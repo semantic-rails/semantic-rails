@@ -109,9 +109,6 @@ query_ast:
       fill: false
       calendar_id: default
     temporal_role_overrides: {}
-    path_policy:
-      preference: fewest_hops
-      ask_if_ambiguous: true
     order_by:
       - field: revenue_usd
         direction: DESC
@@ -291,6 +288,6 @@ review_prompts:
   prompts:
     - Do you want more or fewer top-level semantic primitives in the reference?
     - Should query examples prefer metric references, measure references, or both?
-    - Do you want stricter or looser examples for path_policy and metric_filters?
+    - Do you want stricter or looser examples for metric_filters?
     - Should the API examples include expected response snippets too?
     - Do you want this file to stay Jaffle-specific or become a more abstract runtime reference?

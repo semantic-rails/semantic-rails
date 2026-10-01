@@ -778,20 +778,6 @@ def test_graph_relationships_allowed_directions_defaults_when_omitted(tmp_path: 
     assert rel.allowed_directions == ["forward", "reverse"]
 
 
-def test_graph_relationships_path_preference_propagates(tmp_path: Path) -> None:
-    pkg_dir = tmp_path / "pkg_path_preference"
-    _write_graph_relationship_package(pkg_dir, relationship_extra={"path_preference": 12})
-    config = load_package_config(str(pkg_dir))
-    order_id = next(e.id for e in config.entities if e.id.endswith("_order"))
-    customer_id = next(e.id for e in config.entities if e.id.endswith("_customer"))
-    rel = next(
-        r
-        for r in config.relationships
-        if r.source_entity == order_id and r.target_entity == customer_id
-    )
-    assert rel.path_preference == 12
-
-
 # ---------------------------------------------------------------------------
 # Section 10: Package-relative refs resolve top-level metrics, not just
 # measures (Bug 2 regression)

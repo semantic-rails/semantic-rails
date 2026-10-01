@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 4.827,
-      "compile_ms": 1.202,
+      "cache_lookup_ms": 1.085,
+      "compile_ms": 0.367,
       "dialect": "duckdb",
       "physical_plan_nodes": 8
     },
@@ -172,10 +172,6 @@
             "field": "temporal_role.jaffle_order_time__day"
           }
         ],
-        "path_policy": {
-          "ask_if_ambiguous": true,
-          "preference": "fewest_hops"
-        },
         "select": [
           {
             "as": "qualifying_orders",
@@ -301,10 +297,6 @@
           "field": "temporal_role.jaffle_order_time__day"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "qualifying_orders",
@@ -1401,10 +1393,6 @@
           "field": "temporal_role.jaffle_order_time__day"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "qualifying_orders",
@@ -1531,10 +1519,6 @@
         "field": "temporal_role.jaffle_order_time__day"
       }
     ],
-    "path_policy": {
-      "ask_if_ambiguous": true,
-      "preference": "fewest_hops"
-    },
     "select": [
       {
         "as": "qualifying_orders",
@@ -1613,8 +1597,8 @@
   "recovery_hints": [],
   "rendered_sql": "WITH leaf_1__order_count_customer_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_1__order_count_customer_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1__order_count_customer_month_source_1__leaf_1 AS base\n),\nleaf_1__order_count_customer_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_month_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_month_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\",\n  predicate_source.\"temporal_role.jaffle_order_time__month\" AS \"temporal_role.jaffle_order_time__month\"\nFROM leaf_1__order_count_customer_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 10\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('day', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_month_by_order_count_1.\"dimension.jaffle_customer_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1.\"temporal_role.jaffle_order_time__month\"\nGROUP BY\n  DATE_TRUNC('day', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__day\",\n  base.m1 AS qualifying_orders\nFROM guarded_base AS base\nORDER BY\n  t ASC",
   "request_context": {},
-  "semantic_fingerprint": "sha256:c5b79ea644809aa038e12ef9fe7bda2a7d463e63f00dc256f1bdcc06e33699d8",
-  "source_fingerprint": "8104a0af4cc06331a6ce8c02a3b23de4843667b9597c8175179565433e1a930a",
+  "semantic_fingerprint": "sha256:79e8f3f1f2233be41cfae49254c973c3ff64984ddb66ff349015cf6033769ee7",
+  "source_fingerprint": "3a04595d59e97537227dfd70f6e62ae026eef579da73543884aae311262f0e28",
   "sql_plan": {
     "ctes": [
       {
@@ -2187,5 +2171,23 @@
     "snapshot_row_selection": "aggregate_join",
     "timestamp_type": "TIMESTAMP"
   },
-  "warnings": []
+  "warnings": [
+    {
+      "code": "ROUTE_COLOCATED_KEY",
+      "details": {
+        "route": [
+          "relationship.orders_customer"
+        ]
+      },
+      "message": "Order \u2192 Customer (own key)",
+      "object_ids": [
+        "entity.jaffle_order",
+        "entity.jaffle_customer"
+      ],
+      "path": "",
+      "recovery_hints": [],
+      "severity": "info",
+      "stage": "planning"
+    }
+  ]
 }

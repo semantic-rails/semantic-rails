@@ -811,7 +811,6 @@ def query_slots(
         "fill": bool(time.get("fill")),
         "calendar_id": time.get("calendar_id") or "default",
         "temporal_role_overrides": normalized["temporal_role_overrides"],
-        "path_policy": normalized["path_policy"],
         "where": sorted(compact_json(parts) for parts in filters),
         "metric_filters": sorted(
             compact_json(_canonical_expression(item, aggregations))

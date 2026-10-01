@@ -39,8 +39,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 4.278,
-      "compile_ms": 1.692,
+      "cache_lookup_ms": 1.388,
+      "compile_ms": 0.522,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -167,10 +167,6 @@
             "field": "temporal_role.jaffle_order_time__month"
           }
         ],
-        "path_policy": {
-          "ask_if_ambiguous": true,
-          "preference": "fewest_hops"
-        },
         "select": [
           {
             "as": "trailing_3_month_revenue_usd",
@@ -296,10 +292,6 @@
           "field": "temporal_role.jaffle_order_time__month"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "trailing_3_month_revenue_usd",
@@ -1648,10 +1640,6 @@
           "field": "temporal_role.jaffle_order_time__month"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "trailing_3_month_revenue_usd",
@@ -1778,10 +1766,6 @@
         "field": "temporal_role.jaffle_order_time__month"
       }
     ],
-    "path_policy": {
-      "ask_if_ambiguous": true,
-      "preference": "fewest_hops"
-    },
     "select": [
       {
         "as": "trailing_3_month_revenue_usd",
@@ -1880,55 +1864,55 @@
   "rows": [
     {
       "temporal_role.jaffle_order_time__month": "2016-09-01T00:00:00",
-      "trailing_3_month_revenue_usd": 18053.280000000002
+      "trailing_3_month_revenue_usd": 18053.280000000035
     },
     {
       "temporal_role.jaffle_order_time__month": "2016-10-01T00:00:00",
-      "trailing_3_month_revenue_usd": 39977.230000000025
+      "trailing_3_month_revenue_usd": 39977.23000000004
     },
     {
       "temporal_role.jaffle_order_time__month": "2016-11-01T00:00:00",
-      "trailing_3_month_revenue_usd": 67894.05000000005
+      "trailing_3_month_revenue_usd": 67894.05000000008
     },
     {
       "temporal_role.jaffle_order_time__month": "2016-12-01T00:00:00",
-      "trailing_3_month_revenue_usd": 85518.37000000011
+      "trailing_3_month_revenue_usd": 85518.37000000008
     },
     {
       "temporal_role.jaffle_order_time__month": "2017-01-01T00:00:00",
-      "trailing_3_month_revenue_usd": 108612.36999999988
+      "trailing_3_month_revenue_usd": 108612.36999999995
     },
     {
       "temporal_role.jaffle_order_time__month": "2017-02-01T00:00:00",
-      "trailing_3_month_revenue_usd": 124053.66999999975
+      "trailing_3_month_revenue_usd": 124053.6699999997
     },
     {
       "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00",
-      "trailing_3_month_revenue_usd": 162326.38999999996
+      "trailing_3_month_revenue_usd": 162326.39000000042
     },
     {
       "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00",
-      "trailing_3_month_revenue_usd": 200625.43000000162
+      "trailing_3_month_revenue_usd": 200625.4300000021
     },
     {
       "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00",
-      "trailing_3_month_revenue_usd": 253337.66000000507
+      "trailing_3_month_revenue_usd": 253337.66000000556
     },
     {
       "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00",
-      "trailing_3_month_revenue_usd": 277766.21000000776
+      "trailing_3_month_revenue_usd": 277766.2100000079
     },
     {
       "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00",
-      "trailing_3_month_revenue_usd": 289306.41000000876
+      "trailing_3_month_revenue_usd": 289306.4100000087
     },
     {
       "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00",
-      "trailing_3_month_revenue_usd": 300607.65000000916
+      "trailing_3_month_revenue_usd": 300607.6500000099
     }
   ],
-  "semantic_fingerprint": "sha256:c5b79ea644809aa038e12ef9fe7bda2a7d463e63f00dc256f1bdcc06e33699d8",
-  "source_fingerprint": "8104a0af4cc06331a6ce8c02a3b23de4843667b9597c8175179565433e1a930a",
+  "semantic_fingerprint": "sha256:79e8f3f1f2233be41cfae49254c973c3ff64984ddb66ff349015cf6033769ee7",
+  "source_fingerprint": "3a04595d59e97537227dfd70f6e62ae026eef579da73543884aae311262f0e28",
   "sql_plan": {
     "ctes": [
       {

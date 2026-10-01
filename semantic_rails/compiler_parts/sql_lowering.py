@@ -39,7 +39,7 @@ from ..expressions import (
     expr_to_dict,
     expression_field,
 )
-from ..fanout import analyze_fanout, choose_path, package_hop_limit
+from ..fanout import analyze_fanout, resolve_path
 from ..ir import (
     LogicalPlan,
     MeasurePlan,
@@ -1157,8 +1157,6 @@ def _branch_context_query(
         query["metric_filters"] = list(plan.query.get("metric_filters") or [])
     if plan.query.get("temporal_role_overrides"):
         query["temporal_role_overrides"] = dict(plan.query.get("temporal_role_overrides") or {})
-    if plan.query.get("path_policy"):
-        query["path_policy"] = dict(plan.query.get("path_policy") or {})
     return query
 
 
@@ -1656,21 +1654,6 @@ def _count_key_expr(table: str, columns: list[str]) -> Any:
     )
 
 
-def _preferred_path(
-    config: PackageConfig, *, start: str, target: str, preference: str
-) -> tuple[list[str], list[list[str]]]:
-    explicit = get_package_analysis(config).path_preferences.get((start, target))
-    if explicit is not None:
-        return list(explicit), [list(explicit)]
-    return choose_path(
-        config,
-        start=start,
-        target=target,
-        hop_limit=package_hop_limit(config),
-        preference=preference,
-    )
-
-
 def _anchor_path_selection(
     *,
     config: PackageConfig,
@@ -1682,9 +1665,7 @@ def _anchor_path_selection(
     if start_entity == target_entity:
         return None
     query = normalize_query(plan.query)
-    chosen, candidates = _preferred_path(
-        config, start=start_entity, target=target_entity, preference=query.path_policy.preference
-    )
+    chosen, candidates = resolve_path(config, start=start_entity, target=target_entity)
     analysis = analyze_fanout(
         config,
         start_entity,

@@ -31,6 +31,7 @@ from ..expressions import (
     SemanticExpr,
     expr_kind,
 )
+from ..fanout import record_route_choice, resolve_path
 from ..ir import BoundMeasure, PathSelection
 from ..schema import PackageConfig, RelationshipConfig
 from ..sql_ast import SqlBinary, SqlIdentifier, SqlIsNull, SqlJoin, SqlLiteral, SqlTableRef
@@ -173,15 +174,19 @@ def _direct_entity_key_source_expr(
     if len(routes) != 1:
         return None
     rel, source_col = routes[0]
-    # A pin on this pair, in either direction, is decided by path selection (it may pick a
-    # multi-hop route that reads a different row than the source table's own column), so the
-    # shortcut only stands when the pin names exactly the one direct relationship found.
-    preferences = get_package_analysis(config).path_preferences
-    for pair in ((source_entity, target_entity), (target_entity, source_entity)):
-        pinned = preferences.get(pair)
-        if pinned is not None and pinned != [rel.id]:
-            return None
+    # The shortcut only stands when the route resolver picks exactly the one direct
+    # relationship found: a pin or another route to the target may mean a different row than
+    # the source table's own column, and an ambiguous pair falls through to path selection,
+    # which refuses. A pin on the reverse pair must name the same relationship.
+    try:
+        resolved, candidates = resolve_path(config, start=source_entity, target=target_entity)
+    except SemanticLayerError:
+        return None
+    reverse_pin = get_package_analysis(config).path_preferences.get((target_entity, source_entity))
+    if resolved != [rel.id] or reverse_pin not in (None, [rel.id]):
+        return None
     record_bound_object(rel, config)
+    record_route_choice(source_entity, target_entity, candidates)
     return _column_ref(source_table, source_col)
 
 
@@ -560,6 +565,7 @@ def _joins_for_paths(
     root_table = overrides.get(source_entity, entities[source_entity].table)
     joined_via: dict[str, tuple[str, str]] = {root_table: ("", "root")}
     for selection in path_selections:
+        record_route_choice(source_entity, selection.target_entity, selection.candidate_paths)
         current_entity = source_entity
         nullable_path = False
         for rel_id in selection.chosen_path:

@@ -726,14 +726,12 @@ def test_new_child_filter_paths_require_one_candidate_or_a_pin(
                 for rel in config.relationships
             ],
         )
+    # Two routes and neither is the account's own key: refused until the package records one.
     with pytest.raises(SemanticLayerError) as caught:
         compile_query(config, Registry(config), query)
-    assert caught.value.code == "MIXED_GRAIN_INVALID"
-    purpose = "metric_filter" if bound_filter else "where"
-    assert str(caught.value) == (
-        "Path to 'entity.diamond_district' requires a rewrite that is not supported for " + purpose
-    )
-    assert "no single set of rows belongs to each row" in caught.value.details["why_invalid"]
+    assert caught.value.code == "AMBIGUOUS_PATH"
+    assert caught.value.details["reason"] == "route_decision_required"
+    assert caught.value.details["target"] == "entity.diamond_district"
     routes = [
         (["relationship.account_client", "relationship.district_client"], 50, "east"),
         (
@@ -746,6 +744,7 @@ def test_new_child_filter_paths_require_one_candidate_or_a_pin(
             "west",
         ),
     ]
+    assert caught.value.details["candidates"] == [path for path, _, _ in routes]
     # Seed once; pinning must select the authored route even when it is longer.
     _run(diamond_package, {"select": [{"expression": {"measure": "measure.diamond.amount"}}]})
     for path, expected, branch in routes:
@@ -1208,30 +1207,52 @@ def test_rollup_safe_package_discloses_each_crossing_leaf(runtime_factory) -> No
     assert _normal(tuple(row.values()) for row in typed_rows(result)) == _normal(expected)
 
 
+# A customer's items and sessions: the items of its orders and the sessions it held (not the
+# items or sessions of orders its sessions converted to).
+_CUSTOMER_CHILD_PINS = [
+    PathPreferenceConfig(
+        "entity.jaffle_customer",
+        "entity.jaffle_item",
+        ["relationship.orders_customer", "relationship.order_items_order"],
+    ),
+    PathPreferenceConfig(
+        "entity.jaffle_customer",
+        "entity.jaffle_storefront_session",
+        ["relationship.storefront_sessions_customer"],
+    ),
+]
+
+
 @pytest.mark.parametrize(
-    ("measure", "groups"),
+    ("measure", "groups", "pins"),
     [
         # Two groups on the same child: items.
         (
             "measure.jaffle.order_count",
             ["dimension.jaffle_item_product_type", "dimension.jaffle_item_product_name"],
+            [],
         ),
         # Two groups on different children of a customer: its orders' items and its sessions.
         (
             "measure.jaffle.customer_count",
             ["dimension.jaffle_item_product_type", "dimension.jaffle_storefront_session_store_id"],
+            _CUSTOMER_CHILD_PINS,
         ),
     ],
     ids=["same_child", "different_children"],
 )
 def test_rollup_safe_package_refuses_two_groups_across_a_hop(
-    runtime_factory, measure: str, groups: list[str]
+    runtime_factory, measure: str, groups: list[str], pins: list[PathPreferenceConfig]
 ) -> None:
     """Grouping a distinct count by two dimensions across one-to-many hops was answered before;
     a query may now group or filter across a one-to-many hop once. Both refusal sites raise the
     same error, so the entity_in_terms_of branch is told apart by each group alone planning
     through it."""
     runtime = runtime_factory("jaffle_shop")
+    if pins:
+        config = replace(runtime.config, path_preferences=[*runtime.config.path_preferences, *pins])
+        runtime.close()
+        runtime = Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
 
     def ask(group_by: list[str]) -> dict[str, Any]:
         select = [{"expression": {"measure": measure}, "as": "value"}]
