@@ -43,10 +43,11 @@ def _dimensions_by_id(config: PackageConfig) -> dict[str, Any]:
 
 
 def _path_availability(
-    config: PackageConfig, root_entity: str, target_entity: str, *, query_time: bool = True
+    config: PackageConfig, root_entity: str, target_entity: str, *, query_time: bool = False
 ) -> dict[str, Any]:
     """``query_time``: whether the query gives a time, which a time-valid hop needs. Callers
-    with no query in hand describe reachability given one, as the history notes below do."""
+    with a partial query pass whether it has one; the history notes below describe
+    reachability given one."""
     if not root_entity or target_entity == root_entity:
         return {"available": True, "reason": "", "path": [], "candidates": []}
     try:
@@ -105,7 +106,7 @@ def _dimension_history_coverage(
 ) -> tuple[list[str], str]:
     dim = _dimensions_by_id(config)[dimension_id]
     if root_entity:
-        availability = _path_availability(config, root_entity, dim.entity)
+        availability = _path_availability(config, root_entity, dim.entity, query_time=True)
         if _path_has_temporal_validity(config, availability.get("path", [])):
             note = _history_coverage_note(dimension=True)
             return [note], note
@@ -124,7 +125,7 @@ def _metric_history_coverage_notes(config: PackageConfig, root_entity: str) -> l
     for entity in config.entities:
         if entity.id == root_entity:
             continue
-        availability = _path_availability(config, root_entity, entity.id)
+        availability = _path_availability(config, root_entity, entity.id, query_time=True)
         if _path_has_temporal_validity(config, availability.get("path", [])):
             notes.append(_history_coverage_note())
             break

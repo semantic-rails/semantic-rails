@@ -28,7 +28,7 @@ from .compiler import (
     _requires_query_time,
     _time_bound_relationship_ids,
 )
-from .diagnostics import relationship_contract_payload
+from .diagnostics import recovery_hints_for_error, relationship_contract_payload
 from .errors import SemanticLayerError
 from .expressions import (
     CONVERSION_MATCHING_MODES,
@@ -57,6 +57,7 @@ from .expressions import (
     expr_to_dict,
     parse_semantic_expression,
 )
+from .fanout import UNANCHORED_TIME_VALID_HOP
 from .metadata_parts.capabilities import (
     _capability_payload,
 )
@@ -500,7 +501,9 @@ def _compact_summary_from_card(
     return row
 
 
-def _metric_object_payload(config: PackageConfig, object_id: str, kind: str) -> dict[str, Any]:
+def _metric_object_payload(
+    config: PackageConfig, object_id: str, kind: str, *, query_time: bool = False
+) -> dict[str, Any]:
     maps = _config_maps(config)
     if kind == "metric":
         recipe = maps["metric_recipes"][object_id]
@@ -510,7 +513,9 @@ def _metric_object_payload(config: PackageConfig, object_id: str, kind: str) -> 
         valid_grouping_entities: list[dict[str, Any]] = []
         disabled_grouping_entities: list[dict[str, Any]] = []
         for entity in config.entities:
-            availability = _path_availability(config, root_entity, entity.id)
+            availability = _path_availability(
+                config, root_entity, entity.id, query_time=query_time
+            )
             row = {
                 "id": entity.id,
                 "available": availability["available"],
@@ -524,7 +529,9 @@ def _metric_object_payload(config: PackageConfig, object_id: str, kind: str) -> 
         for dim in config.dimensions:
             if dim.entity == root_entity:
                 continue
-            availability = _path_availability(config, root_entity, dim.entity)
+            availability = _path_availability(
+                config, root_entity, dim.entity, query_time=query_time
+            )
             provenance[dim.id] = {
                 "entity": dim.entity,
                 "path": availability.get("path", []),
@@ -550,7 +557,9 @@ def _metric_object_payload(config: PackageConfig, object_id: str, kind: str) -> 
         valid_grouping_entities = []
         disabled_grouping_entities = []
         for entity in config.entities:
-            availability = _path_availability(config, measure.entity, entity.id)
+            availability = _path_availability(
+                config, measure.entity, entity.id, query_time=query_time
+            )
             row = {
                 "id": entity.id,
                 "available": availability["available"],
@@ -637,25 +646,30 @@ def _result_shape_preview(query_patch: dict[str, Any]) -> dict[str, Any]:
 
 
 def _availability_for_object(
-    config: PackageConfig, root_entity: str, object_id: str, kind: str, *, query_time: bool = True
+    config: PackageConfig, root_entity: str, object_id: str, kind: str, *, query_time: bool = False
 ) -> dict[str, Any]:
     maps = _config_maps(config)
     if kind == "measure":
-        return _path_availability(config, root_entity, maps["measures"][object_id].entity)
+        return _path_availability(
+            config, root_entity, maps["measures"][object_id].entity, query_time=query_time
+        )
     if kind == "metric":
         return _path_availability(
             config,
             root_entity,
             _first_root_entity(config, maps["metric_recipes"][object_id].expression),
+            query_time=query_time,
         )
     if kind == "dimension":
         return _path_availability(
             config, root_entity, maps["dimensions"][object_id].entity, query_time=query_time
         )
     if kind == "segment":
-        return _path_availability(config, root_entity, maps["segments"][object_id].entity)
+        return _path_availability(
+            config, root_entity, maps["segments"][object_id].entity, query_time=query_time
+        )
     if kind == "entity":
-        return _path_availability(config, root_entity, object_id)
+        return _path_availability(config, root_entity, object_id, query_time=query_time)
     return {"available": True, "reason": "", "path": [], "candidates": []}
 
 
@@ -892,7 +906,8 @@ def _object_card(
     selection = _selection_context(config, partial_query)
     obj = runtime.registry.get(object_id)
     payload = dict(obj.payload or {})
-    payload.update(_metric_object_payload(config, object_id, obj.kind))
+    query_time = bool(partial_query.get("time"))
+    payload.update(_metric_object_payload(config, object_id, obj.kind, query_time=query_time))
     base = {
         "id": obj.id,
         "object_type": _public_object_type(obj.kind),
@@ -989,12 +1004,23 @@ def _object_card(
                 "related_measures": [
                     measure.id
                     for measure in config.measures
-                    if _path_availability(config, measure.entity, dim.entity)["available"]
+                    if _path_availability(
+                        config, measure.entity, dim.entity, query_time=query_time
+                    )["available"]
                 ][:10],
                 "coverage_notes": coverage_notes,
                 "null_bucket_meaning": null_bucket_meaning,
             }
         )
+        # Read through a time-valid hop, the dimension needs the query's time: name the hop
+        # and the fix rather than offer a group_by patch the engine would refuse.
+        reach = _path_availability(
+            config, selection["root_entity"], dim.entity, query_time=query_time
+        )
+        details = dict(reach.get("details") or {})
+        if details.get("reason") == UNANCHORED_TIME_VALID_HOP:
+            base["blocked_reason"] = reach["reason"]
+            base["recovery_hints"] = recovery_hints_for_error("FANOUT_UNSAFE", details)
     elif obj.kind == "entity":
         entity = maps["entities"][object_id]
         base.update(
@@ -2077,6 +2103,7 @@ def discover_payload(
     )
     selection = _selection_context(config, partial_query)
     root_entity = selection["root_entity"]
+    query_time = bool(partial_query.get("time"))
     stage = _infer_stage(partial_query, stage, terms)
     maps = _config_maps(config)
     records: list[dict[str, Any]] = []
@@ -2096,7 +2123,9 @@ def discover_payload(
     for measure in config.measures:
         if measure.id in hidden_ids:
             continue
-        availability = _availability_for_object(config, root_entity, measure.id, "measure")
+        availability = _availability_for_object(
+            config, root_entity, measure.id, "measure", query_time=query_time
+        )
         row = {
             "id": measure.id,
             "kind": "measure",
@@ -2129,7 +2158,9 @@ def discover_payload(
     for recipe in config.metric_recipes:
         if recipe.id in hidden_ids:
             continue
-        availability = _availability_for_object(config, root_entity, recipe.id, "metric")
+        availability = _availability_for_object(
+            config, root_entity, recipe.id, "metric", query_time=query_time
+        )
         executable, unsupported_reason = _metric_executable(recipe, config, partial_query)
         predicate_backed = bool(_predicate_exprs_from_expr(config, recipe.expression))
         row = {
@@ -2189,7 +2220,9 @@ def discover_payload(
     for segment in config.segments:
         if segment.id in hidden_ids:
             continue
-        availability = _availability_for_object(config, root_entity, segment.id, "segment")
+        availability = _availability_for_object(
+            config, root_entity, segment.id, "segment", query_time=query_time
+        )
         row = {
             "id": segment.id,
             "kind": "segment",
@@ -2242,7 +2275,6 @@ def discover_payload(
         if top_three_entities.count(leader) >= 2:
             inferred_root_entity = leader
 
-    query_time = bool(partial_query.get("time"))
     for dim in config.dimensions:
         if dim.id in hidden_ids:
             continue
@@ -2277,7 +2309,9 @@ def discover_payload(
     for entity in config.entities:
         if entity.id in hidden_ids:
             continue
-        availability = _availability_for_object(config, root_entity, entity.id, "entity")
+        availability = _availability_for_object(
+            config, root_entity, entity.id, "entity", query_time=query_time
+        )
         row = {
             "id": entity.id,
             "kind": "entity",
@@ -2762,15 +2796,14 @@ def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[st
     )
     selection = _selection_context(config, partial_query)
     root_entity = selection["root_entity"]
+    query_time = bool(partial_query.get("time"))
 
     valid_dimensions: list[dict[str, Any]] = []
     disabled_dimensions: list[dict[str, Any]] = []
     for dim in config.dimensions:
         if dim.id in hidden_ids:
             continue
-        availability = _path_availability(
-            config, root_entity, dim.entity, query_time=bool(partial_query.get("time"))
-        )
+        availability = _path_availability(config, root_entity, dim.entity, query_time=query_time)
         row = {**asdict(dim), **availability}
         (valid_dimensions if availability["available"] else disabled_dimensions).append(row)
 
@@ -2790,7 +2823,8 @@ def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[st
             }
             disabled_temporal_roles.append(row)
             continue
-        availability = _path_availability(config, root_entity, dim.entity)
+        # Choosing a temporal role gives the query its time.
+        availability = _path_availability(config, root_entity, dim.entity, query_time=True)
         row = {**asdict(role), **availability}
         (valid_temporal_roles if availability["available"] else disabled_temporal_roles).append(row)
 
@@ -2799,7 +2833,9 @@ def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[st
     for measure in config.measures:
         if measure.id in hidden_ids:
             continue
-        availability = _path_availability(config, root_entity, measure.entity)
+        availability = _path_availability(
+            config, root_entity, measure.entity, query_time=query_time
+        )
         row = {**asdict(measure), **availability}
         (valid_measures if availability["available"] else disabled_measures).append(row)
 
@@ -2808,7 +2844,7 @@ def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[st
     for entity in config.entities:
         if entity.id in hidden_ids:
             continue
-        availability = _path_availability(config, root_entity, entity.id)
+        availability = _path_availability(config, root_entity, entity.id, query_time=query_time)
         row = {**asdict(entity), **availability}
         (valid_entities if availability["available"] else disabled_entities).append(row)
 
@@ -3585,7 +3621,7 @@ def _starter_query_patches(
                     "note": "scaffold — set op/value before executing",
                 }
             )
-    elif kind == "dimension":
+    elif kind == "dimension" and not card.get("blocked_reason"):
         patches.append(
             {"kind": "group_by", "query_patch": _query_patch_with_group_by(query, object_id)}
         )

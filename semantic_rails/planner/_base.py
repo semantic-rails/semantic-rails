@@ -481,8 +481,8 @@ def _dimension(config: Any, terms: Iterable[str], *, prefer_parent: bool = False
             continue
         if prefer_parent and "parent" in _object_text(row):
             row_score += 2
-        label, versioned_row = getattr(row, "label", ""), row.entity in versioned
-        candidates.append((row_score, label, versioned_row, getattr(row, "id", ""), row))
+        versioned_row, label = row.entity in versioned, getattr(row, "label", "")
+        candidates.append((row_score, versioned_row, label, getattr(row, "id", ""), row))
     candidates.sort(key=lambda item: (-item[0], item[1], item[2], item[3]))
     return candidates[0][4] if candidates else None
 

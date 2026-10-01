@@ -18,6 +18,7 @@ joins), run on the same database, and are also spelled out by hand.
 from __future__ import annotations
 
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -25,13 +26,16 @@ import duckdb
 import pytest
 
 import semantic_rails.fanout as fanout_module
+from semantic_rails.ast import normalize_query
 from semantic_rails.compiler import compile_query
+from semantic_rails.compiler_parts.grain_recovery import mixed_grain_pairing_enrichment
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.fanout import analyze_fanout
-from semantic_rails.metadata import build_options_payload, discover_payload
+from semantic_rails.metadata import build_options_payload, discover_payload, inspect_payload
 from semantic_rails.metadata_parts.path_coverage import _path_availability
 from semantic_rails.metadata_parts.valid_values import valid_values_payload
+from semantic_rails.planner._base import _dimension, _score
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 
@@ -144,7 +148,43 @@ FILES = {
         """,
 }
 
+# The bidirectional pair of the authoring guide: from an account, the reverse hop into the segment
+# table joins every version of the account, unless a time picks one.
+BIDIRECTIONAL = {
+    **{name: body for name, body in FILES.items() if name not in {"models/usage.yml", "models/tiers.yml"}},
+    "graph.yml": """
+        graph:
+          entities:
+            account: {label: Account, key: [account_id], model: accounts}
+            account_segment: {label: Account segment, key: [account_id, valid_from],
+              model: account_segments, allowed_as_root: false}
+          relationships:
+            account_segment_account:
+              id: relationship.account_segment_account
+              entities: [account_segment, account]
+              cardinality: many_to_one
+              safety: requires_rewrite
+              temporal_validity:
+                valid_from: account_segments.valid_from
+                valid_to: account_segments.valid_to
+        """,
+    "models/accounts.yml": """
+        model:
+          id: accounts
+          relation: accounts
+          entities: {account: {}}
+          measures:
+            account_count: {label: Accounts, kind: entity_count, entity_key: account_id,
+              accumulation: {kind: event}, value_type: count}
+        """,
+    "models/account_segments.yml": FILES["models/account_segments.yml"].replace(
+        "{account_segment: {}, account: {}, tier: {}}", "{account_segment: {}, account: {}}"
+    ),
+}
+
 HOP = "relationship.usage_account_segment"
+OUT_HOP = "relationship.account_segment_account"
+ACCOUNT = "entity.hist_account"
 HISTORY = "entity.hist_account_segment"
 SEGMENT = "dimension.hist_account_segment_segment"
 TIER = "dimension.hist_tier_tier_name"
@@ -164,15 +204,19 @@ SQL_TIER = (
 )
 
 
-@pytest.fixture(scope="module")
-def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    pkg = tmp_path_factory.mktemp("time_valid") / "hist"
+def _write_package(root: Path, files: dict[str, str]) -> Path:
+    pkg = root / "hist"
     (pkg / "data").mkdir(parents=True)
     (pkg / "models").mkdir()
     (pkg / "data" / "seed.sql").write_text(SEED_SQL)
-    for name, body in FILES.items():
+    for name, body in files.items():
         (pkg / name).write_text(textwrap.dedent(body))
     return pkg
+
+
+@pytest.fixture(scope="module")
+def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return _write_package(tmp_path_factory.mktemp("time_valid"), FILES)
 
 
 @pytest.fixture(scope="module")
@@ -196,6 +240,18 @@ def gold():
 
 def _amount(**extra: Any) -> dict[str, Any]:
     select = [{"as": "value", "expression": {"measure": "measure.hist.amount"}}]
+    return {"version": 1, "select": select, **extra}
+
+
+def _seats(**extra: Any) -> dict[str, Any]:
+    select = [{"as": "value", "expression": {"measure": "measure.hist.seats"}}]
+    return {"version": 1, "select": select, **extra}
+
+
+def _amount_and_seats(*, seats_first: bool = False, **extra: Any) -> dict[str, Any]:
+    amount = {"as": "value", "expression": {"measure": "measure.hist.amount"}}
+    seats = {"as": "seats", "expression": {"measure": "measure.hist.seats"}}
+    select = [seats, amount] if seats_first else [amount, seats]
     return {"version": 1, "select": select, **extra}
 
 
@@ -231,6 +287,10 @@ def _rows(runtime: Runtime, query: dict[str, Any], keys: list[str]) -> dict[Any,
             id="measure-filter",
         ),
         pytest.param({"version": 1, "group_by": [USAGE_ID, SEGMENT]}, id="dimension-only"),
+        pytest.param(_amount_and_seats(group_by=[SEGMENT]), id="two-measures"),
+        pytest.param(
+            _amount_and_seats(seats_first=True, group_by=[SEGMENT]), id="two-measures-seats-first"
+        ),
     ],
 )
 def test_a_time_valid_hop_without_a_query_time_is_refused(runtime, query):
@@ -310,6 +370,132 @@ def test_a_hop_out_of_the_table_holding_the_window_needs_no_time(runtime, gold):
     )
 
 
+@pytest.mark.parametrize(
+    ("group_by", "expected"),
+    [
+        pytest.param([], {(): (45.0, 8.0)}, id="total"),
+        pytest.param([REGION], {("North",): (40.0, 7.0), ("South",): (5.0, 1.0)}, id="by-region"),
+    ],
+)
+@pytest.mark.parametrize("seats_first", [False, True], ids=["amount-first", "seats-first"])
+def test_measures_aggregated_on_their_own_need_no_time(
+    runtime, gold, seats_first, group_by, expected
+):
+    """Amount and seats are aggregated separately and joined on the grain keys: no usage row
+    joins a segment version, whichever measure the query selects first."""
+    rows = runtime.query(_amount_and_seats(seats_first=seats_first, group_by=group_by))["rows"]
+    result = {
+        tuple(row[key] for key in group_by): (float(row["value"]), float(row["seats"]))
+        for row in rows
+    }
+
+    def total(column: str, table: str) -> dict[Any, float]:
+        region = "(SELECT a.region FROM accounts AS a WHERE a.account_id = t.account_id), "
+        return gold(
+            f"SELECT {region if group_by else ''}SUM(t.{column}) FROM {table} AS t"
+            + (" GROUP BY 1" if group_by else "")
+        )
+
+    amounts, seats = total("amount", "usage"), total("seats", "account_segments")
+    assert result == expected
+    assert result == {key: (amounts[key], seats[key]) for key in amounts}
+
+
+def _predicate(entity: str, scope_mode: str) -> dict[str, Any]:
+    expression = {
+        "kind": "metric_predicate",
+        "entity": entity,
+        "scope_mode": scope_mode,
+        "input": {"measure": "measure.hist.seats"},
+        "op": ">",
+        "value": 0,
+    }
+    return {"expression": expression, "op": "=", "value": True}
+
+
+@pytest.mark.parametrize(
+    ("query", "code"),
+    [
+        pytest.param(
+            _seats(metric_filters=[_predicate(ACCOUNT, "entity_only")]),
+            "PREDICATE_SCOPE_UNSAFE",
+            id="entity",
+        ),
+        pytest.param(
+            _seats(group_by=[REGION], metric_filters=[_predicate(HISTORY, "contextual")]),
+            "PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE",
+            id="context",
+        ),
+        pytest.param(
+            _seats(
+                where=[{"field": REGION, "op": "=", "value": "North"}],
+                metric_filters=[_predicate(HISTORY, "contextual")],
+            ),
+            "PREDICATE_FILTER_INCOMPATIBLE",
+            id="filter",
+        ),
+    ],
+)
+def test_a_metric_predicate_needs_a_time_for_any_time_valid_hop_on_its_path(runtime, query, code):
+    """Stricter than the query itself: the predicate's scope refuses even the hop out of the
+    segment table, which seats grouped or filtered by region crosses without a time."""
+    with pytest.raises(SemanticLayerError) as exc:
+        runtime.query(query)
+
+    assert exc.value.code == code
+    assert "requires a time anchor" in str(exc.value)
+    assert exc.value.details["path"] == [OUT_HOP]
+
+
+CUSTOMER_SEGMENT = "dimension.jaffle_customer_history_segment"
+
+
+def _order_conversion(
+    *, group_by: list[str] | None = None, base: dict[str, Any] | None = None, **extra: Any
+) -> dict[str, Any]:
+    conversion = {
+        "kind": "conversion",
+        "entity": "entity.jaffle_customer",
+        "window": {"unit": "day", "value": 28},
+        "matching_mode": "first_converted_after_base",
+        "base": {"kind": "aggregate", "measure": "measure.jaffle.order_count", **(base or {})},
+        "converted": {"kind": "aggregate", "measure": "measure.jaffle.order_count"},
+        **extra,
+    }
+    select = [{"as": "rate", "expression": conversion}]
+    return {"version": 2, "select": select, "group_by": list(group_by or [])}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        pytest.param(_order_conversion(group_by=[CUSTOMER_SEGMENT]), id="group-by"),
+        pytest.param(_order_conversion(constant_properties=[CUSTOMER_SEGMENT]), id="property"),
+        pytest.param(
+            _order_conversion(
+                base={"filter": {"all": [{"field": CUSTOMER_SEGMENT, "op": "=", "value": "new"}]}}
+            ),
+            id="operand-filter",
+        ),
+    ],
+)
+def test_a_conversion_reading_a_history_dimension_without_a_time_is_refused(
+    runtime_factory, query
+):
+    """Each order would join every version of its customer's history."""
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        with pytest.raises(SemanticLayerError) as exc:
+            runtime.query(query)
+    finally:
+        runtime.close()
+
+    assert exc.value.code == "FANOUT_UNSAFE"
+    assert exc.value.details["reason"] == "time_valid_hop_without_query_time"
+    assert exc.value.details["relationships"] == ["relationship.order_to_customer_history"]
+    assert exc.value.details["entities"] == ["entity.jaffle_customer_history"]
+
+
 def test_valid_values_counts_usage_at_its_version_or_refuses(runtime):
     """A live lookup filtered by usage has to count usage, which reads the segment through the
     hop: at each usage's version with a time, and never through every version without one."""
@@ -346,11 +532,9 @@ def test_the_classification_names_the_hop_and_the_fix(package):
     assert exc.value.details["reason"] == "time_valid_hop_without_query_time"
     assert "time" in exc.value.details["hint"]
     assert anchored["status"] == "ok"
-    # Build-options, discover and the planner offer the hop only to a query that gives a time.
+    # Metadata offers the hop only when told the query gives a time; by default it has none.
     assert _path_availability(config, usage, HISTORY, query_time=True)["available"] is True
-    assert _path_availability(config, usage, HISTORY, query_time=False)["error_code"] == (
-        "FANOUT_UNSAFE"
-    )
+    assert _path_availability(config, usage, HISTORY)["error_code"] == "FANOUT_UNSAFE"
 
 
 @pytest.mark.parametrize(("time", "offered"), [(None, False), (MONTHLY, True)])
@@ -367,6 +551,88 @@ def test_discover_and_build_options_offer_the_hop_only_with_a_time(runtime, time
     assert (HOP in row["blocked_reason"]) is not offered  # the reason names the hop
     patches = [row["id"] for row in [*options["recommended"], *options["available"]]]
     assert (SEGMENT in patches) is offered
+
+
+@pytest.mark.parametrize(("time", "offered"), [(None, False), (MONTHLY, True)])
+def test_inspect_offers_a_history_grouping_only_with_a_time(runtime, time, offered):
+    """Without a time, the card names the hop and asks for one instead of a patch the engine
+    would refuse."""
+    partial = _amount(**({"time": time} if time else {}))
+
+    card = inspect_payload(runtime, object_id=SEGMENT, partial_query=partial)["card"]
+
+    group_by = [row for row in card["starter_query_patches"] if row["kind"] == "group_by"]
+    assert bool(group_by) is offered
+    for row in group_by:
+        assert runtime.validate(row["query_patch"])["ok"] is True
+    assert (HOP in card.get("blocked_reason", "")) is not offered
+    hints = [hint["message"] for hint in card.get("recovery_hints", [])]
+    assert any("Add `time`" in hint for hint in hints) is not offered
+
+
+def test_a_reverse_hop_into_the_window_is_not_offered_without_a_time(tmp_path):
+    """From an account, the segment table holds every version of it: discover lists it only
+    as a rewrite, as before; a time is what would make it one version per account."""
+    pkg = _write_package(tmp_path, BIDIRECTIONAL)
+    partial = {
+        "version": 1,
+        "select": [{"as": "accounts", "expression": {"measure": "measure.hist.account_count"}}],
+    }
+    runtime = Runtime.from_path(str(pkg))
+    try:
+        found = discover_payload(
+            runtime, terms="segment", partial_query=partial, kinds=["entity", "dimension"]
+        )
+    finally:
+        runtime.close()
+
+    rows = {row["id"]: row for row in [*found["entities"], *found["dimensions"]]}
+    assert rows[HISTORY]["available"] is False
+    assert rows[SEGMENT]["available"] is False
+    config = load_package_config(str(pkg))
+    assert _path_availability(config, ACCOUNT, HISTORY, query_time=True)["available"] is True
+
+
+def test_the_planner_prefers_the_dimension_that_needs_no_time_on_an_equal_score(package):
+    """The segment table's account id, relabelled to sort first, still loses to the account's
+    own: the score ties, and the version only a query time picks comes after any label."""
+    config = load_package_config(str(package))
+    history_id = "dimension.hist_account_segment_account_id"
+    relabelled = replace(
+        config,
+        dimensions=[
+            replace(dim, label="Account") if dim.id == history_id else dim
+            for dim in config.dimensions
+        ],
+    )
+    history = next(dim for dim in relabelled.dimensions if dim.id == history_id)
+
+    chosen = _dimension(relabelled, ["account"])
+
+    assert chosen.id == "dimension.hist_account_id"
+    assert _score(chosen, ["account"]) == _score(history, ["account"])
+    assert chosen.label > history.label
+
+
+def test_recovery_hints_skip_a_dimension_behind_a_time_valid_hop(package):
+    """Mixed-grain enrichment lists the dimensions a measure can group by; one that needs a
+    time the query lacks is left out rather than ending the enrichment."""
+    config = load_package_config(str(package))
+
+    def compatible(query: dict[str, Any]) -> dict[str, Any]:
+        return mixed_grain_pairing_enrichment(
+            config=config,
+            query=normalize_query(query),
+            measure_ids=["measure.hist.amount"],
+            target_entity=ACCOUNT,
+        )
+
+    without_time, with_time = compatible(_amount()), compatible(_amount(time=MONTHLY))
+
+    assert without_time["measures"] == ["measure.hist.amount"]
+    assert REGION in without_time["compatible_dimensions"]
+    assert SEGMENT not in without_time["compatible_dimensions"]
+    assert SEGMENT in with_time["compatible_dimensions"]
 
 
 def test_the_join_refuses_a_time_valid_hop_the_classification_let_through(package, monkeypatch):

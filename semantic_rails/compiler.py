@@ -2557,12 +2557,32 @@ def _root_path_summary(
             raise
         selected_paths[target_entity] = list(chosen)
         candidate_paths[target_entity] = [list(path) for path in candidates]
-        analysis = analyze_fanout(
-            config,
-            root_entity,
-            chosen,
-            time_bound_relationships=_time_bound_relationship_ids(query, config),
-        )
+        try:
+            analysis = analyze_fanout(
+                config,
+                root_entity,
+                chosen,
+                time_bound_relationships=_time_bound_relationship_ids(query, config),
+            )
+        except SemanticLayerError as exc:
+            # No leaf joins the path to another measure's entity: each measure aggregates on
+            # its own and is reconciled on the grain keys, whose own paths still refuse.
+            if exc.details.get("reason") != UNANCHORED_TIME_VALID_HOP or purpose != "measure":
+                raise
+            measure = next(
+                row for row in bound_measures if measures[row.measure_id].entity == target_entity
+            )
+            analyses[target_entity] = {"status": "rewrite_required", "reason": exc.details["reason"]}
+            rewrite_steps.append(
+                RewriteStep(
+                    kind="leaf_preaggregate_join",
+                    status="applied",
+                    measure_id=measure.measure_id,
+                    reason="Independent fact families compiled as separate leaf aggregates and reconciled on final grain keys",
+                    details={"target_entity": target_entity, "path": list(chosen)},
+                )
+            )
+            continue
         analyses[target_entity] = analysis
         if analysis.get("status") == "rewrite_required" and purpose == "measure":
             measure = next(
