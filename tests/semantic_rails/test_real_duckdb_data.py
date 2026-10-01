@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import datetime
 
 from semantic_rails.expressions import AggregateExpr, RollingExpr
 from semantic_rails.metadata import _expr_summary, catalog_payload, valid_values_payload
@@ -319,10 +319,10 @@ def test_time_fill_returns_dense_daily_series(runtime_factory):
         result = runtime.query(query)
 
         assert result["row_count"] == 9
-        assert result["rows"][0]["temporal_role.jaffle_order_time__day"] == date(2016, 8, 25)
-        assert result["rows"][0]["orders"] == 0
-        assert any(row["orders"] == 0 for row in result["rows"])
-        assert any(row["orders"] > 0 for row in result["rows"])
+        assert result["rows"][0]["temporal_role.jaffle_order_time__day"] == "2016-08-25T00:00:00"
+        # Orders are loaded from 2016-09-01: the days before have no data, not 0.
+        assert [row["orders"] for row in result["rows"][:7]] == [None] * 7
+        assert all(row["orders"] > 0 for row in result["rows"][7:])
     finally:
         runtime.close()
 
@@ -359,11 +359,12 @@ def test_time_fill_supports_grouped_series(runtime_factory):
                 {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"},
             ],
             "group_by": ["dimension.jaffle_store_name"],
+            # Brooklyn opens on 2017-03-12, inside the loaded orders.
             "time": {
                 "temporal_role": "temporal_role.jaffle_order_time",
                 "grain": "day",
-                "start": "2017-08-30 00:00:00",
-                "end": "2017-09-03 00:00:00",
+                "start": "2017-03-10 00:00:00",
+                "end": "2017-03-14 00:00:00",
                 "fill": True,
             },
             "order_by": [
@@ -374,21 +375,18 @@ def test_time_fill_supports_grouped_series(runtime_factory):
 
         result = runtime.query(query)
 
-        brooklyn_days = {
-            row["temporal_role.jaffle_order_time__day"]
+        brooklyn = {
+            row["temporal_role.jaffle_order_time__day"]: row["orders"]
             for row in result["rows"]
             if row["dimension.jaffle_store_name"] == "Brooklyn"
         }
-        assert brooklyn_days == {
-            date(2017, 8, 30),
-            date(2017, 8, 31),
-            date(2017, 9, 1),
-            date(2017, 9, 2),
+        assert set(brooklyn) == {
+            "2017-03-10T00:00:00",
+            "2017-03-11T00:00:00",
+            "2017-03-12T00:00:00",
+            "2017-03-13T00:00:00",
         }
-        assert any(
-            row["dimension.jaffle_store_name"] == "Brooklyn" and row["orders"] == 0
-            for row in result["rows"]
-        )
+        assert brooklyn["2017-03-10T00:00:00"] == brooklyn["2017-03-11T00:00:00"] == 0
     finally:
         runtime.close()
 
@@ -701,7 +699,7 @@ def test_prior_period_and_period_to_date_semantics_execute(runtime_factory):
         previous_quarter = None
         previous_orders = None
         for row in result["rows"]:
-            month = row["temporal_role.jaffle_order_time__month"]
+            month = datetime.fromisoformat(row["temporal_role.jaffle_order_time__month"])
             quarter_key = (month.year, (month.month - 1) // 3)
             if quarter_key != previous_quarter:
                 expected_qtd = row["orders"]
@@ -939,7 +937,7 @@ def test_fiscal_calendar_buckets_leaf_by_calendar_columns(runtime_factory):
         # Quarter starts must be fiscal anchors (Feb / May / Aug / Nov),
         # NOT Gregorian (Jan / Apr / Jul / Oct).
         quarter_starts = {row["temporal_role.jaffle_order_time__quarter"] for row in result["rows"]}
-        assert any(getattr(qs, "month", None) in {2, 5, 8, 11} for qs in quarter_starts)
+        assert any(datetime.fromisoformat(qs).month in {2, 5, 8, 11} for qs in quarter_starts)
     finally:
         runtime.close()
 
@@ -1388,11 +1386,12 @@ def test_dense_fill_does_not_fabricate_zeros_for_non_additive_measures(runtime_f
                     "as": "orders",
                 },
             ],
+            # Of these loaded days, only 2016-10-02 has a customer's first order.
             "time": {
                 "temporal_role": "temporal_role.jaffle_customer_first_order_at",
-                "grain": "month",
-                "start": "2016-09-01 00:00:00",
-                "end": "2018-06-01 00:00:00",
+                "grain": "day",
+                "start": "2016-10-01 00:00:00",
+                "end": "2016-10-15 00:00:00",
                 "fill": True,
             },
         }
@@ -1402,7 +1401,7 @@ def test_dense_fill_does_not_fabricate_zeros_for_non_additive_measures(runtime_f
         empty = [row for row in rows if row["orders"] == 0]
         populated = [row for row in rows if row["orders"] > 0]
 
-        assert empty, "range must extend past the data so some buckets are empty"
+        assert empty, "the loaded range must hold empty buckets"
         assert populated, "range must also cover buckets that carry data"
 
         for row in empty:
@@ -1422,14 +1421,16 @@ def test_dense_fill_still_zero_fills_additive_measures(runtime_factory):
     """Guard the other direction: the fix must not turn every fill into NULL."""
     runtime = runtime_factory("jaffle_shop")
     try:
+        # Brooklyn opens in March 2017, so it has no orders in the loaded January and February.
         query = {
             "version": 1,
             "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+            "where": [{"field": "dimension.jaffle_store_name", "op": "=", "value": "Brooklyn"}],
             "time": {
                 "temporal_role": "temporal_role.jaffle_order_time",
-                "grain": "day",
-                "start": "2016-08-25 00:00:00",
-                "end": "2016-09-03 00:00:00",
+                "grain": "month",
+                "start": "2017-01-01 00:00:00",
+                "end": "2017-05-01 00:00:00",
                 "fill": True,
             },
         }

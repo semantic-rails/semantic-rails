@@ -423,7 +423,7 @@ def _by_product_type_result(runtime: Runtime, key: str) -> dict[tuple[str, date]
     out: dict[tuple[str, date], float] = {}
     for row in runtime.query(_metric_query(key, by_product_type=True))["rows"]:
         day = row[f"{ORDER_TIME}__day"]
-        day = day.date() if isinstance(day, datetime) else day
+        day = datetime.fromisoformat(day).date()
         out[(row[PRODUCT_TYPE], day)] = float(row["value"])
     return out
 

@@ -66,13 +66,16 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true') }}
-    timeout-minutes: 10
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # The guard diffs the merge-group base against its synthetic head.
+          fetch-depth: 0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
@@ -83,7 +86,27 @@ jobs:
           cache-dependency-glob: uv.lock
       - run: uv sync --group dev --locked
       - run: uv run python scripts/changelog_fragments.py check
-      - run: uv run pytest -q tests/semantic_rails tests/mf2sr -n auto
+      - run: uv run pytest -q tests/semantic_rails tests/mf2sr -n auto --validate-quarantine
+      - name: Catch intermittent failures
+        if: github.event_name == 'merge_group' && matrix.python-version == '3.12'
+        timeout-minutes: 5
+        env:
+          MERGE_BASE: ${{ github.event.merge_group.base_sha }}
+        run: uv run python scripts/flake_guard.py --base "$MERGE_BASE"
+      - name: ClickHouse driver guards (no skips)
+        if: matrix.python-version == '3.12'
+        run: |
+          uv sync --group dev --extra clickhouse --locked
+          uv run --no-sync pytest -v -rs tests/semantic_rails/test_dialect_clickhouse.py --junitxml=clickhouse-results.xml
+          uv run --no-sync python - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          cases = ET.parse("clickhouse-results.xml").findall(".//testcase")
+          skipped = [case.attrib["name"] for case in cases if case.find("skipped") is not None]
+          if not cases or skipped:
+              raise SystemExit(f"ClickHouse tests must run without skips: {skipped}")
+          print(f"All {len(cases)} ClickHouse tests ran without skips.")
+          PY
       - run: uv run semantic-rails parse-config --package jaffle_shop
       - run: uv run semantic-rails validate-config --package jaffle_shop --quiet
       - run: uv run semantic-rails test-package --package jaffle_shop

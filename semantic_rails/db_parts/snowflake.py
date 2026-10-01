@@ -12,6 +12,7 @@ import contextlib
 import json
 import subprocess
 from collections.abc import Mapping
+from decimal import Decimal
 from typing import Any
 
 from ..dialects import (
@@ -49,7 +50,7 @@ def _extract_snowflake_json_rows(stdout: str) -> list[dict[str, Any]]:
     # details, which flow into public HTTP/MCP/CLI error envelopes. Only
     # bounded metadata (length, JSON error position) is safe to surface.
     try:
-        payload = json.loads(text)
+        payload = json.loads(text, parse_float=Decimal)
     except json.JSONDecodeError as exc:
         raise SemanticLayerError(
             "QUERY_EXECUTION_ERROR",

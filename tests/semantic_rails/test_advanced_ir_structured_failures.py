@@ -11,6 +11,8 @@ warehouse execution). These tests pin the structured failure envelope.
 
 from __future__ import annotations
 
+import pytest
+
 
 def _conversion_expr(**overrides) -> dict:
     expr = {
@@ -64,30 +66,21 @@ def test_unknown_dimension_binding_side_is_rejected_not_silently_base(runtime_fa
     assert _codes(report) == ["INVALID_EXPRESSION_AST"]
 
 
-def test_unknown_dimension_binding_key_is_rejected(runtime_factory):
+@pytest.mark.parametrize(
+    "binding",
+    [
+        pytest.param({"denominator_policy": "x"}, id="unknown-binding-key"),
+        pytest.param(
+            {"side": "converted", "denominator": "matched_base_events"},
+            id="unsupported-denominator-policy",
+        ),
+    ],
+)
+def test_invalid_dimension_binding_is_rejected(runtime_factory, binding):
     runtime = runtime_factory("jaffle_shop")
     report = _validate_expr(
         runtime,
-        _conversion_expr(
-            dimension_bindings={"dimension.jaffle_store_name": {"denominator_policy": "x"}}
-        ),
-    )
-    assert report["ok"] is False
-    assert _codes(report) == ["INVALID_EXPRESSION_AST"]
-
-
-def test_unsupported_denominator_policy_is_rejected(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    report = _validate_expr(
-        runtime,
-        _conversion_expr(
-            dimension_bindings={
-                "dimension.jaffle_store_name": {
-                    "side": "converted",
-                    "denominator": "matched_base_events",
-                }
-            }
-        ),
+        _conversion_expr(dimension_bindings={"dimension.jaffle_store_name": binding}),
     )
     assert report["ok"] is False
     assert _codes(report) == ["INVALID_EXPRESSION_AST"]

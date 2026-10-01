@@ -5,6 +5,12 @@ package's own test queries) against every registered warehouse and
 asserts the results match the DuckDB reference row-for-row, over an
 identical JaffleShop fixture.
 
+Comparisons preserve the public JSON types and `column_types` metadata. Decimal columns compare numerically using their metadata, including decimal
+strings against another warehouse's float results. Numeric-looking text remains
+text, and timestamp offsets/awareness are preserved. Column casing and row
+ordering are normalized; numeric comparisons retain a small tolerance for
+floating-point arithmetic across engines.
+
 ```bash
 make warehouses-up        # local Postgres + ClickHouse
 cp .env.example .env      # fill in cloud creds (optional)

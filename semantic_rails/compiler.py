@@ -41,6 +41,9 @@ from .compiler_parts.bind import (
     _resolve_filter_dimension,
     _scoped_aggregate_filter_spec,
     _scoped_predicate_expr_payload,
+    check_conditional_aggregate_path,
+    conditional_aggregate_route_refusal,
+    is_conditional_aggregate,
     lift_conditional_aggregates,
 )
 from .compiler_parts.dependencies import (
@@ -140,7 +143,7 @@ from .expressions import (
     expr_to_dict,
     validate_expression_shapes,
 )
-from .fanout import analyze_fanout, choose_path, one_to_many_descent
+from .fanout import analyze_fanout, choose_path, filter_only_semijoin, one_to_many_descent
 from .ir import (
     BoundMeasure,
     ExplainArtifact,
@@ -837,15 +840,16 @@ def _fanout_dedup_refusal(
     """Why this leaf can't count each measure row once across its one-to-many hops, and the
     path at fault; None when it can.
 
-    ``selections`` are the leaf's paths that need a rewrite. The de-duplicated leaf
-    (``sql_lowering._fanout_dedup_leaf_select``) keeps one row per (measure-entity key, output
-    grain) before it aggregates, so a row counts once at all under a filter (EXISTS), and once
-    per group it has a matching child row in.
+    ``selections`` are all the leaf's paths. Filter-only paths use correlated
+    EXISTS (or a de-duplicated parent leaf on ClickHouse). Grouped paths keep one row per
+    (measure-entity key, output grain) before aggregation, so each row counts once in every
+    group it has a matching child in.
 
     Grouped, only a distinct count is answered. Summing (or averaging) an order amount by an
     item dimension reads as the item-level split ("revenue by product type") as often as the
     orders-that-included-it total, and the two differ, so that shape stays refused.
     """
+    selections = [row for row in selections if row.analysis.get("status") != "ok"]
     for row in selections:
         if row.purpose not in _FANOUT_DEDUP_PURPOSES:
             return (
@@ -853,17 +857,33 @@ def _fanout_dedup_refusal(
                 "a one-to-many hop; only filters and distinct-count groupings can.",
                 row,
             )
+    grouped = [row for row in selections if row.purpose == "group_by"]
     keys = {entity.id: list(entity.key or [entity.primary_key]) for entity in config.entities}
     for row in selections:
-        if not one_to_many_descent(row.analysis, keys):
-            return (
-                f"The path from '{measure.entity}' to '{row.target_entity}' is many-to-many (a "
-                "lookup before the one-to-many hop, an M:N or time-bounded relationship, or a "
-                "join off the declared key), so no single set of rows belongs to each row.",
-                row,
+        # Preserve existing descent shapes, including ClickHouse's DISTINCT-parent
+        # leaf beside lookups. Broader EXISTS paths must have exactly one route
+        # after authored pins; hop count cannot decide which children are meant.
+        if one_to_many_descent(row.analysis, keys):
+            continue
+        if (
+            not grouped
+            and config.package.warehouse != "clickhouse"
+            and filter_only_semijoin(row.analysis)
+            and len(row.candidate_paths) == 1
+        ):
+            continue
+        return (
+            (
+                "ClickHouse requires a key-based descent before any lookup. "
+                if config.package.warehouse == "clickhouse"
+                else ""
             )
+            + f"The path from '{measure.entity}' to '{row.target_entity}' is many-to-many (a "
+            "lookup before the one-to-many hop, an M:N or time-bounded relationship, or a "
+            "join off the declared key), so no single set of rows belongs to each row.",
+            row,
+        )
     aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
-    grouped = [row for row in selections if row.purpose == "group_by"]
     if grouped and aggregation not in _FANOUT_GROUPED_AGGREGATIONS:
         return (
             f"'{aggregation}' of '{measure.id}' grouped by a dimension of "
@@ -2306,16 +2326,26 @@ def _leaf_path_selections(
 
     selections: list[PathSelection] = []
     required_entities: set[str] = set(_measure_required_entities(measure, config))
+    # An aggregate_if's condition joins as a where filter does (a lookup), on the route that
+    # filter takes; every leaf that plans it refuses that route unless each hop is many-to-one.
+    conditional = is_conditional_aggregate(measure)
     for entity_id in sorted(required_entities):
-        selection = _path_selection(
-            config=config,
-            query=query,
-            start_entity=measure.entity,
-            target_entity=entity_id,
-            preference=query.path_policy.preference,
-            purpose="measure_expr",
-        )
+        try:
+            selection = _path_selection(
+                config=config,
+                query=query,
+                start_entity=measure.entity,
+                target_entity=entity_id,
+                preference=query.path_policy.preference,
+                purpose="aggregate_if" if conditional else "measure_expr",
+            )
+        except SemanticLayerError as exc:
+            if not conditional or exc.code not in {"AMBIGUOUS_PATH", "PATH_NOT_FOUND"}:
+                raise
+            raise conditional_aggregate_route_refusal(measure, entity_id, exc) from exc
         if selection is not None:
+            if conditional:
+                check_conditional_aggregate_path(measure, entity_id, selection.chosen_path, config)
             selections.append(selection)
     for dim_id in query.group_by:
         dim = dimensions[dim_id]
@@ -2440,7 +2470,7 @@ def _leaf_path_selections(
                 why_invalid=why_invalid,
             )
         refusal = _fanout_dedup_refusal(
-            measure=measure, bound=bound, selections=unsupported, config=config, query=query
+            measure=measure, bound=bound, selections=selections, config=config, query=query
         )
         if refusal is None:
             return selections, sorted(required_entities), "fanout_dedup"
@@ -4007,6 +4037,7 @@ def _plan_query(
     _validate_rollup_safety(bound_measures, config)
     _validate_non_additive_sums(bound_measures, config, query)
     measure_plans: list[MeasurePlan] = []
+    leaf_strategies: list[str] = []  # each leaf's strategy before rollup routing
     if bound_measures:
         root_entity = measures[bound_measures[0].measure_id].entity
         selected_paths, candidate_paths, rewrite_steps, root_analyses = _root_path_summary(
@@ -4075,6 +4106,7 @@ def _plan_query(
                     aggregate_relation_rejections=aggregate_relation_rejections,
                 )
             )
+            leaf_strategies.append(rewrite_strategy)
     elif conversion_exprs:
         root_entity = _expression_root_entity(conversion_exprs[0].base, config)
         selected_paths = {}
@@ -4128,7 +4160,7 @@ def _plan_query(
     plan_time = asdict(query.time) if query.time else {}
     if collapse_window and bound_measures and _is_window_total(query, config, bound_measures):
         plan_time["window_total"] = True
-    return LogicalPlan(
+    plan = LogicalPlan(
         version=2,
         query=query.to_dict(),
         root_entity=root_entity,
@@ -4146,6 +4178,9 @@ def _plan_query(
         semantic_dag=_semantic_dag_for_query(query, config),
         synthetic_measures=dict(synthetic_measures),
     )
+    from .compiler_parts.sql_lowering import coverage_base_plan
+
+    return coverage_base_plan(plan, config, leaf_strategies)
 
 
 def _calendar_fill_binding(
@@ -4400,7 +4435,7 @@ def compile_query(
 
     physical_plan = build_physical_plan(plan, config)
     performance_plan = build_performance_plan(
-        plan, config, physical_plan, rendered, bound.rollup_scans
+        plan, config, physical_plan, rendered, bound.rollup_scans, sql_ast
     )
     compile_stats = {
         "compile_ms": round((time.perf_counter() - started) * 1000, 3),

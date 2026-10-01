@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 from semantic_rails.compiler import compile_query
@@ -7,6 +9,16 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.planner import plan_payload
 from semantic_rails.registry import Registry
 from tests.plan_candidate_envelope import plan_candidate_envelope
+
+
+def _wire_oracle(rows):
+    return [
+        {
+            key: value.isoformat() if isinstance(value, datetime) else value
+            for key, value in row.items()
+        }
+        for row in rows
+    ]
 
 
 def _snapshot_parent_metric_query() -> dict:
@@ -134,7 +146,7 @@ def test_snapshot_parent_rollup_with_two_contextual_predicates_executes_once_per
             ORDER BY snapshot_base.month_start ASC, snapshot_base.store_name ASC
             """
         )
-        assert actual == oracle
+        assert actual == _wire_oracle(oracle)
     finally:
         runtime.close()
 
@@ -225,7 +237,7 @@ def test_monthly_snapshot_metric_for_session_qualified_stores_matches_oracle(run
             ORDER BY snapshot_base.month_start ASC, snapshot_base.store_name ASC
             """
         )
-        assert actual == oracle
+        assert actual == _wire_oracle(oracle)
     finally:
         runtime.close()
 
@@ -415,7 +427,7 @@ def test_28d_adoption_funnel_applies_order_rate_filter_inside_conversion_base(ru
             ORDER BY month_start ASC, store_name ASC
             """
         )
-        assert result["rows"] == oracle
+        assert result["rows"] == _wire_oracle(oracle)
     finally:
         runtime.close()
 
