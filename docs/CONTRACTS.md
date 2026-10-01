@@ -153,7 +153,9 @@ Direct connections retain their connector session-parameter tag support.
 Read-only DuckDB connections now reject external-file views during bootstrap
 as well as execution. Packages using those views must materialize them into
 tables before upgrading. This security restriction is a behavior compatibility
-change that leaves query/package schema shapes unchanged. See
+change that leaves query/package schema shapes unchanged. An in-process reader
+beside a live read-only runtime must use the same locked configuration;
+`Database.connect(..., read_only=True)` supplies it. See
 [Native adapter timeouts](PACKAGE_AUTHORING.md#native-adapter-timeouts) for
 request margins, cancellation, driver retry limits and excluded adapters.
 

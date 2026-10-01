@@ -15,7 +15,7 @@ from semantic_rails.db import (
     build_snowflake_cli_command,
     create_warehouse_adapter,
 )
-from semantic_rails.db_parts.common import READ_ONLY_DUCKDB_CONFIG, rows_from_cursor
+from semantic_rails.db_parts.common import rows_from_cursor
 from semantic_rails.dialects import (
     DuckDbDialect,
     SnowflakeDialect,
@@ -104,11 +104,12 @@ def test_read_only_duckdb_comparison_reader_shares_locked_configuration(tmp_path
     try:
         with pytest.raises(duckdb.ConnectionException, match="different configuration"):
             duckdb.connect(str(db_path), read_only=True)
-        with duckdb.connect(str(db_path), read_only=True, config=READ_ONLY_DUCKDB_CONFIG) as reader:
-            assert reader.execute("SELECT value FROM local_data").fetchall() == [
-                (row["value"],) for row in db.query("SELECT value FROM local_data")
-            ]
-            for connection in (db.conn, reader):
+        reader = Database.connect(str(db_path), read_only=True)
+        try:
+            assert reader.query("SELECT value FROM local_data") == db.query(
+                "SELECT value FROM local_data"
+            )
+            for connection in (db.conn, reader.conn):
                 with pytest.raises(duckdb.Error, match="file system operations are disabled"):
                     connection.execute("SELECT * FROM read_text(?)", [str(text_path)])
                 for setting in (
@@ -118,6 +119,8 @@ def test_read_only_duckdb_comparison_reader_shares_locked_configuration(tmp_path
                 ):
                     with pytest.raises(duckdb.Error):
                         connection.execute(f"SET {setting}")
+        finally:
+            reader.close()
     finally:
         db.close()
 
@@ -675,10 +678,14 @@ def test_snowflake_named_profile_refuses_authored_tag_before_connect(monkeypatch
 
     from semantic_rails.sql_preparation import prepare_query
 
-    pytest.importorskip("snowflake.connector")
     connection = Mock()
     connect = Mock(return_value=connection)
-    monkeypatch.setattr("snowflake.connector.connect", connect)
+    connector_module = types.ModuleType("snowflake.connector")
+    connector_module.connect = connect
+    snowflake_module = types.ModuleType("snowflake")
+    snowflake_module.connector = connector_module
+    monkeypatch.setitem(sys.modules, "snowflake", snowflake_module)
+    monkeypatch.setitem(sys.modules, "snowflake.connector", connector_module)
     adapter = SnowflakeNativeAdapter("analytics", options={"query_tag": tag})
     with pytest.raises(SemanticLayerError) as exc:
         if entry_point == "kwargs":
@@ -705,9 +712,13 @@ def test_snowflake_named_profile_refuses_authored_tag_before_connect(monkeypatch
 def test_snowflake_direct_connection_passes_tag_as_session_parameter(monkeypatch, tag):
     from unittest.mock import Mock
 
-    pytest.importorskip("snowflake.connector")
     connect = Mock()
-    monkeypatch.setattr("snowflake.connector.connect", connect)
+    connector_module = types.ModuleType("snowflake.connector")
+    connector_module.connect = connect
+    snowflake_module = types.ModuleType("snowflake")
+    snowflake_module.connector = connector_module
+    monkeypatch.setitem(sys.modules, "snowflake", snowflake_module)
+    monkeypatch.setitem(sys.modules, "snowflake.connector", connector_module)
     monkeypatch.setenv("SR_TEST_ACCOUNT", "example")
     monkeypatch.setenv("SR_TEST_USER", "example")
     adapter = SnowflakeNativeAdapter(

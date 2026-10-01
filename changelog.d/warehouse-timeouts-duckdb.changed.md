@@ -9,5 +9,7 @@
   MotherDuck and Snowflake CLI are excluded from these client defaults.
 - Read-only DuckDB bootstrap, execution and authoring introspection reject
   external-file views; materialize them into tables before upgrading.
+  An in-process reader beside a live read-only runtime must use the same locked
+  configuration; `Database.connect(..., read_only=True)` supplies it.
 - BigQuery supplies a default server job deadline and attempts cancellation on
   result timeout; Athena cancels unfinished queries on polling timeout.
