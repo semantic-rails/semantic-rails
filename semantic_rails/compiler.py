@@ -193,6 +193,7 @@ from .sql_ast import (
     validate_single_value_filter_shape,
 )
 from .sql_preparation import ParameterSlot
+from .temporal_support import validate_temporal_support
 
 __all__ = [
     "AggregateExpr",
@@ -3938,6 +3939,7 @@ def plan_query(
     *,
     collapse_window: bool = True,
 ) -> LogicalPlan:
+    validate_temporal_support(config, payload)
     raw_query = normalize_query(payload)
 
     with candidate_planning():
@@ -4193,6 +4195,7 @@ def _compile_query_sql_ast(
     guard_empty: bool = True,
 ) -> SqlSelect:
     """Compile a nested query; ``guard_empty=False`` for a distribution's per-entity values."""
+    validate_temporal_support(config, payload)
     with candidate_planning():
         plan = _plan_query(config, None, normalize_query(payload), collapse_window=False)
     config = resolve_compile_config(plan, config)
@@ -4402,6 +4405,7 @@ def compile_query(
     row_filters: Sequence[RowFilter] = (),
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    validate_temporal_support(config, payload)
     if binding is not None and row_filters:
         raise ValueError("Pass row_filters to bind_query, not with an existing binding.")
     bound = (
