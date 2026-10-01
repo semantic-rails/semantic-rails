@@ -102,6 +102,27 @@ uv run python scripts/changelog_fragments.py check
 If `test_embedding_consumer_contract.py` fails, the change breaks a known embedder's use of
 `semantic_rails.embedding`: follow "Changing the facade" in [docs/EMBEDDING.md](docs/EMBEDDING.md).
 
+### Intermittent tests
+
+Merge-group CI on Python 3.12 repeats affected unit test files three times with
+random test ordering and `-n auto`. `scripts/flake_guard.py` selects changed tests
+from the default test roots and tests that directly import changed `semantic_rails`
+modules, prioritizing changed tests and capping the set at 20 files. Seeds and any
+omitted file count are logged. The guard has a five-minute budget; any failure or
+timeout fails the job with `intermittent: investigate` and its repetition, without
+retrying the failure away. Warehouse integration tests keep their separate CI.
+
+`tests/quarantine.toml` starts empty. To temporarily quarantine a known failure,
+replace `tests = []` with `[[tests]]` entries containing the exact pytest node `id`
+(including parameter IDs), a nonempty `reason`, an HTTPS `upstream` issue link,
+and a `review_by` date no more
+than 30 days ahead. The collection hook applies `xfail(strict=False)` so unexpected
+passes are visible. Expired entries fail collection; full-suite CI also uses
+`--validate-quarantine` to fail on nonexistent IDs. Use
+`uv run pytest --collect-only -q --validate-quarantine` to check entries locally;
+targeted runs omit that flag because they collect only part of the suite. Remove
+entries when fixed, or review the linked issue before extending the date.
+
 ## Dependency advisories
 
 Run `uv run --no-sync python scripts/audit_dependencies.py` after syncing the dev
@@ -117,11 +138,21 @@ When an upstream connector caps a dependency below its patched version, add one
 `fixed_in`, an HTTPS tracking `issue`, `review_by` (a TOML date no more
 than 30 days away), and `reason`. Every finding needs an entry for its own extra.
 The checker rejects expired or unused entries and core-reachable packages.
-An exception is valid only when the latest release of the `blocked_by` package
-declares a dependency requirement in PyPI's JSON `requires_dist` metadata whose
-specifier excludes every patched version reported by the advisory, including
-backports. `fixed_in` must appear among those reported versions. Markers are evaluated
-for the current interpreter and platform and the blocker's requested extras.
+The normalized `blocked_by` package must appear in the extra's audit report and
+be named by an active direct requirement in `project.dependencies` or that extra's
+`optional-dependencies`. A blocker reached only transitively cannot authorize an
+exception. Its latest release must declare an active dependency requirement in
+PyPI's JSON `requires_dist` metadata with an upper bound admitting no version at
+or above the lowest patched version reported by the advisory, including backports.
+`<V` qualifies when `V` is at most that patched version; `<=V`, `==V` and `===V`
+qualify only when `V` is lower. For `~=V` and `==V.*`, the implied exclusive upper
+bound must be at most the patched version. Lower bounds (`>=`, `>`) and exclusions
+(`!=`) never establish a cap; unknown operators or unparseable versions fail the
+check. `fixed_in` must appear among the reported patched versions. Markers are
+evaluated for the current interpreter and platform; only active direct edges
+select the blocker's requested extras.
+The combined active requirements must also exclude every reported patched version
+under packaging specifier rules, including versions with local labels.
 A lifted cap fails with "cap lifted: upgrade now"; missing requirements, metadata
 fetch or parse failures, and audit errors fail the check. Resolver explanations
 cannot authorize an exception. Once the cap lifts,

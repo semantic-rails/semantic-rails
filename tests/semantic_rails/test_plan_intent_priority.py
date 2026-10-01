@@ -25,6 +25,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from tests.plan_candidate_envelope import plan_candidate_envelope
 
 _DERIVATIVE_MARKERS = (
@@ -95,53 +97,27 @@ def test_monthly_revenue_returns_base_revenue_measure(runtime_factory) -> None:
         runtime.close()
 
 
-def test_revenue_by_store_last_month_returns_revenue_usd(runtime_factory) -> None:
-    """ "revenue by store last month" must resolve to ``revenue_usd``
-    grouped by store — not the ``drink_revenue_share`` mix metric whose
-    ``comparison_family`` is ``product_mix_share``.
-    """
+@pytest.mark.parametrize(
+    ("intent", "expected_measure"),
+    [
+        pytest.param(
+            "revenue by store last month", "measure.jaffle.revenue_usd", id="revenue-by-store"
+        ),
+        pytest.param(
+            "drink revenue by month", "measure.jaffle.drink_revenue_usd", id="drink-revenue"
+        ),
+        pytest.param(
+            "food revenue last quarter", "measure.jaffle.food_revenue_usd", id="food-revenue"
+        ),
+    ],
+)
+def test_revenue_intent_returns_base_measure(runtime_factory, intent, expected_measure) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
-        payload = plan_candidate_envelope(runtime, intent="revenue by store last month", limit=5)
+        payload = plan_candidate_envelope(runtime, intent=intent, limit=5)
         top = _top_candidate(payload)
         top_id = _candidate_measure_id(top)
-        assert top_id == "measure.jaffle.revenue_usd", (
-            f"expected revenue_usd at rank 0, got {top_id!r}"
-        )
-        # Share/ratio derivatives must not surface at top for an unqualified
-        # "revenue" intent.
-        assert "share" not in top_id.lower()
-        assert "ratio" not in top_id.lower()
-    finally:
-        runtime.close()
-
-
-def test_drink_revenue_by_month_returns_drink_revenue_usd(runtime_factory) -> None:
-    """A qualified "drink revenue" intent should resolve to the
-    ``drink_revenue_usd`` measure, not a share / ratio."""
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_candidate_envelope(runtime, intent="drink revenue by month", limit=5)
-        top = _top_candidate(payload)
-        top_id = _candidate_measure_id(top)
-        assert top_id == "measure.jaffle.drink_revenue_usd", (
-            f"expected drink_revenue_usd at rank 0, got {top_id!r}"
-        )
-        assert "share" not in top_id.lower()
-        assert "ratio" not in top_id.lower()
-    finally:
-        runtime.close()
-
-
-def test_food_revenue_last_quarter_returns_food_revenue_usd(runtime_factory) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_candidate_envelope(runtime, intent="food revenue last quarter", limit=5)
-        top = _top_candidate(payload)
-        top_id = _candidate_measure_id(top)
-        assert top_id == "measure.jaffle.food_revenue_usd", (
-            f"expected food_revenue_usd at rank 0, got {top_id!r}"
-        )
+        assert top_id == expected_measure, f"expected {expected_measure} at rank 0, got {top_id!r}"
         assert "share" not in top_id.lower()
         assert "ratio" not in top_id.lower()
     finally:
