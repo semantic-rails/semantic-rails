@@ -9,11 +9,11 @@ and compiler call. Also owns the connection-option schema used by
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
 from .errors import SemanticLayerError
+from .expressions import call_cast_type, validate_call_name
 from .sql_ast import (
     SqlBinary,
     SqlCall,
@@ -34,95 +34,6 @@ from .sql_ast import (
     SqlWithinGroup,
 )
 from .sql_preparation import PreparedQuery, prepare_query
-
-CALL_CAST_FORMS = ("DOUBLE", "DECIMAL(p,s)", "INTEGER", "BIGINT", "VARCHAR")
-
-
-def call_cast_type(value: Any) -> str:
-    """Validate the authored logical type before it can become a SQL token."""
-    if isinstance(value, str):
-        normalized = value.strip().upper()
-        normalized = re.sub(r"\s*([(),])\s*", r"\1", normalized)
-        if normalized in {"DOUBLE", "INTEGER", "BIGINT", "VARCHAR"}:
-            return normalized
-        match = re.fullmatch(r"DECIMAL\(([0-9]+),([0-9]+)\)", normalized)
-        if match and 0 <= int(match[2]) <= int(match[1]) <= 38 and int(match[1]) > 0:
-            return f"DECIMAL({int(match[1])},{int(match[2])})"
-    raise SemanticLayerError(
-        "INVALID_EXPRESSION_AST",
-        "CAST requires two args, with a string literal type: " + ", ".join(CALL_CAST_FORMS),
-        details={"accepted_types": list(CALL_CAST_FORMS)},
-    )
-
-
-def accepted_call_names(warehouse: str = "duckdb") -> frozenset[str]:
-    """Scalar spellings valid as plain calls, independently of engine SQL tokens."""
-    common = frozenset(
-        {
-            "ABS",
-            "CAST",
-            "CEIL",
-            "CEILING",
-            "COALESCE",
-            "CONCAT",
-            "EXP",
-            "FLOOR",
-            "LENGTH",
-            "LN",
-            "LOG",
-            "LOWER",
-            "NULLIF",
-            "POWER",
-            "REPLACE",
-            "ROUND",
-            "SQRT",
-            "SUBSTR",
-            "SUBSTRING",
-            "TRIM",
-            "UPPER",
-        }
-    )
-    extras = {
-        "duckdb": {
-            "DATE_PART",
-            "DATE_TRUNC",
-            "LEFT",
-            "RIGHT",
-            "JSON_EXTRACT",
-            "JSON_EXTRACT_STRING",
-            "SPLIT",
-            "STRING_SPLIT",
-            "STR_SPLIT",
-        },
-        "postgres": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT"},
-        "snowflake": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"},
-        "bigquery": {"LEFT", "RIGHT", "JSON_EXTRACT", "SPLIT"},
-        "databricks": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"},
-        "athena": {"DATE_TRUNC", "JSON_EXTRACT", "SPLIT"},
-        "clickhouse": set(),
-    }
-    warehouse = {"motherduck": "duckdb", "ducklake": "duckdb"}.get(warehouse, warehouse)
-    if warehouse == "clickhouse":
-        return common - {"TRIM"}
-    return common | frozenset(extras[warehouse]) if warehouse in extras else frozenset()
-
-
-def validate_call_name(name: str, warehouse: str = "duckdb") -> str:
-    normalized = name.strip().upper()
-    allowed = accepted_call_names(warehouse)
-    if normalized not in allowed:
-        raise SemanticLayerError(
-            "INVALID_EXPRESSION_AST",
-            f"Unsupported scalar call: {name!r}"
-            + ("; use CAST with " + ", ".join(CALL_CAST_FORMS) if normalized == "TRY_CAST" else ""),
-            details={
-                "function": name,
-                "token_kind": "function",
-                "token": name,
-                "allowed": sorted(allowed),
-            },
-        )
-    return normalized
 
 
 def hash_joinable_null_safe_eq(left: Any, right: Any, *, text_cast_type: str) -> Any:
@@ -206,6 +117,12 @@ class SqlDialect:
                 "DECIMAL": "NUMERIC",
                 "VARCHAR": "STRING",
             }[base]
+            if base == "DECIMAL":
+                precision, scale = map(int, logical_type[8:-1].split(","))
+                decimal_type = "BIGNUMERIC" if scale > 9 or precision - scale > 29 else "NUMERIC"
+                type_name = f"{decimal_type}({precision},{scale})"
+        elif self.name == "databricks" and base == "VARCHAR":
+            type_name = "STRING"
         elif self.name == "clickhouse":
             type_name = {
                 "DOUBLE": "Float64",

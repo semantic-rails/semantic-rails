@@ -46,6 +46,7 @@ SQL_BINARY_OPERATORS = frozenset(
 )
 SQL_CAST_TYPE_NAMES = frozenset(
     {
+        "BIGNUMERIC",
         "BIGINT",
         "BOOLEAN",
         "CHAR",
@@ -82,7 +83,7 @@ SQL_FUNCTION_NAMES = frozenset(
         "ARRAY_AGG",
         # Implicit-calendar day series (dialects.SqlDialect.day_series):
         # Snowflake, BigQuery, Trino/Athena and Databricks spellings. Engine-only:
-        # dialects.accepted_call_names keeps them out of `call` expressions.
+        # expressions.accepted_call_names keeps them out of `call` expressions.
         "ARRAY_GENERATE_RANGE",
         "AVG",
         "CEIL",

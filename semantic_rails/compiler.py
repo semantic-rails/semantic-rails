@@ -3906,22 +3906,26 @@ def plan_query(
     *,
     collapse_window: bool = True,
 ) -> LogicalPlan:
+    raw_query = normalize_query(payload)
+
     with candidate_planning():
-        return _plan_query(config, registry, payload, collapse_window=collapse_window)
+        return _plan_query(
+            config, registry, raw_query, collapse_window=collapse_window, top_level=True
+        )
 
 
 def _plan_query(
     config: PackageConfig,
     registry: Registry | None,
-    payload: dict[str, Any],
+    raw_query: NormalizedQuery,
     *,
     collapse_window: bool,
+    top_level: bool = False,
 ) -> LogicalPlan:
-    validate_expression_calls(payload, config)
-    validate_expression_calls(config, config)
-    raw_query = normalize_query(payload, warehouse=config.package.warehouse)
+    validate_expression_calls(raw_query, config)
     if (
-        raw_query.select
+        top_level
+        and raw_query.select
         and all(is_constant_expression(item.expression) for item in raw_query.select)
         and not (
             raw_query.group_by or raw_query.where or raw_query.time or raw_query.metric_filters
@@ -4152,7 +4156,8 @@ def _compile_query_sql_ast(
     guard_empty: bool = True,
 ) -> SqlSelect:
     """Compile a nested query; ``guard_empty=False`` for a distribution's per-entity values."""
-    plan = plan_query(config, None, payload, collapse_window=False)
+    with candidate_planning():
+        plan = _plan_query(config, None, normalize_query(payload), collapse_window=False)
     config = resolve_compile_config(plan, config)
     with plan_bindings(plan, project_cut=project_cut) as leaves:
         _record_bound_plan(plan, config, leaves.leaves)

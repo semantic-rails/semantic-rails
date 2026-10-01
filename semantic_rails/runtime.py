@@ -2003,7 +2003,7 @@ class Runtime:
         binding: BoundQuery | None = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
-        normalized = normalize_query(payload, warehouse=self.warehouse).to_dict()
+        normalized = normalize_query(payload).to_dict()
         key = compilation_cache_key(
             package_hash=self._package_fingerprint,
             normalized_query=normalized,

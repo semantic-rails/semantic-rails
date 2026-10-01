@@ -220,8 +220,6 @@ def _validate_runtime_package_file(source_path: Path) -> list[str]:
     try:
         config = load_package_config(str(source_path))
     except Exception as exc:
-        if isinstance(exc, SemanticLayerError) and exc.code == "CALL_ARGUMENT_TYPE":
-            raise
         add_error(errors, f"{source_path}: failed to load package config: {exc}")
         return errors
     errors.extend(_compiled_package_errors(config, source_path))
@@ -270,8 +268,6 @@ def _validate_runtime_package_dir(path: Path) -> list[str]:
     try:
         config = load_package_config(str(path))
     except Exception as exc:
-        if isinstance(exc, SemanticLayerError) and exc.code == "CALL_ARGUMENT_TYPE":
-            raise
         add_error(errors, f"{path}: failed to load package config: {exc}")
         return errors
 
@@ -1506,7 +1502,14 @@ def parse_snapshot_report(
     try:
         source = capture_package_source(ref.source_path)
         messages = validate_runtime_package(Path(ref.source_path))
-        if not messages:
+        if messages:
+            # Keep the embedding validator's string contract; recover structured errors here.
+            try:
+                load_package_config(ref.source_path)
+            except Exception as exc:
+                if isinstance(exc, SemanticLayerError) and exc.code == "CALL_ARGUMENT_TYPE":
+                    raise
+        else:
             snapshot = load_package_snapshot(ref.source_path)
             if snapshot.source_fingerprint != source.fingerprint:
                 messages.append(

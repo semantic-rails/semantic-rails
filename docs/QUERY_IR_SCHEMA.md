@@ -194,12 +194,20 @@ Numeric conversion uses exactly two args:
 The type must be a string literal naming `DOUBLE`, `DECIMAL(p,s)`, `INTEGER`,
 `BIGINT` or `VARCHAR` (case-insensitive). Decimal precision is 1–38 and scale
 is 0–precision. `INTEGER` and `BIGINT` both select a signed 64-bit type.
-Postgres maps `DOUBLE` to `FLOAT8`; BigQuery maps these types to `FLOAT64`,
-`NUMERIC`, `INT64` and `STRING` (BigQuery uses its native NUMERIC precision
-and scale, rather than the supplied decimal parameters). ClickHouse emits
-nullable targets so NULL inputs remain NULL. Other warehouses use the SQL
-type names. Invalid conversions fail execution; CAST does not silently return
-NULL. `DATE`, `TIMESTAMP`, other target types, non-literal targets and
+The rendered targets are:
+
+| Warehouse | `DOUBLE` | `DECIMAL(p,s)` | `INTEGER`, `BIGINT` | `VARCHAR` |
+| --- | --- | --- | --- | --- |
+| DuckDB, MotherDuck, DuckLake, Snowflake, Athena | `DOUBLE` | `DECIMAL(p,s)` | `BIGINT` | `VARCHAR` |
+| Postgres | `FLOAT8` | `DECIMAL(p,s)` | `BIGINT` | `VARCHAR` |
+| BigQuery | `FLOAT64` | `NUMERIC(p,s)` or `BIGNUMERIC(p,s)` | `INT64` | `STRING` |
+| Databricks | `DOUBLE` | `DECIMAL(p,s)` | `BIGINT` | `STRING` |
+| ClickHouse | `Nullable(Float64)` | `Nullable(DECIMAL(p,s))` | `Nullable(Int64)` | `Nullable(String)` |
+
+BigQuery uses `BIGNUMERIC(p,s)` when scale exceeds 9 or precision minus scale
+exceeds 29, preserving the authored precision and scale. ClickHouse emits
+nullable targets so NULL inputs remain NULL. Invalid conversions fail execution;
+CAST does not silently return NULL. `DATE`, `TIMESTAMP`, other target types, non-literal targets and
 `TRY_CAST` are refused. The same AST works in package expressions,
 conditional aggregates and post-aggregation expressions.
 
@@ -207,13 +215,18 @@ Known argument mismatches fail before SQL lowering with `CALL_ARGUMENT_TYPE`
 and `details: {function, argument_index, expected, received}`. Indices are
 zero-based and the type families are `number`, `text`, `date`, `boolean`
 and `array`. Declared dimension types, literals, casts and known nested-call
-return types are checked; unknown types pass to the warehouse. A numeric
-function receiving text includes a recovery hint to wrap that argument in
+return types are checked; a defaulted or authored `categorical` semantic kind
+and columns without a resolved entity have unknown types and pass to the
+warehouse.
+Arguments to `CONCAT`, `JSON_EXTRACT`, `JSON_EXTRACT_STRING` and the `SPLIT`
+family are unchecked because warehouse overloads accept multiple type families.
+The package walker visits parsed expressions and leaves metadata, defaults and
+parameters as data. A numeric function receiving text includes a recovery hint to wrap that argument in
 CAST. Package `check`, query validation, planning and execution share this
 check. Warehouse execution errors remain redacted.
 
-A select containing only literals, literal arithmetic or casts of literals,
-with no grouping, where, time or metric filter, returns `INVALID_QUERY` with
+A top-level request select containing only literals, literal arithmetic or casts
+of literals, with no grouping, where, time or metric filter, returns `INVALID_QUERY` with
 `details.reason: "literal_only_select"` and the message “A select of literals
 only reads no data; add a measure, a group_by dimension or time”.
 

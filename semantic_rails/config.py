@@ -1067,14 +1067,14 @@ def _resolve_partition_by(
         )
 
 
-def _parse_metric_expression(raw: Any, *, context: str, warehouse: str = "duckdb") -> Any:
+def _parse_metric_expression(raw: Any, *, context: str) -> Any:
     """Parse an authored metric expression, naming the metric on any refusal.
 
     The parser owns which kinds and fields an expression supports; this only adds
     where the author wrote it, keeping the parser's error code and details.
     """
     try:
-        return parse_semantic_expression(raw, context="config", warehouse=warehouse)
+        return parse_semantic_expression(raw, context="config")
     except SemanticLayerError as exc:
         raise SemanticLayerError(exc.code, f"{context}: {exc}", details=exc.details) from exc
     except (TypeError, ValueError) as exc:
@@ -2243,9 +2243,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 ),
                 row_grain=list(row_grain),
                 source_relation=fact_source_relation,
-                expr=parse_config_expression(
-                    expr_raw, warehouse=str(package_raw.get("warehouse", "duckdb"))
-                ),
+                expr=parse_config_expression(expr_raw),
                 default_aggregation=default_aggregation,
                 allowed_aggregations=allowed_aggregations,
                 invalid_aggregations=invalid_aggregations,
@@ -2622,7 +2620,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             expression=_parse_metric_expression(
                 expression,
                 context=f"{path}: metric '{metric_key}'",
-                warehouse=str(package_raw.get("warehouse", "duckdb")),
             ),
             temporal_role=temporal_role,
             compatible_temporal_roles=metric_compatible_temporal_roles,

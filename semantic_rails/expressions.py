@@ -11,18 +11,108 @@ these nodes; the compiler consumes them.
 from __future__ import annotations
 
 import ast as pyast
+import re
 from collections.abc import Iterable, Mapping
-from dataclasses import InitVar, dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
-from .dialects import call_cast_type, validate_call_name
 from .errors import SemanticLayerError
 
 if TYPE_CHECKING:
     from .schema import MeasureConfig, PackageConfig
+
+
+CALL_CAST_FORMS = ("DOUBLE", "DECIMAL(p,s)", "INTEGER", "BIGINT", "VARCHAR")
+
+
+def call_cast_type(value: Any) -> str:
+    """Validate the authored logical type before it can become a SQL token."""
+    if isinstance(value, str):
+        normalized = value.strip().upper()
+        normalized = re.sub(r"\s*([(),])\s*", r"\1", normalized)
+        if normalized in {"DOUBLE", "INTEGER", "BIGINT", "VARCHAR"}:
+            return normalized
+        match = re.fullmatch(r"DECIMAL\(([0-9]+),([0-9]+)\)", normalized)
+        if match and 0 <= int(match[2]) <= int(match[1]) <= 38 and int(match[1]) > 0:
+            return f"DECIMAL({int(match[1])},{int(match[2])})"
+    raise SemanticLayerError(
+        "INVALID_EXPRESSION_AST",
+        "CAST requires two args, with a string literal type: " + ", ".join(CALL_CAST_FORMS),
+        details={"accepted_types": list(CALL_CAST_FORMS)},
+    )
+
+
+def accepted_call_names(warehouse: str = "duckdb") -> frozenset[str]:
+    """Scalar spellings valid as plain calls, independently of engine SQL tokens."""
+    common = frozenset(
+        {
+            "ABS",
+            "CAST",
+            "CEIL",
+            "CEILING",
+            "COALESCE",
+            "CONCAT",
+            "EXP",
+            "FLOOR",
+            "LENGTH",
+            "LN",
+            "LOG",
+            "LOWER",
+            "NULLIF",
+            "POWER",
+            "REPLACE",
+            "ROUND",
+            "SQRT",
+            "SUBSTR",
+            "SUBSTRING",
+            "TRIM",
+            "UPPER",
+        }
+    )
+    extras = {
+        "duckdb": {
+            "DATE_PART",
+            "DATE_TRUNC",
+            "LEFT",
+            "RIGHT",
+            "JSON_EXTRACT",
+            "JSON_EXTRACT_STRING",
+            "SPLIT",
+            "STRING_SPLIT",
+            "STR_SPLIT",
+        },
+        "postgres": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT"},
+        "snowflake": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"},
+        "bigquery": {"LEFT", "RIGHT", "JSON_EXTRACT", "SPLIT"},
+        "databricks": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"},
+        "athena": {"DATE_TRUNC", "JSON_EXTRACT", "SPLIT"},
+        "clickhouse": set(),
+    }
+    warehouse = {"motherduck": "duckdb", "ducklake": "duckdb"}.get(warehouse, warehouse)
+    if warehouse == "clickhouse":
+        return common - {"TRIM"}
+    return common | frozenset(extras[warehouse]) if warehouse in extras else frozenset()
+
+
+def validate_call_name(name: str, warehouse: str = "duckdb") -> str:
+    normalized = name.strip().upper()
+    allowed = accepted_call_names(warehouse)
+    if normalized not in allowed:
+        raise SemanticLayerError(
+            "INVALID_EXPRESSION_AST",
+            f"Unsupported scalar call: {name!r}"
+            + ("; use CAST with " + ", ".join(CALL_CAST_FORMS) if normalized == "TRY_CAST" else ""),
+            details={
+                "function": name,
+                "token_kind": "function",
+                "token": name,
+                "allowed": sorted(allowed),
+            },
+        )
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -85,20 +175,6 @@ class CallExpr:
     name: str
     args: list[SemanticExpr] = field(default_factory=list)
     distinct: bool = False
-    warehouse: InitVar[str] = "duckdb"
-
-    def __post_init__(self, warehouse: str) -> None:
-        name = validate_call_name(self.name, warehouse)
-        if self.distinct:
-            raise SemanticLayerError(
-                "INVALID_EXPRESSION_AST", "Scalar calls do not support distinct"
-            )
-        if name == "CAST":
-            call_cast_type(
-                self.args[1].value
-                if len(self.args) == 2 and isinstance(self.args[1], LiteralExpr)
-                else None
-            )
 
 
 @dataclass(frozen=True)
@@ -384,13 +460,12 @@ def validate_expression_shapes(value: Any) -> None:
 
 
 def validate_expression_calls(value: Any, config: PackageConfig, *, owner: str = "") -> None:
-    """One type walker for request payloads and authored package expressions.
+    """One type walker for normalized queries and parsed package expressions.
 
     Only known types refuse. Literal data, metadata and parameters remain opaque.
     """
     numeric = {"ABS", "CEIL", "CEILING", "EXP", "FLOOR", "LN", "LOG", "POWER", "ROUND", "SQRT"}
     text = {
-        "CONCAT",
         "LOWER",
         "UPPER",
         "TRIM",
@@ -400,11 +475,6 @@ def validate_expression_calls(value: Any, config: PackageConfig, *, owner: str =
         "RIGHT",
         "SUBSTR",
         "SUBSTRING",
-        "SPLIT",
-        "STR_SPLIT",
-        "STRING_SPLIT",
-        "JSON_EXTRACT",
-        "JSON_EXTRACT_STRING",
     }
 
     def family(data_type: str) -> str:
@@ -433,22 +503,6 @@ def validate_expression_calls(value: Any, config: PackageConfig, *, owner: str =
         return "boolean" if base in {"bool", "boolean"} else "unknown"
 
     def walk(node: Any, entity: str) -> str:
-        if isinstance(node, Mapping):
-            kind = node.get("kind")
-            kind = kind.strip() if isinstance(kind, str) else None
-            if kind in {"call", "column", "literal", "arithmetic", "binary", "nullif"}:
-                if kind == "call":
-                    validate_call_name(str(node.get("name", "")), config.package.warehouse)
-                return walk(
-                    parse_semantic_expression(
-                        dict(node), context="config", warehouse=config.package.warehouse
-                    ),
-                    entity,
-                )
-            for key, child in node.items():
-                if not _opaque_expression_data(node, key) and key != "policy_context":
-                    walk(child, entity)
-            return "unknown"
         if isinstance(node, LiteralExpr):
             val = node.value
             if val is None:
@@ -466,14 +520,20 @@ def validate_expression_calls(value: Any, config: PackageConfig, *, owner: str =
             column_owner = node.entity or (
                 resolve_table_entity(config, node.table, owner=entity) if node.table else entity
             )
+            if not column_owner:
+                return "unknown"
             types = {
-                family(dim.data_type)
+                "unknown" if dim.semantic_kind == "categorical" else family(dim.data_type)
                 for dim in config.dimensions
-                if dim.column == node.column and (not column_owner or dim.entity == column_owner)
+                if dim.column == node.column and dim.entity == column_owner
             }
             return next(iter(types)) if len(types) == 1 else "unknown"
         if isinstance(node, CallExpr):
             name = validate_call_name(node.name, config.package.warehouse)
+            if node.distinct:
+                raise SemanticLayerError(
+                    "INVALID_EXPRESSION_AST", "Scalar calls do not support distinct"
+                )
             arg_types = [walk(arg, entity) for arg in node.args]
             if name == "CAST":
                 target = call_cast_type(
@@ -511,7 +571,7 @@ def validate_expression_calls(value: Any, config: PackageConfig, *, owner: str =
                 return "date"
             if name in {"SPLIT", "STR_SPLIT", "STRING_SPLIT"}:
                 return "array"
-            if name == "JSON_EXTRACT":
+            if name in {"JSON_EXTRACT", "JSON_EXTRACT_STRING", "CONCAT"}:
                 return "unknown"
             if name in text:
                 return "text"
@@ -895,13 +955,13 @@ def _parse_python_expr(text: str) -> SemanticExpr:
     return _convert(node)
 
 
-def parse_config_expression(raw: Any, *, warehouse: str = "duckdb") -> SemanticExpr:
+def parse_config_expression(raw: Any) -> SemanticExpr:
     if isinstance(raw, str):
         text = raw.strip()
         if not text:
             raise SemanticLayerError("INVALID_CONFIG", "Measure expression cannot be empty")
         return _parse_python_expr(text)
-    return parse_semantic_expression(raw, context="config", warehouse=warehouse)
+    return parse_semantic_expression(raw, context="config")
 
 
 def _normalize_arithmetic_op(op: Any) -> str:
@@ -1205,7 +1265,7 @@ def expression_field(
     return expr[key]
 
 
-def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckdb") -> SemanticExpr:
+def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
     if not isinstance(raw, dict):
         raise SemanticLayerError(
             "INVALID_EXPRESSION_AST", f"{context} expression must be an object"
@@ -1252,9 +1312,7 @@ def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckd
             raise SemanticLayerError(
                 "INVALID_EXPRESSION_AST", "aggregate_if expressions require 'condition'"
             )
-        condition = parse_semantic_expression(
-            expr.get("condition"), context=context, warehouse=warehouse
-        )
+        condition = parse_semantic_expression(expr.get("condition"), context=context)
         raw_value = expr.get("value")
         if raw_value is None:
             if aggregation.lower() != "count":
@@ -1268,7 +1326,7 @@ def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckd
                 )
             value = None
         else:
-            value = parse_semantic_expression(raw_value, context=context, warehouse=warehouse)
+            value = parse_semantic_expression(raw_value, context=context)
         return ConditionalAggregateExpr(aggregation=aggregation, condition=condition, value=value)
     # ``prior_period`` (and other window kinds) accept ``measure`` as part
     # of a shorthand shape — falling into the MeasureRefExpr arm here
@@ -1357,18 +1415,14 @@ def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckd
     if kind in {"arithmetic", "binary"}:
         return ArithmeticExpr(
             op=_normalize_arithmetic_op(expr.get("op", "")),
-            left=parse_semantic_expression(expr.get("left"), context=context, warehouse=warehouse),
-            right=parse_semantic_expression(
-                expr.get("right"), context=context, warehouse=warehouse
-            ),
+            left=parse_semantic_expression(expr.get("left"), context=context),
+            right=parse_semantic_expression(expr.get("right"), context=context),
         )
     if kind == "comparison":
         return ComparisonExpr(
             op=str(expr.get("op", "")).strip(),
-            left=parse_semantic_expression(expr.get("left"), context=context, warehouse=warehouse),
-            right=parse_semantic_expression(
-                expr.get("right"), context=context, warehouse=warehouse
-            ),
+            left=parse_semantic_expression(expr.get("left"), context=context),
+            right=parse_semantic_expression(expr.get("right"), context=context),
         )
     if kind == "boolean":
         raw_op = str(expr.get("op", "")).strip()
@@ -1397,7 +1451,7 @@ def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckd
                 },
             )
         args = [
-            parse_semantic_expression(arg, context=context, warehouse=warehouse)
+            parse_semantic_expression(arg, context=context)
             for arg in list(expr.get("args", []) or [])
         ]
         if not args:
@@ -1430,9 +1484,8 @@ def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckd
             raise SemanticLayerError("INVALID_EXPRESSION_AST", "Call expressions require 'name'")
         return CallExpr(
             name=name,
-            warehouse=warehouse,
             args=[
-                parse_semantic_expression(arg, context=context, warehouse=warehouse)
+                parse_semantic_expression(arg, context=context)
                 for arg in list(expr.get("args", []) or [])
             ],
             distinct=bool(expr.get("distinct", False)),
@@ -1449,10 +1502,8 @@ def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckd
             )
         return DateAddExpr(
             unit=unit,
-            value=parse_semantic_expression(
-                expr.get("value"), context=context, warehouse=warehouse
-            ),
-            date=parse_semantic_expression(expr.get("date"), context=context, warehouse=warehouse),
+            value=parse_semantic_expression(expr.get("value"), context=context),
+            date=parse_semantic_expression(expr.get("date"), context=context),
         )
     if kind in {"in", "not_in"}:
         raw_values = list(expr.get("values", []) or [])
@@ -1461,15 +1512,13 @@ def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckd
                 "INVALID_EXPRESSION_AST", "in expressions require non-empty 'values'"
             )
         values = [
-            parse_semantic_expression(value, context=context, warehouse=warehouse)
+            parse_semantic_expression(value, context=context)
             if isinstance(value, dict)
             else LiteralExpr(value)
             for value in raw_values
         ]
         return InExpr(
-            expr=parse_semantic_expression(
-                expr.get("expr", expr.get("left")), context=context, warehouse=warehouse
-            ),
+            expr=parse_semantic_expression(expr.get("expr", expr.get("left")), context=context),
             values=values,
             negated=bool(expr.get("negated", False)) or kind == "not_in",
         )
@@ -1485,9 +1534,9 @@ def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckd
             raise SemanticLayerError(
                 "INVALID_EXPRESSION_AST", f"{kind} expressions require 'low' and 'high'"
             )
-        target = parse_semantic_expression(expr.get("expr"), context=context, warehouse=warehouse)
-        low = parse_semantic_expression(expr.get("low"), context=context, warehouse=warehouse)
-        high = parse_semantic_expression(expr.get("high"), context=context, warehouse=warehouse)
+        target = parse_semantic_expression(expr.get("expr"), context=context)
+        low = parse_semantic_expression(expr.get("low"), context=context)
+        high = parse_semantic_expression(expr.get("high"), context=context)
         negated = bool(expr.get("negated", False)) or kind == "not_between"
         if negated:
             return BooleanExpr(
@@ -1507,12 +1556,9 @@ def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckd
     if kind == "nullif":
         return CallExpr(
             name="NULLIF",
-            warehouse=warehouse,
             args=[
-                parse_semantic_expression(expr.get("value"), context=context, warehouse=warehouse),
-                parse_semantic_expression(
-                    expr.get("null_value"), context=context, warehouse=warehouse
-                ),
+                parse_semantic_expression(expr.get("value"), context=context),
+                parse_semantic_expression(expr.get("null_value"), context=context),
             ],
         )
     if kind == "case":
@@ -1520,12 +1566,8 @@ def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckd
         for row in list(expr.get("whens", []) or []):
             whens.append(
                 CaseWhenExpr(
-                    when=parse_semantic_expression(
-                        row.get("when"), context=context, warehouse=warehouse
-                    ),
-                    then=parse_semantic_expression(
-                        row.get("then"), context=context, warehouse=warehouse
-                    ),
+                    when=parse_semantic_expression(row.get("when"), context=context),
+                    then=parse_semantic_expression(row.get("then"), context=context),
                 )
             )
         if not whens:
@@ -1533,15 +1575,13 @@ def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckd
         else_expr = expr.get("else")
         return CaseExpr(
             whens=whens,
-            else_expr=parse_semantic_expression(else_expr, context=context, warehouse=warehouse)
+            else_expr=parse_semantic_expression(else_expr, context=context)
             if else_expr is not None
             else None,
         )
     if kind == "cumulative":
         return OffsetWindowExpr(
-            input=parse_semantic_expression(
-                expr.get("input"), context=context, warehouse=warehouse
-            ),
+            input=parse_semantic_expression(expr.get("input"), context=context),
             kind="cumulative",
             aggregate="sum",
             frame="ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
@@ -1588,9 +1628,7 @@ def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckd
                 "Rolling expressions require a positive window.unit and window.value",
             )
         return OffsetWindowExpr(
-            input=parse_semantic_expression(
-                expr.get("input"), context=context, warehouse=warehouse
-            ),
+            input=parse_semantic_expression(expr.get("input"), context=context),
             kind="rolling",
             aggregate="sum",
             frame="rows",
@@ -1746,9 +1784,7 @@ def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckd
                 },
             )
         return OffsetWindowExpr(
-            input=parse_semantic_expression(
-                expr.get("input"), context=context, warehouse=warehouse
-            ),
+            input=parse_semantic_expression(expr.get("input"), context=context),
             kind="prior_period",
             aggregate="lag",
             unit=unit,
@@ -1761,9 +1797,7 @@ def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckd
                 "INVALID_EXPRESSION_AST", "Period-to-date expressions require 'period'"
             )
         return OffsetWindowExpr(
-            input=parse_semantic_expression(
-                expr.get("input"), context=context, warehouse=warehouse
-            ),
+            input=parse_semantic_expression(expr.get("input"), context=context),
             kind="period_to_date",
             aggregate="sum",
             frame="ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
@@ -1893,9 +1927,7 @@ def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckd
                     },
                 )
         return MetricPredicateExpr(
-            input=parse_semantic_expression(
-                expr.get("input"), context=context, warehouse=warehouse
-            ),
+            input=parse_semantic_expression(expr.get("input"), context=context),
             entity=entity,
             op=op,
             value=validated_value,
@@ -2026,12 +2058,8 @@ def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckd
                 "INVALID_EXPRESSION_AST", "ratio expressions require numerator and denominator"
             )
         return RatioExpr(
-            numerator=parse_semantic_expression(
-                expr.get("numerator"), context=context, warehouse=warehouse
-            ),
-            denominator=parse_semantic_expression(
-                expr.get("denominator"), context=context, warehouse=warehouse
-            ),
+            numerator=parse_semantic_expression(expr.get("numerator"), context=context),
+            denominator=parse_semantic_expression(expr.get("denominator"), context=context),
         )
     if kind == "entity_value":
         entity = str(expr.get("entity", "")).strip()
@@ -2041,13 +2069,11 @@ def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckd
             )
         return EntityValueExpr(
             entity=entity,
-            input=parse_semantic_expression(
-                expr.get("input"), context=context, warehouse=warehouse
-            ),
+            input=parse_semantic_expression(expr.get("input"), context=context),
             where=[dict(item) for item in list(expr.get("where", []) or [])],
         )
     if kind == "distribution":
-        over = parse_semantic_expression(expr.get("over"), context=context, warehouse=warehouse)
+        over = parse_semantic_expression(expr.get("over"), context=context)
         if not isinstance(over, EntityValueExpr):
             raise SemanticLayerError(
                 "INVALID_EXPRESSION_AST", "distribution expressions require entity_value in 'over'"
@@ -2163,10 +2189,8 @@ def parse_semantic_expression(raw: Any, *, context: str, warehouse: str = "duckd
                     details={"dimension": dim_id, "binding": binding},
                 )
         return ConversionExpr(
-            base=parse_semantic_expression(expr.get("base"), context=context, warehouse=warehouse),
-            converted=parse_semantic_expression(
-                expr.get("converted"), context=context, warehouse=warehouse
-            ),
+            base=parse_semantic_expression(expr.get("base"), context=context),
+            converted=parse_semantic_expression(expr.get("converted"), context=context),
             entity=entity,
             window_unit=unit,
             window_value=window_value,

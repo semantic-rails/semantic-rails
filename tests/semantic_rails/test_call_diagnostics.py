@@ -10,13 +10,15 @@ import yaml
 from semantic_rails.compiler import compile_query, plan_query
 from semantic_rails.compiler_parts.bind import _config_expr_to_sql
 from semantic_rails.config import load_package_config
-from semantic_rails.config_validation import PackageReference
+from semantic_rails.config_validation import PackageReference, validate_runtime_package
 from semantic_rails.diagnostics import recovery_hints_for_error
-from semantic_rails.dialects import accepted_call_names, dialect_for_warehouse
+from semantic_rails.dialects import dialect_for_warehouse
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import (
     CallExpr,
+    ColumnRefExpr,
     LiteralExpr,
+    accepted_call_names,
     parse_semantic_expression,
     validate_expression_calls,
 )
@@ -114,7 +116,10 @@ def test_numeric_cast_max_and_post_aggregation_subtraction(package):
 
 
 @pytest.mark.parametrize("warehouse", WAREHOUSES)
-@pytest.mark.parametrize("target", ["DOUBLE", "INTEGER", "BIGINT", "DECIMAL(12,3)", "VARCHAR"])
+@pytest.mark.parametrize(
+    "target",
+    ["DOUBLE", "INTEGER", "BIGINT", "DECIMAL(12,3)", "DECIMAL(38,10)", "DECIMAL(38,0)", "VARCHAR"],
+)
 def test_cast_sql_for_every_dialect(package, warehouse, target):
     config = load_package_config(str(package))
     config = replace(config, package=replace(config.package, warehouse=warehouse))
@@ -127,9 +132,13 @@ def test_cast_sql_for_every_dialect(package, warehouse, target):
             "DOUBLE": "FLOAT64",
             "INTEGER": "INT64",
             "BIGINT": "INT64",
-            "DECIMAL(12,3)": "NUMERIC",
+            "DECIMAL(12,3)": "NUMERIC(12,3)",
+            "DECIMAL(38,10)": "BIGNUMERIC(38,10)",
+            "DECIMAL(38,0)": "BIGNUMERIC(38,0)",
             "VARCHAR": "STRING",
         }[target]
+    elif warehouse == "databricks" and target == "VARCHAR":
+        expected = "STRING"
     elif warehouse == "clickhouse":
         expected = (
             "Nullable("
@@ -138,7 +147,12 @@ def test_cast_sql_for_every_dialect(package, warehouse, target):
             )
             + ")"
         )
-    assert f" AS {expected})" in sql
+    lowered = dialect_for_warehouse(warehouse).scalar_call(
+        "CAST", [SqlLiteral(1), SqlLiteral(target)]
+    )
+    assert lowered.type_name == expected
+    assert render_expr(lowered) == f"CAST(1 AS {expected})"
+    assert f" AS {lowered.type_name})" in sql
 
 
 @pytest.mark.parametrize(
@@ -158,9 +172,9 @@ def test_cast_sql_for_every_dialect(package, warehouse, target):
         None,
     ],
 )
-def test_refused_cast_types_list_accepted_forms(target):
+def test_refused_cast_types_list_accepted_forms(package, target):
     with pytest.raises(SemanticLayerError) as exc:
-        parse_semantic_expression(cast(literal(1), target), context="query")
+        plan_query(load_package_config(str(package)), None, query(cast(literal(1), target)))
     assert exc.value.code == "INVALID_EXPRESSION_AST"
     assert "DOUBLE, DECIMAL(p,s), INTEGER, BIGINT, VARCHAR" in str(exc.value)
 
@@ -174,9 +188,12 @@ def test_refused_cast_types_list_accepted_forms(target):
         [literal(1), literal("DOUBLE"), literal(2)],
     ],
 )
-def test_refused_cast_shapes(args):
+def test_refused_cast_shapes(package, args):
     with pytest.raises(SemanticLayerError, match="string literal type"):
-        parse_semantic_expression(call("CAST", *args), context="query")
+        validate_expression_calls(
+            parse_semantic_expression(call("CAST", *args), context="query"),
+            load_package_config(str(package)),
+        )
 
 
 def test_cast_case_and_invalid_value(package):
@@ -225,7 +242,7 @@ def test_allowed_names_are_constructible_and_duckdb_executes_each(package, wareh
             name, ["abc"] if name in {"LOWER", "UPPER", "LENGTH", "TRIM"} else [2]
         )
         expr = parse_semantic_expression(
-            call(name.lower(), *(literal(v) for v in values)), context="query", warehouse=warehouse
+            call(name.lower(), *(literal(v) for v in values)), context="query"
         )
         validate_expression_calls(expr, config)
         compile_query(config, None, query(maximum(call(name, *(literal(v) for v in values)))))
@@ -337,6 +354,8 @@ def test_package_cast_and_package_type_error_fails_check(package):
         "ROUND", {"kind": "column", "column": "text_value"}, literal(1)
     )
     path.write_text(yaml.safe_dump(model))
+    errors = validate_runtime_package(package)
+    assert errors and all(isinstance(error, str) for error in errors)
     report = check_package_report(PackageReference(source_path=str(package)))
     assert not report["ok"]
     assert report["blockers"][0]["code"] == "CALL_ARGUMENT_TYPE"
@@ -361,9 +380,13 @@ def test_direct_lowering_cannot_bypass_call_guard(package):
         ("clickhouse", "TRIM"),
     ],
 )
-def test_dialect_spelling_is_refused_at_construction(warehouse, name):
+def test_dialect_spelling_is_refused_by_walker(package, warehouse, name):
+    config = load_package_config(str(package))
+    config = replace(config, package=replace(config.package, warehouse=warehouse))
     with pytest.raises(SemanticLayerError) as exc:
-        parse_semantic_expression(call(name, literal(1)), context="config", warehouse=warehouse)
+        validate_expression_calls(
+            parse_semantic_expression(call(name, literal(1)), context="config"), config
+        )
     assert exc.value.details["allowed"] == sorted(accepted_call_names(warehouse))
 
 
@@ -386,3 +409,137 @@ def test_runtime_validation_compile_and_execution_agree(package, expression):
             assert exc.value.code == "CALL_ARGUMENT_TYPE"
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize("warehouse", ["DuckDB", "Snowflake"])
+@pytest.mark.parametrize(
+    "expression",
+    [
+        {
+            "kind": "nullif",
+            "value": {"kind": "column", "column": "amount"},
+            "null_value": literal(0),
+        },
+        call("ABS", {"kind": "column", "column": "amount"}),
+    ],
+)
+def test_mixed_case_warehouse_loads_and_compiles_calls(package, warehouse, expression):
+    path = package / "package.yml"
+    raw = yaml.safe_load(path.read_text())
+    raw["package"]["warehouse"] = warehouse
+    if warehouse == "Snowflake":
+        raw["package"]["connection"] = {"kind": "snowflake_cli", "name": "test"}
+    path.write_text(yaml.safe_dump(raw))
+    path = package / "models/rows.yml"
+    raw = yaml.safe_load(path.read_text())
+    raw["model"]["measures"]["amount"]["expr"] = expression
+    path.write_text(yaml.safe_dump(raw))
+    config = load_package_config(str(package))
+    assert config.package.warehouse == warehouse.lower()
+    assert compile_query(config, None, query({"measure": "measure.numbers.amount"}))["sql"]
+
+
+@pytest.mark.parametrize("kind", [None, "categorical"])
+def test_untyped_integer_dimension_in_query_and_package_measure(package, kind):
+    path = package / "models/rows.yml"
+    raw = yaml.safe_load(path.read_text())
+    raw["model"]["dimensions"]["id"] = {"column": "id"}
+    if kind:
+        raw["model"]["dimensions"]["id"]["kind"] = kind
+    raw["model"]["measures"]["amount"]["expr"] = call("ABS", {"kind": "column", "column": "id"})
+    path.write_text(yaml.safe_dump(raw))
+    config = load_package_config(str(package))
+    assert execute(config, maximum(call("ABS", column("id")))) == [(3,)]
+    assert execute(config, {"measure": "measure.numbers.amount", "aggregation": "max"}) == [(4,)]
+
+
+@pytest.mark.parametrize(
+    "expression,expected",
+    [
+        (call("CONCAT", literal("order-"), literal(1)), "order-1"),
+        (
+            call(
+                "CONCAT", literal("Q"), call("DATE_PART", literal("quarter"), column("placed_at"))
+            ),
+            "Q1",
+        ),
+        (call("JSON_EXTRACT", literal('{"a":1}'), literal(["$.a"])), ["1"]),
+        (call("JSON_EXTRACT_STRING", literal('{"a":1}'), literal(["$.a"])), ["1"]),
+    ],
+)
+def test_warehouse_overloads_execute(package, expression, expected):
+    config = load_package_config(str(package))
+    sql = compile_query(config, None, query(maximum(expression)))["sql"]
+    with duckdb.connect() as conn:
+        conn.execute("CREATE TABLE numbers(id INTEGER, amount INTEGER, placed_at DATE)")
+        conn.execute("INSERT INTO numbers VALUES (1, 1, DATE '2020-01-01')")
+        if expression["name"] in {"JSON_EXTRACT", "JSON_EXTRACT_STRING"}:
+            # Array literal rendering is separate from overload type validation.
+            values = [arg["value"] for arg in expression["args"]]
+            assert conn.execute(f"SELECT {expression['name']}(?, ?)", values).fetchall() == [
+                (expected,)
+            ]
+        else:
+            assert conn.execute(sql).fetchall() == [(expected,)]
+
+
+def test_operational_expression_shaped_metadata_stays_data(package):
+    path = package / "package.yml"
+    raw = yaml.safe_load(path.read_text())
+    raw["defaults"] = {
+        "operational": {
+            "measure": {
+                "fields": {
+                    "kind": {"type": "string"},
+                    "owner": {"type": "string"},
+                }
+            }
+        }
+    }
+    raw["defaults"]["operational"]["metric"] = raw["defaults"]["operational"]["measure"]
+    path.write_text(yaml.safe_dump(raw))
+    path = package / "models/rows.yml"
+    raw = yaml.safe_load(path.read_text())
+    raw["model"]["operational_defaults"] = {"kind": "literal", "owner": "finance"}
+    path.write_text(yaml.safe_dump(raw))
+    config = load_package_config(str(package))
+    assert config.measures[0].operational == {"kind": "literal", "owner": "finance"}
+
+
+def test_unowned_projection_column_does_not_borrow_dimension_type(package):
+    config = load_package_config(str(package))
+    expr = CallExpr("ABS", [ColumnRefExpr("text_value", table="src")])
+    validate_expression_calls(expr, config, owner="entity.numbers_row")
+    assert (
+        render_expr(_semantic_expr_to_sql(expr, default_alias="src", warehouse="duckdb"))
+        == "ABS(src.text_value)"
+    )
+
+
+def test_distribution_constant_branch_uses_internal_root_diagnostic(package):
+    config = load_package_config(str(package))
+    distribution = {
+        "kind": "distribution",
+        "function": "avg",
+        "over": {
+            "kind": "entity_value",
+            "entity": "entity.numbers_row",
+            "input": {"measure": "measure.numbers.amount"},
+        },
+    }
+    payload = {
+        "select": [
+            {"expression": distribution, "as": "avg_amount"},
+            {"expression": literal(6), "as": "constant"},
+        ]
+    }
+    plan = plan_query(config, None, payload)
+    assert plan.post_aggregation_exprs["constant"] == literal(6)
+    # The existing branch planner still requires a grouping/time root for a constant.
+    # It must reach that planner rather than the top-level literal-only guard.
+    with pytest.raises(
+        SemanticLayerError, match="Distinct-values queries require group_by or time"
+    ) as exc:
+        compile_query(config, None, payload)
+    assert exc.value.code == "INVALID_QUERY"
+    assert exc.value.details.get("reason") != "literal_only_select"
