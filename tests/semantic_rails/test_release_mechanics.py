@@ -24,10 +24,13 @@ fast enough for the default test run.
 
 from __future__ import annotations
 
+import io
 import json
+import os
 import re
 import runpy
 import shutil
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -297,6 +300,31 @@ def test_publish_builds_once_and_transfers_exact_artifacts_through_post_publish(
     assert "release-assets/github/SHA256SUMS" in release_commands
 
 
+@pytest.mark.parametrize(
+    ("tag", "prerelease"),
+    [("v0.3.2", "false"), ("v0.3.2.post1", "false"), ("v0.3.2rc1", "true"), ("v1.0.0a1", "true")]
+    + [("v1.0.0b2", "true"), ("v0.3.2.dev1", "true"), ("v0.3.2rc1.post1", "true")],
+)
+def test_release_marks_only_pre_release_tags_as_github_pre_releases(tmp_path, tag, prerelease):
+    """Run the release step with a stub `gh`: a failure there lands after PyPI took the upload."""
+    workflow = yaml.safe_load(PUBLISH_WORKFLOW.read_text(encoding="utf-8"))
+    (script,) = [
+        str(step["run"])
+        for step in workflow["jobs"]["release"]["steps"]
+        if "gh release create" in str(step.get("run", ""))
+    ]
+    stub = tmp_path / "gh"
+    stub.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$GH_ARGS"\n', encoding="utf-8")
+    stub.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"}
+    env |= {"GITHUB_REF_NAME": tag, "GH_ARGS": str(tmp_path / "args")}
+    subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", script], cwd=tmp_path, env=env, check=True
+    )
+    args = (tmp_path / "args").read_text(encoding="utf-8").splitlines()
+    assert args[:2] == ["release", "create"] and f"--prerelease={prerelease}" in args
+
+
 def test_gh_cli_steps_outside_a_checkout_pin_the_repository():
     """`gh` infers the repo from the git remote, not from GITHUB_REPOSITORY.
 
@@ -337,6 +365,71 @@ def test_post_publish_verifier_rejects_every_unexpected_release_file(monkeypatch
 
     with pytest.raises(RuntimeError, match="unexpected=.*manylinux"):
         verifier._wait_for_exact_publish(expected, "0.2.0", attempts=1, delay=0)
+
+
+def test_post_publish_verifier_waits_for_exact_version_on_index(monkeypatch):
+    from scripts import verify_published_release as verifier
+
+    expected = {
+        "semantic_rails-0.2.0-py3-none-any.whl": "wheel-digest",
+        "semantic_rails-0.2.0.tar.gz": "sdist-digest",
+    }
+    polls = iter([set(), {"semantic_rails-0.2.0.tar.gz"}, set(expected)])
+    sleeps = []
+    monkeypatch.setattr(verifier, "_published_artifacts", lambda _version: expected)
+    monkeypatch.setattr(verifier, "_indexed_artifacts", lambda _url: next(polls))
+    monkeypatch.setattr(verifier.time, "sleep", sleeps.append)
+
+    verifier._wait_for_exact_publish(expected, "0.2.0", attempts=3, delay=15)
+    assert sleeps == [15, 30]
+
+
+def test_post_publish_verifier_reads_simple_index_links(monkeypatch):
+    from scripts import verify_published_release as verifier
+
+    page = b'<a href="/files/semantic_rails-0.2.0-py3-none-any.whl#sha256=abc">wheel</a>'
+    monkeypatch.setattr(
+        verifier.urllib.request, "urlopen", lambda _request, timeout: io.BytesIO(page)
+    )
+
+    assert verifier._indexed_artifacts("https://pypi.org/simple") == {
+        "semantic_rails-0.2.0-py3-none-any.whl"
+    }
+
+
+def test_post_publish_verifier_fails_when_version_never_appears(monkeypatch):
+    from scripts import verify_published_release as verifier
+
+    expected = {"semantic_rails-0.2.0-py3-none-any.whl": "wheel-digest"}
+    polls = []
+    sleeps = []
+    monkeypatch.setattr(verifier, "_published_artifacts", lambda _version: expected)
+    monkeypatch.setattr(verifier, "_indexed_artifacts", lambda _url: polls.append(1) or set())
+    monkeypatch.setattr(verifier.time, "sleep", sleeps.append)
+
+    with pytest.raises(RuntimeError, match="after 3 attempts.*not visible on the index yet"):
+        verifier._wait_for_exact_publish(expected, "0.2.0", attempts=3, delay=15)
+    assert len(polls) == 3
+    assert sleeps == [15, 30]
+
+
+def test_post_publish_verifier_fails_on_first_digest_mismatch(monkeypatch):
+    from scripts import verify_published_release as verifier
+
+    expected = {"semantic_rails-0.2.0-py3-none-any.whl": "wheel-digest"}
+    polls = []
+
+    def wrong_digest(_version):
+        polls.append(1)
+        return {next(iter(expected)): "bad"}
+
+    monkeypatch.setattr(verifier, "_published_artifacts", wrong_digest)
+    monkeypatch.setattr(verifier, "_indexed_artifacts", lambda _url: pytest.fail("index queried"))
+    monkeypatch.setattr(verifier.time, "sleep", lambda _delay: pytest.fail("retried"))
+
+    with pytest.raises(RuntimeError, match="digest_mismatches"):
+        verifier._wait_for_exact_publish(expected, "0.2.0", attempts=3, delay=15)
+    assert len(polls) == 1
 
 
 def test_release_readiness_derives_version_and_rejects_mismatched_tag():
@@ -389,7 +482,7 @@ def test_distribution_boundary_gate_rejects_private_paths_and_symbols():
 
 def test_node_dependency_audits_are_ci_gates_and_the_cube_install_is_locked():
     ci = CI_WORKFLOW.read_text(encoding="utf-8")
-    assert "uv export --quiet --format requirements-txt --all-extras" in ci
+    assert "uv run --no-sync python scripts/audit_dependencies.py" in ci
     assert "deploy/cloudflare" not in ci
     assert "npm audit --prefix comparisons/semantic_layers/malloy --audit-level=high" in ci
     # Cube's install surface: exact pins, a committed lockfile and a recorded audit, which CI

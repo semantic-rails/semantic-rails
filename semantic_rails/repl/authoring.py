@@ -18,7 +18,7 @@ from ..architect_service import ArchitectMutation, ArchitectProject
 from ..cli.common import _quote, _ref_label, _runtime_from_ref, _slug, _title
 from ..cli.output import _authoring_error_messages, _authoring_warning_messages
 from ..cli.reports import project_validation_report
-from ..config import _derive_measure_semantics, load_package_config
+from ..config import _DIRECT_EXPRESSION_FIELDS, _derive_measure_semantics, load_package_config
 from ..config_validation import PackageReference
 from ..errors import SemanticLayerError
 from ..expressions import (
@@ -1025,7 +1025,6 @@ def _metric_change(
         fields: dict[str, Any] = {
             "numerator": ids[0],
             "denominator": ids[1],
-            "null_behavior": (retain and saved.null_behavior) or "null_if_zero",
         }
         example = f"How does {name} trend by month?"
     elif recipe == "filtered":
@@ -1129,19 +1128,7 @@ _RECIPE_KINDS = {"filtered": "aggregate", "growth": "derived"}
 _EXPRESSION_RECIPES = frozenset({"filtered", "growth"})
 _PRESERVE = "preserve"
 # Fields that belong to one recipe; switching recipes drops the others.
-_KIND_FIELDS = frozenset(
-    {
-        "measure",
-        "aggregation",
-        "numerator",
-        "denominator",
-        "null_behavior",
-        "expression",
-        "window",
-        "offset",
-        "period",
-    }
-)
+_KIND_FIELDS = frozenset({*_DIRECT_EXPRESSION_FIELDS, "expression"})
 _UNITS = [
     ("day", "Days"),
     ("week", "Weeks"),
@@ -1179,7 +1166,6 @@ class _Saved:
     aggregation: str = ""
     row_filter: dict[str, Any] | None = None
     params: dict[str, Any] = field(default_factory=dict)
-    null_behavior: str = ""
     clock: str = ""
 
 
@@ -1212,7 +1198,7 @@ def _read_recipe(kind: str, expr: Any, config: PackageConfig) -> _Saved | None:
 
     if kind == "ratio" and isinstance(expr, ArithmeticExpr) and expr.op == "divide":
         ids = tuple(_operand_id(side) for side in (expr.left, expr.right))
-        return _Saved("ratio", ids, null_behavior=expr.null_behavior) if all(ids) else None
+        return _Saved("ratio", ids) if all(ids) else None
     if kind == "derived" and isinstance(expr, ArithmeticExpr):
         # Growth: (now - prior) / prior, exactly as `_time_recipe` writes it.
         now = plain(expr.left.left) if isinstance(expr.left, ArithmeticExpr) else None
@@ -1222,10 +1208,7 @@ def _read_recipe(kind: str, expr: Any, config: PackageConfig) -> _Saved | None:
             and isinstance(prior, OffsetWindowExpr)
             and prior.kind == "prior_period"
             and prior.input == now
-            and expr
-            == ArithmeticExpr(
-                "divide", ArithmeticExpr("subtract", now, prior), prior, "null_if_zero"
-            )
+            and expr == ArithmeticExpr("divide", ArithmeticExpr("subtract", now, prior), prior)
         ):
             offset = {"unit": prior.unit, "value": prior.value}
             return _Saved("growth", (now.measure,), now.aggregation, params={"offset": offset})
@@ -1243,6 +1226,9 @@ def _read_recipe(kind: str, expr: Any, config: PackageConfig) -> _Saved | None:
         field_id = resolve_filter_dimension(clause["field"], config)
         return replace(saved, recipe="filtered", row_filter={**clause, "field": field_id})
     if inner.filter or not isinstance(expr, OffsetWindowExpr) or expr.kind != kind:
+        return None
+    if expr.partition_by or expr.window_scope:
+        # The prompts cannot write these back, so the metric stays as saved.
         return None
     params: dict[str, dict[str, Any]] = {
         "cumulative": {},
@@ -1323,7 +1309,6 @@ def _time_recipe(
     growth = {
         "kind": "binary",
         "op": "divide",
-        "null_behavior": "null_if_zero",
         "left": {"kind": "binary", "op": "subtract", "left": now, "right": then},
         "right": dict(then),
     }

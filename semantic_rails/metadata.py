@@ -31,6 +31,8 @@ from .compiler import (
 from .diagnostics import relationship_contract_payload
 from .errors import SemanticLayerError
 from .expressions import (
+    CONVERSION_MATCHING_MODES,
+    CONVERSION_WINDOW_UNITS,
     AggregateExpr,
     ArithmeticExpr,
     BooleanExpr,
@@ -51,6 +53,8 @@ from .expressions import (
     RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    collect_object_references,
+    expr_to_dict,
     parse_semantic_expression,
 )
 from .metadata_parts.capabilities import (
@@ -91,8 +95,9 @@ from .metadata_parts.scope_gate import scope_block_payload as _scope_block_paylo
 from .metadata_parts.valid_values import valid_values_payload
 from .policies import hidden_object_ids, policy_effects_for_object
 from .request_context import context_from_policy_context
+from .request_payload import DISCOVER_RANKED_KINDS, checked_discover_kinds
 from .runtime import Runtime, runtime_request_scope
-from .schema import PackageConfig
+from .schema import MetricConfig, PackageConfig
 from .scope import classify_question
 from .segments import build_segment_query, normalize_segment
 
@@ -765,6 +770,50 @@ def _predicate_exprs_from_expr(
     return []
 
 
+def _without_empty_defaults(expr: dict[str, Any]) -> dict[str, Any]:
+    """Drop the empty defaults ``expr_to_dict`` writes on a conversion and its operands."""
+    return {
+        key: _without_empty_defaults(item) if key in {"base", "converted"} else item
+        for key, item in expr.items()
+        if not (key in {"aggregation", "temporal_role", "constant_properties"} and not item)
+    }
+
+
+def _conversion_metadata(
+    config: PackageConfig, recipe: MetricConfig, policy_context: dict[str, Any]
+) -> dict[str, Any]:
+    """A conversion metric's own expression, so a caller can re-run it over another window.
+
+    Left out (fail closed) when a policy other than a visibility grant or a release label
+    applies to the metric or to anything its expression names, or a reference won't resolve."""
+    if not isinstance(recipe.expression, ConversionExpr):
+        return {}
+    expression = _without_empty_defaults(expr_to_dict(recipe.expression))
+    try:
+        references = collect_object_references(expression, config, owner=recipe.id)
+    except SemanticLayerError:
+        return {}
+    for object_id in {recipe.id, *references}:
+        effects = policy_effects_for_object(
+            config,
+            object_id,
+            environment=str(policy_context.get("environment", "")),
+            audience=str(policy_context.get("audience", "")),
+            roles=policy_context.get("roles", []),
+        )
+        if any(effect["action"] not in {"visible", "label"} for effect in effects):
+            return {}
+    units = "|".join(CONVERSION_WINDOW_UNITS)
+    return {
+        "conversion": {
+            "expression": expression,
+            "matching_modes": list(CONVERSION_MATCHING_MODES),
+            "rewindow": "select this expression with another window "
+            f"{{unit: {units}, value: positive integer}}",
+        }
+    }
+
+
 def _predicate_metadata(
     config: PackageConfig, expr: SemanticExpr, partial_query: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -912,6 +961,7 @@ def _object_card(
                 **_example_test_metadata(recipe),
                 **predicate_meta,
                 **_comparison_metadata(recipe),
+                **_conversion_metadata(config, recipe, policy_context),
             }
         )
     elif obj.kind == "dimension":
@@ -1951,6 +2001,15 @@ def discover_payload(
     limit: int = 10,
     enforce_scope: bool = False,
 ) -> dict[str, Any]:
+    kinds = checked_discover_kinds(kinds, DISCOVER_RANKED_KINDS)
+    if limit < 1:
+        # The buckets are cut to ``limit``, so a zero limit would empty them
+        # and read as "no match" for a search that found something.
+        raise SemanticLayerError(
+            "INVALID_MCP_ARGUMENTS",
+            "Argument 'limit' must be at least 1.",
+            details={"field": "limit", "argument_type": type(limit).__name__},
+        )
     config = runtime._config
     search_index = runtime._get_catalog_search_index()
     search_terms = SearchTerms.from_text(terms)
@@ -2017,7 +2076,6 @@ def discover_payload(
     selection = _selection_context(config, partial_query)
     root_entity = selection["root_entity"]
     stage = _infer_stage(partial_query, stage, terms)
-    kinds = list(kinds or [])
     maps = _config_maps(config)
     records: list[dict[str, Any]] = []
 
@@ -2504,7 +2562,11 @@ def discover_payload(
     if no_matches:
         payload["no_matches"] = {
             "terms": terms,
-            "reason": "no candidate matched the supplied search terms",
+            "reason": (
+                f"no candidate of kind {sorted(set(kinds))} matched the supplied search terms"
+                if kinds
+                else "no candidate matched the supplied search terms"
+            ),
             "recovery_hint": "Try simpler or more specific terms, or browse the catalog of available objects.",
         }
     # Empty-`terms` warning. The blind-agent benchmark caught a probe

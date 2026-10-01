@@ -557,7 +557,11 @@ behavior:
   it directly is governed by `object_access`, not visibility.
 - **`object_access`** — enforced at query time. `action: deny` refuses the
   query with a structured policy error; `action: redact` executes but replaces
-  the governed object's values in the result.
+  the governed object's values in the result. An `aggregate_if` whose condition
+  reads another entity reads the dimensions over its columns, as a `where` filter
+  on them does, so their policies apply. While any `object_access` or
+  `object_visibility` policy is declared, it may not read a column of that entity
+  that no dimension declares (`POLICY_DENIED`, reason `column_without_dimension`).
 - **`protected_object`** — pins an object as protected in the named
   environments; `promote-package` and `impact-report` treat changes to
   protected objects as release-gated.
@@ -590,9 +594,10 @@ behavior:
   needs `type:`. The policy takes no `object_ids`, `action` or operator. A request
   it applies to is denied if the attribute is missing or of another type, and
   so is any query outside the qualified family: the compiled statement must
-  read the filtered relation exactly once, as its only relation. Joins, metric
-  filters, calendar spines (prior-period comparisons, fill) and other second
-  scans are refused, and rollups are not routed to. The zero-row
+  read one ordinary scan of the filtered relation, as its only relation. Engine-generated
+  observation and coverage scans may repeat that relation; each receives the same policy
+  filter. Joins, metric filters, calendar spines (prior-period comparisons, fill) and
+  other second scans are refused, and rollups are not routed to. The zero-row
   data-coverage probe is skipped. Such a policy loads for any warehouse, but only
   DuckDB executes these statements today; every other adapter refuses them.
   An unscoped row filter applies to every request. A scoped one applies only
@@ -759,6 +764,8 @@ configurable.
 Each `relationships:` entry is an unordered pair of entities. Cardinality is
 declared relative to that pair (`many_to_one` = first is many, second is one).
 `rollup_safe` specifies which aggregations roll up safely in each direction.
+When several relationships join one pair (roles), an aggregation must be listed
+by every one that lists any.
 
 Most relationships are **inferred** from FK references in `model.entities:`
 blocks. Author an explicit `graph.relationships:` entry only when you need a
@@ -885,6 +892,49 @@ times:
 `class:`, `supported_grains:`, and `default_query_axis:` are load-bearing — the
 planner uses them to decide alignment and pick implicit time axes.
 
+A measure is timed by the roles in its own `times:` list, or, when it lists none, by its
+model's `default: true` time. A measure with neither has no clock: it answers without `time`
+or grouped by a plain date dimension, but a query that puts it on a time grain (for example
+`time: {temporal_role: ..., grain: month}`) is refused with `INCOMPATIBLE_TEMPORAL_ROLE`. Mark
+the role `default: true` or list it under the measure's `times:`.
+
+`timezone:` (default `UTC`) is the zone the role answers in. Every grain's
+buckets, and a query's `start`/`end` bounds, are in that zone:
+
+- A naive `TIMESTAMP` or a `DATE` column is read as stored. If it stores
+  another zone's clock, name that zone in `column_timezone:` (for example
+  `column_timezone: UTC` with `timezone: America/New_York`), and the engine
+  converts it.
+- A zone-aware column (`TIMESTAMP WITH TIME ZONE`) holds instants. On DuckDB,
+  MotherDuck, DuckLake and Postgres, each query runs with the session time zone
+  set to its time role's zone (UTC for a query without one), and only for that
+  query. So these columns bucket and filter in the role's zone whatever the
+  server's or machine's default. Leave `column_timezone:` off them. (MotherDuck
+  gets the setting on its client connection; this hasn't been checked against
+  the service.)
+- Everything else zone-dependent in the query follows that zone too:
+  - an authored `call` over a zone-aware value, such as `date_part('hour', …)`
+    or a cast to `DATE`;
+  - `now()` and `current_date`;
+  - zone-aware values returned in rows, which are the same instants shown with
+    that zone's offset.
+
+  The rendered SQL doesn't show the zone. To reproduce an answer in a SQL
+  console, set the session's `TimeZone` to it first.
+- A query whose measures are bucketed on time roles in different zones runs in
+  the zone of its `time.temporal_role`. It returns a `TIME_ZONE_NOT_APPLIED`
+  warning that names the roles whose own zone it didn't use.
+- The other warehouses don't do this yet, so there a zone-aware column follows
+  the warehouse's own rules:
+  - Snowflake `TIMESTAMP_LTZ` and Databricks `TIMESTAMP` use the session time zone.
+  - Snowflake `TIMESTAMP_TZ` keeps each value's own offset.
+  - Athena/Trino `timestamp with time zone` keeps each value's own zone.
+  - ClickHouse `DateTime` uses the column's or the server's zone.
+  - BigQuery buckets `DATETIME` values, so a `TIMESTAMP` column isn't bucketed in the role's zone.
+
+  On those warehouses, store naive timestamps and declare their zone with
+  `column_timezone:`.
+
 ### Dimensions
 
 Only behavioral dimensions are authored. Key dimensions auto-create from
@@ -934,6 +984,7 @@ measures:
     expr: amount_usd                  # column or scalar expression
     default_agg: sum                  # default the API uses if no override
     rollup: additive                  # optional physical-variant routing hint
+    additive: true                    # false: already aggregated, never summed (see below)
     accumulation: { kind: flow }
     value_type: currency
     disallowed_aggregations: [median] # subtract from accumulation-derived allowed set
@@ -953,6 +1004,11 @@ measures:
     value_type: count
 ```
 
+An `aggregate` measure with `expr: "1"`, `default_agg: sum`,
+`accumulation: { kind: flow }`, and `value_type: count` counts source rows.
+Package checks treat literal values as constants with no column dependencies;
+columns inside compound expressions are still checked against the warehouse.
+
 `entity_key:` on `kind: entity_count` measures names the **key column** declared
 in `graph.entities.<entity>.key` (e.g. `order_id`), not the entity name
 (`order`). The loader treats the value as a literal column reference.
@@ -960,6 +1016,51 @@ in `graph.entities.<entity>.key` (e.g. `order_id`), not the entity name
 `accumulation:` is always object form: `{ kind: flow }`, `{ kind: event }`,
 `{ kind: population }`, or `{ kind: stock, snapshot: end_of_period }`. The strict
 enum is `{flow, stock, event, population}` — anything else is rejected.
+
+A `stock` measure answers with each series' last snapshot in each period (its first,
+with `snapshot: start_of_period`), then adds up the series. A series is the row key
+without the clock's column, so a snapshot table's entity key is the series columns plus
+the snapshot time: `key: [store_id, date_day]` for inventory per store per day, not a
+surrogate such as `inventory_row_id` that is unique per snapshot row, and the series
+columns must not be unique per row themselves (`[inventory_row_id, date_day]` passes the
+check below but still sums). Give the snapshot time `class: as_of_time`.
+
+- A stock whose key doesn't contain its clock's column gets a
+  `STOCK_SNAPSHOT_KEY_MISSING_CLOCK` parse warning: each key value counts as its own
+  series, so two snapshots of one series in the same week are added together.
+- If the key holds none of the stock's `as_of_time` clocks (in its `times:`), every query
+  of the stock is refused with `INVALID_CONFIG`, whatever clock it's ordered by.
+- Ordered by any other clock, a key that holds an as-of clock leaves it in the series, so
+  each snapshot is its own series: those queries are refused too, with a
+  `STOCK_SERIES_HOLDS_AS_OF_CLOCK` parse warning. Keep one as-of clock in the key and
+  query the stock on it. An event-time column in the key, such as a cohort month, is part
+  of the series and is fine on the as-of clock.
+- A current-state table with one row per series (a customer's lifetime spend on the
+  customers table) has the same shape and is right as keyed; the warning is expected there.
+  Because the engine can't tell the two apart on an event- or state-time clock, each query,
+  validate and compile answer from such a stock also carries the
+  `STOCK_SNAPSHOT_KEY_MISSING_CLOCK` warning (`segment_preview` returns no warnings yet).
+
+`additive: false` marks an `aggregate` measure whose values are already aggregated
+and must never be added together: a vendor's pre-counted distinct values (daily unique
+visitors, a page's unique visitors over 14 days) or a stored ratio. Three pages with 3,
+2 and 2 unique visitors can have 4 distinct visitors between them, not 7.
+
+- A query that would sum more than one of its rows into an output row is refused with
+  `ROLLUP_UNSAFE` (`details.unsupported_construct: non_additive_sum`). A stock sums its
+  series' last snapshots, so there each series must be one output row.
+- An output row holds one row when every column of the row key (for a stock, the key
+  without its clock) is grouped by, pinned with a top-level `=` filter or a one-value
+  `in`, or reached through the key of a many-to-one relationship on that column (when
+  it's the only relationship between the two entities); a `date` clock also counts at
+  `grain: day`. Metric and segment filters don't count.
+  The refusal points to the measure's key or a finer grain.
+- `avg`, `min`, `max`, `median` and `percentile` stay available (average daily unique
+  visitors is a real question), and so does `prior_period`. Cumulative, rolling and
+  period-to-date metrics, scoped aggregates and metric predicates over it are refused.
+- `project validate` probes such a measure grouped by those dimensions.
+- It only applies to `kind: aggregate`: an `entity_count` is a distinct count the
+  engine computes itself.
 
 `default_agg:` (the new name for `agg_function:`) is the default aggregation the
 API uses if the caller doesn't specify. The accumulation class drives the
@@ -995,7 +1096,6 @@ metrics:
     kind: ratio
     numerator: revenue_usd
     denominator: order_count
-    null_behavior: null_if_zero       # default
     value_type: currency
     temporal_role: temporal_role.shop_order_ordered_at
     meta: { owner_team: finance_analytics, review_priority: high, change_risk: medium }
@@ -1098,7 +1198,7 @@ metrics:
 | `kind:` | Direct named fields | Notes |
 |---|---|---|
 | `aggregate` | `measure: <key>` | publish a measure as a metric |
-| `ratio` | `numerator: <key>`, `denominator: <key>`, `null_behavior:` | default `null_if_zero` |
+| `ratio` | `numerator: <key>`, `denominator: <key>` | a zero denominator reads `NULL` |
 | `cumulative` | `measure: <key>`, optional `window:` | running total |
 | `prior_period` | `measure: <key>`, `period:` | comparison value at prior period |
 | `period_to_date` | `measure: <key>`, `period:` | MTD / QTD / YTD |
@@ -1167,6 +1267,9 @@ Warnings (advisory only):
   [`package.environments` and governance `meta:`](#packageenvironments-and-governance-meta)).
 - A measure omits an explicit `default_temporal_role` while declaring
   compatible temporal roles.
+- Several relationships join one pair of entities on different columns and no
+  one of them has the lowest `path_preference` (`RELATIONSHIP_ROLES_UNPINNED`), whichever
+  side each is declared from.
 
 ## Path-finding behavior (entity hopping)
 
@@ -1183,12 +1286,54 @@ join paths.
   prefers the direct table over the multi-hop path
   (`path_preference` on `RelationshipConfig` handles this).
 
+A query that groups or filters by a dimension looked up through a many-to-one or
+one-to-one hop joins it with a left join, so the measure keeps a row whose foreign key
+is NULL or matches no row: it groups under NULL, and grouped rows add up to the
+ungrouped total, except for a dimension a rollup holds (below). A filter on such a
+dimension treats the row as it treats a NULL value in the row itself: `IS NULL` selects it, so "passengers excluding crew"
+through a crew-roster lookup is a `crew_role IS NULL` filter, while `=`, `!=`, `IN`
+and `NOT IN` never match it. Every other read of a lookup keeps its inner join, so a
+row with no match is left out, as before: a time role read through a lookup, a
+measure's own filter, a metric filter and the context entities it matches on,
+conversions (their match keys and properties), qualified sets and metric predicates,
+anchored entity-set ratios, and a dimension a rollup of the measure's model holds
+(below). That last rule covers every dimension any rollup of the model holds, even at a
+grain the rollup can never answer, so those rows are dropped for that dimension however
+the query is grouped. So do hops that fan out, and every hop on ClickHouse, where an
+unmatched outer-join column reads `''` or `0` unless it is `Nullable`, not NULL.
+
 Long chains are first-class: a measure can be grouped or filtered by a
 dimension four relationships away (`line_item → order → customer → city →
 region`), with each hop cardinality-checked. Every hop must be `N:1`/`1:1` in
 the traversal direction (or carry a declared rewrite, e.g. `rollup_safe`
 reverse aggregations or `temporal_validity`); anything else is a structured
-refusal, never a silently fanned-out number.
+refusal, never a silently fanned-out number. A positive child filter needs no
+`rollup_safe` opt-in: it lowers to correlated `EXISTS` and keeps each parent row
+once when at least one child matches. Non-temporal paths of declared `N:1`,
+`1:N` and `1:1` hops may include a lookup before reaching children, and may
+use an alternate parent key; all authored join columns participate in the
+correlation. This supports parent counts and sums without multiplying their
+values. A lookup-before-child or alternate-key path requires exactly one
+candidate route after authored `graph.path_preferences` pins. Several
+remaining routes retain `MIXED_GRAIN_INVALID`, even when one is shorter.
+This applies to query filters and measure-bound filters, including beside
+a lookup. Unsafe, unknown-cardinality and temporal paths retain their refusals.
+ClickHouse retains a deduplicated-parent leaf for servers without correlated
+subqueries. Key-based descents retain their existing SQL shape, including
+beside lookup selections, groupings and filters; those lookups remain inner
+joins. It refuses paths that look up a parent before reaching children and
+paths joined off the parent's declared key, including beside a lookup, with
+`MIXED_GRAIN_INVALID`.
+
+Grouping retains a narrower exception: a path that only goes down one-to-many hops before any lookup
+(`order → order_item → product`), each hop joined on the declared key of its
+one side, lets a distinct parent count be grouped by the far dimension; the entity's key is what
+the engine de-duplicates on.
+At most one group or filter may cross a one-to-many hop. Negated child filters
+and `IS NULL` stay refused because "has a non-matching child" and "has no matching
+child" differ; the IR has no explicit `NOT EXISTS` predicate. A parent sum
+grouped by child dimensions, or a child value authored at parent grain, stays
+`MIXED_GRAIN_INVALID`.
 
 ### `graph.path_policy:` — hop ceiling
 
@@ -1239,7 +1384,38 @@ Three guard rails back this up at query time:
   `path_preferences` pin). Adding a shortcut relationship to a package can
   silently re-route existing queries; this warning is the tripwire.
 - **`AMBIGUOUS_PATH` error** — two routes with identical hop count and
-  preference score refuse to compile rather than pick arbitrarily.
+  preference score refuse to compile rather than pick arbitrarily. The error
+  names the tied routes and how to pin one. A `graph.relationships:` entry
+  never replaces a foreign key on other columns: the model keeps both, so an
+  origin and a destination key into one `airport` entity are two routes. Any
+  query that reaches the airport is refused until you pin the role it means:
+  its city, its key (`airport_code`, even though the leg's table holds the
+  foreign key), a filter on either, or a metric predicate on the airport. An
+  entry that restates the inferred foreign key (the same `via` columns, or none)
+  replaces it. Two authored entries on the same `via` columns are refused at
+  load (`INVALID_CONFIG`, naming both): keep one, or give each its own `via`
+  if they are different roles.
+  Pin the role with a lower `path_preference` on the intended relationship,
+  which applies to every query through the pair. A `path_preferences` row
+  for the pair pins only queries that start at its `source_entity` and end at
+  its `target_entity`; a query from another entity that passes through the pair,
+  one that continues past the target, or one that starts at the target, is still
+  refused. A pinned role reads its key through the pinned relationship's join,
+  like any other column of the airport, so a leg whose code matches no airport
+  row groups under a NULL key (a lookup read, above); a package with a single role
+  and no `path_preferences` row for the pair reads the key from the leg's own column
+  and groups that leg under its code.
+  A `path_preferences` row for the pair, in either direction, sends every read of
+  the key, a filter on it and a metric predicate through the pinned route, so the
+  key and the airport's other columns always come from the same airport. `path_preference` is a non-negative integer
+  (unset is 100), so `0` is the lowest and pins a role.
+- **`RELATIONSHIP_ROLES_UNPINNED` warning** — reported when the package is
+  parsed (`semantic-rails check`, `validate`): several relationships join the
+  same pair of entities on different columns and no single one has the lowest
+  `path_preference` (two tied at the lowest still refuse every query). It names
+  the relationships, says whether a `path_preferences` row covers the pair, and
+  repeats the fix above. It stays quiet only when exactly one relationship has
+  the lowest `path_preference`.
 - **`PATH_JOIN_CONFLICT` error** — one query needs the same physical table
   through two different relationships (e.g. region pinned to the home-city
   route while city resolves via the ship-to shortcut). One table instance
@@ -1370,10 +1546,12 @@ Routing is conservative in the MVP:
   join would have repeated fact rows in every other column.
   Another model's key read from a foreign key (such as the customer key) needs a
   `path` of the one relationship between the two models, and doesn't route when
-  two relationships link them. Build a pre-joined column with an inner join, as
-  the base path joins it: a fact row with no match is left out. So a rollup with a
-  pre-joined column answers only queries that group or filter by that column; the
-  base path doesn't join it otherwise and keeps such rows. A measure whose
+  two relationships link them. Build a pre-joined column with an inner join: the
+  base path joins a dimension a rollup of the measure's model holds with an inner
+  join too, so a fact row with no match is left out of both and routing never
+  changes an answer. So a rollup with a pre-joined column answers only queries that
+  group or filter by that column; the base path doesn't join it otherwise and keeps
+  such rows. A measure whose
   expression, or a time role whose column, comes from another model doesn't route.
   An `aggregate_relations:` entry must declare its `temporal_role`.
 - Every selected measure must have a column in the variant.
@@ -1400,7 +1578,11 @@ Routing is conservative in the MVP:
   rollup under a role that starts at day) isn't certifiable. A runtime doesn't
   use its compile cache for a package with such a rollup: every request compiles
   again, which costs compile time, so that a revoked certification applies to the
-  next request.
+  next request. A rollup under a role whose `timezone:` isn't `UTC` or `Etc/UTC`
+  isn't certifiable yet (`timezone_not_utc`), so its queries use the base tables.
+  On DuckDB, MotherDuck, DuckLake and Postgres, which run each query in its role's
+  zone, build the rollup and run each pair with the session time zone set to UTC
+  (`SET TimeZone = 'UTC'`).
 
 When a rollup can't answer a query exactly, the query runs on the base tables, and
 `logical_plan.measure_plans[].aggregate_relation_rejections` maps each rejected
@@ -1594,6 +1776,39 @@ would ignore such a key, so the package would behave differently from what it sa
 
 Every metric also gets the kind checks: a metric with an unknown `kind:`, or
 without a field its kind requires, such as a ratio's `denominator`, is rejected.
+
+The loader hands a metric's `expression:` to the expression parser as written, and
+carries every direct field a metric kind takes into the expression it builds, so a part
+is kept or rejected and never dropped to make the metric load:
+
+- An unknown expression `kind:`, or a field its kind does not support (a `where` on a
+  `metric` reference, an `anchor` on a plain measure), is rejected with the metric named.
+- Direct fields follow the same table. `partition_by` on a `rolling`, `period_to_date`
+  or `cumulative` metric, `window` on a `rolling` metric, and `window_scope` on a
+  `cumulative` metric reach the compiled metric. A field the kind does not take, such as
+  `window` on a `cumulative`, `partition_by` on a `prior_period` or a `ratio`, or
+  `order_by` anywhere, is rejected. `partition_by` declares a grouping the query must
+  include: the window already runs separately within each group the query groups by, so
+  the field changes no value, and a query that does not group by the dimension is refused
+  with `INVALID_QUERY`, naming the
+  metric and listing the dimension under `partition_by_missing_from_group_by`, instead of
+  returning an unpartitioned value. A `partition_by` that is not a list is rejected at load.
+- A metric is written either with an `expression:` block or with direct fields, never
+  both. A metric that has an `expression:` and also any direct field (`measure`,
+  `aggregation`, `numerator`, `denominator`, `window`, `window_scope`,
+  `offset`, `period`, `partition_by`, `order_by`) is rejected at load, naming the metric
+  and the fields; move them inside `expression:`. A `kind:` beside `expression:` is fine.
+- Every `partition_by` entry must be a dimension of the package, or the metric is rejected
+  at load. A short key resolves against the model of the measure the window reads (a
+  `rolling` over a metric reference or a formula takes only full `dimension.` ids), and is
+  stored as the full id.
+- A `window` on a plain `aggregate` loads but is refused when the metric is queried,
+  because a plain aggregate has no window. Use a `rolling` metric.
+- `scoped_aggregate` keeps its `anchor`, `window`, `where` and `predicates`. A short
+  `measure` key, and a short `where` field key on the measure's own model, resolve as they
+  do elsewhere in the package. An `anchor` with a `window` is refused when the metric is
+  queried, until anchored windows compile (see `docs/CAPABILITIES.md`); it is never
+  computed as a lifetime value.
 
 ### Filter values
 

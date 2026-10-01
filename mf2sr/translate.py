@@ -1004,7 +1004,6 @@ def _build_metric(
                     "op": "divide",
                     "left": operands[0],
                     "right": operands[1],
-                    "null_behavior": "null_if_zero",
                 },
             }
         else:
@@ -1014,7 +1013,6 @@ def _build_metric(
                 "kind": "ratio",
                 "numerator": num_name,
                 "denominator": den_name,
-                "null_behavior": "null_if_zero",
                 "value_type": measure_value_type.get(num_name, "number"),
             }
         owner = measure_owner.get(num_name, "core")
@@ -1462,13 +1460,12 @@ def _parse_derived_expression(
 
     We handle the cases that appear in real MetricFlow projects: nested
     binary arithmetic over metric names (with optional aliases) and
-    numeric literals, plus a single special-cased `NULLIF(x, 0)` form
-    that maps to `null_behavior: null_if_zero` on the parent divide.
+    numeric literals, plus `NULLIF(x, 0)`, which reads as `x` (the engine
+    divides by NULLIF(denominator, 0) for every division).
     Anything else returns None and the caller picks a fallback.
     """
     # Normalize `NULLIF(x, 0)` so Python's parser doesn't trip on it.
-    # We replace `NULLIF(x, 0)` with `__nullif_zero__(x)` and recognize
-    # that function as a marker to set null_behavior on the parent.
+    # We replace `NULLIF(x, 0)` with `__nullif_zero__(x)` and read it as `x`.
     normalized = expr.strip()
     normalized = _rewrite_nullif_zero(normalized)
     try:
@@ -1504,17 +1501,7 @@ def _to_semantic_ast(
         right = _to_semantic_ast(node.right, alias_map, report, metric_name)
         if left is None or right is None:
             return None
-        result: dict[str, Any] = {
-            "kind": "arithmetic",
-            "op": _BINOP_MAP[op_type],
-            "left": left,
-            "right": right,
-        }
-        # If divisor is wrapped in NULLIF(_, 0), promote to null_if_zero.
-        if op_type is pyast.Div and right.get("__nullif_zero__"):
-            result["null_behavior"] = "null_if_zero"
-            right.pop("__nullif_zero__", None)
-        return result
+        return {"kind": "arithmetic", "op": _BINOP_MAP[op_type], "left": left, "right": right}
     if isinstance(node, pyast.UnaryOp) and isinstance(node.op, pyast.USub):
         inner = _to_semantic_ast(node.operand, alias_map, report, metric_name)
         if inner is None:
@@ -1536,12 +1523,7 @@ def _to_semantic_ast(
         and node.func.id == "__nullif_zero__"
         and len(node.args) == 1
     ):
-        inner = _to_semantic_ast(node.args[0], alias_map, report, metric_name)
-        if inner is None:
-            return None
-        inner = dict(inner)
-        inner["__nullif_zero__"] = True
-        return inner
+        return _to_semantic_ast(node.args[0], alias_map, report, metric_name)
     return None
 
 

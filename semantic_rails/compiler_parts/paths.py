@@ -41,6 +41,7 @@ from .indexes import (
     _recipe_index,
     _relationship_index,
     _temporal_role_index,
+    get_package_analysis,
 )
 from .temporal import _allows_coarse_snapshot_alignment
 
@@ -67,6 +68,60 @@ def _resolve_dimension_expr(dim_id: str, config: PackageConfig) -> tuple[SqlIden
     return _column_ref(table, dim.column), dim.id
 
 
+def _pair_orientations(
+    source_entity: str, target_entity: str, config: PackageConfig
+) -> list[tuple[RelationshipConfig, list[str], list[str]]]:
+    """Every relationship between the two entities, in either direction, as
+    ``(relationship, source columns, target columns)`` seen from ``source_entity``."""
+    found = []
+    for rel in config.relationships:
+        forward = (
+            list(rel.source_columns or [rel.source_column]),
+            list(rel.target_columns or [rel.target_column]),
+        )
+        if rel.source_entity == source_entity and rel.target_entity == target_entity:
+            found.append((rel, *forward))
+        if rel.target_entity == source_entity and rel.source_entity == target_entity:
+            found.append((rel, forward[1], forward[0]))
+    return found
+
+
+def _pair_key_routes(
+    source_entity: str,
+    target_entity: str,
+    target_key_col: str,
+    config: PackageConfig,
+) -> list[tuple[RelationshipConfig, str]]:
+    """Every way the source entity's table reads ``target_key_col`` of the target entity:
+    one ``(relationship, source column)`` per distinct source column, in either direction.
+    Relationships that agree on the column collapse to the lowest relationship id, so the
+    answer never depends on declaration order."""
+    by_column: dict[str, RelationshipConfig] = {}
+    for rel, source_columns, target_columns in _pair_orientations(
+        source_entity, target_entity, config
+    ):
+        for source_col, target_col in zip(source_columns, target_columns, strict=True):
+            if target_col == target_key_col:
+                known = by_column.get(source_col)
+                if known is None or rel.id < known.id:
+                    by_column[source_col] = rel
+    return [(rel, column) for column, rel in sorted(by_column.items())]
+
+
+def _pair_has_several_pairings(
+    source_entity: str, target_entity: str, config: PackageConfig
+) -> bool:
+    """True when the entities are joined on more than one distinct column pairing, whatever
+    the target columns are. Relationships that restate one pairing (from either side) count once."""
+    pairings = {
+        frozenset(zip(source_columns, target_columns, strict=True))
+        for _rel, source_columns, target_columns in _pair_orientations(
+            source_entity, target_entity, config
+        )
+    }
+    return len(pairings) > 1
+
+
 def _direct_entity_key_source_expr(
     source_entity: str,
     target_entity: str,
@@ -82,22 +137,26 @@ def _direct_entity_key_source_expr(
     source_table = source_relation_override or source.table
     if source_entity == target_entity and target_key_col in set(source.key or [source.primary_key]):
         return _column_ref(source_table, target_key_col)
-    for rel in config.relationships:
-        if rel.source_entity == source_entity and rel.target_entity == target_entity:
-            source_columns = list(rel.source_columns or [rel.source_column])
-            target_columns = list(rel.target_columns or [rel.target_column])
-            for source_col, target_col in zip(source_columns, target_columns, strict=True):
-                if target_col == target_key_col:
-                    record_bound_object(rel, config)
-                    return _column_ref(source_table, source_col)
-        if rel.target_entity == source_entity and rel.source_entity == target_entity:
-            source_columns = list(rel.target_columns or [rel.target_column])
-            target_columns = list(rel.source_columns or [rel.source_column])
-            for source_col, target_col in zip(source_columns, target_columns, strict=True):
-                if target_col == target_key_col:
-                    record_bound_object(rel, config)
-                    return _column_ref(source_table, source_col)
-    return None
+    # None: not readable here. Several pairings between the entities (role-playing keys, e.g.
+    # an origin and a destination airport, even when one role targets a non-key column) mean
+    # the source table alone cannot say which role is meant, so callers fall through to path
+    # selection, which follows the pin or refuses.
+    if _pair_has_several_pairings(source_entity, target_entity, config):
+        return None
+    routes = _pair_key_routes(source_entity, target_entity, target_key_col, config)
+    if len(routes) != 1:
+        return None
+    rel, source_col = routes[0]
+    # A pin on this pair, in either direction, is decided by path selection (it may pick a
+    # multi-hop route that reads a different row than the source table's own column), so the
+    # shortcut only stands when the pin names exactly the one direct relationship found.
+    preferences = get_package_analysis(config).path_preferences
+    for pair in ((source_entity, target_entity), (target_entity, source_entity)):
+        pinned = preferences.get(pair)
+        if pinned is not None and pinned != [rel.id]:
+            return None
+    record_bound_object(rel, config)
+    return _column_ref(source_table, source_col)
 
 
 def _direct_dimension_source_expr(
@@ -339,6 +398,25 @@ def _join_on_for_relationship(
     return condition, right_table, next_entity
 
 
+def _reaches_at_most_one(rel: RelationshipConfig, current_entity: str) -> bool:
+    """True when the hop reaches at most one row for each current row (N:1, 1:1)."""
+    if ":" not in rel.cardinality:
+        return False
+    near, far = [part.strip() for part in rel.cardinality.upper().split(":", 1)]
+    if current_entity != rel.source_entity:
+        near, far = far, near
+    return far == "1" and near in ("1", "N")
+
+
+def _is_lookup_hop(rel: RelationshipConfig, current_entity: str, config: PackageConfig) -> bool:
+    """True when the hop reaches at most one row for each current row (N:1, 1:1) and the
+    warehouse's outer join reads NULL, not a type default, for an unmatched row (not ClickHouse).
+    """
+    if not dialect_for_warehouse(config.package.warehouse).outer_lookup_joins:
+        return False
+    return _reaches_at_most_one(rel, current_entity)
+
+
 def _joins_for_paths(
     source_entity: str,
     path_selections: Iterable[PathSelection],
@@ -346,9 +424,28 @@ def _joins_for_paths(
     *,
     time_spec: dict[str, Any] | None = None,
     table_overrides: dict[str, str] | None = None,
+    lookup_selections: frozenset[tuple[str, str]] = frozenset(),
 ) -> list[SqlJoin]:
+    """The joins for ``path_selections``, all INNER unless the path is temporal.
+
+    The one exception is the lookup left join: a selection named in ``lookup_selections``
+    (by ``(target_entity, purpose)``) joins its N:1 and 1:1 hops with LEFT, so a row whose
+    foreign key is NULL or unmatched stays, with NULL for what the hop looks up. A hop that
+    any other selection also walks stays INNER.
+    """
     entities = _entity_index(config)
     relationships = _relationship_index(config)
+    path_selections = list(path_selections)
+    inner_hops: set[tuple[str, str]] = set()
+    if lookup_selections:
+        for selection in path_selections:
+            if (selection.target_entity, selection.purpose) in lookup_selections:
+                continue
+            current = source_entity
+            for rel_id in selection.chosen_path:
+                rel = relationships[rel_id]
+                inner_hops.add((rel.id, current))
+                current = rel.target_entity if current == rel.source_entity else rel.source_entity
     joins: list[SqlJoin] = []
     overrides = dict(table_overrides or {})
     # Each physical table may appear in the FROM clause once, so it can
@@ -374,9 +471,16 @@ def _joins_for_paths(
             join_key = (rel.id, current_entity)
             existing = joined_via.get(right_table)
             if existing is None:
+                keep_rows = (
+                    (selection.target_entity, selection.purpose) in lookup_selections
+                    and join_key not in inner_hops
+                    and _is_lookup_hop(rel, current_entity, config)
+                )
                 joins.append(
                     SqlJoin(
-                        join_type="LEFT" if nullable_path or rel.temporal_validity else "INNER",
+                        join_type="LEFT"
+                        if nullable_path or rel.temporal_validity or keep_rows
+                        else "INNER",
                         table=SqlTableRef(name=right_table),
                         on=join_on,
                     )

@@ -375,8 +375,8 @@ def test_model_entities_block_bridge_false_disables_inferred_relationships(tmp_p
 # ---------------------------------------------------------------------------
 
 
-def test_graph_relationships_block_translates_bidirectional_pair(tmp_path: Path) -> None:
-    pkg_dir = tmp_path / "pkg_graph_rel"
+def _write_graph_relationship_package(pkg_dir: Path, *, relationship_extra: dict[str, Any]) -> None:
+    """Write the shared order/customer package with explicit relationship options."""
     _write_synthetic_package(
         pkg_dir,
         graph_entities={
@@ -387,11 +387,8 @@ def test_graph_relationships_block_translates_bidirectional_pair(tmp_path: Path)
             "customer_order": {
                 "entities": ["order", "customer"],
                 "cardinality": "many_to_one",
-                "rollup_safe": {
-                    "forward": ["sum", "count"],
-                    "reverse": [],
-                },
                 "safety": "safe",
+                **relationship_extra,
             },
         },
         models={
@@ -432,6 +429,13 @@ def test_graph_relationships_block_translates_bidirectional_pair(tmp_path: Path)
                 },
             },
         },
+    )
+
+
+def test_graph_relationships_block_translates_bidirectional_pair(tmp_path: Path) -> None:
+    pkg_dir = tmp_path / "pkg_graph_rel"
+    _write_graph_relationship_package(
+        pkg_dir, relationship_extra={"rollup_safe": {"forward": ["sum", "count"], "reverse": []}}
     )
     config = load_package_config(str(pkg_dir))
     order_id = next(e.id for e in config.entities if e.id.endswith("_order"))
@@ -614,7 +618,6 @@ def test_metric_kind_ratio_direct_fields(tmp_path: Path) -> None:
                 "kind": "ratio",
                 "numerator": "premium_count",
                 "denominator": "widget_count",
-                "null_behavior": "null_if_zero",
                 "value_type": "percent",
                 "topics": ["p"],
             },
@@ -635,8 +638,13 @@ def test_metric_kind_ratio_direct_fields(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_strict_mode_rejects_authored_id_on_measure(tmp_path: Path) -> None:
-    pkg_dir = tmp_path / "pkg_strict_id"
+def _write_strict_package(
+    pkg_dir: Path,
+    *,
+    measure_extra: dict[str, Any] | None = None,
+    model_extra: dict[str, Any] | None = None,
+) -> None:
+    """Write the shared strict widget package with the authored field under test."""
     _write_synthetic_package(
         pkg_dir,
         package_extra={"schema_strict": True},
@@ -657,9 +665,9 @@ def test_strict_mode_rejects_authored_id_on_measure(tmp_path: Path) -> None:
                     },
                 },
                 "default_time": "created_at",
+                **(model_extra or {}),
                 "measures": {
                     "widget_count": {
-                        "id": "measure.synth.widget_count",  # authored id — strict-rejected
                         "label": "Widget count",
                         "description": "Count.",
                         "kind": "entity_count",
@@ -667,11 +675,17 @@ def test_strict_mode_rejects_authored_id_on_measure(tmp_path: Path) -> None:
                         "accumulation": {"kind": "event"},
                         "value_type": "count",
                         "topics": ["w"],
+                        **(measure_extra or {}),
                     },
                 },
             },
         },
     )
+
+
+def test_strict_mode_rejects_authored_id_on_measure(tmp_path: Path) -> None:
+    pkg_dir = tmp_path / "pkg_strict_id"
+    _write_strict_package(pkg_dir, measure_extra={"id": "measure.synth.widget_count"})
     errors = validate_runtime_package(pkg_dir)
     assert any("'id:'" in e and "widget_count" in e for e in errors), (
         f"expected strict rejection of authored id on measure, got {errors}"
@@ -680,41 +694,8 @@ def test_strict_mode_rejects_authored_id_on_measure(tmp_path: Path) -> None:
 
 def test_strict_mode_rejects_freeform_accumulation(tmp_path: Path) -> None:
     pkg_dir = tmp_path / "pkg_strict_acc"
-    _write_synthetic_package(
-        pkg_dir,
-        package_extra={"schema_strict": True},
-        models={
-            "widgets": {
-                "id": "widgets",
-                "entity": "widget",
-                "relation": "widget",
-                "grain": ["widget_id"],
-                "keys": {"primary": ["widget_id"]},
-                "times": {
-                    "created_at": {
-                        "label": "Created at",
-                        "column": "created_at",
-                        "kind": "timestamp",
-                        "class": "event_time",
-                        "default_query_axis": True,
-                    },
-                },
-                "default_time": "created_at",
-                "measures": {
-                    "widget_count": {
-                        "label": "Widget count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["widget_id"],
-                        # Freeform value not in {flow, stock, event, population}.
-                        "accumulation": "rolling_population",
-                        "value_type": "count",
-                        "topics": ["w"],
-                    },
-                },
-            },
-        },
-    )
+    # Freeform value not in {flow, stock, event, population}.
+    _write_strict_package(pkg_dir, measure_extra={"accumulation": "rolling_population"})
     errors = validate_runtime_package(pkg_dir)
     assert any("accumulation" in e for e in errors), (
         f"expected strict rejection of freeform accumulation, got {errors}"
@@ -723,42 +704,8 @@ def test_strict_mode_rejects_freeform_accumulation(tmp_path: Path) -> None:
 
 def test_strict_mode_rejects_legacy_joins_block(tmp_path: Path) -> None:
     pkg_dir = tmp_path / "pkg_strict_joins"
-    _write_synthetic_package(
-        pkg_dir,
-        package_extra={"schema_strict": True},
-        models={
-            "widgets": {
-                "id": "widgets",
-                "entity": "widget",
-                "relation": "widget",
-                "grain": ["widget_id"],
-                "keys": {"primary": ["widget_id"]},
-                "joins": {  # strict-rejected
-                    "other": {"to": "other", "cardinality": "N:1"},
-                },
-                "times": {
-                    "created_at": {
-                        "label": "Created at",
-                        "column": "created_at",
-                        "kind": "timestamp",
-                        "class": "event_time",
-                        "default_query_axis": True,
-                    },
-                },
-                "default_time": "created_at",
-                "measures": {
-                    "widget_count": {
-                        "label": "Widget count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["widget_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                        "topics": ["w"],
-                    },
-                },
-            },
-        },
+    _write_strict_package(
+        pkg_dir, model_extra={"joins": {"other": {"to": "other", "cardinality": "N:1"}}}
     )
     errors = validate_runtime_package(pkg_dir)
     assert any("joins" in e for e in errors), (
@@ -799,58 +746,8 @@ def test_graph_relationships_allowed_directions_propagates(tmp_path: Path) -> No
     block.
     """
     pkg_dir = tmp_path / "pkg_allowed_directions"
-    _write_synthetic_package(
-        pkg_dir,
-        graph_entities={
-            "order": {"label": "Order", "key": ["order_id"]},
-            "customer": {"label": "Customer", "key": ["customer_id"]},
-        },
-        graph_relationships={
-            "customer_order": {
-                "entities": ["order", "customer"],
-                "cardinality": "many_to_one",
-                "allowed_directions": ["forward"],
-                "safety": "safe",
-            },
-        },
-        models={
-            "customers": {
-                "id": "customers",
-                "entity": "customer",
-                "relation": "customer",
-                "grain": ["customer_id"],
-                "keys": {"primary": ["customer_id"]},
-                "measures": {
-                    "customer_count": {
-                        "label": "Count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["customer_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                        "topics": ["c"],
-                    },
-                },
-            },
-            "orders": {
-                "id": "orders",
-                "entity": "order",
-                "relation": "orders",
-                "grain": ["order_id"],
-                "keys": {"primary": ["order_id"], "foreign": {"customer": ["customer_id"]}},
-                "measures": {
-                    "order_count": {
-                        "label": "Count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["order_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                        "topics": ["o"],
-                    },
-                },
-            },
-        },
+    _write_graph_relationship_package(
+        pkg_dir, relationship_extra={"allowed_directions": ["forward"]}
     )
     config = load_package_config(str(pkg_dir))
     order_id = next(e.id for e in config.entities if e.id.endswith("_order"))
@@ -869,58 +766,7 @@ def test_graph_relationships_allowed_directions_defaults_when_omitted(tmp_path: 
     """When `allowed_directions:` is not authored, the default
     ['forward', 'reverse'] is preserved (verifies the rename is opt-in only)."""
     pkg_dir = tmp_path / "pkg_allowed_directions_default"
-    _write_synthetic_package(
-        pkg_dir,
-        graph_entities={
-            "order": {"label": "Order", "key": ["order_id"]},
-            "customer": {"label": "Customer", "key": ["customer_id"]},
-        },
-        graph_relationships={
-            "customer_order": {
-                "entities": ["order", "customer"],
-                "cardinality": "many_to_one",
-                "safety": "safe",
-            },
-        },
-        models={
-            "customers": {
-                "id": "customers",
-                "entity": "customer",
-                "relation": "customer",
-                "grain": ["customer_id"],
-                "keys": {"primary": ["customer_id"]},
-                "measures": {
-                    "customer_count": {
-                        "label": "Count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["customer_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                        "topics": ["c"],
-                    },
-                },
-            },
-            "orders": {
-                "id": "orders",
-                "entity": "order",
-                "relation": "orders",
-                "grain": ["order_id"],
-                "keys": {"primary": ["order_id"], "foreign": {"customer": ["customer_id"]}},
-                "measures": {
-                    "order_count": {
-                        "label": "Count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["order_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                        "topics": ["o"],
-                    },
-                },
-            },
-        },
-    )
+    _write_graph_relationship_package(pkg_dir, relationship_extra={})
     config = load_package_config(str(pkg_dir))
     order_id = next(e.id for e in config.entities if e.id.endswith("_order"))
     customer_id = next(e.id for e in config.entities if e.id.endswith("_customer"))
@@ -934,59 +780,7 @@ def test_graph_relationships_allowed_directions_defaults_when_omitted(tmp_path: 
 
 def test_graph_relationships_path_preference_propagates(tmp_path: Path) -> None:
     pkg_dir = tmp_path / "pkg_path_preference"
-    _write_synthetic_package(
-        pkg_dir,
-        graph_entities={
-            "order": {"label": "Order", "key": ["order_id"]},
-            "customer": {"label": "Customer", "key": ["customer_id"]},
-        },
-        graph_relationships={
-            "customer_order": {
-                "entities": ["order", "customer"],
-                "cardinality": "many_to_one",
-                "path_preference": 12,
-                "safety": "safe",
-            },
-        },
-        models={
-            "customers": {
-                "id": "customers",
-                "entity": "customer",
-                "relation": "customer",
-                "grain": ["customer_id"],
-                "keys": {"primary": ["customer_id"]},
-                "measures": {
-                    "customer_count": {
-                        "label": "Count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["customer_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                        "topics": ["c"],
-                    },
-                },
-            },
-            "orders": {
-                "id": "orders",
-                "entity": "order",
-                "relation": "orders",
-                "grain": ["order_id"],
-                "keys": {"primary": ["order_id"], "foreign": {"customer": ["customer_id"]}},
-                "measures": {
-                    "order_count": {
-                        "label": "Count",
-                        "description": "Count.",
-                        "kind": "entity_count",
-                        "entity_key": ["order_id"],
-                        "accumulation": {"kind": "event"},
-                        "value_type": "count",
-                        "topics": ["o"],
-                    },
-                },
-            },
-        },
-    )
+    _write_graph_relationship_package(pkg_dir, relationship_extra={"path_preference": 12})
     config = load_package_config(str(pkg_dir))
     order_id = next(e.id for e in config.entities if e.id.endswith("_order"))
     customer_id = next(e.id for e in config.entities if e.id.endswith("_customer"))
@@ -1075,7 +869,6 @@ def test_metric_ratio_numerator_resolves_top_level_metric(tmp_path: Path) -> Non
                 "kind": "ratio",
                 "numerator": "premium_metric",  # → top-level metric
                 "denominator": "widget_count",  # → measure
-                "null_behavior": "null_if_zero",
                 "value_type": "percent",
                 "topics": ["p"],
             },
@@ -1223,7 +1016,6 @@ def test_metric_ref_ambiguous_when_metric_and_measure_share_key(tmp_path: Path) 
                 "kind": "ratio",
                 "numerator": "shared_key",
                 "denominator": "denom",
-                "null_behavior": "null_if_zero",
                 "value_type": "percent",
                 "topics": ["a"],
             },
@@ -1394,11 +1186,10 @@ def test_times_block_consolidates_temporal_role_and_dimension(tmp_path: Path) ->
 
 
 def test_metric_kind_ratio_compiles_to_arithmetic_divide(tmp_path: Path) -> None:
-    """`kind: ratio` with direct `numerator:`/`denominator:` fields and no
-    explicit `null_behavior:` compiles to an `ArithmeticExpr(op='divide')`
-    with both sides resolved to fully qualified metric ids — verifying the
-    loader produces the canonical AST shape from the v1 direct-fields
-    sugar regardless of whether the optional `null_behavior` is authored.
+    """`kind: ratio` with direct `numerator:`/`denominator:` fields compiles to an
+    `ArithmeticExpr(op='divide')` with both sides resolved to fully qualified
+    metric ids — verifying the loader produces the canonical AST shape from the
+    v1 direct-fields sugar.
     """
     pkg_dir = tmp_path / "pkg_ratio_arithmetic_compile"
     _write_synthetic_package(
@@ -1407,12 +1198,10 @@ def test_metric_kind_ratio_compiles_to_arithmetic_divide(tmp_path: Path) -> None
         metrics={
             "premium_share_default": {
                 "label": "Premium share",
-                "description": "No explicit null_behavior — uses loader default.",
+                "description": "Premium share of widgets.",
                 "kind": "ratio",
                 "numerator": "premium_count",
                 "denominator": "widget_count",
-                # null_behavior intentionally omitted — defaults inside the
-                # loader's ratio-normalization step (see config.py:360).
                 "value_type": "percent",
                 "topics": ["p"],
             },
@@ -1521,7 +1310,6 @@ def test_metric_kind_ratio_value_type_overrides_input_types(tmp_path: Path) -> N
                 "kind": "ratio",
                 "numerator": "premium_count",  # count
                 "denominator": "widget_count",  # count
-                "null_behavior": "null_if_zero",
                 "value_type": "percent",  # explicit override
                 "topics": ["p"],
             },
@@ -1532,38 +1320,6 @@ def test_metric_kind_ratio_value_type_overrides_input_types(tmp_path: Path) -> N
     assert metric.value_type == "percent", (
         f"ratio metric value_type should be 'percent' even when inputs are "
         f"count-typed, got {metric.value_type!r}"
-    )
-
-
-def test_metric_kind_ratio_preserves_null_behavior_through_loader(tmp_path: Path) -> None:
-    """Regression: `null_behavior: null_if_zero` authored on a ratio metric
-    must survive the loader's binary→arithmetic conversion. Previously
-    `_convert_recipe_expr` dropped the field at the conversion site, causing
-    ratio metrics to lose their safety semantics silently."""
-    pkg_dir = tmp_path / "pkg_ratio_null_behavior"
-    _write_synthetic_package(
-        pkg_dir,
-        models=_widget_model_with_two_count_measures(),
-        metrics={
-            "premium_share_safe": {
-                "label": "Premium share (safe)",
-                "description": "Premium share with explicit null-if-zero handling.",
-                "kind": "ratio",
-                "numerator": "premium_count",
-                "denominator": "widget_count",
-                "null_behavior": "null_if_zero",
-                "value_type": "percent",
-                "topics": ["p"],
-            },
-        },
-    )
-    config = load_package_config(str(pkg_dir))
-    metric = next(m for m in config.metric_recipes if "premium_share_safe" in m.id)
-    expr = metric.expression
-    # The runtime ArithmeticExpr should carry null_behavior end-to-end.
-    assert getattr(expr, "null_behavior", "") == "null_if_zero", (
-        f"null_behavior should propagate through the binary→arithmetic "
-        f"conversion in _convert_recipe_expr, got {expr!r}"
     )
 
 

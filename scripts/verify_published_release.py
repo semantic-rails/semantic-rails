@@ -13,7 +13,9 @@ import time
 import urllib.error
 import urllib.request
 import venv
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 PROJECT = "semantic-rails"
 USER_AGENT = "semantic-rails-post-publish-verifier/1"
@@ -45,7 +47,7 @@ def _published_artifacts(version: str) -> dict[str, str]:
         f"https://pypi.org/pypi/{PROJECT}/{version}/json",
         headers={"Accept": "application/json", "User-Agent": USER_AGENT},
     )
-    with urllib.request.urlopen(request, timeout=15) as response:  # nosec - fixed PyPI URL.
+    with urllib.request.urlopen(request, timeout=10) as response:  # nosec - fixed PyPI URL.
         payload = json.loads(response.read().decode("utf-8"))
     return {
         str(row.get("filename", "")): str((row.get("digests") or {}).get("sha256", ""))
@@ -53,32 +55,77 @@ def _published_artifacts(version: str) -> dict[str, str]:
     }
 
 
+def _indexed_artifacts(index_url: str) -> set[str]:
+    class FileLinks(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.names: set[str] = set()
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            if tag == "a":
+                for key, value in attrs:
+                    if key == "href" and value:
+                        self.names.add(unquote(urlsplit(value).path.rsplit("/", 1)[-1]))
+
+    request = urllib.request.Request(
+        f"{index_url.rstrip('/')}/{PROJECT}/",
+        headers={"Accept": "text/html", "User-Agent": USER_AGENT},
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        links = FileLinks()
+        links.feed(response.read().decode("utf-8"))
+    return links.names
+
+
 def _wait_for_exact_publish(
-    expected: dict[str, str], version: str, *, attempts: int, delay: float
+    expected: dict[str, str],
+    version: str,
+    *,
+    index_url: str = "https://pypi.org/simple",
+    attempts: int,
+    delay: float,
 ) -> None:
-    last_error = "release not visible"
+    last_error = f"{PROJECT}=={version} not visible on the index yet"
     for attempt in range(1, attempts + 1):
         try:
             published = _published_artifacts(version)
-            expected_names = set(expected)
-            published_names = set(published)
-            missing = sorted(expected_names - published_names)
-            unexpected = sorted(published_names - expected_names)
-            mismatches = {
-                name: {"expected": digest, "published": published.get(name, "missing")}
-                for name, digest in expected.items()
-                if published.get(name) != digest
-            }
-            if not missing and not unexpected and not mismatches:
-                return
+        except urllib.error.HTTPError as exc:
             last_error = (
-                f"release file-set/digest mismatch: missing={missing}, "
-                f"unexpected={unexpected}, digest_mismatches={mismatches}"
+                f"{PROJECT}=={version} not visible on PyPI yet (HTTP 404)"
+                if exc.code == 404
+                else str(exc)
             )
         except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
             last_error = str(exc)
+        else:
+            missing = sorted(set(expected) - set(published))
+            unexpected = sorted(set(published) - set(expected))
+            mismatches = {
+                name: {"expected": digest, "published": published[name]}
+                for name, digest in expected.items()
+                if name in published and published[name] != digest
+            }
+            if unexpected or mismatches:
+                raise RuntimeError(
+                    f"release file-set/digest mismatch: missing={missing}, "
+                    f"unexpected={unexpected}, digest_mismatches={mismatches}"
+                )
+            if missing:
+                last_error = f"{PROJECT}=={version} not visible on PyPI yet: missing={missing}"
+            else:
+                try:
+                    indexed = _indexed_artifacts(index_url)
+                except (OSError, urllib.error.URLError, UnicodeError) as exc:
+                    last_error = str(exc)
+                else:
+                    unseen = sorted(set(expected) - indexed)
+                    if not unseen:
+                        return
+                    last_error = (
+                        f"{PROJECT}=={version} not visible on the index yet: missing={unseen}"
+                    )
         if attempt < attempts:
-            time.sleep(delay)
+            time.sleep(delay * 2 ** (attempt - 1))
     raise RuntimeError(f"PyPI verification failed after {attempts} attempts: {last_error}")
 
 
@@ -150,14 +197,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", required=True)
     parser.add_argument("--dist-dir", type=Path, required=True)
     parser.add_argument("--index-url", default="https://pypi.org/simple")
-    parser.add_argument("--attempts", type=int, default=12)
-    parser.add_argument("--delay", type=float, default=10.0)
+    parser.add_argument("--attempts", type=int, default=3)
+    parser.add_argument("--delay", type=float, default=20.0)
     args = parser.parse_args(argv)
 
     expected = _local_artifacts(args.dist_dir.resolve(), args.version)
     _wait_for_exact_publish(
         expected,
         args.version,
+        index_url=args.index_url,
         attempts=max(1, args.attempts),
         delay=max(0.0, args.delay),
     )

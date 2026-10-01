@@ -485,6 +485,21 @@ def recovery_hints_for_error(
         ]
     if code == "INCOMPATIBLE_TEMPORAL_ROLE":
         compatible = list(details.get("compatible", []) or [])
+        if not compatible and details.get("source") == "aggregate_if":
+            return []  # The message says what to do; there is no measure to point a hint at.
+        if not compatible and details.get("measure") and details.get("requested"):
+            return [
+                {
+                    "kind": "declare_measure_time_role",
+                    "message": (
+                        f"'{details['measure']}' has no time role. Mark one of its model's "
+                        "`times:` entries `default: true`, or list `times:` on the measure, "
+                        "then query it by that role. Or drop `time` from the query."
+                    ),
+                    "measure": details["measure"],
+                    "requested_temporal_role": details["requested"],
+                }
+            ]
         return [
             {
                 "kind": "select_compatible_temporal_role",
@@ -516,13 +531,15 @@ def recovery_hints_for_error(
             )
             hints.append(
                 {
-                    "kind": "use_authored_windowed_measure",
+                    "kind": "use_anchor_offset_column",
                     "message": (
-                        "If you need the result today, author the "
-                        "windowed measure inside a metric recipe "
-                        "(kind: scoped_aggregate) so the per-row "
-                        "window is fixed at package time — query-time "
-                        "anchor + window awaits the next round."
+                        "If you need the result today, expose the "
+                        "offset from the anchor as a column on the "
+                        "measure's model (for example days since the "
+                        "first order) and filter the measure on it. A "
+                        "metric recipe with the same anchor + window "
+                        "is refused the same way, so it is not a "
+                        "workaround."
                     ),
                 }
             )
@@ -574,7 +591,10 @@ def recovery_hints_for_error(
         return [
             {
                 "kind": "narrow_query",
-                "message": "Choose a more specific grouping, filter, or root entity to break the path ambiguity.",
+                "message": str(
+                    details.get("hint")
+                    or "Choose a more specific grouping, filter, or root entity to break the path ambiguity."
+                ),
                 "candidates": list(details.get("candidates", []) or []),
             }
         ]
@@ -587,11 +607,22 @@ def recovery_hints_for_error(
             }
         ]
     if code == "ROLLUP_UNSAFE":
-        return [
+        return list(details.get("recovery_hints", []) or []) or [
             {
                 "kind": "change_aggregation",
                 "message": "Use an additive primitive, provide sketch metadata, or query at the declared aggregation entity.",
                 "details": dict(details),
+            }
+        ]
+    if code == "CONVERSION_WINDOW_REQUIRED":
+        return list(details.get("recovery_hints", []) or [])
+    if code == "CONVERSION_MATCHING_MODE_REQUIRED" and details.get("expression"):
+        return [
+            {
+                "kind": "set_conversion_matching_mode",
+                "message": "Resend details.expression, or set matching_mode to another "
+                "value from details.allowed_values.",
+                "allowed_values": list(details.get("allowed_values", {}) or {}),
             }
         ]
     if code == "MEASURE_VALIDITY_BOUNDARY":
@@ -624,10 +655,11 @@ def recovery_hints_for_error(
         # When the offending dimension is a calendar-date dimension the
         # primary recovery is the time block — lead with it.
         time_axis = dict(details.get("time_axis_recovery", {}) or {})
-        if time_axis:
-            grain = str(time_axis.get("grain", "") or "")
-            role = str(time_axis.get("temporal_role", "") or "")
-            example = {"temporal_role": role or "<temporal_role>", "grain": grain or "<grain>"}
+        grain = str(time_axis.get("grain", "") or "")
+        role = str(time_axis.get("temporal_role", "") or "")
+        # Without a role the recovery found no time block that would answer: say nothing.
+        if role:
+            example = {"temporal_role": role, "grain": grain or "<grain>"}
             hint = {
                 "kind": "use_time_grain",
                 "message": (
@@ -641,34 +673,33 @@ def recovery_hints_for_error(
             if closest_query:
                 hint["closest_valid_query"] = closest_query
             mixed_grain_hints.append(hint)
+        # A different measure or dimension answers a different question, so these two
+        # hints name the candidates without a query to run in place of the question.
         if compatible_measures and closest_measure:
             dim_label = offending_dims[0] if offending_dims else "the requested dimension"
-            hint = {
-                "kind": "replace_measure",
-                "message": (
-                    f"Measure '{closest_measure}' aggregates at a grain that can group by "
-                    f"'{dim_label}' — query it instead."
-                ),
-                "compatible_measures": compatible_measures,
-            }
-            closest_query = dict(details.get("closest_compatible_measure_query", {}) or {})
-            if closest_query:
-                hint["closest_valid_query"] = closest_query
-            mixed_grain_hints.append(hint)
+            mixed_grain_hints.append(
+                {
+                    "kind": "replace_measure",
+                    "message": (
+                        f"Measure '{closest_measure}' can use '{dim_label}', but it is a "
+                        "different measure: use it only if it is what the question asks for."
+                    ),
+                    "compatible_measures": compatible_measures,
+                }
+            )
         compatible_dimensions = list(details.get("compatible_dimensions", []) or [])
         if compatible_dimensions:
             measure_label = requested_measures[0] if requested_measures else "the requested measure"
-            hint = {
-                "kind": "replace_dimension",
-                "message": (
-                    f"Keep '{measure_label}' and group by a dimension at a compatible grain."
-                ),
-                "compatible_dimensions": compatible_dimensions,
-            }
-            closest_query = dict(details.get("closest_compatible_dimension_query", {}) or {})
-            if closest_query:
-                hint["closest_valid_query"] = closest_query
-            mixed_grain_hints.append(hint)
+            mixed_grain_hints.append(
+                {
+                    "kind": "replace_dimension",
+                    "message": (
+                        f"'{measure_label}' can use these dimensions instead, which answers a "
+                        "different question."
+                    ),
+                    "compatible_dimensions": compatible_dimensions,
+                }
+            )
         analysis = dict(details.get("analysis", {}) or {})
         if str(details.get("purpose", "") or "") == "group_by" and list(
             analysis.get("requires_rewrite_relationships", []) or []
@@ -869,13 +900,29 @@ def recovery_hints_for_error(
                     "details": {"field": field, "argument_type": argument_type},
                 }
             )
+        elif field == "kinds" and details.get("unknown_kinds"):
+            valid_kinds = list(details.get("valid_kinds") or [])
+            hints.append(
+                {
+                    "kind": "use_valid_kind",
+                    "message": (
+                        f"Unknown kinds {list(details['unknown_kinds'])}; use one of {valid_kinds}."
+                    ),
+                    "details": {
+                        "field": field,
+                        "unknown_kinds": list(details["unknown_kinds"]),
+                        "valid_kinds": valid_kinds,
+                    },
+                }
+            )
         elif field == "kinds":
             hints.append(
                 {
                     "kind": "use_string_or_array",
                     "message": (
-                        "'kinds' must be either a comma-separated string "
-                        '("measure,metric") or an array of strings (["measure", "metric"]).'
+                        "'kinds' must be a comma-separated string "
+                        '("measure,metric"), an array of strings (["measure", "metric"]), '
+                        'or a JSON array in a string (\'["measure", "metric"]\').'
                     ),
                     "details": {"field": field, "argument_type": argument_type},
                 }

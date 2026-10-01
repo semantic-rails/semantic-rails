@@ -1,0 +1,8 @@
+schema_version: 1
+package:
+  id: shop
+  namespace: shop
+  warehouse: duckdb
+  default_db: data/warehouse.duckdb
+  seed: {kind: sql_script, source: data/seed.sql}
+  schema_strict: true

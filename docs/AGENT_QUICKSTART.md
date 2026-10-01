@@ -130,8 +130,10 @@ discover -> plan -> execute
   An invalid query fails with a structured error and, where possible, recovery hints instead of
   running. On MCP it returns at most `max_rows` rows (default 200); a capped result sets
   `truncated` and warns `EXECUTE_ROWS_TRUNCATED`.
-  For one total over a window, set `time.grain` so one bucket spans it (`quarter` for April 1 to
-  July 1): without a grain, `execute` returns one row per timestamp (`UNGRAINED_TIME_PROJECTION`).
+  A window (`start` and/or `end`) without a `time.grain` returns one total over the window, with no
+  time column, and says so in `assumptions`; set `time.grain` for one row per period. A time role
+  with no window and no grain still returns one row per timestamp (`UNGRAINED_TIME_PROJECTION`).
+  A result over 32,000 characters is refused with `RESULT_TOO_LARGE` rather than sent.
 - `validate` (optional dry run) returns diagnostics, repair hints, output columns, and risk
   metadata without executing.
 - `compile` (optional dry run) returns SQL and plan metadata without executing. At `compact` or `full` verbosity,
@@ -159,16 +161,18 @@ executing it.
 
 Statuses are:
 
-- `ok`: the best draft validated, and no check found part of the question it leaves out.
-  `warnings` can still name question words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
+- `ok`: the best draft validated, no check found part of the question it leaves out, and every
+  number and clock or zone word in the question is used by the draft. `warnings` can still name
+  other question words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
 - `low_confidence`: a draft exists, but validation failed, the draft leaves out part of the
   question (`why` names it, for example `PLAN_INTENT_COVERAGE_GAP`, or `TIME_WINDOW_UNRESOLVED`,
   which returns no `query_ir`: pass the window, temporal role and grain in `query.time` and
   plan again),
   or a validating fallback would drift from the requested target, grouping, qualification,
   filters, or time scope. For `TIME_WINDOW_UNRESOLVED`, follow `why.recovery_hints`; when
-  `why.details.unresolved_phrases` names one window twice, as in "Q2 2017 (April 1 to June 30
-  2017)", keep one form and plan again.
+  `why.details.conflicting_phrases` names two windows that differ, as in "Q2 2017 (April 1 to
+  June 29, 2017)", keep the one you mean and plan again. (One window stated twice the same way
+  resolves.)
 - `unrealizable`: the intent parsed, but no pattern or fallback produced Query IR.
 - `out_of_scope`: the classifier or relevance gate rejected the request as outside the package.
 

@@ -8,6 +8,8 @@ particular hosting product.
 
 from __future__ import annotations
 
+from .architect_service import ArchitectMutation, ArchitectProject
+from .architect_transactions import ABSENT_PROJECT_REVISION, project_revision
 from .audit import (
     AuditSink,
     StderrAuditSink,
@@ -54,9 +56,10 @@ from .dialects import (
 from .errors import SemanticLayerError
 from .http_core import API_VERSION, PUBLIC_V1_ROUTES, SemanticHTTPService
 from .mcp import SemanticLayerMCPAdapter
-from .mcp_server import MCP_PROTOCOL_VERSION, handle_jsonrpc_message
+from .mcp_server import MCP_PROTOCOL_VERSION, MCPAdapter, handle_jsonrpc_message
+from .mcp_streamable_http import MCPHTTPResponse, handle_streamable_http_request
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
-from .package_tools import run_package_tests_report
+from .package_tools import impact_report, run_package_tests_report
 from .request_context import (
     HeaderPolicyContextResolver,
     PolicyContextResolver,
@@ -71,8 +74,11 @@ from .request_context import (
 from .runtime import Runtime
 
 __all__ = [
+    "ABSENT_PROJECT_REVISION",
     "API_VERSION",
     "ATHENA_CONNECTION_OPTIONS",
+    "ArchitectMutation",
+    "ArchitectProject",
     "AuditSink",
     "BIGQUERY_CONNECTION_OPTIONS",
     "CLICKHOUSE_CONNECTION_OPTIONS",
@@ -86,6 +92,8 @@ __all__ = [
     "HeaderPolicyContextResolver",
     "LoadedPackageSnapshot",
     "LruCompiledSqlCache",
+    "MCPAdapter",
+    "MCPHTTPResponse",
     "MCP_PROTOCOL_VERSION",
     "MOTHERDUCK_CONNECTION_OPTIONS",
     "POSTGRES_CONNECTION_OPTIONS",
@@ -116,9 +124,12 @@ __all__ = [
     "get_audit_sink",
     "get_policy_context_resolver",
     "handle_jsonrpc_message",
+    "handle_streamable_http_request",
+    "impact_report",
     "load_package_snapshot",
     "normalize_connection_options",
     "parse_config_report",
+    "project_revision",
     "request_context_payload",
     "resolve_package_reference",
     "run_package_tests_report",

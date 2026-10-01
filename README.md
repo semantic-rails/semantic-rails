@@ -223,7 +223,9 @@ or add that script.
 
 ## Warehouses
 
-DuckDB is included. Add a connector only when you need it, for example Postgres:
+DuckDB 1.5.6 or newer is included; this minimum version fixes parallel window
+execution over empty input blocks used when filling time buckets. Add a connector
+only when you need it, for example Postgres:
 
 ```bash
 uv tool install 'semantic-rails[postgres]'
@@ -336,7 +338,7 @@ Build and verify the exact wheel and sdist before publishing:
 
 ```bash
 uv build --out-dir dist
-uv pip install --python .venv/bin/python --reinstall dist/semantic_rails-0.3.1-py3-none-any.whl
+uv pip install --python .venv/bin/python --reinstall dist/semantic_rails-0.3.2rc2-py3-none-any.whl
 uv run python scripts/verify_package_distribution.py --dist-dir dist --no-build
 ```
 

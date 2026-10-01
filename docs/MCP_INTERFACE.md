@@ -58,7 +58,7 @@ API:
 - `recovery_hints` (the errors' hints, and other next steps; left out when there are none)
 - `timing_ms`
 
-MCP responses state each fact once: an issue leaves out empty optional fields and a
+MCP issues leave out empty optional fields and a
 `why_invalid` or `unsupported_construct` that only repeats its `message` or `code`, and
 `request_context` appears only when a transport or `policy_context` set one.
 
@@ -79,15 +79,12 @@ tool/schema drift cannot be merged silently.
 - `segment`: `action="validate"`, `"explain"` or `"preview"` for a package-authored segment.
 
 `initialize` returns the workflow as server `instructions` (under 2KB): find objects with
-`discover`, draft Query IR with `plan`, and run it with `execute` only when the draft's status is
-`ok` with no warnings. The instructions also carry the rules that prevent wrong answers
-(exclusive `time.end`, a grain for a time window, `op "in"` for several values), recovery hints
-and `policy_context`. Their wording is measured: rewording the workflow steps ("don't write
-Query IR from scratch") or inviting a "Query IR so far" made models hand their own drafts to
-`plan` far more often, so the steps keep their tested wording. Each tool description says what the tool does, when to use it, and its one
-gotcha; `plan` and `execute` repeat the plan-first rule and the exclusive end for hosts that don't
-forward instructions. Every tool returns its smallest response by default (`verbosity="minimal"`,
-`plan` `detail="query"`).
+`discover`, draft Query IR with `plan`, and run it with `execute`, which validates and compiles
+first, so its `validate` and `sql` modes are optional dry runs. The instructions also carry the
+conventions every tool shares: full ids, response detail controls, recovery hints, and
+`policy_context`. Each tool description then says what the tool does, when to use it, and its
+one gotcha. Every tool returns its smallest response by default (`verbosity="minimal"`, `plan`
+`detail="query"`); ask for more only when you need it.
 
 Every tool schema advertises and accepts optional `request_id` and `policy_context`.
 `policy_context` (`environment`, `audience`, `roles`) is for local testing; authenticated
@@ -116,11 +113,6 @@ The query MCP follows these rules, and other Semantic Rails MCP servers can reus
 - **Parameters describe themselves.** When a parameter's name doesn't explain it, put its
   meaning in its schema (`enum`, `default`, a short `description`) rather than in prose. Keep
   the shared `request_id` and `policy_context` properties on every tool.
-- **Each fact once.** Every token of `tools/list` and the instructions is resent on every turn.
-  Cut prose that doesn't change what a model does, not properties, enums or types: the
-  contract checker treats a removed property as breaking. Keep a rule that prevents a wrong
-  answer (plan first, the exclusive end) in the description of the tool it concerns, even when
-  the instructions state it too.
 - **Budgets.** `tests/semantic_rails/mcp_context/budgets.json` gates the size of `tools/list`
   and the instructions (see "Measuring Context Cost").
 
@@ -217,17 +209,83 @@ negative filter for one value does not make a later excluded value safe if the
 draft includes it.
 
 `why.details.gaps` names each clause. Question words the draft uses nowhere, other than
-framing words, time phrases the planner read, and counts, come back as a
-`PLAN_UNMATCHED_TERMS` warning with up to eight of them in `details.terms`; check them
-before executing. If a
+framing words (including verbs and function words such as "dated", "placed", "only", "using"),
+time phrases the planner read, and numbers the draft carries (a limit, a threshold, the
+window's year), come back as a `PLAN_UNMATCHED_TERMS` warning with up to eight of them in
+`details.terms`. Other words stay warnings, as do measure nouns; check them before executing.
+A number, or a clock or zone word, the draft doesn't carry is not a warning: it makes the plan
+`low_confidence` (below), since the draft dropped an hour, a range or a
+threshold. Two words or more that no catalog object has, the first straight after "for",
+"from", "of" or "with", make it `low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`
+instead: "for tangaroo and vanilla ice" is a filter the draft dropped. Every measure a
+question lists ("item revenue and orders in Q1 2017") is in the draft's select list or the
+plan is `low_confidence` with a `multiple_subjects_unrealized` gap naming the ones it left
+out. For a measure by a dimension, a measure the question names in full outranks a shorter one
+it shares a word with ("item revenue" is Item revenue, not Revenue), but only when the name
+holds every word of the measure the question otherwise asks for: "large order revenue" is
+still revenue. If a
 validating fallback would change the target, grouping, qualification/cohort,
 filters, or time scope, `plan` returns `low_confidence` with
 `why.code="PLAN_FALLBACK_SEMANTIC_DRIFT"` instead of silently promoting it.
 `plan` resolves a time window only when the question names exactly one, in a form it reads
-unambiguously: a year after "in", "for" or "during", consecutive years, a quarter or half with a
-year, a month or month range with a year, days with a year, an ISO date, or a relative window
-("last 7 days"). "and" joins a range only after "between": "between March and May 2017" is a
-range, while "March and May 2017" names two months. Unsupported calendar forms, such as a
+unambiguously: a year after "in", "for" or "during", or after the word "year" where no word
+qualifies it ("year 2017", "the calendar year 2017"; "financial year 2017" and "model year 2017"
+are not calendar years and are reported), consecutive years, a quarter or half with a year ("the first half
+of 2017", "H2 2017"), a month or month range with a year, days with a year ("March 1 to March
+31, 2017", "Mar 1 - Mar 31 2017"), an ISO date or ISO range ("2017-03-01 to 2017-03-31"), or a
+relative window ("last 7 days"). A range's spoken end is included: the response's
+`assumptions` says so, with the exclusive `time.end` it chose. A window restated right beside
+itself ("Q1 2017 (January 1 to March 31, 2017)") is one window; two that differ, or the same
+one beside another condition ("revenue in 2017 from customers who signed up in 2017"), are a
+conflict, and `TIME_WINDOW_UNRESOLVED` names both in `why.details.conflicting_phrases`. `plan`
+resolves days and coarser windows only. A window shorter than a day ("last 24 hours", "past
+hour", "last 30 minutes") returns `TIME_WINDOW_UNRESOLVED` with `why.details.sub_day_phrases` and
+no `best.query_ir`, never a query over all time. Every other hour or zone is caught by one
+rule: a draft is `ok` only if every number, number word and clock or zone word in the question
+is consumed by a construct the draft carries. The words it counts are numerals ("9", "14h30",
+"1930"), spelled-out numbers ("nine", "twelve", "twenty", "hundred", "half", and "quarter" in
+"quarter past" or "quarter to"), "o'clock", "hour", "minutes", "noon", "midnight", "morning",
+"UTC", "GMT", a zone code ("EST", "PST", "CET", "AEST", "MSK", "WIB" in any case, and "ET", "PT",
+"CT", "MT", "Z" in capitals, so an all-caps state code such as "CT" is read as a zone) and a
+name such as "Europe/Berlin". A word is consumed only where it sits inside the text of a
+construct, not because its value equals something the draft holds: the words of the date or
+window plan resolved, the count of the ranking that states the draft's limit ("top 5", "the 5
+customers who spent the most", "3 stores with the highest revenue"; a threshold that repeats
+the limit's number, as in "top 10 stores with at least 10 orders", does not consume it), the number of a threshold or
+percentile the question states ("over 12.50", "90th percentile", "1,000 or more"), a filter
+value, or the name, label or alias of an object the draft selects (not its description). A number
+counts as a percentage only when "%", "percent" or "percentile" follows it: "50 percent" states
+0.5, while "500" never states 5. So a "1930" or "2000" that no such text holds is left over, and so is a "9"
+that a limit of 9 does not state. Otherwise the plan is `low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`, the leftover words in `details.terms`
+and no `next.ready_for`. So "between 9 and 17 on 15 March 2017", "from nine to five", "at
+14h30", "at 2000" and "in UTC" are not ready, and neither is a number range plan doesn't read
+("aged 25-34", "2 to 5 orders") or a token that is not one number ("15.03.2017", "1.2.3",
+"10.0.0.1"); a number the draft does carry ("top 10") is fine. A zone
+written as an ordinary word ("Pacific time", "London time", "local time") is not recognised by
+itself, so with no hour beside it the question reads as its day. A window in the draft
+(one you pass in `query.time`, or plan's own) consumes the date phrases plan resolved only if it
+agrees with them: each bound it carries, read at the day, is the earliest start or the latest end
+of the windows the question states ("15 March 2017" against 12:00 to 13:00 on that day agrees;
+against 1 June 2018, or against the whole of 2017, does not). If it disagrees, the draft is
+`low_confidence` (`PLAN_INTENT_COVERAGE_GAP`, gap `time_window_unrealized`) and the phrase's
+numbers are left over. A window you pass in `query.time` is not held to a lone "previous
+month" when the draft carries a `prior_period` expression: that phrase is the comparison's offset,
+not a window. The window also
+answers a phrase plan could not resolve ("last 24 hours", "before 2017"). A bare year is never
+consumed because a window's bounds hold it, its exclusive end year included: "revenue 2018" or
+"at 2000" is left over whatever the window says, and a year is part of a phrase plan could not
+resolve only when it follows a bound or qualifier word ("before", "until", "of"). In a question over 2,000
+characters plan reads no window, so only the 20xx years after "in", "for", "during" or "year" are
+checked, as calendar years, and only when they name one year: a count ("in 2000 or more") is not
+one, and two different years ("in 2017 ... for 2000 customers") cannot be told from a count, so
+no window is read and both years are left over. It never consumes a time of day,
+an hour or a zone, whatever hours its bounds carry: a question that states "12:00 to 13:00" or
+"noon" is refused (`PLAN_UNMATCHED_TERMS`) even against a window with those hours, so write the
+question without the hours and let the window carry them. To ask for an hour range, pass it in `query.time` yourself, as
+end-exclusive ISO timestamps in the temporal role's time zone (the role must be a timestamp),
+for example `start: "2017-03-15T12:00:00"`, `end: "2017-03-15T13:00:00"`, with the role and
+grain, and plan again. "and" joins a range only after "between": "between March and May 2017" is
+a range, while "March and May 2017" names two months. Unsupported calendar forms, such as a
 bound ("before 2017", "since March 2017"), a qualifier ("early 2017"), a comparison ("2017 vs
 2016", "2017 over 2016"), a numeric date (4/3/2017), two periods joined by "and", or two
 windows at once (such as "last month and this month"), return `low_confidence` with
@@ -297,6 +355,14 @@ response, not the warehouse work.
 
 A `limits.max_rows` inside the query is an operator's fetch ceiling. It can lower the `max_rows`
 cap (and then `total_row_count` is `null` once it is reached), but it never raises it.
+
+Separately, `execute` refuses a result whose rows serialize to more than 32,000 characters (about
+8,000 tokens), so few-but-wide rows and capped rows that are still large never reach the model. The
+refusal is the error `RESULT_TOO_LARGE`: no rows come back, `message` names the row count and says
+what would fit (a coarser or set `time.grain`, a filter, fewer `group_by` dimensions or columns), and
+`details` carries `row_count`, `total_row_count`, `result_chars` and `max_result_chars`. An operator
+changes the limit with the `SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS` environment variable, read on
+every call; a missing or non-positive value means the default.
 The `query` that execute echoes back carries the caller's own `limits`; a transport-level
 `max_rows` does not become part of that query. The HTTP `/api/v1/query` endpoint leaves
 the response uncapped unless the query itself sets a limit.
@@ -324,18 +390,21 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 |---|---|---|
 | `DISCOVER_IDS_TRUNCATED` | `discover` | Empty `terms` listed one page of ids and more remain; `details.next_offset` is the next page |
 | `DISCOVER_TERMS_COERCED` | `discover` | `terms` was a non-string (int/float/bool); coerced to a string |
-| `DISCOVER_UNKNOWN_KIND` | `discover` | One or more `kinds` values aren't valid object kinds; ignored |
 | `<TOOL>_UNKNOWN_ARG` | every tool but `segment` | Unknown argument (on `discover`, incl. `term`/`kind` typos); the value was ignored |
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain; flip `allow_live_query=true` to probe |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
-| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing |
+| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, or when two or more are names the catalog doesn't have |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
-| `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain, so rows group by the raw timestamp — set `time.grain` |
+| `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain and no `start`/`end` window, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
+| `NO_DATA_IN_SCOPE` | `execute` | A sum, count or distinct count (or a sum or difference of them) read `NULL` on every returned row (or nothing came back and neither a `start`/`end` window nor a metric filter explains it): its measure has no data in this query's scope, so it is `NULL`, not `0`. `details.outputs` names them; check the filter values. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
+| `QUERY_SHORTHAND_NORMALIZED` | `execute` | A select item was accepted as shorthand and rewritten; `details.canonical` is the form to send next time (`plan` accepts the same shorthand but returns the canonical form in `best.query_ir` instead of a warning) |
 | `SEMANTIC_CAVEAT_APPLIED` | `execute` | Package-authored advisory context matched the query; interpret affected results with that context |
 | `SEMANTIC_CAVEATS_TRUNCATED` | `execute` | More caveats matched than this verbosity returned; increase verbosity to inspect the rest |
 
 Every `*_UNKNOWN_ARG` warning carries `details.received` (the offending key). Most also carry `details.closest_matches` (up to two ranked suggestions via `difflib.get_close_matches`); the special-cased singular/plural typos (e.g. `term` → `terms` on `discover`) carry `details.expected` with the canonical spelling instead.
+
+`discover` reads `kinds` from an array, a comma-separated string, or a JSON array in a string (`"[\"metric\"]"`). A value that does not parse, or names a kind the call cannot produce (`details.unknown_kinds`, with `details.valid_kinds`), is refused instead of returning an empty result: with `INVALID_MCP_ARGUMENTS` (over HTTP too, except that HTTP reports a value that does not parse as `INVALID_REQUEST`). With `terms` the ranked kinds are `measure`, `metric`, `segment`, `dimension`, `entity` and `dimension_value`. The id listing (empty `terms`) exists on MCP only and accepts the catalog kinds instead (which include `temporal_role`, `relationship` and `value_domain` but not `dimension_value`); over HTTP, empty `terms` run the ranked search and take the ranked kinds. In resource-grant mode only `metric`, `dimension` and `temporal_role` are produced: any other kind is refused with `valid_kinds` naming those three, on a ranked search over MCP or HTTP and on the MCP id listing alike (the shared `/catalog` and MCP catalog resources keep their usual shape under a grant), and a grant search never reports `no_matches`. So "No semantic objects … matched" means the search ran over the requested kinds (the response's own `no_matches` field); a search screened out before it ran (`low_relevance`, `out_of_scope`) never says it, and a `limit` below 1 is refused over MCP and HTTP. A misspelled `kind` argument is ignored with `DISCOVER_UNKNOWN_ARG`, and the recovery hint says the filter was not applied.
 
 Errors return `INVALID_MCP_ARGUMENTS` (with `closest_matches` for typo'd keys) when the boundary contract is violated outright — e.g. wrong arg name, wrong type, value outside a declared enum. The full envelope shape is identical across all six tools.
 
@@ -646,18 +715,18 @@ Every error surfaced through the MCP or HTTP transport is wrapped in a structure
 }
 ```
 
-Every envelope carries `code` and `message`, plus at least one of `details`, `recovery_hints`, or `closest_matches`. Over MCP, empty optional fields are left out, and so is a hint's `details` when it only repeats the issue's. Bare `KeyError` / `AttributeError` leaks are wrapped as `INTERNAL_ERROR` envelopes with a bug-tracker hint so the surface is always actionable.
+Every envelope carries `code` and `message`, plus at least one of `details`, `recovery_hints`, or `closest_matches`. Over MCP, empty optional fields are left out; recovery hints keep their own details so each hint is actionable on its own. Bare `KeyError` / `AttributeError` leaks are wrapped as `INTERNAL_ERROR` envelopes with a bug-tracker hint so the surface is always actionable.
 
 ### Error Code Catalog
 
 | Code | One-line description |
 |------|----------------------|
 | `AMBIGUOUS_ALIAS` | Alias resolves to multiple semantic objects; pick one from `details.candidates`. |
-| `AMBIGUOUS_PATH` | Path between root entity and target is ambiguous; narrow the query. |
+| `AMBIGUOUS_PATH` | Path between root entity and target is ambiguous; `details.candidates` lists the tied routes and `details.hint` says how to pin one. |
 | `DUPLICATE_OUTPUT_ALIAS` | Two projected columns share an alias; rename one. |
 | `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. |
 | `INVALID_TEMPORAL_ROLE` | Unknown temporal role; pick one from `details.compatible_temporal_roles`. |
-| `INCOMPATIBLE_TEMPORAL_ROLE` | Selected role is not compatible with the chosen measure/metric. |
+| `INCOMPATIBLE_TEMPORAL_ROLE` | Selected role is not compatible with the chosen measure/metric, or the measure has no time role at all (`details.compatible` is empty; declare one on the model or the measure). |
 | `INVALID_TEMPORAL_BINDING` | Time block targets a clock incompatible with a conversion's anchor; filter on `details.anchor_temporal_role` or push the constraint into a conversion metric. |
 | `INCOMPATIBLE_CALENDAR` | Selected calendar grain is not supported by the underlying measure. |
 | `FANOUT_UNSAFE` | Breakdown crosses a 1-to-many relationship without a pre-aggregation boundary. |
@@ -690,12 +759,15 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 | `INVALID_ORDER_BY` | `order_by[]` entry has the wrong shape. |
 | `CONVERSION_NOT_SUPPORTED` | Conversion semantics are not supported for this metric. |
 | `CONVERSION_ENTITY_REQUIRED` | Conversion must declare an anchor entity. |
-| `CONVERSION_WINDOW_REQUIRED` | Conversion is missing a required time window. |
-| `CONVERSION_MATCHING_MODE_REQUIRED` | Conversion is missing the matching mode (`first_after`, `last_before`, ...). |
+| `CONVERSION_WINDOW_REQUIRED` | Conversion needs `window: {unit, value}` with a supported unit (`minute` … `year`) and a positive value. |
+| `CONVERSION_MATCHING_MODE_REQUIRED` | Conversion needs `matching_mode`: `first_converted_after_base` or `closest_converted_after_base`. `details.allowed_values` says what each matches and `details.expression` is the sent expression with the first one set. A conversion metric's `inspect` card shows its own expression under `conversion`, to run it over another window. |
 | `UNKNOWN_MCP_PROMPT` | Prompt name isn't in the catalog; see `details.available_prompts`. |
 | `UNKNOWN_MCP_RESOURCE` | Resource URI isn't in the catalog; see `details.available_resources`. |
 | `UNKNOWN_MCP_TOOL` | Tool name isn't in `tools/list`; see `details.available_tools`, and `details.replacement` for a removed v1 tool. |
 | `INVALID_MCP_ARGUMENTS` | Tool arguments don't match the input_schema; `recovery_hints` carries the corrected shape. |
+| `RESULT_TOO_LARGE` | `execute` rows would exceed the response character limit; nothing is returned. `message` says what would fit; see `details.max_result_chars`. |
+| `WINDOW_TOTAL_UNSUPPORTED` | A `time` window with no `grain` would return one total, but part of the query still groups by the raw time column, so the result can't be one row per group. Nothing is returned. Set `time.grain`, or remove `time.start` and `time.end`. |
+| `EMPTY_GROUPS_UNSETTLED` | The compiler built a query that reads a sum or count without settling its empty groups, so a group with no rows would read `NULL` instead of `0`. An engine defect, not a query error; nothing is returned. `details.measures` names them. |
 | `INTERNAL_ERROR` | Bare exception reached the boundary; retry once and file a bug if it recurs. |
 
 ### Worked Example Envelopes

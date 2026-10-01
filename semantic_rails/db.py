@@ -23,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import importlib
+import inspect
 import os
 import sqlite3
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch semantic_rails.db.subprocess
@@ -46,6 +47,7 @@ from .db_parts.base import (
     _limit_timeout_milliseconds,
     restore_column_names,
 )
+from .db_parts.common import session_time_zone, set_duckdb_time_zone
 from .db_parts.snowflake import (
     SnowflakeCliAdapter,
     SnowflakeNativeAdapter,
@@ -149,8 +151,11 @@ class Database:
         params: Iterable[Any] | None = None,
         *,
         max_rows: int | None = None,
+        time_zone: str = "",
     ) -> list[dict[str, Any]]:
         cur = self.conn.cursor()
+        if self.engine == "duckdb":
+            set_duckdb_time_zone(cur, time_zone)
         cur.execute(sql, list(params or []))
         fetched = cur.fetchmany(max_rows + 1) if max_rows is not None else cur.fetchall()
         truncated = max_rows is not None and len(fetched) > max_rows
@@ -163,6 +168,14 @@ class Database:
 
     def close(self) -> None:
         self.conn.close()
+
+
+def _takes_time_zone(query: Any) -> bool:
+    """Whether a ``Database.query`` takes ``time_zone=`` (one swapped in may predate it)."""
+    try:
+        return "time_zone" in inspect.signature(query).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 class DuckDBAdapter(WarehouseAdapter):
@@ -207,7 +220,9 @@ class DuckDBAdapter(WarehouseAdapter):
             watchdog.daemon = True
             watchdog.start()
         try:
-            rows = self._db.query(sql, parameters, max_rows=_limit_max_rows(limits))
+            zone = session_time_zone(limits)
+            extra = {"time_zone": zone} if zone and _takes_time_zone(self._db.query) else {}
+            rows = self._db.query(sql, parameters, max_rows=_limit_max_rows(limits), **extra)
             return _clip_rows(rows, limits)
         except SemanticLayerError:
             raise

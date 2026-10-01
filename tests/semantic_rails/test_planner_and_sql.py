@@ -120,7 +120,41 @@ def test_invalid_temporal_role_is_reported_by_validate(runtime_factory):
         runtime.close()
 
 
-def test_entity_in_terms_of_order_count_by_product_type_uses_item_anchor(runtime_factory):
+@pytest.mark.parametrize(
+    ("measure", "alias", "dimension", "sql_present", "sql_absent", "anchor_relation"),
+    [
+        pytest.param(
+            "measure.jaffle.order_count",
+            "orders",
+            "dimension.jaffle_product_type",
+            ["COUNT(DISTINCT jaffle_item.order_id)", "FROM jaffle_item"],
+            ["jaffle_order"],
+            "jaffle_item",
+            id="order_count_by_product_type",
+        ),
+        pytest.param(
+            "measure.jaffle.customer_count",
+            "customers",
+            "dimension.jaffle_product_type",
+            ["COUNT(DISTINCT jaffle_order.customer_id)", "FROM jaffle_order"],
+            ["JOIN jaffle_customer"],
+            "jaffle_order",
+            id="customer_count_by_product_type",
+        ),
+        pytest.param(
+            "measure.jaffle.customer_count",
+            "customers",
+            "dimension.jaffle_store_name",
+            ["COUNT(DISTINCT jaffle_order.customer_id)", "FROM jaffle_order", "JOIN jaffle_store"],
+            ["jaffle_storefront_session", "JOIN jaffle_customer"],
+            "jaffle_order",
+            id="customer_count_by_store",
+        ),
+    ],
+)
+def test_entity_in_terms_of_uses_physical_anchor(
+    runtime_factory, measure, alias, dimension, sql_present, sql_absent, anchor_relation
+):
     runtime = runtime_factory("jaffle_shop")
     try:
         report = runtime.validate(
@@ -128,25 +162,23 @@ def test_entity_in_terms_of_order_count_by_product_type_uses_item_anchor(runtime
                 "version": 1,
                 "select": [
                     {
-                        "expression": {
-                            "measure": "measure.jaffle.order_count",
-                            "aggregation": "count_distinct",
-                        },
-                        "as": "orders",
+                        "expression": {"measure": measure, "aggregation": "count_distinct"},
+                        "as": alias,
                     }
                 ],
-                "group_by": ["dimension.jaffle_product_type"],
+                "group_by": [dimension],
             }
         )
         assert report["ok"] is True
         rendered = report["explain"]["rendered_sql"]
-        assert "COUNT(DISTINCT jaffle_item.order_id)" in rendered
-        assert "FROM jaffle_item" in rendered
-        assert "jaffle_order" not in rendered
+        for fragment in sql_present:
+            assert fragment in rendered
+        for fragment in sql_absent:
+            assert fragment not in rendered
         rewrite_steps = report["logical_plan"]["rewrite_steps"]
         assert rewrite_steps[0]["kind"] == "entity_in_terms_of"
         scans = report["explain"]["performance_plan"]["estimated_scan_relations"]
-        assert scans[0]["relation"] == "jaffle_item"
+        assert scans[0]["relation"] == anchor_relation
     finally:
         runtime.close()
 
@@ -222,70 +254,6 @@ def test_entity_in_terms_of_order_count_by_product_type_allows_root_lookup_filte
             "INNER JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id" in rendered
         )
         assert "jaffle_store.store_name = 'Brooklyn'" in rendered
-    finally:
-        runtime.close()
-
-
-def test_entity_in_terms_of_customer_count_by_product_type_omits_customer_table(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        report = runtime.validate(
-            {
-                "version": 1,
-                "select": [
-                    {
-                        "expression": {
-                            "measure": "measure.jaffle.customer_count",
-                            "aggregation": "count_distinct",
-                        },
-                        "as": "customers",
-                    }
-                ],
-                "group_by": ["dimension.jaffle_product_type"],
-            }
-        )
-        assert report["ok"] is True
-        rendered = report["explain"]["rendered_sql"]
-        assert "COUNT(DISTINCT jaffle_order.customer_id)" in rendered
-        assert "FROM jaffle_order" in rendered
-        assert "JOIN jaffle_customer" not in rendered
-        rewrite_steps = report["logical_plan"]["rewrite_steps"]
-        assert rewrite_steps[0]["kind"] == "entity_in_terms_of"
-        scans = report["explain"]["performance_plan"]["estimated_scan_relations"]
-        assert scans[0]["relation"] == "jaffle_order"
-    finally:
-        runtime.close()
-
-
-def test_entity_in_terms_of_customer_count_by_store_uses_order_anchor(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        report = runtime.validate(
-            {
-                "version": 1,
-                "select": [
-                    {
-                        "expression": {
-                            "measure": "measure.jaffle.customer_count",
-                            "aggregation": "count_distinct",
-                        },
-                        "as": "customers",
-                    }
-                ],
-                "group_by": ["dimension.jaffle_store_name"],
-            }
-        )
-        assert report["ok"] is True
-        rendered = report["explain"]["rendered_sql"]
-        assert "COUNT(DISTINCT jaffle_order.customer_id)" in rendered
-        assert "FROM jaffle_order" in rendered
-        assert "JOIN jaffle_store" in rendered
-        assert "jaffle_storefront_session" not in rendered
-        assert "JOIN jaffle_customer" not in rendered
-        rewrite_steps = report["logical_plan"]["rewrite_steps"]
-        assert rewrite_steps[0]["kind"] == "entity_in_terms_of"
-        scans = report["explain"]["performance_plan"]["estimated_scan_relations"]
-        assert scans[0]["relation"] == "jaffle_order"
     finally:
         runtime.close()
 
@@ -1058,10 +1026,8 @@ def _primitive_channel_config() -> PackageConfig:
                     "add",
                     MetricRecipeRefExpr("metric.email_count"),
                     MetricRecipeRefExpr("metric.sms_count"),
-                    null_behavior="coalesce_zero",
                 ),
                 MetricRecipeRefExpr("metric.push_count"),
-                null_behavior="coalesce_zero",
             ),
         ),
     ]
@@ -1271,6 +1237,7 @@ def test_scoped_ratio_uses_cross_domain_metric_predicate_sets(package_config_fac
                                 "entity": "entity.jaffle_store",
                                 "op": ">",
                                 "value": 0,
+                                "time_alignment": "same_query_period",
                             }
                         ],
                     },
@@ -1323,6 +1290,7 @@ def test_anchored_ratio_delays_dimension_joins_and_prunes_predicate_context(pack
                                 "entity": "entity.jaffle_store",
                                 "op": ">",
                                 "value": 0,
+                                "time_alignment": "same_query_period",
                             }
                         ],
                     },
@@ -1374,6 +1342,7 @@ def test_anchored_ratio_uses_snowflake_qualify_for_snapshot_selection(package_co
                                 "entity": "entity.jaffle_store",
                                 "op": ">",
                                 "value": 0,
+                                "time_alignment": "same_query_period",
                             }
                         ],
                     },
@@ -2255,3 +2224,43 @@ def test_out_of_scope_question_with_enforce_scope_raises_out_of_scope(runtime_fa
         assert "OUT_OF_SCOPE" in codes, codes
     finally:
         runtime.close()
+
+
+def test_anchored_ratio_refuses_a_threshold_that_zero_satisfies(package_config_factory):
+    config, _ = package_config_factory("jaffle_shop")
+    aggregate = {
+        "kind": "scoped_aggregate",
+        "measure": "measure.jaffle.inventory_on_hand_eop",
+        "aggregation": "sum",
+    }
+    query = {
+        "version": 2,
+        "select": [
+            {
+                "as": "inventory_from_idle_stores_share",
+                "expression": {
+                    "kind": "ratio",
+                    "numerator": {
+                        **aggregate,
+                        "predicates": [
+                            {
+                                "measure": "measure.jaffle.order_count",
+                                "entity": "entity.jaffle_store",
+                                "op": "=",
+                                "value": 0,
+                                "time_alignment": "same_query_period",
+                            }
+                        ],
+                    },
+                    "denominator": aggregate,
+                },
+            }
+        ],
+        "time": {"temporal_role": "temporal_role.jaffle_inventory_day", "grain": "month"},
+    }
+
+    with pytest.raises(SemanticLayerError) as raised:
+        compile_query(config, Registry(config), query)
+
+    assert raised.value.code == "INVALID_METRIC_PREDICATE"
+    assert "anchored entity-set ratio" in str(raised.value)

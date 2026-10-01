@@ -622,9 +622,13 @@ def test_contextual_predicate_records_actual_clock_entity(config, monkeypatch, a
                 "expression": {
                     "kind": "metric_predicate",
                     "entity": ENTITY,
-                    "input": {"measure": "measure.jaffle.order_count"},
+                    "input": {
+                        "measure": "measure.jaffle.order_count",
+                        "temporal_role": customer_role,
+                    },
                     "op": ">",
                     "value": 1,
+                    "time_alignment": "same_query_period",
                 },
                 "op": "=",
                 "value": True,
@@ -645,6 +649,54 @@ def test_contextual_predicate_records_actual_clock_entity(config, monkeypatch, a
             assert CUSTOMER in violations[0]["disallowed"]
     finally:
         engine.close()
+
+
+@pytest.mark.parametrize("pinned", [False, True])
+def test_contextual_predicate_alignment_needs_exactly_one_clock(config, pinned):
+    store_role = "temporal_role.jaffle_store_opened_at"
+    customer_role = "temporal_role.jaffle_customer_first_order_at"
+    config = replace(
+        config,
+        measures=[
+            replace(
+                m,
+                compatible_temporal_roles=[store_role, customer_role],
+                default_temporal_role=store_role,
+            )
+            if m.id == "measure.jaffle.order_count"
+            else m
+            for m in config.measures
+        ],
+    )
+    predicate_input = {"measure": "measure.jaffle.order_count"}
+    if pinned:
+        predicate_input["temporal_role"] = customer_role
+    query = {
+        "select": [{"expression": {"measure": MEASURE}, "as": "revenue"}],
+        "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+        "metric_filters": [
+            {
+                "expression": {
+                    "kind": "metric_predicate",
+                    "entity": ENTITY,
+                    "input": predicate_input,
+                    "op": ">",
+                    "value": 1,
+                    "time_alignment": "same_query_period",
+                },
+                "op": "=",
+                "value": True,
+            }
+        ],
+    }
+    if pinned:
+        assert compiler.compile_query(config, None, query)["sql"]
+        return
+    # Two clocks are compatible and none is named, so asking for calendar alignment is
+    # still ambiguous: the compiler must not pick one.
+    with pytest.raises(SemanticLayerError) as raised:
+        compiler.compile_query(config, None, query)
+    assert raised.value.code == "INVALID_TEMPORAL_BINDING"
 
 
 @pytest.mark.parametrize("allowed", [False, True])
@@ -1069,7 +1121,13 @@ def test_optimized_anchored_predicates_are_cuts(config, monkeypatch, allowed, co
     numerator = {
         **aggregate,
         "predicates": [
-            {"measure": "measure.jaffle.order_count", "entity": STORE, "op": ">", "value": 0}
+            {
+                "measure": "measure.jaffle.order_count",
+                "entity": STORE,
+                "op": ">",
+                "value": 0,
+                "time_alignment": "same_query_period",
+            }
         ],
     }
     query = {
@@ -1177,6 +1235,11 @@ def test_recipe_roles_follow_optimized_operand_bindings(config, monkeypatch, all
     )
     measure = next(m for m in config.measures if m.id == measure_id)
     role = next(r for r in config.temporal_roles if r.id == measure.compatible_temporal_roles[0])
+    if shape == "anchored":
+        # A stock with an as-of clock refuses on any other clock (its series would still
+        # hold the as-of column), so this binding test gives the stock calendar clocks,
+        # which still align at month grain.
+        role = replace(role, temporal_class="calendar_time")
     dimension = next(d for d in config.dimensions if d.id == role.dimension)
     other_dimension = replace(dimension, id="dimension.test.other_clock", column="other_clock")
     other_role = replace(role, id="temporal_role.test.other_clock", dimension=other_dimension.id)
@@ -1189,7 +1252,13 @@ def test_recipe_roles_follow_optimized_operand_bindings(config, monkeypatch, all
     if shape == "anchored":
         expression["aggregation"] = "sum"
         expression["predicates"] = [
-            {"measure": "measure.jaffle.order_count", "entity": STORE, "op": ">", "value": 0}
+            {
+                "measure": "measure.jaffle.order_count",
+                "entity": STORE,
+                "op": ">",
+                "value": 0,
+                "time_alignment": "same_query_period",
+            }
         ]
     recipe = MetricConfig(
         id="operand_recipe",
@@ -1201,7 +1270,10 @@ def test_recipe_roles_follow_optimized_operand_bindings(config, monkeypatch, all
         config,
         measures=[measure if m.id == measure_id else m for m in config.measures],
         dimensions=[*config.dimensions, other_dimension],
-        temporal_roles=[*config.temporal_roles, other_role],
+        temporal_roles=[
+            *(role if r.id == role.id else r for r in config.temporal_roles),
+            other_role,
+        ],
         metric_recipes=[*config.metric_recipes, recipe],
     )
     if shape == "conversion":
@@ -1267,7 +1339,13 @@ def test_optimized_projection_remains_a_parent_predicate_cut(
     numerator = {
         **aggregate,
         "predicates": [
-            {"measure": "measure.jaffle.order_count", "entity": STORE, "op": ">", "value": 0}
+            {
+                "measure": "measure.jaffle.order_count",
+                "entity": STORE,
+                "op": ">",
+                "value": 0,
+                "time_alignment": "same_query_period",
+            }
         ],
     }
     recipe = MetricConfig(
@@ -1292,6 +1370,7 @@ def test_optimized_projection_remains_a_parent_predicate_cut(
                     "input": expression,
                     "op": ">",
                     "value": 0,
+                    "time_alignment": "same_query_period",
                 },
                 "op": "=",
                 "value": True,
@@ -1446,6 +1525,7 @@ def test_distribution_projection_inherits_parent_cut(config, monkeypatch, allowe
                     "input": expression,
                     "op": ">",
                     "value": 0,
+                    "time_alignment": "same_query_period",
                 },
                 "op": "=",
                 "value": True,
@@ -1504,6 +1584,7 @@ def _recipe_with_predicate(config, role, *, nested=False, aggregate=False):
         },
         "op": ">",
         "value": 0,
+        "time_alignment": "same_query_period",
     }
     expression = (
         {"kind": "aggregate", "measure": MEASURE, "filter": {"all": [{"expression": predicate}]}}

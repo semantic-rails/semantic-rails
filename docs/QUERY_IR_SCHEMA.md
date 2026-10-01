@@ -110,6 +110,28 @@ with `closest_matches`:
 }
 ```
 
+Four unambiguous slips are rewritten, not refused. `validate`, `compile` and `execute` (the MCP
+`execute` tool in every mode) add a `QUERY_SHORTHAND_NORMALIZED` warning naming the canonical
+form; `plan` accepts the same shapes in its `query` but returns no such warning, and its
+`best.query_ir` is the canonical form. The item must hold exactly the keys shown; a rewrite
+never drops a key. A dimension moved to `group_by` leaves `select`, so later select items are
+numbered in the rewritten `select`: an unaliased expression after it gets a default alias
+(`expr_N`) and a diagnostic path (`select[N]`) by that new position. Give it an `as`:
+
+| Sent | Treated as |
+|---|---|
+| `{ "metric": "..." }` as the select item itself, with no `expression` wrapper (plus optional `as`) | `{ "expression": {"kind": "metric", "metric": "..."}, "as": ... }` |
+| `{ "measure": "...", "aggregation": "sum" }` as the select item itself (`aggregation` optional, plus optional `as`) | `{ "expression": {"kind": "measure", ...}, "as": ... }` |
+| `{ "dimension": "..." }` as the whole select item (no `as`) | that id added to `group_by[]`, whatever it already holds |
+| `{ "expression": { "dimension": "..." } }` as the whole select item (no `as`), when `group_by` is empty or already lists it | that id on `group_by[]` |
+
+Everything else is refused with `INVALID_EXPRESSION_AST`, and the message shows the canonical
+form: an item naming more than one of `metric`, `measure` and `dimension`, a dimension item
+carrying `as` or any other key (a `group_by` entry has no alias), `expression` beside `metric`,
+`measure` or `dimension`, and any other key on a bare `metric` or `measure` item. A
+`{ "expression": { "dimension": "..." } }` item beside a `group_by` naming other dimensions is
+refused (`MOVE_DIMENSION_TO_GROUP_BY`).
+
 ## SelectExpression (discriminated union)
 
 Most shapes carry an explicit `kind`. The runtime also accepts two kindless
@@ -123,7 +145,7 @@ shorthands for the most common cases:
 | Arithmetic | `{ "kind": "arithmetic", "op": "divide", "left": {...}, "right": {...} }` |
 | Ratio | `{ "kind": "ratio", "numerator": {...}, "denominator": {...} }` |
 | Case | `{ "kind": "case", "whens": [{"when": {...}, "then": {...}}], "else": {...} }` |
-| Aggregate-if | `{ "kind": "aggregate_if", "aggregation": "count", "condition": {...} }` or with `"value": {...}` for sum/avg/min/max. Compiles to `COUNT_IF` / `SUM_IF` on Snowflake, portable `<AGG>(CASE WHEN cond THEN value END)` elsewhere. Column refs inside `condition` / `value` must specify `entity` or `table` (no surrounding measure to inherit from). |
+| Aggregate-if | `{ "kind": "aggregate_if", "aggregation": "count", "condition": {...} }` or with `"value": {...}` for sum/avg/min/max. Compiles to `COUNT_IF` / `SUM_IF` on Snowflake, portable `<AGG>(CASE WHEN cond THEN value END)` elsewhere. Column refs inside `condition` / `value` must specify `entity` or `table` (no surrounding measure to inherit from). It aggregates the rows of the value's entity (all `value` columns share it; without a value column, the condition's columns must share one entity). `condition` may also read any entity that entity reaches over declared many-to-one or one-to-one relationships, on the route a `where` filter on that entity takes. A value row with no match on that route never satisfies the condition: for each such entity, a top-level `and` term must compare one of its columns with `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in` or `IS NOT` null, and a condition such a row could satisfy (`IS NULL`, an `or` with the value's own column) is refused with `UNSUPPORTED_CONDITIONAL_AGGREGATE`. So is a condition across a one-to-many, many-to-many, bridge or time-valid hop, or over two routes with no path preference. Policies on the dimensions over the columns such a condition reads apply as they do to a `where` filter on them. |
 | Between | `{ "kind": "between", "expr": {...}, "low": {...}, "high": {...} }` — sugar for `expr >= low AND expr <= high`. Use `kind: "not_between"` or `negated: true` for the inverted form (`expr < low OR expr > high`). Desugared at parse time; the kind does not appear in the lowered IR. |
 | Literal | `{ "kind": "literal", "value": 0 }` |
 | Prior period | `{ "kind": "prior_period", "input": {...}, "offset": {"unit": "month", "value": 1} }` |
@@ -131,6 +153,23 @@ shorthands for the most common cases:
 | Cumulative | `{ "kind": "cumulative", "input": {...} }` |
 | Period-to-date | `{ "kind": "period_to_date", "input": {...}, "period": "month" }` |
 | Conversion | `{ "kind": "conversion", "base": {...}, "converted": {...}, "entity": "...", "window": {"unit": "day", "value": 7}, "matching_mode": "first_converted_after_base" }` — a converted event counts when `base <= converted < base + window` (7 × 24 hours here, not calendar days). |
+
+Comparisons (`kind: "comparison"`) with a literal `null` on either side lower
+`=` / `IS` to `IS NULL` and `!=` / `<>` / `IS NOT` to `IS NOT NULL`. This applies
+inside CASE and aggregate-if conditions (including a metric predicate's input),
+post-aggregation expressions, segment membership, and relation filters and joins,
+as well as `where` filters.
+Ordering (`<`, `<=`, `>`, `>=`) and LIKE comparisons with a null literal refuse
+with `INVALID_QUERY` and the `USE_NULL_TEST_OR_SCALAR` recovery hint, since they
+would always evaluate to unknown in SQL. `IS DISTINCT FROM`, `IS NOT DISTINCT FROM`
+and `<=>` already handle null, so they pass through unchanged. A comparison
+between two nullable columns retains ordinary SQL three-valued semantics, as does
+a comparison against a computed null such as `NOT(NULL)`: `FALSE != NOT(NULL)`
+evaluates to unknown (NULL) and retains no rows when used as a filter.
+A `metric_predicate` whose `value` is null refuses with `INVALID_METRIC_PREDICATE`:
+its input reads `0` for an entity with no rows and `NULL` for one with no data, so
+a count of none is `= 0`, and a null test belongs inside the input as an
+`aggregate_if` condition.
 
 ## MetricFilter expressions
 
@@ -185,8 +224,44 @@ Supported `op` values (all compile end-to-end):
   (`<`, `<=`, `>`, `>=`) and LIKE ops against `null` are rejected with a
   structured `INVALID_QUERY` and a recovery hint, since they would be
   always-UNKNOWN in SQL three-valued logic.
+- A dimension looked up through a many-to-one or one-to-one relationship is
+  NULL on a row whose lookup found no match, and a filter treats the row as
+  any other NULL: `IS NULL` keeps it (an anti-join, such as boardings with no
+  crew-roster row), while `=`, `!=`, `IN` and `NOT IN` exclude it. This holds for
+  a `group_by` or `where` dimension of the measure. Other reads of a lookup
+  (a time role, a metric filter and its context, a conversion, a qualified
+  set) leave such a row out, as before, and so does a dimension any rollup of the
+  measure's model holds, even at a grain that rollup can never answer. ClickHouse is the exception: its
+  lookups stay inner joins, so it drops such a row from every query that reads
+  the looked-up dimension.
 - Objects are rejected — inline expression thresholds belong in
   `metric_filters` (`metric_predicate`).
+
+A positive child-dimension filter on a parent-grain measure means "parents with at
+least one matching child". It lowers to correlated `EXISTS`, so multiple matching
+children never multiply a parent count or sum. This also applies to an aggregate's
+own `filter`, and to non-temporal paths that look up a parent before reaching its
+children or join on an alternate key. Each hop must declare `N:1`, `1:N` or `1:1`;
+unknown, unsafe and temporal paths retain their refusals. A lookup-before-child
+or alternate-key path requires exactly one candidate route after authored
+`graph.path_preferences` pins. When several routes remain, the query retains
+its `MIXED_GRAIN_INVALID` refusal; a shorter route does not establish which
+children the filter means. This also applies beside a lookup and to an
+aggregate's own filter.
+ClickHouse retains a deduplicated-parent leaf for servers without correlated
+subqueries. Key-based descents retain their existing SQL shape, including
+beside lookup selections, groupings and filters; those lookups remain inner
+joins. It refuses paths that look up a parent before reaching children and
+paths joined off the parent's declared key, including beside a lookup, with
+`MIXED_GRAIN_INVALID`.
+
+At most one group or filter may cross a one-to-many hop. Negated child predicates
+and child `IS NULL` tests remain `MIXED_GRAIN_INVALID`: "has a child that is not X"
+and "has no child that is X" have different answers, and the IR has no explicit
+`NOT EXISTS` predicate. Grouped child dimensions retain their distinct-parent
+count rules; summing a parent amount by a child dimension or reading a child
+measure expression at parent grain remains refused. Under a row policy these
+queries are refused with `POLICY_DENIED`, as before.
 
 ## OrderBy
 
@@ -219,6 +294,21 @@ The runtime rejects any `field` that does not resolve, with
 `start: "2024-01-01"`, `end: "2025-01-01"` — an `end` of `"2024-12-31"`
 would silently exclude December 31. Half-open bounds make adjacent
 windows compose without overlap or gaps.
+
+**A window without a `grain` is one total.** With `start` and/or `end` (or `range`) and no `grain`,
+the query returns one total over the window for each `group_by` group, with no time column, even
+for a window inside one day. The response says so in `assumptions` and sets
+`time_shape: "window_total"`. Set `grain` for one row per period. A `time` block with no bounds and
+no grain still groups by the raw timestamp, and so do queries that need a time axis (rolling,
+prior-period and similar expressions) and queries with a metric predicate, including one in an
+aggregate's `filter` or a metric recipe.
+
+Buckets and bounds are in the temporal role's `timezone` (UTC by default).
+On DuckDB, MotherDuck, DuckLake and Postgres that holds for zone-aware
+(`TIMESTAMP WITH TIME ZONE`) columns too: the query runs with the session time
+zone set to the role's zone.
+For other warehouses, see "`times:` — temporal roles" in
+[PACKAGE_AUTHORING.md](PACKAGE_AUTHORING.md).
 
 `fill: true` requires a `grain`. `range` is mutually exclusive with
 `start`/`end`. `range.last` is strictly an object — the string shorthand
@@ -381,9 +471,10 @@ window where `N` is the offset expressed in grain rows. For a
 The dense-fill machinery is engaged automatically when an offset
 window appears, so rows missing in the source are filled before the
 LAG runs. Additive measures (`sum`, `count`, `count_distinct` over an
-additive, event-count or entity-count measure) fill with `0`; every
-other measure fills with `NULL`, because the value of `AVG`, `MIN`,
-`MAX` or a semi-additive snapshot over no rows is undefined, not zero.
+additive, event-count or entity-count measure) fill with `0` while they
+have data in scope (see "Empty groups" below); every other measure fills
+with `NULL`, because the value of `AVG`, `MIN`, `MAX` or a semi-additive
+snapshot over no rows is undefined, not zero.
 The shift can therefore reach into months that have no orders, and a
 gap there is reported as a gap rather than as a measurement.
 
@@ -405,6 +496,88 @@ of a future bug in the parser or compiler — the layer emits a
 position (`select`/`metric_filters`), the dropped expression
 payload, and the kind it was normalized to. Never silently turn a
 YoY projection into a duplicate of the current period.
+
+## Empty groups: NULL or 0
+
+Sometimes there is no data (NULL), and sometimes there is data of nothing (0). A group with
+no rows reads one or the other, by one rule, in every query:
+
+| Measure | An empty group reads | When nothing is in scope |
+|---|---|---|
+| `sum`, `count`, `count_distinct` over an additive, event-count or entity-count measure | `0` | `NULL` |
+| `avg`, `min`, `max`, `median`, `percentile` | `NULL` | `NULL` |
+| semi-additive measures (stocks), distinct populations, and measures with `additive: false` | `NULL` | `NULL` |
+
+A measure has data in scope when at least one group of the answer holds a value: a sum with a
+non-NULL amount, or a count above zero. The scope is the measure's own filters, the query's
+`where` filters and policy row filters, before the `group_by`. Plain time leaves check
+for data outside the query's time bounds (DuckDB and Postgres; see time coverage below).
+Where a measure has data in scope,
+a group with no rows reads `0`: a store with orders but no refunds has 0 refunds, and a
+month whose orders all have a NULL amount has a revenue of 0. Where it has none, every group
+reads `NULL`: with no refunds anywhere in scope, no store has "0 refunds", because nothing
+says refunds were recorded. An average, minimum or maximum of nothing is undefined, and a
+stock has no value for a period nobody observed, so neither is ever made zero.
+
+- **Arithmetic** settles each operand first, then combines them, so `goods + shipping` by
+  refund type returns numbers even where one column is NULL for a type. An operand with no
+  data in scope stays `NULL` and so does the result: `revenue - refunds` is `NULL` if refunds
+  were never recorded. Division by zero is `NULL`.
+- **A `metric_predicate` applies the rule to every entity alike.** An operand reads `0` for an
+  entity with no match where its measure has data somewhere in the predicate's scope, and
+  `NULL` where it has none, whether that entity has rows or none at all. So
+  `orders - returned_orders > 1` keeps a customer with 2 orders and no returns, as a
+  `metric_filter` on the same expression does, and `large_orders = 0` ("customers with no
+  large orders") keeps every customer without one when some order in scope is large, and
+  keeps nobody when none is: with no large order anywhere in scope there is no data, not a
+  count of zero. `NULL` fails every threshold, `= 0` and `< 1` included. Only a count or sum
+  threshold that 0 passes reaches an entity with no rows at all, and a distinct count of a
+  population is 0 for one whether or not the scope has data.
+- **Filters narrow the scope.** With `where: store = 'x'`, a measure that has no rows at
+  store x reads `NULL`, even though the same store reads `0` in a `group_by: store` answer. A
+  filter value that matches nothing (a misspelled `product`) reads `NULL`, not a confident 0.
+- **Time coverage bounds zero filling.** Bounded plain time leaves check for observation
+  outside the query's window under the same authored, query and policy row filters. For
+  fill, dense series and combined leaves, an empty bucket inside the base relation's loaded
+  range reads `0`; an empty bucket before its first loaded timestamp or after its last
+  reads `NULL`. Coverage uses the whole base relation under policy filters, ignoring
+  measure and query filters, and excludes future timestamps from its upper edge. The
+  cutoff compares UTC instants: timezone-aware columns preserve their instant, and
+  naive columns use their declared storage zone (`column_timezone`, then `timezone`,
+  defaulting to UTC). That cutoff is the only instant comparison: buckets, calendar joins
+  and the window keep each leaf's own time frame, and the loaded range is the lowest and
+  highest of the leaf's own bucket. Coverage gates only
+  zero substitution: populated sums and positive counts always survive, including
+  NULL time keys and future-dated rows.
+  Filled, dense-series (rolling, prior-period) and combined plans, bounded or not, read
+  the base relation even when rollups are available, so routing cannot change their
+  coverage answers. Other routed
+  aggregates, nested, fanout and predicate sources retain the window observation test.
+  Coverage uses data alone. Performance guidance includes the emitted observation and
+  coverage reads as scans without request-window bounds; narrowing the requested window
+  does not bound those reads.
+  Coverage and the outside-window check run only on DuckDB (with MotherDuck and DuckLake)
+  and Postgres, whose execution is tested. On Snowflake, BigQuery, Databricks, Athena and
+  ClickHouse an empty bucket reads `0` only while the measure has data inside the window,
+  and rollups route as they would without coverage.
+- **An ungrouped distinct-population count over nothing reads `0`, with no warning.** That is a
+  known limitation: a count of distinct customers under a `where` that matches no rows returns
+  `0`, not `NULL` with `NO_DATA_IN_SCOPE` as the rule says. An empty group of a grouped answer
+  does read `NULL`
+  ([issue #203](https://github.com/semantic-rails/semantic-rails/issues/203)).
+- **An empty table has no data** to call zero: a measure over it reads `NULL`.
+- A metric filter such as `item_count = 0` sees the settled value, so it keeps the orders
+  with no items.
+
+When an output that is a sum, count or distinct count (or a sum or difference of them) reads
+`NULL` on every returned row, or nothing came back with no time bounds and no metric filter,
+the response carries one `NO_DATA_IN_SCOPE` warning that names those outputs. A `prior_period`,
+ratio or rolling output never gets it: it can be `NULL` while its measure has data. It costs
+no extra query, and a clipped result (`truncated`) never gets it.
+
+ClickHouse fills an unmatched outer-join field with a type default (0 or an empty string)
+unless the join yields NULLs, so every ClickHouse statement ends with
+`SETTINGS join_use_nulls = 1`.
 
 ## Dense fill (`time.fill`)
 
@@ -428,10 +601,15 @@ is that measure's honest value for "no rows contributed":
 
 | Measure | Filled with | Why |
 |---|---|---|
-| `sum` / `count` / `count_distinct` over an additive, event-count or entity-count measure | `0` | Zero is the additive identity — summing no rows really is 0. |
+| `sum` / `count` / `count_distinct` over an additive, event-count or entity-count measure | `0`, while the measure has data in scope; else `NULL` | Zero is the additive identity — summing no rows really is 0 — but only where the measure has data (see "Empty groups"). |
 | `avg`, `min`, `max`, `median`, `percentile` | `NULL` | Undefined over no rows. A filled `0` would be a fabricated measurement — a `min` below every value actually observed. |
 | semi-additive measures (snapshots, period-to-date, rolling balances) | `NULL` | A snapshot for a period that was never observed is unknown, not empty. |
 | ratios, conversion rates and other null-preserving expressions | `NULL` | A period with no denominator has no rate; `0` would read as a 0% rate. |
+
+A query with a `distribution` refuses `fill: true`; without fill, periods with no data are
+omitted. A `distribution` is also refused when its input or a metric filter has a `rolling`
+or `prior_period` window, whose dense per-entity series would count entities in periods where
+they have no rows.
 
 `fill: true` requires a `grain` — the calendar spine needs a step
 size — and it is engaged automatically by features that depend on
@@ -454,8 +632,8 @@ dense rows (for example, the inline `prior_period` LAG window in the
 - Any other `calendar_id` (for example a fiscal calendar) needs that calendar
   authored. Without it the query is refused; it never falls back to Gregorian
   periods, and a `default` query never borrows another calendar's periods.
-- The implicit calendar is not available on ClickHouse (an unmatched outer-join
-  field there reads 0 rather than NULL), and on Athena a series is capped at
+- The implicit calendar is not available on ClickHouse (it has no generated day
+  series there), and on Athena a series is capped at
   10,000 days (about 27 years); past that the warehouse refuses the query.
   A query whose parts compile as separate sub-queries (for example with a
   `distribution` expression) is refused too. Author a calendar for those, for
@@ -508,8 +686,8 @@ month-grain query without dense fill skips empty months:
 ```
 
 Switch dense fill on and every month in the range appears, with
-zeros for the gaps (`end` is exclusive, so `2018-01-01` covers
-through December 2017 without touching 2018):
+zeros for the gaps in a table that has orders elsewhere in the range (`end` is
+exclusive, so `2018-01-01` covers through December 2017 without touching 2018):
 
 ```jsonc
 // fill: true — dense output, every month in [start, end) present

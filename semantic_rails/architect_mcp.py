@@ -1034,8 +1034,11 @@ def create_architect_mcp_server(
             "calendars needs): time.fill reads its date_day time and week_start, month_start, "
             "quarter_start and year_start kind: date dimensions. calendar: false reverts that. "
             "On a regular model, calendar_id binds its times to a calendar. Fields merge into "
-            "an existing model; replace: true rewrites it from the arguments, keeping only its "
-            "id, entities and calendar_id, and lists what it drops in dropped_fields."
+            "an existing model. An existing dimension, time, measure or join given only label, "
+            "description, synonyms or meta keeps its other fields; given anything else it is "
+            "rewritten, and dropped_fields lists what that drops. replace: true rewrites the "
+            "model from the arguments, keeping only its id, entities and calendar_id, and lists "
+            "what it drops in dropped_fields."
         ),
     )
     def upsert_model(
@@ -1584,7 +1587,9 @@ def create_architect_mcp_server(
                     details={"skipped_models": skipped},
                 )
             report = project.upsert_models(
-                items,
+                # Existing objects stay as authored: the draft would revert what an
+                # author changed. The flag is part of each item, so replays still match.
+                [{**item, "keep_existing": True} for item in items],
                 group=group,
                 expected_revision=expected_revision,
                 idempotency_key=idempotency_key,

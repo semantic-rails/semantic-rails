@@ -14,47 +14,55 @@ import pytest
 from mf2sr.filter_parser import filter_clauses, parse_filter
 
 
-def test_parse_between_numeric_bounds():
-    result = parse_filter("{{ Dimension('order__total_cents') }} BETWEEN 100 AND 500")
-    assert result == {
-        "kind": "between",
-        "expr": {"kind": "column", "column": "total_cents"},
-        "low": {"kind": "literal", "value": 100},
-        "high": {"kind": "literal", "value": 500},
-    }
-
-
-def test_parse_not_between_numeric_bounds():
-    result = parse_filter("{{ Dimension('order__total_cents') }} NOT BETWEEN 0 AND 50")
-    assert result == {
-        "kind": "not_between",
-        "expr": {"kind": "column", "column": "total_cents"},
-        "low": {"kind": "literal", "value": 0},
-        "high": {"kind": "literal", "value": 50},
-    }
-
-
-def test_parse_between_quoted_string_bounds():
-    """Date / string ranges via single-quoted SQL literals."""
-    result = parse_filter(
-        "{{ Dimension('order__placed_at') }} BETWEEN '2024-01-01' AND '2024-12-31'"
-    )
-    assert result == {
-        "kind": "between",
-        "expr": {"kind": "column", "column": "placed_at"},
-        "low": {"kind": "literal", "value": "2024-01-01"},
-        "high": {"kind": "literal", "value": "2024-12-31"},
-    }
-
-
-def test_parse_between_float_bounds():
-    result = parse_filter("{{ Dimension('product__weight_kg') }} BETWEEN 0.5 AND 2.5")
-    assert result == {
-        "kind": "between",
-        "expr": {"kind": "column", "column": "weight_kg"},
-        "low": {"kind": "literal", "value": 0.5},
-        "high": {"kind": "literal", "value": 2.5},
-    }
+@pytest.mark.parametrize(
+    ("source", "kind", "column", "values"),
+    [
+        pytest.param(
+            "{{ Dimension('order__total_cents') }} BETWEEN 100 AND 500",
+            "between",
+            "total_cents",
+            [100, 500],
+            id="parse_between_numeric_bounds",
+        ),
+        pytest.param(
+            "{{ Dimension('order__total_cents') }} NOT BETWEEN 0 AND 50",
+            "not_between",
+            "total_cents",
+            [0, 50],
+            id="parse_not_between_numeric_bounds",
+        ),
+        pytest.param(
+            "{{ Dimension('order__placed_at') }} BETWEEN '2024-01-01' AND '2024-12-31'",
+            "between",
+            "placed_at",
+            ["2024-01-01", "2024-12-31"],
+            id="parse_between_quoted_string_bounds",
+        ),
+        pytest.param(
+            "{{ Dimension('product__weight_kg') }} BETWEEN 0.5 AND 2.5",
+            "between",
+            "weight_kg",
+            [0.5, 2.5],
+            id="parse_between_float_bounds",
+        ),
+        pytest.param(
+            "{{ Dimension('user__home_state') }} IN ('CA', 'HI')",
+            "in",
+            "home_state",
+            ["CA", "HI"],
+            id="existing_in_list_still_parses",
+        ),
+    ],
+)
+def test_parse_between_and_in_literals(source, kind, column, values):
+    expected = {"kind": kind, "expr": {"kind": "column", "column": column}}
+    literals = [{"kind": "literal", "value": value} for value in values]
+    if kind == "in":
+        expected["values"] = literals
+    else:
+        expected.update(low=literals[0], high=literals[1])
+    result = parse_filter(source)
+    assert result == expected
 
 
 def test_parse_between_negative_lower_bound():
@@ -91,18 +99,6 @@ def test_existing_boolean_dim_still_parses():
         "op": "=",
         "left": {"kind": "column", "column": "is_instant"},
         "right": {"kind": "literal", "value": True},
-    }
-
-
-def test_existing_in_list_still_parses():
-    result = parse_filter("{{ Dimension('user__home_state') }} IN ('CA', 'HI')")
-    assert result == {
-        "kind": "in",
-        "expr": {"kind": "column", "column": "home_state"},
-        "values": [
-            {"kind": "literal", "value": "CA"},
-            {"kind": "literal", "value": "HI"},
-        ],
     }
 
 

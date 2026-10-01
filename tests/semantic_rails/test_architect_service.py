@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import multiprocessing
+import threading
+import time
+import weakref
 from pathlib import Path
 
 import pytest
@@ -328,6 +331,55 @@ def test_cross_process_writers_from_one_base_are_serialized(tmp_path: Path) -> N
     assert conflict["error"]["details"]["conflict_kind"] == "stale_revision"
 
 
+def test_in_process_project_lock_excludes_threads_across_collection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_path = _create_project(tmp_path, package_id="lock_core")
+    transaction = architect_transactions.ProjectTransaction(project_path, workspace_root=tmp_path)
+
+    class CountingLocks(weakref.WeakValueDictionary):
+        created = 0
+
+        def setdefault(self, key, default=None):
+            value = super().setdefault(key, default)
+            self.created += value is default
+            return value
+
+    locks = CountingLocks()
+    monkeypatch.setattr(architect_transactions, "_LOCAL_LOCKS", locks)
+    # Stub the lock file, so only the in-process lock can keep the threads apart.
+    monkeypatch.setattr(architect_transactions, "_try_file_lock", lambda _descriptor: True)
+    monkeypatch.setattr(architect_transactions, "_release_file_lock", lambda _descriptor: None)
+    inside: list[int] = []
+    seen: list[int] = []
+
+    def writer(index: int) -> None:
+        for turn in range(100):
+            with transaction._exclusive_lock():  # noqa: SLF001
+                inside.append(index)
+                seen.append(len(inside))
+                time.sleep(0.0002)
+                inside.remove(index)
+            time.sleep((index + turn) % 3 / 1000)  # lets every thread let go at times
+
+    threads = [threading.Thread(target=writer, args=(index,)) for index in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(seen) == 600 and max(seen) == 1
+    assert locks.created > 1  # the entry was collected and recreated while threads contended
+    impatient = architect_transactions.ProjectTransaction(
+        project_path, workspace_root=tmp_path, lock_timeout_seconds=0.1
+    )
+    with transaction._exclusive_lock():  # noqa: SLF001
+        for _ in range(2):  # a waiter that times out leaves the holder's entry in place
+            with pytest.raises(SemanticLayerError, match="Timed out"), impatient._exclusive_lock():  # noqa: SLF001
+                pass
+    assert str(transaction._lock_path) not in locks  # noqa: SLF001
+
+
 @pytest.mark.parametrize(
     ("operation", "reported", "refusal"),
     [
@@ -365,3 +417,100 @@ def test_a_retried_file_write_or_archive_replays(
     assert retried.report["original_status"] == first.report["status"]
     with pytest.raises(SemanticLayerError, match=refusal):
         call("second", project.revision())
+
+
+_EVENTS = {
+    "model_id": "events",
+    "entity_key": "event",
+    "relation": "raw_events",
+    "primary_key": ["event_id"],
+}
+
+
+def _events_model(project_path: Path) -> dict:
+    return yaml_loader.load_yaml_file(project_path / "models" / "core" / "events.yml")["model"]
+
+
+def test_model_upsert_relabels_an_object_without_rewriting_it(tmp_path: Path) -> None:
+    project_path = _create_project(tmp_path)
+    project = ArchitectProject(project_path, workspace_root=tmp_path)
+    before = _events_model(project_path)
+
+    # A label-only update used to replace the whole time role with {label: ...},
+    # dropping its column, kind, class and default while parse still passed.
+    mutation = project.upsert_model(**_EVENTS, times={"occurred_at": {"label": "Event time"}})
+
+    assert mutation.report["ok"] is True, mutation.report
+    assert "dropped_fields" not in mutation.report
+    assert _events_model(project_path)["times"]["occurred_at"] == {
+        **before["times"]["occurred_at"],
+        "label": "Event time",
+    }
+    mutation = project.upsert_model(
+        **_EVENTS, measures={"total_amount": {"description": "Amount, summed."}}
+    )
+    assert mutation.report["ok"] is True, mutation.report
+    measure = _events_model(project_path)["measures"]["total_amount"]
+    assert measure == {**before["measures"]["total_amount"], "description": "Amount, summed."}
+
+
+def test_model_upsert_rewrites_an_object_and_reports_what_drops(tmp_path: Path) -> None:
+    # Any other update rewrites the object, as wizards that rebuild it and leave out
+    # fields that no longer apply expect: a kind change must not keep the old expr.
+    project_path = _create_project(tmp_path)
+    project = ArchitectProject(project_path, workspace_root=tmp_path)
+    counted = {"kind": "entity_count", "entity_key": "event_id", "value_type": "count"}
+
+    preview = project.upsert_model(**_EVENTS, measures={"total_amount": counted}, dry_run=True)
+    mutation = project.upsert_model(**_EVENTS, measures={"total_amount": counted})
+
+    assert mutation.report["ok"] is True, mutation.report
+    assert _events_model(project_path)["measures"]["total_amount"] == counted
+    dropped = [
+        f"measures.total_amount.{field}" for field in ("accumulation", "default_agg", "expr")
+    ]
+    assert set(dropped) <= set(mutation.report["dropped_fields"])
+    assert preview.report["dropped_fields"] == mutation.report["dropped_fields"]
+
+
+def test_models_upsert_reports_dropped_fields_per_model(tmp_path: Path) -> None:
+    project_path = _create_project(tmp_path)
+    mutation = ArchitectProject(project_path, workspace_root=tmp_path).upsert_models(
+        models=[{**_EVENTS, "dimensions": {"event_type": {"kind": "categorical"}}}]
+    )
+
+    assert mutation.report["ok"] is True, mutation.report
+    assert mutation.report["models"][0]["dropped_fields"] == ["dimensions.event_type.label"]
+
+
+def test_mcp_upsert_model_returns_dropped_fields(tmp_path: Path) -> None:
+    import asyncio
+
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    from semantic_rails.architect_mcp import create_architect_mcp_server
+    from semantic_rails.architect_transactions import project_revision
+
+    project_path = _create_project(tmp_path)
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+
+    async def call(**values: object) -> dict:
+        async with create_connected_server_and_client_session(server) as session:
+            result = await session.call_tool(
+                "upsert_model",
+                {
+                    "project_path": project_path.name,
+                    "expected_revision": project_revision(project_path),
+                    "idempotency_key": str(values),
+                    **_EVENTS,
+                    **values,
+                },
+            )
+            return dict(result.structuredContent or {})
+
+    relabeled = asyncio.run(call(times={"occurred_at": {"label": "Event time"}}))
+    rewritten = asyncio.run(call(dimensions={"event_type": {"kind": "categorical"}}))
+
+    assert relabeled["ok"] is True and "dropped_fields" not in relabeled
+    assert rewritten["ok"] is True
+    assert rewritten["dropped_fields"] == ["dimensions.event_type.label"]

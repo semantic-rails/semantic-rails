@@ -22,10 +22,11 @@ if TYPE_CHECKING:
     from .schema import MeasureConfig, PackageConfig
 
 # Row generators only the engine emits (the implicit calendar's day series, in
-# dialects.SqlDialect.day_series). A query or package `call` may not name them.
+# dialects.SqlDialect.day_series) and the time coverage cutoff (dialects.SqlDialect.now and
+# utc_timestamp). A query or package `call` may not name them.
 ENGINE_ONLY_FUNCTIONS = frozenset(
     {"ARRAY_GENERATE_RANGE", "EXPLODE", "GENERATE_DATE_ARRAY", "SEQUENCE"}
-)
+) | {"NOW", "PG_TYPEOF"}
 
 
 @dataclass(frozen=True)
@@ -68,7 +69,6 @@ class ArithmeticExpr:
     op: str
     left: SemanticExpr
     right: SemanticExpr
-    null_behavior: str = ""
 
 
 @dataclass(frozen=True)
@@ -211,7 +211,6 @@ class ScopedAggregateExpr:
     parameters: dict[str, Any] = field(default_factory=dict)
     where: list[dict[str, Any]] = field(default_factory=list)
     predicates: list[dict[str, Any]] = field(default_factory=list)
-    null_behavior: str = ""
     # Per-row event-anchored window (round-three Phase 2). When set,
     # the lowering path materialises an anchor CTE and constrains the
     # measure source to events within the per-entity window.
@@ -228,7 +227,6 @@ class ScopedAggregateExpr:
 class RatioExpr:
     numerator: SemanticExpr
     denominator: SemanticExpr
-    null_behavior: str = "null_if_zero"
 
 
 @dataclass(frozen=True)
@@ -470,15 +468,12 @@ def expr_to_dict(expr: SemanticExpr) -> dict[str, Any]:
     if isinstance(expr, LiteralExpr):
         return {"kind": "literal", "value": expr.value}
     if isinstance(expr, ArithmeticExpr):
-        out = {
+        return {
             "kind": "arithmetic",
             "op": expr.op,
             "left": expr_to_dict(expr.left),
             "right": expr_to_dict(expr.right),
         }
-        if expr.null_behavior:
-            out["null_behavior"] = expr.null_behavior
-        return out
     if isinstance(expr, ComparisonExpr):
         return {
             "kind": "comparison",
@@ -620,8 +615,6 @@ def expr_to_dict(expr: SemanticExpr) -> dict[str, Any]:
             out["where"] = [dict(item) for item in expr.where]
         if expr.predicates:
             out["predicates"] = [dict(item) for item in expr.predicates]
-        if expr.null_behavior:
-            out["null_behavior"] = expr.null_behavior
         if expr.anchor:
             out["anchor"] = dict(expr.anchor)
         if expr.window:
@@ -632,7 +625,6 @@ def expr_to_dict(expr: SemanticExpr) -> dict[str, Any]:
             "kind": "ratio",
             "numerator": expr_to_dict(expr.numerator),
             "denominator": expr_to_dict(expr.denominator),
-            "null_behavior": expr.null_behavior,
         }
     if isinstance(expr, EntityValueExpr):
         return {
@@ -781,8 +773,8 @@ _VALID_KEYS_BY_KIND: dict[str, set] = {
     "metric": _COMMON_KEYS | {"metric"},
     "column": _COMMON_KEYS | {"column", "entity", "table"},
     "literal": _COMMON_KEYS | {"value"},
-    "arithmetic": _COMMON_KEYS | {"op", "left", "right", "null_behavior"},
-    "binary": _COMMON_KEYS | {"op", "left", "right", "null_behavior"},
+    "arithmetic": _COMMON_KEYS | {"op", "left", "right"},
+    "binary": _COMMON_KEYS | {"op", "left", "right"},
     "comparison": _COMMON_KEYS | {"op", "left", "right"},
     "boolean": _COMMON_KEYS | {"op", "args"},
     "call": _COMMON_KEYS | {"name", "args", "distinct"},
@@ -816,13 +808,12 @@ _VALID_KEYS_BY_KIND: dict[str, set] = {
         "parameters",
         "where",
         "predicates",
-        "null_behavior",
         # Round 3: per-row event-anchored window keys. SQL lowering
         # is staged; parser + validator land here.
         "anchor",
         "window",
     },
-    "ratio": _COMMON_KEYS | {"numerator", "denominator", "null_behavior"},
+    "ratio": _COMMON_KEYS | {"numerator", "denominator"},
     "entity_value": _COMMON_KEYS | {"entity", "input", "where"},
     "distribution": _COMMON_KEYS | {"function", "over", "p", "parameters"},
     "conversion": _COMMON_KEYS
@@ -852,7 +843,44 @@ _PARAMETER_SCHEMAS_BY_AGGREGATION: dict[str, dict[str, str]] = {
 # Units the conversion matching window can lower into the dialects'
 # DATE_DIFF. Matches the units advertised in the window-shape recovery
 # hint below; anything else only fails at warehouse execution time.
-_CONVERSION_WINDOW_UNITS = {"minute", "hour", "day", "week", "month", "quarter", "year"}
+CONVERSION_WINDOW_UNITS = ("minute", "hour", "day", "week", "month", "quarter", "year")
+_CONVERSION_WINDOW_UNITS = set(CONVERSION_WINDOW_UNITS)
+_CONVERSION_WINDOW_SHAPE = {
+    "unit": f"<{'|'.join(CONVERSION_WINDOW_UNITS)}>",
+    "value": "<positive integer>",
+}
+
+# Every mode counts a base event as converted when any converted event of the same
+# entity falls in its window; the mode only picks which converted event is matched.
+CONVERSION_MATCHING_MODES = {
+    "first_converted_after_base": "match each base event to the earliest converted event "
+    "in its window",
+    "closest_converted_after_base": "match each base event to the converted event nearest "
+    "to it in window units (ties: the earliest)",
+}
+
+
+def _conversion_matching_mode_error(expr: Mapping[str, Any], received: Any) -> SemanticLayerError:
+    problem = (
+        f"unsupported conversion matching_mode {received!r}"
+        if received not in (None, "")
+        else "conversion expressions require 'matching_mode'"
+    )
+    return SemanticLayerError(
+        "CONVERSION_MATCHING_MODE_REQUIRED",
+        f"{problem}: use one of {', '.join(CONVERSION_MATCHING_MODES)}. "
+        "details.allowed_values says what each matches; details.expression is your "
+        "expression with the first one set.",
+        details={
+            "path": "expression.matching_mode",
+            "received_value": received,
+            "allowed_values": dict(CONVERSION_MATCHING_MODES),
+            "expression": {
+                **{key: value for key, value in expr.items() if key != "matching"},
+                "matching_mode": next(iter(CONVERSION_MATCHING_MODES)),
+            },
+        },
+    )
 
 
 def parameter_schema_for_aggregation(aggregation: str) -> dict[str, str]:
@@ -924,6 +952,13 @@ def _aggregate_filter(raw: Any) -> dict[str, Any]:
     )
 
 
+NULL_BEHAVIOR_REMOVED = (
+    "`null_behavior` was removed; delete the line. Empty groups now follow "
+    "https://github.com/semantic-rails/semantic-rails/blob/main/docs/QUERY_IR_SCHEMA.md"
+    "#empty-groups-null-or-0"
+)
+
+
 def _reject_unknown_expression_keys(expr: dict[str, Any], *, kind: str, context: str) -> None:
     """Raise ``INVALID_EXPRESSION_KEY`` when an expression dict carries a
     top-level key that the kind's dispatch arm does not recognise. This
@@ -937,6 +972,12 @@ def _reject_unknown_expression_keys(expr: dict[str, Any], *, kind: str, context:
     unknown = sorted(set(expr.keys()) - valid)
     if not unknown:
         return
+    if "null_behavior" in unknown:
+        raise SemanticLayerError(
+            "INVALID_EXPRESSION_KEY",
+            f"{context} expression with kind={kind!r}: {NULL_BEHAVIOR_REMOVED}",
+            details={"expression_kind": kind, "expression_position": context},
+        )
     # Pick the first unknown key for closest_matches — agents typically
     # mistype one field per retry, and listing every match for every
     # unknown key bloats the envelope.
@@ -1122,7 +1163,15 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
                     ],
                 },
             )
-        raise SemanticLayerError("INVALID_EXPRESSION_AST", "Expression requires a 'kind'")
+        raise SemanticLayerError(
+            "INVALID_EXPRESSION_AST",
+            (
+                "Expression requires a 'kind'. Send "
+                '{"kind": "measure", "measure": "<measure id>", "aggregation": "sum"} or '
+                '{"kind": "metric", "metric": "<metric id>"}.'
+            ),
+            details={"expression_position": context, "received_keys": sorted(expr)},
+        )
 
     if kind == "column":
         column = str(expr.get("column", "")).strip()
@@ -1142,7 +1191,6 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
             op=_normalize_arithmetic_op(expr.get("op", "")),
             left=parse_semantic_expression(expr.get("left"), context=context),
             right=parse_semantic_expression(expr.get("right"), context=context),
-            null_behavior=str(expr.get("null_behavior", "")).strip(),
         )
     if kind == "comparison":
         return ComparisonExpr(
@@ -1344,7 +1392,10 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
             )
         window = dict(raw_window)
         unit = str(window.get("unit", "")).strip()
-        window_value = int(window.get("value", 0) or 0)
+        try:
+            window_value = int(window.get("value", 0) or 0)
+        except (TypeError, ValueError):
+            window_value = 0
         if not unit or window_value <= 0:
             raise SemanticLayerError(
                 "INVALID_EXPRESSION_AST",
@@ -1588,6 +1639,20 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
                 "INVALID_METRIC_PREDICATE",
                 "metric_predicate time_alignment is only supported for entity_only bounded-window predicates",
             )
+        if expr.get("value") is None:
+            # The input is 0 for an entity with no rows and NULL for one with no data, so a
+            # null threshold would keep the wrong entities.
+            hint = (
+                "A count of none is op '=' with value 0; a null test belongs inside the "
+                "input, as an aggregate_if condition."
+            )
+            raise SemanticLayerError(
+                "INVALID_METRIC_PREDICATE",
+                f"metric_predicate 'value' cannot be null. {hint}",
+                details={
+                    "recovery_hints": [{"code": "USE_ZERO_OR_INPUT_NULL_TEST", "message": hint}]
+                },
+            )
         # ``value`` accepts either a literal or an expression-shaped
         # dict for inline thresholds. The only expression kind supported
         # today is ``percentile`` — wider support waits until the
@@ -1671,6 +1736,20 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
         # rejecting at parse-time avoids a confusing downstream error.
         raw_anchor = expr.get("anchor")
         raw_window = expr.get("window")
+        for part_name, raw_part in (("anchor", raw_anchor), ("window", raw_window)):
+            # A present part that is not an object (`anchor: role_id`, `window: 90`,
+            # `{}`) would leave the metric unwindowed and answer a lifetime value.
+            if raw_part is not None and not (isinstance(raw_part, dict) and raw_part):
+                raise SemanticLayerError(
+                    "INVALID_EXPRESSION_AST",
+                    f"scoped_aggregate.{part_name} must be a non-empty object",
+                    details={
+                        "expression_kind": "scoped_aggregate",
+                        "expression_position": context,
+                        "invalid_key": part_name,
+                        "received_type": type(raw_part).__name__,
+                    },
+                )
         has_anchor = isinstance(raw_anchor, dict) and bool(raw_anchor)
         has_window = isinstance(raw_window, dict) and bool(raw_window)
         if has_anchor != has_window:
@@ -1758,7 +1837,6 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
             parameters=dict(expr.get("parameters", {}) or {}),
             where=[dict(item) for item in list(expr.get("where", []) or [])],
             predicates=[dict(item) for item in list(expr.get("predicates", []) or [])],
-            null_behavior=str(expr.get("null_behavior", "")).strip(),
             anchor=anchor_payload,
             window=window_payload,
         )
@@ -1770,7 +1848,6 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
         return RatioExpr(
             numerator=parse_semantic_expression(expr.get("numerator"), context=context),
             denominator=parse_semantic_expression(expr.get("denominator"), context=context),
-            null_behavior=str(expr.get("null_behavior", "null_if_zero") or "null_if_zero"),
         )
     if kind == "entity_value":
         entity = str(expr.get("entity", "")).strip()
@@ -1800,7 +1877,10 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
         entity = str(expr.get("entity", "")).strip()
         if not entity:
             raise SemanticLayerError(
-                "CONVERSION_ENTITY_REQUIRED", "conversion expressions require 'entity'"
+                "CONVERSION_ENTITY_REQUIRED",
+                "conversion expressions require 'entity': the id of the entity a base event and "
+                'its converted event must share, e.g. "entity": "entity.<customer>"',
+                details={"path": "expression.entity"},
             )
         raw_window = expr.get("window", {}) or {}
         if not isinstance(raw_window, dict):
@@ -1820,10 +1900,7 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
                                 "Wrap window as {unit, value}. E.g. window=7 "
                                 "→ window={'unit': 'day', 'value': 7}."
                             ),
-                            "suggested_shape": {
-                                "unit": "<minute|hour|day|week|month|quarter|year>",
-                                "value": "<positive integer>",
-                            },
+                            "suggested_shape": dict(_CONVERSION_WINDOW_SHAPE),
                         }
                     ],
                 },
@@ -1832,15 +1909,19 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
         unit = str(window.get("unit", "")).strip()
         try:
             window_value = int(window.get("value", 0) or 0)
-        except (TypeError, ValueError) as exc:
-            raise SemanticLayerError(
-                "CONVERSION_WINDOW_REQUIRED",
-                "conversion expressions require a positive window.value",
-            ) from exc
+        except (TypeError, ValueError):
+            window_value = 0
         if not unit or window_value <= 0:
             raise SemanticLayerError(
                 "CONVERSION_WINDOW_REQUIRED",
-                "conversion expressions require a positive window.unit and window.value",
+                "conversion expressions require window {unit, value}: unit one of "
+                f"{', '.join(CONVERSION_WINDOW_UNITS)} and a positive integer value, "
+                'e.g. "window": {"unit": "minute", "value": 50}',
+                details={
+                    "path": "expression.window",
+                    "received_value": raw_window,
+                    "suggested_shape": dict(_CONVERSION_WINDOW_SHAPE),
+                },
             )
         if unit not in _CONVERSION_WINDOW_UNITS:
             # An unrecognized unit compiles into DATE_DIFF('<unit>', ...)
@@ -1855,12 +1936,10 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
                     "supported_units": sorted(_CONVERSION_WINDOW_UNITS),
                 },
             )
-        matching_mode = str(expr.get("matching_mode", expr.get("matching", ""))).strip()
-        if matching_mode not in {"first_converted_after_base", "closest_converted_after_base"}:
-            raise SemanticLayerError(
-                "CONVERSION_MATCHING_MODE_REQUIRED",
-                "conversion expressions require a supported matching_mode",
-            )
+        raw_mode = expr.get("matching_mode", expr.get("matching", ""))
+        matching_mode = raw_mode.strip() if isinstance(raw_mode, str) else ""
+        if matching_mode not in CONVERSION_MATCHING_MODES:
+            raise _conversion_matching_mode_error(expr, raw_mode)
         dimension_bindings = {
             str(dim_id): {str(key): str(value) for key, value in dict(binding or {}).items()}
             for dim_id, binding in dict(expr.get("dimension_bindings", {}) or {}).items()

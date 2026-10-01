@@ -6,6 +6,15 @@ from typing import Any
 from ..dialects import dialect_for_warehouse
 from ..expressions import collect_object_references, expr_to_dict
 
+# Said when a time window with no grain was aggregated as one total.
+WINDOW_TOTAL_ASSUMPTION = (
+    "The time window had no grain, so it was aggregated as one total over the window with no "
+    "time column. Set time.grain to get one row per period."
+)
+
+# The ``time_shape`` a response carries when the window was aggregated as one total.
+TIME_SHAPE_WINDOW_TOTAL = "window_total"
+
 _VALID_VERBOSITIES: tuple[str, ...] = ("minimal", "compact", "full")
 _VALID_SQL_PROFILES: tuple[str, ...] = ("audit", "compact", "debug", "off")
 
@@ -104,6 +113,10 @@ def apply_response_verbosity(
         else:
             allowed = _MINIMAL_KEYS_NONEXECUTE
         out = {key: value for key, value in out.items() if key in allowed}
+        # An assumption changes what the numbers mean, so it survives the cheapest response.
+        for key in ("assumptions", "time_shape"):
+            if response.get(key):
+                out[key] = response[key]
     elif verbosity == "compact":
         for key in _COMPACT_DROP_KEYS:
             out.pop(key, None)
@@ -158,7 +171,8 @@ def output_columns(config: Any, compiled: dict[str, Any]) -> list[dict[str, Any]
             }
         )
     time = dict(query.get("time", {}) or {})
-    if time.get("temporal_role"):
+    plan = compiled.get("logical_plan")
+    if time.get("temporal_role") and not (plan is not None and plan.time.get("window_total")):
         role_id = str(time["temporal_role"])
         field = role_id if not time.get("grain") else f"{role_id}__{time['grain']}"
         meta = labels.get(role_id, {})

@@ -527,13 +527,7 @@ def _growth(measure: str, aggregation: str, unit: str, value: int = 1) -> dict[s
     now = {"kind": "aggregate", "measure": measure, "aggregation": aggregation}
     prior = {"kind": "prior_period", "input": now, "offset": {"unit": unit, "value": value}}
     left = {"kind": "binary", "op": "subtract", "left": now, "right": prior}
-    return {
-        "kind": "binary",
-        "op": "divide",
-        "null_behavior": "null_if_zero",
-        "left": left,
-        "right": prior,
-    }
+    return {"kind": "binary", "op": "divide", "left": left, "right": prior}
 
 
 def _one_filter(field: str, op: str, values: list[Any]) -> dict[str, Any]:
@@ -576,7 +570,7 @@ CREATE = [
     ),
     pytest.param(
         {}, {"Metric recipe": "Ratio", "Numerator": "revenue - "},
-        {"kind": "ratio", "numerator": REVENUE, "denominator": ORDER_COUNT, "null_behavior": "null_if_zero",
+        {"kind": "ratio", "numerator": REVENUE, "denominator": ORDER_COUNT,
          "value_type": "currency", "currency": "USD", "temporal_role": ORDERED},
         {"Denominator": ORDER_COUNT_ROW, "Result type": "Currency per unit", "Time axis for this metric": ABSENT},
         [10.0, 20.0, 30.0], id="ratio-per-count-of-the-same-model",
@@ -711,7 +705,6 @@ def _authored_metric(recipe: str, ref: str, *, count: str, status: str) -> dict[
             "kind": "ratio",
             "numerator": ref,
             "denominator": count,
-            "null_behavior": "null_if_zero",
         },
         "cumulative": {"kind": "cumulative", **named},
         "rolling": {"kind": "rolling", **named, "window": {"unit": "quarter", "value": 2}},
@@ -868,6 +861,46 @@ def test_a_changed_input_refreshes_its_defaults_and_undoes(
     assert _values(project, "m") == pytest.approx(values)
     _repl(project, "undo", None, undo)
     assert _path(project, "m").read_bytes() == created and _values(project, "m") == before
+
+
+@pytest.mark.parametrize("recipe", ["Aggregate", "Prior period"])
+def test_a_recipe_switch_drops_the_windows_partition_by(tmp_path: Path, recipe: str) -> None:
+    project = _shop(tmp_path, calendar=True)
+    spec = _authored_metric("rolling", "revenue", count="", status="")
+    _write_metric(
+        project,
+        "m",
+        {**spec, "temporal_role": ORDERED, "partition_by": ["dimension.shop_order_status"]},
+    )
+    answers = {"Metric recipe": recipe, "Measure": "revenue - ", "Measure to publish": "revenue - "}
+
+    _, metric = _author(project, {"Metric key": "m", **answers})
+
+    # A kept partition_by would make the saved package unloadable for these recipes.
+    assert "partition_by" not in metric and "window" not in metric
+    assert _values(project, "m")
+
+
+@pytest.mark.parametrize(
+    ("recipe", "kept"),
+    [
+        pytest.param("rolling", {"partition_by": ["dimension.shop_order_status"]}, id="rolling"),
+        pytest.param("cumulative", {"window_scope": "query_period"}, id="cumulative"),
+    ],
+)
+def test_editing_a_window_keeps_the_partition_and_scope_the_prompts_cannot_write(
+    tmp_path: Path, recipe: str, kept: dict[str, Any]
+) -> None:
+    project = _shop(tmp_path, calendar=True)
+    spec = _authored_metric(recipe, "revenue", count="", status="")
+    _write_metric(project, "m", {**spec, "temporal_role": ORDERED, **kept})
+
+    script, metric = _author(
+        project, {"Metric key": "m", "Business definition": "A new business definition."}
+    )
+
+    assert script.offered["Metric recipe"] == "Keep this expression unchanged"
+    _assert_has(metric, {**kept, "description": "A new business definition."})
 
 
 def test_an_explicit_clock_replaces_a_saved_time_alias(tmp_path: Path) -> None:

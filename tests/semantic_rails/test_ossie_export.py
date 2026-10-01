@@ -252,9 +252,8 @@ COST = AggregateExpr(measure="measure.jaffle.order_cost_usd", aggregation="sum")
             "NULLIF(COUNT(DISTINCT jaffle_order.jaffle_order_count), 0) * 100",
         ),
         (
-            ArithmeticExpr("add", REVENUE, COST, null_behavior="coalesce_zero"),
-            "COALESCE(SUM(jaffle_order.jaffle_revenue_usd), 0) + "
-            "COALESCE(SUM(jaffle_order.jaffle_order_cost_usd), 0)",
+            ArithmeticExpr("add", REVENUE, COST),
+            "SUM(jaffle_order.jaffle_revenue_usd) + SUM(jaffle_order.jaffle_order_cost_usd)",
         ),
         (replace(REVENUE, aggregation="median"), "metrics using median"),
         (

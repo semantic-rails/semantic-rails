@@ -148,11 +148,12 @@ def test_replace_keeps_identity_it_does_not_restate(
     assert _replaced(current, spec) == expected
 
 
-def test_a_merge_reports_nothing_dropped(workspace: Path) -> None:
+def test_a_merge_keeps_unnamed_objects_and_lists_what_rewrites_drop(workspace: Path) -> None:
     report = ArchitectProject(workspace / "shop", workspace_root=workspace).upsert_model(**ORDERS)
 
     assert report.report["ok"] is True
-    assert "dropped_fields" not in report.report
+    # Only fields of the objects the call rewrote are listed, never whole objects.
+    assert all(field.count(".") == 2 for field in report.report.get("dropped_fields", []))
     assert "status" in _yaml(workspace, "models/orders.yml")["model"]["dimensions"]
 
 

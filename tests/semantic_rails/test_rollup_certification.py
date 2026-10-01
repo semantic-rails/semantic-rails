@@ -268,6 +268,23 @@ _NOT_REAGGREGABLE = "aggregation_not_reaggregable"
             {_REVENUE: "timezone_mismatch"},
             id="timezone",
         ),
+        # A query runs in its role's zone, which the paired queries don't carry, so a role in
+        # another zone isn't certified and answers from the base tables. UTC certifies as before.
+        pytest.param(
+            ({"monthly": _MONTHLY}, [], {"time": {"timezone": "America/New_York"}}),
+            _MONTHLY_ID,
+            {_REVENUE: "timezone_not_utc", "measure.order_count": "timezone_not_utc"},
+            id="role-zone-not-utc",
+        ),
+        *(
+            pytest.param(
+                ({"monthly": _MONTHLY}, [], {"time": {"timezone": zone}}),
+                _MONTHLY_ID,
+                {_REVENUE: "", "measure.order_count": ""},
+                id=f"role-zone-{zone or 'unset'}",
+            )
+            for zone in ("", "Etc/UTC", " UTC ")
+        ),
         pytest.param(
             _monthly(revenue={"column": "max_amount", "holds": "max", "aggregation": "sum"}),
             _MONTHLY_ID,

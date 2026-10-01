@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 from ..config import repo_root
@@ -32,6 +33,7 @@ from .common import (
     normalize_connection_options,
     option_or_env,
     require_missing_env,
+    set_duckdb_time_zone,
 )
 
 # Alias under which the lake catalog is ATTACHed on the in-memory host.
@@ -125,6 +127,10 @@ class DuckLakeAdapter(DbApiAdapter):
                 details={"engine": self.engine, "connection_kind": self.connection_kind},
             )
         return catalog_path, data_path
+
+    def _time_zone_scope(self, cursor: Any, zone: str) -> AbstractContextManager[Any]:
+        set_duckdb_time_zone(cursor, zone)  # a DuckDB cursor is a connection of its own
+        return nullcontext()
 
     # -- DbApiAdapter hook ----------------------------------------------------
     def _create_connection(self) -> Any:

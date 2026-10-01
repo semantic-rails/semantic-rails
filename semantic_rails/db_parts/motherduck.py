@@ -14,7 +14,7 @@ with the same guarded pattern as :mod:`semantic_rails.db`.
 from __future__ import annotations
 
 import re
-from contextlib import suppress
+from contextlib import AbstractContextManager, nullcontext, suppress
 from typing import Any
 
 try:
@@ -30,6 +30,7 @@ from .common import (
     normalize_connection_options,
     require_missing_env,
     secret_value,
+    set_duckdb_time_zone,
 )
 
 # Database/schema names are interpolated into CREATE DATABASE / USE
@@ -97,6 +98,10 @@ class MotherDuckAdapter(DbApiAdapter):
                     "option_keys": sorted(self.options),
                 },
             )
+
+    def _time_zone_scope(self, cursor: Any, zone: str) -> AbstractContextManager[Any]:
+        set_duckdb_time_zone(cursor, zone)  # a DuckDB cursor is a connection of its own
+        return nullcontext()
 
     def _create_connection(self) -> Any:
         if duckdb is None:  # pragma: no cover - core dependency

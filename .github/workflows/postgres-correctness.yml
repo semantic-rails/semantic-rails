@@ -1,0 +1,59 @@
+name: Postgres correctness
+
+# The differential correctness suite (tests/integration/correctness) on DuckDB and a real
+# Postgres 16. Not a required check yet: it joins "All checks pass" once it has been stable.
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  postgres:
+    name: Correctness (DuckDB and Postgres 16)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16@sha256:1a6ab3f5345eb6dbe04a1349529caabdb0ab09293a09590fad07b2246bfa4b54
+        env:
+          POSTGRES_USER: sr_test
+          POSTGRES_PASSWORD: sr_test_pw
+          POSTGRES_DB: sr_correctness
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U sr_test -d sr_correctness"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      # Local-only test values for the service container above.
+      SR_POSTGRES_HOST: 127.0.0.1
+      SR_POSTGRES_PORT: "5432"
+      SR_POSTGRES_USER: sr_test
+      SR_POSTGRES_PASSWORD: sr_test_pw
+      SR_POSTGRES_DATABASE: sr_correctness
+      SR_INTEGRATION_STRICT: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+          prune-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv sync --group dev --extra postgres --locked
+      - run: uv run --no-sync pytest -q -rfE tests/integration/correctness

@@ -105,7 +105,9 @@ package test and a `.gitignore` for build outputs.
    one_to_one` also records it in `graph.relationships`. Relate one-to-many from the many
    side, and many-to-many through a bridge model related to each side. A model that already
    relates `to_entity` in a legacy `joins:` or `keys.foreign:` block is refused, since that
-   block would override the columns.
+   block would override the columns, and so is a pair that may have several roles
+   (role-playing keys: several `graph.relationships` entries in either direction, or an entry
+   with its own `via` beside the model's foreign key): edit those in `graph.yml`.
 6. Run `validate_project` with `mode=parse` after structural edits and `mode=runtime` before
    trusting queries.
 7. Run `impact_project` with `compare_path` or `base_ref` before release review; use
@@ -145,6 +147,14 @@ never create, seed or change it.
   relations declare that key. Single-column links use `column`; composite links use `columns` and
   preserve the ordered local and referenced columns. Foreign-key links are review evidence, not
   arguments in the draft `upsert_model` call.
+  A numeric column named like a count of distinct people (`unique`, `uniques`, `distinct`,
+  `visitors`, `users`, `cloners`, but not an average or rate of one) is a `low`-confidence measure
+  whose suggestion carries `additive: false` and says why: a vendor's pre-counted uniques can't be
+  added up across days or pages. The draft `upsert_model` call doesn't set `additive` (it still
+  sums the measure); declare it yourself when the column really is a distinct count.
+  A time column named like a snapshot's as-of time (`snapshot`, `as_of` or `asof` in its name)
+  is drafted `class: as_of_time`, so a stock on it whose key lacks the column is refused rather
+  than summing snapshots; other times are drafted `event_time`.
   Container columns (arrays, lists, structs, maps and similar types) are omitted from scalar model
   roles and listed in `unsupported_columns`; model them with an explicit supported extraction
   expression. Enum labels containing container names or brackets remain scalar dimensions.
@@ -210,7 +220,13 @@ a many-to-one relationship. It follows the usual mutation contract (`expected_re
 `idempotency_key`, `dry_run`). A model whose target is imported in the same call, or already in the
 package, gets the reference; references elsewhere are listed in `skipped_references`, and dbt models
 without a key in dbt in `skipped_models`. A dbt model whose derived id matches a package model
-(`fct_orders` and a model `orders` for entity `order`) updates that model.
+(`fct_orders` and a model `orders` for entity `order`) updates that model. An update adds only the
+dimensions, times and measures the model doesn't have yet and leaves the existing ones as
+authored, listing them in the model's `kept_objects` in `models`, so a re-import doesn't revert
+those objects (a stock accumulation, a clock's class, `additive: false`) or refresh their dbt
+descriptions; change an existing object with `upsert_model`. The model's relation, its entity's
+key and its foreign-key entries still follow dbt: after a re-import, check a key you changed
+(for example a snapshot table keyed by its series and snapshot date).
 Measure keys are package-wide, so a drafted measure whose key another model already has, in the
 package or earlier in the call, gets its entity as a prefix (`order_line_usd_to_local_rate`), like
 the drafted `<entity>_count`, unless that key is taken too; a re-imported model keeps its own keys.
@@ -313,6 +329,12 @@ validation, it may build a missing seeded DuckDB database.
 
 `upsert_model`, `upsert_metric` and `upsert_segment` merge their arguments into an existing
 object. `replace: true` rewrites the object from the arguments instead.
+
+In `upsert_model`, an existing dimension, time, measure or join given only `label`, `description`,
+`synonyms` or `meta` keeps its other fields: `times: {snapshot_date: {label: Snapshot day}}` changes
+only the label. Given any other field, the object is rewritten from what you pass, and the report's
+`dropped_fields` names each field that drops, such as `times.snapshot_date.column`; restate what
+should stay.
 
 - A model keeps only its `id`, its `entities` block (the relationships `upsert_relationship`
   wrote) and its `calendar_id`. The report's `dropped_fields` names every field, dimension, time,

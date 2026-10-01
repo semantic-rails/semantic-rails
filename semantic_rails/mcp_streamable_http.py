@@ -13,10 +13,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .http_core import MAX_REQUEST_BODY_BYTES, cors_origin_header, request_id_from_parts
-from .mcp import SemanticLayerMCPAdapter
 from .mcp_server import (
     MCP_PROTOCOL_VERSION,
     MCP_SUPPORTED_PROTOCOL_VERSIONS,
+    MCPAdapter,
     _jsonrpc_error,
     handle_jsonrpc_message,
 )
@@ -61,13 +61,17 @@ def _valid_accept(value: str) -> bool:
 
 
 def handle_streamable_http_request(
-    adapter: SemanticLayerMCPAdapter,
+    adapter: MCPAdapter,
     *,
     method: str,
     headers: Mapping[str, Any],
     body: bytes = b"",
     request_context: RequestContext | None = None,
 ) -> MCPHTTPResponse:
+    """Answer one stateless MCP Streamable HTTP request with ``adapter``.
+
+    Without ``request_context``, the policy context resolver derives it from ``headers``.
+    """
     method = method.upper()
     origin = _header(headers, "Origin")
     # MCP Streamable HTTP requires Origin validation to block DNS-rebinding

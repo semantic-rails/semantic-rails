@@ -129,6 +129,36 @@ class SqlDialect:
     def timestamp_cast(self, expr: Any) -> Any:
         return SqlCast(expr, self.timestamp_type_name())
 
+    @property
+    def has_time_coverage(self) -> bool:
+        """Whether an empty time bucket reads 0 only inside the base's loaded range.
+
+        That coverage compares stored instants with :meth:`now` through :meth:`utc_timestamp`,
+        spelled here for DuckDB (and MotherDuck and DuckLake, which run it) and Postgres, the
+        warehouses whose execution is tested. The others keep the in-window observation test.
+        """
+        return isinstance(self, DuckDbDialect | PostgresDialect)
+
+    def now(self, timezone: str = "UTC") -> Any:
+        """Current instant as wall time in ``timezone``, independent of the session zone."""
+        return SqlCall("TIMEZONE", [SqlLiteral(timezone), SqlCall("NOW", [])])
+
+    def utc_timestamp(self, expr: Any, storage_zone: str) -> Any:
+        """UTC wall time for an instant, or for naive storage in its declared zone.
+
+        Package timestamp metadata does not distinguish these physical SQL types.
+        Both CASE arms return naive UTC, so session coercion cannot change the cutoff.
+        Only used where :attr:`has_time_coverage` holds.
+        """
+        aware = SqlBinary(
+            SqlCast(SqlCall("PG_TYPEOF", [expr]), "VARCHAR"),
+            "=",
+            SqlLiteral("timestamp with time zone"),
+        )
+        instant = SqlCall("TIMEZONE", [SqlLiteral("UTC"), SqlCast(expr, "TIMESTAMPTZ")])
+        naive = self.convert_timezone(storage_zone, "UTC", self.timestamp_cast(expr))
+        return SqlCase([SqlCaseWhen(aware, instant)], naive)
+
     def date_trunc(self, grain: str, ts_expr: Any) -> Any:
         return SqlCall("DATE_TRUNC", [SqlLiteral(grain), self.timestamp_cast(ts_expr)])
 
@@ -169,6 +199,15 @@ class SqlDialect:
 
     def null_safe_eq(self, left: Any, right: Any) -> Any:
         return SqlBinary(left, "IS NOT DISTINCT FROM", right)
+
+    @property
+    def outer_lookup_joins(self) -> bool:
+        """Whether a many-to-one lookup may be a LEFT JOIN, keeping rows it finds no match for.
+
+        It needs an unmatched row to read NULL from the looked-up columns. A dialect whose
+        outer join fills them with a type default instead says False, and lookups stay inner.
+        """
+        return True
 
     @property
     def has_implicit_calendar(self) -> bool:
@@ -705,11 +744,9 @@ class BigQueryDialect(SqlDialect):
         return "DATETIME"
 
     def timestamp_cast(self, expr: Any) -> Any:
-        # CAST(x AS DATETIME) is not representable today (DATETIME is
-        # not in sql_ast.SQL_CAST_TYPE_NAMES), so rely on BigQuery's
-        # implicit coercions instead: DATE -> DATETIME and string
-        # literal -> DATETIME both coerce wherever the DATETIME_*
-        # functions and comparisons expect a DATETIME.
+        # No cast: BigQuery's implicit coercions suffice here. DATE ->
+        # DATETIME and string literal -> DATETIME both coerce wherever
+        # the DATETIME_* functions and comparisons expect a DATETIME.
         return expr
 
     def date_trunc(self, grain: str, ts_expr: Any) -> Any:
@@ -1046,9 +1083,16 @@ class ClickHouseDialect(SqlDialect):
 
     name: str = "clickhouse"
 
-    # No day_series override: an unmatched LEFT JOIN field is 0 here rather than NULL
-    # (without join_use_nulls), so a filled non-additive bucket would read 0. Packages
-    # on ClickHouse keep needing an authored calendar for dense fill.
+    # No day_series override: it was withheld because an unmatched LEFT JOIN field reads 0
+    # rather than NULL. Every compiled statement now sets join_use_nulls, but a generated
+    # series is untested here, so packages on ClickHouse keep needing an authored calendar
+    # for dense fill.
+
+    @property
+    def outer_lookup_joins(self) -> bool:
+        # The same default fill: an unmatched key or dimension reads '' or 0 unless its column
+        # is Nullable, so a kept row would pair, group and filter as if it had a real value.
+        return False
 
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
         # ClickHouse: toDateTime(ts, tz) reads the value in `tz`;

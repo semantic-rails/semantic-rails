@@ -63,6 +63,10 @@ _SUM_WORDS = (
     "fee",
 )
 _AVERAGE_WORDS = ("price", "rate", "ratio", "pct", "percent", "score", "avg", "average")
+# A vendor's count of distinct people per row (GitHub's daily "uniques"): adding rows counts a
+# person once per day or page, so its suggestion is flagged `additive: false`; the draft never
+# applies it.
+_DISTINCT_COUNT_WORDS = ("unique", "uniques", "distinct", "visitors", "users", "cloners")
 _TABLE_PREFIXES = ("fct_", "fact_", "dim_", "stg_", "int_", "raw_", "mart_", "vw_")
 _BOOKKEEPING_WORDS = ("updated", "modified", "deleted", "loaded", "synced")
 _CONFIDENCE_RANK = {"high": 0, "medium": 1, "low": 2}
@@ -418,6 +422,13 @@ def classify_column(name: str, data_type: str) -> str:
 def measure_aggregation(name: str) -> tuple[str, str, str]:
     """(aggregation, confidence, reason) for a numeric column, from its name."""
     average = _has_word(name, _AVERAGE_WORDS)
+    if _distinct_count_like(name):
+        return (
+            "sum",
+            "low",
+            "may be a pre-counted distinct count; adding rows counts a person more than once, "
+            "so declare additive: false if it is one",
+        )
     summed = _has_word(name, _SUM_WORDS)
     if average and not summed:
         return "avg", "high", "a per-row price or rate: averaging is safe, summing is not"
@@ -476,6 +487,7 @@ def draft_roles(
         described = {"description": column["description"]} if column.get("description") else {}
         if role == "time":
             late = _has_word(name, _BOOKKEEPING_WORDS)
+            snapshot = _snapshot_clock_like(name)
             roles["times"].append(
                 {
                     "column": name,
@@ -483,7 +495,11 @@ def draft_roles(
                     "confidence": "low" if late else "high" if nulls == 0 else "medium",
                     "reason": "bookkeeping timestamp; rarely the time to analyze by"
                     if late
-                    else f"{data_type.lower()} column" + (f" ({nulls} nulls)" if nulls else ""),
+                    else f"{data_type.lower()} column"
+                    + (f" ({nulls} nulls)" if nulls else "")
+                    + ("; named like a snapshot's as-of time" if snapshot else ""),
+                    # A stock on an as-of clock whose key lacks it is refused, not summed.
+                    **({"class": "as_of_time"} if snapshot else {}),
                     **described,
                 }
             )
@@ -496,6 +512,7 @@ def draft_roles(
                     "aggregation": aggregation,
                     "confidence": confidence,
                     "reason": reason,
+                    **({"additive": False} if _distinct_count_like(name) else {}),
                     **described,
                 }
             )
@@ -549,7 +566,7 @@ def upsert_model_draft(
             item["column"]: {
                 "column": item["column"],
                 "kind": item["kind"],
-                "class": "event_time",
+                "class": item.get("class", "event_time"),
                 **({"description": item["description"]} if item.get("description") else {}),
                 **({"default": True} if index == 0 else {}),
             }
@@ -609,6 +626,17 @@ def entity_name(table: str) -> str:
 def _key_like(column: str) -> bool:
     lowered = column.lower()
     return lowered == "id" or lowered.endswith(_KEY_SUFFIXES)
+
+
+def _snapshot_clock_like(column: str) -> bool:
+    """A time column named like a snapshot's as-of time (``snapshot_date``, ``as_of_date``)."""
+    as_of = re.search(r"(?:^|[^a-z0-9])as_of(?:[^a-z0-9]|$)", column.lower())
+    return _has_word(column, ("snapshot", "asof")) or as_of is not None
+
+
+def _distinct_count_like(column: str) -> bool:
+    """A count of distinct people per row, and not an average or rate of one."""
+    return _has_word(column, _DISTINCT_COUNT_WORDS) and not _has_word(column, _AVERAGE_WORDS)
 
 
 def _has_word(column: str, words: tuple[str, ...]) -> bool:

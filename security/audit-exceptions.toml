@@ -1,0 +1,10 @@
+# Connector-only exceptions. Core-reachable packages can never be excepted.
+[[exceptions]]
+id = "CVE-2026-49265"
+package = "oauthlib"
+extras = ["databricks"]
+blocked_by = "databricks-sql-connector: oauthlib>=3.1.0,<4.0.0"
+fixed_in = "4.0.0"
+issue = "https://github.com/semantic-rails/semantic-rails/issues/210"
+review_by = 2026-10-30
+reason = "The Databricks connector caps oauthlib below the patched release; upgrade when its dependency range permits 4.0.0."

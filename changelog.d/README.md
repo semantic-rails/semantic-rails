@@ -28,4 +28,5 @@ uv run python scripts/changelog_fragments.py release --version 0.3.0 --date 2026
 `release` inserts `## 0.3.0 — 2026-10-01 — Short release theme` below `## Unreleased`, with
 `### Added`, `### Changed`, … subsections in the order above, then deletes the folded
 fragments. Bullets keep file-name order compared as text (`142-…` sorts before `99-…`), so
-zero-pad a numeric prefix if the order matters.
+zero-pad a numeric prefix if the order matters. `--version` also takes a pre-release such as
+`0.3.2rc1`.

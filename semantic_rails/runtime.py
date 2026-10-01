@@ -25,6 +25,7 @@ from dataclasses import asdict, replace
 from functools import wraps
 from threading import Condition, RLock, get_ident
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from . import __version__
 from .acceleration.routing import (
@@ -33,7 +34,7 @@ from .acceleration.routing import (
     aggregate_routing_enabled,
     parse_aggregate_routing,
 )
-from .ast import normalize_query
+from .ast import normalize_query, rewrite_select_shorthand
 from .cache import (
     CachedCompilation,
     CompiledSqlCache,
@@ -44,6 +45,7 @@ from .cache import (
 from .catalog_search import CatalogSearchIndex
 from .caveats import caveat_warnings
 from .compiler import BoundQuery, bind_query, compile_query
+from .compiler_parts.paths import _leaf_time_role
 from .config import (
     SEED_KIND_EXTERNAL,
     ensure_contained_package_path,
@@ -91,6 +93,8 @@ from .request_context import (
     without_trusted_attributes,
 )
 from .runtime_parts.responses import (
+    TIME_SHAPE_WINDOW_TOTAL,
+    WINDOW_TOTAL_ASSUMPTION,
     apply_response_verbosity,
     compile_response_metadata,
     resolve_sql_profile,
@@ -538,7 +542,7 @@ def _query_execution_error_details(
     return details
 
 
-def _normalize_query_limits(raw: Any) -> dict[str, Any]:
+def _normalize_query_limits(raw: Any, time_zone: str = "") -> dict[str, Any]:
     """Normalize the request envelope's optional `limits` block.
 
     Recognized keys:
@@ -547,11 +551,12 @@ def _normalize_query_limits(raw: Any) -> dict[str, Any]:
 
     Unrecognized keys are dropped silently so a future addition does not
     break existing clients. Missing or invalid values yield an empty dict
-    (no enforcement).
+    (no enforcement). `time_zone` is not a request key: the runtime adds the
+    zone the query runs in (see `_time_zone`) for the adapter.
     """
+    normalized: dict[str, Any] = {"time_zone": time_zone} if time_zone else {}
     if not isinstance(raw, dict):
-        return {}
-    normalized: dict[str, Any] = {}
+        return normalized
     for key in ("statement_timeout_ms", "max_rows"):
         value = raw.get(key)
         if value is None:
@@ -563,6 +568,59 @@ def _normalize_query_limits(raw: Any) -> dict[str, Any]:
         if coerced > 0:
             normalized[key] = coerced
     return normalized
+
+
+# Warehouses whose adapters run each query in the zone `_time_zone` picks.
+_SESSION_ZONE_WAREHOUSES = frozenset({"duckdb", "motherduck", "ducklake", "postgres"})
+
+
+def _time_zone(config: Any, compiled: dict[str, Any]) -> str:
+    """The zone a query runs in: its time role's, else UTC ("" if the name isn't a zone).
+
+    DuckDB and Postgres evaluate zone-dependent SQL in the session's zone: the clock of a
+    ``TIMESTAMP WITH TIME ZONE`` value, its comparison with a plain timestamp, ``now()``.
+    Their adapters run each query in this zone, so a zone-aware column buckets and filters
+    in the role's zone at every grain. Naive ``TIMESTAMP`` and ``DATE`` values don't
+    depend on the session zone.
+    """
+    role_id = (compiled["logical_plan"].time or {}).get("temporal_role")
+    zone = next((role.timezone for role in config.temporal_roles if role.id == role_id), "")
+    zone = str(zone or "UTC").strip()
+    try:
+        ZoneInfo(zone)
+    except (ValueError, KeyError, OSError):  # an unknown or malformed name
+        return ""
+    return zone
+
+
+def _time_zone_warnings(config: Any, compiled: dict[str, Any]) -> list[dict[str, Any]]:
+    """Name the measures bucketed on a time role whose zone the query doesn't run in."""
+    plan = compiled["logical_plan"]
+    zone = _time_zone(config, compiled)
+    warehouse = str(config.package.warehouse or "duckdb").lower()
+    if not zone or not plan.time or warehouse not in _SESSION_ZONE_WAREHOUSES:
+        return []
+    query = normalize_query(plan.query)
+    zones = {role.id: str(role.timezone or "UTC").strip() for role in config.temporal_roles}
+    roles = sorted(
+        {_leaf_time_role(item.bound_measure, query, config) for item in plan.measure_plans}
+    )
+    others = {role: zones[role] for role in roles if zones.get(role, zone) != zone}
+    if not others:
+        return []
+    message = (
+        f"The query runs in {zone}, its time role's zone, so a TIMESTAMP WITH TIME ZONE"
+        f" column on {', '.join(others)} buckets and filters in {zone}, not in its own zone."
+    )
+    details = {"time_zone": zone, "role_zones": others}
+    return [
+        {
+            "code": "TIME_ZONE_NOT_APPLIED",
+            "severity": "warning",
+            "message": message,
+            "details": details,
+        }
+    ]
 
 
 def _adapter_query(
@@ -695,13 +753,44 @@ def _compiled_warnings(
         *(rewrite_warning_payload(step) for step in compiled["logical_plan"].rewrite_steps),
         *_history_warnings(config, compiled["logical_plan"]),
         *_measure_validity_warnings(config, compiled["logical_plan"]),
+        *_stock_key_gap_warnings(compiled),
         *_path_alternates_warnings(config, compiled["logical_plan"]),
+        *_time_zone_warnings(config, compiled),
     ]
     if payload is not None:
-        warnings.extend(caveat_warnings(config, compiled, payload))
-        warnings.extend(_expression_normalized_away_warnings(payload, compiled))
-        warnings.extend(_ungrained_time_projection_warnings(payload))
+        # Every check reads the canonical query the compiler saw, not the caller's shorthand.
+        canonical, notes = rewrite_select_shorthand(payload)
+        warnings.extend(caveat_warnings(config, compiled, canonical))
+        warnings.extend(_expression_normalized_away_warnings(canonical, compiled))
+        if not compiled["logical_plan"].time.get("window_total"):
+            warnings.extend(_ungrained_time_projection_warnings(canonical))
+        warnings.extend(_shorthand_normalized_warnings(notes))
     return warnings
+
+
+def _window_total_fields(compiled) -> dict[str, Any]:
+    """``assumptions`` for every response, plus ``time_shape`` when the window was collapsed."""
+    if not compiled["logical_plan"].time.get("window_total"):
+        return {"assumptions": []}
+    return {"assumptions": [WINDOW_TOTAL_ASSUMPTION], "time_shape": TIME_SHAPE_WINDOW_TOTAL}
+
+
+def _shorthand_normalized_warnings(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Tell the caller which select shorthands were rewritten, with the canonical form."""
+    return [
+        semantic_issue(
+            code="QUERY_SHORTHAND_NORMALIZED",
+            message=(
+                f"{note['path']} was accepted as shorthand and rewritten; next time send "
+                f"{json.dumps(note['canonical'], separators=(',', ':'))}."
+            ),
+            severity="warning",
+            stage="compile",
+            path=note["path"],
+            details=note,
+        )
+        for note in notes
+    ]
 
 
 _UNGRAINED_INLINE_WINDOW_KINDS = frozenset(
@@ -1013,6 +1102,81 @@ def _crosses_boundary(start: str, end: str, window_start: str, window_end: str) 
     if window_start and start and start < window_start and (not end or end > window_start):
         return True
     return bool(window_end and (not start or start < window_end) and end and end > window_end)
+
+
+def _stock_key_gap_warnings(compiled) -> list[dict[str, Any]]:
+    """Say when a stock answered as if each row were its own series.
+
+    A stock whose key lacks its event- or state-time clock takes every row as a
+    series, so each cell adds up every row in it. That is right for a table with one
+    row per series and wrong for one that keeps snapshots, which the engine can't
+    tell apart, so the answer carries the warning (an as-of clock refuses instead).
+    The lowering records each such stock it reads, metric predicates included.
+    """
+    gaps = {
+        (gap["measure_id"], gap["temporal_role"]): gap
+        for gap in list(compiled.get("stock_key_gaps") or [])
+    }
+    return [
+        semantic_issue(
+            code="STOCK_SNAPSHOT_KEY_MISSING_CLOCK",
+            message=(
+                f"Stock measure '{gap['measure_id']}' is keyed by {gap['row_key']}, which doesn't "
+                f"contain its {gap['clock_class']} clock {gap['clock_column']!r}, so each row counts "
+                "as its own series and each result adds up every row in it. That's right only if "
+                "the table holds one row per series (current state); if it keeps snapshots, "
+                f"they were summed. {gap['fix']} With that clock declared class: as_of_time, a "
+                "key without it is refused instead."
+            ),
+            severity="warning",
+            stage="planning",
+            details=gap,
+            object_ids=[gap["measure_id"]],
+        )
+        for gap in gaps.values()
+    ]
+
+
+def _no_data_in_scope_warnings(compiled, rows) -> list[dict[str, Any]]:
+    """Say when a measure that reads 0 for empty groups had no data at all, so it read NULL.
+
+    A sum, count or distinct count is 0 in a group with no rows only while its measure has
+    data somewhere in scope; with none, every group reads NULL. A misspelled filter value
+    produces exactly that, so the answer names the outputs that came back NULL on every row
+    (or, when nothing came back and no time bounds explain it, every such output). One
+    warning covers them all, and it needs no query beyond the answer.
+    """
+    outputs = {item["output"]: item for item in list(compiled.get("zero_outputs") or [])}
+    window = compiled["logical_plan"].time
+    if getattr(rows, "truncated", False) or not outputs:
+        return []
+    if rows:
+        outputs = {
+            name: item
+            for name, item in outputs.items()
+            if all(row.get(name) is None for row in rows)
+        }
+    elif window.get("start") is not None or window.get("end") is not None:
+        return []  # a window with no rows is EMPTY_RESULT_WINDOW's to explain
+    elif compiled["logical_plan"].query.get("metric_filters"):
+        return []  # a metric filter may have removed every group that holds data
+    if not outputs:
+        return []
+    return [
+        semantic_issue(
+            code="NO_DATA_IN_SCOPE",
+            message=(
+                f"No data in scope for {', '.join(outputs)}: nothing in this query's filters and "
+                f"time window holds a value, so {'it reads' if len(outputs) == 1 else 'they read'}"
+                " NULL rather than 0. A sum or count reads 0 only where its measure has data "
+                "elsewhere in scope; check the filter values."
+            ),
+            severity="warning",
+            stage="execution",
+            details={"outputs": list(outputs)},
+            object_ids=[measure for item in outputs.values() for measure in item["measures"]],
+        )
+    ]
 
 
 def _measure_validity_warnings(config, logical_plan) -> list[dict[str, Any]]:
@@ -1777,10 +1941,6 @@ class Runtime:
                             "entity_value",
                             "distribution",
                         ],
-                        "runtime_expression_options": {
-                            "arithmetic_null_behavior": ["null_propagate", "coalesce_zero"],
-                            "ratio_null_behavior": ["null_if_zero"],
-                        },
                         "aggregate_relation_candidates": [
                             asdict(row) for row in self._config.aggregate_relations
                         ],
@@ -1934,7 +2094,7 @@ class Runtime:
             out["query"] = without_trusted_attributes(payload)
             out["normalized_query"] = compiled["explain"].normalized_query
             out["recovery_hints"] = []
-            out["assumptions"] = []
+            out.update(_window_total_fields(compiled))
             out["methodology_hints"] = _methodology_hints(self._config, payload, compiled)
             out["freshness_by_leaf"] = freshness_rows
             out["freshness_as_of"] = _freshness_as_of(freshness_rows)
@@ -2032,7 +2192,7 @@ class Runtime:
             "recovery_hints": [],
             "authoring_hints": [],
             "query_ir_hints": [],
-            "assumptions": [],
+            **_window_total_fields(compiled),
             "methodology_hints": _methodology_hints(self._config, payload, compiled),
             "freshness_by_leaf": freshness_rows,
             "freshness_as_of": _freshness_as_of(freshness_rows),
@@ -2086,7 +2246,7 @@ class Runtime:
         # from the request envelope through to the warehouse adapter. Hosted
         # operators use this to enforce per-tenant policies without forking;
         # local users typically leave `limits` unset.
-        limits = _normalize_query_limits(payload.get("limits"))
+        limits = _normalize_query_limits(payload.get("limits"), _time_zone(self._config, compiled))
         # If the caller asked for a statement_timeout_ms but the adapter
         # can't honor it at the warehouse boundary, surface a warning so
         # the caller learns the limit was best-effort. Without this, the
@@ -2154,11 +2314,12 @@ class Runtime:
             "errors": [],
             "warnings": [
                 *_compiled_warnings(self._config, compiled, payload),
+                *_no_data_in_scope_warnings(compiled, rows),
                 *limits_warnings,
                 *self._seed_warnings,
             ],
             "recovery_hints": [],
-            "assumptions": [],
+            **_window_total_fields(compiled),
             "methodology_hints": _methodology_hints(self._config, payload, compiled),
             "freshness_by_leaf": freshness_rows,
             "freshness_as_of": _freshness_as_of(freshness_rows),
@@ -2470,10 +2631,16 @@ class Runtime:
         try:
             with self._query_lock:
                 rows = _adapter_query(
-                    adapter, preview_compiled["prepared_query"], limits={}, policy_context=context
+                    adapter,
+                    preview_compiled["prepared_query"],
+                    limits={"time_zone": _time_zone(self._config, preview_compiled)},
+                    policy_context=context,
                 )
                 count_rows = _adapter_query(
-                    adapter, count_prepared, limits={}, policy_context=context
+                    adapter,
+                    count_prepared,
+                    limits={"time_zone": _time_zone(self._config, membership_compiled)},
+                    policy_context=context,
                 )
         except Exception as exc:
             if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":

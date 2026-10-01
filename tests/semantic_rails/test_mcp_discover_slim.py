@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
+from semantic_rails.metadata import discover_payload
 
 SLIM_KEYS = {"id", "kind", "label", "score", "description", "default_temporal_role", "available"}
 VALUE_KEYS = {"id", "kind", "dimension_id", "value", "label", "available", "score"}
@@ -113,13 +114,19 @@ def test_unavailable_candidates_keep_their_reason(adapter: SemanticLayerMCPAdapt
     assert all("blocked_reason" not in row for row in available if row.get("available", True))
 
 
-def test_full_cards_on_request(adapter: SemanticLayerMCPAdapter) -> None:
+@pytest.mark.parametrize("verbosity", ["compact", "full"])
+def test_full_cards_on_request(adapter: SemanticLayerMCPAdapter, verbosity: str) -> None:
     response = adapter.call_tool(
-        "discover", {"terms": "revenue by store", "verbosity": "compact", "limit": 10}
+        "discover", {"terms": "revenue by store", "verbosity": verbosity, "limit": 10}
     )
     card = response["measures"][0]
     assert {"match_reasons", "starter_query_patch", "topics", "kind"} <= set(card)
     assert len(response["measures"]) > 5
+    original = discover_payload(
+        adapter.runtime, terms="revenue by store", verbosity=verbosity, limit=10, enforce_scope=True
+    )
+    for bucket in ("measures", "metrics", "dimensions", "entities", "dimension_values", "blocked"):
+        assert response[bucket] == original[bucket]
 
 
 def test_nonsense_terms_return_a_relevance_block_with_empty_buckets(

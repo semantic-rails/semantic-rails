@@ -20,6 +20,24 @@ from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
 
 
+@pytest.mark.parametrize("threads", [2, 4])
+def test_parallel_window_finalization_with_empty_input(threads):
+    # Empty-group settlement adds a window over a stream with empty input blocks.
+    # DuckDB before 1.5.6 could finalize those blocks before their sink tasks ran.
+    # This reduced query reproduces the race without dates or shared connections.
+    sql = """
+        WITH t AS (SELECT 0 AS x), u AS (
+            SELECT * FROM t WHERE x >= 5000
+            UNION ALL
+            SELECT * FROM t
+        )
+        SELECT x, COUNT(*) OVER () FROM u ORDER BY x DESC
+    """
+    with duckdb.connect(config={"threads": threads}) as connection:
+        for _ in range(1000):
+            assert connection.execute(sql).fetchall() == [(0, 1)]
+
+
 def _as_date(value) -> date:
     return value.date() if isinstance(value, datetime) else value
 
@@ -134,7 +152,7 @@ def test_fill_bounds_the_window_by_date_day_not_the_calendar_key(runtime_factory
     assert key[0] not in sql
     alias = "temporal_role.jaffle_order_time__week"
     assert min(_as_date(row[alias]) for row in rows) == date(2017, 6, 26)
-    assert sum(row["orders"] for row in rows) == 7438
+    assert sum(row["orders"] or 0 for row in rows) == 7438
 
 
 def test_fill_without_a_date_day_column_bounds_the_window_by_bucket(runtime_factory):
@@ -306,7 +324,8 @@ def test_timestamp_calendar_keeps_raw_bounds_across_session_timezone(tmp_path):
             f"FROM ({sql}) AS tokyo_result"
         ).fetchall()
 
-    assert rows == [("2017-07-03 15:00:00+00", 0)]
+    # No order exists at all, so there is no data to call zero: the bucket reads NULL.
+    assert rows == [("2017-07-03 15:00:00+00", None)]
     assert "jaffle_calendar.date_day >= '2017-07-04T00:00:00+09:00'" in sql
 
 
@@ -578,7 +597,7 @@ def test_fill_boundary_dates_do_not_overflow(
         assert "1 = 0" in sql
     else:
         assert rows
-        assert sum(row["orders"] for row in rows) >= 1
+        assert sum(row["orders"] or 0 for row in rows) >= 1
         assert f"jaffle_calendar.date_day {expected_operator} '{expected_day}'" in sql
 
 
@@ -802,7 +821,8 @@ def test_fill_date_extremes_with_representable_zone_conversion(
         ).fetchall()
 
     assert [day for day, _ in rows] == expected
-    assert all(count == 0 for _, count in rows)
+    # These buckets are outside the loaded date range, including placeholder dates.
+    assert all(count is None for _, count in rows)
 
 
 def test_offset_fill_marks_source_bucket_presence_for_clickhouse():

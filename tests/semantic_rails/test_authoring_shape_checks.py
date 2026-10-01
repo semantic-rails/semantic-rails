@@ -20,7 +20,9 @@ from pathlib import Path
 import pytest
 
 from semantic_rails.cli.commands.package import cmd_init
+from semantic_rails.config import load_package_config
 from semantic_rails.config_validation import validate_runtime_package
+from semantic_rails.errors import SemanticLayerError
 
 
 @pytest.fixture()
@@ -79,6 +81,33 @@ def test_grain_that_matches_no_entity_key_is_rejected(starter_package: Path) -> 
     path = _mutated(starter_package, "grain: [customer_id]", "grain: [customerid]")
     errors = _errors(path)
     assert any("grain" in e and "customerid" in e and "customer_id" in e for e in errors), errors
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        # A direct field on a ratio metric, and a key inside an `expression:` block.
+        (
+            "denominator: order_count\n",
+            "denominator: order_count\n    null_behavior: null_if_zero\n",
+        ),
+        (
+            "    kind: ratio\n    numerator: revenue_usd\n    denominator: order_count\n",
+            "    kind: derived\n    expression:\n      kind: ratio\n      null_behavior: null_if_zero\n"
+            "      numerator: {metric: revenue_usd}\n      denominator: {metric: order_count}\n",
+        ),
+    ],
+    ids=["direct_field", "expression_key"],
+)
+def test_removed_null_behavior_key_fails_to_load_with_one_message(
+    starter_package: Path, old: str, new: str
+) -> None:
+    """`null_behavior:` used to pick how a ratio or a sum read an empty group; the engine now
+    settles that itself, so a package that still writes it fails to load and says why."""
+    path = _mutated(starter_package, old, new)
+    with pytest.raises(SemanticLayerError, match="`null_behavior` was removed; delete the line"):
+        load_package_config(str(path.parent))
+    assert any("`null_behavior` was removed; delete the line" in e for e in _errors(path))
 
 
 def test_ratio_operand_typo_names_metric_and_field(starter_package: Path) -> None:

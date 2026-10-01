@@ -23,12 +23,14 @@ import yaml
 
 from .ast import NormalizedQuery
 from .compiler import (
+    NonAdditiveRefusal,
     _collect_conversion_exprs,
     _conversion_sources,
     _expr_leaf_temporal_role_sets,
     _requires_query_time,
     compile_query,
 )
+from .compiler_parts.sql_lowering import _stock_clock_key_gap, _stock_snapshot_refusal
 from .config import (
     SEED_KIND_EXTERNAL,
     _merge_package_dir,
@@ -1305,6 +1307,8 @@ def _compiled_package_warnings(config, source_path: Path) -> list[str | dict[str
             )
         for warning in list(getattr(measure, "authoring_warnings", []) or []):
             warnings.append(f"{prefix}: {warning}")
+        if stock_warning := _stock_key_warning(prefix, measure, config):
+            warnings.append(stock_warning)
         if not str(meta.get("owner_team", "") or "").strip():
             warnings.append(f"{prefix} should declare meta.owner_team")
         if not str(meta.get("review_priority", "") or "").strip():
@@ -1360,12 +1364,110 @@ def _compiled_package_warnings(config, source_path: Path) -> list[str | dict[str
                 )
             )
     warnings.extend(_semantic_collision_warnings(config, source_path))
+    warnings.extend(_unpinned_role_warnings(config, source_path))
+    return warnings
+
+
+def _unpinned_role_warnings(config, source_path: Path) -> list[dict[str, Any]]:
+    """One warning per entity pair joined on different columns by several
+    relationships (role-playing keys) unless exactly one of them has the lowest
+    ``path_preference``: that one wins every route through the pair. A
+    ``path_preferences`` row pins only queries that start at the source entity
+    and end at the target, so a pair pinned that way is still reported, and the
+    message says what the pin covers."""
+    # Either direction of a pair is one pair, and a route is its column pairing, so two
+    # relationships that differ only in target columns, or that are declared from opposite
+    # sides, still count as different roles. The first id (sorted) sets the orientation.
+    by_pair: dict[frozenset[str], list[Any]] = {}
+    for rel in sorted(config.relationships, key=lambda rel: rel.id):
+        by_pair.setdefault(frozenset((rel.source_entity, rel.target_entity)), []).append(rel)
+    pinned = {frozenset((row.source_entity, row.target_entity)) for row in config.path_preferences}
+    warnings: list[dict[str, Any]] = []
+    for pair, rels in by_pair.items():
+        source, target = rels[0].source_entity, rels[0].target_entity
+        routes = {
+            frozenset(
+                zip(
+                    rel.source_columns or [rel.source_column],
+                    rel.target_columns or [rel.target_column],
+                    strict=True,
+                )
+                if (rel.source_entity, rel.target_entity) == (source, target)
+                else zip(
+                    rel.target_columns or [rel.target_column],
+                    rel.source_columns or [rel.source_column],
+                    strict=True,
+                )
+            )
+            for rel in rels
+        }
+        if len(routes) < 2:
+            continue
+        lowest = min(rel.path_preference for rel in rels)
+        if sum(rel.path_preference == lowest for rel in rels) == 1:
+            continue
+        ids = [rel.id for rel in rels]
+        covered = (
+            f"graph.path_preferences pins only queries that start at {source} and end at "
+            f"{target}; queries from another entity, or that continue past {target}, are still "
+            "refused as AMBIGUOUS_PATH"
+            if pair in pinned
+            else f"queries that need {target} from {source} are refused as AMBIGUOUS_PATH"
+        )
+        warnings.append(
+            _error_payload(
+                "RELATIONSHIP_ROLES_UNPINNED",
+                f"{source_path}: {source} reaches {target} through {len(ids)} relationships "
+                f"({', '.join(ids)}) on different columns and none has a unique lowest "
+                f"path_preference: {covered}. Give the intended relationship a lower "
+                "path_preference to pin it for every query.",
+                details={
+                    "source_entity": source,
+                    "target_entity": target,
+                    "relationships": ids,
+                    "pair_pinned": pair in pinned,
+                },
+            )
+        )
     return warnings
 
 
 def _semantic_collision_warnings(config, source_path: Path) -> list[dict[str, Any]]:
     """Compatibility wrapper for the dedicated collision detector."""
     return semantic_collision_warnings(config, source_path)
+
+
+def _stock_key_warning(prefix: str, measure, config) -> dict[str, Any] | None:
+    """One warning per stock whose key can't tell its snapshots apart; refusals win."""
+    clocks = list(dict.fromkeys(measure.compatible_temporal_roles or []))
+    refusals = [row for role in clocks if (row := _stock_snapshot_refusal(measure, role, config))]
+    gap = next((row for role in clocks if (row := _stock_clock_key_gap(measure, role, config))), {})
+    row = refusals[0] if refusals else gap
+    if not row:
+        return None
+    if row.get("reason") == "series_holds_as_of_clock":
+        refused = [refusal["temporal_role"] for refusal in refusals]
+        return _error_payload(
+            "STOCK_SERIES_HOLDS_AS_OF_CLOCK",
+            f"{prefix} is a stock whose key {row['row_key']} holds the as_of_time clock "
+            f"{row['clock_column']!r}: ordered by another clock, its series still holds that "
+            "column, so each snapshot counts as its own series and a coarser grain sums them. "
+            f"{row['fix']} Its queries on {refused} are refused.",
+            details={**row, "refused_temporal_roles": refused},
+        )
+    outcome = (
+        "Its queries are refused."
+        if refusals
+        else "Ignore this only if the table holds one row per series (current state)."
+    )
+    return _error_payload(
+        "STOCK_SNAPSHOT_KEY_MISSING_CLOCK",
+        f"{prefix} is a stock on the {row['clock_class']} clock {row['clock_column']!r}, but "
+        f"its key {row['row_key']} doesn't contain that column: each key value counts as its "
+        "own series, so if the table keeps several snapshots of a series, a coarser grain sums "
+        f"them. {row['fix']} {outcome}",
+        details=row,
+    )
 
 
 def _error_payload(
@@ -1558,7 +1660,15 @@ def _run_probe(
 ) -> dict[str, Any]:
     started = time.perf_counter()
     try:
-        runtime.query(query)
+        try:
+            runtime.query(query)
+        except SemanticLayerError as exc:
+            # An `additive: false` measure answers only at its stored grain: probe it there.
+            missing = exc.dimensions if isinstance(exc, NonAdditiveRefusal) else None
+            if not missing or query.get("group_by"):
+                raise
+            query = {**query, "group_by": list(missing)}
+            runtime.query(query)
         return {
             "object_id": object_id,
             "kind": kind,
