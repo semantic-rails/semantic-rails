@@ -11,11 +11,12 @@ import yaml
 
 from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts.bind import _config_expr_to_sql
-from semantic_rails.dialects import supported_warehouses
+from semantic_rails.compiler_parts.post_aggregation import _compile_post_expr
+from semantic_rails.dialects import dialect_for_warehouse, supported_warehouses
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.expressions import parse_semantic_expression
+from semantic_rails.expressions import BooleanExpr, LiteralExpr, parse_semantic_expression
 from semantic_rails.relation_pipelines import _join_condition, _predicate, _semantic_expr_to_sql
-from semantic_rails.renderer import render_expr
+from semantic_rails.renderer import render_expr, use_dialect
 from semantic_rails.runtime import Runtime
 from semantic_rails.sql_ast import (
     SqlBinary,
@@ -249,6 +250,52 @@ def test_null_tests_render_on_every_dialect(runtime, warehouse, op, sql_op):
     assert not re.search(r"(?:=|!=|<>|<|>)\s*NULL\b", sql)
 
 
+@pytest.mark.parametrize("warehouse", supported_warehouses())
+@pytest.mark.parametrize("lowering", ["configured", "post_aggregation", "relation"])
+def test_computed_boolean_null_renders_on_every_dialect(runtime, warehouse, lowering):
+    context = {"configured": "config", "post_aggregation": "query", "relation": "relation"}
+    expr = parse_semantic_expression(NOT_NULL, context=context[lowering])
+    if lowering == "configured":
+        measure = next(m for m in runtime.config.measures if m.id == COUNT["measure"])
+        lowered = _config_expr_to_sql(expr, measure, runtime.config)
+    elif lowering == "post_aggregation":
+        lowered = _compile_post_expr(expr, runtime.config)
+    else:
+        lowered = _semantic_expr_to_sql(expr)
+    type_name = "Nullable(Bool)" if warehouse == "clickhouse" else "BOOLEAN"
+    expected = f"CAST(NULL AS {type_name})"
+    with use_dialect(dialect_for_warehouse(warehouse)):
+        assert render_expr(lowered) == expected
+        comparison = build_comparison_condition(SqlLiteral(False), "!=", lowered)
+        assert render_expr(comparison) == f"FALSE != {expected}"
+
+
+@pytest.mark.parametrize("warehouse", supported_warehouses())
+def test_compile_binds_dialect_for_computed_boolean_null(runtime, warehouse):
+    config = replace(runtime.config, package=replace(runtime.config.package, warehouse=warehouse))
+    expression = NOT_NULL
+    comparison = {
+        "kind": "comparison",
+        "op": "!=",
+        "left": {"kind": "literal", "value": False},
+        "right": expression,
+    }
+    query = {
+        "version": 2,
+        "select": [
+            {"expression": COUNT, "as": "n"},
+            {"expression": expression, "as": "flag"},
+            {"expression": comparison, "as": "comparison"},
+        ],
+    }
+    sql = compile_query(config, None, query)["sql"]
+    type_name = "Nullable(Bool)" if warehouse == "clickhouse" else "BOOLEAN"
+    assert f"CAST(NULL AS {type_name}) AS flag" in sql
+    assert f"FALSE != CAST(NULL AS {type_name})" in sql
+    if warehouse == "clickhouse":
+        assert "CAST(NULL AS BOOLEAN)" not in sql
+
+
 @pytest.mark.parametrize("op, sql_op", [("=", "IS NULL"), ("!=", "IS NOT NULL")])
 def test_post_aggregate_comparison_matches_sql(runtime, op, sql_op):
     expression = {
@@ -363,6 +410,98 @@ def test_post_aggregate_false_not_equal_not_null_stays_unknown(runtime, reverse)
     ((n, flag),) = _gold("SELECT COUNT(*), FALSE != (NOT NULL) FROM records")
     assert flag is None
     assert runtime.query(query)["rows"] == [{"n": n, "flag": flag}]
+
+
+@pytest.mark.parametrize("lowering", ["configured", "post_aggregation", "relation"])
+@pytest.mark.parametrize("op", ["and", "OR"])
+@pytest.mark.parametrize("negated", [False, True])
+@pytest.mark.parametrize(
+    "args",
+    [
+        [],
+        [NULL],
+        [{"kind": "literal", "value": True}],
+        [{"kind": "literal", "value": False}],
+        [_comparison()],
+    ],
+    ids=["empty", "null", "true", "false", "comparison"],
+)
+def test_boolean_and_or_refused_before_sql(runtime, op, args, negated, lowering):
+    expression = {"kind": "boolean", "op": op, "args": args}
+    if negated:
+        expression = {"kind": "boolean", "op": "not", "args": [expression]}
+    context = {"configured": "config", "post_aggregation": "query", "relation": "relation"}
+    with pytest.raises(SemanticLayerError, match="and/or need at least two arguments") as exc:
+        parse_semantic_expression(expression, context=context[lowering])
+    assert exc.value.code == "INVALID_EXPRESSION_AST"
+    if lowering == "relation":
+        with pytest.raises(SemanticLayerError, match="and/or need at least two arguments") as exc:
+            _predicate(expression)
+        assert exc.value.code == "INVALID_EXPRESSION_AST"
+    else:
+        query = _query(
+            {
+                "kind": "aggregate_if",
+                "aggregation": "count",
+                "condition": expression,
+                "value": {"kind": "column", "entity": ENTITY, "column": "id"},
+            }
+            if lowering == "configured"
+            else expression
+        )
+        report = runtime.validate(query)
+        assert report["errors"][0]["code"] == "INVALID_EXPRESSION_AST"
+        assert report["errors"][0]["message"] == "and/or need at least two arguments"
+        with pytest.raises(SemanticLayerError, match="and/or need at least two arguments") as exc:
+            compile_query(runtime.config, runtime.registry, query)
+        assert exc.value.code == "INVALID_EXPRESSION_AST"
+
+
+@pytest.mark.parametrize("lowering", ["configured", "post_aggregation", "relation"])
+@pytest.mark.parametrize("op", ["AND", "or"])
+@pytest.mark.parametrize("negated", [False, True])
+@pytest.mark.parametrize("values", [[], [None], [True]], ids=["empty", "null", "true"])
+def test_boolean_and_or_typed_ast_bypass_refused(runtime, op, values, negated, lowering):
+    expr = BooleanExpr(op=op, args=[LiteralExpr(value) for value in values])
+    if negated:
+        expr = BooleanExpr(op="not", args=[expr])
+    with pytest.raises(SemanticLayerError, match="and/or need at least two arguments") as exc:
+        if lowering == "configured":
+            measure = next(m for m in runtime.config.measures if m.id == COUNT["measure"])
+            _config_expr_to_sql(expr, measure, runtime.config)
+        elif lowering == "post_aggregation":
+            _compile_post_expr(expr, runtime.config)
+        else:
+            _semantic_expr_to_sql(expr)
+    assert exc.value.code == "INVALID_EXPRESSION_AST"
+
+
+@pytest.mark.parametrize("lowering", ["configured", "post_aggregation", "relation"])
+@pytest.mark.parametrize("op", ["and", "or"])
+@pytest.mark.parametrize("value", [None, True, False])
+@pytest.mark.parametrize("negated", [False, True])
+def test_two_argument_boolean_and_or_unchanged(runtime, op, value, negated, lowering):
+    expression = {
+        "kind": "boolean",
+        "op": op,
+        "args": [{"kind": "literal", "value": value}, {"kind": "literal", "value": True}],
+    }
+    if negated:
+        expression = {"kind": "boolean", "op": "not", "args": [expression]}
+    context = {"configured": "config", "post_aggregation": "query", "relation": "relation"}
+    expr = parse_semantic_expression(expression, context=context[lowering])
+    if lowering == "configured":
+        measure = next(m for m in runtime.config.measures if m.id == COUNT["measure"])
+        lowered = _config_expr_to_sql(expr, measure, runtime.config)
+    elif lowering == "post_aggregation":
+        lowered = _compile_post_expr(expr, runtime.config)
+    else:
+        lowered = _semantic_expr_to_sql(expr)
+    literal = "NULL" if value is None else str(value).upper()
+    sql = render_expr(lowered)
+    expected = f"{literal} {op.upper()} TRUE"
+    assert sql == (f"FALSE = ({expected})" if negated else expected)
+    assert _gold(f"SELECT {sql}") == _gold(f"SELECT {f'NOT ({expected})' if negated else expected}")
 
 
 @pytest.mark.parametrize(

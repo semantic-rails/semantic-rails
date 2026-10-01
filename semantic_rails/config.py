@@ -26,7 +26,12 @@ from .dialects import (
     warehouse_connector,
 )
 from .errors import SemanticLayerError
-from .expressions import NULL_BEHAVIOR_REMOVED, parse_config_expression, parse_semantic_expression
+from .expressions import (
+    NULL_BEHAVIOR_REMOVED,
+    parse_config_expression,
+    parse_semantic_expression,
+    validate_expression_calls,
+)
 from .meta_contract import load_meta_contract
 from .operational import (
     load_operational_contract,
@@ -2613,7 +2618,8 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             id=metric_id,
             kind=str(spec.get("kind", "derived")),
             expression=_parse_metric_expression(
-                expression, context=f"{path}: metric '{metric_key}'"
+                expression,
+                context=f"{path}: metric '{metric_key}'",
             ),
             temporal_role=temporal_role,
             compatible_temporal_roles=metric_compatible_temporal_roles,
@@ -3130,6 +3136,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     _ensure_unique_object_ids(config, path=path)
     _validate_caveat_refs(config, path=path)
     validate_row_filters(config)
+    validate_expression_calls(config, config)
     return config
 
 

@@ -1,5 +1,14 @@
 {
   "assumptions": [],
+  "column_types": {
+    "qualifying_orders": {
+      "type": "integer"
+    },
+    "temporal_role.jaffle_order_time__day": {
+      "timezone": "naive",
+      "type": "timestamp"
+    }
+  },
   "dialect": "duckdb",
   "errors": [],
   "explain": {
@@ -20,8 +29,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.92,
-      "compile_ms": 0.23,
+      "cache_lookup_ms": 3.307,
+      "compile_ms": 1.202,
       "dialect": "duckdb",
       "physical_plan_nodes": 8
     },
@@ -670,7 +679,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1__order_count_customer_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_1__order_count_customer_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_month_source_1__leaf_1 AS base\n),\nleaf_1__qualified_customers_month_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\",\n  predicate_source.\"temporal_role.jaffle_order_time__month\" AS \"temporal_role.jaffle_order_time__month\"\nFROM leaf_1__order_count_customer_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 10\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('day', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_month_by_order_count_1.\"dimension.jaffle_customer_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1.\"temporal_role.jaffle_order_time__month\"\nGROUP BY\n  DATE_TRUNC('day', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__day\",\n  base.m1 AS qualifying_orders\nFROM leaf_1 AS base\nORDER BY\n  t ASC",
+    "rendered_sql": "WITH leaf_1__order_count_customer_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_1__order_count_customer_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1__order_count_customer_month_source_1__leaf_1 AS base\n),\nleaf_1__order_count_customer_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_month_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_month_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\",\n  predicate_source.\"temporal_role.jaffle_order_time__month\" AS \"temporal_role.jaffle_order_time__month\"\nFROM leaf_1__order_count_customer_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 10\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('day', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_month_by_order_count_1.\"dimension.jaffle_customer_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1.\"temporal_role.jaffle_order_time__month\"\nGROUP BY\n  DATE_TRUNC('day', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__day\",\n  base.m1 AS qualifying_orders\nFROM guarded_base AS base\nORDER BY\n  t ASC",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -786,6 +795,7 @@
                         "having": [],
                         "joins": [],
                         "limit": null,
+                        "observation_scan": false,
                         "order_by": [],
                         "qualify": [],
                         "select": [
@@ -837,17 +847,105 @@
                         ],
                         "where": []
                       }
+                    },
+                    {
+                      "name": "leaf_1__order_count_customer_month_source_1__guarded_base",
+                      "query": {
+                        "ctes": [],
+                        "distinct": false,
+                        "from_table": {
+                          "alias": "base",
+                          "name": "leaf_1__order_count_customer_month_source_1__leaf_1"
+                        },
+                        "group_by": [],
+                        "having": [],
+                        "joins": [],
+                        "limit": null,
+                        "observation_scan": false,
+                        "order_by": [],
+                        "qualify": [],
+                        "select": [
+                          {
+                            "alias": "g1",
+                            "expression": {
+                              "parts": [
+                                "base",
+                                "g1"
+                              ]
+                            }
+                          },
+                          {
+                            "alias": "t",
+                            "expression": {
+                              "parts": [
+                                "base",
+                                "t"
+                              ]
+                            }
+                          },
+                          {
+                            "alias": "m1",
+                            "expression": {
+                              "else_expr": null,
+                              "whens": [
+                                {
+                                  "condition": {
+                                    "left": {
+                                      "frame": "",
+                                      "function": {
+                                        "args": [
+                                          {
+                                            "parts": [
+                                              "base",
+                                              "m1"
+                                            ]
+                                          }
+                                        ],
+                                        "distinct": false,
+                                        "name": "MAX"
+                                      },
+                                      "order_by": [],
+                                      "partition_by": []
+                                    },
+                                    "op": ">",
+                                    "right": {
+                                      "value": 0
+                                    }
+                                  },
+                                  "result": {
+                                    "args": [
+                                      {
+                                        "parts": [
+                                          "base",
+                                          "m1"
+                                        ]
+                                      },
+                                      {
+                                        "value": 0
+                                      }
+                                    ],
+                                    "distinct": false,
+                                    "name": "COALESCE"
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        ],
+                        "where": []
+                      }
                     }
                   ],
                   "distinct": false,
                   "from_table": {
                     "alias": "base",
-                    "name": "leaf_1__order_count_customer_month_source_1__leaf_1"
+                    "name": "leaf_1__order_count_customer_month_source_1__guarded_base"
                   },
                   "group_by": [],
                   "having": [],
                   "joins": [],
                   "limit": null,
+                  "observation_scan": false,
                   "order_by": [],
                   "qualify": [],
                   "select": [
@@ -895,6 +993,7 @@
                   "having": [],
                   "joins": [],
                   "limit": null,
+                  "observation_scan": false,
                   "order_by": [],
                   "qualify": [],
                   "select": [
@@ -1015,6 +1114,7 @@
               }
             ],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -1057,17 +1157,96 @@
             ],
             "where": []
           }
+        },
+        {
+          "name": "guarded_base",
+          "query": {
+            "ctes": [],
+            "distinct": false,
+            "from_table": {
+              "alias": "base",
+              "name": "leaf_1"
+            },
+            "group_by": [],
+            "having": [],
+            "joins": [],
+            "limit": null,
+            "observation_scan": false,
+            "order_by": [],
+            "qualify": [],
+            "select": [
+              {
+                "alias": "t",
+                "expression": {
+                  "parts": [
+                    "base",
+                    "t"
+                  ]
+                }
+              },
+              {
+                "alias": "m1",
+                "expression": {
+                  "else_expr": null,
+                  "whens": [
+                    {
+                      "condition": {
+                        "left": {
+                          "frame": "",
+                          "function": {
+                            "args": [
+                              {
+                                "parts": [
+                                  "base",
+                                  "m1"
+                                ]
+                              }
+                            ],
+                            "distinct": false,
+                            "name": "MAX"
+                          },
+                          "order_by": [],
+                          "partition_by": []
+                        },
+                        "op": ">",
+                        "right": {
+                          "value": 0
+                        }
+                      },
+                      "result": {
+                        "args": [
+                          {
+                            "parts": [
+                              "base",
+                              "m1"
+                            ]
+                          },
+                          {
+                            "value": 0
+                          }
+                        ],
+                        "distinct": false,
+                        "name": "COALESCE"
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "where": []
+          }
         }
       ],
       "distinct": false,
       "from_table": {
         "alias": "base",
-        "name": "leaf_1"
+        "name": "guarded_base"
       },
       "group_by": [],
       "having": [],
       "joins": [],
       "limit": null,
+      "observation_scan": false,
       "order_by": [
         {
           "direction": "ASC",
@@ -1439,1473 +1618,1473 @@
     "version": 1
   },
   "recovery_hints": [],
-  "rendered_sql": "WITH leaf_1__order_count_customer_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_1__order_count_customer_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_month_source_1__leaf_1 AS base\n),\nleaf_1__qualified_customers_month_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\",\n  predicate_source.\"temporal_role.jaffle_order_time__month\" AS \"temporal_role.jaffle_order_time__month\"\nFROM leaf_1__order_count_customer_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 10\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('day', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_month_by_order_count_1.\"dimension.jaffle_customer_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1.\"temporal_role.jaffle_order_time__month\"\nGROUP BY\n  DATE_TRUNC('day', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__day\",\n  base.m1 AS qualifying_orders\nFROM leaf_1 AS base\nORDER BY\n  t ASC",
+  "rendered_sql": "WITH leaf_1__order_count_customer_month_source_1__leaf_1 AS (\nSELECT\n  comparison_orders.customer_id AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  comparison_orders.customer_id,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_1__order_count_customer_month_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1__order_count_customer_month_source_1__leaf_1 AS base\n),\nleaf_1__order_count_customer_month_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS __predicate_value\nFROM leaf_1__order_count_customer_month_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_month_by_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\",\n  predicate_source.\"temporal_role.jaffle_order_time__month\" AS \"temporal_role.jaffle_order_time__month\"\nFROM leaf_1__order_count_customer_month_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 10\n),\nleaf_1 AS (\nSELECT\n  DATE_TRUNC('day', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_month_by_order_count_1.\"dimension.jaffle_customer_id\" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1.\"temporal_role.jaffle_order_time__month\"\nGROUP BY\n  DATE_TRUNC('day', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__day\",\n  base.m1 AS qualifying_orders\nFROM guarded_base AS base\nORDER BY\n  t ASC",
   "request_context": {},
   "row_count": 365,
   "rows": [
     {
       "qualifying_orders": 33,
-      "temporal_role.jaffle_order_time__day": "2016-09-01 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-01T00:00:00"
     },
     {
       "qualifying_orders": 33,
-      "temporal_role.jaffle_order_time__day": "2016-09-02 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-02T00:00:00"
     },
     {
       "qualifying_orders": 2,
-      "temporal_role.jaffle_order_time__day": "2016-09-03 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-03T00:00:00"
     },
     {
       "qualifying_orders": 1,
-      "temporal_role.jaffle_order_time__day": "2016-09-04 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-04T00:00:00"
     },
     {
       "qualifying_orders": 27,
-      "temporal_role.jaffle_order_time__day": "2016-09-05 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-05T00:00:00"
     },
     {
       "qualifying_orders": 33,
-      "temporal_role.jaffle_order_time__day": "2016-09-06 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-06T00:00:00"
     },
     {
       "qualifying_orders": 33,
-      "temporal_role.jaffle_order_time__day": "2016-09-07 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-07T00:00:00"
     },
     {
       "qualifying_orders": 36,
-      "temporal_role.jaffle_order_time__day": "2016-09-08 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-08T00:00:00"
     },
     {
       "qualifying_orders": 37,
-      "temporal_role.jaffle_order_time__day": "2016-09-09 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-09T00:00:00"
     },
     {
       "qualifying_orders": 5,
-      "temporal_role.jaffle_order_time__day": "2016-09-10 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-10T00:00:00"
     },
     {
       "qualifying_orders": 1,
-      "temporal_role.jaffle_order_time__day": "2016-09-11 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-11T00:00:00"
     },
     {
       "qualifying_orders": 35,
-      "temporal_role.jaffle_order_time__day": "2016-09-12 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-12T00:00:00"
     },
     {
       "qualifying_orders": 29,
-      "temporal_role.jaffle_order_time__day": "2016-09-13 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-13T00:00:00"
     },
     {
       "qualifying_orders": 30,
-      "temporal_role.jaffle_order_time__day": "2016-09-14 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-14T00:00:00"
     },
     {
       "qualifying_orders": 33,
-      "temporal_role.jaffle_order_time__day": "2016-09-15 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-15T00:00:00"
     },
     {
       "qualifying_orders": 31,
-      "temporal_role.jaffle_order_time__day": "2016-09-16 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-16T00:00:00"
     },
     {
       "qualifying_orders": 2,
-      "temporal_role.jaffle_order_time__day": "2016-09-17 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-17T00:00:00"
     },
     {
       "qualifying_orders": 2,
-      "temporal_role.jaffle_order_time__day": "2016-09-18 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-18T00:00:00"
     },
     {
       "qualifying_orders": 39,
-      "temporal_role.jaffle_order_time__day": "2016-09-19 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-19T00:00:00"
     },
     {
       "qualifying_orders": 33,
-      "temporal_role.jaffle_order_time__day": "2016-09-20 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-20T00:00:00"
     },
     {
       "qualifying_orders": 33,
-      "temporal_role.jaffle_order_time__day": "2016-09-21 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-21T00:00:00"
     },
     {
       "qualifying_orders": 37,
-      "temporal_role.jaffle_order_time__day": "2016-09-22 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-22T00:00:00"
     },
     {
       "qualifying_orders": 33,
-      "temporal_role.jaffle_order_time__day": "2016-09-23 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-23T00:00:00"
     },
     {
       "qualifying_orders": 2,
-      "temporal_role.jaffle_order_time__day": "2016-09-24 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-24T00:00:00"
     },
     {
       "qualifying_orders": 3,
-      "temporal_role.jaffle_order_time__day": "2016-09-25 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-25T00:00:00"
     },
     {
       "qualifying_orders": 31,
-      "temporal_role.jaffle_order_time__day": "2016-09-26 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-26T00:00:00"
     },
     {
       "qualifying_orders": 31,
-      "temporal_role.jaffle_order_time__day": "2016-09-27 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-27T00:00:00"
     },
     {
       "qualifying_orders": 35,
-      "temporal_role.jaffle_order_time__day": "2016-09-28 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-28T00:00:00"
     },
     {
       "qualifying_orders": 34,
-      "temporal_role.jaffle_order_time__day": "2016-09-29 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-29T00:00:00"
     },
     {
       "qualifying_orders": 41,
-      "temporal_role.jaffle_order_time__day": "2016-09-30 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-09-30T00:00:00"
     },
     {
       "qualifying_orders": 6,
-      "temporal_role.jaffle_order_time__day": "2016-10-01 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-01T00:00:00"
     },
     {
       "qualifying_orders": 4,
-      "temporal_role.jaffle_order_time__day": "2016-10-02 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-02T00:00:00"
     },
     {
       "qualifying_orders": 47,
-      "temporal_role.jaffle_order_time__day": "2016-10-03 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-03T00:00:00"
     },
     {
       "qualifying_orders": 54,
-      "temporal_role.jaffle_order_time__day": "2016-10-04 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-04T00:00:00"
     },
     {
       "qualifying_orders": 42,
-      "temporal_role.jaffle_order_time__day": "2016-10-05 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-05T00:00:00"
     },
     {
       "qualifying_orders": 53,
-      "temporal_role.jaffle_order_time__day": "2016-10-06 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-06T00:00:00"
     },
     {
       "qualifying_orders": 51,
-      "temporal_role.jaffle_order_time__day": "2016-10-07 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-07T00:00:00"
     },
     {
       "qualifying_orders": 3,
-      "temporal_role.jaffle_order_time__day": "2016-10-08 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-08T00:00:00"
     },
     {
       "qualifying_orders": 3,
-      "temporal_role.jaffle_order_time__day": "2016-10-09 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-09T00:00:00"
     },
     {
       "qualifying_orders": 48,
-      "temporal_role.jaffle_order_time__day": "2016-10-10 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-10T00:00:00"
     },
     {
       "qualifying_orders": 45,
-      "temporal_role.jaffle_order_time__day": "2016-10-11 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-11T00:00:00"
     },
     {
       "qualifying_orders": 50,
-      "temporal_role.jaffle_order_time__day": "2016-10-12 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-12T00:00:00"
     },
     {
       "qualifying_orders": 46,
-      "temporal_role.jaffle_order_time__day": "2016-10-13 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-13T00:00:00"
     },
     {
       "qualifying_orders": 45,
-      "temporal_role.jaffle_order_time__day": "2016-10-14 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-14T00:00:00"
     },
     {
       "qualifying_orders": 2,
-      "temporal_role.jaffle_order_time__day": "2016-10-15 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-15T00:00:00"
     },
     {
       "qualifying_orders": 5,
-      "temporal_role.jaffle_order_time__day": "2016-10-16 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-16T00:00:00"
     },
     {
       "qualifying_orders": 53,
-      "temporal_role.jaffle_order_time__day": "2016-10-17 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-17T00:00:00"
     },
     {
       "qualifying_orders": 50,
-      "temporal_role.jaffle_order_time__day": "2016-10-18 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-18T00:00:00"
     },
     {
       "qualifying_orders": 48,
-      "temporal_role.jaffle_order_time__day": "2016-10-19 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-19T00:00:00"
     },
     {
       "qualifying_orders": 49,
-      "temporal_role.jaffle_order_time__day": "2016-10-20 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-20T00:00:00"
     },
     {
       "qualifying_orders": 51,
-      "temporal_role.jaffle_order_time__day": "2016-10-21 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-21T00:00:00"
     },
     {
       "qualifying_orders": 1,
-      "temporal_role.jaffle_order_time__day": "2016-10-22 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-22T00:00:00"
     },
     {
       "qualifying_orders": 1,
-      "temporal_role.jaffle_order_time__day": "2016-10-23 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-23T00:00:00"
     },
     {
       "qualifying_orders": 52,
-      "temporal_role.jaffle_order_time__day": "2016-10-24 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-24T00:00:00"
     },
     {
       "qualifying_orders": 51,
-      "temporal_role.jaffle_order_time__day": "2016-10-25 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-25T00:00:00"
     },
     {
       "qualifying_orders": 53,
-      "temporal_role.jaffle_order_time__day": "2016-10-26 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-26T00:00:00"
     },
     {
       "qualifying_orders": 43,
-      "temporal_role.jaffle_order_time__day": "2016-10-27 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-27T00:00:00"
     },
     {
       "qualifying_orders": 55,
-      "temporal_role.jaffle_order_time__day": "2016-10-28 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-28T00:00:00"
     },
     {
       "qualifying_orders": 3,
-      "temporal_role.jaffle_order_time__day": "2016-10-29 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-29T00:00:00"
     },
     {
       "qualifying_orders": 3,
-      "temporal_role.jaffle_order_time__day": "2016-10-30 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-30T00:00:00"
     },
     {
       "qualifying_orders": 56,
-      "temporal_role.jaffle_order_time__day": "2016-10-31 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-10-31T00:00:00"
     },
     {
       "qualifying_orders": 55,
-      "temporal_role.jaffle_order_time__day": "2016-11-01 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-01T00:00:00"
     },
     {
       "qualifying_orders": 71,
-      "temporal_role.jaffle_order_time__day": "2016-11-02 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-02T00:00:00"
     },
     {
       "qualifying_orders": 54,
-      "temporal_role.jaffle_order_time__day": "2016-11-03 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-03T00:00:00"
     },
     {
       "qualifying_orders": 69,
-      "temporal_role.jaffle_order_time__day": "2016-11-04 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-04T00:00:00"
     },
     {
       "qualifying_orders": 8,
-      "temporal_role.jaffle_order_time__day": "2016-11-05 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-05T00:00:00"
     },
     {
       "qualifying_orders": 7,
-      "temporal_role.jaffle_order_time__day": "2016-11-06 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-06T00:00:00"
     },
     {
       "qualifying_orders": 67,
-      "temporal_role.jaffle_order_time__day": "2016-11-07 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-07T00:00:00"
     },
     {
       "qualifying_orders": 69,
-      "temporal_role.jaffle_order_time__day": "2016-11-08 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-08T00:00:00"
     },
     {
       "qualifying_orders": 64,
-      "temporal_role.jaffle_order_time__day": "2016-11-09 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-09T00:00:00"
     },
     {
       "qualifying_orders": 69,
-      "temporal_role.jaffle_order_time__day": "2016-11-10 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-10T00:00:00"
     },
     {
       "qualifying_orders": 62,
-      "temporal_role.jaffle_order_time__day": "2016-11-11 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-11T00:00:00"
     },
     {
       "qualifying_orders": 7,
-      "temporal_role.jaffle_order_time__day": "2016-11-12 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-12T00:00:00"
     },
     {
       "qualifying_orders": 7,
-      "temporal_role.jaffle_order_time__day": "2016-11-13 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-13T00:00:00"
     },
     {
       "qualifying_orders": 63,
-      "temporal_role.jaffle_order_time__day": "2016-11-14 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-14T00:00:00"
     },
     {
       "qualifying_orders": 72,
-      "temporal_role.jaffle_order_time__day": "2016-11-15 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-15T00:00:00"
     },
     {
       "qualifying_orders": 65,
-      "temporal_role.jaffle_order_time__day": "2016-11-16 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-16T00:00:00"
     },
     {
       "qualifying_orders": 75,
-      "temporal_role.jaffle_order_time__day": "2016-11-17 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-17T00:00:00"
     },
     {
       "qualifying_orders": 63,
-      "temporal_role.jaffle_order_time__day": "2016-11-18 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-18T00:00:00"
     },
     {
       "qualifying_orders": 6,
-      "temporal_role.jaffle_order_time__day": "2016-11-19 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-19T00:00:00"
     },
     {
       "qualifying_orders": 7,
-      "temporal_role.jaffle_order_time__day": "2016-11-20 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-20T00:00:00"
     },
     {
       "qualifying_orders": 63,
-      "temporal_role.jaffle_order_time__day": "2016-11-21 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-21T00:00:00"
     },
     {
       "qualifying_orders": 68,
-      "temporal_role.jaffle_order_time__day": "2016-11-22 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-22T00:00:00"
     },
     {
       "qualifying_orders": 62,
-      "temporal_role.jaffle_order_time__day": "2016-11-23 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-23T00:00:00"
     },
     {
       "qualifying_orders": 69,
-      "temporal_role.jaffle_order_time__day": "2016-11-24 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-24T00:00:00"
     },
     {
       "qualifying_orders": 77,
-      "temporal_role.jaffle_order_time__day": "2016-11-25 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-25T00:00:00"
     },
     {
       "qualifying_orders": 6,
-      "temporal_role.jaffle_order_time__day": "2016-11-26 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-26T00:00:00"
     },
     {
       "qualifying_orders": 4,
-      "temporal_role.jaffle_order_time__day": "2016-11-27 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-27T00:00:00"
     },
     {
       "qualifying_orders": 67,
-      "temporal_role.jaffle_order_time__day": "2016-11-28 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-28T00:00:00"
     },
     {
       "qualifying_orders": 66,
-      "temporal_role.jaffle_order_time__day": "2016-11-29 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-29T00:00:00"
     },
     {
       "qualifying_orders": 75,
-      "temporal_role.jaffle_order_time__day": "2016-11-30 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-11-30T00:00:00"
     },
     {
       "qualifying_orders": 82,
-      "temporal_role.jaffle_order_time__day": "2016-12-01 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-01T00:00:00"
     },
     {
       "qualifying_orders": 81,
-      "temporal_role.jaffle_order_time__day": "2016-12-02 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-02T00:00:00"
     },
     {
       "qualifying_orders": 10,
-      "temporal_role.jaffle_order_time__day": "2016-12-03 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-03T00:00:00"
     },
     {
       "qualifying_orders": 9,
-      "temporal_role.jaffle_order_time__day": "2016-12-04 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-04T00:00:00"
     },
     {
       "qualifying_orders": 78,
-      "temporal_role.jaffle_order_time__day": "2016-12-05 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-05T00:00:00"
     },
     {
       "qualifying_orders": 80,
-      "temporal_role.jaffle_order_time__day": "2016-12-06 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-06T00:00:00"
     },
     {
       "qualifying_orders": 84,
-      "temporal_role.jaffle_order_time__day": "2016-12-07 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-07T00:00:00"
     },
     {
       "qualifying_orders": 93,
-      "temporal_role.jaffle_order_time__day": "2016-12-08 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-08T00:00:00"
     },
     {
       "qualifying_orders": 89,
-      "temporal_role.jaffle_order_time__day": "2016-12-09 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-09T00:00:00"
     },
     {
       "qualifying_orders": 7,
-      "temporal_role.jaffle_order_time__day": "2016-12-10 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-10T00:00:00"
     },
     {
       "qualifying_orders": 7,
-      "temporal_role.jaffle_order_time__day": "2016-12-11 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-11T00:00:00"
     },
     {
       "qualifying_orders": 91,
-      "temporal_role.jaffle_order_time__day": "2016-12-12 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-12T00:00:00"
     },
     {
       "qualifying_orders": 96,
-      "temporal_role.jaffle_order_time__day": "2016-12-13 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-13T00:00:00"
     },
     {
       "qualifying_orders": 92,
-      "temporal_role.jaffle_order_time__day": "2016-12-14 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-14T00:00:00"
     },
     {
       "qualifying_orders": 91,
-      "temporal_role.jaffle_order_time__day": "2016-12-15 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-15T00:00:00"
     },
     {
       "qualifying_orders": 85,
-      "temporal_role.jaffle_order_time__day": "2016-12-16 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-16T00:00:00"
     },
     {
       "qualifying_orders": 10,
-      "temporal_role.jaffle_order_time__day": "2016-12-17 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-17T00:00:00"
     },
     {
       "qualifying_orders": 11,
-      "temporal_role.jaffle_order_time__day": "2016-12-18 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-18T00:00:00"
     },
     {
       "qualifying_orders": 88,
-      "temporal_role.jaffle_order_time__day": "2016-12-19 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-19T00:00:00"
     },
     {
       "qualifying_orders": 89,
-      "temporal_role.jaffle_order_time__day": "2016-12-20 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-20T00:00:00"
     },
     {
       "qualifying_orders": 87,
-      "temporal_role.jaffle_order_time__day": "2016-12-21 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-21T00:00:00"
     },
     {
       "qualifying_orders": 88,
-      "temporal_role.jaffle_order_time__day": "2016-12-22 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-22T00:00:00"
     },
     {
       "qualifying_orders": 87,
-      "temporal_role.jaffle_order_time__day": "2016-12-23 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-23T00:00:00"
     },
     {
       "qualifying_orders": 9,
-      "temporal_role.jaffle_order_time__day": "2016-12-24 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-24T00:00:00"
     },
     {
       "qualifying_orders": 10,
-      "temporal_role.jaffle_order_time__day": "2016-12-25 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-25T00:00:00"
     },
     {
       "qualifying_orders": 92,
-      "temporal_role.jaffle_order_time__day": "2016-12-26 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-26T00:00:00"
     },
     {
       "qualifying_orders": 94,
-      "temporal_role.jaffle_order_time__day": "2016-12-27 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-27T00:00:00"
     },
     {
       "qualifying_orders": 86,
-      "temporal_role.jaffle_order_time__day": "2016-12-28 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-28T00:00:00"
     },
     {
       "qualifying_orders": 91,
-      "temporal_role.jaffle_order_time__day": "2016-12-29 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-29T00:00:00"
     },
     {
       "qualifying_orders": 96,
-      "temporal_role.jaffle_order_time__day": "2016-12-30 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-30T00:00:00"
     },
     {
       "qualifying_orders": 4,
-      "temporal_role.jaffle_order_time__day": "2016-12-31 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2016-12-31T00:00:00"
     },
     {
       "qualifying_orders": 11,
-      "temporal_role.jaffle_order_time__day": "2017-01-01 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-01T00:00:00"
     },
     {
       "qualifying_orders": 104,
-      "temporal_role.jaffle_order_time__day": "2017-01-02 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-02T00:00:00"
     },
     {
       "qualifying_orders": 110,
-      "temporal_role.jaffle_order_time__day": "2017-01-03 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-03T00:00:00"
     },
     {
       "qualifying_orders": 109,
-      "temporal_role.jaffle_order_time__day": "2017-01-04 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-04T00:00:00"
     },
     {
       "qualifying_orders": 111,
-      "temporal_role.jaffle_order_time__day": "2017-01-05 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-05T00:00:00"
     },
     {
       "qualifying_orders": 108,
-      "temporal_role.jaffle_order_time__day": "2017-01-06 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-06T00:00:00"
     },
     {
       "qualifying_orders": 13,
-      "temporal_role.jaffle_order_time__day": "2017-01-07 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-07T00:00:00"
     },
     {
       "qualifying_orders": 11,
-      "temporal_role.jaffle_order_time__day": "2017-01-08 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-08T00:00:00"
     },
     {
       "qualifying_orders": 108,
-      "temporal_role.jaffle_order_time__day": "2017-01-09 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-09T00:00:00"
     },
     {
       "qualifying_orders": 101,
-      "temporal_role.jaffle_order_time__day": "2017-01-10 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-10T00:00:00"
     },
     {
       "qualifying_orders": 107,
-      "temporal_role.jaffle_order_time__day": "2017-01-11 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-11T00:00:00"
     },
     {
       "qualifying_orders": 108,
-      "temporal_role.jaffle_order_time__day": "2017-01-12 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-12T00:00:00"
     },
     {
       "qualifying_orders": 108,
-      "temporal_role.jaffle_order_time__day": "2017-01-13 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-13T00:00:00"
     },
     {
       "qualifying_orders": 14,
-      "temporal_role.jaffle_order_time__day": "2017-01-14 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-14T00:00:00"
     },
     {
       "qualifying_orders": 11,
-      "temporal_role.jaffle_order_time__day": "2017-01-15 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-15T00:00:00"
     },
     {
       "qualifying_orders": 110,
-      "temporal_role.jaffle_order_time__day": "2017-01-16 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-16T00:00:00"
     },
     {
       "qualifying_orders": 107,
-      "temporal_role.jaffle_order_time__day": "2017-01-17 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-17T00:00:00"
     },
     {
       "qualifying_orders": 109,
-      "temporal_role.jaffle_order_time__day": "2017-01-18 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-18T00:00:00"
     },
     {
       "qualifying_orders": 106,
-      "temporal_role.jaffle_order_time__day": "2017-01-19 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-19T00:00:00"
     },
     {
       "qualifying_orders": 106,
-      "temporal_role.jaffle_order_time__day": "2017-01-20 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-20T00:00:00"
     },
     {
       "qualifying_orders": 12,
-      "temporal_role.jaffle_order_time__day": "2017-01-21 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-21T00:00:00"
     },
     {
       "qualifying_orders": 10,
-      "temporal_role.jaffle_order_time__day": "2017-01-22 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-22T00:00:00"
     },
     {
       "qualifying_orders": 107,
-      "temporal_role.jaffle_order_time__day": "2017-01-23 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-23T00:00:00"
     },
     {
       "qualifying_orders": 109,
-      "temporal_role.jaffle_order_time__day": "2017-01-24 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-24T00:00:00"
     },
     {
       "qualifying_orders": 103,
-      "temporal_role.jaffle_order_time__day": "2017-01-25 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-25T00:00:00"
     },
     {
       "qualifying_orders": 93,
-      "temporal_role.jaffle_order_time__day": "2017-01-26 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-26T00:00:00"
     },
     {
       "qualifying_orders": 103,
-      "temporal_role.jaffle_order_time__day": "2017-01-27 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-27T00:00:00"
     },
     {
       "qualifying_orders": 11,
-      "temporal_role.jaffle_order_time__day": "2017-01-28 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-28T00:00:00"
     },
     {
       "qualifying_orders": 16,
-      "temporal_role.jaffle_order_time__day": "2017-01-29 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-29T00:00:00"
     },
     {
       "qualifying_orders": 105,
-      "temporal_role.jaffle_order_time__day": "2017-01-30 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-30T00:00:00"
     },
     {
       "qualifying_orders": 108,
-      "temporal_role.jaffle_order_time__day": "2017-01-31 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-01-31T00:00:00"
     },
     {
       "qualifying_orders": 105,
-      "temporal_role.jaffle_order_time__day": "2017-02-01 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-01T00:00:00"
     },
     {
       "qualifying_orders": 105,
-      "temporal_role.jaffle_order_time__day": "2017-02-02 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-02T00:00:00"
     },
     {
       "qualifying_orders": 109,
-      "temporal_role.jaffle_order_time__day": "2017-02-03 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-03T00:00:00"
     },
     {
       "qualifying_orders": 5,
-      "temporal_role.jaffle_order_time__day": "2017-02-04 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-04T00:00:00"
     },
     {
       "qualifying_orders": 8,
-      "temporal_role.jaffle_order_time__day": "2017-02-05 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-05T00:00:00"
     },
     {
       "qualifying_orders": 100,
-      "temporal_role.jaffle_order_time__day": "2017-02-06 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-06T00:00:00"
     },
     {
       "qualifying_orders": 106,
-      "temporal_role.jaffle_order_time__day": "2017-02-07 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-07T00:00:00"
     },
     {
       "qualifying_orders": 104,
-      "temporal_role.jaffle_order_time__day": "2017-02-08 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-08T00:00:00"
     },
     {
       "qualifying_orders": 104,
-      "temporal_role.jaffle_order_time__day": "2017-02-09 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-09T00:00:00"
     },
     {
       "qualifying_orders": 109,
-      "temporal_role.jaffle_order_time__day": "2017-02-10 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-10T00:00:00"
     },
     {
       "qualifying_orders": 9,
-      "temporal_role.jaffle_order_time__day": "2017-02-11 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-11T00:00:00"
     },
     {
       "qualifying_orders": 7,
-      "temporal_role.jaffle_order_time__day": "2017-02-12 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-12T00:00:00"
     },
     {
       "qualifying_orders": 116,
-      "temporal_role.jaffle_order_time__day": "2017-02-13 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-13T00:00:00"
     },
     {
       "qualifying_orders": 101,
-      "temporal_role.jaffle_order_time__day": "2017-02-14 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-14T00:00:00"
     },
     {
       "qualifying_orders": 120,
-      "temporal_role.jaffle_order_time__day": "2017-02-15 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-15T00:00:00"
     },
     {
       "qualifying_orders": 117,
-      "temporal_role.jaffle_order_time__day": "2017-02-16 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-16T00:00:00"
     },
     {
       "qualifying_orders": 104,
-      "temporal_role.jaffle_order_time__day": "2017-02-17 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-17T00:00:00"
     },
     {
       "qualifying_orders": 7,
-      "temporal_role.jaffle_order_time__day": "2017-02-18 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-18T00:00:00"
     },
     {
       "qualifying_orders": 11,
-      "temporal_role.jaffle_order_time__day": "2017-02-19 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-19T00:00:00"
     },
     {
       "qualifying_orders": 113,
-      "temporal_role.jaffle_order_time__day": "2017-02-20 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-20T00:00:00"
     },
     {
       "qualifying_orders": 103,
-      "temporal_role.jaffle_order_time__day": "2017-02-21 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-21T00:00:00"
     },
     {
       "qualifying_orders": 112,
-      "temporal_role.jaffle_order_time__day": "2017-02-22 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-22T00:00:00"
     },
     {
       "qualifying_orders": 94,
-      "temporal_role.jaffle_order_time__day": "2017-02-23 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-23T00:00:00"
     },
     {
       "qualifying_orders": 106,
-      "temporal_role.jaffle_order_time__day": "2017-02-24 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-24T00:00:00"
     },
     {
       "qualifying_orders": 11,
-      "temporal_role.jaffle_order_time__day": "2017-02-25 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-25T00:00:00"
     },
     {
       "qualifying_orders": 10,
-      "temporal_role.jaffle_order_time__day": "2017-02-26 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-26T00:00:00"
     },
     {
       "qualifying_orders": 96,
-      "temporal_role.jaffle_order_time__day": "2017-02-27 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-27T00:00:00"
     },
     {
       "qualifying_orders": 111,
-      "temporal_role.jaffle_order_time__day": "2017-02-28 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-02-28T00:00:00"
     },
     {
       "qualifying_orders": 124,
-      "temporal_role.jaffle_order_time__day": "2017-03-01 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-01T00:00:00"
     },
     {
       "qualifying_orders": 123,
-      "temporal_role.jaffle_order_time__day": "2017-03-02 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-02T00:00:00"
     },
     {
       "qualifying_orders": 122,
-      "temporal_role.jaffle_order_time__day": "2017-03-03 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-03T00:00:00"
     },
     {
       "qualifying_orders": 10,
-      "temporal_role.jaffle_order_time__day": "2017-03-04 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-04T00:00:00"
     },
     {
       "qualifying_orders": 13,
-      "temporal_role.jaffle_order_time__day": "2017-03-05 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-05T00:00:00"
     },
     {
       "qualifying_orders": 118,
-      "temporal_role.jaffle_order_time__day": "2017-03-06 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-06T00:00:00"
     },
     {
       "qualifying_orders": 123,
-      "temporal_role.jaffle_order_time__day": "2017-03-07 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-07T00:00:00"
     },
     {
       "qualifying_orders": 129,
-      "temporal_role.jaffle_order_time__day": "2017-03-08 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-08T00:00:00"
     },
     {
       "qualifying_orders": 130,
-      "temporal_role.jaffle_order_time__day": "2017-03-09 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-09T00:00:00"
     },
     {
       "qualifying_orders": 117,
-      "temporal_role.jaffle_order_time__day": "2017-03-10 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-10T00:00:00"
     },
     {
       "qualifying_orders": 8,
-      "temporal_role.jaffle_order_time__day": "2017-03-11 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-11T00:00:00"
     },
     {
       "qualifying_orders": 14,
-      "temporal_role.jaffle_order_time__day": "2017-03-12 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-12T00:00:00"
     },
     {
       "qualifying_orders": 180,
-      "temporal_role.jaffle_order_time__day": "2017-03-13 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-13T00:00:00"
     },
     {
       "qualifying_orders": 195,
-      "temporal_role.jaffle_order_time__day": "2017-03-14 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-14T00:00:00"
     },
     {
       "qualifying_orders": 188,
-      "temporal_role.jaffle_order_time__day": "2017-03-15 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-15T00:00:00"
     },
     {
       "qualifying_orders": 195,
-      "temporal_role.jaffle_order_time__day": "2017-03-16 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-16T00:00:00"
     },
     {
       "qualifying_orders": 181,
-      "temporal_role.jaffle_order_time__day": "2017-03-17 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-17T00:00:00"
     },
     {
       "qualifying_orders": 17,
-      "temporal_role.jaffle_order_time__day": "2017-03-18 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-18T00:00:00"
     },
     {
       "qualifying_orders": 18,
-      "temporal_role.jaffle_order_time__day": "2017-03-19 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-19T00:00:00"
     },
     {
       "qualifying_orders": 177,
-      "temporal_role.jaffle_order_time__day": "2017-03-20 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-20T00:00:00"
     },
     {
       "qualifying_orders": 187,
-      "temporal_role.jaffle_order_time__day": "2017-03-21 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-21T00:00:00"
     },
     {
       "qualifying_orders": 180,
-      "temporal_role.jaffle_order_time__day": "2017-03-22 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-22T00:00:00"
     },
     {
       "qualifying_orders": 187,
-      "temporal_role.jaffle_order_time__day": "2017-03-23 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-23T00:00:00"
     },
     {
       "qualifying_orders": 171,
-      "temporal_role.jaffle_order_time__day": "2017-03-24 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-24T00:00:00"
     },
     {
       "qualifying_orders": 14,
-      "temporal_role.jaffle_order_time__day": "2017-03-25 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-25T00:00:00"
     },
     {
       "qualifying_orders": 17,
-      "temporal_role.jaffle_order_time__day": "2017-03-26 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-26T00:00:00"
     },
     {
       "qualifying_orders": 190,
-      "temporal_role.jaffle_order_time__day": "2017-03-27 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-27T00:00:00"
     },
     {
       "qualifying_orders": 182,
-      "temporal_role.jaffle_order_time__day": "2017-03-28 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-28T00:00:00"
     },
     {
       "qualifying_orders": 190,
-      "temporal_role.jaffle_order_time__day": "2017-03-29 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-29T00:00:00"
     },
     {
       "qualifying_orders": 178,
-      "temporal_role.jaffle_order_time__day": "2017-03-30 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-30T00:00:00"
     },
     {
       "qualifying_orders": 185,
-      "temporal_role.jaffle_order_time__day": "2017-03-31 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-03-31T00:00:00"
     },
     {
       "qualifying_orders": 23,
-      "temporal_role.jaffle_order_time__day": "2017-04-01 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-01T00:00:00"
     },
     {
       "qualifying_orders": 13,
-      "temporal_role.jaffle_order_time__day": "2017-04-02 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-02T00:00:00"
     },
     {
       "qualifying_orders": 220,
-      "temporal_role.jaffle_order_time__day": "2017-04-03 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-03T00:00:00"
     },
     {
       "qualifying_orders": 203,
-      "temporal_role.jaffle_order_time__day": "2017-04-04 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-04T00:00:00"
     },
     {
       "qualifying_orders": 213,
-      "temporal_role.jaffle_order_time__day": "2017-04-05 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-05T00:00:00"
     },
     {
       "qualifying_orders": 215,
-      "temporal_role.jaffle_order_time__day": "2017-04-06 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-06T00:00:00"
     },
     {
       "qualifying_orders": 212,
-      "temporal_role.jaffle_order_time__day": "2017-04-07 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-07T00:00:00"
     },
     {
       "qualifying_orders": 23,
-      "temporal_role.jaffle_order_time__day": "2017-04-08 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-08T00:00:00"
     },
     {
       "qualifying_orders": 23,
-      "temporal_role.jaffle_order_time__day": "2017-04-09 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-09T00:00:00"
     },
     {
       "qualifying_orders": 204,
-      "temporal_role.jaffle_order_time__day": "2017-04-10 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-10T00:00:00"
     },
     {
       "qualifying_orders": 209,
-      "temporal_role.jaffle_order_time__day": "2017-04-11 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-11T00:00:00"
     },
     {
       "qualifying_orders": 221,
-      "temporal_role.jaffle_order_time__day": "2017-04-12 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-12T00:00:00"
     },
     {
       "qualifying_orders": 219,
-      "temporal_role.jaffle_order_time__day": "2017-04-13 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-13T00:00:00"
     },
     {
       "qualifying_orders": 221,
-      "temporal_role.jaffle_order_time__day": "2017-04-14 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-14T00:00:00"
     },
     {
       "qualifying_orders": 26,
-      "temporal_role.jaffle_order_time__day": "2017-04-15 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-15T00:00:00"
     },
     {
       "qualifying_orders": 17,
-      "temporal_role.jaffle_order_time__day": "2017-04-16 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-16T00:00:00"
     },
     {
       "qualifying_orders": 212,
-      "temporal_role.jaffle_order_time__day": "2017-04-17 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-17T00:00:00"
     },
     {
       "qualifying_orders": 218,
-      "temporal_role.jaffle_order_time__day": "2017-04-18 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-18T00:00:00"
     },
     {
       "qualifying_orders": 213,
-      "temporal_role.jaffle_order_time__day": "2017-04-19 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-19T00:00:00"
     },
     {
       "qualifying_orders": 217,
-      "temporal_role.jaffle_order_time__day": "2017-04-20 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-20T00:00:00"
     },
     {
       "qualifying_orders": 213,
-      "temporal_role.jaffle_order_time__day": "2017-04-21 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-21T00:00:00"
     },
     {
       "qualifying_orders": 25,
-      "temporal_role.jaffle_order_time__day": "2017-04-22 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-22T00:00:00"
     },
     {
       "qualifying_orders": 20,
-      "temporal_role.jaffle_order_time__day": "2017-04-23 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-23T00:00:00"
     },
     {
       "qualifying_orders": 218,
-      "temporal_role.jaffle_order_time__day": "2017-04-24 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-24T00:00:00"
     },
     {
       "qualifying_orders": 209,
-      "temporal_role.jaffle_order_time__day": "2017-04-25 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-25T00:00:00"
     },
     {
       "qualifying_orders": 215,
-      "temporal_role.jaffle_order_time__day": "2017-04-26 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-26T00:00:00"
     },
     {
       "qualifying_orders": 216,
-      "temporal_role.jaffle_order_time__day": "2017-04-27 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-27T00:00:00"
     },
     {
       "qualifying_orders": 211,
-      "temporal_role.jaffle_order_time__day": "2017-04-28 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-28T00:00:00"
     },
     {
       "qualifying_orders": 24,
-      "temporal_role.jaffle_order_time__day": "2017-04-29 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-29T00:00:00"
     },
     {
       "qualifying_orders": 25,
-      "temporal_role.jaffle_order_time__day": "2017-04-30 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-04-30T00:00:00"
     },
     {
       "qualifying_orders": 221,
-      "temporal_role.jaffle_order_time__day": "2017-05-01 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-01T00:00:00"
     },
     {
       "qualifying_orders": 235,
-      "temporal_role.jaffle_order_time__day": "2017-05-02 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-02T00:00:00"
     },
     {
       "qualifying_orders": 217,
-      "temporal_role.jaffle_order_time__day": "2017-05-03 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-03T00:00:00"
     },
     {
       "qualifying_orders": 251,
-      "temporal_role.jaffle_order_time__day": "2017-05-04 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-04T00:00:00"
     },
     {
       "qualifying_orders": 247,
-      "temporal_role.jaffle_order_time__day": "2017-05-05 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-05T00:00:00"
     },
     {
       "qualifying_orders": 14,
-      "temporal_role.jaffle_order_time__day": "2017-05-06 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-06T00:00:00"
     },
     {
       "qualifying_orders": 20,
-      "temporal_role.jaffle_order_time__day": "2017-05-07 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-07T00:00:00"
     },
     {
       "qualifying_orders": 242,
-      "temporal_role.jaffle_order_time__day": "2017-05-08 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-08T00:00:00"
     },
     {
       "qualifying_orders": 229,
-      "temporal_role.jaffle_order_time__day": "2017-05-09 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-09T00:00:00"
     },
     {
       "qualifying_orders": 239,
-      "temporal_role.jaffle_order_time__day": "2017-05-10 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-10T00:00:00"
     },
     {
       "qualifying_orders": 250,
-      "temporal_role.jaffle_order_time__day": "2017-05-11 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-11T00:00:00"
     },
     {
       "qualifying_orders": 257,
-      "temporal_role.jaffle_order_time__day": "2017-05-12 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-12T00:00:00"
     },
     {
       "qualifying_orders": 19,
-      "temporal_role.jaffle_order_time__day": "2017-05-13 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-13T00:00:00"
     },
     {
       "qualifying_orders": 11,
-      "temporal_role.jaffle_order_time__day": "2017-05-14 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-14T00:00:00"
     },
     {
       "qualifying_orders": 242,
-      "temporal_role.jaffle_order_time__day": "2017-05-15 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-15T00:00:00"
     },
     {
       "qualifying_orders": 247,
-      "temporal_role.jaffle_order_time__day": "2017-05-16 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-16T00:00:00"
     },
     {
       "qualifying_orders": 246,
-      "temporal_role.jaffle_order_time__day": "2017-05-17 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-17T00:00:00"
     },
     {
       "qualifying_orders": 242,
-      "temporal_role.jaffle_order_time__day": "2017-05-18 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-18T00:00:00"
     },
     {
       "qualifying_orders": 233,
-      "temporal_role.jaffle_order_time__day": "2017-05-19 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-19T00:00:00"
     },
     {
       "qualifying_orders": 23,
-      "temporal_role.jaffle_order_time__day": "2017-05-20 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-20T00:00:00"
     },
     {
       "qualifying_orders": 22,
-      "temporal_role.jaffle_order_time__day": "2017-05-21 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-21T00:00:00"
     },
     {
       "qualifying_orders": 230,
-      "temporal_role.jaffle_order_time__day": "2017-05-22 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-22T00:00:00"
     },
     {
       "qualifying_orders": 239,
-      "temporal_role.jaffle_order_time__day": "2017-05-23 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-23T00:00:00"
     },
     {
       "qualifying_orders": 237,
-      "temporal_role.jaffle_order_time__day": "2017-05-24 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-24T00:00:00"
     },
     {
       "qualifying_orders": 232,
-      "temporal_role.jaffle_order_time__day": "2017-05-25 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-25T00:00:00"
     },
     {
       "qualifying_orders": 250,
-      "temporal_role.jaffle_order_time__day": "2017-05-26 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-26T00:00:00"
     },
     {
       "qualifying_orders": 24,
-      "temporal_role.jaffle_order_time__day": "2017-05-27 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-27T00:00:00"
     },
     {
       "qualifying_orders": 20,
-      "temporal_role.jaffle_order_time__day": "2017-05-28 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-28T00:00:00"
     },
     {
       "qualifying_orders": 233,
-      "temporal_role.jaffle_order_time__day": "2017-05-29 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-29T00:00:00"
     },
     {
       "qualifying_orders": 230,
-      "temporal_role.jaffle_order_time__day": "2017-05-30 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-30T00:00:00"
     },
     {
       "qualifying_orders": 251,
-      "temporal_role.jaffle_order_time__day": "2017-05-31 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-05-31T00:00:00"
     },
     {
       "qualifying_orders": 203,
-      "temporal_role.jaffle_order_time__day": "2017-06-01 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-01T00:00:00"
     },
     {
       "qualifying_orders": 183,
-      "temporal_role.jaffle_order_time__day": "2017-06-02 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-02T00:00:00"
     },
     {
       "qualifying_orders": 22,
-      "temporal_role.jaffle_order_time__day": "2017-06-03 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-03T00:00:00"
     },
     {
       "qualifying_orders": 14,
-      "temporal_role.jaffle_order_time__day": "2017-06-04 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-04T00:00:00"
     },
     {
       "qualifying_orders": 196,
-      "temporal_role.jaffle_order_time__day": "2017-06-05 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-05T00:00:00"
     },
     {
       "qualifying_orders": 201,
-      "temporal_role.jaffle_order_time__day": "2017-06-06 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-06T00:00:00"
     },
     {
       "qualifying_orders": 204,
-      "temporal_role.jaffle_order_time__day": "2017-06-07 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-07T00:00:00"
     },
     {
       "qualifying_orders": 219,
-      "temporal_role.jaffle_order_time__day": "2017-06-08 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-08T00:00:00"
     },
     {
       "qualifying_orders": 204,
-      "temporal_role.jaffle_order_time__day": "2017-06-09 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-09T00:00:00"
     },
     {
       "qualifying_orders": 21,
-      "temporal_role.jaffle_order_time__day": "2017-06-10 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-10T00:00:00"
     },
     {
       "qualifying_orders": 25,
-      "temporal_role.jaffle_order_time__day": "2017-06-11 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-11T00:00:00"
     },
     {
       "qualifying_orders": 213,
-      "temporal_role.jaffle_order_time__day": "2017-06-12 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-12T00:00:00"
     },
     {
       "qualifying_orders": 198,
-      "temporal_role.jaffle_order_time__day": "2017-06-13 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-13T00:00:00"
     },
     {
       "qualifying_orders": 205,
-      "temporal_role.jaffle_order_time__day": "2017-06-14 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-14T00:00:00"
     },
     {
       "qualifying_orders": 210,
-      "temporal_role.jaffle_order_time__day": "2017-06-15 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-15T00:00:00"
     },
     {
       "qualifying_orders": 199,
-      "temporal_role.jaffle_order_time__day": "2017-06-16 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-16T00:00:00"
     },
     {
       "qualifying_orders": 22,
-      "temporal_role.jaffle_order_time__day": "2017-06-17 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-17T00:00:00"
     },
     {
       "qualifying_orders": 29,
-      "temporal_role.jaffle_order_time__day": "2017-06-18 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-18T00:00:00"
     },
     {
       "qualifying_orders": 201,
-      "temporal_role.jaffle_order_time__day": "2017-06-19 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-19T00:00:00"
     },
     {
       "qualifying_orders": 205,
-      "temporal_role.jaffle_order_time__day": "2017-06-20 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-20T00:00:00"
     },
     {
       "qualifying_orders": 197,
-      "temporal_role.jaffle_order_time__day": "2017-06-21 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-21T00:00:00"
     },
     {
       "qualifying_orders": 206,
-      "temporal_role.jaffle_order_time__day": "2017-06-22 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-22T00:00:00"
     },
     {
       "qualifying_orders": 204,
-      "temporal_role.jaffle_order_time__day": "2017-06-23 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-23T00:00:00"
     },
     {
       "qualifying_orders": 15,
-      "temporal_role.jaffle_order_time__day": "2017-06-24 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-24T00:00:00"
     },
     {
       "qualifying_orders": 19,
-      "temporal_role.jaffle_order_time__day": "2017-06-25 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-25T00:00:00"
     },
     {
       "qualifying_orders": 209,
-      "temporal_role.jaffle_order_time__day": "2017-06-26 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-26T00:00:00"
     },
     {
       "qualifying_orders": 209,
-      "temporal_role.jaffle_order_time__day": "2017-06-27 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-27T00:00:00"
     },
     {
       "qualifying_orders": 186,
-      "temporal_role.jaffle_order_time__day": "2017-06-28 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-28T00:00:00"
     },
     {
       "qualifying_orders": 200,
-      "temporal_role.jaffle_order_time__day": "2017-06-29 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-29T00:00:00"
     },
     {
       "qualifying_orders": 201,
-      "temporal_role.jaffle_order_time__day": "2017-06-30 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-06-30T00:00:00"
     },
     {
       "qualifying_orders": 24,
-      "temporal_role.jaffle_order_time__day": "2017-07-01 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-01T00:00:00"
     },
     {
       "qualifying_orders": 34,
-      "temporal_role.jaffle_order_time__day": "2017-07-02 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-02T00:00:00"
     },
     {
       "qualifying_orders": 236,
-      "temporal_role.jaffle_order_time__day": "2017-07-03 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-03T00:00:00"
     },
     {
       "qualifying_orders": 216,
-      "temporal_role.jaffle_order_time__day": "2017-07-04 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-04T00:00:00"
     },
     {
       "qualifying_orders": 228,
-      "temporal_role.jaffle_order_time__day": "2017-07-05 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-05T00:00:00"
     },
     {
       "qualifying_orders": 225,
-      "temporal_role.jaffle_order_time__day": "2017-07-06 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-06T00:00:00"
     },
     {
       "qualifying_orders": 219,
-      "temporal_role.jaffle_order_time__day": "2017-07-07 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-07T00:00:00"
     },
     {
       "qualifying_orders": 21,
-      "temporal_role.jaffle_order_time__day": "2017-07-08 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-08T00:00:00"
     },
     {
       "qualifying_orders": 20,
-      "temporal_role.jaffle_order_time__day": "2017-07-09 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-09T00:00:00"
     },
     {
       "qualifying_orders": 228,
-      "temporal_role.jaffle_order_time__day": "2017-07-10 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-10T00:00:00"
     },
     {
       "qualifying_orders": 221,
-      "temporal_role.jaffle_order_time__day": "2017-07-11 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-11T00:00:00"
     },
     {
       "qualifying_orders": 227,
-      "temporal_role.jaffle_order_time__day": "2017-07-12 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-12T00:00:00"
     },
     {
       "qualifying_orders": 227,
-      "temporal_role.jaffle_order_time__day": "2017-07-13 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-13T00:00:00"
     },
     {
       "qualifying_orders": 237,
-      "temporal_role.jaffle_order_time__day": "2017-07-14 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-14T00:00:00"
     },
     {
       "qualifying_orders": 22,
-      "temporal_role.jaffle_order_time__day": "2017-07-15 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-15T00:00:00"
     },
     {
       "qualifying_orders": 20,
-      "temporal_role.jaffle_order_time__day": "2017-07-16 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-16T00:00:00"
     },
     {
       "qualifying_orders": 216,
-      "temporal_role.jaffle_order_time__day": "2017-07-17 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-17T00:00:00"
     },
     {
       "qualifying_orders": 222,
-      "temporal_role.jaffle_order_time__day": "2017-07-18 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-18T00:00:00"
     },
     {
       "qualifying_orders": 220,
-      "temporal_role.jaffle_order_time__day": "2017-07-19 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-19T00:00:00"
     },
     {
       "qualifying_orders": 218,
-      "temporal_role.jaffle_order_time__day": "2017-07-20 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-20T00:00:00"
     },
     {
       "qualifying_orders": 220,
-      "temporal_role.jaffle_order_time__day": "2017-07-21 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-21T00:00:00"
     },
     {
       "qualifying_orders": 18,
-      "temporal_role.jaffle_order_time__day": "2017-07-22 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-22T00:00:00"
     },
     {
       "qualifying_orders": 17,
-      "temporal_role.jaffle_order_time__day": "2017-07-23 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-23T00:00:00"
     },
     {
       "qualifying_orders": 232,
-      "temporal_role.jaffle_order_time__day": "2017-07-24 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-24T00:00:00"
     },
     {
       "qualifying_orders": 234,
-      "temporal_role.jaffle_order_time__day": "2017-07-25 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-25T00:00:00"
     },
     {
       "qualifying_orders": 232,
-      "temporal_role.jaffle_order_time__day": "2017-07-26 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-26T00:00:00"
     },
     {
       "qualifying_orders": 236,
-      "temporal_role.jaffle_order_time__day": "2017-07-27 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-27T00:00:00"
     },
     {
       "qualifying_orders": 222,
-      "temporal_role.jaffle_order_time__day": "2017-07-28 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-28T00:00:00"
     },
     {
       "qualifying_orders": 24,
-      "temporal_role.jaffle_order_time__day": "2017-07-29 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-29T00:00:00"
     },
     {
       "qualifying_orders": 27,
-      "temporal_role.jaffle_order_time__day": "2017-07-30 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-30T00:00:00"
     },
     {
       "qualifying_orders": 229,
-      "temporal_role.jaffle_order_time__day": "2017-07-31 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-07-31T00:00:00"
     },
     {
       "qualifying_orders": 260,
-      "temporal_role.jaffle_order_time__day": "2017-08-01 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-01T00:00:00"
     },
     {
       "qualifying_orders": 272,
-      "temporal_role.jaffle_order_time__day": "2017-08-02 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-02T00:00:00"
     },
     {
       "qualifying_orders": 258,
-      "temporal_role.jaffle_order_time__day": "2017-08-03 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-03T00:00:00"
     },
     {
       "qualifying_orders": 268,
-      "temporal_role.jaffle_order_time__day": "2017-08-04 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-04T00:00:00"
     },
     {
       "qualifying_orders": 35,
-      "temporal_role.jaffle_order_time__day": "2017-08-05 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-05T00:00:00"
     },
     {
       "qualifying_orders": 30,
-      "temporal_role.jaffle_order_time__day": "2017-08-06 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-06T00:00:00"
     },
     {
       "qualifying_orders": 275,
-      "temporal_role.jaffle_order_time__day": "2017-08-07 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-07T00:00:00"
     },
     {
       "qualifying_orders": 274,
-      "temporal_role.jaffle_order_time__day": "2017-08-08 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-08T00:00:00"
     },
     {
       "qualifying_orders": 283,
-      "temporal_role.jaffle_order_time__day": "2017-08-09 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-09T00:00:00"
     },
     {
       "qualifying_orders": 267,
-      "temporal_role.jaffle_order_time__day": "2017-08-10 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-10T00:00:00"
     },
     {
       "qualifying_orders": 277,
-      "temporal_role.jaffle_order_time__day": "2017-08-11 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-11T00:00:00"
     },
     {
       "qualifying_orders": 24,
-      "temporal_role.jaffle_order_time__day": "2017-08-12 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-12T00:00:00"
     },
     {
       "qualifying_orders": 30,
-      "temporal_role.jaffle_order_time__day": "2017-08-13 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-13T00:00:00"
     },
     {
       "qualifying_orders": 287,
-      "temporal_role.jaffle_order_time__day": "2017-08-14 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-14T00:00:00"
     },
     {
       "qualifying_orders": 272,
-      "temporal_role.jaffle_order_time__day": "2017-08-15 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-15T00:00:00"
     },
     {
       "qualifying_orders": 279,
-      "temporal_role.jaffle_order_time__day": "2017-08-16 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-16T00:00:00"
     },
     {
       "qualifying_orders": 277,
-      "temporal_role.jaffle_order_time__day": "2017-08-17 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-17T00:00:00"
     },
     {
       "qualifying_orders": 269,
-      "temporal_role.jaffle_order_time__day": "2017-08-18 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-18T00:00:00"
     },
     {
       "qualifying_orders": 33,
-      "temporal_role.jaffle_order_time__day": "2017-08-19 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-19T00:00:00"
     },
     {
       "qualifying_orders": 35,
-      "temporal_role.jaffle_order_time__day": "2017-08-20 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-20T00:00:00"
     },
     {
       "qualifying_orders": 262,
-      "temporal_role.jaffle_order_time__day": "2017-08-21 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-21T00:00:00"
     },
     {
       "qualifying_orders": 272,
-      "temporal_role.jaffle_order_time__day": "2017-08-22 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-22T00:00:00"
     },
     {
       "qualifying_orders": 273,
-      "temporal_role.jaffle_order_time__day": "2017-08-23 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-23T00:00:00"
     },
     {
       "qualifying_orders": 291,
-      "temporal_role.jaffle_order_time__day": "2017-08-24 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-24T00:00:00"
     },
     {
       "qualifying_orders": 274,
-      "temporal_role.jaffle_order_time__day": "2017-08-25 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-25T00:00:00"
     },
     {
       "qualifying_orders": 26,
-      "temporal_role.jaffle_order_time__day": "2017-08-26 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-26T00:00:00"
     },
     {
       "qualifying_orders": 32,
-      "temporal_role.jaffle_order_time__day": "2017-08-27 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-27T00:00:00"
     },
     {
       "qualifying_orders": 293,
-      "temporal_role.jaffle_order_time__day": "2017-08-28 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-28T00:00:00"
     },
     {
       "qualifying_orders": 268,
-      "temporal_role.jaffle_order_time__day": "2017-08-29 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-29T00:00:00"
     },
     {
       "qualifying_orders": 288,
-      "temporal_role.jaffle_order_time__day": "2017-08-30 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-30T00:00:00"
     },
     {
       "qualifying_orders": 277,
-      "temporal_role.jaffle_order_time__day": "2017-08-31 00:00:00"
+      "temporal_role.jaffle_order_time__day": "2017-08-31T00:00:00"
     }
   ],
-  "semantic_fingerprint": "sha256:0486911f94045efa979e23e23222aa0fb090db86bc43954643883a473bf7882b",
-  "source_fingerprint": "4df4037fac8fc9bed8005076674631fbc6b731c4d62cbe6cdd9b0b826d877935",
+  "semantic_fingerprint": "sha256:c5b79ea644809aa038e12ef9fe7bda2a7d463e63f00dc256f1bdcc06e33699d8",
+  "source_fingerprint": "8104a0af4cc06331a6ce8c02a3b23de4843667b9597c8175179565433e1a930a",
   "sql_plan": {
     "ctes": [
       {
@@ -2954,6 +3133,7 @@
                       "having": [],
                       "joins": [],
                       "limit": null,
+                      "observation_scan": false,
                       "order_by": [],
                       "qualify": [],
                       "select": [
@@ -3005,17 +3185,105 @@
                       ],
                       "where": []
                     }
+                  },
+                  {
+                    "name": "leaf_1__order_count_customer_month_source_1__guarded_base",
+                    "query": {
+                      "ctes": [],
+                      "distinct": false,
+                      "from_table": {
+                        "alias": "base",
+                        "name": "leaf_1__order_count_customer_month_source_1__leaf_1"
+                      },
+                      "group_by": [],
+                      "having": [],
+                      "joins": [],
+                      "limit": null,
+                      "observation_scan": false,
+                      "order_by": [],
+                      "qualify": [],
+                      "select": [
+                        {
+                          "alias": "g1",
+                          "expression": {
+                            "parts": [
+                              "base",
+                              "g1"
+                            ]
+                          }
+                        },
+                        {
+                          "alias": "t",
+                          "expression": {
+                            "parts": [
+                              "base",
+                              "t"
+                            ]
+                          }
+                        },
+                        {
+                          "alias": "m1",
+                          "expression": {
+                            "else_expr": null,
+                            "whens": [
+                              {
+                                "condition": {
+                                  "left": {
+                                    "frame": "",
+                                    "function": {
+                                      "args": [
+                                        {
+                                          "parts": [
+                                            "base",
+                                            "m1"
+                                          ]
+                                        }
+                                      ],
+                                      "distinct": false,
+                                      "name": "MAX"
+                                    },
+                                    "order_by": [],
+                                    "partition_by": []
+                                  },
+                                  "op": ">",
+                                  "right": {
+                                    "value": 0
+                                  }
+                                },
+                                "result": {
+                                  "args": [
+                                    {
+                                      "parts": [
+                                        "base",
+                                        "m1"
+                                      ]
+                                    },
+                                    {
+                                      "value": 0
+                                    }
+                                  ],
+                                  "distinct": false,
+                                  "name": "COALESCE"
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      ],
+                      "where": []
+                    }
                   }
                 ],
                 "distinct": false,
                 "from_table": {
                   "alias": "base",
-                  "name": "leaf_1__order_count_customer_month_source_1__leaf_1"
+                  "name": "leaf_1__order_count_customer_month_source_1__guarded_base"
                 },
                 "group_by": [],
                 "having": [],
                 "joins": [],
                 "limit": null,
+                "observation_scan": false,
                 "order_by": [],
                 "qualify": [],
                 "select": [
@@ -3063,6 +3331,7 @@
                 "having": [],
                 "joins": [],
                 "limit": null,
+                "observation_scan": false,
                 "order_by": [],
                 "qualify": [],
                 "select": [
@@ -3183,6 +3452,7 @@
             }
           ],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -3225,17 +3495,96 @@
           ],
           "where": []
         }
+      },
+      {
+        "name": "guarded_base",
+        "query": {
+          "ctes": [],
+          "distinct": false,
+          "from_table": {
+            "alias": "base",
+            "name": "leaf_1"
+          },
+          "group_by": [],
+          "having": [],
+          "joins": [],
+          "limit": null,
+          "observation_scan": false,
+          "order_by": [],
+          "qualify": [],
+          "select": [
+            {
+              "alias": "t",
+              "expression": {
+                "parts": [
+                  "base",
+                  "t"
+                ]
+              }
+            },
+            {
+              "alias": "m1",
+              "expression": {
+                "else_expr": null,
+                "whens": [
+                  {
+                    "condition": {
+                      "left": {
+                        "frame": "",
+                        "function": {
+                          "args": [
+                            {
+                              "parts": [
+                                "base",
+                                "m1"
+                              ]
+                            }
+                          ],
+                          "distinct": false,
+                          "name": "MAX"
+                        },
+                        "order_by": [],
+                        "partition_by": []
+                      },
+                      "op": ">",
+                      "right": {
+                        "value": 0
+                      }
+                    },
+                    "result": {
+                      "args": [
+                        {
+                          "parts": [
+                            "base",
+                            "m1"
+                          ]
+                        },
+                        {
+                          "value": 0
+                        }
+                      ],
+                      "distinct": false,
+                      "name": "COALESCE"
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "where": []
+        }
       }
     ],
     "distinct": false,
     "from_table": {
       "alias": "base",
-      "name": "leaf_1"
+      "name": "guarded_base"
     },
     "group_by": [],
     "having": [],
     "joins": [],
     "limit": null,
+    "observation_scan": false,
     "order_by": [
       {
         "direction": "ASC",
