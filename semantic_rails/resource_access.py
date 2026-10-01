@@ -445,6 +445,7 @@ def run_authorized_operation(
                     "ok",
                     "status",
                     "rows",
+                    "column_types",
                     "row_count",
                     "truncated",
                     "rendered_sql",

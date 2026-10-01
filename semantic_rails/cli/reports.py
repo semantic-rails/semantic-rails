@@ -231,6 +231,7 @@ def ask_report(
             out["result"] = {
                 "ok": bool(result.get("ok", True)),
                 "rows": rows,
+                "column_types": result.get("column_types", {}),
                 "row_count": result.get("row_count", len(rows)),
                 "row_limit": row_limit,
                 "planned_limit": planned_limit,

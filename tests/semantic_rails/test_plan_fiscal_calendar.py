@@ -27,6 +27,7 @@ from semantic_rails.planner.faithfulness import intent_faithfulness_why
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
+from tests.semantic_rails.result_helpers import typed_rows
 
 REVENUE = {"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}
 ORDER_TIME = "temporal_role.jaffle_order_time"
@@ -105,7 +106,7 @@ def test_a_fiscal_series_buckets_on_the_fiscal_calendar(
 
 def test_fiscal_quarters_start_where_the_fiscal_calendar_starts_them(jaffle: Runtime) -> None:
     query = plan_payload(jaffle, intent="revenue by fiscal quarter")["best"]["query_ir"]
-    rows = jaffle.query(query)["rows"]
+    rows = typed_rows(jaffle.query(query))
     starts = [row[f"{ORDER_TIME}__quarter"] for row in rows]
 
     # The fixture's fiscal year starts in February; Gregorian quarters start in January.

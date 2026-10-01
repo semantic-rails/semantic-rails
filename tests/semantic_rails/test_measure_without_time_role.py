@@ -10,7 +10,7 @@ answer is checked against independent SQL over the same table.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -134,7 +134,8 @@ def _answer(package: Path, grain: str) -> list[tuple[date, Decimal]]:
     finally:
         engine.close()
     return sorted(
-        (row[f"{ROLE}__{grain}"].date(), Decimal(str(row["amount"]))) for row in result["rows"]
+        (datetime.fromisoformat(row[f"{ROLE}__{grain}"]).date(), Decimal(str(row["amount"])))
+        for row in result["rows"]
     )
 
 
@@ -396,11 +397,11 @@ def test_a_clockless_measure_still_answers_without_time_or_by_a_plain_date(tmp_p
     assert sorted(
         (row["dimension.ins_claim_opened_on_date"], Decimal(str(row["amount"]))) for row in by_date
     ) == [
-        (date(2024, 1, 5), Decimal("100.0")),
-        (date(2024, 1, 20), Decimal("50.0")),
-        (date(2024, 2, 10), Decimal("70.0")),
-        (date(2024, 4, 2), Decimal("30.0")),
-        (date(2024, 8, 15), Decimal("20.0")),
+        ("2024-01-05", Decimal("100.0")),
+        ("2024-01-20", Decimal("50.0")),
+        ("2024-02-10", Decimal("70.0")),
+        ("2024-04-02", Decimal("30.0")),
+        ("2024-08-15", Decimal("20.0")),
     ]
 
 
