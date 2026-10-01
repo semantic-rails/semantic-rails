@@ -611,6 +611,30 @@ def test_a_cut_policy_sees_the_conditions_inside_a_group(package: Path) -> None:
     assert violation == {"kind": "disallowed_where", "disallowed": [PRICE], "allowed": [TYPE]}
 
 
+def test_a_denied_dimension_inside_a_group_is_denied(package: Path) -> None:
+    config = load_package_config(str(package))
+    policy = SemanticPolicyConfig(
+        id="policy.scope.hide_price",
+        kind="object_access",
+        object_ids=[PRICE],
+        audiences=["partner"],
+        action="deny",
+    )
+    config = replace(config, semantic_policies=[policy])
+    engine = Runtime.from_config(config, source_path=str(package))
+    context = {"audience": "partner"}
+    try:
+        allowed = engine.validate(
+            {**_query([{"child": ITEM, "match": "any", "where": [BEVERAGE]}]), "policy_context": context}
+        )
+        denied = engine.validate({**_query(NO_SAME_ROW), "policy_context": context})
+    finally:
+        engine.close()
+    assert allowed["ok"] is True, allowed
+    assert denied["ok"] is False
+    assert denied["errors"][0]["code"] == "POLICY_DENIED"
+
+
 def test_a_rollup_holding_the_group_dimension_is_not_used(package: Path) -> None:
     config = load_package_config(str(package))
     rollup = AggregateRelationConfig(
@@ -625,6 +649,33 @@ def test_a_rollup_holding_the_group_dimension_is_not_used(package: Path) -> None
     assert leaf.aggregate_relation_id == ""
     assert leaf.aggregate_relation_rejections == {rollup.id: "child_group"}
     assert "customers_by_type" not in compiled["sql"]
+
+
+def test_a_leaf_planned_without_the_group_route_is_refused_not_answered(
+    package: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Force the bypass: plan the leaf as if the group were not there. The plan's guard refuses;
+    with that guard gone too, the ordinary leaf refuses the group rather than drop it."""
+    import semantic_rails.compiler as compiler
+
+    planned = compiler._leaf_path_selections
+
+    def without_groups(bound: Any, config: Any, query: Any) -> Any:
+        selections, entities, _ = planned(bound, config, replace(query, where=[]))
+        return selections, entities, ""
+
+    config = load_package_config(str(package))
+    monkeypatch.setattr(compiler, "_leaf_path_selections", without_groups)
+    with pytest.raises(SemanticLayerError) as caught:
+        compile_query(config, Registry(config), _query(SAME_ROW))
+    assert caught.value.code == "INVALID_QUERY"
+    assert "cannot filter 'measure.scope.customer_count'" in str(caught.value)
+
+    monkeypatch.setattr(compiler, "_require_child_group_leaves", lambda *args: None)
+    with pytest.raises(SemanticLayerError) as caught:
+        compile_query(config, Registry(config), _query(SAME_ROW))
+    assert caught.value.code == "INVALID_QUERY"
+    assert "in this measure's leaf" in str(caught.value)
 
 
 # ---- Policies and dialects ------------------------------------------------------------

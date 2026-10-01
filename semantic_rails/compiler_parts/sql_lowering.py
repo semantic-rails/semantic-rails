@@ -2499,8 +2499,13 @@ def _measure_leaf_select(
         )
     )
     # Child groups lower in the semi-join leaf, each to its own EXISTS (_fanout_filter_leaf_select),
-    # or as the one child of ClickHouse's de-duplicated leaf below.
-    for item in plain_filters(query.get("where")):
+    # or as the one child of ClickHouse's de-duplicated leaf below. Any other leaf refuses them.
+    filters = (
+        plain_filters(query.get("where"))
+        if measure_plan.rewrite_strategy == "fanout_dedup"
+        else refuse_child_groups(query.get("where"), "in this measure's leaf")
+    )
+    for item in filters:
         expr, _ = _direct_dimension_source_expr(
             measure.entity,
             str(item["field"]),
