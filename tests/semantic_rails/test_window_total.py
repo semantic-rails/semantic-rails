@@ -120,7 +120,7 @@ def test_a_grain_still_returns_one_row_per_period(runtime: Runtime) -> None:
     )
     key = f"{ORDER_TIME}__month"
     assert {row[key]: row["revenue"] for row in response["rows"]} == pytest.approx(
-        {row["month"]: row["revenue"] for row in gold}
+        {row["month"].isoformat(): row["revenue"] for row in gold}
     )
     assert response["assumptions"] == []
 

@@ -30,7 +30,7 @@ LAYERS = [
     "db db_parts seed_provenance",
     "config config_parts package_snapshot yaml_loader operational meta_contract",
     "dialects sql_preparation sql_ast sql_identifiers row_filters",
-    "ast expressions schema errors request_payload catalog_search scope",
+    "ast expressions schema errors request_payload catalog_search scope result_values",
 ]
 LAYER_OF = {key: rank for rank, keys in enumerate(LAYERS) for key in keys.split()}
 LAYER_OF[""] = len(LAYERS) - 1  # the package root only reads its version

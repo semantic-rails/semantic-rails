@@ -119,9 +119,10 @@ def _query(package: Path, query: dict[str, Any]) -> tuple[list[tuple[Any, ...]],
         result = engine.query({"version": 1, **query})
     finally:
         engine.close()
-    return _sorted(_normal(tuple(row.values())) for row in result["rows"]), str(
-        result["rendered_sql"]
-    )
+    return _sorted(
+        _normal(tuple(row.values()), [result["column_types"][key]["type"] for key in row])
+        for row in result["rows"]
+    ), str(result["rendered_sql"])
 
 
 def _key(package: Path, sql: str) -> list[tuple[Any, ...]]:
@@ -134,15 +135,19 @@ def _sorted(rows: Any) -> list[tuple[Any, ...]]:
     return sorted(rows, key=lambda row: [str(value) for value in row[:2]])
 
 
-def _normal(row: tuple[Any, ...]) -> tuple[Any, ...]:
-    def one(value: Any) -> Any:
+def _normal(row: tuple[Any, ...], types: list[str] | None = None) -> tuple[Any, ...]:
+    def one(value: Any, kind: str) -> Any:
+        if value is not None and kind == "decimal":
+            value = Decimal(value)
+        if value is not None and kind == "timestamp":
+            value = datetime.fromisoformat(value)
         if isinstance(value, datetime):
             return value.date()
         if isinstance(value, (Decimal, float)):
             return round(float(value), 6)
         return value
 
-    return tuple(one(value) for value in row)
+    return tuple(one(value, types[index] if types else "") for index, value in enumerate(row))
 
 
 def _time(grain: str, **extra: Any) -> dict[str, Any]:

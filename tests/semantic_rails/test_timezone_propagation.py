@@ -435,3 +435,45 @@ def test_postgres_restores_the_current_session_zone(zone: str) -> None:
         if zone and zone != "Europe/Paris"
         else []
     )
+
+
+@pytest.mark.parametrize("zone,offset", [("Asia/Tokyo", "+09:00"), ("Europe/Berlin", "+01:00")])
+def test_eastern_zone_month_buckets_keep_their_first_day(
+    tmp_path: Path, zone: str, offset: str, monkeypatch
+) -> None:
+    runtime = _zone_runtime(tmp_path, "ordered_at_tz", f", timezone: {zone}")
+    try:
+        result = runtime.query(
+            {
+                "version": 1,
+                "select": ZONE_REVENUE,
+                "time": {"temporal_role": ZONE_ROLE, "grain": "month"},
+            }
+        )
+        assert result["rows"][0][f"{ZONE_ROLE}__month"][:10] == "2023-12-01"
+        # Exercise a native aware bucket too: a driver may return either a
+        # local naive clock or an aware instant for the same calendar bucket.
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        bucket = datetime(2023, 12, 1, tzinfo=ZoneInfo(zone))
+        monkeypatch.setattr(
+            "semantic_rails.runtime._adapter_query",
+            lambda *args, **kwargs: [{f"{ZONE_ROLE}__month": bucket, "revenue": 15}],
+        )
+        result = runtime.query(
+            {
+                "version": 1,
+                "select": ZONE_REVENUE,
+                "time": {"temporal_role": ZONE_ROLE, "grain": "month"},
+            }
+        )
+        assert result["rows"] == [
+            {f"{ZONE_ROLE}__month": f"2023-12-01T00:00:00{offset}", "revenue": 15}
+        ]
+        assert result["column_types"][f"{ZONE_ROLE}__month"] == {
+            "type": "timestamp",
+            "timezone": "aware",
+        }
+    finally:
+        runtime.close()
