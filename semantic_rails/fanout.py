@@ -14,7 +14,8 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
+from itertools import islice
 from typing import Any
 
 from .compiler_parts.indexes import RouteRefusal, get_package_analysis
@@ -65,25 +66,49 @@ def _min_hops_unbounded(
 def enumerate_paths(
     graph: dict[str, list[tuple[str, str]]], start: str, target: str, hop_limit: int
 ) -> list[list[str]]:
-    found: list[list[str]] = []
+    return list(_iter_paths(graph, start, target, hop_limit))
 
-    def _dfs(node: str, path: list[str], visited: set[str]) -> None:
+
+@dataclass
+class _PathSearchBudget:
+    remaining: int
+    exhausted: bool = False
+
+
+def _iter_paths(
+    graph: dict[str, list[tuple[str, str]]],
+    start: str,
+    target: str,
+    hop_limit: int,
+    budget: _PathSearchBudget | None = None,
+) -> Iterator[list[str]]:
+    """The shared simple-path traversal; diagnostics may stop early or bound edge visits."""
+
+    def _dfs(node: str, path: list[str], visited: set[str]) -> Iterator[list[str]]:
         if len(path) > hop_limit:
             return
         if node == target:
-            found.append(list(path))
+            yield list(path)
+            return
+        if len(path) == hop_limit:
             return
         for neighbor, rel_id in graph.get(node, []):
+            if budget is not None:
+                if budget.remaining == 0:
+                    budget.exhausted = True
+                    return
+                budget.remaining -= 1
             if neighbor in visited:
                 continue
             visited.add(neighbor)
             path.append(rel_id)
-            _dfs(neighbor, path, visited)
+            yield from _dfs(neighbor, path, visited)
             path.pop()
             visited.remove(neighbor)
+            if budget is not None and budget.exhausted:
+                return
 
-    _dfs(start, [], {start})
-    return found
+    yield from _dfs(start, [], {start})
 
 
 def hop_is_functional(rel: RelationshipConfig, current_entity: str) -> bool:
@@ -267,16 +292,59 @@ def _resolve_uncached(config: PackageConfig, start: str, target: str) -> list[li
             },
         )
     routes = sorted(candidates, key=lambda path: (len(path), path))
+    chosen = _choose_unpinned_route(config, start, routes)
+    if chosen is not None:
+        return [chosen, *(path for path in routes if path != chosen)]
+    raise _route_decision_required(config, start, target, routes)
+
+
+def _choose_unpinned_route(
+    config: PackageConfig, start: str, routes: list[list[str]]
+) -> list[str] | None:
+    """Rules 2-3, shared by full resolution and bounded diagnostic eligibility."""
     if len(routes) == 1:
-        return routes
+        return routes[0]
+    analysis = get_package_analysis(config)
     direct = [
         path
         for path in routes
         if len(path) == 1 and hop_is_functional(analysis.relationships[path[0]], start)
     ]
-    if len(direct) == 1:
-        return [direct[0], *(path for path in routes if path != direct[0])]
-    raise _route_decision_required(config, start, target, routes)
+    return direct[0] if len(direct) == 1 else None
+
+
+def eligible_path_targets(config: PackageConfig, *, start: str) -> list[str]:
+    """Proven resolvable targets without building or caching route refusal envelopes.
+
+    Pins and unique functional direct routes need no search. For other targets,
+    two routes suffice to refuse ambiguity; a sole route needs a completed search.
+    One 4096-edge search budget applies across all targets. Exhaustion omits
+    uncertain targets rather than suggesting a route the resolver might refuse.
+    """
+    analysis = get_package_analysis(config)
+    hop_limit = package_hop_limit(config)
+    direct: dict[str, list[list[str]]] = {}
+    if hop_limit >= 1:
+        for target, rel_id in analysis.graph.get(start, []):
+            if target != start and hop_is_functional(analysis.relationships[rel_id], start):
+                direct.setdefault(target, []).append([rel_id])
+    budget = _PathSearchBudget(remaining=4096)
+    eligible: list[str] = []
+    for target in sorted(analysis.entities):
+        if target == start:
+            continue
+        if (start, target) in analysis.path_preferences:
+            eligible.append(target)
+        elif target in direct:
+            # All functional direct routes were collected, so rule 3 is exact
+            # regardless of the number of longer alternatives.
+            if _choose_unpinned_route(config, start, direct[target]) is not None:
+                eligible.append(target)
+        elif not budget.exhausted:
+            routes = list(islice(_iter_paths(analysis.graph, start, target, hop_limit, budget), 2))
+            if not budget.exhausted and _choose_unpinned_route(config, start, routes) is not None:
+                eligible.append(target)
+    return eligible
 
 
 def build_hop_profile(

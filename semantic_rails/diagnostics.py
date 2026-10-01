@@ -1288,7 +1288,7 @@ def enrich_expression_ast_error(
 def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> SemanticLayerError:
     """Attach reachable-target context to ``PATH_NOT_FOUND``.
 
-    Only the shared path resolver can approve alternatives: relationship
+    Shared path eligibility approves alternatives: relationship
     directions, hop limits, and route decisions apply to hints too.
     """
     if exc.code != "PATH_NOT_FOUND":
@@ -1303,18 +1303,9 @@ def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> Sem
             target = target or match.group(2)
     if not start:
         return exc
-    from .fanout import resolve_path
+    from .fanout import eligible_path_targets
 
-    reachable: set[str] = set()
-    for entity in config.entities:
-        if entity.id == start:
-            continue
-        try:
-            resolve_path(config, start=start, target=entity.id)
-        except SemanticLayerError:
-            continue
-        reachable.add(entity.id)
-    reachable_sorted = sorted(reachable)
+    reachable_sorted = eligible_path_targets(config, start=start)
     # Walk the dimension index for concrete ``dimension.<id>`` values
     # whose owning entity is ``start`` or any reachable entity. Listing
     # 15 ids keeps the envelope small; agents that need more browse
