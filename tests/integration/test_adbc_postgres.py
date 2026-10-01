@@ -252,7 +252,7 @@ def test_postgres_statement_timeout_and_recovery(adbc):
         cursor.execute("RESET statement_timeout")
     started = time.monotonic()
     with pytest.raises(SemanticLayerError) as caught:
-        adbc.query("SELECT pg_sleep(5)", limits={"statement_timeout_ms": limit_ms})
+        adbc.query("SELECT 1 AS n FROM pg_sleep(5)", limits={"statement_timeout_ms": limit_ms})
     elapsed_ms = (time.monotonic() - started) * 1000
     assert elapsed_ms < limit_ms + 1000
     assert caught.value.code == "QUERY_EXECUTION_ERROR"
@@ -319,7 +319,7 @@ def test_postgres_inherited_statement_timeout_is_preserved(adbc):
         cursor.execute("SET statement_timeout = '300ms'")
     started = time.monotonic()
     with pytest.raises(SemanticLayerError) as caught:
-        adbc.query("SELECT pg_sleep(2)")
+        adbc.query("SELECT 1 AS n FROM pg_sleep(2)")
     elapsed_ms = (time.monotonic() - started) * 1000
     assert elapsed_ms < 1500
     assert caught.value.code == "QUERY_EXECUTION_ERROR"
