@@ -126,6 +126,10 @@ already use, and no layer's model defines the variant. Every layer answers them 
 unchanged (the rubric checks each model against its sha256 in `shared/frozen_model.yml`), through
 its documented query-time interface only. A layer that can't express a variant is labeled
 `requires_model_change`, with the reason and a documentation link in `shared/frozen_model.yml`.
+The Semantic Rails model's route pins (`graph.path_preferences`) changed after the variants were
+first answered, because the engine now requires a recorded route decision where two join routes
+can mean different things; no answer was edited into the model, and every question was answered
+again with it.
 
 | Layer | Support labels | Answered with the model frozen | What answers them, or why not |
 | --- | --- | --- | --- |

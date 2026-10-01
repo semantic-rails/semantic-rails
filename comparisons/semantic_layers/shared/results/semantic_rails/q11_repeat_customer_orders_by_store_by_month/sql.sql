@@ -6,11 +6,17 @@ FROM comparison_customers
 GROUP BY
   comparison_customers.customer_id
 ),
+leaf_1__lifetime_order_count_customer_source_1__guarded_base AS (
+SELECT
+  base.g1 AS g1,
+  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1
+FROM leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS base
+),
 leaf_1__lifetime_order_count_customer_source_1 AS (
 SELECT
   base.g1 AS "dimension.jaffle_customer_id",
   base.m1 AS __predicate_value
-FROM leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS base
+FROM leaf_1__lifetime_order_count_customer_source_1__guarded_base AS base
 ),
 leaf_1__qualified_customers_by_lifetime_order_count_1 AS (
 SELECT DISTINCT
@@ -30,12 +36,19 @@ INNER JOIN leaf_1__qualified_customers_by_lifetime_order_count_1 ON comparison_o
 GROUP BY
   comparison_stores.store_name,
   DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))
+),
+guarded_base AS (
+SELECT
+  base.g1 AS g1,
+  base.t AS t,
+  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1
+FROM leaf_1 AS base
 )
 SELECT
   base.g1 AS "dimension.jaffle_store_name",
   base.t AS "temporal_role.jaffle_order_time__month",
   base.m1 AS repeat_customer_orders
-FROM leaf_1 AS base
+FROM guarded_base AS base
 ORDER BY
   t ASC,
   g1 ASC

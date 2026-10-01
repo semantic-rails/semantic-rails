@@ -1,5 +1,6 @@
 {
   "assumptions": [],
+  "authoring_hints": [],
   "dialect": "duckdb",
   "errors": [],
   "explain": {
@@ -38,7 +39,7 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 1.118,
+      "cache_lookup_ms": 1.117,
       "compile_ms": 0.251,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
@@ -1782,72 +1783,10 @@
     },
     "version": 1
   },
+  "query_ir_hints": [],
   "recovery_hints": [],
   "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_base AS (\nSELECT\n  base.t AS t,\n  base.m1 AS m1\nFROM leaf_1 AS base\n),\ndense_bounds AS (\nSELECT\n  MIN(leaf_base.t) AS range_start,\n  MAX(leaf_base.t) AS range_end\nFROM leaf_base\n),\nimplicit_days AS (\nSELECT\n  CAST(day_series.series_day AS DATE) AS date_day\nFROM dense_bounds\nCROSS JOIN LATERAL GENERATE_SERIES(CAST(dense_bounds.range_start AS DATE), CAST(dense_bounds.range_end AS DATE), INTERVAL (1) DAY) AS day_series(series_day)\n),\nimplicit_calendar AS (\nSELECT\n  implicit_days.date_day AS date_day,\n  DATE_TRUNC('month', CAST(implicit_days.date_day AS TIMESTAMP)) AS bucket\nFROM implicit_days\n),\ncalendar_time AS (\nSELECT\n  implicit_calendar.bucket AS t\nFROM implicit_calendar\nCROSS JOIN dense_bounds\nWHERE\n  implicit_calendar.bucket >= dense_bounds.range_start\n  AND implicit_calendar.bucket <= dense_bounds.range_end\nGROUP BY\n  implicit_calendar.bucket\n),\nleaf_time_keys AS (\nSELECT\n  leaf_base.t AS t,\n  1 AS source_present\nFROM leaf_base\nWHERE\n  leaf_base.t IS NOT NULL\nGROUP BY\n  leaf_base.t\n),\ndense_time AS (\nSELECT\n  CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END AS t\nFROM calendar_time\nFULL OUTER JOIN leaf_time_keys ON calendar_time.t = leaf_time_keys.t\nGROUP BY\n  CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END\n),\nseries_base AS (\nSELECT\n  dense_time.t AS t,\n  leaf_base.m1 AS m1\nFROM dense_time\nLEFT JOIN leaf_base ON dense_time.t = leaf_base.t\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM series_base AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd,\n  LAG(base.m1, 1) OVER (ORDER BY base.t ASC) AS prior_month_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  t ASC",
   "request_context": {},
-  "row_count": 12,
-  "rows": [
-    {
-      "prior_month_revenue_usd": null,
-      "revenue_usd": 18053.27999999999,
-      "temporal_role.jaffle_order_time__month": "2016-09-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 18053.27999999999,
-      "revenue_usd": 21923.95000000005,
-      "temporal_role.jaffle_order_time__month": "2016-10-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 21923.95000000005,
-      "revenue_usd": 27916.81999999999,
-      "temporal_role.jaffle_order_time__month": "2016-11-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 27916.81999999999,
-      "revenue_usd": 35677.600000000006,
-      "temporal_role.jaffle_order_time__month": "2016-12-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 35677.600000000006,
-      "revenue_usd": 45017.94999999985,
-      "temporal_role.jaffle_order_time__month": "2017-01-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 45017.94999999985,
-      "revenue_usd": 43358.119999999784,
-      "temporal_role.jaffle_order_time__month": "2017-02-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 43358.119999999784,
-      "revenue_usd": 73950.32000000034,
-      "temporal_role.jaffle_order_time__month": "2017-03-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 73950.32000000034,
-      "revenue_usd": 83316.99000000164,
-      "temporal_role.jaffle_order_time__month": "2017-04-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 83316.99000000164,
-      "revenue_usd": 96070.35000000306,
-      "temporal_role.jaffle_order_time__month": "2017-05-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 96070.35000000306,
-      "revenue_usd": 98378.87000000282,
-      "temporal_role.jaffle_order_time__month": "2017-06-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 98378.87000000282,
-      "revenue_usd": 94857.19000000272,
-      "temporal_role.jaffle_order_time__month": "2017-07-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 94857.19000000272,
-      "revenue_usd": 107371.59000000401,
-      "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00"
-    }
-  ],
   "semantic_fingerprint": "sha256:79e8f3f1f2233be41cfae49254c973c3ff64984ddb66ff349015cf6033769ee7",
   "source_fingerprint": "3a04595d59e97537227dfd70f6e62ae026eef579da73543884aae311262f0e28",
   "sql_plan": {
@@ -2624,7 +2563,6 @@
       ]
     }
   },
-  "truncated": false,
   "warehouse": "duckdb",
   "warehouse_capabilities": {
     "date_diff": true,

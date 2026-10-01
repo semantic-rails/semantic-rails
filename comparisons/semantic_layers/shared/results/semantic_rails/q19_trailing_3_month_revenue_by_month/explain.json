@@ -1,5 +1,6 @@
 {
   "assumptions": [],
+  "authoring_hints": [],
   "dialect": "duckdb",
   "errors": [],
   "explain": {
@@ -7,16 +8,7 @@
       "group_by": [],
       "select": [
         {
-          "alias": "revenue_usd",
-          "expression": {
-            "aggregation": "",
-            "kind": "measure",
-            "measure": "measure.jaffle.revenue_usd",
-            "temporal_role": ""
-          }
-        },
-        {
-          "alias": "prior_month_revenue_usd",
+          "alias": "trailing_3_month_revenue_usd",
           "expression": {
             "input": {
               "aggregation": "",
@@ -24,10 +16,11 @@
               "measure": "measure.jaffle.revenue_usd",
               "temporal_role": ""
             },
-            "kind": "prior_period",
-            "offset": {
+            "kind": "rolling",
+            "partition_by": [],
+            "window": {
               "unit": "month",
-              "value": 1
+              "value": 3
             }
           }
         }
@@ -38,8 +31,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 1.118,
-      "compile_ms": 0.251,
+      "cache_lookup_ms": 1.038,
+      "compile_ms": 0.242,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -138,24 +131,19 @@
         }
       ],
       "post_aggregation_exprs": {
-        "prior_month_revenue_usd": {
+        "trailing_3_month_revenue_usd": {
           "input": {
             "aggregation": "",
             "kind": "measure",
             "measure": "measure.jaffle.revenue_usd",
             "temporal_role": ""
           },
-          "kind": "prior_period",
-          "offset": {
+          "kind": "rolling",
+          "partition_by": [],
+          "window": {
             "unit": "month",
-            "value": 1
+            "value": 3
           }
-        },
-        "revenue_usd": {
-          "aggregation": "",
-          "kind": "measure",
-          "measure": "measure.jaffle.revenue_usd",
-          "temporal_role": ""
         }
       },
       "query": {
@@ -173,16 +161,7 @@
         ],
         "select": [
           {
-            "as": "revenue_usd",
-            "expression": {
-              "aggregation": "",
-              "kind": "measure",
-              "measure": "measure.jaffle.revenue_usd",
-              "temporal_role": ""
-            }
-          },
-          {
-            "as": "prior_month_revenue_usd",
+            "as": "trailing_3_month_revenue_usd",
             "expression": {
               "input": {
                 "aggregation": "",
@@ -190,10 +169,11 @@
                 "measure": "measure.jaffle.revenue_usd",
                 "temporal_role": ""
               },
-              "kind": "prior_period",
-              "offset": {
+              "kind": "rolling",
+              "partition_by": [],
+              "window": {
                 "unit": "month",
-                "value": 1
+                "value": 3
               }
             }
           }
@@ -214,16 +194,7 @@
         "group_by": [],
         "select": [
           {
-            "alias": "revenue_usd",
-            "expression": {
-              "aggregation": "",
-              "kind": "measure",
-              "measure": "measure.jaffle.revenue_usd",
-              "temporal_role": ""
-            }
-          },
-          {
-            "alias": "prior_month_revenue_usd",
+            "alias": "trailing_3_month_revenue_usd",
             "expression": {
               "input": {
                 "aggregation": "",
@@ -231,10 +202,11 @@
                 "measure": "measure.jaffle.revenue_usd",
                 "temporal_role": ""
               },
-              "kind": "prior_period",
-              "offset": {
+              "kind": "rolling",
+              "partition_by": [],
+              "window": {
                 "unit": "month",
-                "value": 1
+                "value": 3
               }
             }
           }
@@ -249,20 +221,6 @@
         "nodes": [
           {
             "details": {
-              "aggregation": "sum",
-              "entity": "entity.jaffle_order",
-              "measure": "measure.jaffle.revenue_usd",
-              "temporal_roles": [
-                "temporal_role.jaffle_order_time"
-              ]
-            },
-            "id": "source_leaf_1",
-            "inputs": [],
-            "kind": "SourceLeaf",
-            "label": "revenue_usd"
-          },
-          {
-            "details": {
               "expression": {
                 "input": {
                   "aggregation": "",
@@ -270,51 +228,35 @@
                   "measure": "measure.jaffle.revenue_usd",
                   "temporal_role": ""
                 },
-                "kind": "prior_period",
-                "offset": {
+                "kind": "rolling",
+                "partition_by": [],
+                "window": {
                   "unit": "month",
-                  "value": 1
+                  "value": 3
                 }
               }
             },
-            "id": "prior_period_2",
+            "id": "rolling_1",
             "inputs": [],
-            "kind": "prior_period",
-            "label": "prior_month_revenue_usd"
-          },
-          {
-            "details": {
-              "keys": [
-                "temporal_role.jaffle_order_time__month"
-              ]
-            },
-            "id": "multi_fact_align",
-            "inputs": [
-              "source_leaf_1",
-              "prior_period_2"
-            ],
-            "kind": "MultiFactAlign",
-            "label": ""
+            "kind": "rolling",
+            "label": "trailing_3_month_revenue_usd"
           },
           {
             "details": {
               "outputs": {
-                "prior_month_revenue_usd": "prior_period_2",
-                "revenue_usd": "source_leaf_1"
+                "trailing_3_month_revenue_usd": "rolling_1"
               }
             },
             "id": "final_project",
             "inputs": [
-              "source_leaf_1",
-              "prior_period_2"
+              "rolling_1"
             ],
             "kind": "FinalProject",
             "label": ""
           }
         ],
         "outputs": {
-          "prior_month_revenue_usd": "prior_period_2",
-          "revenue_usd": "source_leaf_1"
+          "trailing_3_month_revenue_usd": "rolling_1"
         },
         "version": 1
       },
@@ -344,16 +286,7 @@
       ],
       "select": [
         {
-          "as": "revenue_usd",
-          "expression": {
-            "aggregation": "",
-            "kind": "measure",
-            "measure": "measure.jaffle.revenue_usd",
-            "temporal_role": ""
-          }
-        },
-        {
-          "as": "prior_month_revenue_usd",
+          "as": "trailing_3_month_revenue_usd",
           "expression": {
             "input": {
               "aggregation": "",
@@ -361,10 +294,11 @@
               "measure": "measure.jaffle.revenue_usd",
               "temporal_role": ""
             },
-            "kind": "prior_period",
-            "offset": {
+            "kind": "rolling",
+            "partition_by": [],
+            "window": {
               "unit": "month",
-              "value": 1
+              "value": 3
             }
           }
         }
@@ -530,8 +464,7 @@
               "temporal_role.jaffle_order_time__month"
             ],
             "outputs": [
-              "revenue_usd",
-              "prior_month_revenue_usd"
+              "trailing_3_month_revenue_usd"
             ],
             "projection_wrappers": "pruned_when_no_metric_filters_or_order_by"
           },
@@ -558,32 +491,17 @@
       ],
       "outputs": {
         "leaf__measure_jaffle_revenue_usd__sum": "leaf_1",
-        "prior_month_revenue_usd": "final_project",
-        "revenue_usd": "final_project"
+        "trailing_3_month_revenue_usd": "final_project"
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_base AS (\nSELECT\n  base.t AS t,\n  base.m1 AS m1\nFROM leaf_1 AS base\n),\ndense_bounds AS (\nSELECT\n  MIN(leaf_base.t) AS range_start,\n  MAX(leaf_base.t) AS range_end\nFROM leaf_base\n),\nimplicit_days AS (\nSELECT\n  CAST(day_series.series_day AS DATE) AS date_day\nFROM dense_bounds\nCROSS JOIN LATERAL GENERATE_SERIES(CAST(dense_bounds.range_start AS DATE), CAST(dense_bounds.range_end AS DATE), INTERVAL (1) DAY) AS day_series(series_day)\n),\nimplicit_calendar AS (\nSELECT\n  implicit_days.date_day AS date_day,\n  DATE_TRUNC('month', CAST(implicit_days.date_day AS TIMESTAMP)) AS bucket\nFROM implicit_days\n),\ncalendar_time AS (\nSELECT\n  implicit_calendar.bucket AS t\nFROM implicit_calendar\nCROSS JOIN dense_bounds\nWHERE\n  implicit_calendar.bucket >= dense_bounds.range_start\n  AND implicit_calendar.bucket <= dense_bounds.range_end\nGROUP BY\n  implicit_calendar.bucket\n),\nleaf_time_keys AS (\nSELECT\n  leaf_base.t AS t,\n  1 AS source_present\nFROM leaf_base\nWHERE\n  leaf_base.t IS NOT NULL\nGROUP BY\n  leaf_base.t\n),\ndense_time AS (\nSELECT\n  CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END AS t\nFROM calendar_time\nFULL OUTER JOIN leaf_time_keys ON calendar_time.t = leaf_time_keys.t\nGROUP BY\n  CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END\n),\nseries_base AS (\nSELECT\n  dense_time.t AS t,\n  leaf_base.m1 AS m1\nFROM dense_time\nLEFT JOIN leaf_base ON dense_time.t = leaf_base.t\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM series_base AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd,\n  LAG(base.m1, 1) OVER (ORDER BY base.t ASC) AS prior_month_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  t ASC",
+    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_base AS (\nSELECT\n  base.t AS t,\n  base.m1 AS m1\nFROM leaf_1 AS base\n),\ndense_bounds AS (\nSELECT\n  MIN(leaf_base.t) AS range_start,\n  MAX(leaf_base.t) AS range_end\nFROM leaf_base\n),\nimplicit_days AS (\nSELECT\n  CAST(day_series.series_day AS DATE) AS date_day\nFROM dense_bounds\nCROSS JOIN LATERAL GENERATE_SERIES(CAST(dense_bounds.range_start AS DATE), CAST(dense_bounds.range_end AS DATE), INTERVAL (1) DAY) AS day_series(series_day)\n),\nimplicit_calendar AS (\nSELECT\n  implicit_days.date_day AS date_day,\n  DATE_TRUNC('month', CAST(implicit_days.date_day AS TIMESTAMP)) AS bucket\nFROM implicit_days\n),\ncalendar_time AS (\nSELECT\n  implicit_calendar.bucket AS t\nFROM implicit_calendar\nCROSS JOIN dense_bounds\nWHERE\n  implicit_calendar.bucket >= dense_bounds.range_start\n  AND implicit_calendar.bucket <= dense_bounds.range_end\nGROUP BY\n  implicit_calendar.bucket\n),\nleaf_time_keys AS (\nSELECT\n  leaf_base.t AS t,\n  1 AS source_present\nFROM leaf_base\nWHERE\n  leaf_base.t IS NOT NULL\nGROUP BY\n  leaf_base.t\n),\ndense_time AS (\nSELECT\n  CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END AS t\nFROM calendar_time\nFULL OUTER JOIN leaf_time_keys ON calendar_time.t = leaf_time_keys.t\nGROUP BY\n  CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END\n),\nseries_base AS (\nSELECT\n  dense_time.t AS t,\n  leaf_base.m1 AS m1\nFROM dense_time\nLEFT JOIN leaf_base ON dense_time.t = leaf_base.t\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM series_base AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  SUM(base.m1) OVER (ORDER BY base.t ASC ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS trailing_3_month_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  t ASC",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
     },
     "semantic_dag": {
       "nodes": [
-        {
-          "details": {
-            "aggregation": "sum",
-            "entity": "entity.jaffle_order",
-            "measure": "measure.jaffle.revenue_usd",
-            "temporal_roles": [
-              "temporal_role.jaffle_order_time"
-            ]
-          },
-          "id": "source_leaf_1",
-          "inputs": [],
-          "kind": "SourceLeaf",
-          "label": "revenue_usd"
-        },
         {
           "details": {
             "expression": {
@@ -593,51 +511,35 @@
                 "measure": "measure.jaffle.revenue_usd",
                 "temporal_role": ""
               },
-              "kind": "prior_period",
-              "offset": {
+              "kind": "rolling",
+              "partition_by": [],
+              "window": {
                 "unit": "month",
-                "value": 1
+                "value": 3
               }
             }
           },
-          "id": "prior_period_2",
+          "id": "rolling_1",
           "inputs": [],
-          "kind": "prior_period",
-          "label": "prior_month_revenue_usd"
-        },
-        {
-          "details": {
-            "keys": [
-              "temporal_role.jaffle_order_time__month"
-            ]
-          },
-          "id": "multi_fact_align",
-          "inputs": [
-            "source_leaf_1",
-            "prior_period_2"
-          ],
-          "kind": "MultiFactAlign",
-          "label": ""
+          "kind": "rolling",
+          "label": "trailing_3_month_revenue_usd"
         },
         {
           "details": {
             "outputs": {
-              "prior_month_revenue_usd": "prior_period_2",
-              "revenue_usd": "source_leaf_1"
+              "trailing_3_month_revenue_usd": "rolling_1"
             }
           },
           "id": "final_project",
           "inputs": [
-            "source_leaf_1",
-            "prior_period_2"
+            "rolling_1"
           ],
           "kind": "FinalProject",
           "label": ""
         }
       ],
       "outputs": {
-        "prior_month_revenue_usd": "prior_period_2",
-        "revenue_usd": "source_leaf_1"
+        "trailing_3_month_revenue_usd": "rolling_1"
       },
       "version": 1
     },
@@ -1343,18 +1245,9 @@
           }
         },
         {
-          "alias": "revenue_usd",
+          "alias": "trailing_3_month_revenue_usd",
           "expression": {
-            "parts": [
-              "base",
-              "m1"
-            ]
-          }
-        },
-        {
-          "alias": "prior_month_revenue_usd",
-          "expression": {
-            "frame": "",
+            "frame": "ROWS BETWEEN 2 PRECEDING AND CURRENT ROW",
             "function": {
               "args": [
                 {
@@ -1362,13 +1255,10 @@
                     "base",
                     "m1"
                   ]
-                },
-                {
-                  "value": 1
                 }
               ],
               "distinct": false,
-              "name": "LAG"
+              "name": "SUM"
             },
             "order_by": [
               {
@@ -1465,24 +1355,19 @@
       }
     ],
     "post_aggregation_exprs": {
-      "prior_month_revenue_usd": {
+      "trailing_3_month_revenue_usd": {
         "input": {
           "aggregation": "",
           "kind": "measure",
           "measure": "measure.jaffle.revenue_usd",
           "temporal_role": ""
         },
-        "kind": "prior_period",
-        "offset": {
+        "kind": "rolling",
+        "partition_by": [],
+        "window": {
           "unit": "month",
-          "value": 1
+          "value": 3
         }
-      },
-      "revenue_usd": {
-        "aggregation": "",
-        "kind": "measure",
-        "measure": "measure.jaffle.revenue_usd",
-        "temporal_role": ""
       }
     },
     "query": {
@@ -1500,16 +1385,7 @@
       ],
       "select": [
         {
-          "as": "revenue_usd",
-          "expression": {
-            "aggregation": "",
-            "kind": "measure",
-            "measure": "measure.jaffle.revenue_usd",
-            "temporal_role": ""
-          }
-        },
-        {
-          "as": "prior_month_revenue_usd",
+          "as": "trailing_3_month_revenue_usd",
           "expression": {
             "input": {
               "aggregation": "",
@@ -1517,10 +1393,11 @@
               "measure": "measure.jaffle.revenue_usd",
               "temporal_role": ""
             },
-            "kind": "prior_period",
-            "offset": {
+            "kind": "rolling",
+            "partition_by": [],
+            "window": {
               "unit": "month",
-              "value": 1
+              "value": 3
             }
           }
         }
@@ -1541,16 +1418,7 @@
       "group_by": [],
       "select": [
         {
-          "alias": "revenue_usd",
-          "expression": {
-            "aggregation": "",
-            "kind": "measure",
-            "measure": "measure.jaffle.revenue_usd",
-            "temporal_role": ""
-          }
-        },
-        {
-          "alias": "prior_month_revenue_usd",
+          "alias": "trailing_3_month_revenue_usd",
           "expression": {
             "input": {
               "aggregation": "",
@@ -1558,10 +1426,11 @@
               "measure": "measure.jaffle.revenue_usd",
               "temporal_role": ""
             },
-            "kind": "prior_period",
-            "offset": {
+            "kind": "rolling",
+            "partition_by": [],
+            "window": {
               "unit": "month",
-              "value": 1
+              "value": 3
             }
           }
         }
@@ -1576,20 +1445,6 @@
       "nodes": [
         {
           "details": {
-            "aggregation": "sum",
-            "entity": "entity.jaffle_order",
-            "measure": "measure.jaffle.revenue_usd",
-            "temporal_roles": [
-              "temporal_role.jaffle_order_time"
-            ]
-          },
-          "id": "source_leaf_1",
-          "inputs": [],
-          "kind": "SourceLeaf",
-          "label": "revenue_usd"
-        },
-        {
-          "details": {
             "expression": {
               "input": {
                 "aggregation": "",
@@ -1597,51 +1452,35 @@
                 "measure": "measure.jaffle.revenue_usd",
                 "temporal_role": ""
               },
-              "kind": "prior_period",
-              "offset": {
+              "kind": "rolling",
+              "partition_by": [],
+              "window": {
                 "unit": "month",
-                "value": 1
+                "value": 3
               }
             }
           },
-          "id": "prior_period_2",
+          "id": "rolling_1",
           "inputs": [],
-          "kind": "prior_period",
-          "label": "prior_month_revenue_usd"
-        },
-        {
-          "details": {
-            "keys": [
-              "temporal_role.jaffle_order_time__month"
-            ]
-          },
-          "id": "multi_fact_align",
-          "inputs": [
-            "source_leaf_1",
-            "prior_period_2"
-          ],
-          "kind": "MultiFactAlign",
-          "label": ""
+          "kind": "rolling",
+          "label": "trailing_3_month_revenue_usd"
         },
         {
           "details": {
             "outputs": {
-              "prior_month_revenue_usd": "prior_period_2",
-              "revenue_usd": "source_leaf_1"
+              "trailing_3_month_revenue_usd": "rolling_1"
             }
           },
           "id": "final_project",
           "inputs": [
-            "source_leaf_1",
-            "prior_period_2"
+            "rolling_1"
           ],
           "kind": "FinalProject",
           "label": ""
         }
       ],
       "outputs": {
-        "prior_month_revenue_usd": "prior_period_2",
-        "revenue_usd": "source_leaf_1"
+        "trailing_3_month_revenue_usd": "rolling_1"
       },
       "version": 1
     },
@@ -1672,16 +1511,7 @@
     ],
     "select": [
       {
-        "as": "revenue_usd",
-        "expression": {
-          "aggregation": "",
-          "kind": "measure",
-          "measure": "measure.jaffle.revenue_usd",
-          "temporal_role": ""
-        }
-      },
-      {
-        "as": "prior_month_revenue_usd",
+        "as": "trailing_3_month_revenue_usd",
         "expression": {
           "input": {
             "aggregation": "",
@@ -1689,10 +1519,11 @@
             "measure": "measure.jaffle.revenue_usd",
             "temporal_role": ""
           },
-          "kind": "prior_period",
-          "offset": {
+          "kind": "rolling",
+          "partition_by": [],
+          "window": {
             "unit": "month",
-            "value": 1
+            "value": 3
           }
         }
       }
@@ -1720,16 +1551,9 @@
     },
     {
       "display_label": "Revenue (USD)",
-      "field": "revenue_usd",
+      "field": "trailing_3_month_revenue_usd",
       "semantic_id": "measure.jaffle.revenue_usd",
-      "sql_alias": "revenue_usd",
-      "type": "currency"
-    },
-    {
-      "display_label": "Revenue (USD)",
-      "field": "prior_month_revenue_usd",
-      "semantic_id": "measure.jaffle.revenue_usd",
-      "sql_alias": "prior_month_revenue_usd",
+      "sql_alias": "trailing_3_month_revenue_usd",
       "type": "currency"
     }
   ],
@@ -1757,21 +1581,15 @@
     ],
     "select": [
       {
-        "as": "revenue_usd",
-        "expression": {
-          "measure": "measure.jaffle.revenue_usd"
-        }
-      },
-      {
-        "as": "prior_month_revenue_usd",
+        "as": "trailing_3_month_revenue_usd",
         "expression": {
           "input": {
             "measure": "measure.jaffle.revenue_usd"
           },
-          "kind": "prior_period",
-          "offset": {
+          "kind": "rolling",
+          "window": {
             "unit": "month",
-            "value": 1
+            "value": 3
           }
         }
       }
@@ -1782,72 +1600,10 @@
     },
     "version": 1
   },
+  "query_ir_hints": [],
   "recovery_hints": [],
-  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_base AS (\nSELECT\n  base.t AS t,\n  base.m1 AS m1\nFROM leaf_1 AS base\n),\ndense_bounds AS (\nSELECT\n  MIN(leaf_base.t) AS range_start,\n  MAX(leaf_base.t) AS range_end\nFROM leaf_base\n),\nimplicit_days AS (\nSELECT\n  CAST(day_series.series_day AS DATE) AS date_day\nFROM dense_bounds\nCROSS JOIN LATERAL GENERATE_SERIES(CAST(dense_bounds.range_start AS DATE), CAST(dense_bounds.range_end AS DATE), INTERVAL (1) DAY) AS day_series(series_day)\n),\nimplicit_calendar AS (\nSELECT\n  implicit_days.date_day AS date_day,\n  DATE_TRUNC('month', CAST(implicit_days.date_day AS TIMESTAMP)) AS bucket\nFROM implicit_days\n),\ncalendar_time AS (\nSELECT\n  implicit_calendar.bucket AS t\nFROM implicit_calendar\nCROSS JOIN dense_bounds\nWHERE\n  implicit_calendar.bucket >= dense_bounds.range_start\n  AND implicit_calendar.bucket <= dense_bounds.range_end\nGROUP BY\n  implicit_calendar.bucket\n),\nleaf_time_keys AS (\nSELECT\n  leaf_base.t AS t,\n  1 AS source_present\nFROM leaf_base\nWHERE\n  leaf_base.t IS NOT NULL\nGROUP BY\n  leaf_base.t\n),\ndense_time AS (\nSELECT\n  CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END AS t\nFROM calendar_time\nFULL OUTER JOIN leaf_time_keys ON calendar_time.t = leaf_time_keys.t\nGROUP BY\n  CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END\n),\nseries_base AS (\nSELECT\n  dense_time.t AS t,\n  leaf_base.m1 AS m1\nFROM dense_time\nLEFT JOIN leaf_base ON dense_time.t = leaf_base.t\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM series_base AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS revenue_usd,\n  LAG(base.m1, 1) OVER (ORDER BY base.t ASC) AS prior_month_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  t ASC",
+  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_orders.order_total_cents / 100.0) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nleaf_base AS (\nSELECT\n  base.t AS t,\n  base.m1 AS m1\nFROM leaf_1 AS base\n),\ndense_bounds AS (\nSELECT\n  MIN(leaf_base.t) AS range_start,\n  MAX(leaf_base.t) AS range_end\nFROM leaf_base\n),\nimplicit_days AS (\nSELECT\n  CAST(day_series.series_day AS DATE) AS date_day\nFROM dense_bounds\nCROSS JOIN LATERAL GENERATE_SERIES(CAST(dense_bounds.range_start AS DATE), CAST(dense_bounds.range_end AS DATE), INTERVAL (1) DAY) AS day_series(series_day)\n),\nimplicit_calendar AS (\nSELECT\n  implicit_days.date_day AS date_day,\n  DATE_TRUNC('month', CAST(implicit_days.date_day AS TIMESTAMP)) AS bucket\nFROM implicit_days\n),\ncalendar_time AS (\nSELECT\n  implicit_calendar.bucket AS t\nFROM implicit_calendar\nCROSS JOIN dense_bounds\nWHERE\n  implicit_calendar.bucket >= dense_bounds.range_start\n  AND implicit_calendar.bucket <= dense_bounds.range_end\nGROUP BY\n  implicit_calendar.bucket\n),\nleaf_time_keys AS (\nSELECT\n  leaf_base.t AS t,\n  1 AS source_present\nFROM leaf_base\nWHERE\n  leaf_base.t IS NOT NULL\nGROUP BY\n  leaf_base.t\n),\ndense_time AS (\nSELECT\n  CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END AS t\nFROM calendar_time\nFULL OUTER JOIN leaf_time_keys ON calendar_time.t = leaf_time_keys.t\nGROUP BY\n  CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END\n),\nseries_base AS (\nSELECT\n  dense_time.t AS t,\n  leaf_base.m1 AS m1\nFROM dense_time\nLEFT JOIN leaf_base ON dense_time.t = leaf_base.t\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM series_base AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  SUM(base.m1) OVER (ORDER BY base.t ASC ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) AS trailing_3_month_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  t ASC",
   "request_context": {},
-  "row_count": 12,
-  "rows": [
-    {
-      "prior_month_revenue_usd": null,
-      "revenue_usd": 18053.27999999999,
-      "temporal_role.jaffle_order_time__month": "2016-09-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 18053.27999999999,
-      "revenue_usd": 21923.95000000005,
-      "temporal_role.jaffle_order_time__month": "2016-10-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 21923.95000000005,
-      "revenue_usd": 27916.81999999999,
-      "temporal_role.jaffle_order_time__month": "2016-11-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 27916.81999999999,
-      "revenue_usd": 35677.600000000006,
-      "temporal_role.jaffle_order_time__month": "2016-12-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 35677.600000000006,
-      "revenue_usd": 45017.94999999985,
-      "temporal_role.jaffle_order_time__month": "2017-01-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 45017.94999999985,
-      "revenue_usd": 43358.119999999784,
-      "temporal_role.jaffle_order_time__month": "2017-02-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 43358.119999999784,
-      "revenue_usd": 73950.32000000034,
-      "temporal_role.jaffle_order_time__month": "2017-03-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 73950.32000000034,
-      "revenue_usd": 83316.99000000164,
-      "temporal_role.jaffle_order_time__month": "2017-04-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 83316.99000000164,
-      "revenue_usd": 96070.35000000306,
-      "temporal_role.jaffle_order_time__month": "2017-05-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 96070.35000000306,
-      "revenue_usd": 98378.87000000282,
-      "temporal_role.jaffle_order_time__month": "2017-06-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 98378.87000000282,
-      "revenue_usd": 94857.19000000272,
-      "temporal_role.jaffle_order_time__month": "2017-07-01 00:00:00"
-    },
-    {
-      "prior_month_revenue_usd": 94857.19000000272,
-      "revenue_usd": 107371.59000000401,
-      "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00"
-    }
-  ],
   "semantic_fingerprint": "sha256:79e8f3f1f2233be41cfae49254c973c3ff64984ddb66ff349015cf6033769ee7",
   "source_fingerprint": "3a04595d59e97537227dfd70f6e62ae026eef579da73543884aae311262f0e28",
   "sql_plan": {
@@ -2552,18 +2308,9 @@
         }
       },
       {
-        "alias": "revenue_usd",
+        "alias": "trailing_3_month_revenue_usd",
         "expression": {
-          "parts": [
-            "base",
-            "m1"
-          ]
-        }
-      },
-      {
-        "alias": "prior_month_revenue_usd",
-        "expression": {
-          "frame": "",
+          "frame": "ROWS BETWEEN 2 PRECEDING AND CURRENT ROW",
           "function": {
             "args": [
               {
@@ -2571,13 +2318,10 @@
                   "base",
                   "m1"
                 ]
-              },
-              {
-                "value": 1
               }
             ],
             "distinct": false,
-            "name": "LAG"
+            "name": "SUM"
           },
           "order_by": [
             {
@@ -2611,7 +2355,7 @@
       "target": [],
       "time": {}
     },
-    "markdown": "### Semantic Trace\n- Target: measure.jaffle.revenue_usd\n- Grouping: no grouping\n- Filters: 0\n- Relationship paths: 0\n- SQL: available",
+    "markdown": "### Semantic Trace\n- Target: unresolved target\n- Grouping: no grouping\n- Filters: 0\n- Relationship paths: 0\n- SQL: available",
     "selected": {
       "filters": [],
       "group_by": [],
@@ -2619,12 +2363,9 @@
       "rewrite_status": "",
       "root_entity": "entity.jaffle_order",
       "sql_available": true,
-      "subjects": [
-        "measure.jaffle.revenue_usd"
-      ]
+      "subjects": []
     }
   },
-  "truncated": false,
   "warehouse": "duckdb",
   "warehouse_capabilities": {
     "date_diff": true,
