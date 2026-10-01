@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from semantic_rails.db import _split_sql_statements
+from semantic_rails.db import Database, _split_sql_statements
 from semantic_rails.db_parts.common import (
     option_or_env,
 )
@@ -31,6 +31,37 @@ def test_seed_splitting_preserves_quoted_comments_and_token_boundaries():
         "SELECT 1",
         "SELECT '-- /* ; */' AS \"a;b\"",
     ]
+
+
+@pytest.mark.parametrize("tag", ["", "tag"])
+@pytest.mark.parametrize("value", ["a/*b*/c", "a--b", "a; ' /* $other$ --\nb"])
+def test_seed_splitting_preserves_dollar_quoted_values(tag, value):
+    delimiter = f"${tag}$"
+    db = Database.connect_in_memory()
+    try:
+        db.execute_script(
+            "-- the table's value;\nCREATE TABLE seed_example AS SELECT "
+            f"{delimiter}{value}{delimiter} AS value; /* tail's ; */ SELECT 2;"
+        )
+        assert db.query("SELECT value FROM seed_example") == [{"value": value}]
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("literal", ["$$a/*b*/c", "$tag$a--b$other$"])
+def test_unclosed_seed_dollar_quote_refuses_before_any_execution(literal):
+    db = Database.connect_in_memory()
+    try:
+        with pytest.raises(ValueError, match="Unterminated dollar-quoted SQL literal"):
+            db.execute_script(f"CREATE TABLE seed_example(value TEXT); SELECT {literal}")
+        assert (
+            db.query(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = 'seed_example'"
+            )
+            == []
+        )
+    finally:
+        db.close()
 
 
 def test_rewrites_identifiers_to_backticks():

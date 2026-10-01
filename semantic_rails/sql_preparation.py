@@ -84,11 +84,13 @@ def checked_slot_value(slot: ParameterSlot, value: Any) -> ParameterValue:
     return cast(ParameterValue, value)
 
 
-# Compiler SQL uses ANSI literals/identifiers. Also skip comments and dollar
-# quotes so a direct prepared call cannot disguise a placeholder as quoted data.
+# Consume complete Postgres identifiers and E-strings before looking for binds.
+# Also skip ANSI quotes, comments and dollar quotes in compiler or direct SQL.
 _PARAMETER_TOKEN = re.compile(
-    r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|--[^\n]*|/\*|"
-    r"(?P<dollar>\$(?:[A-Za-z_][A-Za-z_0-9]*)?\$).*?(?P=dollar)|\?|\$[0-9]+",
+    r"[eE]'(?:[^'\\]|\\.|'')*'|'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|--[^\n]*|/\*|"
+    r"[A-Za-z_\u0080-\U0010ffff][A-Za-z_0-9$\u0080-\U0010ffff]*|"
+    r"(?P<dollar>\$(?:[A-Za-z_\u0080-\U0010ffff][A-Za-z_0-9\u0080-\U0010ffff]*)?\$)"
+    r".*?(?P=dollar)|\?|\$[0-9]+",
     re.DOTALL,
 )
 

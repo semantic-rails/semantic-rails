@@ -72,6 +72,23 @@ def test_postgres_binds_all_slot_types_without_interpolation(adbc):
     assert canary not in prepared.sql
 
 
+def test_postgres_identifier_suffix_and_escape_string_bind(adbc):
+    assert adbc.query("SELECT 1 AS account$1") == [{"account$1": 1}]
+    prepared = finalize_parameters(
+        PreparedQuery(
+            r"SELECT E'it\'s' AS label, ?::TEXT AS tenant, 'x' AS other",
+            parameters=(ParameterSlot("tenant", "string"),),
+        ),
+        "postgres_native",
+    )
+    value = "tenant' OR true --"
+    assert adbc.query_prepared(prepared, parameters=(value,)) == [
+        {"label": "it's", "tenant": value, "other": "x"}
+    ]
+    assert prepared.sql == r"SELECT E'it\'s' AS label, $1::TEXT AS tenant, 'x' AS other"
+    assert value not in prepared.sql
+
+
 def test_postgres_row_filter_isolation(adbc, tmp_path):
     root = _package(tmp_path / "filtered", [OWN_ORDERS])
     config = load_package_config(str(root))

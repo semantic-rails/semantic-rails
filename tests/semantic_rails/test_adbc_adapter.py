@@ -9,7 +9,12 @@ from semantic_rails.db import create_warehouse_adapter
 from semantic_rails.db_parts.adbc import AdbcAdapter
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.schema import ConnectionSpec, PackageMeta
-from semantic_rails.sql_preparation import ParameterSlot, PreparedQuery, finalize_parameters
+from semantic_rails.sql_preparation import (
+    ParameterSlot,
+    PreparedQuery,
+    finalize_parameters,
+    postgres_parameter_tokens,
+)
 
 SLOT = ParameterSlot("tenant", "string")
 
@@ -162,6 +167,38 @@ def _recording_adapter(monkeypatch, options=None):
     adapter = AdbcAdapter(options)
     adapter._conn = SimpleNamespace(cursor=lambda: cursor)
     return adapter, cursor
+
+
+@pytest.mark.parametrize("identifier", ["account$1", "_account$1$2", "compteé$1", "账户$1"])
+def test_postgres_identifier_suffix_is_not_a_bind_token(monkeypatch, identifier):
+    sql = f"SELECT 1 AS {identifier}"
+    assert postgres_parameter_tokens(sql) == []
+    assert finalize_parameters(PreparedQuery(sql), "postgres_native").sql == sql
+    adapter, cursor = _recording_adapter(monkeypatch)
+    assert adapter.query(sql)
+    assert cursor.statements[-1] == sql
+    assert cursor.parameters[-1] is None
+
+
+@pytest.mark.parametrize(
+    "literal",
+    [r"E'it\'s'", r"e'it\'s $2 ? /* --'", r"E'backslash\\'", "E'it''s'"],
+)
+@pytest.mark.parametrize("alias", ["other", "account$1"])
+def test_escape_string_and_identifier_preserve_one_separate_bind(monkeypatch, literal, alias):
+    sql = f"SELECT {literal} AS label, $1::TEXT AS tenant, 'x' AS {alias}"
+    tokens = postgres_parameter_tokens(sql)
+    assert [token[0] for token in tokens] == ["$1"]
+    assert sql[tokens[0].start() : tokens[0].end()] == "$1"
+    unfinalized = PreparedQuery(sql.replace("$1::TEXT", "?::TEXT"), parameters=(SLOT,))
+    prepared = finalize_parameters(unfinalized, "postgres_native")
+    assert prepared.sql == sql
+    assert prepared.parameters == (SLOT,)
+    adapter, cursor = _recording_adapter(monkeypatch)
+    value = "tenant' OR true --"
+    assert adapter.query_prepared(prepared, parameters=(value,))
+    assert (cursor.statements[-1], cursor.parameters[-1]) == (sql, (value,))
+    assert all(value not in statement for statement in cursor.statements)
 
 
 @pytest.mark.parametrize("limits", [None, {}, {"time_zone": "UTC"}])

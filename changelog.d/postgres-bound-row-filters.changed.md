@@ -4,6 +4,9 @@
   `schema` selects one exact, case-sensitive schema name. Queries preserve
   inherited statement timeouts and restore prior session settings after overrides.
   Plain SQL accepts JSON operators; parameterized SQL still refuses `?` operators.
+  Bind scanning preserves identifiers containing `$` and E-string escapes.
   Session zones unavailable to Python return aware UTC timestamps.
 - Split seed scripts around SQL comments without treating comment apostrophes
-  or semicolons as literal or statement boundaries.
+  or semicolons as literal or statement boundaries. Tagged and untagged
+  dollar-quoted values retain comment delimiters and semicolons verbatim;
+  unterminated dollar quotes refuse the script before any statement executes.

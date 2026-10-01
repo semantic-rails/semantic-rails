@@ -25,6 +25,7 @@ import hashlib
 import importlib
 import inspect
 import os
+import re
 import sqlite3
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch semantic_rails.db.subprocess
 import threading
@@ -84,6 +85,12 @@ def _row_to_dict(cursor: Any, row: Any) -> dict[str, Any]:
     return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
 
 
+_DOLLAR_QUOTE = re.compile(
+    r"(?<![A-Za-z_0-9$\u0080-\U0010ffff])"
+    r"\$(?:[A-Za-z_\u0080-\U0010ffff][A-Za-z_0-9\u0080-\U0010ffff]*)?\$"
+)
+
+
 def _split_sql_statements(sql: str) -> list[str]:
     statements: list[str] = []
     current: list[str] = []
@@ -92,6 +99,14 @@ def _split_sql_statements(sql: str) -> list[str]:
     i = 0
     while i < len(sql):
         if not in_single and not in_double:
+            if dollar := _DOLLAR_QUOTE.match(sql, i):
+                end = sql.find(dollar[0], dollar.end())
+                if end < 0:
+                    raise ValueError("Unterminated dollar-quoted SQL literal")
+                end += len(dollar[0])
+                current.append(sql[i:end])
+                i = end
+                continue
             if sql.startswith("--", i):
                 end = sql.find("\n", i + 2)
                 i = len(sql) if end < 0 else end

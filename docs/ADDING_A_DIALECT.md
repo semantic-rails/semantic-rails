@@ -34,6 +34,9 @@ connecting, binds values separately and sends prepared SQL unchanged. In the
 compiler's ANSI SQL, every placeholder corresponds to one authored slot. Direct
 parameterized calls use the same strict check and refuse `?` JSON operators;
 plain SQL without slots allows those operators and refuses unbound `$n` tokens.
+The shared finalization and validation scanner skips complete Postgres identifiers
+(including `$` suffixes), E-string backslash escapes, ordinary quoted text,
+dollar-quoted literals and nested comments when locating standalone placeholders.
 Arrow batches are sliced before Python row conversion to at most
 `max_rows + 1`, with `QueryRows.truncated` and semantic aliases preserved. The
 64 KiB driver batch hint bounds typical batches, not arbitrarily large cells.
