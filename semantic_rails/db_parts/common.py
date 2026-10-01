@@ -22,8 +22,8 @@ from __future__ import annotations
 import importlib
 import os
 from abc import abstractmethod
-from collections.abc import Mapping
-from contextlib import AbstractContextManager, nullcontext, suppress
+from collections.abc import Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
 from typing import Any
 
 from ..dialects import (
@@ -48,6 +48,13 @@ from .base import (
 FORBIDDEN_LITERAL_SECRET_KEYS = frozenset(
     {"password", "token", "private_key", "secret", "api_key", "credentials"}
 )
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 10
+DEFAULT_READ_TIMEOUT_SECONDS = 65
+
+
+def client_wait_timeout(read_timeout: int, statement_timeout: int) -> int:
+    """A client wait must accommodate the requested statement deadline plus five seconds."""
+    return max(read_timeout, statement_timeout + 5) if statement_timeout > 0 else read_timeout
 
 
 def env_value(name: str, missing_env: list[str] | None = None) -> str:
@@ -204,6 +211,28 @@ def int_option(
         ) from exc
 
 
+def timeout_option(
+    options: dict[str, str],
+    name: str,
+    default: int,
+    *,
+    engine: str,
+    connection_kind: str,
+    label: str = "",
+) -> int:
+    """Return a positive timeout in seconds without exposing option values in errors."""
+    value = int_option(
+        options, name, default, engine=engine, connection_kind=connection_kind, label=label
+    )
+    if value <= 0:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"{label or engine} package.connection option '{name}' must be positive",
+            details={"engine": engine, "connection_kind": connection_kind, "option": name},
+        )
+    return value
+
+
 def redacted_error_details(
     engine: str, connection_kind: str, options: dict[str, str]
 ) -> dict[str, Any]:
@@ -302,6 +331,13 @@ class DbApiAdapter(WarehouseAdapter):
             self._conn = self._create_connection()
         return self._conn
 
+    @contextmanager
+    def _query_connection(self, timeout_seconds: int) -> Iterator[Any]:
+        yield self._connection()
+
+    def _query_cursor(self, connection: Any, timeout_seconds: int) -> Any:
+        return connection.cursor()
+
     def _apply_statement_timeout(self, cursor: Any, timeout_seconds: int) -> None:
         """Set a session/statement timeout before executing. No-op default."""
 
@@ -329,20 +365,21 @@ class DbApiAdapter(WarehouseAdapter):
         timeout_s = _limit_timeout_seconds(limits)
         use_timeout = timeout_s > 0 and self.supports_statement_timeout
         try:
-            cursor = self._connection().cursor()
-            try:
-                if use_timeout:
-                    self._apply_statement_timeout(cursor, timeout_s)
-                zone = session_time_zone(limits)
-                with self._time_zone_scope(cursor, zone) if zone else nullcontext():
-                    cursor.execute(prepared.sql)
-                    rows = rows_from_cursor(cursor, limits=limits)
-                return restore_column_names(_clip_rows(rows, limits), prepared)
-            finally:
-                if use_timeout:
-                    with suppress(Exception):
-                        self._reset_statement_timeout(cursor)
-                cursor.close()
+            with self._query_connection(timeout_s) as connection:
+                cursor = self._query_cursor(connection, timeout_s)
+                try:
+                    if use_timeout:
+                        self._apply_statement_timeout(cursor, timeout_s)
+                    zone = session_time_zone(limits)
+                    with self._time_zone_scope(cursor, zone) if zone else nullcontext():
+                        cursor.execute(prepared.sql)
+                        rows = rows_from_cursor(cursor, limits=limits)
+                    return restore_column_names(_clip_rows(rows, limits), prepared)
+                finally:
+                    if use_timeout:
+                        with suppress(Exception):
+                            self._reset_statement_timeout(cursor)
+                    cursor.close()
         except SemanticLayerError:
             raise
         except Exception as exc:

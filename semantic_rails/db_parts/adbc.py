@@ -32,6 +32,8 @@ from .base import (
     restore_column_names,
 )
 from .common import (
+    DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_READ_TIMEOUT_SECONDS,
     import_driver,
     int_option,
     normalize_connection_options,
@@ -40,6 +42,7 @@ from .common import (
     require_missing_env,
     secret_value,
     session_time_zone,
+    timeout_option,
 )
 
 
@@ -194,7 +197,30 @@ class AdbcAdapter(WarehouseAdapter):
             connection_kind=self.connection_kind,
         )
         require_missing_env(missing, engine=self.engine, connection_kind=self.connection_kind)
-        values.update(port=str(self._int_option("port", 5432)), connect_timeout="10")
+        connect_timeout = timeout_option(
+            self.options,
+            "connect_timeout_seconds",
+            DEFAULT_CONNECT_TIMEOUT_SECONDS,
+            engine=self.engine,
+            connection_kind=self.connection_kind,
+        )
+        read_timeout = timeout_option(
+            self.options,
+            "read_timeout_seconds",
+            max(DEFAULT_READ_TIMEOUT_SECONDS, self._int_option("statement_timeout_seconds", 0) + 5),
+            engine=self.engine,
+            connection_kind=self.connection_kind,
+        )
+        # libpq has no socket read deadline. Keepalives detect lost peers;
+        # only an explicitly configured statement_timeout bounds healthy queries.
+        values.update(
+            port=str(self._int_option("port", 5432)),
+            connect_timeout=str(connect_timeout),
+            keepalives="1",
+            keepalives_idle=str(read_timeout),
+            keepalives_interval="1",
+            keepalives_count="1",
+        )
         for option, key in (("database", "dbname"), ("sslmode", "sslmode")):
             if self.options.get(option):
                 values[key] = self.options[option]
