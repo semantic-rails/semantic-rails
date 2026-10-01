@@ -420,8 +420,11 @@ Important planner behaviors:
   decides, and the only caller of the join-condition builder; leaves cannot opt out
 - an `entity_in_terms_of` count always requires a matching row of the counted entity,
   including when grouping only by the child's lookup without a parent dimension or time
-  axis. Its anchor plan always adds that path; `_joins_for_paths` checks the emitted joins
-  and refuses a missing or nullable parent check with `REWRITE_NOT_SUPPORTED`
+  axis. The shortcut requires exactly one relationship between child and parent, on the
+  counted path, with an available forward lookup; otherwise the measure's own leaf answers.
+  Its anchor plan adds that same relationship; `_joins_for_paths` checks both the relationship
+  and emitted joins, and refuses a missing, nullable or different parent check with
+  `REWRITE_NOT_SUPPORTED` if the shortcut's eligibility check is bypassed
 - dense fill uses the declared calendar entity for the requested calendar id, or the implicit
   Gregorian calendar for a default request in a package that declares no default calendar
 - `metric_predicate` compiles as a scoped predicate subplan rather than a projected boolean expression

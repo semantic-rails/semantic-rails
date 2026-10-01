@@ -14,3 +14,5 @@
 - A parent count grouped by a child's looked-up dimension counts only parents that exist,
   with or without a time axis. Orphan children no longer inflate the NULL group, while
   existing parents whose children have a NULL or unmatched lookup key still count there.
+  Multiple child-to-parent relationships or a reverse-only relationship use the parent's
+  own rows, preserving the selected relationship's count without an extra lookup failure.

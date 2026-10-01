@@ -111,6 +111,29 @@ def _pair_key_routes(
     return [(rel, column) for column, rel in sorted(by_column.items())]
 
 
+def _entity_in_terms_of_parent_relationship(
+    source_entity: str, measure_entity: str, config: PackageConfig
+) -> RelationshipConfig | None:
+    """A child anchor can check only its unique, available relationship to the parent."""
+    routes = _pair_orientations(source_entity, measure_entity, config)
+    if len(routes) != 1:
+        return None
+    rel = routes[0][0]
+    if (
+        rel.source_entity != source_entity
+        or rel.target_entity != measure_entity
+        or rel.cardinality != "N:1"
+        or rel.safety == "unsafe"
+        or rel.temporal_validity
+        or "forward" not in rel.allowed_directions
+    ):
+        return None
+    pinned = get_package_analysis(config).path_preferences.get((source_entity, measure_entity))
+    if pinned is not None and pinned != [rel.id]:
+        return None
+    return rel
+
+
 def _pair_has_several_pairings(
     source_entity: str, target_entity: str, config: PackageConfig
 ) -> bool:
@@ -491,7 +514,8 @@ def _joins_for_paths(
     it. Such a leaf that looks up a dimension a rollup of the measure's model holds is refused:
     only the measure's own leaf answers as that rollup does. It must also join the measure's
     own rows INNER: a child whose parent has no record counts no parent. The internal guard
-    checks the emitted joins, so a missing or nullable parent check cannot silently count it.
+    checks the unique relationship and emitted joins, so a missing, nullable or different
+    parent check cannot silently count it.
     """
     entities = _entity_index(config)
     relationships = _relationship_index(config)
@@ -595,13 +619,18 @@ def _joins_for_paths(
             current_entity = next_entity
     if measure_entity is not None and measure_entity != source_entity:
         measure_table = overrides.get(measure_entity, entities[measure_entity].table)
-        if not any(
-            join.table.name == measure_table and join.join_type == "INNER" for join in joins
+        parent = _entity_in_terms_of_parent_relationship(source_entity, measure_entity, config)
+        if (
+            parent is None
+            or joined_via.get(measure_table) != (parent.id, source_entity)
+            or not any(
+                join.table.name == measure_table and join.join_type == "INNER" for join in joins
+            )
         ):
             raise SemanticLayerError(
                 "REWRITE_NOT_SUPPORTED",
                 f"A measure of '{measure_entity}' read from the rows of '{source_entity}' "
-                "must require a matching row of the counted entity.",
+                "must require a matching row through the counted parent relationship.",
                 details={"measure_entity": measure_entity, "source_entity": source_entity},
             )
     return joins

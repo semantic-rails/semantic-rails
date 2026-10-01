@@ -36,6 +36,7 @@ from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts import sql_lowering
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.ir import PathSelection
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import AggregateRelationConfig
@@ -761,6 +762,133 @@ def test_a_child_lookup_grouping_counts_only_existing_parents(
         assert "_entity_rows" in sql
 
 
+def _write_parent_roles_package(
+    root: Path, *, extra_seed: str, other_preference: int, pin_other: bool = False
+) -> Path:
+    package = _write_package(
+        root,
+        rollup_safe=True,
+        extra_seed=(
+            "ALTER TABLE items ADD COLUMN other_order_id INTEGER;\n"
+            "UPDATE items SET other_order_id = order_id;\n" + extra_seed
+        ),
+    )
+    graph = yaml.safe_load((package / "graph.yml").read_text())["graph"]
+    graph["relationships"]["items_other_order"] = {
+        "id": "relationship.items_other_order",
+        "entities": ["item", "order"],
+        "via": "other_order_id",
+        "cardinality": "many_to_one",
+        "path_preference": other_preference,
+    }
+    graph["path_preferences"] = [
+        {
+            "source_entity": "order",
+            "target_entity": "product",
+            "relationship_path": ["relationship.items_order", "relationship.items_product"],
+        }
+    ]
+    if pin_other:
+        graph["path_preferences"].append(
+            {
+                "source_entity": "item",
+                "target_entity": "order",
+                "relationship_path": ["relationship.items_other_order"],
+            }
+        )
+    (package / "graph.yml").write_text(yaml.safe_dump({"graph": graph}))
+    return package
+
+
+@pytest.mark.parametrize(
+    ("other_preference", "pin_other"),
+    [(0, False), (100, False), (100, True)],
+    ids=["preferred_other", "tied_parents", "pinned_other"],
+)
+@pytest.mark.parametrize(
+    ("extra_seed", "expected"),
+    [
+        pytest.param(
+            "INSERT INTO items VALUES (111, 999, 'coffee', 'beverage', 1);\n",
+            {"hot": 4, "cold": 2, None: 3},
+            id="orphan_with_another_existing_parent",
+        ),
+        pytest.param(
+            "UPDATE items SET other_order_id = NULL WHERE order_id = 1;\n",
+            {"hot": 4, "cold": 2, None: 3},
+            id="valid_parent_with_null_other_parent",
+        ),
+        pytest.param(
+            "DELETE FROM items;\nINSERT INTO items VALUES (111, 1, 'coffee', 'beverage', 999);\n",
+            {"hot": 1},
+            id="valid_parent_with_missing_other_parent",
+        ),
+    ],
+)
+def test_a_parent_count_with_two_relationships_uses_the_counted_path(
+    tmp_path, extra_seed, expected, other_preference, pin_other
+):
+    """A preferred or ambiguous alternative parent never changes the pinned order count."""
+    package = _write_parent_roles_package(
+        tmp_path, extra_seed=extra_seed, other_preference=other_preference, pin_other=pin_other
+    )
+    runtime = Runtime.from_path(str(package))
+    connection = duckdb.connect()
+    try:
+        query = _query(ORDER_COUNT, group_by=[CATEGORY])
+        sql = _sql(runtime.config, query)
+        connection.execute((package / "data" / "seed.sql").read_text())
+        reference = dict(
+            connection.execute(
+                "SELECT (SELECT p.category FROM products AS p WHERE p.sku = i.sku),"
+                " COUNT(DISTINCT o.order_id) FROM orders AS o"
+                " JOIN items AS i ON i.order_id = o.order_id GROUP BY 1"
+            ).fetchall()
+        )
+        assert _rows(runtime, query) == reference == expected
+    finally:
+        runtime.close()
+        connection.close()
+
+    assert "FROM orders" in sql
+    assert "FROM items" not in sql
+    assert "other_order_id" not in sql
+    assert _lookup_joins(sql) == [("LEFT", "products")]
+
+
+@pytest.mark.parametrize("dimension", [TYPE, CATEGORY], ids=["child", "child_lookup"])
+def test_a_reverse_only_parent_relationship_declines_the_child_anchor(tmp_path, dimension):
+    """A supported parent-to-child grouping needs no prohibited child-to-parent lookup."""
+    package = _write_package(tmp_path, rollup_safe=True, extra_seed=ORPHAN_ITEM_SEED)
+    graph = yaml.safe_load((package / "graph.yml").read_text())
+    graph["graph"]["relationships"]["items_order"]["allowed_directions"] = ["reverse"]
+    (package / "graph.yml").write_text(yaml.safe_dump(graph))
+    runtime = Runtime.from_path(str(package))
+    connection = duckdb.connect()
+    try:
+        query = _query(ORDER_COUNT, group_by=[dimension])
+        sql = _sql(runtime.config, query)
+        connection.execute(SEED_SQL + ORPHAN_ITEM_SEED)
+        grouping = (
+            "i.item_type"
+            if dimension == TYPE
+            else "(SELECT p.category FROM products AS p WHERE p.sku = i.sku)"
+        )
+        reference = dict(
+            connection.execute(
+                f"SELECT {grouping}, COUNT(DISTINCT o.order_id) FROM orders AS o"
+                " JOIN items AS i ON i.order_id = o.order_id GROUP BY 1"
+            ).fetchall()
+        )
+        assert _rows(runtime, query) == reference
+    finally:
+        runtime.close()
+        connection.close()
+
+    assert "FROM orders" in sql
+    assert "FROM items" not in sql
+
+
 @pytest.mark.parametrize("bypass", ["missing", "left"])
 def test_a_child_anchored_count_refuses_a_bypassed_parent_check(tmp_path, monkeypatch, bypass):
     """The shared join builder refuses the leaf if its parent check is absent or nullable."""
@@ -788,6 +916,30 @@ def test_a_child_anchored_count_refuses_a_bypassed_parent_check(tmp_path, monkey
 
     with pytest.raises(SemanticLayerError) as raised:
         _sql(config, _query(ORDER_COUNT, group_by=[CATEGORY]))
+
+    assert raised.value.code == "REWRITE_NOT_SUPPORTED"
+    assert raised.value.details["measure_entity"] == "entity.geo_order"
+    assert raised.value.details["source_entity"] == "entity.geo_item"
+
+
+@pytest.mark.parametrize("relationship", ["items_order", "items_other_order"])
+def test_a_child_anchor_guard_refuses_two_parent_relationships(tmp_path, relationship):
+    """Bypassing the anchor's decline cannot pass the guard just by joining orders INNER."""
+    from semantic_rails.compiler_parts import paths
+
+    config = load_package_config(
+        str(_write_parent_roles_package(tmp_path, extra_seed="", other_preference=0))
+    )
+    root = PathSelection(
+        target_entity="entity.geo_order",
+        purpose="entity_in_terms_of_root",
+        chosen_path=[f"relationship.{relationship}"],
+        candidate_paths=[],
+        analysis={},
+    )
+
+    with pytest.raises(SemanticLayerError) as raised:
+        paths._joins_for_paths("entity.geo_item", [root], config, measure_entity="entity.geo_order")
 
     assert raised.value.code == "REWRITE_NOT_SUPPORTED"
     assert raised.value.details["measure_entity"] == "entity.geo_order"

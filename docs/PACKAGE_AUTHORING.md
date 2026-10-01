@@ -1344,9 +1344,11 @@ Hops that fan out are inner joins too. A distinct count read from a child model 
 `rollup_safe` reverse `count_distinct`) joins back to the counted entity with an inner join,
 even when grouping only by a child's looked-up dimension and reading no parent dimension
 or time axis. A child row whose parent has no record counts nothing; valid parents whose
-child lookup finds no match still count under NULL. A leaf that cannot require the counted
-entity's own row is refused with `REWRITE_NOT_SUPPORTED`. The lookups past that entity keep
-their rows. Because of those inner reads, an `aggregate_if` condition that a row with no
+child lookup finds no match still count under NULL. This shortcut requires exactly one
+relationship between child and parent, on the counted path, and permits the forward lookup.
+With multiple parent relationships or a reverse-only relationship, the query uses the
+counted entity's own leaf instead. The lookups past that entity keep their rows.
+Because of those inner reads, an `aggregate_if` condition that a row with no
 match could satisfy (such as `IS NULL`) is refused.
 
 Long chains are first-class: a measure can be grouped or filtered by a

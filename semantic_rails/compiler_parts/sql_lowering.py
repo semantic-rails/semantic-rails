@@ -122,6 +122,7 @@ from .paths import (
     _column_ref,
     _direct_dimension_source_expr,
     _direct_entity_key_source_expr,
+    _entity_in_terms_of_parent_relationship,
     _entity_key_dimension_ids,
     _expression_root_entity,
     _join_condition,
@@ -1728,6 +1729,7 @@ def _entity_in_terms_of_anchor_plan(
 
     anchor_entity = ""
     anchor_key_columns: list[str] = []
+    anchor_relationship_id = ""
     transformed_selections: list[PathSelection] = []
     for selection in measure_plan.path_selections:
         if selection.analysis.get("status") == "ok":
@@ -1754,6 +1756,11 @@ def _entity_in_terms_of_anchor_plan(
             if "count_distinct" not in reverse_safe:
                 return None
             if not selected_anchor:
+                parent = _entity_in_terms_of_parent_relationship(
+                    rel.source_entity, measure.entity, config
+                )
+                if index != 0 or parent is None or parent.id != rel.id:
+                    return None
                 target_to_source = dict(
                     zip(
                         list(rel.target_columns or [rel.target_column]),
@@ -1765,11 +1772,14 @@ def _entity_in_terms_of_anchor_plan(
                     return None
                 selected_anchor = rel.source_entity
                 selected_key_columns = [target_to_source[column] for column in measure_key_columns]
+                anchor_relationship_id = rel.id
                 remaining_path = list(selection.chosen_path[index + 1 :])
             current_entity = rel.source_entity
         if not selected_anchor:
             return None
-        if anchor_entity and selected_anchor != anchor_entity:
+        if anchor_entity and (
+            selected_anchor != anchor_entity or selected_key_columns != anchor_key_columns
+        ):
             return None
         anchor_entity = selected_anchor
         anchor_key_columns = selected_key_columns
@@ -1861,14 +1871,14 @@ def _entity_in_terms_of_anchor_plan(
                 break
     # The counted entity must exist even when every grouping reads only the child's rows
     # or its lookups, so no supplemental dimension path happens to reach the parent.
-    root = _anchor_path_selection(
-        config=config,
-        plan=plan,
-        start_entity=anchor_entity,
+    root = PathSelection(
         target_entity=measure.entity,
         purpose="entity_in_terms_of_root",
+        chosen_path=[anchor_relationship_id],
+        candidate_paths=[[anchor_relationship_id]],
+        analysis=analyze_fanout(config, anchor_entity, [anchor_relationship_id]),
     )
-    if root is None or (root_paths and root_paths != {tuple(root.chosen_path)}):
+    if root_paths and root_paths != {tuple(root.chosen_path)}:
         return None
     supplemental_selections.append(root)
     return {
