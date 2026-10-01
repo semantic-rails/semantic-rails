@@ -641,6 +641,23 @@ def test_a_query_without_a_measure_refuses_a_group(package: Path) -> None:
     assert error["code"] == "INVALID_QUERY"
 
 
+def test_a_segment_membership_refuses_a_group(package: Path) -> None:
+    from semantic_rails.schema import SegmentConfig
+    from semantic_rails.segments import normalize_segment
+
+    config = load_package_config(str(package))
+    segment = SegmentConfig(
+        id="segment.scope.beverage_buyers",
+        entity="entity.scope_customer",
+        basis_metric="metric.scope.customers",
+        where=SAME_ROW,
+    )
+    config = replace(config, segments=[segment])
+    with pytest.raises(SemanticLayerError) as caught:
+        normalize_segment(config, segment.id)
+    assert caught.value.code == "INVALID_SEGMENT"
+
+
 def test_a_distribution_beside_a_group_refuses(package: Path) -> None:
     """Per-entity values across the group's hop are refused, as under a flat child filter."""
     distribution = {
