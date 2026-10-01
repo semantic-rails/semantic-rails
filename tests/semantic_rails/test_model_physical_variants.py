@@ -9,8 +9,8 @@ import yaml
 
 from semantic_rails.acceleration import routing
 from semantic_rails.acceleration.routing import ROUTING_OFF, aggregate_routing
-from semantic_rails.acceleration.selection import rollup_dimension_entities
 from semantic_rails.compiler import compile_query
+from semantic_rails.compiler_parts.indexes import rollup_dimension_entities
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry

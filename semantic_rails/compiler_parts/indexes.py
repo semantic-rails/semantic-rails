@@ -6,6 +6,7 @@ from typing import Any
 
 from ..expressions import resolve_table_entity
 from ..schema import (
+    AggregateRelationConfig,
     DimensionConfig,
     EntityConfig,
     MeasureConfig,
@@ -124,3 +125,22 @@ def _resolve_table_entity(config: PackageConfig, table: str, *, owner: str = "")
 
 def _default_temporal_role(measure: MeasureConfig) -> str:
     return measure.compatible_temporal_roles[0] if measure.compatible_temporal_roles else ""
+
+
+def _aggregate_dimension_coverage(row: AggregateRelationConfig) -> set[str]:
+    return {str(item) for item in [*row.dimensions, *row.dimension_columns]}
+
+
+def rollup_dimension_entities(config: PackageConfig, source_entity: str) -> set[str]:
+    """The models whose dimensions a rollup of ``source_entity`` holds, pre-joined or not.
+
+    Read from the config, not the binding index: this is a routing fact, not an object read.
+    """
+    entity_of = {dim.id: dim.entity for dim in config.dimensions}
+    return {
+        entity_of[dim_id]
+        for row in config.aggregate_relations
+        if row.source_entity == source_entity
+        for dim_id in _aggregate_dimension_coverage(row)
+        if dim_id in entity_of
+    }

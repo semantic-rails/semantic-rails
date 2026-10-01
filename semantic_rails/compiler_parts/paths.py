@@ -44,6 +44,7 @@ from .indexes import (
     _relationship_index,
     _temporal_role_index,
     get_package_analysis,
+    rollup_dimension_entities,
 )
 from .temporal import _allows_coarse_snapshot_alignment
 
@@ -421,17 +422,25 @@ def _is_lookup_hop(rel: RelationshipConfig, current_entity: str, config: Package
 
 # The reads that need the looked-up row, so they join every hop of their path INNER: a time
 # role (a row with no time has no bucket), a metric predicate's route to the entity its set is
-# matched on, and a conversion's events.
+# matched on, a conversion's events, and the measure's own entity read back from the anchor of
+# an entity_in_terms_of leaf (a child row whose parent has no record counts no entity).
 _INNER_LOOKUP_PURPOSES = frozenset(
-    {"time", "metric_predicate", "conversion_dimension", "conversion_match_entity"}
+    {
+        "time",
+        "metric_predicate",
+        "conversion_dimension",
+        "conversion_match_entity",
+        "entity_in_terms_of_root",
+    }
 )
 _inner_lookups: ContextVar[bool] = ContextVar("inner_lookups", default=False)
 
 
 @contextmanager
 def inner_lookups() -> Iterator[None]:
-    """Join every lookup INNER while a metric predicate's own query lowers: its set holds the
-    entities that have rows, never a NULL key for rows that have none."""
+    """Join every lookup INNER while a metric predicate's own query or a distribution's
+    per-entity values lower: each holds the entities that have rows, never a NULL key for rows
+    that have none."""
     token = _inner_lookups.set(True)
     try:
         yield
@@ -454,14 +463,13 @@ def _joins_for_paths(
     or unmatched stays, with NULL for everything the hop looks up, whatever reads it (a
     grouping, a filter, the measure's own filter, an aggregate_if's condition or its
     expression). It joins INNER only when a read in ``_INNER_LOOKUP_PURPOSES`` walks the same
-    hop, inside a metric predicate's own query (``inner_lookups``), on the path to a
+    hop, inside a metric predicate's own query or a distribution's per-entity values
+    (``inner_lookups``), on the path to a
     dimension some rollup of ``source_entity`` holds pre-joined (so the base answers as the
     rollup does), or on a warehouse whose outer join reads a type default instead of NULL
     (``_is_lookup_hop``). Hops that fan out join INNER, and every hop after a
     temporal-validity hop joins LEFT.
     """
-    from ..acceleration.selection import rollup_dimension_entities
-
     entities = _entity_index(config)
     relationships = _relationship_index(config)
     path_selections = list(path_selections)

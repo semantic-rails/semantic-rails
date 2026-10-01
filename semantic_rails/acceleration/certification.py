@@ -12,11 +12,15 @@ from dataclasses import replace
 from typing import Any
 
 from ..compiler import compile_query
-from ..compiler_parts.indexes import _measure_index, _temporal_role_index
+from ..compiler_parts.indexes import (
+    _aggregate_dimension_coverage,
+    _measure_index,
+    _temporal_role_index,
+)
 from ..errors import SemanticLayerError
 from ..schema import PackageConfig
 from .routing import LOWERED_SEPARATELY, aggregate_routing
-from .selection import _aggregate_dimension_coverage, _column_holds
+from .selection import _column_holds
 
 _UTC_ZONES = frozenset({"UTC", "Etc/UTC"})
 

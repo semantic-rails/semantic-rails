@@ -117,6 +117,7 @@ from .indexes import (
     _relationship_index,
     _temporal_role_index,
     get_package_analysis,
+    rollup_dimension_entities,
 )
 from .paths import (
     _column_ref,
@@ -128,6 +129,7 @@ from .paths import (
     _joins_for_paths,
     _leaf_time_role,
     _resolve_dimension_expr,
+    inner_lookups,
 )
 from .post_aggregation import _compile_post_expr, _expr_requires_dense_series, _namespace_sql_select
 from .predicate import (
@@ -1184,12 +1186,15 @@ def _distribution_select(
         value_alias,
         extra_group_by=entity_key_dims,
     )
-    sql_ast = _compile_query_sql_ast(
-        config,
-        entity_value_query,
-        project_cut=project_is_cut() or bool(expr.over.where),
-        guard_empty=False,
-    )
+    # Like a metric predicate's set, the per-entity values join their lookups INNER: a row whose
+    # lookup of the entity finds no match is no entity, never one NULL entity of its own.
+    with inner_lookups():
+        sql_ast = _compile_query_sql_ast(
+            config,
+            entity_value_query,
+            project_cut=project_is_cut() or bool(expr.over.where),
+            guard_empty=False,
+        )
     source_name = f"{alias}__entity_values"
     key_aliases = _query_key_aliases(plan)
     value_ref = SqlIdentifier(parts=[source_name, value_alias])
@@ -1832,6 +1837,41 @@ def _entity_in_terms_of_anchor_plan(
             return None
         supplemental_selections.append(new_selection)
         covered_targets.add((dim.entity, purpose))
+    # A dimension some rollup of the measure's model holds joins INNER on the measure's own
+    # path (``_joins_for_paths``); this leaf starts from another entity, so it leaves the query
+    # to the measure's own leaf.
+    prejoined = rollup_dimension_entities(config, measure.entity) - {measure.entity}
+    if any(
+        row.chosen_path and row.target_entity in prejoined
+        for row in [*supplemental_selections, *transformed_selections]
+    ):
+        return None
+    # An anchor row whose parent has no record is none of the measure's entities: the hops back
+    # to the measure's own entity join INNER, and the lookups past it keep rows.
+    root_paths: set[tuple[str, ...]] = set()
+    for row in supplemental_selections:
+        if row.purpose != lookup:
+            continue  # a time role's hops join INNER already
+        current_entity = anchor_entity
+        for index, rel_id in enumerate(row.chosen_path):
+            rel = relationships[rel_id]
+            current_entity = (
+                rel.target_entity if current_entity == rel.source_entity else rel.source_entity
+            )
+            if current_entity == measure.entity:
+                root_paths.add(tuple(row.chosen_path[: index + 1]))
+                break
+    if root_paths:
+        root = _anchor_path_selection(
+            config=config,
+            plan=plan,
+            start_entity=anchor_entity,
+            target_entity=measure.entity,
+            purpose="entity_in_terms_of_root",
+        )
+        if root is None or root_paths != {tuple(root.chosen_path)}:
+            return None
+        supplemental_selections.append(root)
     return {
         "anchor_entity": anchor_entity,
         "anchor_key_columns": anchor_key_columns,
@@ -2915,11 +2955,21 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
     )
 
 
-def _distinct_value_path_selections(plan: LogicalPlan) -> list[PathSelection]:
+def _distinct_value_path_selections(
+    plan: LogicalPlan, config: PackageConfig
+) -> list[PathSelection]:
+    # The time role's path joins INNER, as in every leaf, even where a grouping shares it.
+    time_entity = (
+        _dimension_index(config)[
+            _temporal_role_index(config)[str(plan.time["temporal_role"])].dimension
+        ].entity
+        if plan.time
+        else None
+    )
     return [
         PathSelection(
             target_entity=target_entity,
-            purpose="distinct_values",
+            purpose="time" if target_entity == time_entity else "distinct_values",
             chosen_path=list(path),
             candidate_paths=[
                 list(candidate)
@@ -2988,7 +3038,10 @@ def _distinct_value_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelec
 
     joins = list(
         _joins_for_paths(
-            plan.root_entity, _distinct_value_path_selections(plan), config, time_spec=plan.time
+            plan.root_entity,
+            _distinct_value_path_selections(plan, config),
+            config,
+            time_spec=plan.time,
         )
     )
     if leaf_calendar_join is not None:
