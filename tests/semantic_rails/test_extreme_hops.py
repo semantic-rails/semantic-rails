@@ -493,7 +493,15 @@ def test_consistent_pins_resolve_the_conflict(tmp_path):
     }
 
 
-def test_path_preferences_with_unknown_relationship_fail_at_load(tmp_path):
+@pytest.mark.parametrize(
+    ("path", "message"),
+    [
+        pytest.param(["relationship.does_not_exist"], "does_not_exist", id="unknown-relationship"),
+        # Stops at customer, never reaching region.
+        pytest.param(CUSTOMER_ROUTE_TO_REGION[:2], "ends at", id="wrong-target"),
+    ],
+)
+def test_invalid_path_preferences_fail_at_load(tmp_path, path, message):
     with pytest.raises(SemanticLayerError) as exc_info:
         Runtime.from_path(
             str(
@@ -503,7 +511,7 @@ def test_path_preferences_with_unknown_relationship_fail_at_load(tmp_path):
                         {
                             "source": "line_item",
                             "target": "region",
-                            "path": ["relationship.does_not_exist"],
+                            "path": path,
                         }
                     ],
                 )
@@ -511,26 +519,4 @@ def test_path_preferences_with_unknown_relationship_fail_at_load(tmp_path):
         )
     err = exc_info.value
     assert err.code == "INVALID_CONFIG"
-    assert "does_not_exist" in str(err)
-
-
-def test_path_preferences_that_do_not_reach_target_fail_at_load(tmp_path):
-    with pytest.raises(SemanticLayerError) as exc_info:
-        Runtime.from_path(
-            str(
-                _write_geo_package(
-                    tmp_path,
-                    path_preferences=[
-                        {
-                            "source": "line_item",
-                            "target": "region",
-                            # Stops at customer — never reaches region.
-                            "path": CUSTOMER_ROUTE_TO_REGION[:2],
-                        }
-                    ],
-                )
-            )
-        )
-    err = exc_info.value
-    assert err.code == "INVALID_CONFIG"
-    assert "ends at" in str(err)
+    assert message in str(err)
