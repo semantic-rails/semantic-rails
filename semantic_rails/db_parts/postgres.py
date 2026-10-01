@@ -137,14 +137,7 @@ class PostgresAdapter(DbApiAdapter):
                 label=_LABEL,
             ),
         }
-        statement_timeout = timeout_option(
-            self.options,
-            "statement_timeout_seconds",
-            60,
-            engine=self.engine,
-            connection_kind=self.connection_kind,
-            label=_LABEL,
-        )
+        statement_timeout = self._int_option("statement_timeout_seconds", 0)
         read_timeout = timeout_option(
             self.options,
             "read_timeout_seconds",
@@ -154,7 +147,7 @@ class PostgresAdapter(DbApiAdapter):
             label=_LABEL,
         )
         # libpq has no socket read deadline. Keepalives detect lost peers;
-        # statement_timeout below bounds healthy but stalled queries.
+        # only an explicitly configured statement_timeout bounds healthy queries.
         kwargs.update(
             keepalives=1, keepalives_idle=read_timeout, keepalives_interval=1, keepalives_count=1
         )
@@ -173,7 +166,8 @@ class PostgresAdapter(DbApiAdapter):
         startup_options: list[str] = []
         if self.options.get("schema"):
             startup_options.append(f"-c search_path={self.options['schema']}")
-        startup_options.append(f"-c statement_timeout={statement_timeout * 1000}")
+        if statement_timeout > 0:
+            startup_options.append(f"-c statement_timeout={statement_timeout * 1000}")
         if startup_options:
             kwargs["options"] = " ".join(startup_options)
         return kwargs

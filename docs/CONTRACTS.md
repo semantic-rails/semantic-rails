@@ -135,6 +135,25 @@ python scripts/check_contract_compatibility.py \
 The compatibility checker is deliberately conservative. Contract owners review
 any flagged change and either preserve compatibility or introduce a new major.
 
+## Warehouse wait and read-only compatibility
+
+The optional `connect_timeout_seconds` and `read_timeout_seconds` connection
+options are additive and leave contract artifact shapes unchanged. Native
+adapter defaults are 10 seconds for connection operations and 65 seconds for
+network operations/query waits where the driver supports them; they are
+per-operation bounds rather than a universal elapsed-time deadline. Longer
+queries may require larger configured waits. Postgres/Snowflake server
+statement limits remain opt-in and accept an explicit `"0"` (defer to the
+server on Postgres, disable the session limit on Snowflake); named Snowflake
+profiles retain inherited settings unless an override is authored.
+
+Read-only DuckDB connections now reject external-file views during bootstrap
+as well as execution. Packages using those views must materialize them into
+tables before upgrading. This security restriction is a behavior compatibility
+change that leaves query/package schema shapes unchanged. See
+[Native adapter timeouts](PACKAGE_AUTHORING.md#native-adapter-timeouts) for
+request margins, cancellation, driver retry limits and excluded adapters.
+
 ## Concurrent cross-repository changes
 
 Cross-repository work follows provider-before-removal ordering:

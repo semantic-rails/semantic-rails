@@ -158,6 +158,10 @@ def _install_fake_driver(monkeypatch: pytest.MonkeyPatch, captured: dict, *, fai
     httputil.get_pool_manager = get_pool_manager
 
     class FakeClient:
+        from urllib3.util import Timeout
+
+        timeout = Timeout(connect=10, read=65)
+
         def __init__(self, **kwargs):
             captured["connect_kwargs"] = kwargs
             self.http = kwargs["pool_mgr"]
@@ -605,3 +609,24 @@ def test_real_driver_constructor_cannot_follow_redirect(monkeypatch: pytest.Monk
     assert exc.value.code == "QUERY_EXECUTION_ERROR"
     assert hits == ["configured"]
     assert set(httputil.all_managers) == managers_before
+
+
+@pytest.mark.parametrize("timeout_ms, expected_wait", [(1000, 65), (120000, 125)])
+def test_clickhouse_request_deadline_extends_and_restores_client_wait(
+    monkeypatch, timeout_ms, expected_wait
+):
+    adapter = ClickHouseAdapter()
+    from urllib3.util import Timeout
+
+    original = Timeout(connect=10, read=65)
+    client = types.SimpleNamespace(timeout=original)
+
+    def query(sql, *, settings):
+        assert client.timeout.read_timeout == expected_wait
+        assert settings == {"max_execution_time": timeout_ms // 1000}
+        return types.SimpleNamespace(column_names=["value"], result_rows=[[1]])
+
+    client.query = query
+    adapter._client = client
+    assert adapter.query("select 1", limits={"statement_timeout_ms": timeout_ms}) == [{"value": 1}]
+    assert client.timeout is original

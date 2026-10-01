@@ -1606,6 +1606,13 @@ class Runtime:
                 continue
             try:
                 missing = missing_duckdb_relations(self.db_path, self._expected_tables())
+            except SemanticLayerError as exc:
+                if (
+                    exc.code == "INVALID_CONFIG"
+                    and exc.details.get("reason") == "external_access_disabled"
+                ):
+                    raise
+                raise self._unreadable_db_error() from exc
             except Exception as exc:  # noqa: BLE001 — any uncertain probe fails closed
                 raise self._unreadable_db_error() from exc
             if missing:

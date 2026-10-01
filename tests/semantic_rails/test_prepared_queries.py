@@ -70,6 +70,9 @@ class CaptureCursor:
     def execute(self, sql):
         self.statements.append(sql)
 
+    def fetchone(self):
+        return ("STATEMENT_TIMEOUT_IN_SECONDS", "30")
+
     def fetchmany(self, size):
         self.fetch_size = size
         return [(1.25,), (2.5,)]
@@ -104,7 +107,7 @@ def test_compiled_sql_is_the_dbapi_statement(package_config, monkeypatch, wareho
         "snowflake": lambda: SnowflakeNativeAdapter("test_connection"),
     }[warehouse]()
     cursor = CaptureCursor(_physical_alias(prepared))
-    adapter._conn = SimpleNamespace(cursor=lambda: cursor)
+    adapter._conn = SimpleNamespace(cursor=lambda **kwargs: cursor)
     monkeypatch.setattr("semantic_rails.db_parts.common.prepare_query", _forbid_second_preparation)
     monkeypatch.setattr(
         "semantic_rails.db_parts.snowflake.prepare_query", _forbid_second_preparation
@@ -116,9 +119,10 @@ def test_compiled_sql_is_the_dbapi_statement(package_config, monkeypatch, wareho
         "databricks": ["SET STATEMENT_TIMEOUT = 1", prepared.sql, "RESET STATEMENT_TIMEOUT"],
         "athena": [prepared.sql],
         "snowflake": [
+            "show parameters like 'STATEMENT_TIMEOUT_IN_SECONDS' in session",
             "alter session set statement_timeout_in_seconds = 1",
             prepared.sql,
-            "alter session set statement_timeout_in_seconds = 60",
+            "alter session set statement_timeout_in_seconds = 30",
         ],
     }[warehouse]
     assert cursor.statements == expected
@@ -207,7 +211,7 @@ def test_postgres_direct_query_preserves_long_unicode_aliases():
     assert all(len(name.encode("utf-8")) <= 63 for name in names)
     cursor = CaptureCursor(next(iter(names)))
     adapter = PostgresAdapter()
-    adapter._conn = SimpleNamespace(cursor=lambda: cursor)
+    adapter._conn = SimpleNamespace(cursor=lambda **kwargs: cursor)
     rows = adapter.query(original, limits={"max_rows": 1})
     assert cursor.statements == [prepared.sql]
     assert rows == [{aliases[0]: 1.25}]

@@ -322,7 +322,7 @@ def test_create_warehouse_adapter_selects_snowflake_native_direct_connect(
 @pytest.mark.parametrize(
     ("timeouts", "connect_timeout", "read_timeout", "statement_timeout"),
     [
-        ({}, 10, 65, 60),
+        ({}, 10, 65, None),
         (
             {
                 "connect_timeout_seconds": "7",
@@ -370,11 +370,12 @@ def test_snowflake_native_adapter_queries_with_optional_connector(
     monkeypatch.setitem(sys.modules, "snowflake.connector", connector_module)
     monkeypatch.setenv("SNOW_ACCOUNT", "acct")
     monkeypatch.setenv("SNOW_TOKEN", "oauth-token")
+    monkeypatch.setenv("SNOW_USER", "example")
 
     adapter = SnowflakeNativeAdapter(
-        "prod_native",
         options={
             "account_env": "SNOW_ACCOUNT",
+            "user_env": "SNOW_USER",
             "authenticator": "oauth",
             "token_env": "SNOW_TOKEN",
             **timeouts,
@@ -386,15 +387,18 @@ def test_snowflake_native_adapter_queries_with_optional_connector(
     assert rows == [{"ONE": 1, "TWO": "x"}]
     assert captured["sql"] == "select 1"
     assert captured["kwargs"]["account"] == "acct"
-    assert captured["kwargs"]["connection_name"] == "prod_native"
+    assert "connection_name" not in captured["kwargs"]
     assert captured["kwargs"]["authenticator"] == "oauth"
     assert captured["kwargs"]["token"] == "oauth-token"
     assert captured["kwargs"]["login_timeout"] == connect_timeout
     assert captured["kwargs"]["network_timeout"] == read_timeout
     assert captured["kwargs"]["socket_timeout"] == read_timeout
-    assert captured["kwargs"]["session_parameters"] == {
-        "STATEMENT_TIMEOUT_IN_SECONDS": statement_timeout
-    }
+    if statement_timeout is None:
+        assert "session_parameters" not in captured["kwargs"]
+    else:
+        assert captured["kwargs"]["session_parameters"] == {
+            "STATEMENT_TIMEOUT_IN_SECONDS": statement_timeout
+        }
     assert captured["closed"] is True
     assert captured["connection_closed"] is True
 
@@ -611,3 +615,175 @@ def test_every_registered_connector_names_an_adapter_entry_point():
         module_name, _, attr = connector.adapter.partition(":")
         factory = getattr(importlib.import_module(module_name), attr, None)
         assert callable(factory), f"{name} adapter entry point {connector.adapter} not callable"
+
+
+@pytest.mark.parametrize("timeout", [None, "0", "30"])
+def test_snowflake_server_timeout_is_opt_in(monkeypatch, timeout):
+    monkeypatch.setenv("SR_TEST_ACCOUNT", "example")
+    monkeypatch.setenv("SR_TEST_USER", "example")
+    options = {
+        "account_env": "SR_TEST_ACCOUNT",
+        "user_env": "SR_TEST_USER",
+        "authenticator": "externalbrowser",
+    }
+    if timeout is not None:
+        options["statement_timeout_seconds"] = timeout
+    kwargs = SnowflakeNativeAdapter(options=options)._connect_kwargs()
+    if timeout is None:
+        assert "session_parameters" not in kwargs
+    else:
+        assert kwargs["session_parameters"] == {"STATEMENT_TIMEOUT_IN_SECONDS": int(timeout)}
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {},
+        {"statement_timeout_seconds": "0"},
+        {
+            "connect_timeout_seconds": "7",
+            "read_timeout_seconds": "45",
+            "statement_timeout_seconds": "20",
+        },
+    ],
+)
+def test_snowflake_named_profile_preserves_inherited_session_and_login(monkeypatch, options):
+    from unittest.mock import Mock
+
+    pytest.importorskip("snowflake.connector")
+    from snowflake.connector.config_manager import CONFIG_MANAGER
+    from snowflake.connector.connection import SnowflakeConnection
+
+    profile = {
+        "account": "example",
+        "login_timeout": 60,
+        "network_timeout": 90,
+        "socket_timeout": 90,
+        "session_parameters": {
+            "TIMEZONE": "America/New_York",
+            "QUERY_TAG": "bi",
+            "STATEMENT_TIMEOUT_IN_SECONDS": 30,
+        },
+    }
+    import tomlkit
+
+    monkeypatch.setattr(
+        CONFIG_MANAGER, "conf_file_cache", tomlkit.item({"connections": {"analytics": profile}})
+    )
+    monkeypatch.setattr(CONFIG_MANAGER, "read_config", lambda **kwargs: None)
+    monkeypatch.setattr(
+        SnowflakeConnection, "connect", lambda self, **kwargs: setattr(self, "received", kwargs)
+    )
+    real = SnowflakeConnection
+    cursor = Mock()
+    conn = real(
+        connection_name="analytics",
+        **{
+            k: v
+            for k, v in SnowflakeNativeAdapter("analytics", options=options)
+            ._connect_kwargs()
+            .items()
+            if k != "connection_name"
+        },
+    )
+    assert conn.received["session_parameters"] == profile["session_parameters"]
+    assert conn.received["login_timeout"] == (7 if "connect_timeout_seconds" in options else 60)
+    conn.cursor = lambda: cursor
+    monkeypatch.setattr("snowflake.connector.connect", lambda **kwargs: conn)
+    adapter = SnowflakeNativeAdapter("analytics", options=options)
+    adapter._connection()
+    statements = [call.args[0] for call in cursor.execute.call_args_list]
+    if "statement_timeout_seconds" in options:
+        assert statements == [
+            f"alter session set statement_timeout_in_seconds = {options['statement_timeout_seconds']}"
+        ]
+    else:
+        assert statements == []
+    assert conn.received["session_parameters"]["TIMEZONE"] == "America/New_York"
+    assert conn.received["session_parameters"]["QUERY_TAG"] == "bi"
+
+
+@pytest.mark.parametrize("prepared", [False, True])
+def test_snowflake_long_request_wait_and_inherited_timeout_restored(prepared):
+    from semantic_rails.sql_preparation import prepare_query
+
+    connection = SimpleNamespace(_network_timeout=65, _socket_timeout=65)
+    statements = []
+
+    class Cursor:
+        description = [("value",)]
+
+        def execute(self, sql):
+            statements.append(sql)
+            assert connection._network_timeout == 125
+            assert connection._socket_timeout == 125
+
+        def fetchone(self):
+            return ("STATEMENT_TIMEOUT_IN_SECONDS", "30")
+
+        def fetchall(self):
+            return [(1,)]
+
+        def close(self):
+            pass
+
+    connection.cursor = Cursor
+    adapter = SnowflakeNativeAdapter("analytics")
+    adapter._conn = connection
+    if prepared:
+        rows = adapter.query_prepared(
+            prepare_query("select 1", "snowflake"), limits={"statement_timeout_ms": 120000}
+        )
+    else:
+        rows = adapter.query("select 1", limits={"statement_timeout_ms": 120000})
+    assert rows == [{"value": 1}]
+    assert statements == [
+        "show parameters like 'STATEMENT_TIMEOUT_IN_SECONDS' in session",
+        "alter session set statement_timeout_in_seconds = 120",
+        "select 1",
+        "alter session set statement_timeout_in_seconds = 30",
+    ]
+    assert connection._network_timeout == connection._socket_timeout == 65
+
+
+def test_snowflake_refuses_request_if_inherited_timeout_cannot_be_read():
+    from unittest.mock import Mock
+
+    cursor = Mock()
+    cursor.fetchone.return_value = None
+    connection = SimpleNamespace(cursor=lambda: cursor, _network_timeout=65, _socket_timeout=65)
+    adapter = SnowflakeNativeAdapter("analytics")
+    adapter._conn = connection
+    with pytest.raises(SemanticLayerError) as exc:
+        adapter.query("select 1", limits={"statement_timeout_ms": 120000})
+    assert exc.value.code == "QUERY_EXECUTION_ERROR"
+    assert cursor.execute.call_count == 1
+    assert connection._network_timeout == connection._socket_timeout == 65
+
+
+@pytest.mark.parametrize("close_fails", [False, True])
+def test_snowflake_drops_connection_if_inherited_deadline_restore_fails(close_fails):
+    from unittest.mock import Mock
+
+    cursor = Mock()
+    cursor.description = [("value",)]
+    cursor.fetchone.return_value = ("STATEMENT_TIMEOUT_IN_SECONDS", "30")
+    cursor.fetchall.return_value = [(1,)]
+
+    def execute(sql):
+        if sql == "alter session set statement_timeout_in_seconds = 30":
+            raise RuntimeError("restore failed")
+
+    cursor.execute.side_effect = execute
+    connection = SimpleNamespace(
+        cursor=lambda: cursor, close=Mock(), _network_timeout=65, _socket_timeout=65
+    )
+    if close_fails:
+        connection.close.side_effect = RuntimeError("close failed")
+    adapter = SnowflakeNativeAdapter("analytics")
+    adapter._conn = connection
+    with pytest.raises(SemanticLayerError) as exc:
+        adapter.query("select 1", limits={"statement_timeout_ms": 120000})
+    assert exc.value.code == "QUERY_EXECUTION_ERROR"
+    connection.close.assert_called_once()
+    assert adapter._conn is None

@@ -1,2 +1,2 @@
-- Bound native warehouse connection and query waits, and restrict external
-  access from read-only DuckDB execution connections.
+- Restrict external access and extension loading on read-only DuckDB
+  execution, bootstrap probe and authoring introspection connections.

@@ -560,3 +560,51 @@ def test_jaffle_battery_compiles_for_bigquery():
     # Exact percentile lowering (ARRAY_AGG interpolation) is exercised
     # by the percentile battery cases.
     assert "ORDER BY" in combined and "[OFFSET(CAST(FLOOR(" in combined
+
+
+@pytest.mark.parametrize(
+    "prepared, timeout_ms, expected_wait, expected_server",
+    [
+        (False, None, 65, 65000),
+        (True, None, 65, 65000),
+        (False, 120000, 125, 120000),
+        (True, 120000, 125, 120000),
+    ],
+)
+def test_bigquery_server_deadline_and_long_request_wait(
+    monkeypatch, prepared, timeout_ms, expected_wait, expected_server
+):
+    from semantic_rails.sql_preparation import prepare_query
+
+    log = {}
+    _install_fake_bigquery(monkeypatch, log)
+    adapter = BigQueryNativeAdapter()
+    limits = {} if timeout_ms is None else {"statement_timeout_ms": timeout_ms}
+    if prepared:
+        adapter.query_prepared(prepare_query("select 1", "bigquery"), limits=limits)
+    else:
+        adapter.query("select 1", limits=limits)
+    assert log["result_timeout"] == expected_wait
+    assert log["job_config"].job_timeout_ms == expected_server
+
+
+def test_bigquery_cancels_timed_out_work_even_when_cancellation_fails(monkeypatch):
+    log = {}
+    _install_fake_bigquery(monkeypatch, log)
+    adapter = BigQueryNativeAdapter()
+    job = types.SimpleNamespace()
+
+    def result(*, timeout):
+        raise TimeoutError("warehouse diagnostic must stay private")
+
+    def cancel(*, timeout):
+        log["cancel_timeout"] = timeout
+        raise RuntimeError("cancel failed")
+
+    job.result, job.cancel = result, cancel
+    adapter.client().query = lambda *args, **kwargs: job
+    with pytest.raises(SemanticLayerError) as exc:
+        adapter.query("select 1")
+    assert log["cancel_timeout"] == 10
+    assert isinstance(exc.value.__cause__, TimeoutError)
+    assert "warehouse diagnostic" not in str(exc.value)

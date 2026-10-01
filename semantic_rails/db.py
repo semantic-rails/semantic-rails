@@ -47,7 +47,7 @@ from .db_parts.base import (
     _limit_timeout_milliseconds,
     restore_column_names,
 )
-from .db_parts.common import session_time_zone, set_duckdb_time_zone
+from .db_parts.common import READ_ONLY_DUCKDB_CONFIG, session_time_zone, set_duckdb_time_zone
 from .db_parts.snowflake import (
     SnowflakeCliAdapter,
     SnowflakeNativeAdapter,
@@ -119,15 +119,7 @@ class Database:
                 raise RuntimeError(
                     "duckdb is not installed. Add it to your environment dependencies."
                 )
-            config: dict[str, str | bool | int | float | list[str]] = {}
-            if read_only:
-                config = {
-                    "enable_external_access": False,
-                    "autoinstall_known_extensions": False,
-                    "autoload_known_extensions": False,
-                    "lock_configuration": True,
-                    "allowed_configs": ["TimeZone"],
-                }
+            config = READ_ONLY_DUCKDB_CONFIG if read_only else {}
             return cls(
                 conn=duckdb.connect(db_path, read_only=read_only, config=config), engine=engine
             )

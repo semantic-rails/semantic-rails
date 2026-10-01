@@ -33,6 +33,8 @@ from .base import (
 from .common import (
     DEFAULT_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_READ_TIMEOUT_SECONDS,
+    client_wait_timeout,
+    int_option,
     normalize_connection_options,
     require_missing_env,
     rows_from_cursor,
@@ -305,35 +307,41 @@ class SnowflakeNativeAdapter(WarehouseAdapter):
         session_parameters: dict[str, Any] = {}
         if self.options.get("query_tag"):
             session_parameters["QUERY_TAG"] = self.options["query_tag"]
-        statement_timeout = timeout_option(
+        statement_timeout = int_option(
             self.options,
             "statement_timeout_seconds",
-            60,
+            0,
             engine=self.engine,
             connection_kind="snowflake_native",
             label="Snowflake native",
         )
-        session_parameters["STATEMENT_TIMEOUT_IN_SECONDS"] = statement_timeout
-        if session_parameters:
+        if "statement_timeout_seconds" in self.options:
+            session_parameters["STATEMENT_TIMEOUT_IN_SECONDS"] = statement_timeout
+        # Named profiles own their session map. Apply authored session keys separately
+        # after connecting so connector's shallow merge cannot drop inherited keys.
+        named_profile = "connection_name" in kwargs
+        if session_parameters and not named_profile:
             kwargs["session_parameters"] = session_parameters
-        kwargs["login_timeout"] = timeout_option(
-            self.options,
-            "connect_timeout_seconds",
-            DEFAULT_CONNECT_TIMEOUT_SECONDS,
-            engine=self.engine,
-            connection_kind="snowflake_native",
-            label="Snowflake native",
-        )
-        read_timeout = timeout_option(
-            self.options,
-            "read_timeout_seconds",
-            max(DEFAULT_READ_TIMEOUT_SECONDS, statement_timeout + 5),
-            engine=self.engine,
-            connection_kind="snowflake_native",
-            label="Snowflake native",
-        )
-        kwargs["network_timeout"] = read_timeout
-        kwargs["socket_timeout"] = read_timeout
+        if not named_profile or "connect_timeout_seconds" in self.options:
+            kwargs["login_timeout"] = timeout_option(
+                self.options,
+                "connect_timeout_seconds",
+                DEFAULT_CONNECT_TIMEOUT_SECONDS,
+                engine=self.engine,
+                connection_kind="snowflake_native",
+                label="Snowflake native",
+            )
+        if not named_profile or "read_timeout_seconds" in self.options:
+            read_timeout = timeout_option(
+                self.options,
+                "read_timeout_seconds",
+                client_wait_timeout(DEFAULT_READ_TIMEOUT_SECONDS, statement_timeout),
+                engine=self.engine,
+                connection_kind="snowflake_native",
+                label="Snowflake native",
+            )
+            kwargs["network_timeout"] = read_timeout
+            kwargs["socket_timeout"] = read_timeout
         kwargs.setdefault("application", "semantic-rails")
         return kwargs
 
@@ -347,7 +355,25 @@ class SnowflakeNativeAdapter(WarehouseAdapter):
                     "Install semantic-rails[snowflake] to use package.connection.kind snowflake_native.",
                     details={"engine": "snowflake", "connection_kind": "snowflake_native"},
                 ) from exc
-            self._conn = snowflake.connector.connect(**self._connect_kwargs())
+            kwargs = self._connect_kwargs()
+            self._conn = snowflake.connector.connect(**kwargs)
+            if "connection_name" in kwargs:
+                cursor = self._conn.cursor()
+                try:
+                    if "statement_timeout_seconds" in self.options:
+                        timeout = int(self.options["statement_timeout_seconds"])
+                        cursor.execute(
+                            f"alter session set statement_timeout_in_seconds = {timeout}"
+                        )
+                    if self.options.get("query_tag"):
+                        tag = self.options["query_tag"].replace("'", "''")
+                        cursor.execute(f"alter session set query_tag = '{tag}'")
+                except Exception:
+                    self._conn.close()
+                    self._conn = None
+                    raise
+                finally:
+                    cursor.close()
         return self._conn
 
     def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -359,27 +385,49 @@ class SnowflakeNativeAdapter(WarehouseAdapter):
         reject_parameters(prepared, self)
         timeout_s = _limit_timeout_seconds(limits)
         try:
-            cursor = self._connection().cursor()
+            connection = self._connection()
+            cursor = connection.cursor()
+            original_waits = {
+                key: getattr(connection, key, None)
+                for key in ("_network_timeout", "_socket_timeout")
+            }
+            original_timeout: int | None = None
             try:
                 if timeout_s > 0:
+                    read_timeout = timeout_option(
+                        self.options,
+                        "read_timeout_seconds",
+                        DEFAULT_READ_TIMEOUT_SECONDS,
+                        engine=self.engine,
+                        connection_kind="snowflake_native",
+                        label="Snowflake native",
+                    )
+                    for key, value in original_waits.items():
+                        setattr(
+                            connection,
+                            key,
+                            client_wait_timeout(max(read_timeout, value or 0), timeout_s),
+                        )
+                    cursor.execute("show parameters like 'STATEMENT_TIMEOUT_IN_SECONDS' in session")
+                    original_timeout = int(cursor.fetchone()[1])
                     cursor.execute(f"alter session set statement_timeout_in_seconds = {timeout_s}")
                 cursor.execute(prepared.sql)
                 rows = rows_from_cursor(cursor, limits=limits)
                 return restore_column_names(_clip_rows(rows, limits), prepared)
             finally:
-                if timeout_s > 0:
-                    with contextlib.suppress(Exception):  # best-effort reset
-                        default_timeout = timeout_option(
-                            self.options,
-                            "statement_timeout_seconds",
-                            60,
-                            engine=self.engine,
-                            connection_kind="snowflake_native",
-                            label="Snowflake native",
-                        )
+                if original_timeout is not None:
+                    try:
                         cursor.execute(
-                            f"alter session set statement_timeout_in_seconds = {default_timeout}"
+                            f"alter session set statement_timeout_in_seconds = {original_timeout}"
                         )
+                    except Exception:
+                        # A session whose inherited deadline could not be restored
+                        # must never be reused by the next query.
+                        self._conn = None
+                        connection.close()
+                        raise
+                for key, value in original_waits.items():
+                    setattr(connection, key, value)
                 cursor.close()
         except SemanticLayerError:
             raise

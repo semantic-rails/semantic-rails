@@ -480,3 +480,25 @@ def test_changed_seed_csv_is_reported_stale_until_the_file_is_deleted(tmp_path: 
 
     db_path.unlink()  # the fix the warning names
     assert run() == (3000, [])
+
+
+def test_parquet_backed_view_fails_closed_during_bootstrap(tmp_path):
+    package_dir = write_orders_package(tmp_path, seed={"kind": "external"}, schema="")
+    db_path = package_dir / "data" / "warehouse.duckdb"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    parquet = tmp_path / "orders.parquet"
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute(
+            f"COPY (SELECT 1 AS order_id, 1 AS customer_id, 10 AS amount) TO '{parquet}' (FORMAT PARQUET)"
+        )
+        conn.execute(f"CREATE VIEW fct_orders AS SELECT * FROM read_parquet('{parquet}')")
+        conn.execute(
+            "CREATE TABLE dim_customers AS SELECT 1 AS customer_id, 'inside' AS customer_name"
+        )
+    before = file_digest(db_path)
+    with pytest.raises(SemanticLayerError, match="materialize external-file") as exc:
+        _ensure_db(package_dir)
+    assert exc.value.code == "INVALID_CONFIG"
+    assert exc.value.details == {"reason": "external_access_disabled", "relation": "fct_orders"}
+    assert str(parquet) not in str(exc.value)
+    assert file_digest(db_path) == before

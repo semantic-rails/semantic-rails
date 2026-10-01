@@ -53,7 +53,7 @@ Key authoring principles:
 - Metadata must be query-state aware, expose a stable builder-first contract, and answer `build-options` and `valid-values`.
 - Explain output is part of the product, not a debugging afterthought.
 - DuckDB is the zero-setup local execution target; Snowflake execution is available through Snow CLI or optional native connector adapters when the package declares a configured connection.
-- The read-only DuckDB execution adapter locks external access and extension autoloading at connection creation. DuckLake keeps its separate file-backed connection for its catalog and data files.
+- The read-only DuckDB execution adapter, bootstrap relation probe and authoring introspection share a configuration that locks external access and extension autoloading at connection creation while allowing TimeZone changes. Bootstrap rejects external-file views with `INVALID_CONFIG` (`external_access_disabled`); materialize them into tables first. DuckLake keeps its separate file-backed connection for its catalog and data files.
 - Physical routing is semantic-first. The compiler may use exact aggregate
   relations for efficiency, but only when the configured rollup covers the
   requested measures, dimensions, filters, time role, and time grain.

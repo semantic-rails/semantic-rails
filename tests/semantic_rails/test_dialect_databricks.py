@@ -458,3 +458,22 @@ def test_adapter_fetches_results_inline_not_from_result_links(monkeypatch: pytes
     adapter.close()
 
     assert captured["connect_kwargs"]["use_cloud_fetch"] is False
+
+
+@pytest.mark.parametrize("prepared", [False, True])
+def test_databricks_long_request_uses_a_bounded_temporary_connection(monkeypatch, prepared):
+    from semantic_rails.sql_preparation import prepare_query
+
+    log = {}
+    _install_fake_driver(monkeypatch, log)
+    _set_connection_env(monkeypatch)
+    adapter = DatabricksNativeAdapter(_adapter_options())
+    if prepared:
+        adapter.query_prepared(
+            prepare_query("select 1", "databricks"), limits={"statement_timeout_ms": 120000}
+        )
+    else:
+        adapter.query("select 1", limits={"statement_timeout_ms": 120000})
+    assert log["connect_kwargs"]["_socket_timeout"] == 125
+    assert log["connection_closed"] is True
+    assert adapter._conn is None

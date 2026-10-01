@@ -27,6 +27,7 @@ from .base import WarehouseAdapter, _clip_rows, _limit_timeout_seconds
 from .common import (
     DEFAULT_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_READ_TIMEOUT_SECONDS,
+    client_wait_timeout,
     import_driver,
     int_option,
     normalize_connection_options,
@@ -140,7 +141,14 @@ class ClickHouseAdapter(WarehouseAdapter):
         timeout_s = _limit_timeout_seconds(limits)
         settings = {"max_execution_time": timeout_s} if timeout_s > 0 else None
         try:
-            result = self._client_handle().query(sql, settings=settings)
+            client = self._client_handle()
+            original = client.timeout
+            wait = client_wait_timeout(original.read_timeout, timeout_s)
+            client.timeout = type(original)(connect=original.connect_timeout, read=wait)
+            try:
+                result = client.query(sql, settings=settings)
+            finally:
+                client.timeout = original
             rows = [dict(zip(result.column_names, row, strict=False)) for row in result.result_rows]
             return _clip_rows(rows, limits)
         except SemanticLayerError:

@@ -285,7 +285,7 @@ def test_adapter_normalizes_options_and_builds_connect_kwargs(monkeypatch: pytes
         "user": "svc_user",
         "password": "super-secret",
         "dbname": "sr_jaffle",
-        "options": "-c search_path=analytics -c statement_timeout=60000",
+        "options": "-c search_path=analytics",
     }
 
 
@@ -354,7 +354,7 @@ def test_adapter_reports_every_missing_env_var_without_secret_values(
 @pytest.mark.parametrize(
     ("timeouts", "connect_timeout", "read_timeout", "statement_timeout"),
     [
-        ({}, 10, 65, 60000),
+        ({}, 10, 65, None),
         (
             {
                 "connect_timeout_seconds": "7",
@@ -383,9 +383,10 @@ def test_adapter_queries_with_fake_driver_and_maps_rows(
     assert captured["kwargs"]["autocommit"] is True
     assert captured["kwargs"]["connect_timeout"] == connect_timeout
     assert captured["kwargs"]["keepalives_idle"] == read_timeout
-    assert captured["kwargs"]["options"] == (
-        f"-c search_path=analytics -c statement_timeout={statement_timeout}"
-    )
+    expected_options = "-c search_path=analytics"
+    if statement_timeout is not None:
+        expected_options += f" -c statement_timeout={statement_timeout}"
+    assert captured["kwargs"]["options"] == expected_options
     assert captured["cursor_closed"] is True
     assert captured["connection_closed"] is True
 
@@ -585,3 +586,13 @@ def test_postgres_compiles_every_battery_case():
             "EQUAL_NULL(",
         ):
             assert forbidden not in sql, f"{case.name}: forbidden fragment {forbidden}\n{sql}"
+
+
+@pytest.mark.parametrize("statement_timeout", [None, "0", "30"])
+def test_postgres_server_timeout_is_opt_in_without_schema(statement_timeout):
+    options = {} if statement_timeout is None else {"statement_timeout_seconds": statement_timeout}
+    kwargs = PostgresAdapter(options)._connect_kwargs()
+    if statement_timeout in (None, "0"):
+        assert "options" not in kwargs
+    else:
+        assert kwargs["options"] == f"-c statement_timeout={int(statement_timeout) * 1000}"

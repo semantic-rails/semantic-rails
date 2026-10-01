@@ -23,6 +23,8 @@ Connection contract (see ``DATABRICKS_CONNECTION_OPTIONS`` in
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from ..dialects import DATABRICKS_CONNECTION_OPTIONS
@@ -32,6 +34,7 @@ from .common import (
     DEFAULT_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_READ_TIMEOUT_SECONDS,
     DbApiAdapter,
+    client_wait_timeout,
     import_driver,
     normalize_connection_options,
     option_or_env,
@@ -117,7 +120,27 @@ class DatabricksNativeAdapter(DbApiAdapter):
                 kwargs[key] = self.options[key]
         return kwargs
 
-    def _create_connection(self) -> Any:
+    @contextmanager
+    def _query_connection(self, timeout_seconds: int) -> Iterator[Any]:
+        read_timeout = timeout_option(
+            self.options,
+            "read_timeout_seconds",
+            DEFAULT_READ_TIMEOUT_SECONDS,
+            engine=self.engine,
+            connection_kind=self.connection_kind,
+            label="Databricks",
+        )
+        wait = client_wait_timeout(read_timeout, timeout_seconds)
+        if wait <= read_timeout:
+            yield self._connection()
+        else:
+            connection = self._create_connection(read_timeout=wait)
+            try:
+                yield connection
+            finally:
+                connection.close()
+
+    def _create_connection(self, *, read_timeout: int | None = None) -> Any:
         driver = import_driver(
             "databricks.sql",
             extra="databricks",
@@ -132,7 +155,7 @@ class DatabricksNativeAdapter(DbApiAdapter):
             connection_kind=self.connection_kind,
             label="Databricks",
         )
-        read_timeout = timeout_option(
+        read_timeout = read_timeout or timeout_option(
             self.options,
             "read_timeout_seconds",
             DEFAULT_READ_TIMEOUT_SECONDS,

@@ -23,6 +23,7 @@ Connection contract:
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any
 
 from ..dialects import BIGQUERY_CONNECTION_OPTIONS
@@ -38,6 +39,7 @@ from .base import (
 from .common import (
     DEFAULT_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_READ_TIMEOUT_SECONDS,
+    client_wait_timeout,
     import_driver,
     normalize_connection_options,
     option_or_env,
@@ -147,8 +149,6 @@ class BigQueryNativeAdapter(WarehouseAdapter):
             default_dataset = self.default_dataset_id()
             if default_dataset:
                 job_config.default_dataset = default_dataset
-            if timeout_s > 0:
-                job_config.job_timeout_ms = timeout_s * 1000
             connect_timeout = timeout_option(
                 self.options,
                 "connect_timeout_seconds",
@@ -165,8 +165,15 @@ class BigQueryNativeAdapter(WarehouseAdapter):
                 connection_kind=self.connection_kind,
                 label=_LABEL,
             )
+            read_timeout = client_wait_timeout(read_timeout, timeout_s)
+            job_config.job_timeout_ms = (timeout_s or read_timeout) * 1000
             job = client.query(prepared.sql, job_config=job_config, timeout=connect_timeout)
-            rows = [dict(row.items()) for row in job.result(timeout=read_timeout)]
+            try:
+                rows = [dict(row.items()) for row in job.result(timeout=read_timeout)]
+            except TimeoutError:
+                with suppress(Exception):
+                    job.cancel(timeout=connect_timeout)
+                raise
             return restore_column_names(_clip_rows(rows, limits), prepared)
         except SemanticLayerError:
             raise

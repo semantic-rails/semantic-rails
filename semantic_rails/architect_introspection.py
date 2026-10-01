@@ -32,6 +32,7 @@ from typing import Any
 import duckdb
 
 from .architect_scaffold import slug
+from .db_parts.common import READ_ONLY_DUCKDB_CONFIG
 from .errors import SemanticLayerError
 from .sql_identifiers import quote_identifier, quote_relation, relation_parts
 
@@ -107,9 +108,7 @@ def open_duckdb(path: str | os.PathLike[str]) -> Iterator[DuckDBWarehouse]:
             details={"duckdb_path": db_path, "reason": "database_missing"},
         )
     try:
-        connection = duckdb.connect(
-            db_path, read_only=True, config={"enable_external_access": "false"}
-        )
+        connection = duckdb.connect(db_path, read_only=True, config=READ_ONLY_DUCKDB_CONFIG)
     except Exception as exc:  # noqa: BLE001 — never surface driver text (paths, PIDs)
         raise SemanticLayerError(
             "INVALID_CONFIG",

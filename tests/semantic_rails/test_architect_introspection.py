@@ -929,3 +929,11 @@ def test_a_snapshot_named_time_is_drafted_as_an_as_of_clock() -> None:
         "created_at": "event_time",
         "was_offered_at": "event_time",
     }
+
+
+def test_introspection_configuration_is_locked_but_allows_timezone(warehouse_path):
+    with open_duckdb(warehouse_path) as warehouse:
+        warehouse.execute("SET TimeZone = 'UTC'")
+        assert warehouse.rows("SELECT current_setting('TimeZone') AS zone") == [{"zone": "UTC"}]
+        with pytest.raises(duckdb.Error):
+            warehouse.execute("SET enable_external_access = true")

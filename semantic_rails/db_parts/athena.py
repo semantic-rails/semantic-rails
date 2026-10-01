@@ -26,6 +26,7 @@ from .common import (
     DEFAULT_CONNECT_TIMEOUT_SECONDS,
     DEFAULT_READ_TIMEOUT_SECONDS,
     DbApiAdapter,
+    client_wait_timeout,
     import_driver,
     normalize_connection_options,
     option_or_env,
@@ -52,27 +53,28 @@ class AthenaAdapter(DbApiAdapter):
             ATHENA_CONNECTION_OPTIONS,
             label=_LABEL,
         )
-        self._poll_started: dict[str, float] = {}
 
-    def _on_poll(self, execution: Any) -> None:
-        """Bound PyAthena's polling loop, which has no built-in query deadline."""
-        query_id = execution.query_id
-        if not query_id:
-            return
-        now = time.monotonic()
-        started = self._poll_started.setdefault(query_id, now)
-        if execution.state in {"SUCCEEDED", "FAILED", "CANCELLED"}:
-            self._poll_started.pop(query_id, None)
-        elif now - started >= timeout_option(
+    def _query_cursor(self, connection: Any, timeout_seconds: int) -> Any:
+        read_timeout = timeout_option(
             self.options,
             "read_timeout_seconds",
             DEFAULT_READ_TIMEOUT_SECONDS,
             engine=self.engine,
             connection_kind=self.connection_kind,
             label=_LABEL,
-        ):
-            self._poll_started.pop(query_id, None)
-            raise TimeoutError("Athena query polling timed out")
+        )
+        deadline = time.monotonic() + client_wait_timeout(read_timeout, timeout_seconds)
+
+        def on_poll(execution: Any) -> None:
+            if (
+                execution.state not in {"SUCCEEDED", "FAILED", "CANCELLED"}
+                and time.monotonic() >= deadline
+            ):
+                cursor.cancel()
+                raise TimeoutError("Athena query polling timed out")
+
+        cursor = connection.cursor(on_poll=on_poll)
+        return cursor
 
     def _create_connection(self) -> Any:
         driver = import_driver(
@@ -135,7 +137,6 @@ class AthenaAdapter(DbApiAdapter):
                     label=_LABEL,
                 ),
             ),
-            on_poll=self._on_poll,
         )
 
 

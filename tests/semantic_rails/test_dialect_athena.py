@@ -181,7 +181,8 @@ class _FakeConnection:
         self._log = log
         self._fail = fail
 
-    def cursor(self) -> _FakeCursor:
+    def cursor(self, **kwargs) -> _FakeCursor:
+        self._log["cursor_kwargs"] = kwargs
         return _FakeCursor(self._log, self._fail)
 
     def close(self) -> None:
@@ -319,21 +320,88 @@ def test_athena_adapter_connects_with_env_indirection_and_defaults_namespace(
     }
     assert log["connect_kwargs"]["config"].connect_timeout == connect_timeout
     assert log["connect_kwargs"]["config"].read_timeout == read_timeout
-    assert log["connect_kwargs"]["on_poll"] == adapter._on_poll
+    assert "on_poll" not in log["connect_kwargs"]
+    assert callable(log["cursor_kwargs"]["on_poll"])
     assert log["cursor_closed"] is True
     assert log["connection_closed"] is True
 
 
-def test_athena_poll_deadline_stops_an_unfinished_query(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize("timeout_ms, deadline", [(None, 3), (120000, 125)])
+def test_athena_poll_deadline_cancels_before_abandoning_query(monkeypatch, timeout_ms, deadline):
     now = [0.0]
     monkeypatch.setattr("semantic_rails.db_parts.athena.time.monotonic", lambda: now[0])
     adapter = AthenaAdapter({"read_timeout_seconds": "3"})
+    log = []
+    cursor = types.SimpleNamespace(cancel=lambda: log.append("cancel"))
+    callbacks = {}
+    connection = types.SimpleNamespace(cursor=lambda **kwargs: callbacks.update(kwargs) or cursor)
+    adapter._query_cursor(connection, (timeout_ms or 0) // 1000)
     execution = types.SimpleNamespace(query_id="query-1", state="RUNNING")
-    adapter._on_poll(execution)
-    now[0] = 3.0
+    now[0] = deadline - 0.1
+    callbacks["on_poll"](execution)
+    assert log == []
+    now[0] = deadline
     with pytest.raises(TimeoutError, match="polling timed out"):
-        adapter._on_poll(execution)
-    assert adapter._poll_started == {}
+        callbacks["on_poll"](execution)
+    assert log == ["cancel"]
+
+
+def test_athena_installed_driver_calls_poll_hook_and_cancels(monkeypatch):
+    import inspect
+
+    pytest.importorskip("pyathena")
+    import boto3
+    from botocore.stub import ANY, Stubber
+    from pyathena.connection import Connection
+
+    assert "on_poll" in inspect.signature(Connection).parameters
+    connection = Connection(
+        s3_staging_dir="s3://example/results",
+        region_name="us-east-1",
+        poll_interval=0,
+        session=boto3.Session(
+            aws_access_key_id="test", aws_secret_access_key="test", region_name="us-east-1"
+        ),
+    )
+    now = [0.0]
+    monkeypatch.setattr("semantic_rails.db_parts.athena.time.monotonic", lambda: now[0])
+    adapter = AthenaAdapter({"read_timeout_seconds": "3"})
+    cursor = adapter._query_cursor(connection, 0)
+    original_get = cursor._get_query_execution
+
+    def get_execution(query_id):
+        execution = original_get(query_id)
+        now[0] += 3
+        return execution
+
+    monkeypatch.setattr(cursor, "_get_query_execution", get_execution)
+    with Stubber(connection.client) as stub:
+        stub.add_response(
+            "start_query_execution",
+            {"QueryExecutionId": "query-1"},
+            {
+                "QueryString": ANY,
+                "QueryExecutionContext": ANY,
+                "ResultConfiguration": ANY,
+            },
+        )
+        stub.add_response(
+            "get_query_execution",
+            {
+                "QueryExecution": {
+                    "QueryExecutionId": "query-1",
+                    "Query": "select 1",
+                    "Status": {"State": "RUNNING"},
+                }
+            },
+            {"QueryExecutionId": "query-1"},
+        )
+        stub.add_response("stop_query_execution", {}, {"QueryExecutionId": "query-1"})
+        with pytest.raises(TimeoutError, match="polling timed out"):
+            cursor.execute("select 1")
+        stub.assert_no_pending_responses()
+    cursor.close()
+    connection.close()
 
 
 def test_athena_adapter_defaults_schema_and_omits_workgroup(monkeypatch: pytest.MonkeyPatch):
