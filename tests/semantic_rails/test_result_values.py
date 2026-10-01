@@ -72,6 +72,9 @@ QUERY = {
         (UUID(int=0), "00000000-0000-0000-0000-000000000000", {"type": "uuid"}),
         ({"a": [None, 1.0, "2"]}, {"a": [None, 1, "2"]}, {"type": "object"}),
         ([1, "2"], [1, "2"], {"type": "array"}),
+        ({"n": 9007199254740993}, {"n": 9007199254740993}, {"type": "object"}),
+        ([9007199254740993, True], [9007199254740993, True], {"type": "array"}),
+        ({"a": [{"n": 9007199254740993}]}, {"a": [{"n": 9007199254740993}]}, {"type": "object"}),
     ],
 )
 def test_value_policy(value: Any, expected: Any, metadata: dict[str, str]) -> None:
@@ -80,6 +83,30 @@ def test_value_policy(value: Any, expected: Any, metadata: dict[str, str]) -> No
     assert type(result["rows"][0]["value"]) is type(expected)
     assert result["column_types"] == {"value": metadata}
     json.dumps(result, allow_nan=False)
+
+
+@pytest.mark.parametrize(
+    "expression,expected,kind",
+    [
+        ("{'n': 9007199254740993::BIGINT}", {"n": 9007199254740993}, "object"),
+        ("[9007199254740993::BIGINT]", [9007199254740993], "array"),
+    ],
+)
+def test_runtime_preserves_container_integers(
+    runtime_factory, monkeypatch, expression, expected, kind
+) -> None:
+    with duckdb.connect(":memory:") as connection:
+        value = connection.execute(f"SELECT {expression}").fetchone()[0]
+    rows = [{"orders": value}]
+    runtime = runtime_factory("jaffle_shop")
+    monkeypatch.setattr("semantic_rails.runtime._adapter_query", lambda *args, **kwargs: rows)
+    try:
+        result = runtime.query(QUERY)
+        assert result["rows"] == [{"orders": expected}]
+        assert result["column_types"] == {"orders": {"type": kind}}
+        assert json.loads(json.dumps(result, allow_nan=False))["rows"] == [{"orders": expected}]
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize(

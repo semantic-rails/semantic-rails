@@ -114,7 +114,9 @@ def _value(value: Any, *, zone: str = "", numeric_type: str = "") -> tuple[Any, 
 def _json_container(value: Any) -> Any:
     if value is None or isinstance(value, (str, bool)):
         return value
-    if isinstance(value, (int, float, Decimal)):
+    if isinstance(value, int):
+        return value
+    if isinstance(value, (float, Decimal)):
         number = _number(value)
         if isinstance(number, str):
             raise _refuse()
