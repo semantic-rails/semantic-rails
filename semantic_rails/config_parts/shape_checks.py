@@ -571,18 +571,21 @@ def _check_model_shape(
                     errors=errors,
                 )
 
-    # Grain must match the resolved primary's key (or `expr:` override).
+    # Explicit graph bindings fix identity independently of the row grain.
+    # Otherwise grain must match the resolved primary's key (or `expr:` override).
     model_kind = str(model.get("kind", "model") or "model").strip().lower()
-    primary = next(
+    bound_primary = next(
         (
             str(name)
             for name, entity in (graph_entities or {}).items()
             if isinstance(entity, dict) and str(entity.get("model", "") or "").strip() == model_id
         ),
-        str(model.get("entity", "") or "").strip(),
+        "",
     )
+    primary = bound_primary or str(model.get("entity", "") or "").strip()
     if (
         model_kind == "model"
+        and not bound_primary
         and isinstance(entities_block, dict)
         and graph_entities is not None
         and model.get("grain") is not None

@@ -852,8 +852,8 @@ model:
 
 The **primary entity** of a model is resolved without authoring `grain:`:
 `graph.entities.<x>.model:` names the model that is the primary home of each
-entity (the jaffle and tpch packages author it this way), and the row grain is
-derived from that entity's canonical key. Single-file packages may instead pin
+entity (the jaffle and tpch packages author it this way), and an omitted row grain
+is derived from that entity's canonical key. Single-file packages may instead pin
 the primary by authoring `grain:` — the entity whose key matches the grain is
 primary. Under `schema_strict`, directory packages reject
 `grain:` authored alongside an `entities:` block ("Drop 'grain:' — it's derived
@@ -866,10 +866,14 @@ explicit graph binding. It back-fills implicit graph bindings from the resolved
 identity. Declaration order never selects the primary; loading fails with
 `INVALID_CONFIG` if it cannot be resolved or two graph entities bind to one model.
 Two models claiming the same unbound graph entity also fail with `INVALID_CONFIG`
-naming both models. When `grain:` accompanies an `entities:` block, it must match
-the resolved primary entity's `expr:` override or canonical graph key, even when
-a binding or singular `entity:` supplies the identity. When neither declares
-columns, the check uses the model's own `keys.primary:`. If no key is declared,
+naming both models. An explicit graph `model:` binding fixes primary identity
+independently of an authored `grain:`. That grain describes measure rows and may
+differ from the entity key (for example, payment rows belonging to one receipt,
+or snapshot rows keyed by their clock). It never replaces the bound entity's key.
+Without an explicit graph binding, when `grain:` accompanies an `entities:` block,
+it must match the resolved primary entity's `expr:` override or canonical graph
+key, including when a singular `entity:` supplies the identity. When neither
+declares columns, the check uses the model's own `keys.primary:`. If no key is declared,
 its own model's grain can supply it. Empty `entities:` blocks retain the graph's
 model-name default and still validate the grain.
 

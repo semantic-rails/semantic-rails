@@ -22,6 +22,7 @@ import yaml
 
 from semantic_rails.cli.commands.package import cmd_init
 from semantic_rails.config import load_package_config
+from semantic_rails.config_parts.package_loader import normalize_package
 from semantic_rails.config_validation import validate_runtime_package
 from semantic_rails.errors import SemanticLayerError
 
@@ -84,18 +85,14 @@ def test_grain_that_matches_no_entity_key_is_rejected(starter_package: Path) -> 
     assert any("grain" in e and "customerid" in e and "customer_id" in e for e in errors), errors
 
 
-@pytest.mark.parametrize("primary_source", ["graph", "entity"])
 @pytest.mark.parametrize("key_source", ["graph", "expr", "primary", "empty_block"])
 @pytest.mark.parametrize("surface", ["validate", "load"])
 def test_grain_does_not_select_primary_when_identity_is_authored(
-    starter_package: Path, primary_source: str, key_source: str, surface: str
+    starter_package: Path, key_source: str, surface: str
 ) -> None:
     raw = yaml.safe_load(starter_package.read_text(encoding="utf-8"))
     raw["models"]["customers"]["grain"] = ["authored_row_id"]
-    if primary_source == "graph":
-        raw["graph"]["entities"]["customer"]["model"] = "customers"
-    else:
-        raw["models"]["customers"]["entity"] = "customer"
+    raw["models"]["customers"]["entity"] = "customer"
     if key_source == "expr":
         raw["models"]["customers"]["entities"]["customer"] = {"expr": "renamed_customer_id"}
     elif key_source == "primary":
@@ -116,6 +113,51 @@ def test_grain_does_not_select_primary_when_identity_is_authored(
         load_package_config(str(starter_package))
     assert exc.value.code == "INVALID_CONFIG"
     assert all(text in str(exc.value) for text in ("'customers'", "'customer'", expected_key))
+
+
+@pytest.mark.parametrize("key_source", ["graph", "expr", "primary", "empty_block"])
+@pytest.mark.parametrize("grain", [["authored_row_id"], ["order_id"]])
+def test_explicit_graph_binding_preserves_identity_and_separate_row_grain(
+    starter_package: Path, key_source: str, grain: list[str]
+) -> None:
+    raw = yaml.safe_load(starter_package.read_text(encoding="utf-8"))
+    raw["graph"]["entities"]["customer"]["model"] = " customers "
+    model = raw["models"]["customers"]
+    model["grain"] = grain
+    model["entities"]["order"] = {}
+    model["measures"] = {
+        "customer_rows": {
+            "kind": "aggregate",
+            "expr": "1",
+            "accumulation": {"kind": "flow"},
+            "value_type": "count",
+            "publish": False,
+        }
+    }
+    expected_key = "customer_id"
+    if key_source == "expr":
+        model["entities"]["customer"] = {"expr": "renamed_customer_id"}
+        expected_key = "renamed_customer_id"
+    elif key_source == "primary":
+        raw["graph"]["entities"]["customer"].pop("key")
+        model["keys"] = {"primary": ["customer_id"]}
+        raw["models"]["orders"]["entities"]["customer"] = {"expr": "customer_id"}
+    elif key_source == "empty_block":
+        model["entities"] = {}
+    starter_package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    assert not _errors(starter_package)
+    # Direct loading also bypasses raw-shape validation. Neither path may borrow
+    # order's key or use the row grain to replace the graph's explicit identity.
+    config = load_package_config(str(starter_package))
+    normalized = normalize_package(raw)["models"]["customers"]
+    assert normalized["entity"] == "customer"
+    assert normalized["keys"]["primary"] == [expected_key]
+    customer = next(entity for entity in config.entities if entity.id.endswith("_customer"))
+    assert customer.key == ["customer_id"]
+    assert customer.table == "shop_customer"
+    measures = [measure for measure in config.measures if measure.entity == customer.id]
+    assert measures
+    assert all(measure.row_grain == grain for measure in measures)
 
 
 def test_grain_matching_foreign_key_does_not_override_authored_primary(

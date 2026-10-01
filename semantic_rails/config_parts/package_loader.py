@@ -199,14 +199,20 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
                 "listed with the model's name",
             )
 
-        # Grain must agree with the resolved primary, even when identity is authored.
+        # An explicit graph binding fixes identity independently of the row grain.
+        # Otherwise grain must agree with the resolved primary.
         # A primary with no declared columns may instead receive its key from grain.
         primary_cols = (
             effective_cols.get(primary_entity)
             or _canonical_key_for(primary_entity)
             or _column_list((model.get("keys") or {}).get("primary"))
         )
-        if model_grain is not None and primary_cols and grain_cols != primary_cols:
+        if (
+            model_id not in bound_entities
+            and model_grain is not None
+            and primary_cols
+            and grain_cols != primary_cols
+        ):
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 f"model '{model_id}' grain {grain_cols} does not match the key of "
