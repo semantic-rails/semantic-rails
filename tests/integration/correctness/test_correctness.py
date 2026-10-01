@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from datetime import time as clock_time
 from decimal import Decimal
 from typing import Any
@@ -787,7 +787,22 @@ def _answer(backend: Backend, case: Case) -> list[tuple[Any, ...]]:
     if case.routes is not None:
         routed = "orders_monthly" in str(result.get("rendered_sql") or "")
         assert routed is case.routes, f"{case.name}: rollup routing is {routed} on {backend.name}"
-    return [tuple(row.values()) for row in result["rows"]]
+
+    def typed(value: Any, kind: str) -> Any:
+        if value is None:
+            return None
+        if kind == "decimal":
+            return Decimal(value)
+        if kind == "timestamp":
+            return datetime.fromisoformat(value)
+        if kind == "date":
+            return date.fromisoformat(value)
+        return value
+
+    return [
+        tuple(typed(value, result["column_types"][key]["type"]) for key, value in row.items())
+        for row in result["rows"]
+    ]
 
 
 def _backend(request: pytest.FixtureRequest, name: str) -> Backend:

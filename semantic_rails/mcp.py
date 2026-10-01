@@ -1186,6 +1186,7 @@ _SEGMENT_MINIMAL_KEYS: dict[str, frozenset[str]] = {
             "member_key_dimensions",
             "preview_dimensions",
             "rows",
+            "column_types",
             "preview_row_count",
             "member_count",
             "derived_query",
@@ -1223,7 +1224,10 @@ def _segment_response(action: str, payload: Mapping[str, Any], verbosity: Any) -
         key: value
         for key, value in out.items()
         if key in keep
-        and (key in {"ok", "status", "errors", "warnings"} or value not in ("", [], {}))
+        and (
+            key in {"ok", "status", "errors", "warnings", "column_types"}
+            or value not in ("", [], {})
+        )
     }
 
 
