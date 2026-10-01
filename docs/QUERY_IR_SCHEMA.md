@@ -232,25 +232,12 @@ CAST does not silently return NULL. `DATE`, `TIMESTAMP`, other target types, non
 `TRY_CAST` are refused. The same AST works in package expressions,
 conditional aggregates and post-aggregation expressions.
 
-Certainly incompatible arguments fail before SQL lowering with `CALL_ARGUMENT_TYPE`
-and `details: {function, argument_index, expected, received}`. Indices are
-zero-based and the type families are `number`, `text`, `date`, `boolean`
-and `array`. Declared dimension types, literals, casts and known nested-call
-return types are checked; a defaulted or authored `categorical` semantic kind
-and columns without a resolved entity have unknown types and pass to the
-warehouse. Coarse family checks apply to DuckDB (including MotherDuck and
-DuckLake), Postgres and BigQuery. Other warehouses' implicit conversions and
-overloads are deferred to execution. Postgres string literals are unknown until
-the warehouse resolves them against a function signature. DuckDB-family `LENGTH` accepts arrays as
-well as text. Additional `ROUND` arguments are deferred to the warehouse;
-Snowflake's text rounding-mode argument is supported.
-Arguments to `CONCAT`, `JSON_EXTRACT`, `JSON_EXTRACT_STRING` and the `SPLIT`
-family are unchecked because warehouse overloads accept multiple type families.
-The package walker visits parsed expressions and leaves metadata, defaults and
-parameters as data. A numeric function receiving text includes a recovery hint to wrap that argument in
-CAST. Package `check`, query validation, planning and execution share this
-check. Package `check` retains other configuration errors alongside a structured
-call type error. Warehouse execution errors remain redacted.
+Scalar-call argument types and overload resolution are checked by the warehouse
+at execution, for query, package and relation-pipeline expressions alike.
+Compilation checks the allowed function name and CAST shape without inferring
+argument categories from literals, dimensions or nested calls. Use CAST when an
+explicit conversion is required. Warehouse execution failures use the stable
+`QUERY_EXECUTION_ERROR` code and remain redacted.
 
 A top-level request select containing only literals, literal arithmetic or casts
 of literals, with no grouping, where, time or metric filter, returns `INVALID_QUERY` with
