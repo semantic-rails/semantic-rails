@@ -7,6 +7,7 @@ import pytest
 from semantic_rails.db import Database, _split_sql_statements, load_csv_dir_to_duckdb, seed_db
 from semantic_rails.db_parts.common import (
     option_or_env,
+    timeout_option,
 )
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.sql_preparation import (
@@ -14,6 +15,21 @@ from semantic_rails.sql_preparation import (
     map_double_quoted_identifiers,
     rewrite_double_quoted_identifiers,
 )
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "invalid"])
+def test_timeout_option_rejects_nonpositive_or_invalid_values_without_echoing_them(value):
+    with pytest.raises(SemanticLayerError) as exc:
+        timeout_option(
+            {"read_timeout_seconds": value},
+            "read_timeout_seconds",
+            65,
+            engine="postgres",
+            connection_kind="postgres_native",
+        )
+    assert exc.value.code == "INVALID_CONFIG"
+    assert exc.value.details["option"] == "read_timeout_seconds"
+    assert value not in str(exc.value)
 
 
 @pytest.mark.parametrize(

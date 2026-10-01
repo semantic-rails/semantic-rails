@@ -10,6 +10,7 @@ under a hop limit.
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -179,12 +180,44 @@ def route_basis(
     """How ``resolve_path`` chose the route it returned (``routes``) for a pair with two or
     more routes: ``"recorded"`` (a ``graph.path_preferences`` row) or ``"colocated_key"``
     (rule 3, the start's own key). ``""`` when the pair has one route, so nothing was chosen."""
-    if (start, target) in get_package_analysis(config).path_preferences:
-        unpinned = _unpinned_resolution(config, start, target)
-        if isinstance(unpinned, RouteRefusal):
-            return "recorded" if unpinned.code == "AMBIGUOUS_PATH" else ""
-        return "recorded" if len(unpinned) > 1 else ""
+    analysis = get_package_analysis(config)
+    pair = (start, target)
+    if pair in analysis.path_preferences:
+        if pair not in analysis.route_note_cache:
+            analysis.route_note_cache[pair] = _has_multiple_routes(
+                analysis.graph, start, target, package_hop_limit(config)
+            )
+        return "recorded" if analysis.route_note_cache[pair] else ""
     return "colocated_key" if len(routes) > 1 else ""
+
+
+def _has_multiple_routes(
+    graph: dict[str, list[tuple[str, str]]], start: str, target: str, hop_limit: int
+) -> bool:
+    """Check multiplicity without enumerating routes: find one bounded shortest path,
+    then test reachability with each of its relationships removed. Any other simple path
+    must omit at least one of those relationships. At most ``hop_limit + 1`` BFS scans,
+    each visiting an entity once; cycles and parallel relationships need no special case.
+    """
+
+    def shortest_path(excluded: str | None = None) -> tuple[str, ...] | None:
+        pending: deque[tuple[str, tuple[str, ...]]] = deque([(start, ())])
+        seen = {start}
+        while pending:
+            node, path = pending.popleft()
+            if node == target:
+                return path
+            if len(path) >= hop_limit:
+                continue
+            for neighbor, rel_id in graph.get(node, []):
+                if rel_id == excluded or neighbor in seen:
+                    continue
+                seen.add(neighbor)
+                pending.append((neighbor, (*path, rel_id)))
+        return None
+
+    path = shortest_path()
+    return path is not None and any(shortest_path(rel_id) is not None for rel_id in path)
 
 
 def resolve_path(

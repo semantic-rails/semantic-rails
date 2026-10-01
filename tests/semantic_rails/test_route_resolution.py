@@ -27,6 +27,7 @@ import gc
 import json
 import textwrap
 import weakref
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -35,15 +36,26 @@ import pytest
 import yaml
 
 import semantic_rails.fanout as fanout_module
+from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts.grain_recovery import _chosen_path
-from semantic_rails.compiler_parts.indexes import _PACKAGE_ANALYSIS_CACHE
+from semantic_rails.compiler_parts.indexes import _PACKAGE_ANALYSIS_CACHE, get_package_analysis
 from semantic_rails.compiler_parts.paths import _direct_entity_key_source_expr
 from semantic_rails.config import load_package_config
 from semantic_rails.diagnostics import exception_issue
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.expressions import ColumnRefExpr
 from semantic_rails.fanout import resolve_path
 from semantic_rails.metadata_parts.path_coverage import _path_availability
+from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
+from semantic_rails.runtime import _route_notes as compiled_route_notes
+from semantic_rails.schema import (
+    DimensionConfig,
+    EntityConfig,
+    PathPolicyConfig,
+    PathPreferenceConfig,
+    RelationshipConfig,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -382,6 +394,121 @@ def test_no_route_note_where_nothing_was_chosen_or_in_the_minimal_response(
     out = Runtime.from_path(str(pkg)).query(query)
     assert _rows(out, [REGION_NAME, "v"]) == _gold(BY_BRANCH)
     assert _route_notes(out) == {}
+
+
+def test_pinned_dense_graph_compiles_and_notes_use_bounded_work(tmp_path, monkeypatch):
+    """A pin bypasses candidate enumeration even when hundreds of thousands of routes fit
+    the ceiling. The note scans edges a bounded number of times and caches only a boolean.
+    """
+    base = load_package_config(str(_write_package(tmp_path)))
+    entities = [EntityConfig(id=f"e{i}", table=f"e{i}", primary_key="id") for i in range(11)]
+    relationships = [
+        RelationshipConfig(
+            id=f"r{i}_{j}",
+            source_entity=f"e{i}",
+            target_entity=f"e{j}",
+            source_column=f"e{j}_id",
+            target_column="id",
+            cardinality="N:1",
+            safety="safe",
+            rollup_safe_aggregations_reverse=["count_distinct"],
+        )
+        for i in range(11)
+        for j in range(i + 1, 11)
+    ]
+    config = replace(
+        base,
+        entities=entities,
+        relationships=relationships,
+        dimensions=[
+            DimensionConfig(id="dimension.e0_id", entity="e0", column="id", data_type="id"),
+            DimensionConfig(id="dimension.e10_id", entity="e10", column="id", data_type="id"),
+        ],
+        temporal_roles=[],
+        measures=[
+            replace(
+                base.measures[0],
+                id="measure.e10_count",
+                entity="e10",
+                subject_entity="e10",
+                aggregation_entity="e10",
+                row_grain=["dimension.e10_id"],
+                expr=ColumnRefExpr("id"),
+                measure_class="event_count",
+                default_aggregation="count_distinct",
+                allowed_aggregations=["count_distinct"],
+                compatible_temporal_roles=[],
+            )
+        ],
+        metric_recipes=[],
+        path_preferences=[PathPreferenceConfig("e10", "e0", relationship_path=["r0_10"])],
+        path_policy=PathPolicyConfig(max_hops=8),
+    )
+    analysis = get_package_analysis(config)
+    work = {"enumerations": 0, "edges": 0}
+
+    class CountedEdges(list):
+        def __iter__(self):
+            for edge in super().__iter__():
+                work["edges"] += 1
+                yield edge
+
+    analysis.graph = {node: CountedEdges(edges) for node, edges in analysis.graph.items()}
+
+    def count_enumeration(*_args, **_kwargs):
+        work["enumerations"] += 1
+        pytest.fail("a pinned compile or its notes must not enumerate candidates")
+
+    monkeypatch.setattr(fanout_module, "enumerate_paths", count_enumeration)
+    query = _query("measure.e10_count", group_by=["dimension.e0_id"], verbosity="compact")
+    compiled = compile_query(config, Registry(config), query)
+    notes = compiled_route_notes(config, compiled, query)
+    assert [(note["code"], note["details"]) for note in notes] == [
+        ("ROUTE_RECORDED", {"route": ["r0_10"]})
+    ]
+    assert work["enumerations"] == 0
+    assert 0 < work["edges"] <= (config.path_policy.max_hops + 1) * 2 * len(relationships)
+    assert analysis.path_cache == {}
+    assert analysis.route_note_cache == {("e10", "e0"): True}
+    first_work = dict(work)
+    assert compiled_route_notes(config, compiled, query) == notes
+    assert work == first_work
+
+
+@pytest.mark.parametrize("hop_limit", [1, 2, 3])
+@pytest.mark.parametrize("pinned_path", [BRANCH, HOME])
+def test_recorded_route_notes_obey_the_hop_ceiling(tmp_path, monkeypatch, hop_limit, pinned_path):
+    config = load_package_config(
+        str(_write_package(tmp_path, pins=[_pin("account", "region", pinned_path)]))
+    )
+    config = replace(config, path_policy=PathPolicyConfig(max_hops=hop_limit))
+    chosen, candidates = resolve_path(config, start=ACCOUNT, target=REGION)
+    assert chosen == pinned_path
+
+    def fail_enumeration(*_args, **_kwargs):
+        pytest.fail("notes must not enumerate paths even when alternatives exceed the ceiling")
+
+    monkeypatch.setattr(fanout_module, "enumerate_paths", fail_enumeration)
+    expected = "recorded" if hop_limit >= 2 else ""
+    assert fanout_module.route_basis(config, ACCOUNT, REGION, candidates) == expected
+    assert get_package_analysis(config).path_cache == {}
+
+
+@pytest.mark.parametrize(
+    "graph",
+    [
+        {"a": [("b", "ab")], "b": [("a", "ab"), ("c", "bc")]},
+        {"a": [("b", "ab"), ("b", "role_ab")], "b": [("c", "bc")]},
+        {"a": [("b", "ab"), ("c", "ac")], "b": [("c", "bc")]},
+        {"a": [("b", "ab")], "c": [("b", "cb")]},
+        {"a": [("b", "ab")], "b": [("c", "bc"), ("d", "bd")], "d": [("c", "dc")]},
+    ],
+    ids=["cycle", "parallel-roles", "diamond", "disallowed-direction", "shared-prefix"],
+)
+@pytest.mark.parametrize("hop_limit", [1, 2, 3])
+def test_bounded_route_multiplicity_matches_simple_paths(graph, hop_limit):
+    expected = len(fanout_module.enumerate_paths(graph, "a", "c", hop_limit)) > 1
+    assert fanout_module._has_multiple_routes(graph, "a", "c", hop_limit) == expected
 
 
 @pytest.mark.parametrize(

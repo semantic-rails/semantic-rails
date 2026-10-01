@@ -51,6 +51,8 @@ class PackageAnalysis:
     path_cache: dict[tuple[str, str], tuple[tuple[str, ...], ...] | RouteRefusal] = field(
         default_factory=dict
     )
+    # Pinned-pair notes need only whether two routes fit the hop ceiling.
+    route_note_cache: dict[tuple[str, str], bool] = field(default_factory=dict)
 
     @classmethod
     def from_config(cls, config: PackageConfig) -> PackageAnalysis:
