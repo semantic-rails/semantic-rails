@@ -68,6 +68,12 @@ def test_postgres_exact_types(adbc):
             clock_time(12, 34, 56, 123456),
             {"type": "time", "timezone": "naive"},
         ),
+        ("TIME '00:00:00'", clock_time(0, 0), {"type": "time", "timezone": "naive"}),
+        (
+            "TIME '23:59:59.999999'",
+            clock_time(23, 59, 59, 999999),
+            {"type": "time", "timezone": "naive"},
+        ),
         (
             "decode('00ff1234', 'hex')",
             b"\x00\xff\x12\x34",
@@ -105,6 +111,24 @@ def test_postgres_time_binary_uuid_results(adbc, expression, value, metadata, co
         assert rows == [{"payload": value}]
         assert type(rows[0]["payload"]) is type(value)
         assert result_rows(rows)["column_types"] == {"payload": metadata}
+
+
+@pytest.mark.parametrize("positional", [False, True])
+def test_postgres_end_of_day_time_refuses_without_wrapping(adbc, positional):
+    from types import SimpleNamespace
+
+    from tests.integration.correctness.conftest import _rows
+
+    sql = "SELECT TIME '24:00:00' AS payload"
+    with pytest.raises(SemanticLayerError) as caught:
+        if positional:
+            _rows(SimpleNamespace(_get_adapter=lambda: adbc), sql)
+        else:
+            adbc.query(sql)
+    assert caught.value.code == "RESULT_TYPE_UNSUPPORTED"
+    assert caught.value.details == {"column": "payload", "type": "time64[us]"}
+    assert "24:00:00" not in str(caught.value)
+    assert adbc.query("SELECT TIME '00:00:00' AS payload") == [{"payload": clock_time(0, 0)}]
 
 
 def test_postgres_semantic_dimension_on_uuid_key(adbc, tmp_path):

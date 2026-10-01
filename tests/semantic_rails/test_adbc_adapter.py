@@ -247,6 +247,44 @@ def test_supported_postgres_scalar_schemas_allow_null_and_empty_results(kind, co
     )
 
 
+@pytest.mark.parametrize("positional", [False, True])
+@pytest.mark.parametrize(
+    "microseconds, literal",
+    [(0, "00:00:00"), (86_399_999_999, "23:59:59.999999")],
+)
+def test_postgres_arrow_time_endpoints_encode_identically_to_duckdb(
+    microseconds, literal, positional
+):
+    pa = pytest.importorskip("pyarrow")
+    # Integer-backed arrays exercise the driver's raw representation.
+    batch = pa.record_batch(
+        [pa.array([microseconds, None], type=pa.time64("us"))], names=["payload"]
+    )
+    rows = _arrow_rows(_arrow_cursor(batch), positional)
+    db = Database.connect_in_memory()
+    try:
+        reference = result_rows(db.query(f"SELECT TIME '{literal}' AS payload"))
+    finally:
+        db.close()
+    assert result_rows(rows[:1]) == reference
+    if positional:
+        assert rows[1] == {"payload": None}
+
+
+@pytest.mark.parametrize("positional", [False, True])
+@pytest.mark.parametrize("microseconds", [-1, 86_400_000_000, 86_400_000_001])
+def test_postgres_arrow_time_out_of_range_refuses_before_conversion(microseconds, positional):
+    pa = pytest.importorskip("pyarrow")
+    batch = pa.record_batch([pa.array([0, microseconds], type=pa.time64("us"))], names=["payload"])
+    # 24:00:00 must not collapse into the preceding midnight, even when the
+    # invalid value is the dictionary reader's truncation sentinel.
+    with pytest.raises(SemanticLayerError) as caught:
+        _arrow_rows(_arrow_cursor(batch), positional)
+    assert caught.value.code == "RESULT_TYPE_UNSUPPORTED"
+    assert caught.value.details == {"column": "payload", "type": "time64[us]"}
+    assert str(microseconds) not in str(caught.value)
+
+
 @pytest.mark.parametrize("kind", ["uuid_binary", "uuid_extension"])
 @pytest.mark.parametrize("value", ["12345678-1234-5678-9abc-def012345678", b"short", 16])
 def test_postgres_uuid_conversion_refuses_invalid_driver_values(kind, value):
