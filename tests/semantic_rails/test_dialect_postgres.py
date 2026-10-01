@@ -285,7 +285,8 @@ def test_adapter_normalizes_options_and_escapes_libpq_values(monkeypatch: pytest
     assert adapter.options == VALID_OPTIONS
     assert adapter._connect_uri() == (
         "host='pg.example.test' user='svc_user' password='super-secret' "
-        "port='5433' connect_timeout='10' dbname='sr_jaffle'"
+        "port='5433' connect_timeout='10' keepalives='1' keepalives_idle='65' "
+        "keepalives_interval='1' keepalives_count='1' dbname='sr_jaffle'"
     )
     monkeypatch.setenv("SR_PG_TEST_PASSWORD", "quote' and slash\\")
     assert "password='quote\\' and slash\\\\'" in adapter._connect_uri()
@@ -349,11 +350,32 @@ def test_adapter_reports_every_missing_env_var_without_secret_values(
     assert exc.value.details["connection_kind"] == "postgres_native"
 
 
-def test_adapter_queries_with_fake_driver_and_maps_rows(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize(
+    ("timeouts", "connect_timeout", "read_timeout", "statement_timeout"),
+    [
+        ({}, 10, 65, None),
+        ({"statement_timeout_seconds": "0"}, 10, 65, None),
+        ({"statement_timeout_seconds": "30"}, 10, 65, "30000"),
+        ({"statement_timeout_seconds": "120"}, 10, 125, "120000"),
+        (
+            {
+                "connect_timeout_seconds": "7",
+                "read_timeout_seconds": "45",
+                "statement_timeout_seconds": "40",
+            },
+            7,
+            45,
+            "40000",
+        ),
+    ],
+)
+def test_adapter_queries_with_fake_driver_and_maps_rows(
+    monkeypatch: pytest.MonkeyPatch, timeouts, connect_timeout, read_timeout, statement_timeout
+):
     _set_pg_env(monkeypatch)
     captured: dict = {}
     _install_fake_adbc(monkeypatch, captured)
-    adapter = AdbcAdapter(VALID_OPTIONS)
+    adapter = AdbcAdapter({**VALID_OPTIONS, **timeouts})
 
     rows = adapter.query("select 1")
     adapter.close()
@@ -362,10 +384,18 @@ def test_adapter_queries_with_fake_driver_and_maps_rows(monkeypatch: pytest.Monk
     assert ("select 1", None) in captured["sql"]
     assert captured["kwargs"]["autocommit"] is True
     assert captured["sql"][0] == ("SELECT set_config('search_path', $1, false)", ('"analytics"',))
-    assert captured["sql"][1:] == [
+    assert f"connect_timeout='{connect_timeout}'" in captured["uri"]
+    assert f"keepalives_idle='{read_timeout}'" in captured["uri"]
+    expected = [
         ("SELECT current_setting('TimeZone'), current_setting('statement_timeout')", None),
         ("select 1", None),
     ]
+    if statement_timeout is not None:
+        expected.insert(
+            1, ("SELECT set_config('statement_timeout', $1, false)", (statement_timeout,))
+        )
+        expected.append(("SELECT set_config('statement_timeout', $1, false)", ("5s",)))
+    assert captured["sql"][1:] == expected
     assert captured["cursor_closed"] is True
     assert captured["connection_closed"] is True
 
@@ -574,3 +604,16 @@ def test_postgres_compiles_every_battery_case():
             "EQUAL_NULL(",
         ):
             assert forbidden not in sql, f"{case.name}: forbidden fragment {forbidden}\n{sql}"
+
+
+@pytest.mark.parametrize("option", ["connect_timeout_seconds", "read_timeout_seconds"])
+@pytest.mark.parametrize("value", ["0", "-1", "invalid"])
+def test_adapter_rejects_invalid_client_timeout_before_connecting(monkeypatch, option, value):
+    captured = {}
+    _install_fake_adbc(monkeypatch, captured)
+    with pytest.raises(SemanticLayerError) as exc:
+        AdbcAdapter({option: value}).query("select 1")
+    assert exc.value.code == "INVALID_CONFIG"
+    assert exc.value.details["option"] == option
+    assert value not in str(exc.value)
+    assert "uri" not in captured

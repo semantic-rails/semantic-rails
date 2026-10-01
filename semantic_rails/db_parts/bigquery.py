@@ -23,6 +23,7 @@ Connection contract:
 
 from __future__ import annotations
 
+from contextlib import suppress
 from typing import Any
 
 from ..dialects import BIGQUERY_CONNECTION_OPTIONS
@@ -36,11 +37,15 @@ from .base import (
     restore_column_names,
 )
 from .common import (
+    DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_READ_TIMEOUT_SECONDS,
+    client_wait_timeout,
     import_driver,
     normalize_connection_options,
     option_or_env,
     redacted_error_details,
     require_missing_env,
+    timeout_option,
 )
 
 _ENGINE = "bigquery"
@@ -144,10 +149,31 @@ class BigQueryNativeAdapter(WarehouseAdapter):
             default_dataset = self.default_dataset_id()
             if default_dataset:
                 job_config.default_dataset = default_dataset
-            if timeout_s > 0:
-                job_config.job_timeout_ms = timeout_s * 1000
-            job = client.query(prepared.sql, job_config=job_config)
-            rows = [dict(row.items()) for row in job.result()]
+            connect_timeout = timeout_option(
+                self.options,
+                "connect_timeout_seconds",
+                DEFAULT_CONNECT_TIMEOUT_SECONDS,
+                engine=self.engine,
+                connection_kind=self.connection_kind,
+                label=_LABEL,
+            )
+            read_timeout = timeout_option(
+                self.options,
+                "read_timeout_seconds",
+                DEFAULT_READ_TIMEOUT_SECONDS,
+                engine=self.engine,
+                connection_kind=self.connection_kind,
+                label=_LABEL,
+            )
+            read_timeout = client_wait_timeout(read_timeout, timeout_s)
+            job_config.job_timeout_ms = (timeout_s or read_timeout) * 1000
+            job = client.query(prepared.sql, job_config=job_config, timeout=connect_timeout)
+            try:
+                rows = [dict(row.items()) for row in job.result(timeout=read_timeout)]
+            except TimeoutError:
+                with suppress(Exception):
+                    job.cancel(timeout=connect_timeout)
+                raise
             return restore_column_names(_clip_rows(rows, limits), prepared)
         except SemanticLayerError:
             raise
