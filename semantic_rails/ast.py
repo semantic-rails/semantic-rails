@@ -1088,7 +1088,7 @@ def _note(path: str, received: dict[str, Any], canonical: dict[str, Any]) -> dic
 
 
 def rewrite_select_shorthand(
-    payload: dict[str, Any], *, partial: bool = False
+    payload: dict[str, Any], partial: bool = False
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Return ``payload`` with select shorthands rewritten, and a note per rewrite.
 

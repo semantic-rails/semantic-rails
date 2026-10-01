@@ -55,8 +55,12 @@ API:
 - `package_id`
 - `warnings`
 - `errors`
-- `recovery_hints`
+- `recovery_hints` (the errors' hints, and other next steps; left out when there are none)
 - `timing_ms`
+
+MCP issues leave out empty optional fields and a
+`why_invalid` or `unsupported_construct` that only repeats its `message` or `code`, and
+`request_context` appears only when a transport or `policy_context` set one.
 
 Every `tools/list` definition publishes an `outputSchema` for this envelope and
 MCP-standard annotations (`readOnlyHint`, `destructiveHint`,
@@ -121,12 +125,14 @@ ids, `kinds` limits the kinds listed, and a `DISCOVER_IDS_TRUNCATED` warning giv
 and `catalog/full` resources return the whole index, descriptive rows, or every card with the
 alias index (see [Resources And Prompts](#resources-and-prompts)).
 
-`discover` returns slim cards by default: `id`, `kind`, `label`, `score`, a `description`
-trimmed to 120 characters, `default_temporal_role` and `available`, plus `blocked_reason` for a
-candidate that isn't available. `verbosity="compact"` returns full cards with match reasons,
-starter patches and comparison metadata. When the question uses an object's whole name ("revenue by
-store"), that object ranks above near-duplicates that add a qualifier the question doesn't use
-("Delivered revenue").
+`discover` returns slim cards by default: `id`, `label`, `score`, a `description` trimmed to 120
+characters (left out when it only repeats the label) and `default_temporal_role`, plus
+`available: false` and `blocked_reason` for a candidate that isn't available. A card in a kind's
+bucket leaves out its `kind`; the response leaves out the `terms` and `verbosity` it was called
+with. `verbosity="compact"` returns full cards with match reasons, starter patches and comparison
+metadata. When the question uses an object's whole name ("revenue by store"), that object ranks
+above near-duplicates that add a qualifier the question doesn't use ("Delivered revenue").
+`kinds` takes an array or a comma-separated string, and also a JSON array sent as a string.
 Dimension-value cards keep the raw filter `value`, its business-facing `label`, and explicit
 `available` flag, including when a value is blocked.
 
@@ -709,7 +715,7 @@ Every error surfaced through the MCP or HTTP transport is wrapped in a structure
 }
 ```
 
-Every envelope carries `code` and `message`, plus at least one of `details`, `recovery_hints`, or `closest_matches`. Bare `KeyError` / `AttributeError` leaks are wrapped as `INTERNAL_ERROR` envelopes with a bug-tracker hint so the surface is always actionable.
+Every envelope carries `code` and `message`, plus at least one of `details`, `recovery_hints`, or `closest_matches`. Over MCP, empty optional fields are left out; recovery hints keep their own details so each hint is actionable on its own. Bare `KeyError` / `AttributeError` leaks are wrapped as `INTERNAL_ERROR` envelopes with a bug-tracker hint so the surface is always actionable.
 
 ### Error Code Catalog
 

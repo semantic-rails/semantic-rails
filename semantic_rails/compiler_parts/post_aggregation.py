@@ -29,6 +29,7 @@ from ..expressions import (
     ScopedAggregateExpr,
     SemanticExpr,
     expr_to_dict,
+    validate_boolean_argument_count,
 )
 from ..schema import PackageConfig
 from ..sql_ast import (
@@ -303,6 +304,7 @@ def _compile_post_expr(
             negated=expr.negated,
         )
     if isinstance(expr, BooleanExpr):
+        validate_boolean_argument_count(expr.op, len(expr.args))
         op = expr.op.strip().lower()
         if op not in {"and", "or", "not"}:
             raise SemanticLayerError(
@@ -353,7 +355,7 @@ def _compile_post_expr(
             current = SqlBinary(current, op.upper(), item)
         return current
     if isinstance(expr, CallExpr):
-        return SqlCall(
+        return dialect_for_warehouse(config.package.warehouse).scalar_call(
             expr.name,
             [
                 _compile_post_expr(
