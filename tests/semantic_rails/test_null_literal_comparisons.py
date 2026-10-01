@@ -12,11 +12,11 @@ import yaml
 from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts.bind import _config_expr_to_sql
 from semantic_rails.compiler_parts.post_aggregation import _compile_post_expr
-from semantic_rails.dialects import supported_warehouses
+from semantic_rails.dialects import dialect_for_warehouse, supported_warehouses
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_semantic_expression
 from semantic_rails.relation_pipelines import _join_condition, _predicate, _semantic_expr_to_sql
-from semantic_rails.renderer import render_expr
+from semantic_rails.renderer import render_expr, use_dialect
 from semantic_rails.runtime import Runtime
 from semantic_rails.sql_ast import (
     SqlBinary,
@@ -248,6 +248,56 @@ def test_null_tests_render_on_every_dialect(runtime, warehouse, op, sql_op):
     sql = compile_query(config, None, _query(_conditional_count(op)))["sql"]
     assert sql_op in sql
     assert not re.search(r"(?:=|!=|<>|<|>)\s*NULL\b", sql)
+
+
+@pytest.mark.parametrize("warehouse", supported_warehouses())
+@pytest.mark.parametrize("op", ["not", "and", "or"])
+@pytest.mark.parametrize("lowering", ["configured", "post_aggregation", "relation"])
+def test_computed_boolean_null_renders_on_every_dialect(runtime, warehouse, op, lowering):
+    context = {"configured": "config", "post_aggregation": "query", "relation": "relation"}
+    expr = parse_semantic_expression(
+        {"kind": "boolean", "op": op, "args": [NULL]}, context=context[lowering]
+    )
+    if lowering == "configured":
+        measure = next(m for m in runtime.config.measures if m.id == COUNT["measure"])
+        lowered = _config_expr_to_sql(expr, measure, runtime.config)
+    elif lowering == "post_aggregation":
+        lowered = _compile_post_expr(expr, runtime.config)
+    else:
+        lowered = _semantic_expr_to_sql(expr)
+    type_name = "Nullable(Bool)" if warehouse == "clickhouse" else "BOOLEAN"
+    expected = f"CAST(NULL AS {type_name})"
+    with use_dialect(dialect_for_warehouse(warehouse)):
+        assert render_expr(lowered) == expected
+        comparison = build_comparison_condition(SqlLiteral(False), "!=", lowered)
+        assert render_expr(comparison) == f"FALSE != {expected}"
+
+
+@pytest.mark.parametrize("warehouse", supported_warehouses())
+@pytest.mark.parametrize("op", ["not", "and", "or"])
+def test_compile_binds_dialect_for_computed_boolean_null(runtime, warehouse, op):
+    config = replace(runtime.config, package=replace(runtime.config.package, warehouse=warehouse))
+    expression = {"kind": "boolean", "op": op, "args": [NULL]}
+    comparison = {
+        "kind": "comparison",
+        "op": "!=",
+        "left": {"kind": "literal", "value": False},
+        "right": expression,
+    }
+    query = {
+        "version": 2,
+        "select": [
+            {"expression": COUNT, "as": "n"},
+            {"expression": expression, "as": "flag"},
+            {"expression": comparison, "as": "comparison"},
+        ],
+    }
+    sql = compile_query(config, None, query)["sql"]
+    type_name = "Nullable(Bool)" if warehouse == "clickhouse" else "BOOLEAN"
+    assert f"CAST(NULL AS {type_name}) AS flag" in sql
+    assert f"FALSE != CAST(NULL AS {type_name})" in sql
+    if warehouse == "clickhouse":
+        assert "CAST(NULL AS BOOLEAN)" not in sql
 
 
 @pytest.mark.parametrize("op, sql_op", [("=", "IS NULL"), ("!=", "IS NOT NULL")])

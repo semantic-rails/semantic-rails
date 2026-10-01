@@ -167,6 +167,8 @@ between two nullable columns retains ordinary SQL three-valued semantics, as doe
 a comparison against a computed null such as `NOT(NULL)` or a single-argument
 `AND(NULL)` / `OR(NULL)`: comparing any of these to `FALSE` with `!=` evaluates
 to unknown (NULL) and retains no rows when used as a filter.
+These computed boolean nulls render as `CAST(NULL AS Nullable(Bool))` on
+ClickHouse and `CAST(NULL AS BOOLEAN)` on other warehouses.
 A `metric_predicate` whose `value` is null refuses with `INVALID_METRIC_PREDICATE`:
 its input reads `0` for an entity with no rows and `NULL` for one with no data, so
 a count of none is `= 0`, and a null test belongs inside the input as an
