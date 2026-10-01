@@ -448,11 +448,25 @@ def inner_lookups() -> Iterator[None]:
         _inner_lookups.reset(token)
 
 
+def rollup_held_lookups(
+    config: PackageConfig, measure_entity: str, path_selections: Iterable[PathSelection]
+) -> set[str]:
+    """The models ``path_selections`` look up whose dimensions a rollup of ``measure_entity``
+    holds: read from that model's own rows, their lookups join INNER, as the rollup was built."""
+    held = rollup_dimension_entities(config, measure_entity) - {measure_entity}
+    return {
+        row.target_entity
+        for row in path_selections
+        if row.chosen_path and row.target_entity in held
+    }
+
+
 def _joins_for_paths(
     source_entity: str,
     path_selections: Iterable[PathSelection],
     config: PackageConfig,
     *,
+    measure_entity: str | None,
     time_spec: dict[str, Any] | None = None,
     table_overrides: dict[str, str] | None = None,
 ) -> list[SqlJoin]:
@@ -464,15 +478,38 @@ def _joins_for_paths(
     grouping, a filter, the measure's own filter, an aggregate_if's condition or its
     expression). It joins INNER only when a read in ``_INNER_LOOKUP_PURPOSES`` walks the same
     hop, inside a metric predicate's own query or a distribution's per-entity values
-    (``inner_lookups``), on the path to a dimension some rollup of ``source_entity`` holds
+    (``inner_lookups``), on the path to a dimension a rollup of the measure's model holds
     pre-joined (so the base answers as the rollup does), or on a warehouse whose outer join
     reads a type default instead of NULL (``_is_lookup_hop``). Hops that fan out join INNER,
     and every hop after a temporal-validity hop joins LEFT.
+
+    ``measure_entity`` is the model of the measure the leaf aggregates, or None for dimensions
+    alone and conversions. A rollup belongs to the measures of the model it aggregates, so
+    only a rollup of ``measure_entity`` changes a join, and only when the leaf reads that
+    model's own rows (``source_entity``). Every other leaf joins as the base tables do: a
+    rollup of an entity_in_terms_of anchor's model never applies to the measure counted from
+    it. Such a leaf that looks up a dimension a rollup of the measure's model holds is refused:
+    only the measure's own leaf answers as that rollup does.
     """
     entities = _entity_index(config)
     relationships = _relationship_index(config)
     path_selections = list(path_selections)
-    prejoined = rollup_dimension_entities(config, source_entity)
+    prejoined: set[str] = set()
+    if measure_entity == source_entity:
+        prejoined = rollup_dimension_entities(config, source_entity)
+    elif measure_entity is not None and (
+        held := rollup_held_lookups(config, measure_entity, path_selections)
+    ):
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            f"A measure of '{measure_entity}' read from the rows of '{source_entity}' cannot "
+            "join a dimension a rollup of its own model holds as that rollup does.",
+            details={
+                "measure_entity": measure_entity,
+                "source_entity": source_entity,
+                "rollup_held_entities": sorted(held),
+            },
+        )
     inner_hops: set[tuple[str, str]] = set()
     for selection in path_selections:
         if (

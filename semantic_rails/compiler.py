@@ -3106,6 +3106,7 @@ def _conversion_event_cte(
             ]
         ),
         config,
+        measure_entity=None,
         time_spec=(
             query.time.to_dict()
             if query.time is not None and hasattr(query.time, "to_dict")

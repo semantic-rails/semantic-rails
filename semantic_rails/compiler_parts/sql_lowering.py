@@ -117,7 +117,6 @@ from .indexes import (
     _relationship_index,
     _temporal_role_index,
     get_package_analysis,
-    rollup_dimension_entities,
 )
 from .paths import (
     _column_ref,
@@ -130,6 +129,7 @@ from .paths import (
     _leaf_time_role,
     _resolve_dimension_expr,
     inner_lookups,
+    rollup_held_lookups,
 )
 from .post_aggregation import _compile_post_expr, _expr_requires_dense_series, _namespace_sql_select
 from .predicate import (
@@ -1840,10 +1840,8 @@ def _entity_in_terms_of_anchor_plan(
     # A dimension some rollup of the measure's model holds joins INNER on the measure's own
     # path (``_joins_for_paths``); this leaf starts from another entity, so it leaves the query
     # to the measure's own leaf.
-    prejoined = rollup_dimension_entities(config, measure.entity) - {measure.entity}
-    if any(
-        row.chosen_path and row.target_entity in prejoined
-        for row in [*supplemental_selections, *transformed_selections]
+    if rollup_held_lookups(
+        config, measure.entity, [*supplemental_selections, *transformed_selections]
     ):
         return None
     # An anchor row whose parent has no record is none of the measure's entities: the hops back
@@ -1951,7 +1949,13 @@ def _entity_in_terms_of_leaf_select(
     return SqlSelect(
         select=select_fields,
         from_table=SqlTableRef(name=anchor_table),
-        joins=_joins_for_paths(anchor_entity, path_selections, config, time_spec=plan.time),
+        joins=_joins_for_paths(
+            anchor_entity,
+            path_selections,
+            config,
+            measure_entity=str(anchor_plan["omitted_root_entity"]),
+            time_spec=plan.time,
+        ),
         where=where_clauses,
         group_by=group_fields,
     )
@@ -2044,7 +2048,9 @@ def _fanout_filter_leaf_select(
     """
     measure = _measure_index(config)[measure_plan.bound_measure.measure_id]
     crossing = [row for row in measure_plan.path_selections if row.analysis.get("status") != "ok"]
-    child_joins = _joins_for_paths(measure.entity, crossing, config, time_spec=plan.time)
+    child_joins = _joins_for_paths(
+        measure.entity, crossing, config, measure_entity=measure.entity, time_spec=plan.time
+    )
     levels: list[tuple[SqlJoin, SqlExpr, list[SqlJoin]]] = []
     for join in child_joins:
         if join.on is None:
@@ -2079,6 +2085,7 @@ def _fanout_filter_leaf_select(
         measure.entity,
         [row for row in measure_plan.path_selections if row.analysis.get("status") == "ok"],
         config,
+        measure_entity=measure.entity,
         time_spec=plan.time,
     )
     return SqlSelect(
@@ -2219,6 +2226,7 @@ def _source_rollup_leaf_select(
             measure.entity,
             measure_plan.path_selections,
             config,
+            measure_entity=measure.entity,
             time_spec=plan.time,
             table_overrides={measure.entity: rollup_name},
         ),
@@ -2382,7 +2390,11 @@ def _measure_leaf_select(
         )
     if measure_plan.rewrite_strategy == "fanout_dedup":
         joins = _joins_for_paths(
-            measure.entity, measure_plan.path_selections, config, time_spec=plan.time
+            measure.entity,
+            measure_plan.path_selections,
+            config,
+            measure_entity=measure.entity,
+            time_spec=plan.time,
         )
         return _fanout_dedup_leaf_select(
             measure_plan,
@@ -2410,7 +2422,11 @@ def _measure_leaf_select(
         return source_rollup
     joins = [
         *_joins_for_paths(
-            measure.entity, measure_plan.path_selections, config, time_spec=plan.time
+            measure.entity,
+            measure_plan.path_selections,
+            config,
+            measure_entity=measure.entity,
+            time_spec=plan.time,
         ),
         *predicate_joins,
     ]
@@ -2827,6 +2843,7 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
         measure.entity,
         measure_plan.path_selections,
         config,
+        measure_entity=measure.entity,
         time_spec=plan.time,
         table_overrides={measure.entity: "snapshot"},
     )
@@ -3041,6 +3058,7 @@ def _distinct_value_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelec
             plan.root_entity,
             _distinct_value_path_selections(plan, config),
             config,
+            measure_entity=None,
             time_spec=plan.time,
         )
     )
@@ -4196,7 +4214,11 @@ def _measure_group_leaf_select(
 
     joins = list(
         _joins_for_paths(
-            first_measure.entity, first_plan.path_selections, config, time_spec=plan.time
+            first_measure.entity,
+            first_plan.path_selections,
+            config,
+            measure_entity=first_measure.entity,
+            time_spec=plan.time,
         )
     )
     if leaf_calendar_join is not None:
