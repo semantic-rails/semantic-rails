@@ -11,3 +11,6 @@
   a partial query with a `time` (`inspect` names the relationship instead of offering a
   `group_by` patch), and `plan` prefers, of two equally scored dimensions, the one that needs
   no time.
+- Schema-qualified validity windows preserve outgoing lookups without a query time. Grouping
+  metadata checks every selected measure, including compound expressions and named metrics,
+  so changing selection order cannot offer a history grouping that compilation refuses.

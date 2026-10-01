@@ -32,7 +32,12 @@ from semantic_rails.compiler_parts.grain_recovery import mixed_grain_pairing_enr
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.fanout import analyze_fanout
-from semantic_rails.metadata import build_options_payload, discover_payload, inspect_payload
+from semantic_rails.metadata import (
+    build_options_payload,
+    catalog_payload,
+    discover_payload,
+    inspect_payload,
+)
 from semantic_rails.metadata_parts.path_coverage import _path_availability
 from semantic_rails.metadata_parts.valid_values import valid_values_payload
 from semantic_rails.planner._base import _dimension, _score
@@ -375,6 +380,43 @@ def test_a_hop_out_of_the_table_holding_the_window_needs_no_time(runtime, gold):
     )
 
 
+def test_schema_qualified_windows_keep_outgoing_lookups_safe_and_incoming_hops_anchored(tmp_path):
+    files = dict(FILES)
+    files["models/account_segments.yml"] = files["models/account_segments.yml"].replace(
+        "relation: account_segments", "relation: analytics.account_segments"
+    )
+    files["graph.yml"] = files["graph.yml"].replace(
+        "account_segments.valid_", "analytics.account_segments.valid_"
+    )
+    pkg = _write_package(tmp_path, files)
+    seed = "CREATE SCHEMA analytics;\n" + SEED_SQL.replace(
+        "TABLE account_segments", "TABLE analytics.account_segments"
+    ).replace("INTO account_segments", "INTO analytics.account_segments")
+    (pkg / "data" / "seed.sql").write_text(seed)
+    runtime = Runtime.from_path(str(pkg))
+    try:
+        query = _seats(group_by=[REGION])
+        assert runtime.validate(query)["ok"] is True
+        by_region = _rows(runtime, query, [REGION])
+        assert by_region == {("North",): 7.0, ("South",): 1.0}
+        gold = runtime.adapter.query(
+            "SELECT (SELECT a.region FROM accounts a WHERE a.account_id = s.account_id) AS region,"
+            " SUM(s.seats) AS seats FROM analytics.account_segments s GROUP BY 1"
+        )
+        assert by_region == {(row["region"],): float(row["seats"]) for row in gold}
+        with pytest.raises(SemanticLayerError) as exc:
+            runtime.compile(_amount(group_by=[SEGMENT]))
+        assert exc.value.details["reason"] == "time_valid_hop_without_query_time"
+        assert _rows(runtime, _amount(group_by=[SEGMENT], time=MONTHLY), [SEGMENT, MONTH]) == {
+            ("starter", 1): 15.0,
+            ("business", 2): 20.0,
+            (None, 1): 7.0,
+            (None, 12): 3.0,
+        }
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize(
     ("group_by", "expected"),
     [
@@ -571,6 +613,109 @@ def test_inspect_offers_a_history_grouping_only_with_a_time(runtime, time, offer
     assert (HOP in card.get("blocked_reason", "")) is not offered
     hints = [hint["message"] for hint in card.get("recovery_hints", [])]
     assert any("Add `time`" in hint for hint in hints) is not offered
+
+
+@pytest.mark.parametrize("seats_first", [False, True], ids=["amount-first", "seats-first"])
+@pytest.mark.parametrize("compound", [False, True], ids=["separate", "compound"])
+@pytest.mark.parametrize("dimension", [SEGMENT, REGION], ids=["history", "safe-lookup"])
+def test_grouping_metadata_checks_every_selected_measure_leaf(
+    runtime, seats_first, compound, dimension
+):
+    partial = _amount_and_seats(seats_first=seats_first)
+    if compound:
+        left, right = [item["expression"] for item in partial["select"]]
+        partial["select"] = [
+            {
+                "as": "value",
+                "expression": {"kind": "arithmetic", "op": "add", "left": left, "right": right},
+            }
+        ]
+    assert runtime.validate(partial)["ok"] is True
+    offered = dimension == REGION
+    card = inspect_payload(runtime, object_id=dimension, partial_query=partial)["card"]
+    found = discover_payload(
+        runtime, terms="segment region", partial_query=partial, kinds=["dimension"]
+    )
+    options = build_options_payload(
+        runtime, partial_query=partial, step="group_by", include_blocked=True
+    )
+
+    patches = [
+        row["query_patch"] for row in card["starter_query_patches"] if row["kind"] == "group_by"
+    ]
+    assert bool(patches) is offered
+    assert (HOP in card.get("blocked_reason", "")) is not offered
+    assert (
+        any("Add `time`" in hint["message"] for hint in card.get("recovery_hints", []))
+        is not offered
+    )
+    (row,) = [row for row in found["dimensions"] if row["id"] == dimension]
+    assert row["available"] is offered
+    assert (HOP in row["blocked_reason"]) is not offered
+    option_rows = [
+        row for row in [*options["recommended"], *options["available"]] if row["id"] == dimension
+    ]
+    assert bool(option_rows) is offered
+    patches.extend(row["query_patch"] for row in option_rows)
+    for patch in patches:
+        assert runtime.validate(patch)["ok"] is True
+    if not offered:
+        (blocked,) = [row for row in options["blocked"] if row["id"] == dimension]
+        assert HOP in blocked["blocked_reason"]
+
+
+@pytest.mark.parametrize("seats_first", [False, True], ids=["amount-first", "seats-first"])
+def test_catalog_and_grouping_metadata_expand_measure_leaves_in_metric_recipes(
+    tmp_path, seats_first
+):
+    pkg = _write_package(tmp_path, FILES)
+    (pkg / "metrics").mkdir()
+    left, right = ("seats", "amount") if seats_first else ("amount", "seats")
+    (pkg / "metrics" / "mixed.yml").write_text(
+        textwrap.dedent(f"""
+        metric:
+          id: metric.hist.mixed
+          label: Mixed
+          kind: arithmetic
+          expression:
+            kind: arithmetic
+            op: add
+            left: {{measure: measure.hist.{left}}}
+            right: {{measure: measure.hist.{right}}}
+        """)
+    )
+    partial = {
+        "version": 1,
+        "select": [{"as": "mixed", "expression": {"metric": "metric.hist.mixed"}}],
+    }
+    runtime = Runtime.from_path(str(pkg))
+    try:
+        assert runtime.validate(partial)["ok"] is True
+        card = inspect_payload(runtime, object_id=SEGMENT, partial_query=partial)["card"]
+        assert not card["starter_query_patches"]
+        assert HOP in card["blocked_reason"]
+        found = discover_payload(
+            runtime, terms="segment", partial_query=partial, kinds=["dimension"]
+        )
+        (row,) = [row for row in found["dimensions"] if row["id"] == SEGMENT]
+        assert row["available"] is False
+        options = build_options_payload(runtime, partial_query=partial, step="group_by")
+        assert SEGMENT not in {
+            row["id"] for row in [*options["recommended"], *options["available"]]
+        }
+        catalog = catalog_payload(runtime, verbosity="full")
+        (metric,) = [row for row in catalog["metrics"] if row["id"] == "metric.hist.mixed"]
+        (history,) = [
+            row for row in metric["payload"]["disabled_grouping_entities"] if row["id"] == HISTORY
+        ]
+        assert HOP in history["reason"]
+        assert ACCOUNT in {row["id"] for row in metric["payload"]["valid_grouping_entities"]}
+        # The safe lookup stays executable after expanding the named compound metric.
+        region = inspect_payload(runtime, object_id=REGION, partial_query=partial)["card"]
+        for patch in region["starter_query_patches"]:
+            assert runtime.validate(patch["query_patch"])["ok"] is True
+    finally:
+        runtime.close()
 
 
 def test_a_reverse_hop_into_the_window_is_not_offered_without_a_time(tmp_path):

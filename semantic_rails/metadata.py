@@ -64,6 +64,7 @@ from .metadata_parts.capabilities import (
 from .metadata_parts.guidance import (
     _aggregation_guidance,
     _metric_guidance,
+    _metric_measure_ids,
     _metric_preferences,
 )
 from .metadata_parts.object_metadata import (
@@ -282,6 +283,7 @@ def _first_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
 
 
 def _selection_context(config: PackageConfig, partial_query: dict[str, Any]) -> dict[str, Any]:
+    measures = _config_maps(config)["measures"]
     root_entity = ""
     selected_exprs: list[SemanticExpr] = []
     for item in list(partial_query.get("select", []) or []):
@@ -294,6 +296,13 @@ def _selection_context(config: PackageConfig, partial_query: dict[str, Any]) -> 
     return {
         "root_entity": root_entity,
         "selected_exprs": selected_exprs,
+        "measure_entities": sorted(
+            {
+                measures[measure_id].entity
+                for expr in selected_exprs
+                for measure_id in _metric_measure_ids(config, expr)
+            }
+        ),
         "selected_measure_ids": [
             expr.measure for expr in selected_exprs if isinstance(expr, MeasureRefExpr)
         ],
@@ -307,6 +316,27 @@ def _selection_context(config: PackageConfig, partial_query: dict[str, Any]) -> 
             dict(partial_query.get("time", {}) or {}).get("temporal_role", "")
         ),
     }
+
+
+def _grouping_availability(
+    config: PackageConfig, selection: dict[str, Any], target_entity: str, *, query_time: bool
+) -> dict[str, Any]:
+    """A grouping needs time when any selected measure leaf crosses an unanchored window.
+
+    Keep other reachability rules at the query root: leaves can use grain-aware rewrites.
+    """
+    root = selection["root_entity"]
+    availability = _path_availability(config, root, target_entity, query_time=query_time)
+    if not query_time:
+        for entity in selection["measure_entities"]:
+            reach = (
+                availability
+                if entity == root
+                else _path_availability(config, entity, target_entity, query_time=False)
+            )
+            if (reach.get("details") or {}).get("reason") == UNANCHORED_TIME_VALID_HOP:
+                return reach
+    return availability
 
 
 def _measure_default_metric_id(measure: Any) -> str:
@@ -509,11 +539,14 @@ def _metric_object_payload(
         recipe = maps["metric_recipes"][object_id]
         executable, unsupported_reason = _metric_executable(recipe, config)
         root_entity = _first_root_entity(config, recipe.expression)
+        selection = _selection_context(config, {"select": [{"expression": {"metric": object_id}}]})
         predicate_meta = _predicate_metadata(config, recipe.expression)
         valid_grouping_entities: list[dict[str, Any]] = []
         disabled_grouping_entities: list[dict[str, Any]] = []
         for entity in config.entities:
-            availability = _path_availability(config, root_entity, entity.id, query_time=query_time)
+            availability = _grouping_availability(
+                config, selection, entity.id, query_time=query_time
+            )
             row = {
                 "id": entity.id,
                 "available": availability["available"],
@@ -527,8 +560,8 @@ def _metric_object_payload(
         for dim in config.dimensions:
             if dim.entity == root_entity:
                 continue
-            availability = _path_availability(
-                config, root_entity, dim.entity, query_time=query_time
+            availability = _grouping_availability(
+                config, selection, dim.entity, query_time=query_time
             )
             provenance[dim.id] = {
                 "entity": dim.entity,
@@ -1012,9 +1045,7 @@ def _object_card(
         )
         # Read through a time-valid hop, the dimension needs the query's time: name the hop
         # and the fix rather than offer a group_by patch the engine would refuse.
-        reach = _path_availability(
-            config, selection["root_entity"], dim.entity, query_time=query_time
-        )
+        reach = _grouping_availability(config, selection, dim.entity, query_time=query_time)
         details = dict(reach.get("details") or {})
         if details.get("reason") == UNANCHORED_TIME_VALID_HOP:
             base["blocked_reason"] = reach["reason"]
@@ -2276,9 +2307,7 @@ def discover_payload(
     for dim in config.dimensions:
         if dim.id in hidden_ids:
             continue
-        availability = _availability_for_object(
-            config, root_entity, dim.id, "dimension", query_time=query_time
-        )
+        availability = _grouping_availability(config, selection, dim.entity, query_time=query_time)
         row = {
             "id": dim.id,
             "kind": "dimension",
@@ -2341,9 +2370,7 @@ def discover_payload(
             continue
         if dim.id in hidden_ids:
             continue
-        availability = _availability_for_object(
-            config, root_entity, dim.id, "dimension", query_time=query_time
-        )
+        availability = _grouping_availability(config, selection, dim.entity, query_time=query_time)
         for value in domain.values:
             row = {
                 "id": f"{dim.id}={value.value}",
@@ -2801,7 +2828,7 @@ def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[st
     for dim in config.dimensions:
         if dim.id in hidden_ids:
             continue
-        availability = _path_availability(config, root_entity, dim.entity, query_time=query_time)
+        availability = _grouping_availability(config, selection, dim.entity, query_time=query_time)
         row = {**asdict(dim), **availability}
         (valid_dimensions if availability["available"] else disabled_dimensions).append(row)
 

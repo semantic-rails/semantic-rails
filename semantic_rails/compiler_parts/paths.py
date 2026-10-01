@@ -52,8 +52,8 @@ def _column_ref(table: str, column: str) -> SqlIdentifier:
 
 
 def _split_column_ref(value: str) -> tuple[str, str]:
-    table, _, column = str(value).strip().partition(".")
-    return table, column or table
+    table, _, column = str(value).strip().rpartition(".")
+    return table or column, column
 
 
 def _resolve_dimension_expr(dim_id: str, config: PackageConfig) -> tuple[SqlIdentifier, str]:

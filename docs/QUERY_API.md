@@ -803,6 +803,10 @@ History-backed cards can also expose:
 A dimension card read through a time-valid relationship, inspected with a `partial_query` that
 has no `time`, carries `blocked_reason` (naming the relationship) and `recovery_hints` (add
 `time`) instead of a `group_by` starter patch.
+Grouping availability in `discover`, `inspect`, and `build-options` checks every selected
+measure leaf, including compound expressions and named metrics. If any leaf needs a query
+time to reach the dimension, the grouping stays blocked regardless of selection order.
+Full catalog metric payloads apply the same rule to their grouping entities and provenance.
 
 Packages that opt into `defaults.operational` can also expose a nested `operational` block on measure and metric cards.
 

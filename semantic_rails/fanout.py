@@ -236,7 +236,7 @@ def enters_validity_window(rel: RelationshipConfig, near_table: str) -> bool:
     each near row is one version already; any other window (or an unqualified one) counts."""
     window = rel.temporal_validity or {}
     refs = [str(window.get(key, "")).strip() for key in ("valid_from", "valid_to")]
-    tables = {ref.partition(".")[0] for ref in refs if "." in ref}
+    tables = {ref.rpartition(".")[0] for ref in refs if "." in ref}
     return bool(window) and tables != {near_table}
 
 
