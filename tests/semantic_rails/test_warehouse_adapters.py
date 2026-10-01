@@ -125,6 +125,104 @@ def test_read_only_duckdb_comparison_reader_shares_locked_configuration(tmp_path
         db.close()
 
 
+@pytest.mark.parametrize("existing_read_only", [False, True])
+@pytest.mark.parametrize("reader", ["database", "adapter", "introspection"])
+def test_duckdb_reader_reuses_existing_in_process_configuration(
+    tmp_path, existing_read_only, reader
+):
+    import duckdb
+
+    from semantic_rails.architect_introspection import open_duckdb
+
+    path = str(tmp_path / "warehouse.duckdb")
+    with duckdb.connect(path) as connection:
+        connection.execute("CREATE TABLE local_data AS SELECT 1 AS value")
+    with duckdb.connect(path, read_only=existing_read_only) as existing:
+        if reader == "introspection":
+            with open_duckdb(path) as warehouse:
+                assert warehouse.rows("SELECT value FROM local_data") == [{"value": 1}]
+        else:
+            connection = (
+                Database.connect(path, read_only=True)
+                if reader == "database"
+                else DuckDBAdapter(path)
+            )
+            try:
+                assert connection.query("SELECT value FROM local_data") == [{"value": 1}]
+            finally:
+                connection.close()
+        assert existing.execute("SELECT value FROM local_data").fetchall() == [(1,)]
+        assert existing.execute("SELECT current_setting('enable_external_access')").fetchone() == (
+            True,
+        )
+    # The compatibility exception must not survive the connection that required it.
+    locked = Database.connect(path, read_only=True)
+    try:
+        with pytest.raises(duckdb.Error):
+            locked.conn.execute("SET enable_external_access = true")
+    finally:
+        locked.close()
+
+
+def test_runtime_query_with_an_open_read_write_duckdb_connection(runtime_factory):
+    import duckdb
+
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        with duckdb.connect(runtime.db_path) as existing:
+            expected = existing.execute(
+                "SELECT count(DISTINCT order_id) FROM jaffle_order"
+            ).fetchone()
+            runtime.set_adapter(DuckDBAdapter(runtime.db_path))
+            result = runtime.query(
+                {
+                    "version": 1,
+                    "select": [
+                        {
+                            "as": "orders",
+                            "expression": {
+                                "measure": "measure.jaffle.order_count",
+                                "aggregation": "count_distinct",
+                            },
+                        }
+                    ],
+                }
+            )
+            assert result["rows"] == [{"orders": expected[0]}]
+            runtime.close()
+            assert existing.execute("SELECT 1").fetchone() == (1,)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("after_conflict", [False, True])
+@pytest.mark.parametrize(
+    "error_type", ["ConnectionException", "IOException", "PermissionException"]
+)
+def test_duckdb_reader_does_not_fallback_on_other_open_errors(
+    monkeypatch, after_conflict, error_type
+):
+    from unittest.mock import Mock
+
+    import duckdb
+
+    error = getattr(duckdb, error_type)("database unavailable")
+    errors = [error]
+    if after_conflict:
+        errors.insert(
+            0,
+            duckdb.ConnectionException(
+                "Can't open a connection to same database file with a different configuration "
+                "than existing connections"
+            ),
+        )
+    connect = Mock(side_effect=errors)
+    monkeypatch.setattr(duckdb, "connect", connect)
+    with pytest.raises(type(error), match="database unavailable"):
+        Database.connect("warehouse.duckdb", read_only=True)
+    assert connect.call_count == len(errors)
+
+
 def test_duckdb_timeout_interrupts_the_active_connection(monkeypatch: pytest.MonkeyPatch):
     interrupted = threading.Event()
 
@@ -802,6 +900,49 @@ def test_snowflake_named_profile_preserves_inherited_session_and_login(monkeypat
         assert statements == []
     assert conn.received["session_parameters"]["TIMEZONE"] == "America/New_York"
     assert conn.received["session_parameters"]["QUERY_TAG"] == "bi"
+
+
+@pytest.mark.parametrize("failure", ["cursor", "execute", "cursor_close"])
+@pytest.mark.parametrize("close_fails", [False, True])
+def test_snowflake_drops_named_profile_connection_if_timeout_setup_fails(
+    monkeypatch, failure, close_fails
+):
+    from unittest.mock import Mock
+
+    failed, healthy = Mock(), Mock()
+    target = {
+        "cursor": failed.cursor,
+        "execute": failed.cursor.return_value.execute,
+        "cursor_close": failed.cursor.return_value.close,
+    }[failure]
+    target.side_effect = RuntimeError("timeout setup failed")
+    if close_fails:
+        failed.close.side_effect = RuntimeError("close failed")
+    connect = Mock(side_effect=[failed, healthy])
+    connector_module = types.ModuleType("snowflake.connector")
+    connector_module.connect = connect
+    snowflake_module = types.ModuleType("snowflake")
+    snowflake_module.connector = connector_module
+    monkeypatch.setitem(sys.modules, "snowflake", snowflake_module)
+    monkeypatch.setitem(sys.modules, "snowflake.connector", connector_module)
+    adapter = SnowflakeNativeAdapter("analytics", options={"statement_timeout_seconds": "20"})
+
+    with pytest.raises(SemanticLayerError) as exc:
+        adapter.query("select 1")
+    assert exc.value.code == "QUERY_EXECUTION_ERROR"
+    assert adapter._conn is None
+    failed.close.assert_called_once()
+    if failure == "cursor":
+        failed.cursor.return_value.execute.assert_not_called()
+    assert not any(
+        call.args[0] == "select 1" for call in failed.cursor.return_value.execute.call_args_list
+    )
+    # A later request must connect again and apply the deadline before caching.
+    assert adapter._connection() is healthy
+    assert connect.call_count == 2
+    healthy.cursor.return_value.execute.assert_called_once_with(
+        "alter session set statement_timeout_in_seconds = 20"
+    )
 
 
 @pytest.mark.parametrize("prepared", [False, True])

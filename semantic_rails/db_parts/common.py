@@ -59,6 +59,22 @@ READ_ONLY_DUCKDB_CONFIG: dict[str, Any] = {
 }
 
 
+def connect_read_only_duckdb(path: str) -> Any:
+    """Lock a new catalog, or reuse an existing in-process catalog's settings."""
+    import duckdb
+
+    conflict = "Can't open a connection to same database file with a different configuration"
+    for read_only, config in ((True, READ_ONLY_DUCKDB_CONFIG), (True, {})):
+        try:
+            return duckdb.connect(path, read_only=read_only, config=config)
+        except duckdb.ConnectionException as exc:
+            # Only this conflict proves another connection already owns the catalog.
+            # Permission, IO and other failures must not weaken the requested lock.
+            if conflict not in str(exc):
+                raise
+    return duckdb.connect(path)
+
+
 def client_wait_timeout(read_timeout: int, statement_timeout: int) -> int:
     """A client wait must accommodate the requested statement deadline plus five seconds."""
     return max(read_timeout, statement_timeout + 5) if statement_timeout > 0 else read_timeout

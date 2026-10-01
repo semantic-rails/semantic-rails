@@ -47,7 +47,7 @@ from .db_parts.base import (
     _limit_timeout_milliseconds,
     restore_column_names,
 )
-from .db_parts.common import READ_ONLY_DUCKDB_CONFIG, session_time_zone, set_duckdb_time_zone
+from .db_parts.common import connect_read_only_duckdb, session_time_zone, set_duckdb_time_zone
 from .db_parts.snowflake import (
     SnowflakeCliAdapter,
     SnowflakeNativeAdapter,
@@ -119,9 +119,9 @@ class Database:
                 raise RuntimeError(
                     "duckdb is not installed. Add it to your environment dependencies."
                 )
-            config = READ_ONLY_DUCKDB_CONFIG if read_only else {}
             return cls(
-                conn=duckdb.connect(db_path, read_only=read_only, config=config), engine=engine
+                conn=connect_read_only_duckdb(db_path) if read_only else duckdb.connect(db_path),
+                engine=engine,
             )
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row

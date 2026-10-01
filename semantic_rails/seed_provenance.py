@@ -20,7 +20,7 @@ from typing import Any
 
 import duckdb
 
-from .db_parts.common import READ_ONLY_DUCKDB_CONFIG
+from .db_parts.common import connect_read_only_duckdb
 from .errors import SemanticLayerError
 from .sql_identifiers import quote_relation
 
@@ -63,7 +63,7 @@ def _probe_cli() -> None:
     path, relations = request["path"], request["relations"]
     try:
         before = _identity(path)
-        conn = duckdb.connect(path, read_only=True, config=READ_ONLY_DUCKDB_CONFIG)
+        conn = connect_read_only_duckdb(path)
         try:
             missing = _missing_on_connection(conn, relations)
         finally:

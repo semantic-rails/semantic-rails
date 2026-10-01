@@ -534,13 +534,18 @@ supplied and attempts cancellation if result waiting times out. Athena cancels
 an unfinished query before returning its polling timeout; its request limit
 remains best-effort, with the client polling margin and workgroup server limits.
 
-Read-only DuckDB package connections disable external file and network access,
+New read-only DuckDB catalogs disable external file and network access,
 extension autoinstall/autoload, and changes to those settings. Tables stored in
 the database file remain available; views that read other files need to be
 materialized into tables before using the read-only adapter. Bootstrap probes
 and authoring introspection use the same locked configuration; bootstrap
 rejects external-file views with `INVALID_CONFIG` and
-`reason: external_access_disabled`. TimeZone changes remain allowed. DuckLake uses a separate
+`reason: external_access_disabled`. If an existing in-process connection owns
+the file with different settings, execution and introspection reuse those
+settings without adding the lock, including read-write mode when necessary.
+Other open errors still fail. The isolated bootstrap probe uses a new locked
+catalog and remains subject to DuckDB's cross-process file locks.
+TimeZone changes remain allowed. DuckLake uses a separate
 writable DuckDB connection because its catalog and data files require external
 file access; install its extension before use in environments that disallow
 extension downloads.

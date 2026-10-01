@@ -32,7 +32,7 @@ from typing import Any
 import duckdb
 
 from .architect_scaffold import slug
-from .db_parts.common import READ_ONLY_DUCKDB_CONFIG
+from .db_parts.common import connect_read_only_duckdb
 from .errors import SemanticLayerError
 from .sql_identifiers import quote_identifier, quote_relation, relation_parts
 
@@ -75,7 +75,7 @@ _CONFIDENCE_RANK = {"high": 0, "medium": 1, "low": 2}
 
 @dataclass(frozen=True)
 class DuckDBWarehouse:
-    """A read-only DuckDB connection with external access disabled."""
+    """A DuckDB reader using locked settings or an existing in-process catalog."""
 
     path: str
     connection: Any
@@ -98,7 +98,7 @@ class DuckDBWarehouse:
 
 @contextlib.contextmanager
 def open_duckdb(path: str | os.PathLike[str]) -> Iterator[DuckDBWarehouse]:
-    """Open an existing DuckDB file read-only, without external access."""
+    """Read an existing DuckDB file, locking external access on a new catalog."""
     db_path = str(path)
     if not os.path.isfile(db_path):
         raise SemanticLayerError(
@@ -108,7 +108,7 @@ def open_duckdb(path: str | os.PathLike[str]) -> Iterator[DuckDBWarehouse]:
             details={"duckdb_path": db_path, "reason": "database_missing"},
         )
     try:
-        connection = duckdb.connect(db_path, read_only=True, config=READ_ONLY_DUCKDB_CONFIG)
+        connection = connect_read_only_duckdb(db_path)
     except Exception as exc:  # noqa: BLE001 — never surface driver text (paths, PIDs)
         raise SemanticLayerError(
             "INVALID_CONFIG",

@@ -369,21 +369,22 @@ class SnowflakeNativeAdapter(WarehouseAdapter):
                     details={"engine": "snowflake", "connection_kind": "snowflake_native"},
                 ) from exc
             kwargs = self._connect_kwargs()
-            self._conn = snowflake.connector.connect(**kwargs)
-            if "connection_name" in kwargs:
-                cursor = self._conn.cursor()
+            connection = snowflake.connector.connect(**kwargs)
+            if "connection_name" in kwargs and "statement_timeout_seconds" in self.options:
                 try:
-                    if "statement_timeout_seconds" in self.options:
+                    cursor = connection.cursor()
+                    try:
                         timeout = int(self.options["statement_timeout_seconds"])
                         cursor.execute(
                             f"alter session set statement_timeout_in_seconds = {timeout}"
                         )
+                    finally:
+                        cursor.close()
                 except Exception:
-                    self._conn.close()
-                    self._conn = None
+                    # Cache only fully initialized sessions, even when close fails.
+                    connection.close()
                     raise
-                finally:
-                    cursor.close()
+            self._conn = connection
         return self._conn
 
     def query(self, sql: str, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:

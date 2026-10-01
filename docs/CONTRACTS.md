@@ -152,14 +152,23 @@ authored. Named profiles refuse a nonempty authored `query_tag` with redacted
 `INVALID_CONFIG` before connecting; configure `QUERY_TAG` in the profile.
 Direct connections retain their connector session-parameter tag support.
 
-Read-only DuckDB connections now reject external-file views during bootstrap
-as well as execution. Packages using those views must materialize them into
-tables before upgrading. This security restriction is a behavior compatibility
-change that leaves query/package schema shapes unchanged. An in-process reader
-beside a live read-only runtime must use the same locked configuration;
+New read-only DuckDB catalogs reject external-file views during bootstrap and
+execution. Packages using those views must materialize them into tables before
+upgrading. If a file already has an in-process connection with different
+settings, readers reuse those settings without adding the lock, retaining
+read-write mode when necessary. Only DuckDB's configuration-conflict error
+allows this fallback; other open errors propagate. The isolated bootstrap
+probe still uses a new locked catalog. This behavior compatibility change
+leaves query/package schema shapes unchanged. An in-process reader beside a
+live locked runtime must use the same configuration;
 `Database.connect(..., read_only=True)` supplies it. See
 [Native adapter timeouts](PACKAGE_AUTHORING.md#native-adapter-timeouts) for
 request margins, cancellation, driver retry limits and excluded adapters.
+
+Named Snowflake profile connections are cached only after any authored server
+statement timeout is applied successfully. Cursor creation, setup or cleanup
+failure discards the session, including when closing the connection also fails;
+later requests must connect again.
 
 ## Concurrent cross-repository changes
 
