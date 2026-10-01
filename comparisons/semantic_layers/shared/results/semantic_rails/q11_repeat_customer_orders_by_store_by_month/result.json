@@ -1,5 +1,17 @@
 {
   "assumptions": [],
+  "column_types": {
+    "dimension.jaffle_store_name": {
+      "type": "string"
+    },
+    "repeat_customer_orders": {
+      "type": "integer"
+    },
+    "temporal_role.jaffle_order_time__month": {
+      "timezone": "naive",
+      "type": "timestamp"
+    }
+  },
   "dialect": "duckdb",
   "errors": [],
   "explain": {
@@ -100,8 +112,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 3.787,
-      "compile_ms": 1.217,
+      "cache_lookup_ms": 4.904,
+      "compile_ms": 1.092,
       "dialect": "duckdb",
       "physical_plan_nodes": 9
     },
@@ -2767,92 +2779,92 @@
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 1367,
-      "temporal_role.jaffle_order_time__month": "2016-09-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2016-09-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 1685,
-      "temporal_role.jaffle_order_time__month": "2016-10-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2016-10-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 2280,
-      "temporal_role.jaffle_order_time__month": "2016-11-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2016-11-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 2862,
-      "temporal_role.jaffle_order_time__month": "2016-12-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2016-12-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 3410,
-      "temporal_role.jaffle_order_time__month": "2017-01-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-01-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 3357,
-      "temporal_role.jaffle_order_time__month": "2017-02-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-02-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "repeat_customer_orders": 2092,
-      "temporal_role.jaffle_order_time__month": "2017-03-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 3986,
-      "temporal_role.jaffle_order_time__month": "2017-03-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "repeat_customer_orders": 2850,
-      "temporal_role.jaffle_order_time__month": "2017-04-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 3746,
-      "temporal_role.jaffle_order_time__month": "2017-04-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "repeat_customer_orders": 3565,
-      "temporal_role.jaffle_order_time__month": "2017-05-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 4391,
-      "temporal_role.jaffle_order_time__month": "2017-05-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "repeat_customer_orders": 3963,
-      "temporal_role.jaffle_order_time__month": "2017-06-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 3916,
-      "temporal_role.jaffle_order_time__month": "2017-06-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "repeat_customer_orders": 4053,
-      "temporal_role.jaffle_order_time__month": "2017-07-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 3385,
-      "temporal_role.jaffle_order_time__month": "2017-07-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "repeat_customer_orders": 4937,
-      "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 3801,
-      "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
     }
   ],
   "semantic_fingerprint": "sha256:79e8f3f1f2233be41cfae49254c973c3ff64984ddb66ff349015cf6033769ee7",

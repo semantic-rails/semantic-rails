@@ -1,5 +1,14 @@
 {
   "assumptions": [],
+  "column_types": {
+    "session_to_order_conversion_rate_14d": {
+      "type": "float"
+    },
+    "temporal_role.jaffle_session_started_at__month": {
+      "timezone": "naive",
+      "type": "timestamp"
+    }
+  },
   "dialect": "duckdb",
   "errors": [],
   "explain": {
@@ -38,8 +47,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 2.38,
-      "compile_ms": 1.111,
+      "cache_lookup_ms": 2.65,
+      "compile_ms": 0.841,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -1387,7 +1396,7 @@
   "rows": [
     {
       "session_to_order_conversion_rate_14d": 1.0,
-      "temporal_role.jaffle_session_started_at__month": "2016-09-01 00:00:00"
+      "temporal_role.jaffle_session_started_at__month": "2016-09-01T00:00:00"
     }
   ],
   "semantic_fingerprint": "sha256:79e8f3f1f2233be41cfae49254c973c3ff64984ddb66ff349015cf6033769ee7",

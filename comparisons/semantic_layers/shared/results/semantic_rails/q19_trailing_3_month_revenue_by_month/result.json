@@ -1,5 +1,14 @@
 {
   "assumptions": [],
+  "column_types": {
+    "temporal_role.jaffle_order_time__month": {
+      "timezone": "naive",
+      "type": "timestamp"
+    },
+    "trailing_3_month_revenue_usd": {
+      "type": "float"
+    }
+  },
   "dialect": "duckdb",
   "errors": [],
   "explain": {
@@ -30,8 +39,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 4.122,
-      "compile_ms": 1.537,
+      "cache_lookup_ms": 4.182,
+      "compile_ms": 1.477,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -1854,52 +1863,52 @@
   "row_count": 12,
   "rows": [
     {
-      "temporal_role.jaffle_order_time__month": "2016-09-01 00:00:00",
-      "trailing_3_month_revenue_usd": 18053.280000000002
+      "temporal_role.jaffle_order_time__month": "2016-09-01T00:00:00",
+      "trailing_3_month_revenue_usd": 18053.27999999999
     },
     {
-      "temporal_role.jaffle_order_time__month": "2016-10-01 00:00:00",
-      "trailing_3_month_revenue_usd": 39977.23000000001
+      "temporal_role.jaffle_order_time__month": "2016-10-01T00:00:00",
+      "trailing_3_month_revenue_usd": 39977.229999999996
     },
     {
-      "temporal_role.jaffle_order_time__month": "2016-11-01 00:00:00",
-      "trailing_3_month_revenue_usd": 67894.05000000008
+      "temporal_role.jaffle_order_time__month": "2016-11-01T00:00:00",
+      "trailing_3_month_revenue_usd": 67894.04999999999
     },
     {
-      "temporal_role.jaffle_order_time__month": "2016-12-01 00:00:00",
-      "trailing_3_month_revenue_usd": 85518.3700000001
+      "temporal_role.jaffle_order_time__month": "2016-12-01T00:00:00",
+      "trailing_3_month_revenue_usd": 85518.37000000002
     },
     {
-      "temporal_role.jaffle_order_time__month": "2017-01-01 00:00:00",
-      "trailing_3_month_revenue_usd": 108612.36999999997
+      "temporal_role.jaffle_order_time__month": "2017-01-01T00:00:00",
+      "trailing_3_month_revenue_usd": 108612.36999999994
     },
     {
-      "temporal_role.jaffle_order_time__month": "2017-02-01 00:00:00",
-      "trailing_3_month_revenue_usd": 124053.66999999972
+      "temporal_role.jaffle_order_time__month": "2017-02-01T00:00:00",
+      "trailing_3_month_revenue_usd": 124053.6699999996
     },
     {
-      "temporal_role.jaffle_order_time__month": "2017-03-01 00:00:00",
-      "trailing_3_month_revenue_usd": 162326.39000000028
+      "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00",
+      "trailing_3_month_revenue_usd": 162326.38999999984
     },
     {
-      "temporal_role.jaffle_order_time__month": "2017-04-01 00:00:00",
-      "trailing_3_month_revenue_usd": 200625.43000000197
+      "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00",
+      "trailing_3_month_revenue_usd": 200625.4300000015
     },
     {
-      "temporal_role.jaffle_order_time__month": "2017-05-01 00:00:00",
-      "trailing_3_month_revenue_usd": 253337.6600000055
+      "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00",
+      "trailing_3_month_revenue_usd": 253337.6600000052
     },
     {
-      "temporal_role.jaffle_order_time__month": "2017-06-01 00:00:00",
-      "trailing_3_month_revenue_usd": 277766.210000008
+      "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00",
+      "trailing_3_month_revenue_usd": 277766.2100000077
     },
     {
-      "temporal_role.jaffle_order_time__month": "2017-07-01 00:00:00",
-      "trailing_3_month_revenue_usd": 289306.4100000088
+      "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00",
+      "trailing_3_month_revenue_usd": 289306.41000000836
     },
     {
-      "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00",
-      "trailing_3_month_revenue_usd": 300607.65000000916
+      "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00",
+      "trailing_3_month_revenue_usd": 300607.65000000887
     }
   ],
   "semantic_fingerprint": "sha256:79e8f3f1f2233be41cfae49254c973c3ff64984ddb66ff349015cf6033769ee7",
