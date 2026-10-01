@@ -201,8 +201,8 @@ jobs:
       - name: Verify no required job failed or was cancelled
         # Skipped jobs from path filters count as success, except Postgres:
         # its live correctness suite must run on every CI event.
-        # Every required job (backend, lint, security, docs) must
-        # succeed for the gate to pass. The `lint` job runs ruff +
+        # Every path-filtered job (backend, lint, security, docs) must
+        # succeed or be skipped for the gate to pass. The `lint` job runs ruff +
         # mypy and IS required — they were continue-on-error during
         # the round-six cleanup but are now load-bearing.
         # A merge-queue group has no path filter, so there every suite

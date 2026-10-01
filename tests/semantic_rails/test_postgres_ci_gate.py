@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -52,17 +53,79 @@ def test_correctness_requires_strict_fixtures_locked_extra_and_execution_steps()
     _, correctness = workflows()
     job = correctness["jobs"]["postgres"]
     assert job["env"]["SR_INTEGRATION_STRICT"] == "1"
+    for name in ("HOST", "USER", "PASSWORD", "DATABASE"):
+        assert job["env"][f"SR_POSTGRES_{name}"].strip()
     assert job["services"]["postgres"]["image"].startswith("postgres:16@sha256:")
     commands = [step.get("run") for step in job["steps"]]
     assert "uv sync --group dev --extra postgres --locked" in commands
-    assert "uv run --no-sync pytest -q -rfE tests/integration/correctness" in commands
-    # Once the bound-filter integration suite is present, its live step must
-    # remain in this same required job, alongside differential correctness.
-    if (ROOT / "tests/integration/test_adbc_postgres.py").exists():
-        assert (
-            "uv run --no-sync pytest -q -rfE tests/integration/test_conformance.py "
-            "tests/integration/test_adbc_postgres.py -k postgres"
-        ) in commands
+    execution = (
+        "uv run --no-sync pytest -q -rfE tests/integration/correctness "
+        "--junitxml=postgres-results.xml"
+    )
+    assert execution in commands
+    guard = next(step for step in job["steps"] if step.get("name") == "Verify Postgres tests ran")
+    assert job["steps"].index(guard) > commands.index(execution)
+
+
+@pytest.mark.parametrize(
+    "cases, succeeds",
+    [
+        ([], False),
+        ([("duckdb", None)], False),
+        ([("duckdb-postgres_compatibility", None)], False),
+        ([("duckdb", None), ("postgres", "skipped")], False),
+        ([("postgres", "pytest.xfail")], False),
+        ([("postgres", "failure")], False),
+        ([("postgres", "error")], False),
+        ([("postgres", None)], True),
+        ([("duckdb", None), ("postgres", None)], True),
+        ([("postgres", None), ("postgres", "pytest.xfail")], True),
+        ([("postgres", None), ("postgres", "skipped")], False),
+        ([("postgres", None), ("duckdb", "skipped")], False),
+    ],
+)
+def test_correctness_report_requires_completed_postgres_tests_without_skips(
+    tmp_path, cases, succeeds
+):
+    suite = ET.Element("testsuite")
+    for backend, outcome in cases:
+        case = ET.SubElement(
+            suite, "testcase", name=f"test_answer_matches_reference[{backend}-case]"
+        )
+        if outcome == "pytest.xfail":
+            ET.SubElement(case, "skipped", type=outcome)
+        elif outcome:
+            ET.SubElement(case, outcome)
+    ET.ElementTree(suite).write(tmp_path / "postgres-results.xml")
+    result = run_correctness_report_guard(tmp_path)
+    assert result.returncode == (0 if succeeds else 1), result.stdout + result.stderr
+    if succeeds:
+        assert "1 Postgres reference tests ran" in result.stdout
+
+
+@pytest.mark.parametrize("report", [None, "invalid XML"])
+def test_correctness_report_requires_readable_report(tmp_path, report):
+    if report is not None:
+        (tmp_path / "postgres-results.xml").write_text(report)
+    result = run_correctness_report_guard(tmp_path)
+    assert result.returncode != 0
+
+
+def run_correctness_report_guard(directory):
+    _, correctness = workflows()
+    guard = next(
+        step
+        for step in correctness["jobs"]["postgres"]["steps"]
+        if step.get("name") == "Verify Postgres tests ran"
+    )
+    script = guard["run"].split("uv run --no-sync python - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    return subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=directory,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
 
 
 @pytest.mark.parametrize("event", ["pull_request", "push", "merge_group", "workflow_dispatch"])

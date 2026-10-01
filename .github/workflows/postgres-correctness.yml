@@ -46,4 +46,20 @@ jobs:
           prune-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --group dev --extra postgres --locked
-      - run: uv run --no-sync pytest -q -rfE tests/integration/correctness
+      - run: uv run --no-sync pytest -q -rfE tests/integration/correctness --junitxml=postgres-results.xml
+      - name: Verify Postgres tests ran
+        run: |
+          uv run --no-sync python - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          cases = ET.parse("postgres-results.xml").findall(".//testcase")
+          skipped = [case.attrib["name"] for case in cases
+                     if case.find("skipped") is not None
+                     and case.find("skipped").get("type") != "pytest.xfail"]
+          completed = [case for case in cases
+                       if case.attrib["name"].startswith("test_answer_matches_reference[postgres-")
+                       and all(case.find(outcome) is None for outcome in ("skipped", "failure", "error"))]
+          if not completed or skipped:
+              raise SystemExit(f"Postgres reference tests must run without skips: {skipped}")
+          print(f"{len(completed)} Postgres reference tests ran without skips.")
+          PY
