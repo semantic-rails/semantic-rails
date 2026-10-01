@@ -788,6 +788,10 @@ Consumers that use binary64 must read integer JSON tokens without first rounding
 them to float. Numeric-looking text remains text with type `string`, even when
 authored as an integer dimension.
 
+Inside arrays and objects, native integers remain exact JSON integer tokens,
+including `9007199254740993`; they do not pass through binary64 conversion.
+Booleans remain booleans, and nested decimal/float values retain their normalization.
+
 The same aggregate can have a different SQL result type per warehouse: `AVG`
 is DOUBLE on DuckDB and NUMERIC on Postgres. `column_types` reports the driver's
 result type. Cross-warehouse conformance and package tests compare numeric
