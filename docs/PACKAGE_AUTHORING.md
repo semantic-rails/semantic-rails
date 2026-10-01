@@ -875,19 +875,15 @@ arbitrary multi-hop traversal.
 
 Time is optional. A package without dates can omit every model's `times:` block.
 Counts, sums, ratios, grouping, filters and lookups work without a time axis.
-Requests for time ranges, grains, windows, temporal overrides, prior-period or
-cumulative expressions, and plan intents such as "last month" are refused with
+Explicit Query IR requests for time ranges, grains, windows, temporal overrides,
+prior-period or cumulative expressions are refused with
 `INVALID_TEMPORAL_ROLE`: the package declares no time. Declare a `times:` entry
 before requesting time analysis. A `defaults.time.default_query_axis: true`
-also requires a declared temporal role. Catalogue labels and dimension values
-can contain time words; an unconsumed request for time analysis still refuses.
-Plan uses its time-window, grain and trend interpretation to check the question:
-"every month", "by calendar month", "hourly", "time series" and "tomorrow" refuse
-unless the time words belong to catalogue names or values carried by the draft.
-Any recognized time construction keeps the plan from reporting `ok`, even when
-it belongs to a catalogue name or value. In that case, plan returns
-`low_confidence`, retains the catalogue answer and adds an `INVALID_TEMPORAL_ROLE`
-warning naming the time words and explaining that the package declares no time.
+also requires a declared temporal role. On a package without time, every
+natural-language plan with a draft returns `low_confidence`, retains its Query IR
+and adds the same `INVALID_TEMPORAL_ROLE` warning: "This package has no time; check
+the question doesn't ask for a time breakdown or window." This includes plain
+catalogue questions and catalogue labels or dimension values containing time words.
 For example, "monthly item count for the monthly category" retains the category
 filter, but needs review before execution.
 Architect and CLI scaffolds accept a blank

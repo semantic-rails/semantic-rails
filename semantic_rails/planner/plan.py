@@ -27,120 +27,19 @@ from typing import Any
 from ..ast import rewrite_select_shorthand
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
-from ..temporal_support import require_temporal_support, validate_temporal_support
-from ._base import (
-    _PERIOD_SHIFT_TRIGGERS,
-    _TO_DATE_OR_ROLLING_RE,
-    _TREND_CUE_RE,
-    _explicit_grain,
-    _time_cues,
-    _time_window,
-    _with_fiscal_calendar,
-)
+from ..temporal_support import validate_temporal_support
+from ._base import _time_window, _with_fiscal_calendar
 from .faithfulness import (
-    _CLOCK_WORDS,
     intent_faithfulness_why,
     intent_subject_why,
     unconsumed_terms,
     unmatched_intent_terms,
 )
-from .generators import _matched_value_rows, blocked_object_not_found, fallback_drafts
+from .generators import blocked_object_not_found, fallback_drafts
 from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
 
 _VERSION = 1
-
-_CUMULATIVE_CUE_RE = re.compile(r"\b(?:cumulative|running\s+total)\b")
-
-
-def _atemporal_time_intent(
-    runtime: Any, intent: str, query: dict[str, Any]
-) -> dict[str, Any] | None:
-    """Refuse uncovered time intent; warn on every catalogue-covered time cue."""
-    if runtime._config.temporal_roles:
-        return None
-    lowered = intent.lower()
-    grain = _explicit_grain(lowered, include_unsupported=True)
-    patterns = [
-        _TREND_CUE_RE.pattern,
-        _TO_DATE_OR_ROLLING_RE.pattern,
-        _CUMULATIVE_CUE_RE.pattern,
-        *(p for p, _grain in _PERIOD_SHIFT_TRIGGERS),
-    ]
-    cues = [*_time_window(lowered).spans, *_time_cues(lowered, include_future=True)] + [
-        match.span() for pattern in patterns for match in re.finditer(pattern, lowered)
-    ]
-    # Clock words are the existing faithfulness check's unsupported time terms.
-    cues += [
-        match.span() for match in re.finditer(r"\b\w+\b", lowered) if match.group() in _CLOCK_WORDS
-    ]
-    if not grain and not cues:
-        return None
-    from ..metadata import _config_maps  # noqa: WPS433
-
-    maps = _config_maps(runtime._config)
-    phrases: set[str] = set()
-    for object_id in [*_object_ids_in_node(query), *(query.get("group_by") or [])]:
-        for kind in ("measures", "metric_recipes", "dimensions"):
-            obj = maps[kind].get(object_id)
-            if obj is not None:
-                phrases.update([obj.name, obj.label, *(obj.aliases or [])])
-    for row in _matched_value_rows(runtime, query, intent):
-        if not any(
-            predicate["field"] == row["dimension_id"]
-            and predicate["op"] == "="
-            and predicate["value"] == row["value"]
-            for predicate in _where_filters(query)
-        ):
-            continue
-        phrases.update(str(row.get(key, "") or "") for key in ("value", "label"))
-        for domain in runtime._config.value_domains:
-            if row["dimension_id"] not in domain.dimensions:
-                continue
-            for value in domain.values or []:
-                if value.value == row["value"]:
-                    phrases.update(value.aliases or [])
-    consumed = [
-        match.span()
-        for phrase in phrases
-        if phrase.strip()
-        for match in re.finditer(rf"(?<!\w){re.escape(phrase.strip().lower())}(?!\w)", lowered)
-    ]
-    remaining = list(lowered)
-    for start, end in consumed:
-        remaining[start:end] = " " * (end - start)
-    # Read the uncovered text with the same grain interpreter that builds the
-    # time spec; keep the original question for every downstream diagnostic.
-    require_temporal_support(
-        runtime._config,
-        requested=bool(_explicit_grain("".join(remaining), include_unsupported=True))
-        or any(
-            not any(start <= cue_start and cue_end <= end for start, end in consumed)
-            for cue_start, cue_end in cues
-        ),
-    )
-    # Catalogue coverage preserves the answer, but can also hide a separate
-    # occurrence asking for time analysis. Raw time cues can never be ready.
-    terms = sorted(
-        {lowered[start:end] for start, end in cues}
-        | {
-            match.group()
-            for match in re.finditer(r"\b\w+\b", lowered)
-            if grain
-            and (
-                grain in match.group()
-                or _explicit_grain(match.group(), include_unsupported=True) == grain
-            )
-        }
-    )
-    return {
-        "code": "INVALID_TEMPORAL_ROLE",
-        "message": (
-            f"The question contains time constructions: {', '.join(terms)}. "
-            "The package declares no time; the draft retains only the catalogue answer."
-        ),
-        "details": {"terms": terms},
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -252,11 +151,6 @@ def plan_payload(
     result = compose(runtime, intent)
     if result.draft is not None:
         validate_temporal_support(runtime._config, result.draft.query)
-    _atemporal_time_intent(
-        runtime,
-        intent_str,
-        result.draft.query if result.draft is not None else partial_query or {},
-    )
     intent_ir = result.intent_ir
     draft_rows: list[tuple[Any, str]] = []
     blocked: list[dict[str, Any]] = []
@@ -335,7 +229,18 @@ def plan_payload(
     best_draft = best["draft"]
     best_validation = best["validation"]
     best_ok = bool(best_validation.get("ok"))
-    atemporal_time_why = _atemporal_time_intent(runtime, intent_str, best_draft.query)
+    # No natural-language draft is ready on a package without a time axis.
+    # Preserve the Query IR and use one warning independent of question wording.
+    atemporal_why = (
+        {
+            "code": "INVALID_TEMPORAL_ROLE",
+            "message": (
+                "This package has no time; check the question doesn't ask for a time breakdown or window."
+            ),
+        }
+        if not runtime._config.temporal_roles
+        else None
+    )
     fallback_drift_why = _first_fallback_drift_why(planned, best)
     # Query validation proves executability, not that every high-confidence
     # clause survived natural-language realization.  Keep the valid draft for
@@ -357,7 +262,7 @@ def plan_payload(
     # query), the draft answers a *different* question than the user
     # asked. Downgrade instead of marking it ready to execute.
     time_why = (
-        atemporal_time_why
+        atemporal_why
         or _unresolved_time_why(intent_str, partial_query)
         or _start_dropped_why(
             best.get("start_dropped")
@@ -449,8 +354,8 @@ def plan_payload(
                 "details": {"terms": unmatched},
             }
         ]
-    if atemporal_time_why is not None:
-        payload.setdefault("warnings", []).append({**atemporal_time_why, "severity": "warning"})
+    if atemporal_why is not None:
+        payload.setdefault("warnings", []).append({**atemporal_why, "severity": "warning"})
     if detail_level in {"full", "debug"}:
         payload["alternatives"] = [
             _slim_best(
