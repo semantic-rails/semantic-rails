@@ -15,7 +15,7 @@ from semantic_rails.db import (
     build_snowflake_cli_command,
     create_warehouse_adapter,
 )
-from semantic_rails.db_parts.common import rows_from_cursor
+from semantic_rails.db_parts.common import READ_ONLY_DUCKDB_CONFIG, rows_from_cursor
 from semantic_rails.dialects import (
     DuckDbDialect,
     SnowflakeDialect,
@@ -87,6 +87,37 @@ def test_read_only_duckdb_disables_external_access_and_locks_configuration(tmp_p
             db.query("SELECT * FROM read_text(?)", [str(text_path)])
         with pytest.raises(duckdb.Error):
             db.conn.execute("SET enable_external_access = true")
+    finally:
+        db.close()
+
+
+def test_read_only_duckdb_comparison_reader_shares_locked_configuration(tmp_path):
+    import duckdb
+
+    db_path = tmp_path / "warehouse.duckdb"
+    text_path = tmp_path / "outside.txt"
+    text_path.write_text("outside", encoding="utf-8")
+    with duckdb.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE local_data AS SELECT 1 AS value")
+
+    db = Database.connect(str(db_path), read_only=True)
+    try:
+        with pytest.raises(duckdb.ConnectionException, match="different configuration"):
+            duckdb.connect(str(db_path), read_only=True)
+        with duckdb.connect(str(db_path), read_only=True, config=READ_ONLY_DUCKDB_CONFIG) as reader:
+            assert reader.execute("SELECT value FROM local_data").fetchall() == [
+                (row["value"],) for row in db.query("SELECT value FROM local_data")
+            ]
+            for connection in (db.conn, reader):
+                with pytest.raises(duckdb.Error, match="file system operations are disabled"):
+                    connection.execute("SELECT * FROM read_text(?)", [str(text_path)])
+                for setting in (
+                    "enable_external_access = true",
+                    "autoload_known_extensions = true",
+                    "lock_configuration = false",
+                ):
+                    with pytest.raises(duckdb.Error):
+                        connection.execute(f"SET {setting}")
     finally:
         db.close()
 
@@ -633,6 +664,65 @@ def test_snowflake_server_timeout_is_opt_in(monkeypatch, timeout):
         assert "session_parameters" not in kwargs
     else:
         assert kwargs["session_parameters"] == {"STATEMENT_TIMEOUT_IN_SECONDS": int(timeout)}
+
+
+@pytest.mark.parametrize(
+    "tag", ["ordinary-tag", "ops\\", "a\\', statement_timeout_in_seconds = 0 --"]
+)
+@pytest.mark.parametrize("entry_point", ["kwargs", "connection", "query", "prepared"])
+def test_snowflake_named_profile_refuses_authored_tag_before_connect(monkeypatch, tag, entry_point):
+    from unittest.mock import Mock
+
+    from semantic_rails.sql_preparation import prepare_query
+
+    pytest.importorskip("snowflake.connector")
+    connection = Mock()
+    connect = Mock(return_value=connection)
+    monkeypatch.setattr("snowflake.connector.connect", connect)
+    adapter = SnowflakeNativeAdapter("analytics", options={"query_tag": tag})
+    with pytest.raises(SemanticLayerError) as exc:
+        if entry_point == "kwargs":
+            adapter._connect_kwargs()
+        elif entry_point == "connection":
+            adapter._connection()
+        elif entry_point == "query":
+            adapter.query("select 1")
+        else:
+            adapter.query_prepared(prepare_query("select 1", "snowflake"))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert "named profile" in str(exc.value)
+    assert tag not in str(exc.value)
+    assert tag not in repr(exc.value.details)
+    connect.assert_not_called()
+    connection.cursor.assert_not_called()
+    connection.cursor.return_value.execute.assert_not_called()
+    assert adapter._conn is None
+
+
+@pytest.mark.parametrize(
+    "tag", ["ordinary-tag", "ops\\", "a\\', statement_timeout_in_seconds = 0 --"]
+)
+def test_snowflake_direct_connection_passes_tag_as_session_parameter(monkeypatch, tag):
+    from unittest.mock import Mock
+
+    pytest.importorskip("snowflake.connector")
+    connect = Mock()
+    monkeypatch.setattr("snowflake.connector.connect", connect)
+    monkeypatch.setenv("SR_TEST_ACCOUNT", "example")
+    monkeypatch.setenv("SR_TEST_USER", "example")
+    adapter = SnowflakeNativeAdapter(
+        "analytics",
+        options={
+            "account_env": "SR_TEST_ACCOUNT",
+            "user_env": "SR_TEST_USER",
+            "authenticator": "externalbrowser",
+            "query_tag": tag,
+        },
+    )
+    adapter._connection()
+    assert "connection_name" not in connect.call_args.kwargs
+    assert connect.call_args.kwargs["session_parameters"] == {"QUERY_TAG": tag}
+    connect.return_value.cursor.assert_not_called()
 
 
 @pytest.mark.parametrize(

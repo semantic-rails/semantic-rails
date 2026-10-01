@@ -145,7 +145,10 @@ per-operation bounds rather than a universal elapsed-time deadline. Longer
 queries may require larger configured waits. Postgres/Snowflake server
 statement limits remain opt-in and accept an explicit `"0"` (defer to the
 server on Postgres, disable the session limit on Snowflake); named Snowflake
-profiles retain inherited settings unless an override is authored.
+profiles retain inherited settings unless a numeric timeout override is
+authored. Named profiles refuse a nonempty authored `query_tag` with redacted
+`INVALID_CONFIG` before connecting; configure `QUERY_TAG` in the profile.
+Direct connections retain their connector session-parameter tag support.
 
 Read-only DuckDB connections now reject external-file views during bootstrap
 as well as execution. Packages using those views must materialize them into

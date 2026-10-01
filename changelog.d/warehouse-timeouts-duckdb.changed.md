@@ -3,8 +3,10 @@
   for long queries. Driver retries and polling can extend total elapsed time.
   Postgres/Snowflake server deadlines remain opt-in; explicit zero defers to
   the server on Postgres and disables the session limit on Snowflake. Named
-  Snowflake profiles retain inherited settings. MotherDuck and Snowflake
-  CLI are excluded from these client defaults.
+  Snowflake profiles retain inherited settings; put `QUERY_TAG` in the profile,
+  since nonempty authored `query_tag` overrides are refused before connecting.
+  Direct connections still pass authored tags via connector session parameters.
+  MotherDuck and Snowflake CLI are excluded from these client defaults.
 - Read-only DuckDB bootstrap, execution and authoring introspection reject
   external-file views; materialize them into tables before upgrading.
 - BigQuery supplies a default server job deadline and attempts cancellation on

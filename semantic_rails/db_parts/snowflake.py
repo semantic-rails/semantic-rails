@@ -238,6 +238,18 @@ class SnowflakeNativeAdapter(WarehouseAdapter):
         kwargs = self._provider_connect_kwargs()
         if self.connection_name and not self._uses_direct_connection():
             kwargs["connection_name"] = self.connection_name
+            if self.options.get("query_tag"):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    "Snowflake native query_tag must be configured in the named profile, "
+                    "not package.connection.options.",
+                    details={
+                        "engine": "snowflake",
+                        "connection_kind": "snowflake_native",
+                        "option": "query_tag",
+                        "sql_redacted": True,
+                    },
+                )
         missing_env: list[str] = []
         account = (
             _env_value(self.options.get("account_env", ""), missing_env)
@@ -317,7 +329,7 @@ class SnowflakeNativeAdapter(WarehouseAdapter):
         )
         if "statement_timeout_seconds" in self.options:
             session_parameters["STATEMENT_TIMEOUT_IN_SECONDS"] = statement_timeout
-        # Named profiles own their session map. Apply authored session keys separately
+        # Named profiles own their session map. Apply authored numeric timeouts separately
         # after connecting so connector's shallow merge cannot drop inherited keys.
         named_profile = "connection_name" in kwargs
         if session_parameters and not named_profile:
@@ -365,9 +377,6 @@ class SnowflakeNativeAdapter(WarehouseAdapter):
                         cursor.execute(
                             f"alter session set statement_timeout_in_seconds = {timeout}"
                         )
-                    if self.options.get("query_tag"):
-                        tag = self.options["query_tag"].replace("'", "''")
-                        cursor.execute(f"alter session set query_tag = '{tag}'")
                 except Exception:
                     self._conn.close()
                     self._conn = None

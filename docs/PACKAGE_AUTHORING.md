@@ -509,7 +509,11 @@ defaults are preserved.
 An explicit statement timeout raises the default read timeout to at least five
 seconds beyond it. Snowflake named profiles retain their inherited login,
 network/socket and session settings unless the package explicitly overrides
-those options; authored session keys preserve other profile session keys.
+numeric timeout options. With a named profile, a nonempty authored `query_tag`
+is refused with `INVALID_CONFIG` before connecting; configure `QUERY_TAG` in
+the named profile instead. Inherited `QUERY_TAG` and `TIMEZONE` remain intact
+when a numeric timeout is overridden. Direct connections still pass authored
+tags through the connector's `session_parameters`.
 
 The drivers apply these limits differently: ClickHouse bounds connection and
 HTTP send/receive time; Snowflake bounds login, network, and socket operations;
