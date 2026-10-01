@@ -4,7 +4,7 @@
  "gated": {
   "query.error.discover_unknown_argument_tokens": 2397,
   "query.error.inspect_label_not_id_tokens": 558,
-  "query.error.validate_fanout_tokens": 3371,
+  "query.error.validate_fanout_tokens": 2394,
   "query.error.validate_unknown_dimension_tokens": 649,
   "query.hosted.discover_tokens": 7118,
   "query.hosted.inspect_tokens": 962,
@@ -17,13 +17,13 @@
   "query.resources_list_tokens": 270,
   "query.v2.default.discover_ids_tokens": 2349,
   "query.v2.default.discover_tokens": 1823,
-  "query.v2.default.execute_no_grain_window_tokens": 6144,
-  "query.v2.default.execute_sql_tokens": 386,
+  "query.v2.default.execute_no_grain_window_tokens": 168,
+  "query.v2.default.execute_sql_tokens": 435,
   "query.v2.default.execute_tokens": 718,
   "query.v2.default.execute_validate_tokens": 172,
   "query.v2.default.inspect_tokens": 545,
-  "query.v2.default.max_structured_tokens": 6144,
-  "query.v2.default.max_text_tokens": 6144,
+  "query.v2.default.max_structured_tokens": 2411,
+  "query.v2.default.max_text_tokens": 2411,
   "query.v2.default.plan_tokens": 239,
   "query.v2.default.segment_explain_tokens": 1507,
   "query.v2.default.segment_preview_tokens": 2424,
@@ -42,8 +42,8 @@
   "query.v2.tools_list.wire_tokens": 3537
  },
  "tracked": {
-  "architect.instructions_tokens": 250,
-  "architect.tools_list.largest_tool_tokens": 461,
+  "architect.instructions_tokens": 274,
+  "architect.tools_list.largest_tool_tokens": 512,
   "architect.tools_list.model_visible_tokens": 4183,
   "architect.tools_list.tools": 27,
   "architect.tools_list.wire_tokens": 11502

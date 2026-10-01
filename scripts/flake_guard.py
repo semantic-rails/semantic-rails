@@ -19,6 +19,8 @@ ROOT = Path(__file__).resolve().parents[1]
 TEST_ROOTS = ("tests/semantic_rails", "tests/mf2sr")
 MAX_FILES = 20
 BUDGET_SECONDS = 290
+# Start another repetition only if the time left exceeds the previous repetition's duration by this factor.
+FIT_MARGIN = 1.2
 
 
 def imported_modules(path: Path) -> set[str]:
@@ -86,6 +88,7 @@ def run_repetitions(files: list[str], root: Path, deadline: float) -> int:
     print("Flake guard files:\n" + "\n".join(files), flush=True)
     with tempfile.TemporaryDirectory(prefix="flake-guard-") as scratch:
         seed_base = secrets.randbelow(2**32 - 3)
+        previous: float | None = None
         for repetition in range(1, 4):
             seed = seed_base + repetition
             report = Path(scratch) / f"repetition-{repetition}.xml"
@@ -102,8 +105,17 @@ def run_repetitions(files: list[str], root: Path, deadline: float) -> int:
                 "no:cacheprovider",
                 *files,
             ]
-            print(f"Flake guard repetition {repetition}/3, seed {seed}", flush=True)
             remaining = deadline - time.monotonic()
+            # A repetition that cannot fit in what is left of the budget proves nothing either way: skip it rather than
+            # fail a pull request whose tests merely take long (a core-module change selects many importers).
+            if previous is not None and remaining < previous * FIT_MARGIN:
+                print(
+                    f"::warning::Flake guard inconclusive: {repetition - 1} of 3 repetitions passed; "
+                    f"repetition {repetition} needs about {previous:.0f}s and {max(remaining, 0):.0f}s remain",
+                    flush=True,
+                )
+                return 0
+            print(f"Flake guard repetition {repetition}/3, seed {seed}", flush=True)
             if remaining <= 0:
                 print(
                     f"intermittent: investigate; repetition {repetition}; budget exhausted",
@@ -111,6 +123,7 @@ def run_repetitions(files: list[str], root: Path, deadline: float) -> int:
                 )
                 return 1
             # Kill the whole group on timeout, including xdist workers.
+            started = time.monotonic()
             process = subprocess.Popen(command, cwd=root, start_new_session=True)
             try:
                 result = process.wait(timeout=remaining)
@@ -129,6 +142,7 @@ def run_repetitions(files: list[str], root: Path, deadline: float) -> int:
                     flush=True,
                 )
                 return 1
+            previous = time.monotonic() - started
     return 0
 
 

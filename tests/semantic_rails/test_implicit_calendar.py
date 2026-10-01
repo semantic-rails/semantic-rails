@@ -359,7 +359,7 @@ def test_bounded_fill_lists_every_month_the_window_touches(packages: dict[str, P
         date(2023, 10, 1),
         *(date(2023 + (month > 12), (month - 1) % 12 + 1, 1) for month in range(11, 20)),
     ]
-    assert [row[1] for row in rows] == [0.0, 15.0, 7.0, 20.0, 0.0, 8.0, 4.0, 6.0, 3.0, 0.0]
+    assert [row[1] for row in rows] == [None, 15.0, 7.0, 20.0, 0.0, 8.0, 4.0, 6.0, 3.0, None]
 
 
 def test_zoned_role_buckets_in_its_own_zone(packages: dict[str, Path]) -> None:

@@ -41,6 +41,9 @@ from .compiler_parts.bind import (
     _resolve_filter_dimension,
     _scoped_aggregate_filter_spec,
     _scoped_predicate_expr_payload,
+    check_conditional_aggregate_path,
+    conditional_aggregate_route_refusal,
+    is_conditional_aggregate,
     lift_conditional_aggregates,
 )
 from .compiler_parts.dependencies import (
@@ -2270,16 +2273,26 @@ def _leaf_path_selections(
 
     selections: list[PathSelection] = []
     required_entities: set[str] = set(_measure_required_entities(measure, config))
+    # An aggregate_if's condition joins as a where filter does (a lookup), on the route that
+    # filter takes; every leaf that plans it refuses that route unless each hop is many-to-one.
+    conditional = is_conditional_aggregate(measure)
     for entity_id in sorted(required_entities):
-        selection = _path_selection(
-            config=config,
-            query=query,
-            start_entity=measure.entity,
-            target_entity=entity_id,
-            preference=query.path_policy.preference,
-            purpose="measure_expr",
-        )
+        try:
+            selection = _path_selection(
+                config=config,
+                query=query,
+                start_entity=measure.entity,
+                target_entity=entity_id,
+                preference=query.path_policy.preference,
+                purpose="aggregate_if" if conditional else "measure_expr",
+            )
+        except SemanticLayerError as exc:
+            if not conditional or exc.code not in {"AMBIGUOUS_PATH", "PATH_NOT_FOUND"}:
+                raise
+            raise conditional_aggregate_route_refusal(measure, entity_id, exc) from exc
         if selection is not None:
+            if conditional:
+                check_conditional_aggregate_path(measure, entity_id, selection.chosen_path, config)
             selections.append(selection)
     for dim_id in query.group_by:
         dim = dimensions[dim_id]
@@ -3971,6 +3984,7 @@ def _plan_query(
     _validate_rollup_safety(bound_measures, config)
     _validate_non_additive_sums(bound_measures, config, query)
     measure_plans: list[MeasurePlan] = []
+    leaf_strategies: list[str] = []  # each leaf's strategy before rollup routing
     if bound_measures:
         root_entity = measures[bound_measures[0].measure_id].entity
         selected_paths, candidate_paths, rewrite_steps, root_analyses = _root_path_summary(
@@ -4039,6 +4053,7 @@ def _plan_query(
                     aggregate_relation_rejections=aggregate_relation_rejections,
                 )
             )
+            leaf_strategies.append(rewrite_strategy)
     elif conversion_exprs:
         root_entity = _expression_root_entity(conversion_exprs[0].base, config)
         selected_paths = {}
@@ -4092,7 +4107,7 @@ def _plan_query(
     plan_time = asdict(query.time) if query.time else {}
     if collapse_window and bound_measures and _is_window_total(query, config, bound_measures):
         plan_time["window_total"] = True
-    return LogicalPlan(
+    plan = LogicalPlan(
         version=2,
         query=query.to_dict(),
         root_entity=root_entity,
@@ -4110,6 +4125,9 @@ def _plan_query(
         semantic_dag=_semantic_dag_for_query(query, config),
         synthetic_measures=dict(synthetic_measures),
     )
+    from .compiler_parts.sql_lowering import coverage_base_plan
+
+    return coverage_base_plan(plan, config, leaf_strategies)
 
 
 def _calendar_fill_binding(
@@ -4364,7 +4382,7 @@ def compile_query(
 
     physical_plan = build_physical_plan(plan, config)
     performance_plan = build_performance_plan(
-        plan, config, physical_plan, rendered, bound.rollup_scans
+        plan, config, physical_plan, rendered, bound.rollup_scans, sql_ast
     )
     compile_stats = {
         "compile_ms": round((time.perf_counter() - started) * 1000, 3),

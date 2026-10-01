@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.request import urlopen
 
 from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
 CONNECTORS = ("snowflake", "postgres", "bigquery", "databricks", "athena", "clickhouse")
@@ -156,6 +157,27 @@ def audit_surface(root: Path, surface: str, scratch: Path) -> list[dict]:
     return dependencies
 
 
+def caps_below(specifiers: SpecifierSet, patched: Version) -> bool:
+    """Prove an upper bound below all patched releases; exclusions cannot prove a cap."""
+    capped = False
+    for specifier in specifiers:
+        operator = specifier.operator
+        version = Version(specifier.version.removesuffix(".*"))
+        if operator == "~=" or (operator == "==" and specifier.version.endswith(".*")):
+            prefix = version.release[:-1] if operator == "~=" else version.release
+            upper = Version(
+                f"{version.epoch}!" + ".".join(map(str, (*prefix[:-1], prefix[-1] + 1)))
+            )
+            capped |= upper <= patched
+        elif operator == "<":
+            capped |= version <= patched
+        elif operator in ("<=", "==", "==="):
+            capped |= version < patched
+        elif operator not in (">=", ">", "!="):
+            raise ValueError(f"unknown dependency operator: {operator}")
+    return capped
+
+
 def cap_excludes_fixes(
     root: Path, extra: str, entry: ExceptionEntry, patched_versions: list[str]
 ) -> bool:
@@ -164,13 +186,16 @@ def cap_excludes_fixes(
     try:
         project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
         # Dependency markers use the blocker's requested extras, not our connector's name.
-        selected_extras = {""}
+        selected_extras = set()
         for value in [*project["dependencies"], *project["optional-dependencies"][extra]]:
             requirement = Requirement(value)
             if normalize(requirement.name) == blocker and (
                 requirement.marker is None or requirement.marker.evaluate({"extra": extra})
             ):
+                selected_extras.add("")
                 selected_extras.update(requirement.extras)
+        if not selected_extras:
+            raise ValueError(f"{blocker} is not a dependency of {extra}")
         with urlopen(f"https://pypi.org/pypi/{blocker}/json", timeout=30) as response:
             info = json.load(response)["info"]
         if normalize(info["name"]) != blocker:
@@ -180,7 +205,7 @@ def cap_excludes_fixes(
         if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
             raise ValueError("invalid requires_dist metadata")
         requirements = [Requirement(value) for value in values]
-        patched = [Version(version) for version in patched_versions]
+        patched = min(Version(version) for version in patched_versions)
         caps = [
             requirement
             for requirement in requirements
@@ -192,11 +217,13 @@ def cap_excludes_fixes(
         ]
         if not caps or any(requirement.url for requirement in caps):
             raise ValueError("missing verifiable dependency requirement")
-        return any(
-            all(
-                not requirement.specifier.contains(version, prereleases=True) for version in patched
-            )
-            for requirement in caps
+        # Evaluate every active requirement so malformed evidence cannot be bypassed.
+        capped = any([caps_below(requirement.specifier, patched) for requirement in caps])
+        combined = SpecifierSet()
+        for requirement in caps:
+            combined &= requirement.specifier
+        return capped and not any(
+            combined.contains(version, prereleases=True) for version in patched_versions
         )
     except (OSError, ValueError, TypeError, KeyError) as error:
         raise ValueError(f"{extra}: cannot verify the cap: {error}") from error
@@ -220,6 +247,7 @@ def check_policy(
             errors.append(f"{entry.id}: expired review_by {entry.review_by}")
     for surface in reports:
         findings = 0
+        packages = {normalize(dep["name"]) for dep in reports[surface]}
         for dependency in reports[surface]:
             for advisory in dependency["vulns"]:
                 findings += 1
@@ -238,6 +266,14 @@ def check_policy(
                 else:
                     entry = matches[0]
                     used.add((entry.id, surface))
+                    blocker = normalize(entry.blocked_by.partition(":")[0].strip())
+                    if blocker not in packages:
+                        errors.append(
+                            f"{prefix}: cannot verify the cap: "
+                            f"{blocker} is not a dependency of {surface}"
+                        )
+                        lines.append(f"{prefix}: FAIL")
+                        continue
                     fixes = advisory.get("fix_versions")
                     if (
                         not isinstance(fixes, list)
@@ -245,6 +281,7 @@ def check_policy(
                         or entry.fixed_in not in fixes
                     ):
                         errors.append(f"{prefix}: fixed_in missing from advisory patched versions")
+                        lines.append(f"{prefix}: FAIL")
                         continue
                     if not cap_excludes(surface, entry, fixes):
                         errors.append(f"{prefix}: cap lifted: upgrade now")

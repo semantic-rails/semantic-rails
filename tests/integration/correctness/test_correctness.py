@@ -60,14 +60,8 @@ CLOCK = {
 }
 STEP = {"day": "1 day", "week": "7 day", "month": "1 month", "quarter": "3 month", "year": "1 year"}
 
+
 # Known wrong answers.
-EMPTY_WINDOW_NULL = (
-    "time.fill buckets in a window with no rows read NULL until the engine checks for data"
-    " outside the window (https://github.com/semantic-rails/semantic-rails/issues/201);"
-    " the reference is the 0 the rule gives"
-)
-
-
 def BOTH(reason: str) -> dict[str, str]:  # noqa: N802 - reads as a constant at the call sites
     """A wrong answer on both backends: each misses the reference, and they still agree."""
     return {"duckdb": reason, "postgres": reason}
@@ -206,9 +200,16 @@ def _per_order(aggregate: str, grain: str = "month") -> str:
 
 
 def _fiscal(grain: str, clock: str, start: str, end: str) -> str:
-    """Revenue per fiscal ``grain`` over the calendar's days in [start, end), 0 without orders."""
+    """Fiscal revenue, preserving values and filling only inside loaded calendar coverage."""
+    zone = "America/New_York" if clock == "ny" else "UTC"
     return (
-        f"SELECT f.{grain}_start, COALESCE(SUM(o.amount), 0) FROM dim_fiscal AS f"
+        f"WITH coverage AS (SELECT MIN(c.{grain}_start) lo, "
+        f"MAX(CASE WHEN {CLOCK[clock]} <= (CURRENT_TIMESTAMP AT TIME ZONE '{zone}') "
+        f"THEN c.{grain}_start END) hi FROM orders o "
+        f"JOIN dim_fiscal c ON c.date_day = CAST({CLOCK[clock]} AS DATE)) "
+        f"SELECT f.{grain}_start, COALESCE(SUM(o.amount), "
+        f"CASE WHEN f.{grain}_start BETWEEN (SELECT lo FROM coverage) AND "
+        f"(SELECT hi FROM coverage) THEN 0 END) FROM dim_fiscal AS f"
         f" LEFT JOIN orders AS o ON f.date_day = CAST({CLOCK[clock]} AS DATE)"
         f" WHERE f.date_day >= DATE '{start}' AND f.date_day < DATE '{end}' GROUP BY 1"
     )
@@ -439,6 +440,31 @@ def _absent_entity_cases() -> Iterator[Case]:
             )
 
 
+def _null_comparison_cases() -> Iterator[Case]:
+    for op, sql_op in (("=", "IS NULL"), ("!=", "IS NOT NULL"), ("<>", "IS NOT NULL")):
+        conditional = {
+            "kind": "aggregate_if",
+            "aggregation": "count",
+            "condition": {
+                "kind": "comparison",
+                "op": op,
+                "left": {"kind": "column", "column": "amount", "entity": "entity.shop_order"},
+                "right": {"kind": "literal", "value": None},
+            },
+        }
+        yield Case(
+            f"predicate-conditional_count-null-{op}",
+            "utc_authored",
+            {
+                "select": [_item(ORDERS, "n")],
+                "metric_filters": [
+                    _predicate("entity.shop_order", "entity_only", conditional, ">", 0)
+                ],
+            },
+            f"SELECT COUNT(*) FROM orders WHERE amount {sql_op}",
+        )
+
+
 def _cases() -> Iterator[Case]:
     revenue, average = _item(REVENUE, "revenue"), _item(AVERAGE, "average")
     orders = _item(ORDERS, "orders")
@@ -483,6 +509,7 @@ def _cases() -> Iterator[Case]:
     )
     yield from _empty_group_cases(revenue, orders)
     yield from _absent_entity_cases()
+    yield from _null_comparison_cases()
     for name, variant, grain, start, end, routes in (
         ("utc-march_bounds_by_day", "utc_implicit", "day", "2024-03-01", "2024-04-01", None),
         ("ny-march_bounds_by_day", "ny_implicit", "day", "2024-03-01", "2024-04-01", None),
@@ -558,13 +585,19 @@ def _cases() -> Iterator[Case]:
         clock = variant.split("_")[0]
         query = _ask("month", revenue, average, start="2023-10-01", end="2024-09-01", fill=True)
         reference = FILL_WINDOW.format(clock=CLOCK[clock])
+        # Coverage-dependent plans use the base even when a monthly rollup is available.
+        reference = reference.replace(
+            "COALESCE(m.v, 0)",
+            "COALESCE(m.v, CASE WHEN g.b BETWEEN "
+            f"(SELECT date_trunc('month', MIN({CLOCK[clock]})) FROM orders o) AND "
+            f"(SELECT date_trunc('month', MAX({CLOCK[clock]})) FROM orders o) THEN 0 END)",
+        )
         yield Case(f"{variant}-fill_window", variant, query, reference)
     yield Case(
         "fill_empty_window",
         "utc_authored",
         _ask("month", revenue, start="2024-02-01", end="2024-03-01", fill=True),
         "SELECT TIMESTAMP '2024-02-01', 0",
-        known=BOTH(EMPTY_WINDOW_NULL),
     )
 
     # Windows over the series: rolling, prior_period, cumulative, period_to_date. The week
