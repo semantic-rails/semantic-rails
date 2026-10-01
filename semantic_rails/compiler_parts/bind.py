@@ -415,7 +415,11 @@ def _bind_measure(
         raise SemanticLayerError(
             "UNSUPPORTED_AGGREGATION",
             f"Aggregation '{aggregation}' is not allowed for '{measure_id}'",
-            details={"measure": measure_id, "allowed": list(measure.allowed_aggregations)},
+            details={
+                "measure": measure_id,
+                "aggregation": aggregation,
+                "allowed": list(measure.allowed_aggregations),
+            },
         )
     temporal_role = resolve_measure_temporal_role(
         measure,

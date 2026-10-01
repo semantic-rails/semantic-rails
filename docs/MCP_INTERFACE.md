@@ -725,7 +725,7 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 | `AMBIGUOUS_ALIAS` | Alias resolves to multiple semantic objects; pick one from `details.candidates`. |
 | `AMBIGUOUS_PATH` | Several routes between root entity and target can answer differently and the package records none (`details.reason: route_decision_required`); `details.candidates` lists them, `details.meanings` reads each, `details.pins` holds the `graph.path_preferences` row that records each, and `details.hint` says how. |
 | `DUPLICATE_OUTPUT_ALIAS` | Two projected columns share an alias; rename one. |
-| `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. |
+| `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. For a measure restriction, `details.aggregation` records the rejected value and the hint's `aggregation_received` and `allowed` mirror `details.aggregation` and `details.allowed`; the hint lists only those allowed values. Parameter errors disclose the required parameter schema. |
 | `INVALID_TEMPORAL_ROLE` | Unknown temporal role; pick one from `details.compatible_temporal_roles`. |
 | `INCOMPATIBLE_TEMPORAL_ROLE` | Selected role is not compatible with the chosen measure/metric, or the measure has no time role at all (`details.compatible` is empty; declare one on the model or the measure). |
 | `INVALID_TEMPORAL_BINDING` | Time block targets a clock incompatible with a conversion's anchor; filter on `details.anchor_temporal_role` or push the constraint into a conversion metric. |
@@ -747,7 +747,7 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 | `INVALID_SEGMENT` | Segment definition is invalid. |
 | `MISSING_DEPENDENCY` | Required upstream object is missing. |
 | `QUERY_EXECUTION_ERROR` | Warehouse refused or aborted execution. |
-| `PATH_NOT_FOUND` | No valid join path between the requested objects. |
+| `PATH_NOT_FOUND` | No valid join path between the requested objects. `details.reachable_targets` and suggested group-by dimensions use the same path resolver as compilation, respecting relationship directions, hop limits, route ambiguity, and recorded path preferences. |
 | `POLICY_DENIED` | Policy context blocks a referenced object or query cut. |
 | `INVALID_METRIC_PREDICATE` | `metric_predicates[]` entry is malformed. |
 | `PREDICATE_SCOPE_UNSAFE` | Predicate scope is incompatible with query grain. |

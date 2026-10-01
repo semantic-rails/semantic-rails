@@ -357,11 +357,10 @@ def recovery_hints_for_error(
                 {
                     "kind": "isolated_source_entity",
                     "message": (
-                        f"'{start}' has no declared relationships in this package — no "
-                        f"entity is reachable from it. This usually means the measure is "
-                        f"sourced from a roll-up table that wasn't connected to the rest "
-                        f"of the graph. Group by a dimension defined on '{start}' itself, "
-                        f"or author a relationship from '{start}' to '{target}'."
+                        f"No entity has a resolvable path from '{start}' under the package's "
+                        f"directions, hop limit, and route choices. Group by a dimension "
+                        f"defined on '{start}' itself, or author a relationship "
+                        f"from '{start}' to '{target}'."
                     ),
                     "start": start,
                     "unreachable_target": target,
@@ -458,6 +457,20 @@ def recovery_hints_for_error(
         return hints
     if code == "UNSUPPORTED_AGGREGATION":
         aggregation = str(details.get("aggregation", "") or "")
+        if "allowed" in details:
+            allowed = list(details["allowed"])
+            return [
+                {
+                    "kind": "use_supported_aggregation",
+                    "message": (
+                        f"Choose an allowed aggregation for this measure: {', '.join(allowed)}."
+                        if allowed
+                        else "This measure allows no aggregations; inspect another measure."
+                    ),
+                    "aggregation_received": aggregation,
+                    "allowed": allowed,
+                }
+            ]
         from .expressions import parameter_schema_for_aggregation
 
         schema = parameter_schema_for_aggregation(aggregation) if aggregation else {}
@@ -481,9 +494,8 @@ def recovery_hints_for_error(
                 {
                     "kind": "use_supported_aggregation",
                     "message": (
-                        "Choose a supported aggregation — sum, count, "
-                        "count_distinct, avg, min, max, median, "
-                        "percentile, first_value, or last_value."
+                        "Inspect the measure to find its allowed aggregations, "
+                        "then choose one of those values."
                     ),
                     "aggregation_received": aggregation,
                 }
@@ -1276,17 +1288,12 @@ def enrich_expression_ast_error(
 def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> SemanticLayerError:
     """Attach reachable-target context to ``PATH_NOT_FOUND``.
 
-    The raw error is the most actionable signal we have, but the empty
-    ``recovery_hints`` made it the laggard of the structured-envelope
-    rollout. Enrich the details with a BFS of entities reachable from
-    the source so :func:`recovery_hints_for_error` can list concrete
-    alternatives.
+    Only the shared path resolver can approve alternatives: relationship
+    directions, hop limits, and route decisions apply to hints too.
     """
     if exc.code != "PATH_NOT_FOUND":
         return exc
     details = dict(exc.details or {})
-    if details.get("reachable_targets"):
-        return exc
     start = str(details.get("start", "") or "")
     target = str(details.get("target", "") or "")
     if not start or not target:
@@ -1296,29 +1303,18 @@ def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> Sem
             target = target or match.group(2)
     if not start:
         return exc
-    # BFS the relationship graph from ``start``. Kept local to avoid a
-    # cycle with ``fanout.build_graph`` (diagnostics is imported widely).
-    graph: dict[str, set[str]] = {}
-    for rel in getattr(config, "relationships", []) or []:
-        source = str(getattr(rel, "source_entity", "") or "")
-        target_entity = str(getattr(rel, "target_entity", "") or "")
-        if not source or not target_entity:
+    from .fanout import resolve_path
+
+    reachable: set[str] = set()
+    for entity in config.entities:
+        if entity.id == start:
             continue
-        graph.setdefault(source, set()).add(target_entity)
-        graph.setdefault(target_entity, set()).add(source)
-    visited: set[str] = {start}
-    frontier: list[str] = [start]
-    while frontier:
-        next_frontier: list[str] = []
-        for node in frontier:
-            for neighbour in graph.get(node, set()):
-                if neighbour in visited:
-                    continue
-                visited.add(neighbour)
-                next_frontier.append(neighbour)
-        frontier = next_frontier
-    visited.discard(start)
-    reachable_sorted = sorted(visited)
+        try:
+            resolve_path(config, start=start, target=entity.id)
+        except SemanticLayerError:
+            continue
+        reachable.add(entity.id)
+    reachable_sorted = sorted(reachable)
     # Walk the dimension index for concrete ``dimension.<id>`` values
     # whose owning entity is ``start`` or any reachable entity. Listing
     # 15 ids keeps the envelope small; agents that need more browse
