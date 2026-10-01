@@ -145,7 +145,7 @@ shorthands for the most common cases:
 | Arithmetic | `{ "kind": "arithmetic", "op": "divide", "left": {...}, "right": {...} }` |
 | Ratio | `{ "kind": "ratio", "numerator": {...}, "denominator": {...} }` |
 | Case | `{ "kind": "case", "whens": [{"when": {...}, "then": {...}}], "else": {...} }` |
-| Aggregate-if | `{ "kind": "aggregate_if", "aggregation": "count", "condition": {...} }` or with `"value": {...}` for sum/avg/min/max. Compiles to `COUNT_IF` / `SUM_IF` on Snowflake, portable `<AGG>(CASE WHEN cond THEN value END)` elsewhere. Column refs inside `condition` / `value` must specify `entity` or `table` (no surrounding measure to inherit from). |
+| Aggregate-if | `{ "kind": "aggregate_if", "aggregation": "count", "condition": {...} }` or with `"value": {...}` for sum/avg/min/max. Compiles to `COUNT_IF` / `SUM_IF` on Snowflake, portable `<AGG>(CASE WHEN cond THEN value END)` elsewhere. Column refs inside `condition` / `value` must specify `entity` or `table` (no surrounding measure to inherit from). It aggregates the rows of the value's entity (all `value` columns share it; without a value column, the condition's columns must share one entity). `condition` may also read any entity that entity reaches over declared many-to-one or one-to-one relationships, on the route a `where` filter on that entity takes. A value row with no match on that route never satisfies the condition: for each such entity, a top-level `and` term must compare one of its columns with `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in` or `IS NOT` null, and a condition such a row could satisfy (`IS NULL`, an `or` with the value's own column) is refused with `UNSUPPORTED_CONDITIONAL_AGGREGATE`. So is a condition across a one-to-many, many-to-many, bridge or time-valid hop, or over two routes with no path preference. Policies on the dimensions over the columns such a condition reads apply as they do to a `where` filter on them. |
 | Between | `{ "kind": "between", "expr": {...}, "low": {...}, "high": {...} }` — sugar for `expr >= low AND expr <= high`. Use `kind: "not_between"` or `negated: true` for the inverted form (`expr < low OR expr > high`). Desugared at parse time; the kind does not appear in the lowered IR. |
 | Literal | `{ "kind": "literal", "value": 0 }` |
 | Prior period | `{ "kind": "prior_period", "input": {...}, "offset": {"unit": "month", "value": 1} }` |
@@ -153,6 +153,23 @@ shorthands for the most common cases:
 | Cumulative | `{ "kind": "cumulative", "input": {...} }` |
 | Period-to-date | `{ "kind": "period_to_date", "input": {...}, "period": "month" }` |
 | Conversion | `{ "kind": "conversion", "base": {...}, "converted": {...}, "entity": "...", "window": {"unit": "day", "value": 7}, "matching_mode": "first_converted_after_base" }` — a converted event counts when `base <= converted < base + window` (7 × 24 hours here, not calendar days). |
+
+Comparisons (`kind: "comparison"`) with a literal `null` on either side lower
+`=` / `IS` to `IS NULL` and `!=` / `<>` / `IS NOT` to `IS NOT NULL`. This applies
+inside CASE and aggregate-if conditions (including a metric predicate's input),
+post-aggregation expressions, segment membership, and relation filters and joins,
+as well as `where` filters.
+Ordering (`<`, `<=`, `>`, `>=`) and LIKE comparisons with a null literal refuse
+with `INVALID_QUERY` and the `USE_NULL_TEST_OR_SCALAR` recovery hint, since they
+would always evaluate to unknown in SQL. `IS DISTINCT FROM`, `IS NOT DISTINCT FROM`
+and `<=>` already handle null, so they pass through unchanged. A comparison
+between two nullable columns retains ordinary SQL three-valued semantics, as does
+a comparison against a computed null such as `NOT(NULL)`: `FALSE != NOT(NULL)`
+evaluates to unknown (NULL) and retains no rows when used as a filter.
+A `metric_predicate` whose `value` is null refuses with `INVALID_METRIC_PREDICATE`:
+its input reads `0` for an entity with no rows and `NULL` for one with no data, so
+a count of none is `= 0`, and a null test belongs inside the input as an
+`aggregate_if` condition.
 
 ## Scalar `call` expressions
 
@@ -305,6 +322,32 @@ Supported `op` values (all compile end-to-end):
   the looked-up dimension.
 - Objects are rejected — inline expression thresholds belong in
   `metric_filters` (`metric_predicate`).
+
+A positive child-dimension filter on a parent-grain measure means "parents with at
+least one matching child". It lowers to correlated `EXISTS`, so multiple matching
+children never multiply a parent count or sum. This also applies to an aggregate's
+own `filter`, and to non-temporal paths that look up a parent before reaching its
+children or join on an alternate key. Each hop must declare `N:1`, `1:N` or `1:1`;
+unknown, unsafe and temporal paths retain their refusals. A lookup-before-child
+or alternate-key path requires exactly one candidate route after authored
+`graph.path_preferences` pins. When several routes remain, the query retains
+its `MIXED_GRAIN_INVALID` refusal; a shorter route does not establish which
+children the filter means. This also applies beside a lookup and to an
+aggregate's own filter.
+ClickHouse retains a deduplicated-parent leaf for servers without correlated
+subqueries. Key-based descents retain their existing SQL shape, including
+beside lookup selections, groupings and filters; those lookups remain inner
+joins. It refuses paths that look up a parent before reaching children and
+paths joined off the parent's declared key, including beside a lookup, with
+`MIXED_GRAIN_INVALID`.
+
+At most one group or filter may cross a one-to-many hop. Negated child predicates
+and child `IS NULL` tests remain `MIXED_GRAIN_INVALID`: "has a child that is not X"
+and "has no child that is X" have different answers, and the IR has no explicit
+`NOT EXISTS` predicate. Grouped child dimensions retain their distinct-parent
+count rules; summing a parent amount by a child dimension or reading a child
+measure expression at parent grain remains refused. Under a row policy these
+queries are refused with `POLICY_DENIED`, as before.
 
 ## OrderBy
 
@@ -553,7 +596,9 @@ no rows reads one or the other, by one rule, in every query:
 
 A measure has data in scope when at least one group of the answer holds a value: a sum with a
 non-NULL amount, or a count above zero. The scope is the measure's own filters, the query's
-`where` filters and its time window, before the `group_by`. Where a measure has data in scope,
+`where` filters and policy row filters, before the `group_by`. Plain time leaves check
+for data outside the query's time bounds (DuckDB and Postgres; see time coverage below).
+Where a measure has data in scope,
 a group with no rows reads `0`: a store with orders but no refunds has 0 refunds, and a
 month whose orders all have a NULL amount has a revenue of 0. Where it has none, every group
 reads `NULL`: with no refunds anywhere in scope, no store has "0 refunds", because nothing
@@ -577,10 +622,30 @@ stock has no value for a period nobody observed, so neither is ever made zero.
 - **Filters narrow the scope.** With `where: store = 'x'`, a measure that has no rows at
   store x reads `NULL`, even though the same store reads `0` in a `group_by: store` answer. A
   filter value that matches nothing (a misspelled `product`) reads `NULL`, not a confident 0.
-- **A time window narrows it too, for now.** A `fill: true` bucket in a window with no rows
-  reads `NULL` even where the measure has data outside the window. That is a known limitation
-  (it should read `0`) until the engine checks for data outside the window
-  ([issue #201](https://github.com/semantic-rails/semantic-rails/issues/201)).
+- **Time coverage bounds zero filling.** Bounded plain time leaves check for observation
+  outside the query's window under the same authored, query and policy row filters. For
+  fill, dense series and combined leaves, an empty bucket inside the base relation's loaded
+  range reads `0`; an empty bucket before its first loaded timestamp or after its last
+  reads `NULL`. Coverage uses the whole base relation under policy filters, ignoring
+  measure and query filters, and excludes future timestamps from its upper edge. The
+  cutoff compares UTC instants: timezone-aware columns preserve their instant, and
+  naive columns use their declared storage zone (`column_timezone`, then `timezone`,
+  defaulting to UTC). That cutoff is the only instant comparison: buckets, calendar joins
+  and the window keep each leaf's own time frame, and the loaded range is the lowest and
+  highest of the leaf's own bucket. Coverage gates only
+  zero substitution: populated sums and positive counts always survive, including
+  NULL time keys and future-dated rows.
+  Filled, dense-series (rolling, prior-period) and combined plans, bounded or not, read
+  the base relation even when rollups are available, so routing cannot change their
+  coverage answers. Other routed
+  aggregates, nested, fanout and predicate sources retain the window observation test.
+  Coverage uses data alone. Performance guidance includes the emitted observation and
+  coverage reads as scans without request-window bounds; narrowing the requested window
+  does not bound those reads.
+  Coverage and the outside-window check run only on DuckDB (with MotherDuck and DuckLake)
+  and Postgres, whose execution is tested. On Snowflake, BigQuery, Databricks, Athena and
+  ClickHouse an empty bucket reads `0` only while the measure has data inside the window,
+  and rollups route as they would without coverage.
 - **An ungrouped distinct-population count over nothing reads `0`, with no warning.** That is a
   known limitation: a count of distinct customers under a `where` that matches no rows returns
   `0`, not `NULL` with `NO_DATA_IN_SCOPE` as the rule says. An empty group of a grouped answer
@@ -771,3 +836,66 @@ for e in errors:
 
 The repo's regression suite runs the same loop over every committed
 IR; see `tests/semantic_rails/test_query_ir_schema.py`.
+
+## Result values
+
+HTTP query responses, MCP `execute`, the Python `Runtime.query` SDK, and CLI JSON
+output share one result-value policy. Segment previews use the same policy.
+Python callers receive JSON-ready values, including strings for dates and times.
+`column_types` maps each result field to its observed logical type and survives
+all verbosity levels and MCP record/column row formats. It is separate from
+`output_columns`, which describes semantic lineage and authored types.
+
+| Source value | JSON value | `column_types` metadata |
+|---|---|---|
+| Decimal column | Canonical decimal strings, without redundant fractional zeros, for every non-null cell | `{"type":"decimal"}` |
+| Integer column | Integer JSON numbers, including values larger than binary64's exact integer range | `{"type":"integer"}` |
+| Float/double column | Finite JSON numbers | `{"type":"float"}` |
+| Aware timestamp | ISO 8601 string, normalized to the query time zone; UTC with `+00:00` when no zone is available | `{"type":"timestamp","timezone":"aware"}` |
+| Naive timestamp | ISO 8601 string with `T` and no offset; no zone is inferred | `{"type":"timestamp","timezone":"naive"}` |
+| Date | `YYYY-MM-DD` | `{"type":"date"}` |
+| Time | ISO 8601 string; aware times normalized to UTC with offset, naive times without offset | `{"type":"time","timezone":"aware"}` or `"naive"` |
+| Interval (`timedelta`) | Signed ISO 8601 duration, e.g. `P1DT0H0M2.000003S`; exact microseconds, days/hours/minutes/seconds | `{"type":"interval"}` |
+| SQL NULL | `null` | Does not replace a column's non-null type |
+| Text / boolean | String / boolean, unchanged | `{"type":"string"}` / `{"type":"boolean"}` |
+| Binary | Base64 string | `{"type":"binary","encoding":"base64"}` |
+| UUID | Lowercase, hyphenated string | `{"type":"uuid"}` |
+| JSON array / object | JSON-native structure | `{"type":"array"}` / `{"type":"object"}` |
+
+A column's JSON type follows the driver's result type: DECIMAL/NUMERIC becomes
+canonical strings; FLOAT/DOUBLE and INTEGER become JSON numbers. Authored types
+never convert, re-encode or refuse a value. For mixed numeric driver values,
+Decimal takes precedence over float, then integer, for the entire column.
+An integer mixed with floats converts only if `float(n) == n`; otherwise the
+column refuses with `RESULT_VALUE_UNSUPPORTED` rather than rounding the integer.
+`Decimal("0.10")` becomes `"0.1"` and `Decimal("9007199254740993")` becomes
+`"9007199254740993"`; a native integer `9007199254740993` remains a JSON number.
+Consumers that use binary64 must read integer JSON tokens without first rounding
+them to float. Numeric-looking text remains text with type `string`, even when
+authored as an integer dimension.
+
+The same aggregate can have a different SQL result type per warehouse: `AVG`
+is DOUBLE on DuckDB and NUMERIC on Postgres. `column_types` reports the driver's
+result type. Cross-warehouse conformance and package tests compare numeric
+columns numerically using this metadata, preserving the distinction from text.
+
+The engine-derived time-bucket hint (`semantic_id` starting `temporal_role.`)
+is the only column hint used for encoding: a driver's DATE becomes a naive
+midnight timestamp, and ISO timestamp text is parsed with its complete seconds
+fraction, including precision beyond Python's microseconds. Aware values
+preserve the instant in the query's time zone, so month buckets retain their
+own first day. Other date/time values follow their driver types; authored
+temporal types do not parse text. Nonstandard fractional clocks and fractional
+zone offsets in bucket text that cannot be retained refuse with
+`RESULT_VALUE_UNSUPPORTED` before parsing.
+Intervals represent the duration provided by the driver; calendar months/years
+are not inferred from a `timedelta`.
+
+Metadata is inferred from returned values, not the warehouse catalog: an
+all-null column has type `null`, and an empty result has `column_types: {}`.
+Nulls do not erase observed types. Unsupported values, non-finite numbers,
+conflicting non-null column types (including mixed timestamp awareness), and
+nested values requiring typed string metadata inside arrays/objects refuse with
+`RESULT_VALUE_UNSUPPORTED`; raw values never appear in the error. This guard
+also applies to injected adapters, preventing transport stringification from
+silently changing a result's meaning.

@@ -64,6 +64,7 @@ SQL_CAST_TYPE_NAMES = frozenset(
         "STRING",
         "TEXT",
         "TIMESTAMP",
+        "TIMESTAMPTZ",
         "TIMESTAMP_NTZ",
         "VARCHAR",
     }
@@ -134,11 +135,16 @@ SQL_FUNCTION_NAMES = frozenset(
         "MEDIAN",
         "MIN",
         "MIN_BY",
+        # The current time and a value's physical type, for base time coverage on DuckDB
+        # and Postgres (dialects.SqlDialect.now and utc_timestamp). Engine-only:
+        # expressions.accepted_call_names keeps them out of `call` expressions.
+        "NOW",
         "NULLIF",
         # Spark SQL exact percentile aggregate.
         "PERCENTILE",
         "PERCENTILE_CONT",
         "POWER",
+        "PG_TYPEOF",
         # ClickHouse exact quantiles (case-sensitive — see canonical map).
         "QUANTILE_EXACT",
         "QUANTILE_EXACT_INCLUSIVE",
@@ -320,6 +326,13 @@ class SqlBinary:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "op", normalize_sql_binary_operator(self.op))
+        if self.op in _NULL_LITERAL_GUARDED_OPS and (
+            is_null_literal(self.left) or is_null_literal(self.right)
+        ):
+            raise SemanticLayerError(
+                "INVALID_EXPRESSION_AST",
+                "Comparisons with a null literal must use build_comparison_condition",
+            )
 
 
 @dataclass(frozen=True)
@@ -550,6 +563,7 @@ class SqlSelect:
     limit: int | None = None
     ctes: list[SqlCte] = field(default_factory=list)
     distinct: bool = False
+    observation_scan: bool = False  # Engine-only coverage/observation scan, filter every read.
 
 
 @dataclass(frozen=True)
@@ -570,8 +584,16 @@ class SqlSetQuery:
 SqlQuery = SqlSelect | SqlSetQuery
 
 
+# What build_comparison_condition does with a null literal on either side: equality becomes
+# IS NULL, inequality IS NOT NULL, and ordering or LIKE, always UNKNOWN, refuses. Every other
+# op keeps SQL's meaning, including the null-safe IS [NOT] DISTINCT FROM and <=>.
 _NULL_TEST_EQUALITY_OPS = frozenset({"=", "IS"})
 _NULL_TEST_INEQUALITY_OPS = frozenset({"!=", "<>", "IS NOT"})
+_NULL_REFUSED_OPS = frozenset({"<", "<=", ">", ">=", "LIKE", "NOT LIKE"})
+# SqlBinary refuses a null literal under these; only the null tests IS / IS NOT may hold one.
+_NULL_LITERAL_GUARDED_OPS = (
+    _NULL_TEST_EQUALITY_OPS | _NULL_TEST_INEQUALITY_OPS | _NULL_REFUSED_OPS
+) - {"IS", "IS NOT"}
 
 
 def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "where") -> SqlExpr:
@@ -587,13 +609,9 @@ def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "w
       list compiles to constant FALSE / TRUE (vacuous membership)
       instead of erroring.
     - ``IS NULL`` / ``IS NOT NULL`` ignore ``value`` entirely.
-    - ``value: null`` with ``=`` / ``IS`` lowers to ``expr IS NULL``;
-      with ``!=`` / ``<>`` / ``IS NOT`` it lowers to ``expr IS NOT
-      NULL``. (Previously only the equality form was mapped — every
-      other op rendered ``expr != NULL``, which is always UNKNOWN in
-      SQL three-valued logic and silently matched zero rows.)
-    - ``value: null`` with ordering / LIKE ops is rejected with a
-      structured INVALID_QUERY instead of emitting always-UNKNOWN SQL.
+    - ``value: null`` with any other op follows
+      :func:`build_comparison_condition`, like every comparison with a
+      null literal.
     """
     op_normalized = _compact_token(str(op or "=")).upper()
     if op_normalized in {"IN", "NOT IN"}:
@@ -626,14 +644,30 @@ def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "w
             return SqlLiteral(bool(negated))
         return SqlIn(expr=expr, values=[SqlLiteral(item) for item in values], negated=negated)
     if op_normalized == "IS NULL":
-        return SqlIsNull(expr=expr)
+        return build_comparison_condition(expr, "IS", SqlLiteral(None), path=path)
     if op_normalized == "IS NOT NULL":
+        return build_comparison_condition(expr, "IS NOT", SqlLiteral(None), path=path)
+    validate_single_value_filter_shape(op, value, path=path)
+    return build_comparison_condition(expr, str(op or "="), SqlLiteral(value), path=path)
+
+
+def is_null_literal(expr: object) -> bool:
+    return isinstance(expr, SqlLiteral) and expr.value is None
+
+
+def build_comparison_condition(
+    left: SqlExpr, op: str, right: SqlExpr, *, path: str = "expression"
+) -> SqlExpr:
+    """``left <op> right``, where a null literal on either side follows the op's class."""
+    op_normalized = normalize_sql_binary_operator(op)
+    if not (is_null_literal(left) or is_null_literal(right)):
+        return SqlBinary(left, op_normalized, right)
+    expr = right if is_null_literal(left) else left
+    if op_normalized in _NULL_TEST_EQUALITY_OPS:
+        return SqlIsNull(expr=expr)
+    if op_normalized in _NULL_TEST_INEQUALITY_OPS:
         return SqlBinary(expr, "IS NOT", SqlLiteral(None))
-    if value is None:
-        if op_normalized in _NULL_TEST_EQUALITY_OPS:
-            return SqlIsNull(expr=expr)
-        if op_normalized in _NULL_TEST_INEQUALITY_OPS:
-            return SqlBinary(expr, "IS NOT", SqlLiteral(None))
+    if op_normalized in _NULL_REFUSED_OPS:
         raise SemanticLayerError(
             "INVALID_QUERY",
             f"{path}: op '{op_normalized}' cannot compare against null",
@@ -656,17 +690,19 @@ def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "w
                 ],
             },
         )
-    return _single_value_comparison(expr, op, value, path=path)
+    return SqlBinary(left, op_normalized, right)
 
 
-def _single_value_comparison(expr: SqlExpr, op: Any, value: Any, *, path: str) -> SqlExpr:
-    """``expr <op> value`` for a comparison that takes one value.
+def build_negation(arg: SqlExpr) -> SqlExpr:
+    """``NOT arg`` as ``FALSE = arg`` (no unary-NOT node), which has the same truth table.
 
-    A list would render as one string literal (``= '[''a'', ''b'']'``) and
-    silently match no rows, so it is rejected with a pointer to ``IN``.
+    The arg goes on the right so the renderer parenthesizes it (``FALSE = (x > y)``); chained
+    comparisons are non-associative in Snowflake/Postgres. ``NOT NULL`` is a boolean
+    NULL expression, distinct from an authored null literal for comparison lowering.
     """
-    validate_single_value_filter_shape(op, value, path=path)
-    return SqlBinary(expr, str(op or "="), SqlLiteral(value))
+    if is_null_literal(arg):
+        return SqlCast(SqlLiteral(None), "BOOLEAN")
+    return SqlBinary(SqlLiteral(False), "=", arg)
 
 
 def validate_single_value_filter_shape(op: Any, value: Any, *, path: str = "where") -> None:

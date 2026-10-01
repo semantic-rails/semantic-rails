@@ -1,21 +1,7 @@
-"""Empty groups: NULL when there is no data, 0 when there is data of nothing.
+"""Settle additive empty groups once, below projection: observed and loaded means 0.
 
-The rule for a sum, a count or a distinct count: a group with no rows reads 0 when the
-measure has data somewhere in the query's scope, and NULL when it has none at all. A
-measure counts as observed when at least one group holds a value: a non-NULL sum, or a
-count above zero. Averages, minimums, maximums, stocks and distinct populations have no
-value for nothing and stay NULL, as do measures of already-aggregated values.
-
-Invariant: every such measure the projection reads comes from ``guarded_base``, and
-nothing else turns a measure NULL into 0. :func:`resolves_to_zero` is the only predicate
-and :func:`guard_empty_groups` the only place that builds the guard. Lowering checks its own
-projection with :func:`refuse_unsettled`, so a path that skips the guard is refused with a
-stable code instead of answering with a silent NULL.
-
-A metric predicate keeps the same invariant for the entities its source doesn't list: they
-read what an entity with no match reads there, 0 where the measure has data in the predicate's
-scope and NULL where it has none. :func:`absent_entities_gate` decides that from the settled
-source, and :func:`require_settled_source` refuses a source that skipped the guard.
+Probes and coverage respect row filters. Projection bypasses refuse with
+EMPTY_GROUPS_UNSETTLED. Stocks and non-additive values remain NULL.
 """
 
 from __future__ import annotations
@@ -23,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Collection, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from typing import Any
 
 from ..errors import SemanticLayerError
@@ -42,6 +28,7 @@ from ..sql_ast import (
     SqlCase,
     SqlCaseWhen,
     SqlCte,
+    SqlExists,
     SqlField,
     SqlIdentifier,
     SqlJoin,
@@ -51,14 +38,13 @@ from ..sql_ast import (
     SqlWindow,
 )
 from .bind import _parse_public_expr
+from .dependencies import plan_is_root
 from .indexes import _measure_index, _recipe_index
 
 GUARDED_BASE = "guarded_base"
 
 _ZERO_AGGREGATIONS = {"sum", "count", "count_distinct"}
-# A count never reads NULL, so a group's count is observed once it is above zero.
 _COUNTING = {"count", "count_distinct"}
-# Semi-additive stocks and distinct populations have no value for nothing.
 ZERO_MEASURE_CLASSES = frozenset({"additive", "event_count", "entity_count"})
 
 
@@ -67,11 +53,6 @@ def resolves_to_zero(
     measure: MeasureConfig | None,
     classes: Collection[str] = ZERO_MEASURE_CLASSES,
 ) -> bool:
-    """Whether ``aggregation`` of ``measure`` over no rows is 0 rather than undefined.
-
-    ``classes`` are the measure classes that count: a threshold on a population also counts a
-    distinct population, whose count of no entities is 0.
-    """
     return (
         measure is not None
         and measure.additive
@@ -81,7 +62,6 @@ def resolves_to_zero(
 
 
 def zero_aliases(rows: Iterable[MeasurePlan], config: PackageConfig) -> dict[str, str]:
-    """The measure aliases of ``rows`` that resolve to zero, each with its aggregation."""
     measures = _measure_index(config)
     zero: dict[str, str] = {}
     for row in rows:
@@ -95,7 +75,6 @@ def zero_aliases(rows: Iterable[MeasurePlan], config: PackageConfig) -> dict[str
 def expr_resolves_to_zero(
     expr: SemanticExpr, config: PackageConfig, classes: Collection[str] = ZERO_MEASURE_CLASSES
 ) -> bool:
-    """Whether a whole expression is 0 over no rows: sums and differences of such measures."""
     if isinstance(expr, MeasureRefExpr | AggregateExpr):
         measure = _measure_index(config).get(expr.measure)
         return resolves_to_zero(expr.aggregation, measure, classes)
@@ -110,7 +89,6 @@ def expr_resolves_to_zero(
 
 
 def zero_outputs(plan: LogicalPlan, config: PackageConfig) -> dict[str, str]:
-    """The outputs of a branch-combined plan that are 0 over no rows, each as a plain value."""
     return {
         alias: "sum"
         for alias, payload in plan.post_aggregation_exprs.items()
@@ -118,48 +96,169 @@ def zero_outputs(plan: LogicalPlan, config: PackageConfig) -> dict[str, str]:
     }
 
 
-def guard_empty_groups(
-    source: str, keys: Iterable[str], measures: Iterable[str], zero: Mapping[str, str]
-) -> SqlCte:
-    """The ``guarded_base`` CTE: ``source`` with each ``zero`` measure's NULLs settled.
+@dataclass(frozen=True)
+class LeafScope:
+    """A plain leaf's aggregate, untimed filters and base time axis."""
 
-    ``zero`` maps a measure alias to its aggregation. Its NULL reads 0 while some row of the
-    whole grouped result holds a value, and stays NULL when none does. The other measures
-    pass through. It sits below the projection, so a LIMIT or a metric filter can't change
-    which groups it sees.
+    from_table: SqlTableRef
+    joins: tuple[SqlJoin, ...]
+    where: tuple[Any, ...]
+    value: Any
+    bucket: Any = None
+    raw_time: Any | None = None
+    storage_zone: str = "UTC"
+    calendar: SqlJoin | None = None
+    now: Any = None
+    bounded: bool = False
+
+
+_leaf_scopes: ContextVar[dict[str, LeafScope] | None] = ContextVar("leaf_scopes", default=None)
+
+
+@contextmanager
+def recording_leaf_scopes() -> Iterator[dict[str, LeafScope]]:
+    scopes: dict[str, LeafScope] = {}
+    token = _leaf_scopes.set(scopes)
+    try:
+        yield scopes
+    finally:
+        _leaf_scopes.reset(token)
+
+
+def record_leaf_scope(alias: str, scope: LeafScope) -> None:
+    scopes = _leaf_scopes.get()
+    if scopes is not None and plan_is_root():
+        scopes[alias] = scope
+
+
+def guard_empty_groups(
+    source: str,
+    keys: Iterable[str],
+    measures: Iterable[str],
+    zero: Mapping[str, str],
+    scopes: Mapping[str, LeafScope] | None = None,
+    *,
+    time_key: str = "",
+    dialect: Any = None,
+) -> list[SqlCte]:
+    """Settle measures centrally, with untimed observation and loaded coverage guards.
+
+    Scopes and ``time_key`` need a dialect with time coverage; anything else is refused.
     """
-    fields_: list[SqlField] = [SqlField(SqlIdentifier(parts=["base", key]), key) for key in keys]
+    if (scopes or time_key) and not (dialect is not None and dialect.has_time_coverage):
+        raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})
+    fields_ = [SqlField(SqlIdentifier(parts=["base", key]), key) for key in keys]
+    ctes: list[SqlCte] = []
+    joins: list[SqlJoin] = []
+    coverage: dict[str, str] = {}
     for alias in measures:
         value: Any = SqlIdentifier(parts=["base", alias])
         aggregation = zero.get(alias)
         if aggregation is not None:
-            seen = SqlCall("MAX" if aggregation in _COUNTING else "COUNT", [value])
-            value = SqlCase(
-                whens=[
-                    SqlCaseWhen(
-                        SqlBinary(SqlWindow(function=seen), ">", SqlLiteral(0)),
-                        SqlCall("COALESCE", [value, SqlLiteral(0)]),
-                    )
-                ],
-                else_expr=None,
+            seen: Any = SqlBinary(
+                SqlWindow(
+                    function=SqlCall("MAX" if aggregation in _COUNTING else "COUNT", [value])
+                ),
+                ">",
+                SqlLiteral(0),
             )
+            scope = (scopes or {}).get(alias)
+            if scope is not None:
+                if scope.bounded:
+                    seen = SqlBinary(seen, "OR", _seen_outside_window(scope))
+                if time_key and scope.bucket is not None:
+                    loaded = repr(
+                        (
+                            scope.from_table,
+                            scope.raw_time,
+                            scope.storage_zone,
+                            scope.bucket,
+                            scope.calendar,
+                        )
+                    )
+                    name = coverage.get(loaded)
+                    if name is None:
+                        name = coverage[loaded] = f"coverage_{len(coverage) + 1}"
+                        ctes.append(SqlCte(name=name, query=coverage_select(scope, dialect)))
+                        joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
+                    seen = SqlBinary(seen, "AND", _loaded_bucket(time_key, name))
+                # A zero count records no observation. A positive count or populated sum
+                # always survives; coverage gates only the empty-group substitution.
+                if aggregation in _COUNTING:
+                    value = SqlCall("NULLIF", [value, SqlLiteral(0)])
+                value = SqlCall("COALESCE", [value, SqlCase([SqlCaseWhen(seen, SqlLiteral(0))])])
+            else:
+                value = SqlCase(
+                    whens=[SqlCaseWhen(seen, SqlCall("COALESCE", [value, SqlLiteral(0)]))],
+                )
         fields_.append(SqlField(value, alias))
-    return SqlCte(
-        name=GUARDED_BASE,
-        query=SqlSelect(select=fields_, from_table=SqlTableRef(name=source, alias="base")),
+    guard = SqlSelect(
+        select=fields_, from_table=SqlTableRef(name=source, alias="base"), joins=joins
+    )
+    return [*ctes, SqlCte(name=GUARDED_BASE, query=guard)]
+
+
+def _seen_outside_window(scope: LeafScope) -> SqlExists:
+    if (
+        not isinstance(scope.value, SqlCall)
+        or scope.value.name not in {"SUM", "COUNT", "COUNT_IF", "COUNTIF"}
+        or len(scope.value.args) != 1
+    ):
+        raise _unsettled_error({"observation": "unsupported_aggregate"})
+    operand = scope.value.args[0]
+    observed = (
+        operand
+        if scope.value.name in {"COUNT_IF", "COUNTIF"}
+        else SqlBinary(operand, "IS NOT", SqlLiteral(None))
+    )
+    return SqlExists(
+        SqlSelect(
+            select=[SqlField(SqlLiteral(1), "seen")],
+            from_table=replace(scope.from_table),
+            joins=list(scope.joins),
+            where=[*scope.where, observed],
+            limit=1,
+            observation_scan=True,
+        )
     )
 
 
-def absent_entities_gate(name: str, source: str, value: str) -> tuple[SqlCte, SqlJoin, SqlBinary]:
-    """What lets an entity ``source`` doesn't list read 0: the source holds a settled value.
+def _loaded_bucket(time_key: str, coverage: str) -> SqlBinary:
+    bucket = SqlIdentifier(parts=["base", time_key])
+    return SqlBinary(
+        SqlBinary(bucket, ">=", SqlIdentifier(parts=[coverage, "loaded_from"])),
+        "AND",
+        SqlBinary(bucket, "<=", SqlIdentifier(parts=[coverage, "loaded_to"])),
+    )
 
-    ``source`` is a query settled by :func:`guard_empty_groups`, so its ``value`` is non-NULL
-    on every row where the measures have data in scope, and NULL on every row where they have
-    none. An entity absent from it reads like an entity with no match: 0 in the first case
-    and NULL in the second, by the same test, so a threshold that 0 passes may keep it only
-    while some row holds a value. Nothing here turns a NULL into 0. Returns the one-row CTE,
-    the join to it, and the condition that keeps a row.
-    """
+
+def coverage_select(scope: LeafScope, dialect: Any) -> SqlSelect:
+    known = dialect.utc_timestamp(scope.raw_time, scope.storage_zone)
+    now = scope.now
+    joins = [scope.calendar] if scope.calendar is not None else []
+    last_bucket = SqlCase([SqlCaseWhen(SqlBinary(known, "<=", now), scope.bucket)])
+    return SqlSelect(
+        select=[
+            SqlField(
+                SqlCall("MIN", [scope.bucket]),
+                "loaded_from",
+            ),
+            SqlField(SqlCall("MAX", [last_bucket]), "loaded_to"),
+        ],
+        from_table=replace(scope.from_table),
+        joins=joins,
+        observation_scan=True,
+    )
+
+
+def require_time_scopes(aliases: Iterable[str], scopes: Mapping[str, LeafScope]) -> None:
+    missing = set(aliases) - scopes.keys()
+    if missing:
+        raise _unsettled_error({"time_scopes": sorted(missing)})
+
+
+def absent_entities_gate(name: str, source: str, value: str) -> tuple[SqlCte, SqlJoin, SqlBinary]:
+    """Gate absent entities on the centrally settled source, without inventing a zero."""
     count = SqlCall("COUNT", [SqlIdentifier(parts=["settled", value])])
     cte = SqlCte(
         name=name,
@@ -175,12 +274,7 @@ def absent_entities_gate(name: str, source: str, value: str) -> tuple[SqlCte, Sq
 def refuse_unsettled(
     projection: SqlSelect, plan: LogicalPlan, config: PackageConfig, *, combined: bool
 ) -> None:
-    """Refuse a projection that reads an empty-group measure from anywhere but ``guarded_base``.
-
-    What must be guarded is worked out again from the plan (``combined`` for the outputs of
-    branches joined together), never taken from lowering, so a path that never built the guard
-    or read past it is refused here instead of answering with a silent NULL.
-    """
+    """Recompute required guards from the plan and refuse a projection that bypasses them."""
     expected = zero_outputs(plan, config) if combined else zero_aliases(plan.measure_plans, config)
     unsettled = sorted(base_reads(projection.select) & expected.keys())
     if unsettled and not reads_guarded_base(projection):
@@ -193,11 +287,6 @@ def reads_guarded_base(select: SqlSelect) -> bool:
 
 
 def require_settled_source(source: SqlSelect, details: Mapping[str, Any]) -> None:
-    """Refuse a source that a consumer reads as settled when it reads past the guard.
-
-    A metric predicate lets an entity its source doesn't list read like the ones it does, which
-    holds only while every row of the source is settled together.
-    """
     if not reads_guarded_base(source):
         raise _unsettled_error(details)
 
@@ -236,11 +325,7 @@ _zero_outputs: ContextVar[list[dict[str, Any]] | None] = ContextVar("zero_output
 
 @contextmanager
 def recording_zero_outputs() -> Iterator[list[dict[str, Any]]]:
-    """Collect every output that follows the zero-or-NULL rule, nested compiles included.
-
-    The runtime warns about the ones that came back NULL on every row, which needs no
-    extra query.
-    """
+    """Record guarded outputs, including nested compiles, for runtime scope warnings."""
     outputs: list[dict[str, Any]] = []
     token = _zero_outputs.set(outputs)
     try:

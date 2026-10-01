@@ -148,7 +148,9 @@ def test_disjoint_catalog_discovery_inspect_plan_query(granted_runtime, metric, 
     compiled = runtime.compile({**portable, "policy_context": policy})
     assert compiled["ok"]
     assert compiled["rendered_sql"]
-    assert runtime.query({**portable, "policy_context": policy})["rows"] == [{"value": 7}]
+    result = runtime.query({**portable, "policy_context": policy})
+    assert result["rows"] == [{"value": 7}]
+    assert result["column_types"] == {"value": {"type": "integer"}}
     assert len(runtime.adapter.statements) == 1
     forbidden_plan = plan_payload(runtime, intent=hidden, partial_query=partial, detail="debug")
     assert forbidden_plan["best"] is None

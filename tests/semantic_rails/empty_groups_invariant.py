@@ -20,7 +20,7 @@ from semantic_rails.compiler_parts.sql_lowering import (
     _plan_requires_agent_dag_lowering,
 )
 from semantic_rails.schema import PackageConfig
-from semantic_rails.sql_ast import SqlCall, SqlCase, SqlCte, SqlIdentifier, SqlLiteral, SqlSelect
+from semantic_rails.sql_ast import SqlCall, SqlCase, SqlCte, SqlLiteral, SqlSelect
 
 
 def _is_zero_fill(node: Any) -> bool:
@@ -28,8 +28,7 @@ def _is_zero_fill(node: Any) -> bool:
         isinstance(node, SqlCall)
         and node.name.upper() == "COALESCE"
         and len(node.args) == 2
-        and isinstance(node.args[0], SqlIdentifier)
-        and node.args[1] == SqlLiteral(0)
+        and (node.args[1] == SqlLiteral(0) or isinstance(node.args[1], SqlCase))
     )
 
 
@@ -63,7 +62,11 @@ def assert_settled_in_one_place(compiled: dict[str, Any], config: PackageConfig)
     )
     if expected:
         guard = next(node for node in guards if node.name == GUARDED_BASE)
-        settled = [field for field in guard.query.select if isinstance(field.expression, SqlCase)]
+        settled = [
+            field
+            for field in guard.query.select
+            if isinstance(field.expression, SqlCase) or _is_zero_fill(field.expression)
+        ]
         assert len(settled) == len(expected), (
             f"{GUARDED_BASE} settles {len(settled)} measures, expected {sorted(expected)}"
         )

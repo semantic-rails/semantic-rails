@@ -42,6 +42,8 @@ from ..sql_ast import (
     SqlLiteral,
     SqlOrderTerm,
     SqlWindow,
+    build_comparison_condition,
+    build_negation,
 )
 from .bind import _expression_alias
 from .dependencies import _recipes, recipe_objects, record_leaf_reference
@@ -258,7 +260,7 @@ def _compile_post_expr(
         )
         return SqlBinary(left, "/", SqlCall("NULLIF", [right, SqlLiteral(0)]))
     if isinstance(expr, ComparisonExpr):
-        return SqlBinary(
+        return build_comparison_condition(
             _compile_post_expr(
                 expr.left,
                 config,
@@ -345,14 +347,7 @@ def _compile_post_expr(
                         ],
                     },
                 )
-            # The SQL AST has no unary-NOT node (sql_ast.py is owned by the
-            # renderer layer), so compose negation from existing nodes:
-            # ``FALSE = arg`` has the same three-valued truth table as
-            # ``NOT arg`` (TRUE -> FALSE, FALSE -> TRUE, NULL -> NULL).
-            # The arg goes on the right so the renderer parenthesizes
-            # same-precedence comparisons (``FALSE = (x > y)``) — chained
-            # comparisons are non-associative in Snowflake/Postgres.
-            return SqlBinary(SqlLiteral(False), "=", rendered[0])
+            return build_negation(rendered[0])
         current = rendered[0]
         for item in rendered[1:]:
             current = SqlBinary(current, op.upper(), item)

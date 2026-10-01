@@ -15,6 +15,7 @@ from mf2sr import translate
 from mf2sr.cli import main as cli_main
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.dbt_warehouse import build_dbt_warehouse
+from tests.semantic_rails.result_helpers import typed_rows
 
 NODE = {"database": "analytics", "schema_name": "main_marts", "alias": "fct_orders"}
 
@@ -131,12 +132,14 @@ def test_a_strict_package_queries_the_dbt_built_marts(tmp_path: Path) -> None:
     assert package["seed"] == {"kind": "external"}  # dbt built it; never rebuilt
     engine = Runtime.from_path(str(report.package_dir))
     try:
-        rows = engine.query(
-            {
-                "version": 1,
-                "select": [{"expression": {"metric": "metric.shop.revenue"}, "as": "revenue"}],
-            }
-        )["rows"]
+        rows = typed_rows(
+            engine.query(
+                {
+                    "version": 1,
+                    "select": [{"expression": {"metric": "metric.shop.revenue"}, "as": "revenue"}],
+                }
+            )
+        )
     finally:
         engine.close()
     assert rows and rows[0]["revenue"] > 0
