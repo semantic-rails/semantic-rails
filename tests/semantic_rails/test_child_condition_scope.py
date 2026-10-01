@@ -300,6 +300,31 @@ def test_a_parent_sum_counts_each_customer_once(package: Path) -> None:
     assert _reference(package, naive) == [(2300.0,)]  # what a plain join would have said
 
 
+def test_a_ratio_and_a_second_measure_entity_each_apply_the_group(package: Path) -> None:
+    """Each leaf reads the group from its own entity: customers, and orders."""
+    ratio = {
+        "kind": "ratio",
+        "numerator": {"measure": "measure.scope.credit"},
+        "denominator": {"measure": "measure.scope.customer_count"},
+    }
+    query = {
+        "version": 1,
+        "select": [{"expression": ratio, "as": "credit_per_customer"}, _measure("order_count")],
+        "where": SEPARATE_ROWS,
+    }
+    orders_with = (
+        "SELECT COUNT(*) FROM orders o WHERE "
+        "EXISTS (SELECT 1 FROM items i WHERE i.order_id = o.order_id "
+        "AND i.product_type = 'beverage') AND EXISTS (SELECT 1 FROM items i "
+        "WHERE i.order_id = o.order_id AND i.price > 5)"
+    )
+    reference = f"""
+        SELECT (SELECT SUM(c.credit) / COUNT(*) FROM customers c WHERE {SEPARATE_ROWS_SQL}),
+               ({orders_with})
+    """
+    assert _rows(package, query) == _reference(package, reference) == [(400.0, 4)]
+
+
 def test_grouped_by_a_parent_lookup_the_null_group_stays(package: Path) -> None:
     """Customer 6's region is not in the regions table: its row reads a NULL region."""
     query = {**_query(SEPARATE_ROWS, "customer_count", "credit"), "group_by": [REGION]}
@@ -808,6 +833,40 @@ def test_an_ambiguous_child_route_is_never_answered(package: Path) -> None:
     compiled = compile_query(pinned, Registry(pinned), _query(SAME_ROW))
     with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
         assert _normal(conn.execute(compiled["sql"]).fetchall()) == [(2,)]
+
+
+def test_a_lookup_first_route_beside_another_candidate_is_ambiguous(package: Path) -> None:
+    """An order reaches sessions through its customer, or through its customer's region if
+    sessions carried one. A shorter route doesn't say which sessions the question means."""
+    config = load_package_config(str(package))
+    [customer_region] = [rel for rel in config.relationships if rel.id == "relationship.customers_region"]
+    session_region = replace(
+        customer_region, id="relationship.sessions_region", source_entity=SESSION
+    )
+    longer = replace(config, relationships=[*config.relationships, session_region])
+    where = [{"child": SESSION, "match": "any", "where": [WEB]}]
+    with pytest.raises(SemanticLayerError) as caught:
+        compile_query(longer, Registry(longer), _query(where, "order_count"))
+    assert caught.value.code == "AMBIGUOUS_PATH"
+    assert len(caught.value.details["candidates"]) == 2
+    pinned = replace(
+        longer,
+        path_preferences=[
+            PathPreferenceConfig(
+                source_entity="entity.scope_order",
+                target_entity=SESSION,
+                relationship_path=["relationship.orders_customer", "relationship.sessions_customer"],
+            )
+        ],
+    )
+    compiled = compile_query(pinned, Registry(pinned), _query(where, "order_count"))
+    reference = (
+        "SELECT COUNT(*) FROM orders o WHERE EXISTS (SELECT 1 FROM customers c "
+        "JOIN sessions s ON s.customer_id = c.customer_id "
+        "WHERE c.customer_id = o.customer_id AND s.channel = 'web')"
+    )
+    with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
+        assert _normal(conn.execute(compiled["sql"]).fetchall()) == _reference(package, reference)
 
 
 # ---- Agreement ------------------------------------------------------------------------

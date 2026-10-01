@@ -2091,7 +2091,14 @@ def _distinct_parent_group_conditions(
         raise SemanticLayerError(
             "MIXED_GRAIN_INVALID",
             "This child group needs correlated EXISTS, which this leaf does not use.",
-            details={"child": group.child, "match": group.match},
+            details={
+                "child": group.child,
+                "match": group.match,
+                "why_invalid": (
+                    "ClickHouse's de-duplicated parent leaf answers one 'any' child group on the "
+                    "child's own columns, as the leaf's only condition across a one-to-many hop."
+                ),
+            },
         )
     return [
         build_filter_condition(

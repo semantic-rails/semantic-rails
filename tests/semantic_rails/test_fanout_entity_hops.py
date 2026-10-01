@@ -200,6 +200,7 @@ Q4_2016 = {"temporal_role": ROLE, "grain": "quarter", "start": "2016-10-01", "en
 IN_Q4 = "o.ordered_at >= TIMESTAMP '2016-10-01' AND o.ordered_at < TIMESTAMP '2017-01-01'"
 BEVERAGE = {"field": TYPE, "op": "=", "value": "beverage"}
 WEB = {"field": CHANNEL, "op": "=", "value": "web"}
+HOT_ITEM = {"field": HOT, "op": "=", "value": True}
 FILTERED_SUM = {
     "select": [{"expression": {"measure": "measure.hop.revenue"}, "as": "revenue"}],
     "where": [BEVERAGE],
@@ -444,6 +445,51 @@ def test_time_bounded_child_filter_keeps_window_observation(
     sql = result["rendered_sql"]
     assert "EXISTS (" in sql and "SELECT DISTINCT" not in sql
     # Rewritten fanout leaves retain observation inside the window, including filled buckets.
+    assert "coverage_" not in sql and sql.count("FROM orders") == 1
+
+
+@pytest.mark.parametrize("match", ["any", "none"])
+@pytest.mark.parametrize("fill", [False, True], ids=["bounded", "filled"])
+def test_time_bounded_child_groups_keep_window_observation(
+    package: Path, match: str, fill: bool
+) -> None:
+    """A child group lowers in the same semi-join leaf as a flat child filter."""
+    query = {
+        "select": [{"expression": {"measure": "measure.hop.revenue"}, "as": "revenue"}],
+        "where": [{"child": "entity.hop_item", "match": match, "where": [BEVERAGE, HOT_ITEM]}],
+        "time": {
+            "temporal_role": ROLE,
+            "grain": "month",
+            "start": "2016-10-01",
+            "end": "2017-04-01",
+            "fill": fill,
+        },
+    }
+    negation = "NOT " if match == "none" else ""
+    matching = f"""
+        SELECT DATE_TRUNC('month', o.ordered_at) AS month, SUM(o.total) AS revenue
+        FROM orders o
+        WHERE o.ordered_at >= TIMESTAMP '2016-10-01'
+          AND o.ordered_at < TIMESTAMP '2017-04-01'
+          AND {negation}EXISTS (SELECT 1 FROM order_items i WHERE i.order_id = o.order_id
+                                AND i.product_type = 'beverage' AND i.is_hot)
+        GROUP BY month
+    """
+    reference = matching
+    if fill:
+        reference = f"""
+            WITH matching AS ({matching})
+            SELECT months.month, COALESCE(matching.revenue, 0)
+            FROM GENERATE_SERIES(TIMESTAMP '2016-10-01', TIMESTAMP '2017-03-01',
+                                 INTERVAL '1 month') AS months(month)
+            LEFT JOIN matching USING (month)
+        """
+    result = _run(package, query)
+    assert _normal(tuple(row.values()) for row in typed_rows(result)) == _reference(
+        package, reference
+    )
+    sql = result["rendered_sql"]
+    assert f"{negation}EXISTS (" in sql and "SELECT DISTINCT" not in sql
     assert "coverage_" not in sql and sql.count("FROM orders") == 1
 
 
