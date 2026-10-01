@@ -38,15 +38,28 @@ and the comparison fixtures: see
 Unknown top-level keys are **rejected** with `INVALID_QUERY` and the
 offending keys are returned under `details.unsupported_keys`, so typos
 surface as structured errors instead of silently no-op'ing. There is
-**no `having` field** — use `metric_filters` (see below). There is no
-`path_policy` field either: a query can't choose a join route. The package
-records one with `graph.path_preferences`; without a row, a query whose routes
-can answer differently uses the start entity's one direct key (and says so
-with `PATH_ALTERNATES_UNPINNED`) or is refused with `AMBIGUOUS_PATH` (see
-[the route rule](PACKAGE_AUTHORING.md#the-route-rule)). The only
+**no `having` field** — use `metric_filters` (see below). The only
 top-level extras accepted by the runtime and schema are
 underscore-prefixed annotations such as `_note`, which are ignored before
 planning and SQL generation.
+
+### Removed: `path_policy`
+
+`path_policy` (`preference`, `ask_if_ambiguous`) is no longer a Query IR key,
+in v1 or preview v2. This is a breaking change made within v1: before 1.0 the
+project follows Semantic Versioning's major-zero rule (see
+[CHANGELOG.md](../CHANGELOG.md)), under which a 0.x release may change the
+public API. The key never changed an answer. A query that still sends it is
+refused with `INVALID_QUERY` and `details.unsupported_keys: ["path_policy"]`;
+delete it.
+
+A query can't choose a join route. The package records one with a
+`graph.path_preferences` row. Without a row, a query whose routes can answer
+differently uses the start entity's one direct key or is refused with
+`AMBIGUOUS_PATH` (see [the route rule](PACKAGE_AUTHORING.md#the-route-rule)).
+Where the engine chose one of two or more routes, compact and full responses
+carry an info note, `ROUTE_COLOCATED_KEY` or `ROUTE_RECORDED`, with the chosen
+route in `details.route`.
 
 ## Common gotchas
 

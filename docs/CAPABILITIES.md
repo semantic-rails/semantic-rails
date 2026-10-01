@@ -46,7 +46,7 @@ surface.
 - multi-hop entity traversal with per-hop cardinality checks (default ceiling
   4 relationships; raisable to 8 via `graph.path_policy.max_hops`)
 - route rule: a `graph.path_preferences` row, else the only route, else the
-  start entity's one direct key (disclosed with `PATH_ALTERNATES_UNPINNED`);
+  start entity's one direct key (noted with `ROUTE_COLOCATED_KEY`);
   anything else is refused as `AMBIGUOUS_PATH` (`reason: route_decision_required`,
   with each route's meaning and the row that records it), whatever the routes'
   lengths. Hop count never decides, and adding a route never changes an answer

@@ -1300,9 +1300,8 @@ paths, because most pairs have one route (see [the route rule](#the-route-rule))
 - "items per customer" when the items table also carries `customer_id`: the direct
   relationship and `order_item → order → customer` are two routes that can name
   different customers. The item's own `customer_id` is its one direct key, so the
-  planner uses it and the response says another route exists
-  (`PATH_ALTERNATES_UNPINNED`); a `graph.path_preferences` row records the other route
-  when that is the meaning.
+  planner uses it and the response notes it (`ROUTE_COLOCATED_KEY`); a
+  `graph.path_preferences` row records the other route when that is the meaning.
 - "customers per store" in a package where a customer reaches a store through the
   stores they ordered at and through a preferred store: neither is the customer's own
   key, so the query is refused until a `graph.path_preferences` row records which one
@@ -1388,8 +1387,7 @@ order:
 2. Exactly one route: it is used.
 3. Otherwise, when exactly one route is a direct relationship from the start
    entity that reaches at most one row (many-to-one, or one-to-one: the start
-   row holds the target's key), it is used, and the response discloses it with
-   a `PATH_ALTERNATES_UNPINNED` warning.
+   row holds the target's key), it is used.
 4. Otherwise the query is refused with `AMBIGUOUS_PATH`, whatever the routes'
    lengths (equal or not) and whether they fan out: two direct keys (parallel
    roles), routes with no direct key, and routes that all fan out are all
@@ -1439,15 +1437,15 @@ the decision reviewable.
 
 Four guard rails back this up:
 
-- **`PATH_ALTERNATES_UNPINNED` warning** — the disclosure for rule 3: emitted
-  for every path the compiled query reads through a direct key (root, leaf,
-  predicate and conversion paths, and the direct read of the key) while another
-  route reaches the same entity and no `graph.path_preferences` row records the
-  pair. `details` names the key used (`chosen_path`), every other route
-  (`alternate_paths`), their `meanings`, and the row that would record each
-  (`pins`). A pair with a row, or with one route, never warns. So adding a route
+- **Route notes** — where the engine chose one of two or more routes for a pair
+  the compiled query reads (root, leaf, predicate and conversion paths, and the
+  direct read of a key), compact and full responses carry one `info` note:
+  `ROUTE_RECORDED` (rule 1) or `ROUTE_COLOCATED_KEY` (rule 3), with the chosen
+  route's relationship ids in `details.route` and its readable meaning in the
+  message (`Order → Store (own key)`). A pair with one route gets none, and the
+  minimal response (the MCP default) leaves the notes out. So adding a route
   never changes an answer silently: a pair whose one route is its own key keeps
-  its answer and gains this warning, and any other pair is refused until a row
+  its answer and now notes it, and any other pair is refused until a row
   records it.
 - **`AMBIGUOUS_PATH` error** — rule 4 above. A `graph.relationships:` entry
   never replaces a foreign key on other columns: the model keeps both, so an
