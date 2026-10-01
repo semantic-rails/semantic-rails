@@ -237,6 +237,32 @@ Supported `op` values (all compile end-to-end):
 - Objects are rejected — inline expression thresholds belong in
   `metric_filters` (`metric_predicate`).
 
+A positive child-dimension filter on a parent-grain measure means "parents with at
+least one matching child". It lowers to correlated `EXISTS`, so multiple matching
+children never multiply a parent count or sum. This also applies to an aggregate's
+own `filter`, and to non-temporal paths that look up a parent before reaching its
+children or join on an alternate key. Each hop must declare `N:1`, `1:N` or `1:1`;
+unknown, unsafe and temporal paths retain their refusals. A lookup-before-child
+or alternate-key path requires exactly one candidate route after authored
+`graph.path_preferences` pins. When several routes remain, the query retains
+its `MIXED_GRAIN_INVALID` refusal; a shorter route does not establish which
+children the filter means. This also applies beside a lookup and to an
+aggregate's own filter.
+ClickHouse retains a deduplicated-parent leaf for servers without correlated
+subqueries. Key-based descents retain their existing SQL shape, including
+beside lookup selections, groupings and filters; those lookups remain inner
+joins. It refuses paths that look up a parent before reaching children and
+paths joined off the parent's declared key, including beside a lookup, with
+`MIXED_GRAIN_INVALID`.
+
+At most one group or filter may cross a one-to-many hop. Negated child predicates
+and child `IS NULL` tests remain `MIXED_GRAIN_INVALID`: "has a child that is not X"
+and "has no child that is X" have different answers, and the IR has no explicit
+`NOT EXISTS` predicate. Grouped child dimensions retain their distinct-parent
+count rules; summing a parent amount by a child dimension or reading a child
+measure expression at parent grain remains refused. Under a row policy these
+queries are refused with `POLICY_DENIED`, as before.
+
 ## OrderBy
 
 ```jsonc

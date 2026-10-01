@@ -143,7 +143,7 @@ from .expressions import (
     expr_to_dict,
     validate_expression_shapes,
 )
-from .fanout import analyze_fanout, choose_path, one_to_many_descent
+from .fanout import analyze_fanout, choose_path, filter_only_semijoin, one_to_many_descent
 from .ir import (
     BoundMeasure,
     ExplainArtifact,
@@ -840,15 +840,16 @@ def _fanout_dedup_refusal(
     """Why this leaf can't count each measure row once across its one-to-many hops, and the
     path at fault; None when it can.
 
-    ``selections`` are the leaf's paths that need a rewrite. The de-duplicated leaf
-    (``sql_lowering._fanout_dedup_leaf_select``) keeps one row per (measure-entity key, output
-    grain) before it aggregates, so a row counts once at all under a filter (EXISTS), and once
-    per group it has a matching child row in.
+    ``selections`` are all the leaf's paths. Filter-only paths use correlated
+    EXISTS (or a de-duplicated parent leaf on ClickHouse). Grouped paths keep one row per
+    (measure-entity key, output grain) before aggregation, so each row counts once in every
+    group it has a matching child in.
 
     Grouped, only a distinct count is answered. Summing (or averaging) an order amount by an
     item dimension reads as the item-level split ("revenue by product type") as often as the
     orders-that-included-it total, and the two differ, so that shape stays refused.
     """
+    selections = [row for row in selections if row.analysis.get("status") != "ok"]
     for row in selections:
         if row.purpose not in _FANOUT_DEDUP_PURPOSES:
             return (
@@ -856,17 +857,33 @@ def _fanout_dedup_refusal(
                 "a one-to-many hop; only filters and distinct-count groupings can.",
                 row,
             )
+    grouped = [row for row in selections if row.purpose == "group_by"]
     keys = {entity.id: list(entity.key or [entity.primary_key]) for entity in config.entities}
     for row in selections:
-        if not one_to_many_descent(row.analysis, keys):
-            return (
-                f"The path from '{measure.entity}' to '{row.target_entity}' is many-to-many (a "
-                "lookup before the one-to-many hop, an M:N or time-bounded relationship, or a "
-                "join off the declared key), so no single set of rows belongs to each row.",
-                row,
+        # Preserve existing descent shapes, including ClickHouse's DISTINCT-parent
+        # leaf beside lookups. Broader EXISTS paths must have exactly one route
+        # after authored pins; hop count cannot decide which children are meant.
+        if one_to_many_descent(row.analysis, keys):
+            continue
+        if (
+            not grouped
+            and config.package.warehouse != "clickhouse"
+            and filter_only_semijoin(row.analysis)
+            and len(row.candidate_paths) == 1
+        ):
+            continue
+        return (
+            (
+                "ClickHouse requires a key-based descent before any lookup. "
+                if config.package.warehouse == "clickhouse"
+                else ""
             )
+            + f"The path from '{measure.entity}' to '{row.target_entity}' is many-to-many (a "
+            "lookup before the one-to-many hop, an M:N or time-bounded relationship, or a "
+            "join off the declared key), so no single set of rows belongs to each row.",
+            row,
+        )
     aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
-    grouped = [row for row in selections if row.purpose == "group_by"]
     if grouped and aggregation not in _FANOUT_GROUPED_AGGREGATIONS:
         return (
             f"'{aggregation}' of '{measure.id}' grouped by a dimension of "
@@ -2417,7 +2434,7 @@ def _leaf_path_selections(
                 why_invalid=why_invalid,
             )
         refusal = _fanout_dedup_refusal(
-            measure=measure, bound=bound, selections=unsupported, config=config, query=query
+            measure=measure, bound=bound, selections=selections, config=config, query=query
         )
         if refusal is None:
             return selections, sorted(required_entities), "fanout_dedup"
