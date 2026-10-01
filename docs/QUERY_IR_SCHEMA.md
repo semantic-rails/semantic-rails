@@ -755,3 +755,66 @@ for e in errors:
 
 The repo's regression suite runs the same loop over every committed
 IR; see `tests/semantic_rails/test_query_ir_schema.py`.
+
+## Result values
+
+HTTP query responses, MCP `execute`, the Python `Runtime.query` SDK, and CLI JSON
+output share one result-value policy. Segment previews use the same policy.
+Python callers receive JSON-ready values, including strings for dates and times.
+`column_types` maps each result field to its observed logical type and survives
+all verbosity levels and MCP record/column row formats. It is separate from
+`output_columns`, which describes semantic lineage and authored types.
+
+| Source value | JSON value | `column_types` metadata |
+|---|---|---|
+| Decimal column | Canonical decimal strings, without redundant fractional zeros, for every non-null cell | `{"type":"decimal"}` |
+| Integer column | Integer JSON numbers, including values larger than binary64's exact integer range | `{"type":"integer"}` |
+| Float/double column | Finite JSON numbers | `{"type":"float"}` |
+| Aware timestamp | ISO 8601 string, normalized to the query time zone; UTC with `+00:00` when no zone is available | `{"type":"timestamp","timezone":"aware"}` |
+| Naive timestamp | ISO 8601 string with `T` and no offset; no zone is inferred | `{"type":"timestamp","timezone":"naive"}` |
+| Date | `YYYY-MM-DD` | `{"type":"date"}` |
+| Time | ISO 8601 string; aware times normalized to UTC with offset, naive times without offset | `{"type":"time","timezone":"aware"}` or `"naive"` |
+| Interval (`timedelta`) | Signed ISO 8601 duration, e.g. `P1DT0H0M2.000003S`; exact microseconds, days/hours/minutes/seconds | `{"type":"interval"}` |
+| SQL NULL | `null` | Does not replace a column's non-null type |
+| Text / boolean | String / boolean, unchanged | `{"type":"string"}` / `{"type":"boolean"}` |
+| Binary | Base64 string | `{"type":"binary","encoding":"base64"}` |
+| UUID | Lowercase, hyphenated string | `{"type":"uuid"}` |
+| JSON array / object | JSON-native structure | `{"type":"array"}` / `{"type":"object"}` |
+
+A column's JSON type follows the driver's result type: DECIMAL/NUMERIC becomes
+canonical strings; FLOAT/DOUBLE and INTEGER become JSON numbers. Authored types
+never convert, re-encode or refuse a value. For mixed numeric driver values,
+Decimal takes precedence over float, then integer, for the entire column.
+An integer mixed with floats converts only if `float(n) == n`; otherwise the
+column refuses with `RESULT_VALUE_UNSUPPORTED` rather than rounding the integer.
+`Decimal("0.10")` becomes `"0.1"` and `Decimal("9007199254740993")` becomes
+`"9007199254740993"`; a native integer `9007199254740993` remains a JSON number.
+Consumers that use binary64 must read integer JSON tokens without first rounding
+them to float. Numeric-looking text remains text with type `string`, even when
+authored as an integer dimension.
+
+The same aggregate can have a different SQL result type per warehouse: `AVG`
+is DOUBLE on DuckDB and NUMERIC on Postgres. `column_types` reports the driver's
+result type. Cross-warehouse conformance and package tests compare numeric
+columns numerically using this metadata, preserving the distinction from text.
+
+The engine-derived time-bucket hint (`semantic_id` starting `temporal_role.`)
+is the only column hint used for encoding: a driver's DATE becomes a naive
+midnight timestamp, and ISO timestamp text is parsed with its complete seconds
+fraction, including precision beyond Python's microseconds. Aware values
+preserve the instant in the query's time zone, so month buckets retain their
+own first day. Other date/time values follow their driver types; authored
+temporal types do not parse text. Nonstandard fractional clocks and fractional
+zone offsets in bucket text that cannot be retained refuse with
+`RESULT_VALUE_UNSUPPORTED` before parsing.
+Intervals represent the duration provided by the driver; calendar months/years
+are not inferred from a `timedelta`.
+
+Metadata is inferred from returned values, not the warehouse catalog: an
+all-null column has type `null`, and an empty result has `column_types: {}`.
+Nulls do not erase observed types. Unsupported values, non-finite numbers,
+conflicting non-null column types (including mixed timestamp awareness), and
+nested values requiring typed string metadata inside arrays/objects refuse with
+`RESULT_VALUE_UNSUPPORTED`; raw values never appear in the error. This guard
+also applies to injected adapters, preventing transport stringification from
+silently changing a result's meaning.
