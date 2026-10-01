@@ -19,9 +19,9 @@ import pytest
 
 from semantic_rails.api import AppState, Handler
 from semantic_rails.db import DuckDBAdapter, SnowflakeCliAdapter, SnowflakeNativeAdapter
+from semantic_rails.db_parts.adbc import AdbcAdapter
 from semantic_rails.db_parts.bigquery import BigQueryNativeAdapter
 from semantic_rails.db_parts.clickhouse import ClickHouseAdapter
-from semantic_rails.db_parts.postgres import PostgresAdapter
 from semantic_rails.diagnostics import exception_issue
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.http_core import MAX_REQUEST_BODY_BYTES, SemanticHTTPService
@@ -77,7 +77,7 @@ def test_warning_silent_with_custom_resolver(capsys):
 @pytest.mark.parametrize(
     "adapter_type,connection_method",
     [
-        (PostgresAdapter, "_connection"),
+        (AdbcAdapter, "_connection"),
         (BigQueryNativeAdapter, "client"),
         (ClickHouseAdapter, "_client_handle"),
         (SnowflakeNativeAdapter, "_connection"),
@@ -95,7 +95,7 @@ def test_driver_failures_stay_private_across_public_envelopes(
     def fail(*args, **kwargs):
         raise original
 
-    adapter = adapter_type.__new__(adapter_type)
+    adapter = AdbcAdapter() if adapter_type is AdbcAdapter else adapter_type.__new__(adapter_type)
     adapter.options = {}
     adapter.connection_name = "test"
     if connection_method:

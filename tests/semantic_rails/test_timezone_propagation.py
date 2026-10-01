@@ -14,9 +14,6 @@ When the two zones are absent or equal, no wrap is emitted.
 
 from __future__ import annotations
 
-import os
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -27,9 +24,9 @@ import yaml
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
 from semantic_rails.db import DuckDBAdapter, WarehouseAdapter
+from semantic_rails.db_parts.adbc import AdbcAdapter
 from semantic_rails.db_parts.ducklake import DuckLakeAdapter
 from semantic_rails.db_parts.motherduck import MotherDuckAdapter
-from semantic_rails.db_parts.postgres import PostgresAdapter
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
@@ -164,7 +161,6 @@ def test_unknown_warehouse_refuses_the_rewrite_instead_of_guessing() -> None:
     """The base class used to emit Snowflake syntax for anything it did not
     recognize. Refusing to compile is the honest outcome."""
     from semantic_rails.dialects import SqlDialect
-    from semantic_rails.errors import SemanticLayerError
     from semantic_rails.sql_ast import SqlIdentifier
 
     with pytest.raises(SemanticLayerError) as exc:
@@ -421,110 +417,24 @@ def test_a_database_from_before_time_zone_still_runs() -> None:
     assert calls == [{"sql": "SELECT 1 AS n", "max_rows": None}]
 
 
-def _postgres_with(connection: Any) -> PostgresAdapter:
-    options = {"host_env": "SR_POSTGRES_HOST", "user_env": "SR_POSTGRES_USER"}
-    options |= {"password_env": "SR_POSTGRES_PASSWORD"}
-    options["port"] = os.environ.get("SR_POSTGRES_PORT", "5432")
-    options["database"] = os.environ.get("SR_POSTGRES_DATABASE", "postgres")
+@pytest.mark.parametrize("zone", ["UTC", "Asia/Tokyo", "Europe/Paris", ""])
+def test_postgres_restores_the_current_session_zone(zone: str) -> None:
+    from tests.semantic_rails.test_prepared_queries import CaptureCursor
 
-    class HostOwned(PostgresAdapter):
-        def _create_connection(self) -> Any:
-            return connection if connection is not None else super()._create_connection()
-
-    return HostOwned(options)
-
-
-@pytest.mark.parametrize(
-    ("status", "current", "expected"),
-    [
-        # The engine's own idle connection: SET LOCAL in a transaction of its own.
-        ("IDLE", "America/Los_Angeles", ["BEGIN", "UTC", "SQL", "COMMIT"]),
-        # A host's open transaction: its zone is put back before the transaction goes on.
-        (
-            "INTRANS",
-            "America/Los_Angeles",
-            ["BEGIN", "UTC", "SQL", "America/Los_Angeles", "COMMIT"],
-        ),
-        # Already in the zone, under any of its names: no transaction and no SET.
-        ("IDLE", "UTC", ["SQL"]),
-        ("IDLE", "Etc/UTC", ["SQL"]),
-        # A connection that doesn't report its zone: the server is asked, inside the scope.
-        ("IDLE", None, ["BEGIN", "ASK", "UTC", "SQL", "COMMIT"]),
-        ("INTRANS", None, ["BEGIN", "ASK", "UTC", "SQL", "Europe/Paris", "COMMIT"]),
-    ],
-)
-def test_postgres_scopes_the_zone_to_the_query(
-    status: str, current: str | None, expected: list
-) -> None:
-    log: list[str] = []
-
-    class Cursor:
-        description = [("n",)]
-
-        def execute(self, sql: str, params: tuple[str, ...] = ()) -> None:
-            asks = "current_setting" in sql
-            log.append(params[0] if "set_config" in sql else "ASK" if asks else "SQL")
-
-        def fetchone(self) -> tuple[str]:
-            return ("Europe/Paris",)
-
-        def fetchall(self) -> list[tuple[int]]:
-            return [(1,)]
-
-        def close(self) -> None:
-            pass
-
-    class Connection:
-        info = SimpleNamespace(
-            transaction_status=SimpleNamespace(name=status),
-            parameter_status=lambda name: current,
-        )
-
-        def cursor(self) -> Cursor:
-            return Cursor()
-
-        @contextmanager
-        def transaction(self) -> Iterator[None]:
-            log.append("BEGIN")
-            yield
-            log.append("COMMIT")
-
-    rows = _postgres_with(Connection()).query("SELECT 1 AS n", limits={"time_zone": "UTC"})
-    assert rows == [{"n": 1}]
-    assert log == expected
-
-
-@pytest.mark.skipif(
-    not os.environ.get("SR_POSTGRES_HOST"), reason="needs a Postgres server (SR_POSTGRES_*)"
-)
-def test_postgres_zone_never_outlives_the_query() -> None:
-    psycopg = pytest.importorskip("psycopg")
-    zone_sql = "SELECT current_setting('TimeZone') AS zone"
-    adapter = _postgres_with(None)
-    try:
-        adapter.query("SET TimeZone = 'America/Los_Angeles'")
-        assert adapter.query(zone_sql, limits={"time_zone": "Asia/Tokyo"}) == [
-            {"zone": "Asia/Tokyo"}
-        ]
-        assert adapter.query(zone_sql) == [{"zone": "America/Los_Angeles"}]
-        # The same with a host's connection, inside a transaction the host opened.
-        host = psycopg.connect(**adapter._connect_kwargs() | {"autocommit": False})  # noqa: SLF001
-        host.execute("SET LOCAL TimeZone = 'Europe/Paris'")
-        hosted = _postgres_with(host)
-        assert hosted.query(zone_sql, limits={"time_zone": "Asia/Tokyo"}) == [
-            {"zone": "Asia/Tokyo"}
-        ]
-        assert host.execute(zone_sql).fetchone() == ("Europe/Paris",)
-        # A failed statement rolls back to the scope's savepoint, zone included.
-        with pytest.raises(SemanticLayerError):
-            hosted.query("SELECT 1 / 0", limits={"time_zone": "Asia/Tokyo"})
-        assert host.execute(zone_sql).fetchone() == ("Europe/Paris",)
-        server_zone = adapter.query("SELECT reset_val FROM pg_settings WHERE name = 'TimeZone'")
-        host.commit()
-        assert host.execute(zone_sql).fetchone() == (server_zone[0]["reset_val"],)
-        hosted.close()
-    finally:
-        adapter.close()
+    cursor = CaptureCursor("n")
+    adapter = AdbcAdapter()
+    adapter._conn = SimpleNamespace(cursor=lambda: cursor)
+    adapter.query("SELECT 1 AS n", limits={"time_zone": zone})
+    zone_sql = "SELECT set_config('TimeZone', $1, false)"
+    assert [
+        (sql, args)
+        for sql, args in zip(cursor.statements, cursor.parameters, strict=True)
+        if sql == zone_sql
+    ] == (
+        [(zone_sql, (zone,)), (zone_sql, ("Europe/Paris",))]
+        if zone and zone != "Europe/Paris"
+        else []
+    )
 
 
 @pytest.mark.parametrize("zone,offset", [("Asia/Tokyo", "+09:00"), ("Europe/Berlin", "+01:00")])
