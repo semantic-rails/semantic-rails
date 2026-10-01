@@ -848,8 +848,6 @@ def _compiled_package_errors(config, source_path: Path) -> list[str]:
     errors: list[str] = []
     if not config.entities:
         add_error(errors, f"{source_path}: compiled package must declare entities")
-    if not config.temporal_roles:
-        add_error(errors, f"{source_path}: compiled package must declare temporal roles")
     if not config.measures:
         add_error(errors, f"{source_path}: compiled package must declare measures")
     if not config.metric_recipes:
@@ -1498,23 +1496,10 @@ def parse_snapshot_report(
     if progress is not None:
         progress(f"Parsing package: {ref.display_name}")
     snapshot = None
-    call_error = None
     try:
         source = capture_package_source(ref.source_path)
         messages = validate_runtime_package(Path(ref.source_path))
-        if messages:
-            # Keep the embedding validator's string contract; recover structured errors here.
-            try:
-                load_package_config(ref.source_path)
-            except Exception as exc:
-                if isinstance(exc, SemanticLayerError) and exc.code == "CALL_ARGUMENT_TYPE":
-                    call_error = exc
-                    messages = [
-                        message
-                        for message in messages
-                        if not message.endswith(f": failed to load package config: {exc}")
-                    ]
-        else:
+        if not messages:
             snapshot = load_package_snapshot(ref.source_path)
             if snapshot.source_fingerprint != source.fingerprint:
                 messages.append(
@@ -1523,14 +1508,8 @@ def parse_snapshot_report(
                 snapshot = None
     except SemanticLayerError as exc:
         messages = [str(exc)]
-        if exc.code == "CALL_ARGUMENT_TYPE":
-            call_error = exc
     warnings: list[dict[str, Any]] = []
     errors = [_error_payload("INVALID_CONFIG", message) for message in messages]
-    if call_error:
-        errors.insert(
-            0, _error_payload(call_error.code, str(call_error), details=call_error.details)
-        )
     config = None
     if not errors:
         assert snapshot is not None
@@ -1639,6 +1618,9 @@ def _metric_min_window_unit(expression: Any) -> str:
 
 
 def _default_time_spec_for_metric(recipe, runtime: Runtime) -> dict[str, Any]:
+    from .temporal_support import require_temporal_support
+
+    require_temporal_support(runtime._config)
     role_id = str(recipe.temporal_role or "").strip()
     if not role_id:
         compatible_roles = list(recipe.compatible_temporal_roles or [])

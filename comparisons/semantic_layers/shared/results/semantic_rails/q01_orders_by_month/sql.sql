@@ -5,10 +5,16 @@ SELECT
 FROM comparison_orders
 GROUP BY
   DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))
+),
+guarded_base AS (
+SELECT
+  base.t AS t,
+  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1
+FROM leaf_1 AS base
 )
 SELECT
   base.t AS "temporal_role.jaffle_order_time__month",
   base.m1 AS orders
-FROM leaf_1 AS base
+FROM guarded_base AS base
 ORDER BY
   t ASC

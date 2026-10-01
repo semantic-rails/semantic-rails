@@ -242,17 +242,6 @@ def recovery_hints_for_error(
                 }
             )
         return hints
-    if code == "CALL_ARGUMENT_TYPE":
-        return [
-            {
-                "code": "FIX_CALL_ARGUMENT_TYPE",
-                "message": (
-                    "Wrap the text argument in CAST with type DOUBLE, DECIMAL(p,s), INTEGER or BIGINT."
-                    if details.get("expected") == "number" and details.get("received") == "text"
-                    else "Use an argument of the expected type; unknown types are checked by the warehouse."
-                ),
-            }
-        ]
     if code == "INVALID_EXPRESSION_AST":
         kind = str(details.get("expression_kind", "") or "")
         position = str(details.get("expression_position", "") or "")
@@ -486,6 +475,13 @@ def recovery_hints_for_error(
             }
         ]
     if code == "INVALID_TEMPORAL_ROLE":
+        if details.get("available_temporal_roles") == []:
+            return [
+                {
+                    "kind": "remove_time_or_declare_role",
+                    "message": "Ask without time, or declare a times: entry on a model before time analysis.",
+                }
+            ]
         compatible = list(details.get("compatible", []) or [])
         return [
             {

@@ -11,7 +11,6 @@ from semantic_rails.compiler import compile_query, plan_query
 from semantic_rails.compiler_parts.bind import _config_expr_to_sql
 from semantic_rails.config import load_package_config
 from semantic_rails.config_validation import PackageReference, validate_runtime_package
-from semantic_rails.diagnostics import recovery_hints_for_error
 from semantic_rails.dialects import dialect_for_warehouse
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import (
@@ -288,32 +287,20 @@ def test_excluded_calls_report_exact_dialect_list(package, warehouse, name):
     assert exc.value.details["allowed"] == sorted(accepted_call_names(warehouse))
 
 
+@pytest.mark.parametrize("warehouse", WAREHOUSES)
 @pytest.mark.parametrize(
-    "expression,function,index,expected,received",
+    "expression",
     [
-        (maximum(call("ROUND", column("text_value"), literal(1))), "ROUND", 0, "number", "text"),
-        (call("DATE_PART", literal("year"), literal("2020-01-01")), "DATE_PART", 1, "date", "text"),
-        (maximum(call("UPPER", column("amount"))), "UPPER", 0, "text", "number"),
-        (maximum(call("ROUND", call("LOWER", column("text_value")))), "ROUND", 0, "number", "text"),
-        (maximum(call("ROUND", cast(column("amount"), "VARCHAR"))), "ROUND", 0, "number", "text"),
+        call("ROUND", column("text_value"), literal(1)),
+        call("UPPER", column("amount")),
+        call("ROUND", call("LOWER", column("text_value"))),
+        call("ROUND", cast(column("amount"), "VARCHAR")),
     ],
 )
-def test_known_type_errors_before_planning(
-    package, expression, function, index, expected, received
-):
+def test_argument_types_are_deferred_to_warehouse(package, warehouse, expression):
     config = load_package_config(str(package))
-    with pytest.raises(SemanticLayerError) as exc:
-        plan_query(config, None, query(expression))
-    assert exc.value.code == "CALL_ARGUMENT_TYPE"
-    assert exc.value.details == {
-        "function": function,
-        "argument_index": index,
-        "expected": expected,
-        "received": received,
-    }
-    hints = recovery_hints_for_error(exc.value.code, exc.value.details)
-    if expected == "number" and received == "text":
-        assert "CAST" in hints[0]["message"]
+    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    assert compile_query(config, None, query(maximum(expression)))["sql"]
 
 
 def test_numeric_column_and_cast_pass_but_unknown_reaches_warehouse(package):
@@ -344,7 +331,7 @@ def test_literal_only_select_has_precise_reason(package, expression):
     assert "add a measure, a group_by dimension or time" in str(exc.value)
 
 
-def test_package_cast_and_package_type_error_fails_check(package):
+def test_package_cast_and_call_preserve_other_check_errors(package):
     path = package / "models/rows.yml"
     model = yaml.safe_load(path.read_text())
     model["model"]["measures"]["amount"]["expr"] = cast({"kind": "column", "column": "text_value"})
@@ -365,15 +352,14 @@ def test_package_cast_and_package_type_error_fails_check(package):
     assert errors and all(isinstance(error, str) for error in errors)
     report = check_package_report(PackageReference(source_path=str(package)))
     assert not report["ok"]
-    assert report["blockers"][0]["code"] == "CALL_ARGUMENT_TYPE"
-    assert report["blockers"][0]["details"]["function"] == "ROUND"
-    assert [error["code"] for error in report["blockers"]] == [
-        "CALL_ARGUMENT_TYPE",
-        "INVALID_CONFIG",
-        "INVALID_CONFIG",
-    ]
-    assert "package.id must equal directory name" in report["blockers"][1]["message"]
-    assert "dimension rows.text_value has unknown kind 'string'" in report["blockers"][2]["message"]
+    assert {error["code"] for error in report["blockers"]} == {"INVALID_CONFIG"}
+    assert any(
+        "package.id must equal directory name" in error["message"] for error in report["blockers"]
+    )
+    assert any(
+        "dimension rows.text_value has unknown kind 'string'" in error["message"]
+        for error in report["blockers"]
+    )
     assert not any(
         "failed to load package config" in error["message"] for error in report["blockers"]
     )
@@ -441,6 +427,32 @@ def test_bigquery_decimal_constraints_refused_at_load_and_validation(package, ta
         ("databricks", call("UPPER", column("amount")), None),
         ("clickhouse", call("LENGTH", literal([1, 2])), None),
         ("postgres", call("ROUND", cast(literal("2.5"), "DECIMAL(10,1)"), literal("0")), None),
+    ]
+    + [
+        (warehouse, expression, expected)
+        for expression, expected in [
+            (
+                call(
+                    "DATE_PART",
+                    call("SPLIT", literal("year,month"), literal(",")),
+                    column("placed_at"),
+                ),
+                {"year": 2020, "month": 1},
+            ),
+            (call("SUBSTRING", literal("Thomas"), cast(literal("...$"), "VARCHAR")), None),
+            (
+                call(
+                    "DATE_TRUNC",
+                    literal("day"),
+                    column("placed_at"),
+                    cast(literal("UTC"), "VARCHAR"),
+                ),
+                None,
+            ),
+        ]
+        for warehouse in WAREHOUSES
+        if expression["name"] in accepted_call_names(warehouse)
+        and (expression["name"] != "DATE_PART" or "SPLIT" in accepted_call_names(warehouse))
     ],
 )
 def test_supported_overloads_compile_in_queries_and_packages(
@@ -454,8 +466,15 @@ def test_supported_overloads_compile_in_queries_and_packages(
         assert runtime.validate(query(maximum(expression)))["ok"]
     finally:
         runtime.close()
-    if warehouse == "duckdb":
-        assert execute(config, maximum(expression)) == [(expected,)]
+    if warehouse == "duckdb" and expected is not None:
+        if expression["name"] == "DATE_PART":
+            sql = compile_query(config, None, query(maximum(expression)))["sql"]
+            with duckdb.connect() as conn:
+                conn.execute("CREATE TABLE numbers(amount INTEGER, placed_at TIMESTAMP)")
+                conn.execute("INSERT INTO numbers VALUES (1, TIMESTAMP '2020-01-01')")
+                assert conn.execute(sql).fetchall() == [(expected,)]
+        else:
+            assert execute(config, maximum(expression)) == [(expected,)]
     path = package / "models/rows.yml"
     raw = yaml.safe_load(path.read_text())
     raw["model"]["measures"]["amount"]["expr"] = expression
@@ -467,6 +486,21 @@ def test_supported_overloads_compile_in_queries_and_packages(
         raw["package"]["connection"] = {"kind": "snowflake_cli", "name": "test"}
     elif warehouse != "duckdb":
         raw["package"]["connection"] = {"kind": f"{warehouse}_native"}
+    path.write_text(yaml.safe_dump(raw))
+    config = load_package_config(str(package))
+    assert compile_query(config, None, query({"measure": "measure.numbers.amount"}))["sql"]
+    raw["relations"] = {
+        "projected": {
+            "source": "numbers",
+            "columns": ["id", "amount", "text_value", "placed_at"],
+            "steps": [{"select": {"columns": {"id": "id", "projected_value": expression}}}],
+        }
+    }
+    path.write_text(yaml.safe_dump(raw))
+    path = package / "models/rows.yml"
+    raw = yaml.safe_load(path.read_text())
+    raw["model"]["relation"] = "projected"
+    raw["model"]["measures"]["amount"]["expr"] = "projected_value"
     path.write_text(yaml.safe_dump(raw))
     config = load_package_config(str(package))
     assert compile_query(config, None, query({"measure": "measure.numbers.amount"}))["sql"]
@@ -500,23 +534,50 @@ def test_dialect_spelling_is_refused_by_walker(package, warehouse, name):
     assert exc.value.details["allowed"] == sorted(accepted_call_names(warehouse))
 
 
-@pytest.mark.parametrize(
-    "expression",
-    [
-        maximum(call("ROUND", column("text_value"), literal(1))),
-        call("DATE_PART", literal("year"), literal("2020-01-01")),
-    ],
-)
-def test_runtime_validation_compile_and_execution_agree(package, expression):
+@pytest.mark.parametrize("path", ["select", "measure", "relation"])
+def test_warehouse_type_error_is_redacted_on_every_call_path(package, path):
+    expression = call("ROUND", literal("private-value"))
+    payload = query(maximum(expression))
+    if path != "select":
+        model_path = package / "models/rows.yml"
+        raw = yaml.safe_load(model_path.read_text())
+        raw["model"]["measures"]["amount"]["expr"] = expression
+        if path == "relation":
+            raw["model"]["relation"] = "projected"
+            raw["model"]["measures"]["amount"]["expr"] = "amount"
+            package_path = package / "package.yml"
+            metadata = yaml.safe_load(package_path.read_text())
+            metadata["relations"] = {
+                "projected": {
+                    "source": "numbers",
+                    "columns": ["id", "text_value", "amount"],
+                    "steps": [
+                        {
+                            "select": {
+                                "columns": {
+                                    "id": "id",
+                                    "text_value": "text_value",
+                                    "amount": expression,
+                                }
+                            }
+                        }
+                    ],
+                }
+            }
+            package_path.write_text(yaml.safe_dump(metadata))
+        model_path.write_text(yaml.safe_dump(raw))
+        payload = query({"measure": "measure.numbers.amount", "aggregation": "max"})
     runtime = Runtime.from_path(str(package))
     try:
-        report = runtime.validate(query(expression))
-        assert not report["ok"]
-        assert report["errors"][0]["code"] == "CALL_ARGUMENT_TYPE"
-        for operation in [runtime.compile, runtime.query]:
-            with pytest.raises(SemanticLayerError) as exc:
-                operation(query(expression))
-            assert exc.value.code == "CALL_ARGUMENT_TYPE"
+        assert runtime.validate(payload)["ok"]
+        assert runtime.compile(payload)["ok"]
+        assert "ROUND('private-value')" in compile_query(runtime.config, None, payload)["sql"]
+        with pytest.raises(SemanticLayerError) as exc:
+            runtime.query(payload)
+        assert exc.value.code == "QUERY_EXECUTION_ERROR"
+        assert exc.value.details["sql_redacted"] is True
+        assert "private-value" not in str(exc.value) + str(exc.value.details)
+        assert "Binder" not in str(exc.value) + str(exc.value.details)
     finally:
         runtime.close()
 
@@ -619,7 +680,7 @@ def test_operational_expression_shaped_metadata_stays_data(package):
 def test_unowned_projection_column_does_not_borrow_dimension_type(package):
     config = load_package_config(str(package))
     expr = CallExpr("ABS", [ColumnRefExpr("text_value", table="src")])
-    validate_expression_calls(expr, config, owner="entity.numbers_row")
+    validate_expression_calls(expr, config)
     assert (
         render_expr(_semantic_expr_to_sql(expr, default_alias="src", warehouse="duckdb"))
         == "ABS(src.text_value)"
