@@ -499,6 +499,13 @@ def recovery_hints_for_error(
             }
         ]
     if code == "INVALID_TEMPORAL_ROLE":
+        if details.get("available_temporal_roles") == []:
+            return [
+                {
+                    "kind": "remove_time_or_declare_role",
+                    "message": "Ask without time, or declare a times: entry on a model before time analysis.",
+                }
+            ]
         compatible = list(details.get("compatible", []) or [])
         return [
             {

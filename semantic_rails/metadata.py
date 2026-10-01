@@ -100,6 +100,7 @@ from .runtime import Runtime, runtime_request_scope
 from .schema import MetricConfig, PackageConfig
 from .scope import classify_question
 from .segments import build_segment_query, normalize_segment
+from .temporal_support import require_temporal_support, validate_temporal_support
 
 # Query IR fields: the fields of a normalized query. Query patches and
 # query_state carry only these: never the request's policy context, response
@@ -2012,6 +2013,7 @@ def discover_payload(
     search_index = runtime._get_catalog_search_index()
     search_terms = SearchTerms.from_text(terms)
     partial_query = dict(partial_query or {})
+    validate_temporal_support(runtime._config, partial_query)
     # When invoked from the HTTP boundary (``enforce_scope=True``), gate
     # the response on the same classifier ``validate``/``compile`` use
     # and a content-token relevance floor against the package catalog.
@@ -2676,6 +2678,7 @@ def inspect_payload(
     """
 
     partial_query = dict(partial_query or {})
+    validate_temporal_support(runtime._config, partial_query)
     payload: dict[str, Any] = {
         "object_id": object_id,
         "verbosity": verbosity,
@@ -2744,6 +2747,7 @@ def _slim_inspect_card(card: dict[str, Any]) -> dict[str, Any]:
 
 def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[str, Any]:
     config = runtime._config
+    validate_temporal_support(config, partial_query)
     policy_context = _policy_context(partial_query)
     hidden_ids = hidden_object_ids(
         config,
@@ -2860,6 +2864,7 @@ def build_options_payload(
 ) -> dict[str, Any]:
     base = _valid_next_base(runtime, partial_query)
     config = runtime._config
+    require_temporal_support(config, requested=step == "time" or stage == "time")
     maps = _config_maps(config)
     # Patches build on the caller's Query IR only; the policy context in
     # partial_query decides visibility, never a patch's contents.
@@ -2874,7 +2879,7 @@ def build_options_payload(
             return "group_by"
         if not list(raw_query.get("where", []) or []):
             return "filter_dimension"
-        if not dict(raw_query.get("time", {}) or {}):
+        if config.temporal_roles and not dict(raw_query.get("time", {}) or {}):
             return "time"
         return "review"
 
@@ -2890,7 +2895,7 @@ def build_options_payload(
             steps.append("group_by")
         if not list(raw_query.get("where", []) or []):
             steps.append("filter_dimension")
-        if not dict(raw_query.get("time", {}) or {}):
+        if config.temporal_roles and not dict(raw_query.get("time", {}) or {}):
             steps.append("time")
         steps.append("review")
         return steps

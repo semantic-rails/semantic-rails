@@ -848,8 +848,6 @@ def _compiled_package_errors(config, source_path: Path) -> list[str]:
     errors: list[str] = []
     if not config.entities:
         add_error(errors, f"{source_path}: compiled package must declare entities")
-    if not config.temporal_roles:
-        add_error(errors, f"{source_path}: compiled package must declare temporal roles")
     if not config.measures:
         add_error(errors, f"{source_path}: compiled package must declare measures")
     if not config.metric_recipes:
@@ -1615,6 +1613,9 @@ def _metric_min_window_unit(expression: Any) -> str:
 
 
 def _default_time_spec_for_metric(recipe, runtime: Runtime) -> dict[str, Any]:
+    from .temporal_support import require_temporal_support
+
+    require_temporal_support(runtime._config)
     role_id = str(recipe.temporal_role or "").strip()
     if not role_id:
         compatible_roles = list(recipe.compatible_temporal_roles or [])

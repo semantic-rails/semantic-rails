@@ -27,6 +27,7 @@ from typing import Any
 from ..ast import rewrite_select_shorthand
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
+from ..temporal_support import validate_temporal_support
 from ._base import _time_window, _with_fiscal_calendar
 from .faithfulness import (
     intent_faithfulness_why,
@@ -146,7 +147,10 @@ def plan_payload(
             )
             return _query_detail_payload(payload) if detail_level == "query" else payload
 
+    validate_temporal_support(runtime._config, partial_query or {})
     result = compose(runtime, intent)
+    if result.draft is not None:
+        validate_temporal_support(runtime._config, result.draft.query)
     intent_ir = result.intent_ir
     draft_rows: list[tuple[Any, str]] = []
     blocked: list[dict[str, Any]] = []
@@ -225,6 +229,18 @@ def plan_payload(
     best_draft = best["draft"]
     best_validation = best["validation"]
     best_ok = bool(best_validation.get("ok"))
+    # No natural-language draft is ready on a package without a time axis.
+    # Preserve the Query IR and use one warning independent of question wording.
+    atemporal_why = (
+        {
+            "code": "INVALID_TEMPORAL_ROLE",
+            "message": (
+                "This package has no time; check the question doesn't ask for a time breakdown or window."
+            ),
+        }
+        if not runtime._config.temporal_roles
+        else None
+    )
     fallback_drift_why = _first_fallback_drift_why(planned, best)
     # Query validation proves executability, not that every high-confidence
     # clause survived natural-language realization.  Keep the valid draft for
@@ -246,7 +262,8 @@ def plan_payload(
     # query), the draft answers a *different* question than the user
     # asked. Downgrade instead of marking it ready to execute.
     time_why = (
-        _unresolved_time_why(intent_str, partial_query)
+        atemporal_why
+        or _unresolved_time_why(intent_str, partial_query)
         or _start_dropped_why(
             best.get("start_dropped")
             or _pattern_dropped_start(intent_str, best_draft.query, partial_query)
@@ -337,6 +354,8 @@ def plan_payload(
                 "details": {"terms": unmatched},
             }
         ]
+    if atemporal_why is not None:
+        payload.setdefault("warnings", []).append({**atemporal_why, "severity": "warning"})
     if detail_level in {"full", "debug"}:
         payload["alternatives"] = [
             _slim_best(
