@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 2.802,
-      "compile_ms": 1.09,
+      "cache_lookup_ms": 0.994,
+      "compile_ms": 0.381,
       "dialect": "duckdb",
       "physical_plan_nodes": 8
     },
@@ -2160,186 +2160,20 @@
   },
   "warnings": [
     {
-      "code": "PATH_ALTERNATES_UNPINNED",
+      "code": "ROUTE_COLOCATED_KEY",
       "details": {
-        "alternate_paths": [
-          [
-            "relationship.order_lifecycle_order",
-            "relationship.order_lifecycle_customer"
-          ],
-          [
-            "relationship.order_to_customer_history",
-            "relationship.customer_history_customer"
-          ],
-          [
-            "relationship.storefront_sessions_order",
-            "relationship.storefront_sessions_customer"
-          ],
-          [
-            "relationship.order_lifecycle_order",
-            "relationship.order_lifecycle_to_customer_history",
-            "relationship.customer_history_customer"
-          ],
-          [
-            "relationship.order_to_customer_history",
-            "relationship.order_lifecycle_to_customer_history",
-            "relationship.order_lifecycle_customer"
-          ],
-          [
-            "relationship.orders_store",
-            "relationship.order_lifecycle_store",
-            "relationship.order_lifecycle_customer"
-          ],
-          [
-            "relationship.orders_store",
-            "relationship.storefront_sessions_store",
-            "relationship.storefront_sessions_customer"
-          ],
-          [
-            "relationship.order_lifecycle_order",
-            "relationship.order_lifecycle_store",
-            "relationship.storefront_sessions_store",
-            "relationship.storefront_sessions_customer"
-          ],
-          [
-            "relationship.orders_store",
-            "relationship.order_lifecycle_store",
-            "relationship.order_lifecycle_to_customer_history",
-            "relationship.customer_history_customer"
-          ],
-          [
-            "relationship.storefront_sessions_order",
-            "relationship.storefront_sessions_store",
-            "relationship.order_lifecycle_store",
-            "relationship.order_lifecycle_customer"
-          ]
-        ],
-        "chosen_path": [
+        "route": [
           "relationship.orders_customer"
-        ],
-        "hint": "Which route is meant is a business definition. Record it once as a graph.path_preferences row in the package (details.pins has the row for each route); then every query uses it, without this warning.",
-        "meanings": [
-          "Order \u2192 Customer",
-          "Order \u2192 Order lifecycle \u2192 Customer",
-          "Order \u2192 Customer history \u2192 Customer",
-          "Order \u2192 Storefront session \u2192 Customer",
-          "Order \u2192 Order lifecycle \u2192 Customer history \u2192 Customer",
-          "Order \u2192 Customer history \u2192 Order lifecycle \u2192 Customer",
-          "Order \u2192 Store \u2192 Order lifecycle \u2192 Customer",
-          "Order \u2192 Store \u2192 Storefront session \u2192 Customer",
-          "Order \u2192 Order lifecycle \u2192 Store \u2192 Storefront session \u2192 Customer",
-          "Order \u2192 Store \u2192 Order lifecycle \u2192 Customer history \u2192 Customer",
-          "Order \u2192 Storefront session \u2192 Store \u2192 Order lifecycle \u2192 Customer"
-        ],
-        "pins": [
-          {
-            "relationship_path": [
-              "relationship.orders_customer"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.order_lifecycle_customer"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_to_customer_history",
-              "relationship.customer_history_customer"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer"
-          },
-          {
-            "relationship_path": [
-              "relationship.storefront_sessions_order",
-              "relationship.storefront_sessions_customer"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.order_lifecycle_to_customer_history",
-              "relationship.customer_history_customer"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_to_customer_history",
-              "relationship.order_lifecycle_to_customer_history",
-              "relationship.order_lifecycle_customer"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer"
-          },
-          {
-            "relationship_path": [
-              "relationship.orders_store",
-              "relationship.order_lifecycle_store",
-              "relationship.order_lifecycle_customer"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer"
-          },
-          {
-            "relationship_path": [
-              "relationship.orders_store",
-              "relationship.storefront_sessions_store",
-              "relationship.storefront_sessions_customer"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.order_lifecycle_store",
-              "relationship.storefront_sessions_store",
-              "relationship.storefront_sessions_customer"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer"
-          },
-          {
-            "relationship_path": [
-              "relationship.orders_store",
-              "relationship.order_lifecycle_store",
-              "relationship.order_lifecycle_to_customer_history",
-              "relationship.customer_history_customer"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer"
-          },
-          {
-            "relationship_path": [
-              "relationship.storefront_sessions_order",
-              "relationship.storefront_sessions_store",
-              "relationship.order_lifecycle_store",
-              "relationship.order_lifecycle_customer"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer"
-          }
-        ],
-        "start": "entity.jaffle_order",
-        "target": "entity.jaffle_customer"
+        ]
       },
-      "message": "'entity.jaffle_customer' was read through entity.jaffle_order's direct key relationship.orders_customer; 10 other route(s) reach it, and no graph.path_preferences row records which one is meant.",
+      "message": "Order \u2192 Customer (own key)",
       "object_ids": [
+        "entity.jaffle_order",
         "entity.jaffle_customer"
       ],
       "path": "",
       "recovery_hints": [],
-      "severity": "warning",
+      "severity": "info",
       "stage": "planning"
     }
   ]

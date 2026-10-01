@@ -114,8 +114,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 2.487,
-      "compile_ms": 0.68,
+      "cache_lookup_ms": 0.885,
+      "compile_ms": 0.232,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -2368,67 +2368,67 @@
   "rows": [
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 106851.1500000043,
+      "revenue_usd": 106851.15000000426,
       "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 97728.07000000286,
+      "revenue_usd": 97728.07000000306,
       "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 95395.17000000343,
+      "revenue_usd": 95395.1700000031,
       "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 94105.69000000205,
+      "revenue_usd": 94105.69000000226,
       "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 82682.07000000103,
+      "revenue_usd": 82682.07000000149,
       "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 73321.7699999999,
+      "revenue_usd": 73321.77000000072,
       "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 44504.92999999983,
+      "revenue_usd": 44504.92999999986,
       "temporal_role.jaffle_order_time__month": "2017-01-01T00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 42834.49999999988,
+      "revenue_usd": 42834.499999999796,
       "temporal_role.jaffle_order_time__month": "2017-02-01T00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 34952.61000000005,
+      "revenue_usd": 34952.61000000004,
       "temporal_role.jaffle_order_time__month": "2016-12-01T00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 27428.179999999957,
+      "revenue_usd": 27428.18000000004,
       "temporal_role.jaffle_order_time__month": "2016-11-01T00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 21277.359999999982,
+      "revenue_usd": 21277.359999999997,
       "temporal_role.jaffle_order_time__month": "2016-10-01T00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": null,
-      "revenue_usd": 17477.699999999993,
+      "revenue_usd": 17477.70000000003,
       "temporal_role.jaffle_order_time__month": "2016-09-01T00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
-      "revenue_usd": 724.9900000000004,
+      "revenue_usd": 724.9900000000002,
       "temporal_role.jaffle_order_time__month": "2016-12-01T00:00:00"
     },
     {
@@ -2453,7 +2453,7 @@
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
-      "revenue_usd": 396.4000000000002,
+      "revenue_usd": 396.4000000000003,
       "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00"
     },
     {
@@ -2463,7 +2463,7 @@
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
-      "revenue_usd": 376.29000000000025,
+      "revenue_usd": 376.29000000000013,
       "temporal_role.jaffle_order_time__month": "2017-02-01T00:00:00"
     },
     {
@@ -2478,12 +2478,12 @@
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
-      "revenue_usd": 348.7300000000003,
+      "revenue_usd": 348.73000000000025,
       "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
-      "revenue_usd": 348.7200000000001,
+      "revenue_usd": 348.7200000000003,
       "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
     },
     {
@@ -2493,7 +2493,7 @@
     },
     {
       "dimension.jaffle_customer_history_segment": "new",
-      "revenue_usd": 294.6700000000002,
+      "revenue_usd": 294.67000000000013,
       "temporal_role.jaffle_order_time__month": "2017-01-01T00:00:00"
     },
     {
@@ -2908,190 +2908,20 @@
       "stage": "planning"
     },
     {
-      "code": "PATH_ALTERNATES_UNPINNED",
+      "code": "ROUTE_COLOCATED_KEY",
       "details": {
-        "alternate_paths": [
-          [
-            "relationship.order_lifecycle_order",
-            "relationship.order_lifecycle_to_customer_history"
-          ],
-          [
-            "relationship.orders_customer",
-            "relationship.customer_history_customer"
-          ],
-          [
-            "relationship.order_lifecycle_order",
-            "relationship.order_lifecycle_customer",
-            "relationship.customer_history_customer"
-          ],
-          [
-            "relationship.orders_customer",
-            "relationship.order_lifecycle_customer",
-            "relationship.order_lifecycle_to_customer_history"
-          ],
-          [
-            "relationship.orders_store",
-            "relationship.order_lifecycle_store",
-            "relationship.order_lifecycle_to_customer_history"
-          ],
-          [
-            "relationship.storefront_sessions_order",
-            "relationship.storefront_sessions_customer",
-            "relationship.customer_history_customer"
-          ],
-          [
-            "relationship.orders_store",
-            "relationship.order_lifecycle_store",
-            "relationship.order_lifecycle_customer",
-            "relationship.customer_history_customer"
-          ],
-          [
-            "relationship.orders_store",
-            "relationship.storefront_sessions_store",
-            "relationship.storefront_sessions_customer",
-            "relationship.customer_history_customer"
-          ],
-          [
-            "relationship.storefront_sessions_order",
-            "relationship.storefront_sessions_customer",
-            "relationship.order_lifecycle_customer",
-            "relationship.order_lifecycle_to_customer_history"
-          ],
-          [
-            "relationship.storefront_sessions_order",
-            "relationship.storefront_sessions_store",
-            "relationship.order_lifecycle_store",
-            "relationship.order_lifecycle_to_customer_history"
-          ]
-        ],
-        "chosen_path": [
+        "route": [
           "relationship.order_to_customer_history"
-        ],
-        "hint": "Which route is meant is a business definition. Record it once as a graph.path_preferences row in the package (details.pins has the row for each route); then every query uses it, without this warning.",
-        "meanings": [
-          "Order \u2192 Customer history",
-          "Order \u2192 Order lifecycle \u2192 Customer history",
-          "Order \u2192 Customer \u2192 Customer history",
-          "Order \u2192 Order lifecycle \u2192 Customer \u2192 Customer history",
-          "Order \u2192 Customer \u2192 Order lifecycle \u2192 Customer history",
-          "Order \u2192 Store \u2192 Order lifecycle \u2192 Customer history",
-          "Order \u2192 Storefront session \u2192 Customer \u2192 Customer history",
-          "Order \u2192 Store \u2192 Order lifecycle \u2192 Customer \u2192 Customer history",
-          "Order \u2192 Store \u2192 Storefront session \u2192 Customer \u2192 Customer history",
-          "Order \u2192 Storefront session \u2192 Customer \u2192 Order lifecycle \u2192 Customer history",
-          "Order \u2192 Storefront session \u2192 Store \u2192 Order lifecycle \u2192 Customer history"
-        ],
-        "pins": [
-          {
-            "relationship_path": [
-              "relationship.order_to_customer_history"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.order_lifecycle_to_customer_history"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.orders_customer",
-              "relationship.customer_history_customer"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.order_lifecycle_customer",
-              "relationship.customer_history_customer"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.orders_customer",
-              "relationship.order_lifecycle_customer",
-              "relationship.order_lifecycle_to_customer_history"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.orders_store",
-              "relationship.order_lifecycle_store",
-              "relationship.order_lifecycle_to_customer_history"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.storefront_sessions_order",
-              "relationship.storefront_sessions_customer",
-              "relationship.customer_history_customer"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.orders_store",
-              "relationship.order_lifecycle_store",
-              "relationship.order_lifecycle_customer",
-              "relationship.customer_history_customer"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.orders_store",
-              "relationship.storefront_sessions_store",
-              "relationship.storefront_sessions_customer",
-              "relationship.customer_history_customer"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.storefront_sessions_order",
-              "relationship.storefront_sessions_customer",
-              "relationship.order_lifecycle_customer",
-              "relationship.order_lifecycle_to_customer_history"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.storefront_sessions_order",
-              "relationship.storefront_sessions_store",
-              "relationship.order_lifecycle_store",
-              "relationship.order_lifecycle_to_customer_history"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_customer_history"
-          }
-        ],
-        "start": "entity.jaffle_order",
-        "target": "entity.jaffle_customer_history"
+        ]
       },
-      "message": "'entity.jaffle_customer_history' was read through entity.jaffle_order's direct key relationship.order_to_customer_history; 10 other route(s) reach it, and no graph.path_preferences row records which one is meant.",
+      "message": "Order \u2192 Customer history (own key)",
       "object_ids": [
+        "entity.jaffle_order",
         "entity.jaffle_customer_history"
       ],
       "path": "",
       "recovery_hints": [],
-      "severity": "warning",
+      "severity": "info",
       "stage": "planning"
     }
   ]

@@ -115,8 +115,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 3.114,
-      "compile_ms": 0.69,
+      "cache_lookup_ms": 1.06,
+      "compile_ms": 0.267,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -2410,7 +2410,7 @@
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-09-01T00:00:00"
     },
     {
-      "delivered_revenue": 17477.69999999999,
+      "delivered_revenue": 17477.70000000003,
       "dimension.jaffle_customer_history_segment": null,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-09-01T00:00:00"
     },
@@ -2420,7 +2420,7 @@
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-10-01T00:00:00"
     },
     {
-      "delivered_revenue": 21277.359999999982,
+      "delivered_revenue": 21277.359999999997,
       "dimension.jaffle_customer_history_segment": null,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-10-01T00:00:00"
     },
@@ -2430,22 +2430,22 @@
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-11-01T00:00:00"
     },
     {
-      "delivered_revenue": 27428.179999999957,
+      "delivered_revenue": 27428.18000000004,
       "dimension.jaffle_customer_history_segment": null,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-11-01T00:00:00"
     },
     {
-      "delivered_revenue": 724.9900000000004,
+      "delivered_revenue": 724.9900000000002,
       "dimension.jaffle_customer_history_segment": "new",
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-12-01T00:00:00"
     },
     {
-      "delivered_revenue": 34952.61000000005,
+      "delivered_revenue": 34952.61000000004,
       "dimension.jaffle_customer_history_segment": null,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2016-12-01T00:00:00"
     },
     {
-      "delivered_revenue": 294.6700000000002,
+      "delivered_revenue": 294.67000000000013,
       "dimension.jaffle_customer_history_segment": "new",
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-01-01T00:00:00"
     },
@@ -2455,12 +2455,12 @@
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-01-01T00:00:00"
     },
     {
-      "delivered_revenue": 44504.92999999983,
+      "delivered_revenue": 44504.92999999986,
       "dimension.jaffle_customer_history_segment": null,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-01-01T00:00:00"
     },
     {
-      "delivered_revenue": 376.29000000000025,
+      "delivered_revenue": 376.29000000000013,
       "dimension.jaffle_customer_history_segment": "new",
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-02-01T00:00:00"
     },
@@ -2470,7 +2470,7 @@
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-02-01T00:00:00"
     },
     {
-      "delivered_revenue": 42834.49999999988,
+      "delivered_revenue": 42834.499999999796,
       "dimension.jaffle_customer_history_segment": null,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-02-01T00:00:00"
     },
@@ -2485,7 +2485,7 @@
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-03-01T00:00:00"
     },
     {
-      "delivered_revenue": 73321.7699999999,
+      "delivered_revenue": 73321.77000000072,
       "dimension.jaffle_customer_history_segment": null,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-03-01T00:00:00"
     },
@@ -2500,12 +2500,12 @@
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-04-01T00:00:00"
     },
     {
-      "delivered_revenue": 82682.07000000103,
+      "delivered_revenue": 82682.07000000149,
       "dimension.jaffle_customer_history_segment": null,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-04-01T00:00:00"
     },
     {
-      "delivered_revenue": 396.4000000000002,
+      "delivered_revenue": 396.4000000000003,
       "dimension.jaffle_customer_history_segment": "new",
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-05-01T00:00:00"
     },
@@ -2515,12 +2515,12 @@
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-05-01T00:00:00"
     },
     {
-      "delivered_revenue": 95395.17000000343,
+      "delivered_revenue": 95395.1700000031,
       "dimension.jaffle_customer_history_segment": null,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-05-01T00:00:00"
     },
     {
-      "delivered_revenue": 348.7300000000003,
+      "delivered_revenue": 348.73000000000025,
       "dimension.jaffle_customer_history_segment": "new",
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-06-01T00:00:00"
     },
@@ -2530,7 +2530,7 @@
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-06-01T00:00:00"
     },
     {
-      "delivered_revenue": 97728.07000000286,
+      "delivered_revenue": 97728.07000000306,
       "dimension.jaffle_customer_history_segment": null,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-06-01T00:00:00"
     },
@@ -2545,12 +2545,12 @@
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-07-01T00:00:00"
     },
     {
-      "delivered_revenue": 94105.69000000205,
+      "delivered_revenue": 94105.69000000226,
       "dimension.jaffle_customer_history_segment": null,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-07-01T00:00:00"
     },
     {
-      "delivered_revenue": 348.7200000000001,
+      "delivered_revenue": 348.7200000000003,
       "dimension.jaffle_customer_history_segment": "new",
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-08-01T00:00:00"
     },
@@ -2560,7 +2560,7 @@
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-08-01T00:00:00"
     },
     {
-      "delivered_revenue": 106851.1500000043,
+      "delivered_revenue": 106851.15000000426,
       "dimension.jaffle_customer_history_segment": null,
       "temporal_role.jaffle_lifecycle_delivered_at__month": "2017-08-01T00:00:00"
     }
@@ -2954,192 +2954,20 @@
       "stage": "planning"
     },
     {
-      "code": "PATH_ALTERNATES_UNPINNED",
+      "code": "ROUTE_COLOCATED_KEY",
       "details": {
-        "alternate_paths": [
-          [
-            "relationship.order_lifecycle_customer",
-            "relationship.customer_history_customer"
-          ],
-          [
-            "relationship.order_lifecycle_order",
-            "relationship.order_to_customer_history"
-          ],
-          [
-            "relationship.order_lifecycle_customer",
-            "relationship.orders_customer",
-            "relationship.order_to_customer_history"
-          ],
-          [
-            "relationship.order_lifecycle_order",
-            "relationship.orders_customer",
-            "relationship.customer_history_customer"
-          ],
-          [
-            "relationship.order_lifecycle_store",
-            "relationship.orders_store",
-            "relationship.order_to_customer_history"
-          ],
-          [
-            "relationship.order_lifecycle_customer",
-            "relationship.storefront_sessions_customer",
-            "relationship.storefront_sessions_order",
-            "relationship.order_to_customer_history"
-          ],
-          [
-            "relationship.order_lifecycle_order",
-            "relationship.storefront_sessions_order",
-            "relationship.storefront_sessions_customer",
-            "relationship.customer_history_customer"
-          ],
-          [
-            "relationship.order_lifecycle_store",
-            "relationship.orders_store",
-            "relationship.orders_customer",
-            "relationship.customer_history_customer"
-          ],
-          [
-            "relationship.order_lifecycle_store",
-            "relationship.storefront_sessions_store",
-            "relationship.storefront_sessions_customer",
-            "relationship.customer_history_customer"
-          ],
-          [
-            "relationship.order_lifecycle_store",
-            "relationship.storefront_sessions_store",
-            "relationship.storefront_sessions_order",
-            "relationship.order_to_customer_history"
-          ]
-        ],
-        "chosen_path": [
+        "route": [
           "relationship.order_lifecycle_to_customer_history"
-        ],
-        "hint": "Which route is meant is a business definition. Record it once as a graph.path_preferences row in the package (details.pins has the row for each route); then every query uses it, without this warning.",
-        "meanings": [
-          "Order lifecycle \u2192 Customer history",
-          "Order lifecycle \u2192 Customer \u2192 Customer history",
-          "Order lifecycle \u2192 Order \u2192 Customer history",
-          "Order lifecycle \u2192 Customer \u2192 Order \u2192 Customer history",
-          "Order lifecycle \u2192 Order \u2192 Customer \u2192 Customer history",
-          "Order lifecycle \u2192 Store \u2192 Order \u2192 Customer history",
-          "Order lifecycle \u2192 Customer \u2192 Storefront session \u2192 Order \u2192 Customer history",
-          "Order lifecycle \u2192 Order \u2192 Storefront session \u2192 Customer \u2192 Customer history",
-          "Order lifecycle \u2192 Store \u2192 Order \u2192 Customer \u2192 Customer history",
-          "Order lifecycle \u2192 Store \u2192 Storefront session \u2192 Customer \u2192 Customer history",
-          "Order lifecycle \u2192 Store \u2192 Storefront session \u2192 Order \u2192 Customer history"
-        ],
-        "pins": [
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_to_customer_history"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_customer",
-              "relationship.customer_history_customer"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.order_to_customer_history"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_customer",
-              "relationship.orders_customer",
-              "relationship.order_to_customer_history"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.orders_customer",
-              "relationship.customer_history_customer"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_store",
-              "relationship.orders_store",
-              "relationship.order_to_customer_history"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_customer",
-              "relationship.storefront_sessions_customer",
-              "relationship.storefront_sessions_order",
-              "relationship.order_to_customer_history"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.storefront_sessions_order",
-              "relationship.storefront_sessions_customer",
-              "relationship.customer_history_customer"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_store",
-              "relationship.orders_store",
-              "relationship.orders_customer",
-              "relationship.customer_history_customer"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_store",
-              "relationship.storefront_sessions_store",
-              "relationship.storefront_sessions_customer",
-              "relationship.customer_history_customer"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_store",
-              "relationship.storefront_sessions_store",
-              "relationship.storefront_sessions_order",
-              "relationship.order_to_customer_history"
-            ],
-            "source_entity": "entity.jaffle_order_lifecycle",
-            "target_entity": "entity.jaffle_customer_history"
-          }
-        ],
-        "start": "entity.jaffle_order_lifecycle",
-        "target": "entity.jaffle_customer_history"
+        ]
       },
-      "message": "'entity.jaffle_customer_history' was read through entity.jaffle_order_lifecycle's direct key relationship.order_lifecycle_to_customer_history; 10 other route(s) reach it, and no graph.path_preferences row records which one is meant.",
+      "message": "Order lifecycle \u2192 Customer history (own key)",
       "object_ids": [
+        "entity.jaffle_order_lifecycle",
         "entity.jaffle_customer_history"
       ],
       "path": "",
       "recovery_hints": [],
-      "severity": "warning",
+      "severity": "info",
       "stage": "planning"
     }
   ]

@@ -112,8 +112,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 2.415,
-      "compile_ms": 1.295,
+      "cache_lookup_ms": 0.835,
+      "compile_ms": 0.268,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -2265,62 +2265,62 @@
   "rows": [
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "revenue_usd": 59714.46999999902,
+      "revenue_usd": 59714.469999999295,
       "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 54589.11999999993,
+      "revenue_usd": 54589.12000000004,
       "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 50398.659999999785,
+      "revenue_usd": 50398.65999999986,
       "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "revenue_usd": 49970.74999999993,
+      "revenue_usd": 49970.749999999745,
       "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 49092.32999999983,
+      "revenue_usd": 49092.32999999984,
       "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "revenue_usd": 47980.20999999982,
+      "revenue_usd": 47980.209999999526,
       "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 47896.78999999991,
+      "revenue_usd": 47896.78999999988,
       "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 47657.11999999995,
+      "revenue_usd": 47657.11999999991,
       "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 45017.94999999982,
+      "revenue_usd": 45017.949999999866,
       "temporal_role.jaffle_order_time__month": "2017-01-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 44886.44000000009,
+      "revenue_usd": 44886.44000000003,
       "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 43358.11999999985,
+      "revenue_usd": 43358.11999999978,
       "temporal_role.jaffle_order_time__month": "2017-02-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "revenue_usd": 41481.23000000013,
+      "revenue_usd": 41481.23000000011,
       "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00"
     },
     {
@@ -2330,27 +2330,27 @@
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "revenue_usd": 35420.200000000215,
+      "revenue_usd": 35420.200000000244,
       "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 27916.819999999952,
+      "revenue_usd": 27916.820000000032,
       "temporal_role.jaffle_order_time__month": "2016-11-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
-      "revenue_usd": 24857.99000000022,
+      "revenue_usd": 24857.99000000026,
       "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 21923.94999999999,
+      "revenue_usd": 21923.95,
       "temporal_role.jaffle_order_time__month": "2016-10-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
-      "revenue_usd": 18053.28,
+      "revenue_usd": 18053.280000000035,
       "temporal_role.jaffle_order_time__month": "2016-09-01T00:00:00"
     }
   ],
@@ -2669,192 +2669,20 @@
   },
   "warnings": [
     {
-      "code": "PATH_ALTERNATES_UNPINNED",
+      "code": "ROUTE_COLOCATED_KEY",
       "details": {
-        "alternate_paths": [
-          [
-            "relationship.order_lifecycle_order",
-            "relationship.order_lifecycle_store"
-          ],
-          [
-            "relationship.storefront_sessions_order",
-            "relationship.storefront_sessions_store"
-          ],
-          [
-            "relationship.order_to_customer_history",
-            "relationship.order_lifecycle_to_customer_history",
-            "relationship.order_lifecycle_store"
-          ],
-          [
-            "relationship.orders_customer",
-            "relationship.order_lifecycle_customer",
-            "relationship.order_lifecycle_store"
-          ],
-          [
-            "relationship.orders_customer",
-            "relationship.storefront_sessions_customer",
-            "relationship.storefront_sessions_store"
-          ],
-          [
-            "relationship.order_lifecycle_order",
-            "relationship.order_lifecycle_customer",
-            "relationship.storefront_sessions_customer",
-            "relationship.storefront_sessions_store"
-          ],
-          [
-            "relationship.order_to_customer_history",
-            "relationship.customer_history_customer",
-            "relationship.order_lifecycle_customer",
-            "relationship.order_lifecycle_store"
-          ],
-          [
-            "relationship.order_to_customer_history",
-            "relationship.customer_history_customer",
-            "relationship.storefront_sessions_customer",
-            "relationship.storefront_sessions_store"
-          ],
-          [
-            "relationship.orders_customer",
-            "relationship.customer_history_customer",
-            "relationship.order_lifecycle_to_customer_history",
-            "relationship.order_lifecycle_store"
-          ],
-          [
-            "relationship.storefront_sessions_order",
-            "relationship.storefront_sessions_customer",
-            "relationship.order_lifecycle_customer",
-            "relationship.order_lifecycle_store"
-          ]
-        ],
-        "chosen_path": [
+        "route": [
           "relationship.orders_store"
-        ],
-        "hint": "Which route is meant is a business definition. Record it once as a graph.path_preferences row in the package (details.pins has the row for each route); then every query uses it, without this warning.",
-        "meanings": [
-          "Order \u2192 Store",
-          "Order \u2192 Order lifecycle \u2192 Store",
-          "Order \u2192 Storefront session \u2192 Store",
-          "Order \u2192 Customer history \u2192 Order lifecycle \u2192 Store",
-          "Order \u2192 Customer \u2192 Order lifecycle \u2192 Store",
-          "Order \u2192 Customer \u2192 Storefront session \u2192 Store",
-          "Order \u2192 Order lifecycle \u2192 Customer \u2192 Storefront session \u2192 Store",
-          "Order \u2192 Customer history \u2192 Customer \u2192 Order lifecycle \u2192 Store",
-          "Order \u2192 Customer history \u2192 Customer \u2192 Storefront session \u2192 Store",
-          "Order \u2192 Customer \u2192 Customer history \u2192 Order lifecycle \u2192 Store",
-          "Order \u2192 Storefront session \u2192 Customer \u2192 Order lifecycle \u2192 Store"
-        ],
-        "pins": [
-          {
-            "relationship_path": [
-              "relationship.orders_store"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_store"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.order_lifecycle_store"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_store"
-          },
-          {
-            "relationship_path": [
-              "relationship.storefront_sessions_order",
-              "relationship.storefront_sessions_store"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_store"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_to_customer_history",
-              "relationship.order_lifecycle_to_customer_history",
-              "relationship.order_lifecycle_store"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_store"
-          },
-          {
-            "relationship_path": [
-              "relationship.orders_customer",
-              "relationship.order_lifecycle_customer",
-              "relationship.order_lifecycle_store"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_store"
-          },
-          {
-            "relationship_path": [
-              "relationship.orders_customer",
-              "relationship.storefront_sessions_customer",
-              "relationship.storefront_sessions_store"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_store"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_lifecycle_order",
-              "relationship.order_lifecycle_customer",
-              "relationship.storefront_sessions_customer",
-              "relationship.storefront_sessions_store"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_store"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_to_customer_history",
-              "relationship.customer_history_customer",
-              "relationship.order_lifecycle_customer",
-              "relationship.order_lifecycle_store"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_store"
-          },
-          {
-            "relationship_path": [
-              "relationship.order_to_customer_history",
-              "relationship.customer_history_customer",
-              "relationship.storefront_sessions_customer",
-              "relationship.storefront_sessions_store"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_store"
-          },
-          {
-            "relationship_path": [
-              "relationship.orders_customer",
-              "relationship.customer_history_customer",
-              "relationship.order_lifecycle_to_customer_history",
-              "relationship.order_lifecycle_store"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_store"
-          },
-          {
-            "relationship_path": [
-              "relationship.storefront_sessions_order",
-              "relationship.storefront_sessions_customer",
-              "relationship.order_lifecycle_customer",
-              "relationship.order_lifecycle_store"
-            ],
-            "source_entity": "entity.jaffle_order",
-            "target_entity": "entity.jaffle_store"
-          }
-        ],
-        "start": "entity.jaffle_order",
-        "target": "entity.jaffle_store"
+        ]
       },
-      "message": "'entity.jaffle_store' was read through entity.jaffle_order's direct key relationship.orders_store; 10 other route(s) reach it, and no graph.path_preferences row records which one is meant.",
+      "message": "Order \u2192 Store (own key)",
       "object_ids": [
+        "entity.jaffle_order",
         "entity.jaffle_store"
       ],
       "path": "",
       "recovery_hints": [],
-      "severity": "warning",
+      "severity": "info",
       "stage": "planning"
     }
   ]
