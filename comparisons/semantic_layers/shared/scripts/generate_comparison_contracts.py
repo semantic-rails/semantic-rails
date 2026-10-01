@@ -1303,6 +1303,23 @@ def answered_with_model_frozen(statuses: list[str]) -> dict[str, int] | None:
     }
 
 
+def semantic_rails_frozen_version_note() -> str:
+    """Qualify the frozen-model count with the captured engine and release evidence."""
+    summary = load_json(RESULTS_ROOT / "semantic_rails" / "summary.json")
+    release = load_json(RESULTS_ROOT / "semantic_rails" / "latest_release_frozen_model.json")
+    if release["dataset_fingerprint"] != summary["dataset_fingerprint"]:
+        raise SystemExit("Semantic Rails release capture uses a different dataset")
+    answered = sum(q["status"] == "executed" for q in release["questions"])
+    engine = summary["semantic_rails_commit"]
+    qualifier = "unreleased engine commit" if summary["engine_release"] is None else "engine commit"
+    return (
+        f"Semantic Rails' current count uses {qualifier} {engine}; "
+        f"the latest release checked, {release['engine_release']}, answers {answered} of "
+        f"{len(release['questions'])} on the same frozen model (q19 and q20 are refused because "
+        "it requires a declared calendar). The competitor captures were not re-run on newer versions."
+    )
+
+
 def frozen_model_claims(
     slice_ids: dict[str, list[str]], layers_payload: list[dict[str, Any]]
 ) -> list[str]:
@@ -1337,7 +1354,8 @@ def frozen_model_claims(
         f"parameter of a metric that {written} already use: a window, an offset, a filter, an "
         "aggregation or a threshold. No layer's model defines the variant. With each layer's "
         f"model left exactly as written for {written}, answered through the layer's query-time "
-        f"interface, out of {len(variants)}: {join_names(parts)}. Each other answer is labeled "
+        f"interface, out of {len(variants)}: {join_names(parts)}. "
+        f"{semantic_rails_frozen_version_note()} Each other answer is labeled "
         "requires_model_change, with the reason and the documentation in "
         "shared/frozen_model.yml"
         + (f", except those that failed to run: {join_names(failed)}." if failed else ".")

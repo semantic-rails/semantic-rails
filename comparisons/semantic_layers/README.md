@@ -14,7 +14,11 @@ compare latency, token use or cost. It runs without touching the active
   beside total revenue, the average and maximum of a measure modeled as a sum, and two new
   thresholds. Every layer answers them with its model exactly as written for q01-q16, through
   its query-time interface only. Answered, out of 8, in the pack's layer order: **Semantic Rails 8, MetricFlow 2, Cube 7
-  (5 of them through SQL API workarounds), Malloy 8 and KtX 3**; each other answer needs a model
+  (5 of them through SQL API workarounds), Malloy 8 and KtX 3**.
+  Semantic Rails' current count uses unreleased engine commit
+  0f7f3b5c3b8c9313756b0240ab93b68e0df84a19; the latest release checked, v0.3.1, answers 6 of 8
+  on the same frozen model (q19 and q20 are refused because it requires a declared calendar).
+  The competitor captures were not re-run on newer versions. Each other answer needs a model
   change, for the reason in [`shared/frozen_model.yml`](shared/frozen_model.yml). Snowflake
   Semantic Views isn't assessed. See *Frozen-Model Questions* below.
 - **Output check: on all 16 questions, the five layers checked on the current dataset return an
@@ -86,6 +90,13 @@ tree is `c710d06`, and it isn't exactly a tagged release, so it is labeled
 "0.3.2rc2, not a release (engine tree c710d06)" wherever the version is shown. The commit it
 records may not survive a squash merge, but the tree hashes do.
 
+The latest release checked on 2026-10-01 was PyPI `semantic-rails==0.3.1`. An isolated
+installation ran the same bootstrap and `semantic_rails/scripts/run_questions.py` against a copy
+of the unchanged package and queries. Its six executed frozen-model answers match the answer
+key; q19 and q20 return `REWRITE_NOT_SUPPORTED`. The compact
+[release capture](shared/results/semantic_rails/latest_release_frozen_model.json) records the
+per-question statuses, validation errors, dataset fingerprint and capture time.
+
 ## Shared Questions: q01-q07
 
 These 7 questions (`scope_level: required`; 4 `baseline`, 3 `advanced_portable`) cover the count,
@@ -129,7 +140,7 @@ its documented query-time interface only. A layer that can't express a variant i
 
 | Layer | Support labels | Answered with the model frozen | What answers them, or why not |
 | --- | --- | --- | --- |
-| Semantic Rails | 8 native | 8 of 8 | Query API conversion windows, rolling and prior-period expressions, aggregate overrides, a scoped aggregate and metric predicates. The engine supplies an implicit Gregorian calendar for q19 and q20; the package model stays unchanged |
+| Semantic Rails | 8 native | 8 of 8 (unreleased engine commit `0f7f3b5c3b8c9313756b0240ab93b68e0df84a19`); v0.3.1: 6 of 8 | Query API conversion windows, rolling and prior-period expressions, aggregate overrides, a scoped aggregate and metric predicates. The engine supplies an implicit Gregorian calendar for q19 and q20; the package model stays unchanged |
 | MetricFlow | 2 native (q23, q24), 6 requires_model_change (q17-q22) | 2 of 8 | `--where` metric filters over existing entities answer the new thresholds. A conversion window, a cumulative window, a period offset, a per-metric filter and an aggregation are each part of a metric's definition |
 | Cube | 2 native (q22, q24), 5 workaround (q18-q21, q23), 1 requires_model_change (q17) | 7 of 8 | A REST filter answers q24, and an SQL API query's `AVG` and `MAX` over the item revenue measure answer q22 (Cube pushes them down as aggregates of the measure's row expression). SQL API queries answer q18-q21 and q23 by wrapping a Cube query in SQL (a derived table, window functions, `CASE`). The 7-day window is on a declared join and the SQL API joins cubes only along declared joins, so it can narrow the window (q18) but not widen it (q17) |
 | Malloy | 8 native | 8 of 8 | Filtered and ad hoc aggregates, calculations (`sum_moving`, `lag`) and, for q17 and q18, a join the query declares on the model's source |
@@ -152,8 +163,11 @@ What this doesn't show:
   price in every month, so a layer returning the base metric would still match there
   ([`shared/oracle/SEMANTICS.md`](shared/oracle/SEMANTICS.md)). The labels don't depend on it:
   each layer's query for a variant is in its `queries/` folder.
-- **The set is small, and the Semantic Rails authors chose it** knowing which parameters Semantic
-  Rails composes at query time and which some other layers set in the model. It probes where
+- **The set is small, and the Semantic Rails authors chose it.** Semantic Rails added implicit
+  calendar support after v0.3.1: q19 and q20 now run on the unreleased engine commit
+  `0f7f3b5c3b8c9313756b0240ab93b68e0df84a19`; v0.3.1 refuses both. The authors knew which
+  parameters Semantic Rails composes at query time and which some other layers set in the model.
+  It probes where
   each layer's frozen-model boundary lies; it isn't a ranking, and it doesn't weigh what a model
   change costs in each layer.
 
