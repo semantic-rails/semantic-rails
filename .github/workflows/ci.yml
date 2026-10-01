@@ -189,14 +189,18 @@ jobs:
       - run: uv sync --group dev --locked
       - run: uv run python scripts/verify_release_readiness.py
 
+  postgres:
+    uses: ./.github/workflows/postgres-correctness.yml
+
   all-checks:
     name: All checks pass
     if: ${{ always() }}
-    needs: [changes, backend, lint, security, docs]
+    needs: [changes, backend, lint, security, docs, postgres]
     runs-on: ubuntu-latest
     steps:
       - name: Verify no required job failed or was cancelled
-        # Skipped jobs (from path filters) count as success.
+        # Skipped jobs from path filters count as success, except Postgres:
+        # its live correctness suite must run on every CI event.
         # Every required job (backend, lint, security, docs) must
         # succeed for the gate to pass. The `lint` job runs ruff +
         # mypy and IS required — they were continue-on-error during
@@ -211,6 +215,9 @@ jobs:
           needs = json.loads(os.environ["RESULTS"])
           bad = {n: r["result"] for n, r in needs.items()
                  if r["result"] in ("failure", "cancelled")}
+          postgres = needs.get("postgres", {}).get("result", "missing")
+          if postgres != "success":
+              bad["postgres"] = postgres
           if os.environ["EVENT"] == "merge_group":
               for name in ("backend", "lint", "security", "docs"):
                   result = needs.get(name, {}).get("result", "missing")

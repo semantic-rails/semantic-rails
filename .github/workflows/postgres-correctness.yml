@@ -1,22 +1,12 @@
 name: Postgres correctness
 
 # The differential correctness suite (tests/integration/correctness) on DuckDB and a real
-# Postgres 16. Not a required check yet: it joins "All checks pass" once it has been stable.
+# Postgres 16. Called once by CI and required by "All checks pass".
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-  merge_group:
-    types: [checks_requested]
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
-  cancel-in-progress: true
 
 jobs:
   postgres:

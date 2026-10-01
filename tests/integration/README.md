@@ -28,3 +28,8 @@ answer as DuckDB does. Without Docker the Postgres checks skip. With `SR_POSTGRE
 set it uses that server, in a schema of its own that it drops afterwards; `make
 test-integration` also collects this suite. Known wrong answers are strict xfails that link
 their issue.
+
+CI calls the Postgres correctness workflow once per pull request, main/master push,
+merge group, or manual CI run. Its live DuckDB/Postgres job uses strict fixture mode
+and the locked Postgres extra, and must succeed for `All checks pass`; a skipped,
+cancelled, or failed correctness job blocks that aggregate.
