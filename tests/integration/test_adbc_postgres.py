@@ -18,6 +18,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ConnectionSpec, SeedSpec
 from semantic_rails.sql_preparation import ParameterSlot, PreparedQuery, finalize_parameters
+from tests.semantic_rails.result_helpers import typed_rows
 from tests.semantic_rails.test_row_filters import BY_STORE, OWN_ORDERS, A, B, _package, _q
 
 from .targets.postgres import TARGET
@@ -123,9 +124,10 @@ def test_postgres_row_filter_isolation(adbc, tmp_path):
     try:
         results = [runtime.query(_q(BY_STORE, customer_id=customer)) for customer in (A, B, A, B)]
         for customer, result in zip((A, B, A, B), results, strict=True):
+            assert result["column_types"]["revenue"] == {"type": "decimal"}
             actual = [
                 (r["dimension.rf_order_store_id"], r["revenue"], r["per_order"])
-                for r in result["rows"]
+                for r in typed_rows(result)
             ]
             assert actual == (
                 [("s1", 10, 10.0), ("s2", 20, 20.0)]
