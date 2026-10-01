@@ -60,6 +60,7 @@ SQL_CAST_TYPE_NAMES = frozenset(
         "STRING",
         "TEXT",
         "TIMESTAMP",
+        "TIMESTAMPTZ",
         "TIMESTAMP_NTZ",
         "VARCHAR",
     }
@@ -130,11 +131,16 @@ SQL_FUNCTION_NAMES = frozenset(
         "MEDIAN",
         "MIN",
         "MIN_BY",
+        # The current time and a value's physical type, for base time coverage on DuckDB
+        # and Postgres (dialects.SqlDialect.now and utc_timestamp). Engine-only:
+        # expressions.ENGINE_ONLY_FUNCTIONS keeps them out of `call` expressions.
+        "NOW",
         "NULLIF",
         # Spark SQL exact percentile aggregate.
         "PERCENTILE",
         "PERCENTILE_CONT",
         "POWER",
+        "PG_TYPEOF",
         # ClickHouse exact quantiles (case-sensitive — see canonical map).
         "QUANTILE_EXACT",
         "QUANTILE_EXACT_INCLUSIVE",
@@ -542,6 +548,7 @@ class SqlSelect:
     limit: int | None = None
     ctes: list[SqlCte] = field(default_factory=list)
     distinct: bool = False
+    observation_scan: bool = False  # Engine-only coverage/observation scan, filter every read.
 
 
 @dataclass(frozen=True)

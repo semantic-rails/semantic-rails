@@ -17,7 +17,9 @@ from semantic_rails import row_filters as row_filters_module
 from semantic_rails import runtime as runtime_module
 from semantic_rails.asgi import SemanticLayerASGIApp
 from semantic_rails.audit import get_audit_sink, set_audit_sink
+from semantic_rails.compiler_parts.empty_groups import LeafScope, guard_empty_groups
 from semantic_rails.config import load_package_config
+from semantic_rails.dialects import dialect_for_warehouse
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp_server import MCP_PROTOCOL_VERSION
@@ -29,6 +31,7 @@ from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
 from semantic_rails.sql_ast import (
     SqlBinary,
+    SqlCall,
     SqlCte,
     SqlExists,
     SqlField,
@@ -129,6 +132,10 @@ def _package(root, policies):
         "measures": {
             "revenue": {"kind": "aggregate", "expr": "amount", "rollup": "additive"},
             "order_count": {"kind": "entity_count", "entity_key": "order_id", "rollup": "additive"},
+            "s2_count": {"kind": "entity_count", "accumulation": {"kind": "event"}, "expr": {
+                "kind": "case", "whens": [{"when": {"kind": "comparison", "op": "=",
+                    "left": {"kind": "column", "column": "store_id"}, "right": {"kind": "literal", "value": "s2"}},
+                    "then": {"kind": "column", "column": "order_id"}}], "else": {"kind": "literal", "value": None}}},
         },
         "default_variant": "tx", "variants": {"tx": {**tx, "covers": "inherit_all"}, "monthly": monthly},
     }})  # fmt: skip
@@ -571,3 +578,129 @@ def test_mcp_denies_a_missing_attribute_and_audits_failures_without_values(mcp):
     codes = [code for event in events for code in event.get("error_codes", [])]
     assert codes == ["POLICY_DENIED", "QUERY_EXECUTION_ERROR"]
     assert A not in json.dumps([missing, failed, events], default=str)
+
+
+@pytest.mark.parametrize("tenant", [A, B, "customer-with-no-rows"])
+def test_observation_and_coverage_never_see_another_customers_rows(runtime, tenant):
+    count = {"measure": "measure.rf.s2_count"}
+    query = {
+        "version": 2,
+        "select": [{"expression": REVENUE, "as": "revenue"}, {"expression": count, "as": "v"}],
+        "time": {**MONTH, "start": "2026-01-01", "end": "2026-02-01"},
+    }
+    result = runtime.query(_q(query, customer_id=tenant))
+    # A has an s2 sale outside January; B has no s2 sale anywhere.
+    assert [r["v"] for r in result["rows"]] == (
+        [0] if tenant == A else [None] if tenant == B else []
+    )
+    assert result["rendered_sql"].count("customer_id = ?") == 3
+    assert tenant not in result["rendered_sql"]
+
+
+def test_a_tagged_row_returning_scan_is_still_refused():
+    extra = replace(_scan(SqlTableRef("t")), observation_scan=True)
+    statement = replace(_scan(SqlTableRef("t")), where=[SqlExists(extra)])
+    assert _denied(lambda: apply_row_filters(statement, [ROW])) == "row_filter_unsupported_query"
+
+
+def test_an_empty_tenant_never_borrows_another_tenants_observation(package):
+    with duckdb.connect(str(package / "rf.duckdb")) as connection:
+        connection.execute("DELETE FROM order_fact WHERE customer_id = ?", [A])
+    runtime = Runtime.from_path(str(package))
+    adapter = runtime._get_adapter()
+    query = {
+        "version": 2,
+        "select": [
+            {"expression": REVENUE, "as": "v"},
+            {"expression": {"measure": "measure.rf.order_count"}, "as": "n"},
+        ],
+        "where": [
+            {"field": "dimension.rf_order_ordered_at", "op": ">=", "value": "2026-01-01"},
+            {"field": "dimension.rf_order_ordered_at", "op": "<", "value": "2026-02-01"},
+        ],
+    }
+    gold = adapter._db.conn.execute(
+        "SELECT SUM(amount), NULLIF(COUNT(order_id), 0) "
+        "FROM order_fact WHERE customer_id = ? AND ordered_at >= TIMESTAMP '2026-01-01' "
+        "AND ordered_at < TIMESTAMP '2026-02-01'",
+        [A],
+    ).fetchall()
+    result = runtime.query(_q(query, customer_id=A))
+    assert [(row["v"], row["n"]) for row in result["rows"]] == gold == [(None, None)]
+    assert runtime.query(_q(query, customer_id=B))["rows"] == [{"v": 300, "n": 1}]
+
+
+def test_every_tagged_probe_gets_both_policy_filters(runtime):
+    query = {
+        "version": 2,
+        "select": [{"expression": REVENUE, "as": "v"}],
+        "time": {**MONTH, "start": "2026-01-01", "end": "2026-02-01"},
+    }
+    context = replace(_ctx(customer_id=A, store_id="s1"), roles=("store_scoped",))
+    result = runtime.query({**query, "policy_context": context.to_policy_context()})
+    assert result["rows"][0]["v"] == 10
+    assert result["rendered_sql"].count("customer_id = ?") == 2
+    assert result["rendered_sql"].count("store_id = ?") == 2
+
+
+def test_empty_tenant_coverage_and_observation_match_filtered_gold(package):
+    # A bounded aggregate supplies one empty row; the real guard then reads both
+    # engine probes. B's positive value must not make A's empty value become zero.
+    dialect = dialect_for_warehouse("duckdb")
+    stamp = SqlIdentifier(["order_fact", "ordered_at"])
+    bucket = dialect.date_trunc("month", stamp)
+    value = SqlCall("SUM", [SqlIdentifier(["order_fact", "amount"])])
+    source = SqlSelect(
+        select=[
+            SqlField(dialect.timestamp_cast(SqlLiteral("2026-01-01")), "t"),
+            SqlField(value, "v"),
+        ],
+        from_table=SqlTableRef("order_fact"),
+        where=[
+            SqlBinary(stamp, ">=", SqlLiteral("2026-01-01")),
+            SqlBinary(stamp, "<", SqlLiteral("2026-02-01")),
+        ],
+    )
+    scope = LeafScope(
+        SqlTableRef("order_fact"),
+        (),
+        (),
+        value,
+        bucket=bucket,
+        raw_time=stamp,
+        now=dialect.now(),
+        bounded=True,
+    )
+    statement = SqlSelect(
+        select=[SqlField(SqlIdentifier(["guarded_base", "v"]), "v")],
+        from_table=SqlTableRef("guarded_base"),
+        ctes=[
+            SqlCte("source", source),
+            *guard_empty_groups(
+                "source", ["t"], ["v"], {"v": "sum"}, {"v": scope}, time_key="t", dialect=dialect
+            ),
+        ],
+    )
+    with duckdb.connect(str(package / "rf.duckdb")) as connection:
+        connection.execute("DELETE FROM order_fact WHERE customer_id = ?", [A])
+        for tenant, expected in [(A, [(None,)]), (B, [(300,)])]:
+            filtered, slots = apply_row_filters(
+                statement,
+                [
+                    RowFilter("own_orders", "order_fact", "customer_id", ROW.slot),
+                    RowFilter(
+                        "own_store", "order_fact", "store_id", ParameterSlot("store_id", "string")
+                    ),
+                ],
+            )
+            sql = render_select(filtered)
+            assert sql.count("customer_id = ?") == sql.count("store_id = ?") == 3
+            assert len(slots) == 6
+            got = connection.execute(sql, [tenant, "s3"] * 3).fetchall()
+            gold = connection.execute(
+                "SELECT SUM(amount) FROM order_fact WHERE customer_id = ? "
+                "AND ordered_at >= TIMESTAMP '2026-01-01' "
+                "AND ordered_at < TIMESTAMP '2026-02-01' AND store_id = 's3'",
+                [tenant],
+            ).fetchall()
+            assert got == gold == expected

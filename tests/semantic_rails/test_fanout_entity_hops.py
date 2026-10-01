@@ -399,6 +399,51 @@ def test_measure_bound_child_filter_does_not_change_unfiltered_sibling(package: 
     assert _rows(package, query) == _reference(package, reference) == [(30.0, 290.0)]
 
 
+@pytest.mark.parametrize("bound_filter", [False, True], ids=["query", "measure"])
+@pytest.mark.parametrize("fill", [False, True], ids=["bounded", "filled"])
+def test_time_bounded_child_filter_keeps_window_observation(
+    package: Path, bound_filter: bool, fill: bool
+) -> None:
+    expression: dict[str, Any] = {"measure": "measure.hop.revenue"}
+    if bound_filter:
+        expression.update(kind="aggregate", aggregation="sum", filter={"all": [BEVERAGE]})
+    query = {
+        "select": [{"expression": expression, "as": "revenue"}],
+        "where": [] if bound_filter else [BEVERAGE],
+        "time": {
+            "temporal_role": ROLE,
+            "grain": "month",
+            "start": "2016-10-01",
+            "end": "2017-04-01",
+            "fill": fill,
+        },
+    }
+    matching = """
+        SELECT DATE_TRUNC('month', o.ordered_at) AS month, SUM(o.total) AS revenue
+        FROM orders o
+        WHERE o.ordered_at >= TIMESTAMP '2016-10-01'
+          AND o.ordered_at < TIMESTAMP '2017-04-01'
+          AND EXISTS (SELECT 1 FROM order_items i
+                      WHERE i.order_id = o.order_id AND i.product_type = 'beverage')
+        GROUP BY month
+    """
+    reference = matching
+    if fill:
+        reference = f"""
+            WITH matching AS ({matching})
+            SELECT months.month, COALESCE(matching.revenue, 0)
+            FROM GENERATE_SERIES(TIMESTAMP '2016-10-01', TIMESTAMP '2017-03-01',
+                                 INTERVAL '1 month') AS months(month)
+            LEFT JOIN matching USING (month)
+        """
+    result = _run(package, query)
+    assert _normal(tuple(row.values()) for row in result["rows"]) == _reference(package, reference)
+    sql = result["rendered_sql"]
+    assert "EXISTS (" in sql and "SELECT DISTINCT" not in sql
+    # Rewritten fanout leaves retain observation inside the window, including filled buckets.
+    assert "coverage_" not in sql and sql.count("FROM orders") == 1
+
+
 def test_child_filter_correlates_every_authored_join_column(package: Path) -> None:
     config = load_package_config(str(package))
     config = replace(
