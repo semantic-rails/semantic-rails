@@ -155,4 +155,5 @@ def alias_select(
         ],
         limit=select.limit,
         distinct=getattr(select, "distinct", False),
+        observation_scan=select.observation_scan,
     )

@@ -415,7 +415,9 @@ HYGIENE_FORBIDDEN_PATH_PATTERNS = [
     # cross-warehouse conformance suite (targets, fixture loaders, and
     # the parity battery documented in docs/ADDING_A_DIALECT.md). Both
     # are part of the public release surface.
-    re.compile(r"^tests/(?!semantic_rails/|mf2sr/|integration/|__init__\.py$|conftest\.py$).+"),
+    re.compile(
+        r"^tests/(?!semantic_rails/|mf2sr/|integration/|__init__\.py$|conftest\.py$|quarantine\.toml$).+"
+    ),
     re.compile(r"^contracts/"),
     re.compile(r"^capabilities/"),
 ]

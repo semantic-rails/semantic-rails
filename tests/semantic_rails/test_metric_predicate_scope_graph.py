@@ -45,291 +45,107 @@ def _load_config(package_dir: Path):
     return config, Registry(config)
 
 
-def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction(tmp_path: Path):
-    package_dir = tmp_path / "region_scope_demo"
-    _write_package_header(
-        package_dir,
-        "region_scope_demo",
-        {
-            "customer": {
-                "id": "entity.demo_customer",
-                "name": "demo.Customer",
-                "label": "Customer",
-                "key": ["customer_id"],
-                "model": "customers",
+@pytest.mark.parametrize(
+    "names",
+    [
+        pytest.param(
+            {
+                "owner": "customer",
+                "parent": "region",
+                "child": "store",
+                "fact": "order",
+                "child_entity": "store",
+                "namespace": "sales",
+                "time_column": "ordered_at",
             },
-            "region": {
-                "id": "entity.demo_region",
-                "name": "demo.Region",
-                "label": "Region",
-                "key": ["region_id"],
-                "model": "regions",
+            id="customer-region-store-order",
+        ),
+        pytest.param(
+            {
+                "owner": "user",
+                "parent": "message",
+                "child": "variation",
+                "fact": "event",
+                "child_entity": "message_variation",
+                "namespace": "engagement",
+                "time_column": "event_at",
             },
-            "store": {
-                "id": "entity.demo_store",
-                "name": "demo.Store",
-                "label": "Store",
-                "key": ["store_id"],
-                "model": "stores",
+            id="user-message-variation-event",
+        ),
+        # Reverse the original alphabetical order: child < parent < fact < owner.
+        pytest.param(
+            {
+                "owner": "zcustomer",
+                "parent": "xregion",
+                "child": "wstore",
+                "fact": "yorder",
+                "child_entity": "wstore",
+                "namespace": "sales",
+                "time_column": "yorder_at",
             },
-            "order": {
-                "id": "entity.demo_order",
-                "name": "demo.Order",
-                "label": "Order",
-                "key": ["order_id"],
-                "model": "orders",
-            },
-        },
-    )
-    _write_yaml(
-        package_dir / "models" / "core" / "customers.yml",
-        {
-            "model": {
-                "id": "customers",
-                "entity": "customer",
-                "relation": "demo_customer",
-                "grain": ["customer_id"],
-                "dimensions": {
-                    "customer_id": {
-                        "id": "dimension.demo_customer_id",
-                        "name": "demo.Customer.customer_id",
-                        "label": "Customer id",
-                        "kind": "id",
-                    }
-                },
-            }
-        },
-    )
-    _write_yaml(
-        package_dir / "models" / "core" / "regions.yml",
-        {
-            "model": {
-                "id": "regions",
-                "entity": "region",
-                "relation": "demo_region",
-                "grain": ["region_id"],
-                "dimensions": {
-                    "region_id": {
-                        "id": "dimension.demo_region_id",
-                        "name": "demo.Region.region_id",
-                        "label": "Region id",
-                        "kind": "id",
-                    },
-                    "region_name": {
-                        "id": "dimension.demo_region_name",
-                        "name": "demo.Region.region_name",
-                        "label": "Region name",
-                        "kind": "categorical",
-                    },
-                },
-            }
-        },
-    )
-    _write_yaml(
-        package_dir / "models" / "core" / "stores.yml",
-        {
-            "model": {
-                "id": "stores",
-                "entity": "store",
-                "relation": "demo_store",
-                "grain": ["store_id"],
-                "keys": {"primary": ["store_id"], "foreign": {"region": ["region_id"]}},
-                "joins": {"region": {"id": "relationship.demo_store_region", "to": "region"}},
-                "dimensions": {
-                    "store_id": {
-                        "id": "dimension.demo_store_id",
-                        "name": "demo.Store.store_id",
-                        "label": "Store id",
-                        "kind": "id",
-                    },
-                    "region_id": {
-                        "id": "dimension.demo_store_region_id",
-                        "name": "demo.Store.region_id",
-                        "label": "Store region id",
-                        "kind": "id",
-                    },
-                    "store_name": {
-                        "id": "dimension.demo_store_name",
-                        "name": "demo.Store.store_name",
-                        "label": "Store name",
-                        "kind": "categorical",
-                    },
-                },
-            }
-        },
-    )
-    _write_yaml(
-        package_dir / "models" / "core" / "orders.yml",
-        {
-            "model": {
-                "id": "orders",
-                "entity": "order",
-                "relation": "demo_order",
-                "grain": ["order_id"],
-                "keys": {
-                    "primary": ["order_id"],
-                    "foreign": {"customer": ["customer_id"], "store": ["store_id"]},
-                },
-                "joins": {
-                    "customer": {"id": "relationship.demo_order_customer", "to": "customer"},
-                    "store": {"id": "relationship.demo_order_store", "to": "store"},
-                },
-                "dimensions": {
-                    "order_id": {
-                        "id": "dimension.demo_order_id",
-                        "name": "demo.Order.order_id",
-                        "label": "Order id",
-                        "kind": "id",
-                    },
-                    "customer_id": {
-                        "id": "dimension.demo_order_customer_id",
-                        "name": "demo.Order.customer_id",
-                        "label": "Customer id",
-                        "kind": "id",
-                    },
-                    "store_id": {
-                        "id": "dimension.demo_order_store_id",
-                        "name": "demo.Order.store_id",
-                        "label": "Store id",
-                        "kind": "id",
-                    },
-                },
-                "times": {
-                    "ordered_at": {
-                        "id": "temporal_role.demo_order_time",
-                        "name": "demo.Order.ordered_at",
-                        "label": "Order time",
-                        "column": "ordered_at",
-                        "kind": "timestamp",
-                        "class": "event_time",
-                        "default_query_axis": True,
-                    }
-                },
-                "measures": {
-                    "order_count": {
-                        "id": "measure.demo.order_count",
-                        "name": "sales.orders",
-                        "label": "Orders",
-                        "kind": "entity_count",
-                        "time": "ordered_at",
-                        "publish": {"id": "metric.sales.orders"},
-                    }
-                },
-            }
-        },
-    )
-    _write_yaml(
-        package_dir / "metrics.yml",
-        {
-            "metrics": {
-                "sales.orders_from_customers_with_2plus_orders_in_period": {
-                    "id": "metric.sales.orders_from_customers_with_2plus_orders_in_period",
-                    "name": "sales.orders_from_customers_with_2plus_orders_in_period",
-                    "label": "Orders from customers with 2+ orders in period",
-                    "kind": "aggregate",
-                    "temporal_role": "temporal_role.demo_order_time",
-                    "expression": {
-                        "kind": "aggregate",
-                        "measure": "measure.demo.order_count",
-                        "aggregation": "count_distinct",
-                        "filter": {
-                            "all": [
-                                {
-                                    "expression": {
-                                        "kind": "metric_predicate",
-                                        "entity": "entity.demo_customer",
-                                        "scope_mode": "contextual",
-                                        "input": {"metric": "metric.sales.orders"},
-                                        "op": ">",
-                                        "value": 2,
-                                    }
-                                }
-                            ]
-                        },
-                    },
-                }
-            }
-        },
-    )
-
-    config, registry = _load_config(package_dir)
-    compiled = compile_query(
-        config,
-        registry,
-        {
-            "version": 1,
-            "select": [
-                {
-                    "expression": {
-                        "metric": "metric.sales.orders_from_customers_with_2plus_orders_in_period"
-                    },
-                    "as": "orders",
-                }
-            ],
-            "group_by": ["dimension.demo_store_name", "dimension.demo_region_name"],
-            "time": {"temporal_role": "temporal_role.demo_order_time", "grain": "month"},
-        },
-    )
-
-    predicate_source_sql = compiled["sql"].split('"qualified_customers_month_by_orders_1" AS (', 1)[
-        0
-    ]
-    assert '"dimension.demo_customer_id"' in predicate_source_sql
-    assert '"dimension.demo_store_id"' in predicate_source_sql
-    assert '"dimension.demo_region_id"' not in predicate_source_sql
-
-
-def test_contextual_metric_predicate_reuses_entity_graph_for_variation_to_message_reduction(
-    tmp_path: Path,
+            id="reversed-name-order",
+        ),
+    ],
+)
+def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction(
+    tmp_path: Path, names: dict[str, str]
 ):
-    package_dir = tmp_path / "message_scope_demo"
+    owner = names["owner"]
+    parent = names["parent"]
+    child = names["child"]
+    fact = names["fact"]
+    child_entity = names["child_entity"]
+    child_name = "".join(part.title() for part in child_entity.split("_"))
+    namespace = names["namespace"]
+    time_column = names["time_column"]
+    package_dir = tmp_path / f"{parent}_scope_demo"
     _write_package_header(
         package_dir,
-        "message_scope_demo",
+        f"{parent}_scope_demo",
         {
-            "user": {
-                "id": "entity.demo_user",
-                "name": "demo.User",
-                "label": "User",
-                "key": ["user_id"],
-                "model": "users",
+            owner: {
+                "id": f"entity.demo_{owner}",
+                "name": f"demo.{owner.title()}",
+                "label": owner.title(),
+                "key": [f"{owner}_id"],
+                "model": f"{owner}s",
             },
-            "message": {
-                "id": "entity.demo_message",
-                "name": "demo.Message",
-                "label": "Message",
-                "key": ["message_id"],
-                "model": "messages",
+            parent: {
+                "id": f"entity.demo_{parent}",
+                "name": f"demo.{parent.title()}",
+                "label": parent.title(),
+                "key": [f"{parent}_id"],
+                "model": f"{parent}s",
             },
-            "message_variation": {
-                "id": "entity.demo_message_variation",
-                "name": "demo.MessageVariation",
-                "label": "Message variation",
-                "key": ["variation_id"],
-                "model": "variations",
+            child_entity: {
+                "id": f"entity.demo_{child_entity}",
+                "name": f"demo.{child_name}",
+                "label": child_entity.replace("_", " ").capitalize(),
+                "key": [f"{child}_id"],
+                "model": f"{child}s",
             },
-            "event": {
-                "id": "entity.demo_event",
-                "name": "demo.Event",
-                "label": "Event",
-                "key": ["event_id"],
-                "model": "events",
+            fact: {
+                "id": f"entity.demo_{fact}",
+                "name": f"demo.{fact.title()}",
+                "label": fact.title(),
+                "key": [f"{fact}_id"],
+                "model": f"{fact}s",
             },
         },
     )
     _write_yaml(
-        package_dir / "models" / "core" / "users.yml",
+        package_dir / "models" / "core" / f"{owner}s.yml",
         {
             "model": {
-                "id": "users",
-                "entity": "user",
-                "relation": "demo_user",
-                "grain": ["user_id"],
+                "id": f"{owner}s",
+                "entity": owner,
+                "relation": f"demo_{owner}",
+                "grain": [f"{owner}_id"],
                 "dimensions": {
-                    "user_id": {
-                        "id": "dimension.demo_user_id",
-                        "name": "demo.User.user_id",
-                        "label": "User id",
+                    f"{owner}_id": {
+                        "id": f"dimension.demo_{owner}_id",
+                        "name": f"demo.{owner.title()}.{owner}_id",
+                        "label": f"{owner.title()} id",
                         "kind": "id",
                     }
                 },
@@ -337,24 +153,24 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_variation_to_messag
         },
     )
     _write_yaml(
-        package_dir / "models" / "core" / "messages.yml",
+        package_dir / "models" / "core" / f"{parent}s.yml",
         {
             "model": {
-                "id": "messages",
-                "entity": "message",
-                "relation": "demo_message",
-                "grain": ["message_id"],
+                "id": f"{parent}s",
+                "entity": parent,
+                "relation": f"demo_{parent}",
+                "grain": [f"{parent}_id"],
                 "dimensions": {
-                    "message_id": {
-                        "id": "dimension.demo_message_id",
-                        "name": "demo.Message.message_id",
-                        "label": "Message id",
+                    f"{parent}_id": {
+                        "id": f"dimension.demo_{parent}_id",
+                        "name": f"demo.{parent.title()}.{parent}_id",
+                        "label": f"{parent.title()} id",
                         "kind": "id",
                     },
-                    "message_name": {
-                        "id": "dimension.demo_message_name",
-                        "name": "demo.Message.message_name",
-                        "label": "Message name",
+                    f"{parent}_name": {
+                        "id": f"dimension.demo_{parent}_name",
+                        "name": f"demo.{parent.title()}.{parent}_name",
+                        "label": f"{parent.title()} name",
                         "kind": "categorical",
                     },
                 },
@@ -362,34 +178,32 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_variation_to_messag
         },
     )
     _write_yaml(
-        package_dir / "models" / "core" / "variations.yml",
+        package_dir / "models" / "core" / f"{child}s.yml",
         {
             "model": {
-                "id": "variations",
-                "entity": "message_variation",
-                "relation": "demo_variation",
-                "grain": ["variation_id"],
-                "keys": {"primary": ["variation_id"], "foreign": {"message": ["message_id"]}},
-                "joins": {
-                    "message": {"id": "relationship.demo_variation_message", "to": "message"}
-                },
+                "id": f"{child}s",
+                "entity": child_entity,
+                "relation": f"demo_{child}",
+                "grain": [f"{child}_id"],
+                "keys": {"primary": [f"{child}_id"], "foreign": {parent: [f"{parent}_id"]}},
+                "joins": {parent: {"id": f"relationship.demo_{child}_{parent}", "to": parent}},
                 "dimensions": {
-                    "variation_id": {
-                        "id": "dimension.demo_variation_id",
-                        "name": "demo.MessageVariation.variation_id",
-                        "label": "Variation id",
+                    f"{child}_id": {
+                        "id": f"dimension.demo_{child}_id",
+                        "name": f"demo.{child_name}.{child}_id",
+                        "label": f"{child.title()} id",
                         "kind": "id",
                     },
-                    "message_id": {
-                        "id": "dimension.demo_variation_message_id",
-                        "name": "demo.MessageVariation.message_id",
-                        "label": "Variation message id",
+                    f"{parent}_id": {
+                        "id": f"dimension.demo_{child}_{parent}_id",
+                        "name": f"demo.{child_name}.{parent}_id",
+                        "label": f"{child.title()} {parent} id",
                         "kind": "id",
                     },
-                    "variation_name": {
-                        "id": "dimension.demo_variation_name",
-                        "name": "demo.MessageVariation.variation_name",
-                        "label": "Variation name",
+                    f"{child}_name": {
+                        "id": f"dimension.demo_{child}_name",
+                        "name": f"demo.{child_name}.{child}_name",
+                        "label": f"{child.title()} name",
                         "kind": "categorical",
                     },
                 },
@@ -397,63 +211,63 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_variation_to_messag
         },
     )
     _write_yaml(
-        package_dir / "models" / "core" / "events.yml",
+        package_dir / "models" / "core" / f"{fact}s.yml",
         {
             "model": {
-                "id": "events",
-                "entity": "event",
-                "relation": "demo_event",
-                "grain": ["event_id"],
+                "id": f"{fact}s",
+                "entity": fact,
+                "relation": f"demo_{fact}",
+                "grain": [f"{fact}_id"],
                 "keys": {
-                    "primary": ["event_id"],
-                    "foreign": {"user": ["user_id"], "message_variation": ["variation_id"]},
+                    "primary": [f"{fact}_id"],
+                    "foreign": {owner: [f"{owner}_id"], child_entity: [f"{child}_id"]},
                 },
                 "joins": {
-                    "user": {"id": "relationship.demo_event_user", "to": "user"},
-                    "message_variation": {
-                        "id": "relationship.demo_event_variation",
-                        "to": "message_variation",
+                    owner: {"id": f"relationship.demo_{fact}_{owner}", "to": owner},
+                    child_entity: {
+                        "id": f"relationship.demo_{fact}_{child}",
+                        "to": child_entity,
                     },
                 },
                 "dimensions": {
-                    "event_id": {
-                        "id": "dimension.demo_event_id",
-                        "name": "demo.Event.event_id",
-                        "label": "Event id",
+                    f"{fact}_id": {
+                        "id": f"dimension.demo_{fact}_id",
+                        "name": f"demo.{fact.title()}.{fact}_id",
+                        "label": f"{fact.title()} id",
                         "kind": "id",
                     },
-                    "user_id": {
-                        "id": "dimension.demo_event_user_id",
-                        "name": "demo.Event.user_id",
-                        "label": "User id",
+                    f"{owner}_id": {
+                        "id": f"dimension.demo_{fact}_{owner}_id",
+                        "name": f"demo.{fact.title()}.{owner}_id",
+                        "label": f"{owner.title()} id",
                         "kind": "id",
                     },
-                    "variation_id": {
-                        "id": "dimension.demo_event_variation_id",
-                        "name": "demo.Event.variation_id",
-                        "label": "Variation id",
+                    f"{child}_id": {
+                        "id": f"dimension.demo_{fact}_{child}_id",
+                        "name": f"demo.{fact.title()}.{child}_id",
+                        "label": f"{child.title()} id",
                         "kind": "id",
                     },
                 },
                 "times": {
-                    "event_at": {
-                        "id": "temporal_role.demo_event_time",
-                        "name": "demo.Event.event_at",
-                        "label": "Event time",
-                        "column": "event_at",
+                    time_column: {
+                        "id": f"temporal_role.demo_{fact}_time",
+                        "name": f"demo.{fact.title()}.{time_column}",
+                        "label": f"{fact.title()} time",
+                        "column": time_column,
                         "kind": "timestamp",
                         "class": "event_time",
                         "default_query_axis": True,
                     }
                 },
                 "measures": {
-                    "event_count": {
-                        "id": "measure.demo.event_count",
-                        "name": "engagement.events",
-                        "label": "Events",
+                    f"{fact}_count": {
+                        "id": f"measure.demo.{fact}_count",
+                        "name": f"{namespace}.{fact}s",
+                        "label": f"{fact.title()}s",
                         "kind": "entity_count",
-                        "time": "event_at",
-                        "publish": {"id": "metric.engagement.events"},
+                        "time": time_column,
+                        "publish": {"id": f"metric.{namespace}.{fact}s"},
                     }
                 },
             }
@@ -463,24 +277,24 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_variation_to_messag
         package_dir / "metrics.yml",
         {
             "metrics": {
-                "engagement.events_from_users_with_2plus_events_in_period": {
-                    "id": "metric.engagement.events_from_users_with_2plus_events_in_period",
-                    "name": "engagement.events_from_users_with_2plus_events_in_period",
-                    "label": "Events from users with 2+ events in period",
+                f"{namespace}.{fact}s_from_{owner}s_with_2plus_{fact}s_in_period": {
+                    "id": f"metric.{namespace}.{fact}s_from_{owner}s_with_2plus_{fact}s_in_period",
+                    "name": f"{namespace}.{fact}s_from_{owner}s_with_2plus_{fact}s_in_period",
+                    "label": f"{fact.title()}s from {owner}s with 2+ {fact}s in period",
                     "kind": "aggregate",
-                    "temporal_role": "temporal_role.demo_event_time",
+                    "temporal_role": f"temporal_role.demo_{fact}_time",
                     "expression": {
                         "kind": "aggregate",
-                        "measure": "measure.demo.event_count",
+                        "measure": f"measure.demo.{fact}_count",
                         "aggregation": "count_distinct",
                         "filter": {
                             "all": [
                                 {
                                     "expression": {
                                         "kind": "metric_predicate",
-                                        "entity": "entity.demo_user",
+                                        "entity": f"entity.demo_{owner}",
                                         "scope_mode": "contextual",
-                                        "input": {"metric": "metric.engagement.events"},
+                                        "input": {"metric": f"metric.{namespace}.{fact}s"},
                                         "op": ">",
                                         "value": 2,
                                     }
@@ -502,20 +316,22 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_variation_to_messag
             "select": [
                 {
                     "expression": {
-                        "metric": "metric.engagement.events_from_users_with_2plus_events_in_period"
+                        "metric": f"metric.{namespace}.{fact}s_from_{owner}s_with_2plus_{fact}s_in_period"
                     },
-                    "as": "events",
+                    "as": f"{fact}s",
                 }
             ],
-            "group_by": ["dimension.demo_variation_name", "dimension.demo_message_name"],
-            "time": {"temporal_role": "temporal_role.demo_event_time", "grain": "month"},
+            "group_by": [f"dimension.demo_{child}_name", f"dimension.demo_{parent}_name"],
+            "time": {"temporal_role": f"temporal_role.demo_{fact}_time", "grain": "month"},
         },
     )
 
-    predicate_source_sql = compiled["sql"].split('"qualified_users_month_by_events_1" AS (', 1)[0]
-    assert '"dimension.demo_user_id"' in predicate_source_sql
-    assert '"dimension.demo_variation_id"' in predicate_source_sql
-    assert '"dimension.demo_message_id"' not in predicate_source_sql
+    predicate_source_sql = compiled["sql"].split(
+        f'"qualified_{owner}s_month_by_{fact}s_1" AS (', 1
+    )[0]
+    assert f'"dimension.demo_{owner}_id"' in predicate_source_sql
+    assert f'"dimension.demo_{child}_id"' in predicate_source_sql
+    assert f'"dimension.demo_{parent}_id"' not in predicate_source_sql
 
 
 def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_context_entities(

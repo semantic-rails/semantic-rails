@@ -1836,26 +1836,32 @@ def test_mcp_session_creates_a_dbt_backed_project_and_validates_it(tmp_path: Pat
     assert runtime["ok"] is True, runtime
 
 
-def test_mcp_setup_dialog_elicits_the_warehouse(tmp_path: Path) -> None:
-    server = create_architect_mcp_server(workspace_root=tmp_path)
-
+def _setup_dialog(server, package_id: str, content: dict[str, Any]) -> dict[str, Any]:
     async def answer(
         context: RequestContext[ClientSession, Any], params: ElicitRequestParams
     ) -> ElicitResult:
-        return ElicitResult(
-            action="accept",
-            content={
-                "package_id": "shop",
-                "warehouse": "duckdb",
-                "data": "external",
-                "relation": "main_marts.fct_orders",
-            },
-        )
+        return ElicitResult(action="accept", content=content)
 
     (dialog,) = _session_call(
         server,
-        [("setup_project_dialog", {"package_id": "shop", "interactive": True})],
+        [("setup_project_dialog", {"package_id": package_id, "interactive": True})],
         elicitation_callback=answer,
+    )
+    return dialog
+
+
+def test_mcp_setup_dialog_elicits_the_warehouse(tmp_path: Path) -> None:
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+
+    dialog = _setup_dialog(
+        server,
+        "shop",
+        {
+            "package_id": "shop",
+            "warehouse": "duckdb",
+            "data": "external",
+            "relation": "main_marts.fct_orders",
+        },
     )
 
     assert dialog["mode"] == "elicitation"
@@ -1904,22 +1910,14 @@ def test_mcp_dialog_to_create_postgres_round_trip(tmp_path: Path) -> None:
 def test_mcp_dialog_does_not_claim_missing_connection_details_are_ready(tmp_path: Path) -> None:
     server = create_architect_mcp_server(workspace_root=tmp_path)
 
-    async def answer(
-        context: RequestContext[ClientSession, Any], params: ElicitRequestParams
-    ) -> ElicitResult:
-        return ElicitResult(
-            action="accept",
-            content={
-                "package_id": "pg_shop",
-                "warehouse": "postgres",
-                "connection_kind": "postgres_native",
-            },
-        )
-
-    (dialog,) = _session_call(
+    dialog = _setup_dialog(
         server,
-        [("setup_project_dialog", {"package_id": "pg_shop", "interactive": True})],
-        elicitation_callback=answer,
+        "pg_shop",
+        {
+            "package_id": "pg_shop",
+            "warehouse": "postgres",
+            "connection_kind": "postgres_native",
+        },
     )
     assert dialog["ok"] is False
     assert dialog["status"] == "needs_connection_details"
@@ -1930,23 +1928,15 @@ def test_mcp_dialog_does_not_claim_missing_connection_details_are_ready(tmp_path
 def test_mcp_dialog_requires_named_snowflake_cli_connection(tmp_path: Path) -> None:
     server = create_architect_mcp_server(workspace_root=tmp_path)
 
-    async def answer(
-        context: RequestContext[ClientSession, Any], params: ElicitRequestParams
-    ) -> ElicitResult:
-        return ElicitResult(
-            action="accept",
-            content={
-                "package_id": "snow_shop",
-                "warehouse": "snowflake",
-                "connection_kind": "snowflake_cli",
-                "connection_options": '{"database":"ANALYTICS"}',
-            },
-        )
-
-    (dialog,) = _session_call(
+    dialog = _setup_dialog(
         server,
-        [("setup_project_dialog", {"package_id": "snow_shop", "interactive": True})],
-        elicitation_callback=answer,
+        "snow_shop",
+        {
+            "package_id": "snow_shop",
+            "warehouse": "snowflake",
+            "connection_kind": "snowflake_cli",
+            "connection_options": '{"database":"ANALYTICS"}',
+        },
     )
     assert dialog["ok"] is False
     assert dialog["status"] == "needs_connection_details"
@@ -2038,24 +2028,16 @@ def test_mcp_dialog_rejects_unsupported_named_connection(
 ) -> None:
     server = create_architect_mcp_server(workspace_root=tmp_path)
 
-    async def answer(
-        context: RequestContext[ClientSession, Any], params: ElicitRequestParams
-    ) -> ElicitResult:
-        return ElicitResult(
-            action="accept",
-            content={
-                "package_id": "profile_shop",
-                "warehouse": warehouse,
-                "connection_kind": kind,
-                "connection_name": "my_profile",
-                "connection_options": "{}",
-            },
-        )
-
-    (dialog,) = _session_call(
+    dialog = _setup_dialog(
         server,
-        [("setup_project_dialog", {"package_id": "profile_shop", "interactive": True})],
-        elicitation_callback=answer,
+        "profile_shop",
+        {
+            "package_id": "profile_shop",
+            "warehouse": warehouse,
+            "connection_kind": kind,
+            "connection_name": "my_profile",
+            "connection_options": "{}",
+        },
     )
     assert dialog["ok"] is False
     assert dialog["status"] == "needs_connection_details"

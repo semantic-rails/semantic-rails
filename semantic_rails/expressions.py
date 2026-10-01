@@ -22,10 +22,11 @@ if TYPE_CHECKING:
     from .schema import MeasureConfig, PackageConfig
 
 # Row generators only the engine emits (the implicit calendar's day series, in
-# dialects.SqlDialect.day_series). A query or package `call` may not name them.
+# dialects.SqlDialect.day_series) and the time coverage cutoff (dialects.SqlDialect.now and
+# utc_timestamp). A query or package `call` may not name them.
 ENGINE_ONLY_FUNCTIONS = frozenset(
     {"ARRAY_GENERATE_RANGE", "EXPLODE", "GENERATE_DATE_ARRAY", "SEQUENCE"}
-)
+) | {"NOW", "PG_TYPEOF"}
 
 
 @dataclass(frozen=True)
@@ -1637,6 +1638,20 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
             raise SemanticLayerError(
                 "INVALID_METRIC_PREDICATE",
                 "metric_predicate time_alignment is only supported for entity_only bounded-window predicates",
+            )
+        if expr.get("value") is None:
+            # The input is 0 for an entity with no rows and NULL for one with no data, so a
+            # null threshold would keep the wrong entities.
+            hint = (
+                "A count of none is op '=' with value 0; a null test belongs inside the "
+                "input, as an aggregate_if condition."
+            )
+            raise SemanticLayerError(
+                "INVALID_METRIC_PREDICATE",
+                f"metric_predicate 'value' cannot be null. {hint}",
+                details={
+                    "recovery_hints": [{"code": "USE_ZERO_OR_INPUT_NULL_TEST", "message": hint}]
+                },
             )
         # ``value`` accepts either a literal or an expression-shaped
         # dict for inline thresholds. The only expression kind supported
