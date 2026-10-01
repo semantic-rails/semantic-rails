@@ -48,8 +48,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 2.69,
-      "compile_ms": 0.657,
+      "cache_lookup_ms": 2.312,
+      "compile_ms": 0.834,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -1860,27 +1860,27 @@
       "temporal_role.jaffle_order_time__month": "2016-09-01T00:00:00"
     },
     {
-      "avg_item_revenue_usd": 11.975961538461538,
-      "dimension.jaffle_item_product_type": "jaffle",
-      "max_item_revenue_usd": 14.0,
-      "temporal_role.jaffle_order_time__month": "2016-10-01T00:00:00"
-    },
-    {
       "avg_item_revenue_usd": 5.586242834809797,
       "dimension.jaffle_item_product_type": "beverage",
       "max_item_revenue_usd": 7.0,
       "temporal_role.jaffle_order_time__month": "2016-10-01T00:00:00"
     },
     {
-      "avg_item_revenue_usd": 12.054187192118226,
+      "avg_item_revenue_usd": 11.975961538461538,
       "dimension.jaffle_item_product_type": "jaffle",
       "max_item_revenue_usd": 14.0,
-      "temporal_role.jaffle_order_time__month": "2016-11-01T00:00:00"
+      "temporal_role.jaffle_order_time__month": "2016-10-01T00:00:00"
     },
     {
       "avg_item_revenue_usd": 5.60087370929309,
       "dimension.jaffle_item_product_type": "beverage",
       "max_item_revenue_usd": 7.0,
+      "temporal_role.jaffle_order_time__month": "2016-11-01T00:00:00"
+    },
+    {
+      "avg_item_revenue_usd": 12.054187192118226,
+      "dimension.jaffle_item_product_type": "jaffle",
+      "max_item_revenue_usd": 14.0,
       "temporal_role.jaffle_order_time__month": "2016-11-01T00:00:00"
     },
     {
@@ -1896,22 +1896,16 @@
       "temporal_role.jaffle_order_time__month": "2016-12-01T00:00:00"
     },
     {
-      "avg_item_revenue_usd": 11.996515679442508,
-      "dimension.jaffle_item_product_type": "jaffle",
-      "max_item_revenue_usd": 14.0,
-      "temporal_role.jaffle_order_time__month": "2017-01-01T00:00:00"
-    },
-    {
       "avg_item_revenue_usd": 5.619268418341061,
       "dimension.jaffle_item_product_type": "beverage",
       "max_item_revenue_usd": 7.0,
       "temporal_role.jaffle_order_time__month": "2017-01-01T00:00:00"
     },
     {
-      "avg_item_revenue_usd": 5.5921875,
-      "dimension.jaffle_item_product_type": "beverage",
-      "max_item_revenue_usd": 7.0,
-      "temporal_role.jaffle_order_time__month": "2017-02-01T00:00:00"
+      "avg_item_revenue_usd": 11.996515679442508,
+      "dimension.jaffle_item_product_type": "jaffle",
+      "max_item_revenue_usd": 14.0,
+      "temporal_role.jaffle_order_time__month": "2017-01-01T00:00:00"
     },
     {
       "avg_item_revenue_usd": 11.980271270036992,
@@ -1920,10 +1914,10 @@
       "temporal_role.jaffle_order_time__month": "2017-02-01T00:00:00"
     },
     {
-      "avg_item_revenue_usd": 5.5961397865184965,
+      "avg_item_revenue_usd": 5.5921875,
       "dimension.jaffle_item_product_type": "beverage",
       "max_item_revenue_usd": 7.0,
-      "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-02-01T00:00:00"
     },
     {
       "avg_item_revenue_usd": 11.969276882727613,
@@ -1932,15 +1926,21 @@
       "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
     },
     {
-      "avg_item_revenue_usd": 5.600477200424178,
+      "avg_item_revenue_usd": 5.5961397865184965,
       "dimension.jaffle_item_product_type": "beverage",
       "max_item_revenue_usd": 7.0,
-      "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
     },
     {
       "avg_item_revenue_usd": 12.050814332247556,
       "dimension.jaffle_item_product_type": "jaffle",
       "max_item_revenue_usd": 14.0,
+      "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
+    },
+    {
+      "avg_item_revenue_usd": 5.600477200424178,
+      "dimension.jaffle_item_product_type": "beverage",
+      "max_item_revenue_usd": 7.0,
       "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
     },
     {
@@ -1956,15 +1956,15 @@
       "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00"
     },
     {
-      "avg_item_revenue_usd": 12.020891364902507,
-      "dimension.jaffle_item_product_type": "jaffle",
-      "max_item_revenue_usd": 14.0,
-      "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
-    },
-    {
       "avg_item_revenue_usd": 5.613598489056772,
       "dimension.jaffle_item_product_type": "beverage",
       "max_item_revenue_usd": 7.0,
+      "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
+    },
+    {
+      "avg_item_revenue_usd": 12.020891364902507,
+      "dimension.jaffle_item_product_type": "jaffle",
+      "max_item_revenue_usd": 14.0,
       "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
     },
     {
@@ -1980,15 +1980,15 @@
       "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00"
     },
     {
-      "avg_item_revenue_usd": 11.999736980536559,
-      "dimension.jaffle_item_product_type": "jaffle",
-      "max_item_revenue_usd": 14.0,
-      "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
-    },
-    {
       "avg_item_revenue_usd": 5.592826172644856,
       "dimension.jaffle_item_product_type": "beverage",
       "max_item_revenue_usd": 7.0,
+      "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
+    },
+    {
+      "avg_item_revenue_usd": 11.999736980536559,
+      "dimension.jaffle_item_product_type": "jaffle",
+      "max_item_revenue_usd": 14.0,
       "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
     }
   ],
