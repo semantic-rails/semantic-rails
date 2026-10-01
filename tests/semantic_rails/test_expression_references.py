@@ -172,7 +172,10 @@ def _cases():
                         )
                     )
                 elif key == "args":
-                    probes.append(([deepcopy(REF)], MEASURE, True))
+                    args = [deepcopy(REF)]
+                    if kind == "boolean" and example["op"] in {"and", "or"}:
+                        args.append({"kind": "literal", "value": True})
+                    probes.append((args, MEASURE, True))
                 elif key == "whens":
                     for slot in ("when", "then"):
                         row = {"when": deepcopy(LITERAL), "then": deepcopy(LITERAL)}

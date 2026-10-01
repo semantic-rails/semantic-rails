@@ -84,6 +84,12 @@ class BooleanExpr:
     args: list[SemanticExpr] = field(default_factory=list)
 
 
+def validate_boolean_argument_count(op: str, count: int) -> None:
+    """AND/OR must have at least two operands, before parsing or lowering children."""
+    if op.strip().lower() in {"and", "or"} and count < 2:
+        raise SemanticLayerError("INVALID_EXPRESSION_AST", "and/or need at least two arguments")
+
+
 @dataclass(frozen=True)
 class CallExpr:
     name: str
@@ -1224,10 +1230,9 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
                     ],
                 },
             )
-        args = [
-            parse_semantic_expression(arg, context=context)
-            for arg in list(expr.get("args", []) or [])
-        ]
+        raw_args = list(expr.get("args", []) or [])
+        validate_boolean_argument_count(op, len(raw_args))
+        args = [parse_semantic_expression(arg, context=context) for arg in raw_args]
         if not args:
             raise SemanticLayerError("INVALID_EXPRESSION_AST", "Boolean expressions require args")
         if op == "not" and len(args) != 1:

@@ -40,6 +40,7 @@ from ..expressions import (
     parse_semantic_expression,
     resolve_filter_dimension,
     resolve_measure_temporal_role,
+    validate_boolean_argument_count,
 )
 from ..ir import BoundMeasure
 from ..schema import MeasureConfig, PackageConfig
@@ -50,7 +51,6 @@ from ..sql_ast import (
     SqlCaseWhen,
     SqlIn,
     SqlLiteral,
-    build_boolean_condition,
     build_comparison_condition,
     build_negation,
 )
@@ -302,6 +302,7 @@ def _config_expr_to_sql_inner(
             negated=expr.negated,
         )
     if isinstance(expr, BooleanExpr):
+        validate_boolean_argument_count(expr.op, len(expr.args))
         rendered = [_config_expr_to_sql(arg, measure, config) for arg in expr.args]
         if not rendered:
             raise SemanticLayerError("INVALID_EXPRESSION_AST", "Boolean expressions require args")
@@ -313,7 +314,10 @@ def _config_expr_to_sql_inner(
                     f"Boolean 'not' expressions require exactly one arg, got {len(rendered)}",
                 )
             return build_negation(rendered[0])
-        return build_boolean_condition(op, rendered)
+        current = rendered[0]
+        for item in rendered[1:]:
+            current = SqlBinary(current, op.upper(), item)
+        return current
     if isinstance(expr, CallExpr):
         return SqlCall(
             expr.name,

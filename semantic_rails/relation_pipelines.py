@@ -30,6 +30,7 @@ from .expressions import (
     SemanticExpr,
     parse_config_expression,
     parse_semantic_expression,
+    validate_boolean_argument_count,
 )
 from .schema import PackageConfig, RelationConfig, RelationPipelineStep
 from .sql_ast import (
@@ -56,7 +57,6 @@ from .sql_ast import (
     SqlTableFunction,
     SqlTableRef,
     SqlWindow,
-    build_boolean_condition,
     build_comparison_condition,
     build_filter_condition,
     build_negation,
@@ -148,6 +148,7 @@ def _semantic_expr_to_sql(
             negated=expr.negated,
         )
     if isinstance(expr, BooleanExpr):
+        validate_boolean_argument_count(expr.op, len(expr.args))
         args = [
             _semantic_expr_to_sql(arg, default_alias=default_alias, warehouse=warehouse)
             for arg in expr.args
@@ -161,7 +162,10 @@ def _semantic_expr_to_sql(
                     f"Boolean 'not' expressions require exactly one arg, got {len(args)}",
                 )
             return build_negation(args[0])
-        return build_boolean_condition(expr.op, args)
+        current = args[0]
+        for arg in args[1:]:
+            current = SqlBinary(current, expr.op.upper(), arg)
+        return current
     if isinstance(expr, CallExpr):
         return SqlCall(
             expr.name,

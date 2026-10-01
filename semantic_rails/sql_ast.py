@@ -685,16 +685,6 @@ def build_comparison_condition(
     return SqlBinary(left, op_normalized, right)
 
 
-def build_boolean_condition(op: str, args: list[SqlExpr]) -> SqlExpr:
-    """Fold nonempty AND/OR args without exposing computed NULL as an authored literal."""
-    current = args[0]
-    if len(args) == 1 and is_null_literal(current):
-        return SqlCast(SqlLiteral(None), "BOOLEAN")
-    for arg in args[1:]:
-        current = SqlBinary(current, op.upper(), arg)
-    return current
-
-
 def build_negation(arg: SqlExpr) -> SqlExpr:
     """``NOT arg`` as ``FALSE = arg`` (no unary-NOT node), which has the same truth table.
 
