@@ -46,6 +46,8 @@ jobs:
           prune-cache: true
           cache-dependency-glob: uv.lock
       - run: uv sync --group dev --extra postgres --locked
+      - name: Arrow adapter unit regressions
+        run: uv run --no-sync pytest -q -rfE tests/semantic_rails/test_adbc_adapter.py
       - run: uv run --no-sync pytest -q -rfE tests/integration/correctness --junitxml=postgres-results.xml
       - name: Verify Postgres tests ran
         run: |

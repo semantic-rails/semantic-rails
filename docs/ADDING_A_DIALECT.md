@@ -46,9 +46,12 @@ numeric-looking TEXT stays text. Positional correctness reads share this
 Arrow-type conversion while retaining duplicate column names. Aware timestamps retain
 microseconds and use the requested query zone (otherwise the current session
 zone, falling back to aware UTC when Python cannot load it). PostgreSQL stores
-instants, so the originally authored offset cannot be recovered. Intervals retain
-separate months, days and nanoseconds as Arrow
-`MonthDayNano` values. Each query restores the session's previous zone. The
+instants, so the originally authored offset cannot be recovered. Arrow
+`MonthDayNano` intervals become Python `timedelta` values, matching DuckDB's
+driver convention of 30 days per month and preserving exact microseconds.
+Their public JSON values and interval metadata therefore match DuckDB.
+Sub-microsecond intervals or durations outside Python's range refuse with
+`RESULT_VALUE_UNSUPPORTED`. Each query restores the session's previous zone. The
 adapter preserves inherited statement timeouts unless a request or connection
 option overrides them, then restores the exact previous value. It changes the
 zone only when needed. A query without overrides takes two round trips: read
@@ -58,7 +61,7 @@ Arrow fetching. Failed queries discard the connection
 before reuse. The libpq connect timeout is ten seconds; a separate network-read
 deadline is not exposed.
 
-The hosted Postgres correctness job runs the conformance battery and
+The hosted Postgres correctness job runs the Arrow adapter unit tests, the conformance battery and
 `tests/integration/test_adbc_postgres.py` with the standard `SR_POSTGRES_*`
 fixture variables. Exact-type, two-tenant isolation and timeout tests supplement
 normalized parity. The conformance loader uses `adbc_ingest` on the production
@@ -68,6 +71,9 @@ Seed scripts split only at semicolons outside quoted literals, identifiers,
 E-string escapes, dollar quotes and comments. Each statement retains its authored
 text and comments. An unterminated quote or block comment refuses the entire
 script before execution with `INVALID_CONFIG` (`unterminated_sql_script`).
+LF and CRLF line endings terminate line comments identically. A bare carriage
+return anywhere in a script refuses before execution with `INVALID_CONFIG`
+(`bare_carriage_return_sql_script`), naming the SQL source or `post_sql` file.
 
 ## 1. Dialect class — `semantic_rails/dialects.py`
 

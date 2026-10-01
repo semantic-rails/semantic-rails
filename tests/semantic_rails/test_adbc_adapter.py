@@ -1,13 +1,15 @@
 """Driver-free checks for Postgres dispatch, immutable binds and bounded batches."""
 
 from dataclasses import replace
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
 
-from semantic_rails.db import create_warehouse_adapter
+from semantic_rails.db import Database, create_warehouse_adapter
 from semantic_rails.db_parts.adbc import AdbcAdapter
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.result_values import result_rows
 from semantic_rails.schema import ConnectionSpec, PackageMeta
 from semantic_rails.sql_preparation import (
     ParameterSlot,
@@ -17,6 +19,88 @@ from semantic_rails.sql_preparation import (
 )
 
 SLOT = ParameterSlot("tenant", "string")
+
+
+def _interval_cursor(values):
+    pa = pytest.importorskip("pyarrow")
+    batch = pa.record_batch(
+        [pa.array(values, type=pa.month_day_nano_interval())], names=["duration"]
+    )
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def execute(self, sql):
+            assert sql == "SELECT 1"
+
+        def fetch_record_batch(self):
+            return pa.RecordBatchReader.from_batches(batch.schema, [batch])
+
+    return Cursor()
+
+
+@pytest.mark.parametrize("positional", [False, True])
+@pytest.mark.parametrize(
+    "value, literal",
+    [
+        ((0, 1, 2000003000), "1 day 2.000003 seconds"),
+        ((1, 2, 3123456000), "1 month 2 days 3.123456 seconds"),
+        ((-1, 2, -3123456000), "-1 month 2 days -3.123456 seconds"),
+        ((13, 0, 0), "1 year 1 month"),
+        ((0, 0, -1000), "-0.000001 seconds"),
+        ((0, 0, 0), "0 seconds"),
+    ],
+)
+def test_postgres_intervals_encode_identically_to_duckdb(value, literal, positional):
+    import json
+
+    from tests.integration.correctness.conftest import _rows
+
+    cursor = _interval_cursor([value, None])
+    if positional:
+        adapter = SimpleNamespace(_connection=lambda: SimpleNamespace(cursor=lambda: cursor))
+        rows = [
+            {"duration": row[0]}
+            for row in _rows(SimpleNamespace(_get_adapter=lambda: adapter), "SELECT 1")
+        ]
+    else:
+        rows = AdbcAdapter._rows(cursor, None, "UTC")
+    assert type(rows[0]["duration"]) is timedelta
+    db = Database.connect_in_memory()
+    try:
+        reference = result_rows(
+            db.query(f"SELECT INTERVAL '{literal}' AS duration UNION ALL SELECT NULL::INTERVAL")
+        )
+    finally:
+        db.close()
+    encoded = result_rows(rows)
+    assert encoded["column_types"] == {"duration": {"type": "interval"}}
+    assert encoded["rows"][1] == {"duration": None}
+    assert (
+        json.dumps(encoded, allow_nan=False, sort_keys=True).encode()
+        == json.dumps(reference, allow_nan=False, sort_keys=True).encode()
+    )
+
+
+@pytest.mark.parametrize("value", [(0, 0, 1), (0, 0, -1), (2147483647, 0, 0)])
+@pytest.mark.parametrize("positional", [False, True])
+def test_unrepresentable_postgres_intervals_refuse_without_values(value, positional):
+    from tests.integration.correctness.conftest import _rows
+
+    cursor = _interval_cursor([value])
+    with pytest.raises(SemanticLayerError) as caught:
+        if positional:
+            adapter = SimpleNamespace(_connection=lambda: SimpleNamespace(cursor=lambda: cursor))
+            _rows(SimpleNamespace(_get_adapter=lambda: adapter), "SELECT 1")
+        else:
+            AdbcAdapter._rows(cursor, None, "UTC")
+    assert caught.value.code == "RESULT_VALUE_UNSUPPORTED"
+    assert caught.value.details == {}
+    assert str(value) not in str(caught.value)
 
 
 def test_postgres_dispatch_uses_the_qualified_profile():

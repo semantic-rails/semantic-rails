@@ -94,12 +94,23 @@ _SQL_SCRIPT_TOKEN = re.compile(
     r"[eE]'|[A-Za-z_\u0080-\U0010ffff][A-Za-z_0-9$\u0080-\U0010ffff]*|"
     r"(?<![A-Za-z_0-9$\u0080-\U0010ffff])"
     r"\$(?:[A-Za-z_\u0080-\U0010ffff][A-Za-z_0-9\u0080-\U0010ffff]*)?\$|"
-    r"--[^\n]*|/\*|['\";]"
+    r"--[^\r\n]*|/\*|['\";]"
 )
 
 
-def _split_sql_statements(sql: str) -> list[str]:
+def _check_script_line_endings(sql: str, source_path: str) -> None:
+    if re.search(r"\r(?!\n)", sql):
+        filename = source_path or "<inline>"
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"SQL script '{filename}' contains a bare carriage return; use LF or CRLF line endings.",
+            details={"reason": "bare_carriage_return_sql_script", "file": filename},
+        )
+
+
+def _split_sql_statements(sql: str, *, source_path: str = "") -> list[str]:
     """Validate the whole script, then split at unquoted semicolons without rewriting it."""
+    _check_script_line_endings(sql, source_path)
     statements: list[str] = []
     start = position = 0
     has_statement = False
@@ -175,11 +186,12 @@ class Database:
         if hasattr(self.conn, "commit"):
             self.conn.commit()
 
-    def execute_script(self, sql: str) -> None:
+    def execute_script(self, sql: str, *, source_path: str = "") -> None:
         if self.engine == "sqlite":
+            _check_script_line_endings(sql, source_path)
             self.conn.executescript(sql)
         else:
-            for statement in _split_sql_statements(sql):
+            for statement in _split_sql_statements(sql, source_path=source_path):
                 self.conn.execute(statement)
         if hasattr(self.conn, "commit"):
             self.conn.commit()
@@ -337,8 +349,8 @@ def _duckdb_string_list(values: Iterable[str]) -> str:
 
 
 def _build_sql_seed(db: Database, seed_sql_path: str) -> None:
-    with open(seed_sql_path, encoding="utf-8") as f:
-        db.execute_script(f.read())
+    with open(seed_sql_path, encoding="utf-8", newline="") as f:
+        db.execute_script(f.read(), source_path=seed_sql_path)
 
 
 def _csv_seed_files(csv_dir: str) -> list[str]:
@@ -383,8 +395,10 @@ def _build_csv_seed(
             ) from exc
     if post_sql_path:
         try:
-            with open(post_sql_path, encoding="utf-8") as f:
-                db.execute_script(f.read())
+            with open(post_sql_path, encoding="utf-8", newline="") as f:
+                db.execute_script(f.read(), source_path=post_sql_path)
+        except SemanticLayerError:
+            raise
         except Exception as exc:
             raise SemanticLayerError(
                 "INVALID_CONFIG",

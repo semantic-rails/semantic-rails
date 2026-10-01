@@ -13,8 +13,10 @@ from decimal import Decimal
 import pytest
 
 from semantic_rails.config import load_package_config
+from semantic_rails.db import Database
 from semantic_rails.db_parts.adbc import AdbcAdapter
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.result_values import result_rows
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ConnectionSpec, SeedSpec
 from semantic_rails.sql_preparation import ParameterSlot, PreparedQuery, finalize_parameters
@@ -49,9 +51,68 @@ def test_postgres_exact_types(adbc):
     assert row["z"].utcoffset() == timedelta(hours=5, minutes=30)
     assert row["z"].microsecond == 123456
     assert row["z"].astimezone(UTC) == datetime(2026, 9, 30, 7, 4, 56, 123456, tzinfo=UTC)
-    assert (row["i"].months, row["i"].days, row["i"].nanoseconds) == (1, 2, 3123456000)
+    assert type(row["i"]) is timedelta
+    assert row["i"] == timedelta(days=32, seconds=3, microseconds=123456)
     assert row["missing"] is None
     assert adbc.query("SELECT current_setting('TimeZone') z")[0]["z"] == original_zone
+
+
+@pytest.mark.parametrize(
+    "literal",
+    [
+        "1 day 2.000003 seconds",
+        "1 month 2 days 3.123456 seconds",
+        "-1 month 2 days -3.123456 seconds",
+        "1 year 1 month",
+    ],
+)
+def test_postgres_runtime_interval_row_encodes_identically_to_duckdb(adbc, tmp_path, literal):
+    root = _package(tmp_path / "intervals", [])
+    config = load_package_config(str(root))
+    package = replace(
+        config.package,
+        warehouse="postgres",
+        default_db="",
+        seed=SeedSpec(),
+        connection=ConnectionSpec(kind="postgres_native", options=dict(TARGET.connection_options)),
+    )
+    runtime = Runtime.from_config(
+        replace(config, package=package), source_path=str(root), package_id="rf"
+    )
+    adbc.query("CREATE TEMP TABLE order_fact(amount INTERVAL)")
+    adbc.query(f"INSERT INTO order_fact VALUES (INTERVAL '{literal}'), (NULL)")
+    runtime.set_adapter(adbc)
+    db = Database.connect_in_memory()
+    try:
+        result = runtime.query(
+            {
+                "version": 1,
+                "select": [
+                    {
+                        "expression": {
+                            "kind": "aggregate",
+                            "measure": "measure.rf.revenue",
+                            "aggregation": "max",
+                        },
+                        "as": "duration",
+                    }
+                ],
+            }
+        )
+        reference = result_rows(
+            db.query(
+                f"SELECT MAX(amount) AS duration FROM (VALUES (INTERVAL '{literal}'), (NULL::INTERVAL)) AS durations(amount)"
+            )
+        )
+        encoded = {"rows": result["rows"], "column_types": result["column_types"]}
+        assert encoded["column_types"] == {"duration": {"type": "interval"}}
+        assert (
+            json.dumps(encoded, allow_nan=False, sort_keys=True).encode()
+            == json.dumps(reference, allow_nan=False, sort_keys=True).encode()
+        )
+    finally:
+        runtime.close()
+        db.close()
 
 
 @pytest.mark.parametrize("value", ["70.00", "123456789.4500", "0.0000"])

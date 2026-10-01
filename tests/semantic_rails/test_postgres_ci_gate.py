@@ -58,6 +58,7 @@ def test_correctness_requires_strict_fixtures_locked_extra_and_execution_steps()
     assert job["services"]["postgres"]["image"].startswith("postgres:16@sha256:")
     commands = [step.get("run") for step in job["steps"]]
     assert "uv sync --group dev --extra postgres --locked" in commands
+    assert "uv run --no-sync pytest -q -rfE tests/semantic_rails/test_adbc_adapter.py" in commands
     execution = (
         "uv run --no-sync pytest -q -rfE tests/integration/correctness "
         "--junitxml=postgres-results.xml"

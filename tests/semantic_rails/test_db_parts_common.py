@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from semantic_rails.db import Database, _split_sql_statements
+from semantic_rails.db import Database, _split_sql_statements, load_csv_dir_to_duckdb, seed_db
 from semantic_rails.db_parts.common import (
     option_or_env,
 )
@@ -18,7 +18,12 @@ from semantic_rails.sql_preparation import (
 
 @pytest.mark.parametrize(
     "comment",
-    ["-- the base table's key;\n", "/* the base table's key; */", "/* outer /* '; */ inner */"],
+    [
+        "-- the base table's key;\n",
+        "-- the base table's key;\r\n",
+        "/* the base table's key; */",
+        "/* outer /* '; */ inner */",
+    ],
 )
 def test_seed_splitting_ignores_comment_quotes_and_semicolons(comment):
     assert _split_sql_statements(f"{comment} SELECT 'a;b'; SELECT 2;") == [
@@ -115,6 +120,79 @@ def test_seed_statement_text_is_unchanged(statement):
         statement,
         " /* keep */ SELECT 2",
     ]
+
+
+@pytest.mark.parametrize("engine", ["duckdb", "sqlite"])
+@pytest.mark.parametrize(
+    "tail",
+    ["-- comment\rINSERT INTO seed_example VALUES (7);", "-- comment\rSELECT 'unterminated"],
+)
+def test_bare_carriage_return_refuses_before_any_execution(engine, tail):
+    db = Database.connect(":memory:", engine=engine)
+    try:
+        with pytest.raises(SemanticLayerError) as caught:
+            db.execute_script(f"CREATE TABLE seed_example(value INTEGER); {tail}")
+        assert caught.value.code == "INVALID_CONFIG"
+        assert caught.value.details["reason"] == "bare_carriage_return_sql_script"
+        catalog = "information_schema.tables" if engine == "duckdb" else "sqlite_master"
+        field = "table_name" if engine == "duckdb" else "name"
+        assert db.query(f"SELECT {field} FROM {catalog} WHERE {field} = 'seed_example'") == []
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "script", ["SELECT 1; -- tail\r", "SELECT 'a\rb';", "-- ok\r\nSELECT 1;\r"]
+)
+def test_splitter_refuses_bare_carriage_return_on_direct_calls(script):
+    with pytest.raises(SemanticLayerError) as caught:
+        _split_sql_statements(script)
+    assert caught.value.code == "INVALID_CONFIG"
+    assert caught.value.details["reason"] == "bare_carriage_return_sql_script"
+
+
+@pytest.mark.parametrize("seed_kind", ["sql_script", "csv_dir_duckdb"])
+def test_seed_file_bare_carriage_return_refuses_with_filename(tmp_path, seed_kind):
+    source = tmp_path / "seed.sql"
+    source.write_bytes(
+        b"CREATE TABLE seed_example(value INTEGER); -- comment\rINSERT INTO seed_example VALUES (7);"
+    )
+    target = tmp_path / "seed.duckdb"
+    with pytest.raises(SemanticLayerError) as caught:
+        if seed_kind == "sql_script":
+            seed_db(str(target), str(source))
+        else:
+            load_csv_dir_to_duckdb(str(target), str(tmp_path), str(source))
+    assert caught.value.code == "INVALID_CONFIG"
+    assert caught.value.details == {
+        "reason": "bare_carriage_return_sql_script",
+        "file": str(source),
+    }
+    assert str(source) in str(caught.value)
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("seed_kind", ["sql_script", "csv_dir_duckdb"])
+def test_crlf_seed_file_executes_every_statement(tmp_path, seed_kind):
+    source = tmp_path / "seed.sql"
+    source.write_bytes(
+        b"CREATE TABLE seed_example(value INTEGER); -- comment\r\n"
+        b"INSERT INTO seed_example VALUES (7); -- second\r\n"
+        b"INSERT INTO seed_example VALUES (9); -- tail\r\n"
+    )
+    target = tmp_path / "seed.duckdb"
+    if seed_kind == "sql_script":
+        seed_db(str(target), str(source))
+    else:
+        load_csv_dir_to_duckdb(str(target), str(tmp_path), str(source))
+    db = Database.connect(str(target))
+    try:
+        assert db.query("SELECT value FROM seed_example ORDER BY value") == [
+            {"value": 7},
+            {"value": 9},
+        ]
+    finally:
+        db.close()
 
 
 def test_rewrites_identifiers_to_backticks():

@@ -10,7 +10,7 @@ import threading
 from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, datetime, timedelta, tzinfo
 from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -63,6 +63,19 @@ def _postgres_value(value: Any, data_type: Any, result_zone: tzinfo) -> Any:
         and getattr(data_type, "vendor_name", "") == "PostgreSQL"
     ):
         return Decimal(value)
+    if value is not None and str(data_type) == "month_day_nano_interval":
+        if value.nanoseconds % 1000 == 0:
+            try:
+                # Match DuckDB's driver duration: a month becomes 30 days.
+                return timedelta(
+                    days=value.months * 30 + value.days, microseconds=value.nanoseconds // 1000
+                )
+            except OverflowError:
+                pass
+        raise SemanticLayerError(
+            "RESULT_VALUE_UNSUPPORTED",
+            "A result interval cannot be represented as an exact Python timedelta.",
+        )
     if isinstance(value, datetime) and value.tzinfo is not None:
         return value.astimezone(result_zone)
     return value
