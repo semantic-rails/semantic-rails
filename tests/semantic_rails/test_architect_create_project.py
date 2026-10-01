@@ -1498,7 +1498,7 @@ def test_create_overwrite_refuses_ambiguous_graph_before_model_replacement(
         assert parse["ok"] is False, parse
         assert any(
             error["code"] == "INVALID_CONFIG"
-            and all(name in error["message"] for name in ("orders", "order", "customer"))
+            and all(f"'{name}'" in error["message"] for name in ("orders", "order", "customer"))
             for error in parse["errors"]
         ), parse
     elif graph_case == "missing":

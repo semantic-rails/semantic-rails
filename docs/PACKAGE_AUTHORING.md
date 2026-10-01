@@ -712,7 +712,8 @@ between them.
 Each graph entity must have a key, declared on the entity or through its own
 model's `keys.primary:` or `grain:`. An explicit graph model binding makes that
 entity the model's primary entity, regardless of the order of its `entities:` block. A
-conflicting authored `entity:` fails with `INVALID_CONFIG` naming both entities. A
+conflicting resolved `entity:` fails with `INVALID_CONFIG` naming both entities,
+including for implicit bindings and bindings by model name. A
 keyless entity cannot borrow a foreign entity's key: loading fails with
 `INVALID_CONFIG` naming the entity and model before graph relationships are
 translated. Each model can be the primary home of only one graph entity.
@@ -863,6 +864,13 @@ the model's `entities:` block whose name matches the model and which has no
 explicit graph binding. It back-fills implicit graph bindings from the resolved
 identity. Declaration order never selects the primary; loading fails with
 `INVALID_CONFIG` if it cannot be resolved or two graph entities bind to one model.
+Two models claiming the same unbound graph entity also fail with `INVALID_CONFIG`
+naming both models. When `grain:` accompanies an `entities:` block, it must match
+the resolved primary entity's `expr:` override or canonical graph key, even when
+a binding or singular `entity:` supplies the identity. When neither declares
+columns, the check uses the model's own `keys.primary:`. If no key is declared,
+its own model's grain can supply it. Empty `entities:` blocks retain the graph's
+model-name default and still validate the grain.
 
 ### `bridge: false` — junction tables
 

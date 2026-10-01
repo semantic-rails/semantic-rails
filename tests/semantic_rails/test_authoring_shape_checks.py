@@ -85,8 +85,10 @@ def test_grain_that_matches_no_entity_key_is_rejected(starter_package: Path) -> 
 
 
 @pytest.mark.parametrize("primary_source", ["graph", "entity"])
+@pytest.mark.parametrize("key_source", ["graph", "expr", "primary", "empty_block"])
+@pytest.mark.parametrize("surface", ["validate", "load"])
 def test_grain_does_not_select_primary_when_identity_is_authored(
-    starter_package: Path, primary_source: str
+    starter_package: Path, primary_source: str, key_source: str, surface: str
 ) -> None:
     raw = yaml.safe_load(starter_package.read_text(encoding="utf-8"))
     raw["models"]["customers"]["grain"] = ["authored_row_id"]
@@ -94,11 +96,52 @@ def test_grain_does_not_select_primary_when_identity_is_authored(
         raw["graph"]["entities"]["customer"]["model"] = "customers"
     else:
         raw["models"]["customers"]["entity"] = "customer"
+    if key_source == "expr":
+        raw["models"]["customers"]["entities"]["customer"] = {"expr": "renamed_customer_id"}
+    elif key_source == "primary":
+        raw["graph"]["entities"]["customer"].pop("key")
+        raw["models"]["customers"]["keys"] = {"primary": ["customer_id"]}
+    elif key_source == "empty_block":
+        raw["models"]["customers"]["entities"] = {}
     starter_package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
-    assert _errors(starter_package) == []
-    config = load_package_config(str(starter_package))
-    customer = next(entity for entity in config.entities if entity.id.endswith("_customer"))
-    assert customer.key == ["customer_id"]
+    expected_key = "renamed_customer_id" if key_source == "expr" else "customer_id"
+    if surface == "validate":
+        assert any(
+            "grain" in error and "authored_row_id" in error and expected_key in error
+            for error in _errors(starter_package)
+        )
+        return
+    # Loading directly bypasses raw-shape validation, so the normalizer must refuse too.
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(starter_package))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert all(text in str(exc.value) for text in ("'customers'", "'customer'", expected_key))
+
+
+def test_grain_matching_foreign_key_does_not_override_authored_primary(
+    starter_package: Path,
+) -> None:
+    raw = yaml.safe_load(starter_package.read_text(encoding="utf-8"))
+    model = raw["models"]["customers"]
+    model["entity"] = "customer"
+    model["entities"]["order"] = {}
+    model["grain"] = ["order_id"]
+    starter_package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    assert any("grain" in error and "customer_id" in error for error in _errors(starter_package))
+    with pytest.raises(SemanticLayerError, match="primary entity 'customer'") as exc:
+        load_package_config(str(starter_package))
+    assert exc.value.code == "INVALID_CONFIG"
+
+
+def test_grain_matching_primary_expr_override_is_accepted(starter_package: Path) -> None:
+    raw = yaml.safe_load(starter_package.read_text(encoding="utf-8"))
+    model = raw["models"]["customers"]
+    model["entity"] = "customer"
+    model["entities"]["customer"] = {"expr": "renamed_customer_id"}
+    model["grain"] = ["renamed_customer_id"]
+    starter_package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    assert not any("grain" in error for error in _errors(starter_package))
+    load_package_config(str(starter_package))
 
 
 @pytest.mark.parametrize(

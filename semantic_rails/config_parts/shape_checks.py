@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .package_loader import _column_list
+
 
 def add_error(errors: list[str], message: str) -> None:
     errors.append(message)
@@ -569,17 +571,18 @@ def _check_model_shape(
                     errors=errors,
                 )
 
-    # Grain selects the primary only without an explicit binding or authored identity.
-    # In that case, check it against entity keys (or `expr:` overrides).
+    # Grain must match the resolved primary's key (or `expr:` override).
     model_kind = str(model.get("kind", "model") or "model").strip().lower()
-    explicitly_bound = any(
-        isinstance(entity, dict) and str(entity.get("model", "") or "") == model_id
-        for entity in (graph_entities or {}).values()
+    primary = next(
+        (
+            str(name)
+            for name, entity in (graph_entities or {}).items()
+            if isinstance(entity, dict) and str(entity.get("model", "") or "").strip() == model_id
+        ),
+        str(model.get("entity", "") or "").strip(),
     )
     if (
         model_kind == "model"
-        and not explicitly_bound
-        and not str(model.get("entity", "") or "").strip()
         and isinstance(entities_block, dict)
         and graph_entities is not None
         and model.get("grain") is not None
@@ -587,24 +590,30 @@ def _check_model_shape(
         grain_raw = model.get("grain")
         grain_cols = [str(c) for c in (grain_raw if isinstance(grain_raw, list) else [grain_raw])]
         candidates: dict[str, list[str]] = {}
-        for ent_name, ent_raw in entities_block.items():
+        entries = {primary: entities_block.get(primary)} if primary else entities_block
+        for ent_name, ent_raw in entries.items():
             if str(ent_name) == "bridge":
                 continue
             ent_spec = ent_raw if isinstance(ent_raw, dict) else {}
             expr_override = ent_spec.get("expr")
-            if expr_override is not None:
-                cols = expr_override if isinstance(expr_override, list) else [expr_override]
-                candidates[str(ent_name)] = [str(c) for c in cols]
-            else:
-                graph_ent = graph_entities.get(str(ent_name))
-                ent_key = graph_ent.get("key") if isinstance(graph_ent, dict) else None
-                if isinstance(ent_key, list):
-                    candidates[str(ent_name)] = [str(c) for c in ent_key]
-                elif ent_key:
-                    candidates[str(ent_name)] = [str(ent_key)]
+            graph_ent = graph_entities.get(str(ent_name))
+            ent_key = graph_ent.get("key") if isinstance(graph_ent, dict) else None
+            candidates[str(ent_name)] = _column_list(expr_override) or _column_list(ent_key)
+        if (
+            not primary
+            and not any(cols == grain_cols for cols in candidates.values())
+            and (model_id in entities_block or not entities_block)
+            and not (graph_entities.get(model_id) or {}).get("model")
+        ):
+            candidates = {model_id: candidates.get(model_id, [])}
+        if len(candidates) == 1:
+            name = next(iter(candidates))
+            if not candidates[name]:
+                candidates[name] = _column_list((model.get("keys") or {}).get("primary"))
         if (
             grain_cols
             and candidates
+            and any(candidates.values())
             and not any(cols == grain_cols for cols in candidates.values())
         ):
             rendered = ", ".join(
@@ -612,9 +621,9 @@ def _check_model_shape(
             )
             add_error(
                 errors,
-                f"{label} grain {grain_cols} does not match the key of any entity "
-                f"in its entities: block ({rendered}); fix the grain or entity key, "
-                "or identify the primary with a graph model binding or entity",
+                f"{label} grain {grain_cols} does not match the "
+                f"{'primary entity key' if primary else 'key of any entity in its entities: block'} "
+                f"({rendered}); fix the grain or entity key",
             )
 
 
