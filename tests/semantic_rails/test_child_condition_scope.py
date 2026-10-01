@@ -641,6 +641,24 @@ def test_a_query_without_a_measure_refuses_a_group(package: Path) -> None:
     assert error["code"] == "INVALID_QUERY"
 
 
+def test_a_distribution_beside_a_group_refuses(package: Path) -> None:
+    """Per-entity values across the group's hop are refused, as under a flat child filter."""
+    distribution = {
+        "kind": "distribution",
+        "function": "avg",
+        "over": {
+            "kind": "entity_value",
+            "entity": "entity.scope_customer",
+            "input": {"measure": "measure.scope.order_count"},
+        },
+    }
+    query = {"select": [{"expression": distribution, "as": "orders_per_customer"}]}
+    assert _run(package, query, validate=True)["ok"] is True
+    error = _refusal(package, {**query, "where": SAME_ROW})
+    assert error["code"] == "MIXED_GRAIN_INVALID"
+    assert "distribution" in error["why_invalid"]
+
+
 # ---- Guards ---------------------------------------------------------------------------
 
 

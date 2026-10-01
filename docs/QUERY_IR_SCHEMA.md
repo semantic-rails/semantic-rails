@@ -293,11 +293,12 @@ query states it. A child group is a `where` item of its own:
 - Refused with `INVALID_QUERY`: a child reached only through lookups, or the measure's
   own entity (use a plain filter); nested groups; a condition that is not on the child
   or a lookup from it; a condition whose lookup reads a table the route already reads;
-  and a group in a query without a measure, beside a conversion or a distribution, or in
-  a segment's membership.
+  and a group in a query without a measure or beside a conversion. A segment's
+  membership refuses a group with `INVALID_SEGMENT`.
 - A group never reads a rollup. Grouping by a child dimension beside a group is
   `MIXED_GRAIN_INVALID`, and the measure must meet the same rules as under a plain child
-  filter (one value per row of its entity, no window or metric predicate across the hop).
+  filter (one value per row of its entity; no window, distribution or metric predicate
+  across the hop).
   Under a row policy the query is refused with `POLICY_DENIED`.
 - ClickHouse answers one `any` group on the child's own columns, as the only condition
   across a one-to-many hop, with its de-duplicated parent leaf. A `none` group (a NULL-safe
