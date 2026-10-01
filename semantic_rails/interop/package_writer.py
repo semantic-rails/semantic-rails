@@ -4,8 +4,8 @@ The loader derives much of a package (ids, names, key dimensions, aggregation se
 the compact authoring form that ``schema_strict`` packages must use. This writer goes the other
 way: each object in the keys the loader reads, leaving out what the loader derives anyway. It
 then loads the directory back, and refuses (removing it) unless every object comes back the
-same, naming the ones that don't: relation pipelines, aggregate relations and path preferences
-aren't written yet. Deployment settings (connection, seed, default database) are written and
+same, naming the ones that don't: relation pipelines and aggregate relations aren't written
+yet. Deployment settings (connection, seed, default database) are written and
 compared as they are: relative paths in them aren't rebased, so they name files in the new
 directory, which the caller supplies.
 """
@@ -53,7 +53,7 @@ _CARDINALITY = {
 }
 _ROLLUPS = {"rollup_safe_aggregations": "forward", "rollup_safe_aggregations_reverse": "reverse"}
 _MODEL_FIELDS = {"calendar_id", "freshness_source", "freshness_sla_seconds", "freshness_as_of"}
-_MEMBERSHIP = ("where", "metric_filters", "time", "temporal_role_overrides", "path_policy")
+_MEMBERSHIP = ("where", "metric_filters", "time", "temporal_role_overrides")
 
 
 def _keyed(sr_id: str, prefix: str) -> tuple[str, dict[str, str]]:
@@ -240,6 +240,15 @@ class _Writer:
             graph["relationships"] = dict(map(self.relationship, config.relationships))
         if config.path_policy != type(config.path_policy)():
             graph["path_policy"] = _authored(config.path_policy)
+        if config.path_preferences:
+            graph["path_preferences"] = [
+                {
+                    "source_entity": self.keys[row.source_entity][0],
+                    "target_entity": self.keys[row.target_entity][0],
+                    "relationship_path": list(row.relationship_path),
+                }
+                for row in config.path_preferences
+            ]
         documents: dict[str, dict[str, Any]] = {
             "package.yml": {"schema_version": config.version, "package": package},
             "graph.yml": {"graph": graph},

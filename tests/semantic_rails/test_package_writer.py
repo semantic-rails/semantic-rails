@@ -15,7 +15,6 @@ from semantic_rails.operational import load_operational_contract
 from semantic_rails.schema import (
     AggregateRelationConfig,
     PathPolicyConfig,
-    PathPreferenceConfig,
     RelationConfig,
 )
 
@@ -36,6 +35,8 @@ def test_written_package_loads_back_identical_and_validates_alike(package, tmp_p
     namespace = snapshot.normalized["package"]["namespace"]
     assert write_package(snapshot.config, directory, namespace=namespace) == directory
     loaded = load_package_snapshot(directory)
+    # Route pins (jaffle_shop and the comparison package carry them) come back too.
+    assert loaded.config.path_preferences == snapshot.config.path_preferences
     assert (loaded.semantic, loaded.config.package) == (snapshot.semantic, snapshot.config.package)
     # No source authors suggested aggregations, so the derived ones aren't written either.
     assert not any("suggested_aggregations" in p.read_text() for p in directory.rglob("*.yml"))
@@ -95,10 +96,6 @@ def _relation_pipeline(config):
         (
             lambda c: {"metric_recipes": [c.metric_recipes[0], *c.metric_recipes]},
             ["metric_recipes"],
-        ),
-        (
-            lambda c: {"path_preferences": [PathPreferenceConfig("entity.a", "entity.b", ["r"])]},
-            ["path_preferences"],
         ),
         # Deployment settings are compared too: an empty `null_strings` loads back as the default.
         (

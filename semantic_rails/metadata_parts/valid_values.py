@@ -58,7 +58,6 @@ def _query_state(query: dict[str, Any]) -> dict[str, Any]:
         "metric_filters",
         "time",
         "temporal_role_overrides",
-        "path_policy",
         "order_by",
         "limit",
         "debug",

@@ -17,7 +17,10 @@ These tests pin the enrichment contract added in
    measure, but never as a query to run: a different measure answers a
    different question (item revenue is not order revenue).
 3. Calendar-date dimensions additionally carry a ``use_time_grain``
-   hint pointing at the ``time`` block, listed first.
+   hint pointing at the ``time`` block, listed first. In jaffle_shop an order
+   reaches the calendar only through other facts' rows (store inventory
+   snapshots), by more than one route, so the query is refused as
+   AMBIGUOUS_PATH, with the same time-block recovery.
 """
 
 from __future__ import annotations
@@ -121,7 +124,7 @@ def test_calendar_dimension_group_by_carries_time_grain_hint(runtime_factory) ->
             group_by=["dimension.jaffle_time_month_start"],
         )
         err = _first_error(report)
-        assert err["code"] == "MIXED_GRAIN_INVALID"
+        assert err["code"] == "AMBIGUOUS_PATH"
         details = err.get("details") or {}
 
         time_axis = dict(details.get("time_axis_recovery") or {})
@@ -162,7 +165,7 @@ def test_calendar_dimension_with_existing_time_block_keeps_query_role(runtime_fa
             time={"temporal_role": "temporal_role.jaffle_order_time", "grain": "day"},
         )
         err = _first_error(report)
-        assert err["code"] == "MIXED_GRAIN_INVALID"
+        assert err["code"] == "AMBIGUOUS_PATH"
         time_axis = dict((err.get("details") or {}).get("time_axis_recovery") or {})
         assert time_axis.get("temporal_role") == "temporal_role.jaffle_order_time"
         assert time_axis.get("grain") == "month"

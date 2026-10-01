@@ -147,7 +147,6 @@ class RelationshipConfig:
     name: str = ""
     label: str = ""
     description: str = ""
-    path_preference: int = 100
     allowed_directions: list[str] = field(default_factory=lambda: ["forward", "reverse"])
     temporal_validity: dict[str, str] = field(default_factory=dict)
     target_key_type: str = "primary"
@@ -279,7 +278,6 @@ class SegmentConfig:
     metric_filters: list[dict[str, Any]] = field(default_factory=list)
     time: dict[str, Any] = field(default_factory=dict)
     temporal_role_overrides: dict[str, str] = field(default_factory=dict)
-    path_policy: dict[str, Any] = field(default_factory=dict)
     aliases: list[str] = field(default_factory=list)
     name: str = ""
     label: str = ""

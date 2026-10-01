@@ -293,7 +293,6 @@ _JOIN_KEYS: frozenset[str] = frozenset(
         "name",
         "label",
         "description",
-        "path_preference",
         "traversal",
         "allowed_directions",
         "temporal_validity",
@@ -359,7 +358,7 @@ _SEGMENT_KEYS: frozenset[str] = frozenset(
 )
 # The keys the loader reads from a segment's `membership:` block.
 _SEGMENT_MEMBERSHIP_KEYS: frozenset[str] = frozenset(
-    {"where", "metric_filters", "time", "temporal_role_overrides", "path_policy"}
+    {"where", "metric_filters", "time", "temporal_role_overrides"}
 )
 # Membership spellings the loader doesn't read, from other tools or a singular typo,
 # and the membership key that holds such conditions.
