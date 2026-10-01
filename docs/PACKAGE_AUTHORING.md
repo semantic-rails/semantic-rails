@@ -503,6 +503,12 @@ Three connection kinds are supported:
 
 Literal credentials in YAML are rejected.
 
+For `snowflake_adbc`, driver names, shared-library paths and manifests belong to
+the runtime operator's environment; package options selecting them are rejected
+with `INVALID_CONFIG`. Temporal values with nonzero sub-microsecond precision
+refuse with `RESULT_VALUE_UNSUPPORTED`; out-of-range nanosecond timestamps refuse
+with `QUERY_EXECUTION_ERROR`.
+
 ### Native adapter timeouts
 
 Postgres, ClickHouse, Databricks, Snowflake native, BigQuery, and Athena

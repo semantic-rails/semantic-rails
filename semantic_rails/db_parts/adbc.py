@@ -6,6 +6,7 @@ Credentials stay in memory and are never interpolated into query SQL.
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Sequence
 from contextlib import suppress
@@ -128,6 +129,31 @@ def _postgres_value(value: Any, data_type: Any, result_zone: tzinfo) -> Any:
     return value
 
 
+def _snowflake_temporal_batch(batch: Any) -> Any:
+    """Convert nanosecond temporals exactly, or refuse before Python conversion."""
+    pa = import_driver(
+        "pyarrow", extra="snowflake-adbc", engine="snowflake", connection_kind="snowflake_adbc"
+    )
+    for index, field in enumerate(batch.schema):
+        data_type = field.type
+        if pa.types.is_timestamp(data_type) and data_type.unit == "ns":
+            target = pa.timestamp("us", tz=data_type.tz)
+        elif pa.types.is_time64(data_type) and data_type.unit == "ns":
+            target = pa.time64("us")
+        else:
+            continue
+        try:
+            column = batch.column(index).cast(target, safe=True)
+        except pa.ArrowInvalid as exc:
+            raise SemanticLayerError(
+                "RESULT_VALUE_UNSUPPORTED",
+                "A Snowflake result timestamp or time cannot be represented at exact microsecond precision.",
+                details={"column": field.name, "type": str(data_type)},
+            ) from exc
+        batch = batch.set_column(index, field.with_type(target), column)
+    return batch
+
+
 class AdbcAdapter(WarehouseAdapter):
     engine = POSTGRES_PROFILE.engine
     connection_kind = POSTGRES_PROFILE.connection_kind
@@ -248,6 +274,9 @@ class AdbcAdapter(WarehouseAdapter):
         if precision not in ("true", "false"):
             raise SemanticLayerError("INVALID_CONFIG", "use_high_precision must be true or false")
         options["adbc.snowflake.sql.client_option.use_high_precision"] = precision
+        options["adbc.snowflake.sql.client_option.max_timestamp_precision"] = (
+            "nanoseconds_error_on_overflow"
+        )
         return options
 
     def _connection(self) -> Any:
@@ -263,7 +292,8 @@ class AdbcAdapter(WarehouseAdapter):
         )
         conn = (
             driver.connect(
-                driver=self.options.get("driver_path", "snowflake"),
+                # Native code selection belongs to the operator, never package options.
+                driver=os.environ.get("SR_SNOWFLAKE_ADBC_DRIVER_PATH") or "snowflake",
                 db_kwargs=credentials,
                 autocommit=True,
             )
@@ -406,6 +436,8 @@ class AdbcAdapter(WarehouseAdapter):
             for batch in reader:
                 if cap is not None:
                     batch = batch.slice(0, max(0, cap + 1 - len(rows)))
+                if profile == SNOWFLAKE_PROFILE and data_types:
+                    batch = _snowflake_temporal_batch(batch)
                 for row in batch.to_pylist():
                     for key, value in row.items():
                         if profile == POSTGRES_PROFILE:

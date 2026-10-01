@@ -1,6 +1,7 @@
 """Driver-free Snowflake profile checks; no warehouse credentials required."""
 
-from datetime import UTC, datetime, timedelta
+import sys
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -113,6 +114,34 @@ def test_config_report_accepts_unnamed_snowflake_adbc(tmp_path):
     assert report["ok"] is True, report["errors"]
 
 
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("driver_path", "../../package-driver.dylib"),
+        ("driver-path", "/opt/package-driver.so"),
+        ("driver_path", "package-driver.toml"),
+        ("driver", "package-driver"),
+        ("driver_name", "package-driver"),
+        ("driver_manifest", "package-driver.toml"),
+    ],
+)
+@pytest.mark.parametrize("inline", [False, True])
+def test_package_driver_selection_refuses_at_load(tmp_path, key, value, inline):
+    root = _package(tmp_path / "filtered", [OWN_ORDERS])
+    path = root / "package.yml"
+    payload = yaml.safe_load(path.read_text())
+    connection = {"kind": "snowflake_adbc", "options": dict(OPTIONS)}
+    (connection if inline else connection["options"])[key] = value
+    payload["package"].update(warehouse="snowflake", connection=connection)
+    path.write_text(yaml.safe_dump(payload))
+    with pytest.raises(SemanticLayerError) as caught:
+        load_package_config(str(root))
+    assert caught.value.code == "INVALID_CONFIG"
+    assert key in str(caught.value)
+    report, _ = parse_config_report(resolve_package_reference(path=str(root)))
+    assert report["ok"] is False
+
+
 def test_password_file_mapping(driver, tmp_path):
     path = tmp_path / "password"
     path.write_text("file-password-canary\n")
@@ -123,9 +152,13 @@ def test_password_file_mapping(driver, tmp_path):
     adapter.close()
 
 
-@pytest.mark.parametrize("driver_path", [None, "/opt/drivers/libsnowflake.so"])
+@pytest.mark.parametrize(
+    "driver_path", [None, "/opt/drivers/libsnowflake.so", "/opt/snowflake.toml"]
+)
 @pytest.mark.parametrize("precision", [None, "true", "false"])
-def test_password_options_search_path_precision_and_escaped_tag(driver, driver_path, precision):
+def test_password_options_search_path_precision_and_escaped_tag(
+    driver, monkeypatch, driver_path, precision
+):
     options = {
         **OPTIONS,
         "database": "DB",
@@ -135,7 +168,9 @@ def test_password_options_search_path_precision_and_escaped_tag(driver, driver_p
         "query_tag": "canary\\'; SELECT 1 --",
     }
     if driver_path:
-        options["driver_path"] = driver_path
+        monkeypatch.setenv("SR_SNOWFLAKE_ADBC_DRIVER_PATH", driver_path)
+    else:
+        monkeypatch.delenv("SR_SNOWFLAKE_ADBC_DRIVER_PATH", raising=False)
     if precision:
         options["use_high_precision"] = precision
     adapter = AdbcAdapter(options, profile=SNOWFLAKE_PROFILE)
@@ -153,6 +188,7 @@ def test_password_options_search_path_precision_and_escaped_tag(driver, driver_p
             "adbc.snowflake.sql.warehouse": "WH",
             "adbc.snowflake.sql.role": "ROLE",
             "adbc.snowflake.sql.client_option.use_high_precision": precision or "true",
+            "adbc.snowflake.sql.client_option.max_timestamp_precision": "nanoseconds_error_on_overflow",
         },
     }
     assert driver[1] == ("ALTER SESSION SET QUERY_TAG = 'canary\\\\''; SELECT 1 --'", None)
@@ -297,6 +333,56 @@ def test_arrow_decimal_and_timestamp_match_typed_values_contract(monkeypatch, zo
             "local": {"type": "timestamp", "timezone": "naive"},
         }
         assert wire["rows"][1] == {"amount": None, "instant": None, "local": None}
+    finally:
+        adapter.close()
+
+
+@pytest.mark.parametrize("kind", ["timestamp", "timestamp_utc", "time"])
+@pytest.mark.parametrize("value", [123456000, 123456789, -123456789, None])
+@pytest.mark.parametrize("prepared", [False, True])
+def test_nanosecond_temporals_require_exact_microseconds_without_pandas(
+    monkeypatch, kind, value, prepared
+):
+    pa = pytest.importorskip("pyarrow")
+    monkeypatch.setitem(sys.modules, "pandas", None)
+    arrow_type = {
+        "timestamp": pa.timestamp("ns"),
+        "timestamp_utc": pa.timestamp("ns", tz="UTC"),
+        "time": pa.time64("ns"),
+    }[kind]
+    batch = pa.record_batch([pa.array([value], type=arrow_type)], names=["instant"])
+    calls = []
+
+    class ArrowCursor(Cursor):
+        def fetch_record_batch(self):
+            return pa.RecordBatchReader.from_batches(batch.schema, [batch])
+
+    adapter = AdbcAdapter(profile=SNOWFLAKE_PROFILE)
+    adapter._conn = SimpleNamespace(
+        cursor=lambda: ArrowCursor(calls), close=lambda: calls.append("closed")
+    )
+    query = (
+        (lambda: adapter.query_prepared(PreparedQuery("SELECT instant")))
+        if prepared
+        else (lambda: adapter.query("SELECT instant"))
+    )
+    try:
+        if value is not None and value % 1000:
+            with pytest.raises(SemanticLayerError) as caught:
+                query()
+            assert caught.value.code == "RESULT_VALUE_UNSUPPORTED"
+            assert caught.value.details == {"column": "instant", "type": str(arrow_type)}
+            assert adapter._conn is None
+            assert calls[-1] == "closed"
+        else:
+            expected = None
+            if value is not None:
+                expected = {
+                    "time": time(0, 0, 0, 123456),
+                    "timestamp": datetime(1970, 1, 1, microsecond=123456),
+                    "timestamp_utc": datetime(1970, 1, 1, microsecond=123456, tzinfo=UTC),
+                }[kind]
+            assert query() == [{"instant": expected}]
     finally:
         adapter.close()
 
@@ -482,15 +568,14 @@ def test_failed_tag_setup_closes_connection(driver):
     assert calls[-1] == "closed"
 
 
-def test_driver_path_is_exclusive_to_experimental_snowflake():
+@pytest.mark.parametrize("kind", ["snowflake_native", "snowflake_adbc"])
+def test_direct_adapter_cannot_bypass_package_driver_refusal(kind):
     package = PackageMeta(
         package_id="test",
         name="test",
         description="test",
         warehouse="snowflake",
-        connection=ConnectionSpec(
-            kind="snowflake_native", options={"driver_path": "/tmp/driver.so"}
-        ),
+        connection=ConnectionSpec(kind=kind, options={"driver_path": "/tmp/driver.so"}),
     )
     with pytest.raises(SemanticLayerError) as caught:
         create_warehouse_adapter(package)

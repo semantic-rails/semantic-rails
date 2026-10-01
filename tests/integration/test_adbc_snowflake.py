@@ -5,7 +5,6 @@ warehouse/driver failure is a failure, never a skip. Uses a session-local table.
 """
 
 import json
-import os
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -30,10 +29,7 @@ def adbc():
         pytest.skip(
             "requires SR_SNOWFLAKE_ACCOUNT, SR_SNOWFLAKE_USER and SR_SNOWFLAKE_PASSWORD on a credentialed runner"
         )
-    options = dict(TARGET.connection_options)
-    if path := os.environ.get("SR_SNOWFLAKE_ADBC_DRIVER_PATH"):
-        options["driver_path"] = path
-    adapter = AdbcAdapter(options, profile=SNOWFLAKE_PROFILE)
+    adapter = AdbcAdapter(dict(TARGET.connection_options), profile=SNOWFLAKE_PROFILE)
     try:
         yield adapter
     finally:
@@ -63,6 +59,33 @@ def test_snowflake_adbc_exact_decimal_and_timestamp(adbc):
         "amount": {"type": "decimal"},
         "instant": {"type": "timestamp", "timezone": "aware"},
     }
+
+
+@pytest.mark.parametrize("year", [1600, 2500])
+@pytest.mark.parametrize("kind", ["NTZ", "LTZ", "TZ"])
+def test_snowflake_adbc_timestamp_overflow_refuses(adbc, year, kind):
+    with pytest.raises(SemanticLayerError) as caught:
+        adbc.query(
+            f"SELECT TO_TIMESTAMP_{kind}('{year}-01-01 00:00:00.000000616')::TIMESTAMP_{kind}(9) AS instant"
+        )
+    assert caught.value.code == "QUERY_EXECUTION_ERROR"
+    assert adbc._conn is None
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "TO_TIME('12:34:56.123456789')::TIME(9)",
+        "TO_TIMESTAMP_NTZ('2026-01-01 00:00:00.123456789')::TIMESTAMP_NTZ(9)",
+        "TO_TIMESTAMP_LTZ('2026-01-01 00:00:00.123456789')::TIMESTAMP_LTZ(9)",
+        "TO_TIMESTAMP_TZ('2026-01-01 00:00:00.123456789 +00:00')::TIMESTAMP_TZ(9)",
+    ],
+)
+def test_snowflake_adbc_sub_microsecond_temporals_refuse(adbc, expression):
+    with pytest.raises(SemanticLayerError) as caught:
+        adbc.query(f"SELECT {expression} AS instant")
+    assert caught.value.code == "RESULT_VALUE_UNSUPPORTED"
+    assert adbc._conn is None
 
 
 def test_snowflake_adbc_row_filter_isolation(adbc, tmp_path):

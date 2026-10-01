@@ -1315,7 +1315,6 @@ SNOWFLAKE_ADBC_CONNECTION_OPTIONS: tuple[str, ...] = (
     "query_tag",
     "statement_timeout_seconds",
     "use_high_precision",
-    "driver_path",
 )
 
 # Per-warehouse connection-option schemas. Secrets follow the package

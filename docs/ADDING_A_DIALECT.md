@@ -89,9 +89,11 @@ dbc install snowflake=1.14.0
 The [dbc registry](https://docs.columnar.tech/dbc/guides/finding_drivers/)
 distributes the Snowflake driver. The Python manager loads `driver="snowflake"`
 from its standard [driver search paths](https://arrow.apache.org/adbc/23/format/driver_manifests.html),
-including `ADBC_DRIVER_PATH` and the user installation directory. An explicit
-`driver_path` option selects a shared-library or manifest path instead; that
-option is accepted only for this experimental connection kind. `dbc` verifies
+including the operator's `ADBC_DRIVER_PATH` and the user installation directory.
+An operator can instead set the runtime environment variable
+`SR_SNOWFLAKE_ADBC_DRIVER_PATH` to a shared-library or manifest path. Package
+connection options cannot select a driver name, library or manifest; such options
+are refused at load with `INVALID_CONFIG`. `dbc` verifies
 the downloaded driver signature during installation; do not disable verification.
 
 Password authentication uses `account_env`, `user_env` and either `password_env`
@@ -125,6 +127,14 @@ emits decimal strings and timestamp strings with an explicit offset. Live
 timestamp fidelity, cancellation latency and native-buffer memory bounds remain
 qualification work.
 
+The adapter always sets the driver's `max_timestamp_precision` to
+`nanoseconds_error_on_overflow`, so timestamps outside Arrow's nanosecond range
+fail with `QUERY_EXECUTION_ERROR` instead of wrapping to a different date. Python
+temporal results support exact microseconds: nanosecond TIME and TIMESTAMP values
+are converted only when exactly representable, including nulls; nonzero
+sub-microsecond digits refuse with `RESULT_VALUE_UNSUPPORTED`. This boundary
+does not depend on pandas and never truncates temporal precision.
+
 On a credentialed runner, select `SR_SNOWFLAKE_CONNECTION_KIND=snowflake_adbc`
 for the existing conformance target. Run its Snowflake battery and the dedicated
 exact-type and two-tenant isolation tests:
@@ -138,7 +148,8 @@ and optional `SR_SNOWFLAKE_DATABASE`, `SR_SNOWFLAKE_SCHEMA`,
 `SR_SNOWFLAKE_WAREHOUSE`. The isolation test creates only a session-local table,
 alternates tenants on identical SQL, checks an injection-shaped attribute and
 denies missing attributes. It explicitly skips when credentials are absent;
-configured driver or warehouse failures fail the test. For the dedicated tests,
+configured driver or warehouse failures fail the test. The dedicated tests also
+check timestamp overflow and sub-microsecond precision refusal. The operator's
 `SR_SNOWFLAKE_ADBC_DRIVER_PATH` can override driver discovery. Stub unit tests
 prove mapping and lifecycle behavior; they do not establish live qualification.
 
