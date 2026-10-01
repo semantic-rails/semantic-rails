@@ -723,14 +723,12 @@ def test_new_child_filter_paths_require_one_candidate_or_a_pin(
                 for rel in config.relationships
             ],
         )
+    # Two routes and neither is the account's own key: refused until the package records one.
     with pytest.raises(SemanticLayerError) as caught:
         compile_query(config, Registry(config), query)
-    assert caught.value.code == "MIXED_GRAIN_INVALID"
-    purpose = "metric_filter" if bound_filter else "where"
-    assert str(caught.value) == (
-        "Path to 'entity.diamond_district' requires a rewrite that is not supported for " + purpose
-    )
-    assert "no single set of rows belongs to each row" in caught.value.details["why_invalid"]
+    assert caught.value.code == "AMBIGUOUS_PATH"
+    assert caught.value.details["reason"] == "route_decision_required"
+    assert caught.value.details["target"] == "entity.diamond_district"
     routes = [
         (["relationship.account_client", "relationship.district_client"], 50, "east"),
         (
@@ -743,6 +741,7 @@ def test_new_child_filter_paths_require_one_candidate_or_a_pin(
             "west",
         ),
     ]
+    assert caught.value.details["candidates"] == [path for path, _, _ in routes]
     # Seed once; pinning must select the authored route even when it is longer.
     _run(diamond_package, {"select": [{"expression": {"measure": "measure.diamond.amount"}}]})
     for path, expected, branch in routes:
