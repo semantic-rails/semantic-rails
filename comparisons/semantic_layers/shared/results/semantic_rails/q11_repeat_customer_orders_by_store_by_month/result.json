@@ -1,5 +1,17 @@
 {
   "assumptions": [],
+  "column_types": {
+    "dimension.jaffle_store_name": {
+      "type": "string"
+    },
+    "repeat_customer_orders": {
+      "type": "integer"
+    },
+    "temporal_role.jaffle_order_time__month": {
+      "timezone": "naive",
+      "type": "timestamp"
+    }
+  },
   "dialect": "duckdb",
   "errors": [],
   "explain": {
@@ -100,8 +112,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 1.0,
-      "compile_ms": 0.242,
+      "cache_lookup_ms": 17.059,
+      "compile_ms": 1.887,
       "dialect": "duckdb",
       "physical_plan_nodes": 9
     },
@@ -1487,7 +1499,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_customers.customer_id AS g1,\n  SUM(comparison_customers.lifetime_order_count) AS m1\nFROM comparison_customers\nGROUP BY\n  comparison_customers.customer_id\n),\nleaf_1__lifetime_order_count_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS base\n),\nleaf_1__qualified_customers_by_lifetime_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__lifetime_order_count_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 1\n),\nleaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nINNER JOIN leaf_1__qualified_customers_by_lifetime_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_order_count_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS repeat_customer_orders\nFROM leaf_1 AS base\nORDER BY\n  t ASC,\n  g1 ASC",
+    "rendered_sql": "WITH leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_customers.customer_id AS g1,\n  SUM(comparison_customers.lifetime_order_count) AS m1\nFROM comparison_customers\nGROUP BY\n  comparison_customers.customer_id\n),\nleaf_1__lifetime_order_count_customer_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS base\n),\nleaf_1__lifetime_order_count_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__lifetime_order_count_customer_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_by_lifetime_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__lifetime_order_count_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 1\n),\nleaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nINNER JOIN leaf_1__qualified_customers_by_lifetime_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_order_count_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS repeat_customer_orders\nFROM guarded_base AS base\nORDER BY\n  t ASC,\n  g1 ASC",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -1584,6 +1596,7 @@
                         "having": [],
                         "joins": [],
                         "limit": null,
+                        "observation_scan": false,
                         "order_by": [],
                         "qualify": [],
                         "select": [
@@ -1614,17 +1627,96 @@
                         ],
                         "where": []
                       }
+                    },
+                    {
+                      "name": "leaf_1__lifetime_order_count_customer_source_1__guarded_base",
+                      "query": {
+                        "ctes": [],
+                        "distinct": false,
+                        "from_table": {
+                          "alias": "base",
+                          "name": "leaf_1__lifetime_order_count_customer_source_1__leaf_1"
+                        },
+                        "group_by": [],
+                        "having": [],
+                        "joins": [],
+                        "limit": null,
+                        "observation_scan": false,
+                        "order_by": [],
+                        "qualify": [],
+                        "select": [
+                          {
+                            "alias": "g1",
+                            "expression": {
+                              "parts": [
+                                "base",
+                                "g1"
+                              ]
+                            }
+                          },
+                          {
+                            "alias": "m1",
+                            "expression": {
+                              "else_expr": null,
+                              "whens": [
+                                {
+                                  "condition": {
+                                    "left": {
+                                      "frame": "",
+                                      "function": {
+                                        "args": [
+                                          {
+                                            "parts": [
+                                              "base",
+                                              "m1"
+                                            ]
+                                          }
+                                        ],
+                                        "distinct": false,
+                                        "name": "COUNT"
+                                      },
+                                      "order_by": [],
+                                      "partition_by": []
+                                    },
+                                    "op": ">",
+                                    "right": {
+                                      "value": 0
+                                    }
+                                  },
+                                  "result": {
+                                    "args": [
+                                      {
+                                        "parts": [
+                                          "base",
+                                          "m1"
+                                        ]
+                                      },
+                                      {
+                                        "value": 0
+                                      }
+                                    ],
+                                    "distinct": false,
+                                    "name": "COALESCE"
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        ],
+                        "where": []
+                      }
                     }
                   ],
                   "distinct": false,
                   "from_table": {
                     "alias": "base",
-                    "name": "leaf_1__lifetime_order_count_customer_source_1__leaf_1"
+                    "name": "leaf_1__lifetime_order_count_customer_source_1__guarded_base"
                   },
                   "group_by": [],
                   "having": [],
                   "joins": [],
                   "limit": null,
+                  "observation_scan": false,
                   "order_by": [],
                   "qualify": [],
                   "select": [
@@ -1663,6 +1755,7 @@
                   "having": [],
                   "joins": [],
                   "limit": null,
+                  "observation_scan": false,
                   "order_by": [],
                   "qualify": [],
                   "select": [
@@ -1772,6 +1865,7 @@
               }
             ],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -1823,17 +1917,105 @@
             ],
             "where": []
           }
+        },
+        {
+          "name": "guarded_base",
+          "query": {
+            "ctes": [],
+            "distinct": false,
+            "from_table": {
+              "alias": "base",
+              "name": "leaf_1"
+            },
+            "group_by": [],
+            "having": [],
+            "joins": [],
+            "limit": null,
+            "observation_scan": false,
+            "order_by": [],
+            "qualify": [],
+            "select": [
+              {
+                "alias": "g1",
+                "expression": {
+                  "parts": [
+                    "base",
+                    "g1"
+                  ]
+                }
+              },
+              {
+                "alias": "t",
+                "expression": {
+                  "parts": [
+                    "base",
+                    "t"
+                  ]
+                }
+              },
+              {
+                "alias": "m1",
+                "expression": {
+                  "else_expr": null,
+                  "whens": [
+                    {
+                      "condition": {
+                        "left": {
+                          "frame": "",
+                          "function": {
+                            "args": [
+                              {
+                                "parts": [
+                                  "base",
+                                  "m1"
+                                ]
+                              }
+                            ],
+                            "distinct": false,
+                            "name": "MAX"
+                          },
+                          "order_by": [],
+                          "partition_by": []
+                        },
+                        "op": ">",
+                        "right": {
+                          "value": 0
+                        }
+                      },
+                      "result": {
+                        "args": [
+                          {
+                            "parts": [
+                              "base",
+                              "m1"
+                            ]
+                          },
+                          {
+                            "value": 0
+                          }
+                        ],
+                        "distinct": false,
+                        "name": "COALESCE"
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "where": []
+          }
         }
       ],
       "distinct": false,
       "from_table": {
         "alias": "base",
-        "name": "leaf_1"
+        "name": "guarded_base"
       },
       "group_by": [],
       "having": [],
       "joins": [],
       "limit": null,
+      "observation_scan": false,
       "order_by": [
         {
           "direction": "ASC",
@@ -2616,103 +2798,103 @@
     "version": 1
   },
   "recovery_hints": [],
-  "rendered_sql": "WITH leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_customers.customer_id AS g1,\n  SUM(comparison_customers.lifetime_order_count) AS m1\nFROM comparison_customers\nGROUP BY\n  comparison_customers.customer_id\n),\nleaf_1__lifetime_order_count_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS base\n),\nleaf_1__qualified_customers_by_lifetime_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__lifetime_order_count_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 1\n),\nleaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nINNER JOIN leaf_1__qualified_customers_by_lifetime_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_order_count_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS repeat_customer_orders\nFROM leaf_1 AS base\nORDER BY\n  t ASC,\n  g1 ASC",
+  "rendered_sql": "WITH leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_customers.customer_id AS g1,\n  SUM(comparison_customers.lifetime_order_count) AS m1\nFROM comparison_customers\nGROUP BY\n  comparison_customers.customer_id\n),\nleaf_1__lifetime_order_count_customer_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS base\n),\nleaf_1__lifetime_order_count_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__lifetime_order_count_customer_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_by_lifetime_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__lifetime_order_count_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 1\n),\nleaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nINNER JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nINNER JOIN leaf_1__qualified_customers_by_lifetime_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_order_count_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS repeat_customer_orders\nFROM guarded_base AS base\nORDER BY\n  t ASC,\n  g1 ASC",
   "request_context": {},
   "row_count": 18,
   "rows": [
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 1367,
-      "temporal_role.jaffle_order_time__month": "2016-09-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2016-09-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 1685,
-      "temporal_role.jaffle_order_time__month": "2016-10-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2016-10-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 2280,
-      "temporal_role.jaffle_order_time__month": "2016-11-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2016-11-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 2862,
-      "temporal_role.jaffle_order_time__month": "2016-12-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2016-12-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 3410,
-      "temporal_role.jaffle_order_time__month": "2017-01-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-01-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 3357,
-      "temporal_role.jaffle_order_time__month": "2017-02-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-02-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "repeat_customer_orders": 2092,
-      "temporal_role.jaffle_order_time__month": "2017-03-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 3986,
-      "temporal_role.jaffle_order_time__month": "2017-03-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "repeat_customer_orders": 2850,
-      "temporal_role.jaffle_order_time__month": "2017-04-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 3746,
-      "temporal_role.jaffle_order_time__month": "2017-04-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "repeat_customer_orders": 3565,
-      "temporal_role.jaffle_order_time__month": "2017-05-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 4391,
-      "temporal_role.jaffle_order_time__month": "2017-05-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "repeat_customer_orders": 3963,
-      "temporal_role.jaffle_order_time__month": "2017-06-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 3916,
-      "temporal_role.jaffle_order_time__month": "2017-06-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "repeat_customer_orders": 4053,
-      "temporal_role.jaffle_order_time__month": "2017-07-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 3385,
-      "temporal_role.jaffle_order_time__month": "2017-07-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Brooklyn",
       "repeat_customer_orders": 4937,
-      "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
     },
     {
       "dimension.jaffle_store_name": "Philadelphia",
       "repeat_customer_orders": 3801,
-      "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
     }
   ],
-  "semantic_fingerprint": "sha256:0486911f94045efa979e23e23222aa0fb090db86bc43954643883a473bf7882b",
-  "source_fingerprint": "4df4037fac8fc9bed8005076674631fbc6b731c4d62cbe6cdd9b0b826d877935",
+  "semantic_fingerprint": "sha256:c5b79ea644809aa038e12ef9fe7bda2a7d463e63f00dc256f1bdcc06e33699d8",
+  "source_fingerprint": "8104a0af4cc06331a6ce8c02a3b23de4843667b9597c8175179565433e1a930a",
   "sql_plan": {
     "ctes": [
       {
@@ -2743,6 +2925,7 @@
                       "having": [],
                       "joins": [],
                       "limit": null,
+                      "observation_scan": false,
                       "order_by": [],
                       "qualify": [],
                       "select": [
@@ -2773,17 +2956,96 @@
                       ],
                       "where": []
                     }
+                  },
+                  {
+                    "name": "leaf_1__lifetime_order_count_customer_source_1__guarded_base",
+                    "query": {
+                      "ctes": [],
+                      "distinct": false,
+                      "from_table": {
+                        "alias": "base",
+                        "name": "leaf_1__lifetime_order_count_customer_source_1__leaf_1"
+                      },
+                      "group_by": [],
+                      "having": [],
+                      "joins": [],
+                      "limit": null,
+                      "observation_scan": false,
+                      "order_by": [],
+                      "qualify": [],
+                      "select": [
+                        {
+                          "alias": "g1",
+                          "expression": {
+                            "parts": [
+                              "base",
+                              "g1"
+                            ]
+                          }
+                        },
+                        {
+                          "alias": "m1",
+                          "expression": {
+                            "else_expr": null,
+                            "whens": [
+                              {
+                                "condition": {
+                                  "left": {
+                                    "frame": "",
+                                    "function": {
+                                      "args": [
+                                        {
+                                          "parts": [
+                                            "base",
+                                            "m1"
+                                          ]
+                                        }
+                                      ],
+                                      "distinct": false,
+                                      "name": "COUNT"
+                                    },
+                                    "order_by": [],
+                                    "partition_by": []
+                                  },
+                                  "op": ">",
+                                  "right": {
+                                    "value": 0
+                                  }
+                                },
+                                "result": {
+                                  "args": [
+                                    {
+                                      "parts": [
+                                        "base",
+                                        "m1"
+                                      ]
+                                    },
+                                    {
+                                      "value": 0
+                                    }
+                                  ],
+                                  "distinct": false,
+                                  "name": "COALESCE"
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      ],
+                      "where": []
+                    }
                   }
                 ],
                 "distinct": false,
                 "from_table": {
                   "alias": "base",
-                  "name": "leaf_1__lifetime_order_count_customer_source_1__leaf_1"
+                  "name": "leaf_1__lifetime_order_count_customer_source_1__guarded_base"
                 },
                 "group_by": [],
                 "having": [],
                 "joins": [],
                 "limit": null,
+                "observation_scan": false,
                 "order_by": [],
                 "qualify": [],
                 "select": [
@@ -2822,6 +3084,7 @@
                 "having": [],
                 "joins": [],
                 "limit": null,
+                "observation_scan": false,
                 "order_by": [],
                 "qualify": [],
                 "select": [
@@ -2931,6 +3194,7 @@
             }
           ],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -2982,17 +3246,105 @@
           ],
           "where": []
         }
+      },
+      {
+        "name": "guarded_base",
+        "query": {
+          "ctes": [],
+          "distinct": false,
+          "from_table": {
+            "alias": "base",
+            "name": "leaf_1"
+          },
+          "group_by": [],
+          "having": [],
+          "joins": [],
+          "limit": null,
+          "observation_scan": false,
+          "order_by": [],
+          "qualify": [],
+          "select": [
+            {
+              "alias": "g1",
+              "expression": {
+                "parts": [
+                  "base",
+                  "g1"
+                ]
+              }
+            },
+            {
+              "alias": "t",
+              "expression": {
+                "parts": [
+                  "base",
+                  "t"
+                ]
+              }
+            },
+            {
+              "alias": "m1",
+              "expression": {
+                "else_expr": null,
+                "whens": [
+                  {
+                    "condition": {
+                      "left": {
+                        "frame": "",
+                        "function": {
+                          "args": [
+                            {
+                              "parts": [
+                                "base",
+                                "m1"
+                              ]
+                            }
+                          ],
+                          "distinct": false,
+                          "name": "MAX"
+                        },
+                        "order_by": [],
+                        "partition_by": []
+                      },
+                      "op": ">",
+                      "right": {
+                        "value": 0
+                      }
+                    },
+                    "result": {
+                      "args": [
+                        {
+                          "parts": [
+                            "base",
+                            "m1"
+                          ]
+                        },
+                        {
+                          "value": 0
+                        }
+                      ],
+                      "distinct": false,
+                      "name": "COALESCE"
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "where": []
+        }
       }
     ],
     "distinct": false,
     "from_table": {
       "alias": "base",
-      "name": "leaf_1"
+      "name": "guarded_base"
     },
     "group_by": [],
     "having": [],
     "joins": [],
     "limit": null,
+    "observation_scan": false,
     "order_by": [
       {
         "direction": "ASC",

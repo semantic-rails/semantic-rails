@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 0.359,
-      "compile_ms": 0.155,
+      "cache_lookup_ms": 1.379,
+      "compile_ms": 0.719,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -457,7 +457,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS orders\nFROM leaf_1 AS base\nORDER BY\n  t ASC",
+    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nGROUP BY\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS orders\nFROM guarded_base AS base\nORDER BY\n  t ASC",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -543,6 +543,7 @@
             "having": [],
             "joins": [],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -585,17 +586,96 @@
             ],
             "where": []
           }
+        },
+        {
+          "name": "guarded_base",
+          "query": {
+            "ctes": [],
+            "distinct": false,
+            "from_table": {
+              "alias": "base",
+              "name": "leaf_1"
+            },
+            "group_by": [],
+            "having": [],
+            "joins": [],
+            "limit": null,
+            "observation_scan": false,
+            "order_by": [],
+            "qualify": [],
+            "select": [
+              {
+                "alias": "t",
+                "expression": {
+                  "parts": [
+                    "base",
+                    "t"
+                  ]
+                }
+              },
+              {
+                "alias": "m1",
+                "expression": {
+                  "else_expr": null,
+                  "whens": [
+                    {
+                      "condition": {
+                        "left": {
+                          "frame": "",
+                          "function": {
+                            "args": [
+                              {
+                                "parts": [
+                                  "base",
+                                  "m1"
+                                ]
+                              }
+                            ],
+                            "distinct": false,
+                            "name": "MAX"
+                          },
+                          "order_by": [],
+                          "partition_by": []
+                        },
+                        "op": ">",
+                        "right": {
+                          "value": 0
+                        }
+                      },
+                      "result": {
+                        "args": [
+                          {
+                            "parts": [
+                              "base",
+                              "m1"
+                            ]
+                          },
+                          {
+                            "value": 0
+                          }
+                        ],
+                        "distinct": false,
+                        "name": "COALESCE"
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "where": []
+          }
         }
       ],
       "distinct": false,
       "from_table": {
         "alias": "base",
-        "name": "leaf_1"
+        "name": "guarded_base"
       },
       "group_by": [],
       "having": [],
       "joins": [],
       "limit": null,
+      "observation_scan": false,
       "order_by": [
         {
           "direction": "ASC",
@@ -914,7 +994,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 2.567,
+  "timing_ms": 9.333,
   "trace": {
     "fallback": {
       "reason": "",
