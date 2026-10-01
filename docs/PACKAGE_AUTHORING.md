@@ -503,6 +503,46 @@ Three connection kinds are supported:
 
 Literal credentials in YAML are rejected.
 
+### Native adapter timeouts
+
+Postgres, ClickHouse, Databricks, Snowflake native, BigQuery, and Athena
+connections accept `connect_timeout_seconds` and `read_timeout_seconds` in
+`package.connection.options`. Both must be positive integers. The defaults are
+10 seconds for connecting and 65 seconds for network reads or query waiting.
+Set a larger read timeout when queries normally take longer. Postgres and
+Snowflake native also accept `statement_timeout_seconds`; server statement
+limits remain opt-in. An explicit `"0"` preserves the server default on
+Postgres and disables the session limit on Snowflake, as before. Without an
+authored positive Postgres limit or any Snowflake limit, role/user/account
+defaults are preserved.
+An explicit statement timeout raises the default read timeout to at least five
+seconds beyond it. Snowflake named profiles retain their inherited login,
+network/socket and session settings unless the package explicitly overrides
+numeric timeout options. With a named profile, a nonempty authored `query_tag`
+is refused with `INVALID_CONFIG` before connecting; configure `QUERY_TAG` in
+the named profile instead. Inherited `QUERY_TAG` and `TIMEZONE` remain intact
+when a numeric timeout is overridden. Direct connections still pass authored
+tags through the connector's `session_parameters`.
+
+The drivers apply these limits differently: ClickHouse bounds connection and
+HTTP send/receive time; Snowflake bounds login, network, and socket operations;
+BigQuery bounds query submission and result waiting; Athena bounds API calls
+and query polling. Databricks exposes one socket timeout for connection and
+reads, so the larger configured value applies to both. Postgres uses libpq's
+connection timeout and TCP keepalives; libpq has no separate socket read
+deadline, and healthy queries without an authored server timeout can continue.
+These network limits apply per driver operation/attempt; driver retries and
+Databricks polling can extend total elapsed time. MotherDuck and Snowflake CLI
+are outside these client-wait defaults.
+
+Per-request `limits.statement_timeout_ms` sets each supported warehouse's
+statement deadline. ClickHouse, Databricks, Snowflake native, BigQuery and
+Athena client waits accommodate a longer request with a five-second margin.
+BigQuery sets a server job deadline to the read wait when no request limit is
+supplied and attempts cancellation if result waiting times out. Athena cancels
+an unfinished query before returning its polling timeout; its request limit
+remains best-effort, with the client polling margin and workgroup server limits.
+
 ### Secrets
 
 **Secrets must come from process environment or an external secret store. Package
@@ -1294,24 +1334,29 @@ Warnings (advisory only):
   [`package.environments` and governance `meta:`](#packageenvironments-and-governance-meta)).
 - A measure omits an explicit `default_temporal_role` while declaring
   compatible temporal roles.
-- Several relationships join one pair of entities on different columns and no
-  one of them has the lowest `path_preference` (`RELATIONSHIP_ROLES_UNPINNED`), whichever
-  side each is declared from.
+- Several relationships join one pair of entities on different columns
+  (`RELATIONSHIP_ROLES_UNPINNED`), whichever side each is declared from.
 
 ## Path-finding behavior (entity hopping)
 
 When a query asks for "X per Y" where X is a measure on one model and Y is a
 dimension on a different entity, the planner walks the inferred entity graph for
-the shortest/most-complete path. This is automatic — most packages never author
-join paths.
+the route to Y's entity. This is automatic — most packages never author join
+paths, because most pairs have one route (see [the route rule](#the-route-rule)).
 
 - "orders per customer": the orders model has both `order_id` (primary) and
   `customer_id` (FK). The planner uses that table directly.
 - "items per customer": no single table has all three columns. The planner walks
   `order_item → order → customer` via inferred relationships.
-- "items per customer" when a denormalized table contains all three: the planner
-  prefers the direct table over the multi-hop path
-  (`path_preference` on `RelationshipConfig` handles this).
+- "items per customer" when the items table also carries `customer_id`: the direct
+  relationship and `order_item → order → customer` are two routes that can name
+  different customers. The item's own `customer_id` is its one direct key, so the
+  planner uses it and the response notes it (`ROUTE_COLOCATED_KEY`); a
+  `graph.path_preferences` row records the other route when that is the meaning.
+- "customers per store" in a package where a customer reaches a store through the
+  stores they ordered at and through a preferred store: neither is the customer's own
+  key, so the query is refused until a `graph.path_preferences` row records which one
+  the package means.
 
 A query that groups or filters by a dimension looked up through a many-to-one or
 one-to-one hop joins it with a left join, so the measure keeps a row whose foreign key
@@ -1379,17 +1424,51 @@ A query that needs a longer chain than the ceiling fails with
 `details.reachable_at_hops`, so "the chain exists but is too long" is
 distinguishable from "no relationship chain exists at all".
 
-### `graph.path_preferences:` — pinning a route
+### The route rule
 
 When two routes reach the same entity (role-playing foreign keys are the
 classic case: `order.ship_city_id` vs `order.customer → customer.city_id`),
-the routes have different *meanings*, and hop count alone must not decide
-which one a question gets. Pin the route per entity pair:
+the routes have different *meanings*, and which one a question means is a
+business definition. The engine never guesses: the decision is recorded once
+in the package, then every query uses it, and adding a route never silently
+changes an existing answer. For each start entity and target entity, in this
+order:
+
+1. A `graph.path_preferences` row for the pair (below) wins.
+2. Exactly one route: it is used.
+3. Otherwise, when exactly one route is a direct relationship from the start
+   entity that reaches at most one row (many-to-one, or one-to-one: the start
+   row holds the target's key), it is used.
+4. Otherwise the query is refused with `AMBIGUOUS_PATH`, whatever the routes'
+   lengths (equal or not) and whether they fan out: two direct keys (parallel
+   roles), routes with no direct key, and routes that all fan out are all
+   refused.
+
+Hop count never decides. Every path choice goes through this rule: grouping,
+filters, a measure's own filter, metric predicates, time roles, conversions,
+the direct read of a foreign key, and discovery, catalog and error hints. A
+calendar dimension reached only through other facts' rows is refused the same
+way, and its recovery hint points at `time.grain` instead.
+
+The refusal is a clarification: `details.reason` is `route_decision_required`,
+`details.candidates` lists every route, `details.meanings` reads each one as a
+chain of entity and relationship labels (`Account → Owner → Home region`), and
+`details.pins` holds the `graph.path_preferences` row that records each. Copy
+the row for the meaning the package intends into `graph.yml`.
+
+A relationship's `path_preference` weight no longer exists: a package that
+still sets one fails to load with `INVALID_CONFIG`, naming the relationship.
+Record the route as a `graph.path_preferences` row instead.
+
+### `graph.path_preferences:` — recording a route
+
+Record the route per entity pair:
 
 ```yaml
 # graph.yml
 graph:
   path_preferences:
+    # A line item's region: its customer's home region, not the ship-to region.
     - source_entity: line_item
       target_entity: region
       relationship_path:
@@ -1399,55 +1478,61 @@ graph:
         - relationship.cities_region
 ```
 
-Pinned paths are validated at load time (unknown relationships, broken
-chains, and disallowed traversal directions are `INVALID_CONFIG`), and the
-fanout safety analysis still applies to the pinned route.
+`source_entity` and `target_entity` take an entity's key, name or id (the rows in
+`details.pins` use ids). Rows are validated at load time (unknown entities and
+relationships, broken chains, and disallowed traversal directions are
+`INVALID_CONFIG`), and the fanout safety analysis still applies to the recorded
+route. A row covers only queries that start at its `source_entity` and end at its
+`target_entity`. A comment stating the meaning in the question's own words keeps
+the decision reviewable.
 
-Three guard rails back this up at query time:
+Four guard rails back this up:
 
-- **`PATH_ALTERNATES_UNPINNED` warning** — emitted when hop count alone
-  decided between routes with different hop counts and the author expressed
-  no preference (no `path_preference` on any involved relationship, no
-  `path_preferences` pin). Adding a shortcut relationship to a package can
-  silently re-route existing queries; this warning is the tripwire.
-- **`AMBIGUOUS_PATH` error** — two routes with identical hop count and
-  preference score refuse to compile rather than pick arbitrarily. The error
-  names the tied routes and how to pin one. A `graph.relationships:` entry
+- **Route notes** — where the engine chose one of two or more routes for a pair
+  the compiled query reads (root, leaf, predicate and conversion paths, and the
+  direct read of a key), compact and full responses carry one `info` note:
+  `ROUTE_RECORDED` (rule 1) or `ROUTE_COLOCATED_KEY` (rule 3), with the chosen
+  route's relationship ids in `details.route` and its readable meaning in the
+  message (`Order → Store (own key)`). A pair with one route gets none, and the
+  minimal response (the MCP default) leaves the notes out. So adding a route
+  never changes an answer silently: a pair whose one route is its own key keeps
+  its answer and now notes it, and any other pair is refused until a row
+  records it. Notes reuse the resolver's candidates for an unpinned pair. For
+  a recorded route, they check whether multiple routes fit `max_hops` using
+  bounded reachability scans, without enumerating alternatives or caching a
+  route refusal just to produce a note.
+- **`AMBIGUOUS_PATH` error** — rule 4 above. A `graph.relationships:` entry
   never replaces a foreign key on other columns: the model keeps both, so an
   origin and a destination key into one `airport` entity are two routes. Any
-  query that reaches the airport is refused until you pin the role it means:
+  query that reaches the airport is refused until you record the role it means:
   its city, its key (`airport_code`, even though the leg's table holds the
   foreign key), a filter on either, or a metric predicate on the airport. An
   entry that restates the inferred foreign key (the same `via` columns, or none)
   replaces it. Two authored entries on the same `via` columns are refused at
   load (`INVALID_CONFIG`, naming both): keep one, or give each its own `via`
   if they are different roles.
-  Pin the role with a lower `path_preference` on the intended relationship,
-  which applies to every query through the pair. A `path_preferences` row
-  for the pair pins only queries that start at its `source_entity` and end at
-  its `target_entity`; a query from another entity that passes through the pair,
-  one that continues past the target, or one that starts at the target, is still
-  refused. A pinned role reads its key through the pinned relationship's join,
-  like any other column of the airport, so a leg whose code matches no airport
-  row groups under a NULL key (a lookup read, above); a package with a single role
-  and no `path_preferences` row for the pair reads the key from the leg's own column
-  and groups that leg under its code.
-  A `path_preferences` row for the pair, in either direction, sends every read of
-  the key, a filter on it and a metric predicate through the pinned route, so the
-  key and the airport's other columns always come from the same airport. `path_preference` is a non-negative integer
-  (unset is 100), so `0` is the lowest and pins a role.
+  A `path_preferences` row for the pair covers only queries that start at its
+  `source_entity` and end at its `target_entity`; a query from another entity
+  that passes through the pair, one that continues past the target, or one that
+  starts at the target, is still refused. A recorded role reads its key through
+  that relationship's join, like any other column of the airport, so a leg whose
+  code matches no airport row groups under a NULL key (a lookup read, above); a
+  package with a single role and no row for the pair reads the key from the
+  leg's own column and groups that leg under its code, when the route rule takes
+  that relationship. A `path_preferences` row for the pair, in either direction,
+  sends every read of the key, a filter on it and a metric predicate through the
+  recorded route, so the key and the airport's other columns always come from
+  the same airport.
 - **`RELATIONSHIP_ROLES_UNPINNED` warning** — reported when the package is
   parsed (`semantic-rails check`, `validate`): several relationships join the
-  same pair of entities on different columns and no single one has the lowest
-  `path_preference` (two tied at the lowest still refuse every query). It names
-  the relationships, says whether a `path_preferences` row covers the pair, and
-  repeats the fix above. It stays quiet only when exactly one relationship has
-  the lowest `path_preference`.
+  same pair of entities on different columns. It names the relationships, says
+  whether a `path_preferences` row covers the pair and what that row covers, and
+  asks for a row for each entity pair a query needs.
 - **`PATH_JOIN_CONFLICT` error** — one query needs the same physical table
-  through two different relationships (e.g. region pinned to the home-city
-  route while city resolves via the ship-to shortcut). One table instance
+  through two different relationships (e.g. region recorded as the home-city
+  route while city is read through the ship-to key). One table instance
   cannot serve both semantics, so the compiler refuses with both routes
-  named. Fix by pinning every affected target to a consistent route, or by
+  named. Fix by recording a consistent route for every affected target, or by
   modeling the second role as its own entity over a dedicated relation.
 
 ### `hop_profile` — observing entity hops
@@ -1798,7 +1883,7 @@ would ignore such a key, so the package would behave differently from what it sa
 - a mistyped key, such as `valeu_type` on a metric;
 - a segment's `where` or `metric_filters` written outside `membership:`;
 - an unknown key inside `membership:`. The loader reads `where`, `metric_filters`,
-  `time`, `temporal_role_overrides` and `path_policy` there. `filters` and
+  `time` and `temporal_role_overrides` there. `filters` and
   `dimension_filters`, the spellings other tools use, point to `membership.where`.
 
 Every metric also gets the kind checks: a metric with an unknown `kind:`, or

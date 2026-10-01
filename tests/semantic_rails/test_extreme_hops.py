@@ -87,7 +87,6 @@ def _write_geo_package(
     root: Path,
     *,
     ship_city: bool = False,
-    ship_city_preference: int | None = None,
     rollup_safe_reverse: bool = False,
     path_preferences: list[dict] | None = None,
     pref_key: str = "preferred_paths",
@@ -148,8 +147,6 @@ def _write_geo_package(
             "      target: [city_id]",
             "      allowed_directions: [forward]",
         ]
-        if ship_city_preference is not None:
-            rel_lines.append(f"      path_preference: {ship_city_preference}")
     if rollup_safe_reverse:
         rel_lines += [
             "    orders_customer:",
@@ -369,28 +366,26 @@ def test_reverse_fanout_count_distinct_rolls_up_by_child_dimension(tmp_path):
     assert any(w["code"] == "REWRITE_APPLIED" for w in out["warnings"])
 
 
-def test_shortcut_relationship_changes_route_and_warns_unpinned(tmp_path):
-    """Adding a role-playing shortcut silently re-routes existing queries
-    (fewest hops wins). The numbers prove the flip; the warning is the
-    tripwire that tells the author to pin a route."""
+SHIP_ROUTE_TO_REGION = [
+    "relationship.line_items_order",
+    "relationship.orders_ship_city",
+    "relationship.cities_region",
+]
+
+
+def test_shortcut_relationship_makes_the_route_ambiguous(tmp_path):
+    """A role-playing shortcut gives region two routes of different lengths, the ship-to
+    region and the home region. Hop count doesn't choose between them: the query is refused,
+    naming each route with its pin."""
     runtime = Runtime.from_path(str(_write_geo_package(tmp_path, ship_city=True)))
-    out = runtime.query(_query("measure.geo.revenue_usd", ["dimension.geo_region_name"]))
+    with pytest.raises(SemanticLayerError) as exc_info:
+        runtime.query(_query("measure.geo.revenue_usd", ["dimension.geo_region_name"]))
 
-    assert _values_by_key(out["rows"], "dimension.geo_region_name") == REVENUE_BY_REGION_SHIP
-    unpinned = [w for w in out["warnings"] if w["code"] == "PATH_ALTERNATES_UNPINNED"]
-    assert len(unpinned) == 1
-    assert unpinned[0]["details"]["target_entity"] == "entity.geo_region"
-    assert unpinned[0]["details"]["alternate_path"] == CUSTOMER_ROUTE_TO_REGION
-
-
-def test_unpinned_warning_suppressed_when_author_sets_path_preference(tmp_path):
-    runtime = Runtime.from_path(
-        str(_write_geo_package(tmp_path, ship_city=True, ship_city_preference=10))
-    )
-    out = runtime.query(_query("measure.geo.revenue_usd", ["dimension.geo_region_name"]))
-
-    assert _values_by_key(out["rows"], "dimension.geo_region_name") == REVENUE_BY_REGION_SHIP
-    assert not [w for w in out["warnings"] if w["code"] == "PATH_ALTERNATES_UNPINNED"]
+    err = exc_info.value
+    assert err.code == "AMBIGUOUS_PATH"
+    assert err.details["candidates"] == [SHIP_ROUTE_TO_REGION, CUSTOMER_ROUTE_TO_REGION]
+    assert [pin["relationship_path"] for pin in err.details["pins"]] == err.details["candidates"]
+    assert "path_preferences" in err.details["hint"]
 
 
 @pytest.mark.parametrize("pref_key", ["preferred_paths", "relationship_path"])
@@ -418,9 +413,9 @@ def test_path_preferences_pin_the_declared_route(tmp_path, pref_key):
 
 
 def test_conflicting_routes_to_one_table_are_refused_not_silently_wrong(tmp_path):
-    """Pin region to the customer-home route while city resolves via the
-    ship-to shortcut: both need the `cities` table through different
-    relationships. One table instance cannot serve both semantics."""
+    """Pin region to the customer-home route and city to the ship-to shortcut:
+    both need the `cities` table through different relationships. One table
+    instance cannot serve both semantics."""
     runtime = Runtime.from_path(
         str(
             _write_geo_package(
@@ -431,7 +426,12 @@ def test_conflicting_routes_to_one_table_are_refused_not_silently_wrong(tmp_path
                         "source": "line_item",
                         "target": "region",
                         "path": CUSTOMER_ROUTE_TO_REGION,
-                    }
+                    },
+                    {
+                        "source": "line_item",
+                        "target": "city",
+                        "path": SHIP_ROUTE_TO_REGION[:2],
+                    },
                 ],
             )
         )

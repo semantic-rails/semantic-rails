@@ -45,10 +45,14 @@ surface.
 - safe fact-to-dimension traversal
 - multi-hop entity traversal with per-hop cardinality checks (default ceiling
   4 relationships; raisable to 8 via `graph.path_policy.max_hops`)
-- ambiguous-path rejection
-- route pinning via `graph.path_preferences` (load-time validated)
-- unpinned-alternate-route warning (`PATH_ALTERNATES_UNPINNED`) and
-  conflicting-route refusal (`PATH_JOIN_CONFLICT`)
+- route rule: a `graph.path_preferences` row, else the only route, else the
+  start entity's one direct key (noted with `ROUTE_COLOCATED_KEY`);
+  anything else is refused as `AMBIGUOUS_PATH` (`reason: route_decision_required`,
+  with each route's meaning and the row that records it), whatever the routes'
+  lengths. Hop count never decides, and adding a route never changes an answer
+  silently.
+- route recording via `graph.path_preferences` (load-time validated)
+- conflicting-route refusal (`PATH_JOIN_CONFLICT`)
 - per-query `hop_profile` reporting (chosen chains, per-hop safety,
   long-hop targets)
 - explicit root selection for no-measure distinct-values queries

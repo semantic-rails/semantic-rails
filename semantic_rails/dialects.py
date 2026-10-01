@@ -1287,6 +1287,8 @@ SNOWFLAKE_NATIVE_CONNECTION_OPTIONS: tuple[str, ...] = (
     "role",
     "query_tag",
     "statement_timeout_seconds",
+    "connect_timeout_seconds",
+    "read_timeout_seconds",
 )
 
 SNOWFLAKE_NATIVE_DIRECT_AUTH_OPTIONS: tuple[str, ...] = (
@@ -1332,6 +1334,8 @@ POSTGRES_CONNECTION_OPTIONS: tuple[str, ...] = (
     "password_file",
     "sslmode",
     "statement_timeout_seconds",
+    "connect_timeout_seconds",
+    "read_timeout_seconds",
 )
 
 BIGQUERY_CONNECTION_OPTIONS: tuple[str, ...] = (
@@ -1341,6 +1345,8 @@ BIGQUERY_CONNECTION_OPTIONS: tuple[str, ...] = (
     "location",
     "credentials_file",
     "credentials_file_env",
+    "connect_timeout_seconds",
+    "read_timeout_seconds",
 )
 
 DATABRICKS_CONNECTION_OPTIONS: tuple[str, ...] = (
@@ -1352,6 +1358,8 @@ DATABRICKS_CONNECTION_OPTIONS: tuple[str, ...] = (
     "token_file",
     "catalog",
     "schema",
+    "connect_timeout_seconds",
+    "read_timeout_seconds",
 )
 
 MOTHERDUCK_CONNECTION_OPTIONS: tuple[str, ...] = (
@@ -1376,6 +1384,8 @@ ATHENA_CONNECTION_OPTIONS: tuple[str, ...] = (
     "workgroup",
     "s3_staging_dir",
     "s3_staging_dir_env",
+    "connect_timeout_seconds",
+    "read_timeout_seconds",
 )
 
 CLICKHOUSE_CONNECTION_OPTIONS: tuple[str, ...] = (
@@ -1388,6 +1398,8 @@ CLICKHOUSE_CONNECTION_OPTIONS: tuple[str, ...] = (
     "password_env",
     "password_file",
     "secure",
+    "connect_timeout_seconds",
+    "read_timeout_seconds",
 )
 
 

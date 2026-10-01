@@ -1372,11 +1372,9 @@ def _compiled_package_warnings(config, source_path: Path) -> list[str | dict[str
 
 def _unpinned_role_warnings(config, source_path: Path) -> list[dict[str, Any]]:
     """One warning per entity pair joined on different columns by several
-    relationships (role-playing keys) unless exactly one of them has the lowest
-    ``path_preference``: that one wins every route through the pair. A
-    ``path_preferences`` row pins only queries that start at the source entity
-    and end at the target, so a pair pinned that way is still reported, and the
-    message says what the pin covers."""
+    relationships (role-playing keys). A ``path_preferences`` row pins only
+    queries that start at the source entity and end at the target, so a pair
+    pinned that way is still reported, and the message says what the pin covers."""
     # Either direction of a pair is one pair, and a route is its column pairing, so two
     # relationships that differ only in target columns, or that are declared from opposite
     # sides, still count as different roles. The first id (sorted) sets the orientation.
@@ -1405,9 +1403,6 @@ def _unpinned_role_warnings(config, source_path: Path) -> list[dict[str, Any]]:
         }
         if len(routes) < 2:
             continue
-        lowest = min(rel.path_preference for rel in rels)
-        if sum(rel.path_preference == lowest for rel in rels) == 1:
-            continue
         ids = [rel.id for rel in rels]
         covered = (
             f"graph.path_preferences pins only queries that start at {source} and end at "
@@ -1420,9 +1415,9 @@ def _unpinned_role_warnings(config, source_path: Path) -> list[dict[str, Any]]:
             _error_payload(
                 "RELATIONSHIP_ROLES_UNPINNED",
                 f"{source_path}: {source} reaches {target} through {len(ids)} relationships "
-                f"({', '.join(ids)}) on different columns and none has a unique lowest "
-                f"path_preference: {covered}. Give the intended relationship a lower "
-                "path_preference to pin it for every query.",
+                f"({', '.join(ids)}) on different columns: {covered}. Which one a question "
+                "means is a business definition: record it as a graph.path_preferences row "
+                "for each entity pair a query needs.",
                 details={
                     "source_entity": source,
                     "target_entity": target,

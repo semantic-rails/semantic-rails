@@ -1,12 +1,12 @@
 {
   "dataset_fingerprint": "4f24ad8276dab30eb897fef24c136c863bf6def1bb1e24d1c0244aa4796b549f",
   "engine_release": null,
-  "generated_at": "2026-10-01T03:56:51+00:00",
+  "generated_at": "2026-10-01T05:47:59+00:00",
   "inputs_modified": false,
   "layer": "semantic_rails",
-  "layer_tree": "6b16b1ba48d4a0923809e84b70a742919126df02",
+  "layer_tree": "b42375cdfd0cf6eacd0a5361cb9c3f332f51dfe1",
   "package_id": "comparison_semantic_rails",
-  "package_tree": "728ab071967aaca5bef05842e663f346347f15ac",
+  "package_tree": "8afc73563ac52c0fddec7bfb802281b1bde4af89",
   "questions": [
     {
       "query_path": "comparisons/semantic_layers/semantic_rails/queries/q01_orders_by_month.json",
@@ -202,7 +202,7 @@
     }
   ],
   "questions_blob": "641d3dbb6776b574720ac19bbec139318842cb3e",
-  "semantic_rails_commit": "0f7f3b5c3b8c9313756b0240ab93b68e0df84a19",
-  "semantic_rails_tree": "c710d06c1fa4ac8142a6544d20c2a9b8606df28d",
+  "semantic_rails_commit": "a9c91c55d8f17cf571a4499b48c22b0f4313b553",
+  "semantic_rails_tree": "1242a2fe2cf676f515101b6b683afe2923eb1e47",
   "semantic_rails_version": "0.3.2rc2"
 }

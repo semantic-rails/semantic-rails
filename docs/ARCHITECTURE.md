@@ -275,7 +275,6 @@ Top-level fields:
 - `metric_filters`
 - `time`
 - `temporal_role_overrides`
-- `path_policy`
 - `order_by`
 - `limit`
 - `debug`

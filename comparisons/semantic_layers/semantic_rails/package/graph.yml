@@ -55,7 +55,6 @@ graph:
       cardinality: many_to_one
       target: [customer_id]
       safety: requires_rewrite
-      path_preference: 50
       rollup_safe:
         forward: [sum, count]
         reverse: []
@@ -69,10 +68,23 @@ graph:
       cardinality: many_to_one
       target: [customer_id]
       safety: requires_rewrite
-      path_preference: 50
       rollup_safe:
         forward: [sum, count]
         reverse: []
       temporal_validity:
         valid_from: comparison_customer_history.valid_from
         valid_to: comparison_customer_history.valid_to
+
+  # Which of two routes to one entity a question means is a business definition, so the
+  # engine never picks one: each pair a query needs records its route here. A pair with
+  # one direct key (an order's own customer_id) uses it without a row.
+  path_preferences:
+    # An item's customer: the customer who placed the item's order.
+    - source_entity: item
+      target_entity: customer
+      relationship_path: [relationship.order_items_order, relationship.orders_customer]
+    # An item's store: the store the item's order was placed at ("orders and item revenue
+    # by store and month").
+    - source_entity: item
+      target_entity: store
+      relationship_path: [relationship.order_items_order, relationship.orders_store]

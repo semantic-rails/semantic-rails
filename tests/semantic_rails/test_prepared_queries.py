@@ -81,6 +81,8 @@ class CaptureCursor:
         self.parameters.append(parameters)
 
     def fetchone(self):
+        if self.statements[-1].startswith("show parameters"):
+            return ("STATEMENT_TIMEOUT_IN_SECONDS", "30")
         return ("Europe/Paris", "5s")
 
     def fetch_record_batch(self):
@@ -121,7 +123,7 @@ def test_compiled_sql_is_the_dbapi_statement(package_config, monkeypatch, wareho
         "snowflake": lambda: SnowflakeNativeAdapter("test_connection"),
     }[warehouse]()
     cursor = CaptureCursor(_physical_alias(prepared))
-    adapter._conn = SimpleNamespace(cursor=lambda: cursor)
+    adapter._conn = SimpleNamespace(cursor=lambda **kwargs: cursor)
     monkeypatch.setattr("semantic_rails.db_parts.common.prepare_query", _forbid_second_preparation)
     monkeypatch.setattr("semantic_rails.db_parts.adbc.prepare_query", _forbid_second_preparation)
     monkeypatch.setattr(
@@ -139,9 +141,10 @@ def test_compiled_sql_is_the_dbapi_statement(package_config, monkeypatch, wareho
         "databricks": ["SET STATEMENT_TIMEOUT = 1", prepared.sql, "RESET STATEMENT_TIMEOUT"],
         "athena": [prepared.sql],
         "snowflake": [
+            "show parameters like 'STATEMENT_TIMEOUT_IN_SECONDS' in session",
             "alter session set statement_timeout_in_seconds = 1",
             prepared.sql,
-            "alter session unset statement_timeout_in_seconds",
+            "alter session set statement_timeout_in_seconds = 30",
         ],
     }[warehouse]
     assert cursor.statements == expected
@@ -165,11 +168,15 @@ def test_compiled_bigquery_sql_and_original_columns_survive_execution(
     assert f"`{physical_dimension}`" in prepared.sql
     statements = []
 
-    def query(sql, *, job_config):
+    def query(sql, *, job_config, timeout):
         statements.append(sql)
+        assert timeout == 10
         assert job_config.job_timeout_ms == 1000
         return SimpleNamespace(
-            result=lambda: [{physical_dimension: "Portland"}, {physical_dimension: "NYC"}]
+            result=lambda *, timeout: [
+                {physical_dimension: "Portland"},
+                {physical_dimension: "NYC"},
+            ]
         )
 
     adapter = BigQueryNativeAdapter()
@@ -308,8 +315,9 @@ def test_runtime_query_segment_and_live_values_execute_prepared_sql(package_conf
     )
     reverse = {value: key for key, value in mapping.items()}
 
-    def query(sql, *, job_config):
+    def query(sql, *, job_config, timeout):
         statements.append(sql)
+        assert timeout == 10
         rows = (
             [{"member_count": 1}]
             if sql.startswith("SELECT COUNT(*)")
@@ -317,7 +325,7 @@ def test_runtime_query_segment_and_live_values_execute_prepared_sql(package_conf
                 {reverse[customer_id]: 1, reverse[store_name]: "Portland", "anchor": 3, "aov": 12.5}
             ]
         )
-        return SimpleNamespace(result=lambda: rows)
+        return SimpleNamespace(result=lambda *, timeout: rows)
 
     adapter._client = SimpleNamespace(query=query, close=lambda: None)
     monkeypatch.setattr(

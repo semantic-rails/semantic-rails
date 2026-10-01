@@ -39,8 +39,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 3.034,
-      "compile_ms": 1.726,
+      "cache_lookup_ms": 0.929,
+      "compile_ms": 0.535,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -172,10 +172,6 @@
             "field": "temporal_role.jaffle_order_time__month"
           }
         ],
-        "path_policy": {
-          "ask_if_ambiguous": true,
-          "preference": "fewest_hops"
-        },
         "select": [
           {
             "as": "revenue_usd",
@@ -347,10 +343,6 @@
           "field": "temporal_role.jaffle_order_time__month"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "revenue_usd",
@@ -1749,10 +1741,6 @@
           "field": "temporal_role.jaffle_order_time__month"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "revenue_usd",
@@ -1925,10 +1913,6 @@
         "field": "temporal_role.jaffle_order_time__month"
       }
     ],
-    "path_policy": {
-      "ask_if_ambiguous": true,
-      "preference": "fewest_hops"
-    },
     "select": [
       {
         "as": "revenue_usd",
@@ -2045,7 +2029,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 18.495,
+  "timing_ms": 4.229,
   "trace": {
     "fallback": {
       "reason": "",

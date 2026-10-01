@@ -70,7 +70,7 @@ graph:
 
   # Most relationships are inferred from each model's `entities:` block.
   # Author an explicit entry only for non-default rules (per-direction
-  # rollup safety, SCD2 temporal_validity, custom path_preference, etc.).
+  # rollup safety, SCD2 temporal_validity, a second role's own columns, etc.).
 
 models:
   # One model per warehouse table. Primary entity is auto-detected from

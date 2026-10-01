@@ -404,10 +404,6 @@ At least one of `select`, `group_by`, or `time` must be present.
     "calendar_id": "default"
   },
   "temporal_role_overrides": {},
-  "path_policy": {
-    "preference": "fewest_hops",
-    "ask_if_ambiguous": true
-  },
   "order_by": [
     {
       "field": "orders",
@@ -1153,6 +1149,12 @@ The response `warnings` array can carry these non-error signals:
 - `SEMANTIC_CAVEATS_TRUNCATED` — fires when more caveats matched than
   the current verbosity returns. Increase `verbosity` to inspect the
   omitted advisory context.
+- `ROUTE_COLOCATED_KEY`, `ROUTE_RECORDED` — severity `info`, at `compact`
+  and `full` verbosity: the query reads an entity pair with two or more
+  routes, and the engine used the start entity's own key or the package's
+  `graph.path_preferences` row. `details.route` is the chosen route; the
+  message reads it (`Order → Store (own key)`). See
+  [the route rule](PACKAGE_AUTHORING.md#the-route-rule).
 
 HTTP failures return:
 

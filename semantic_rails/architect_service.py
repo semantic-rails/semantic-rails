@@ -62,6 +62,7 @@ _INVENTORY_KINDS = {
 }
 # What remove_object removes: a relationship is a model's foreign-key entity reference.
 _REMOVABLE = ("model", "dimension", "time", "measure", "metric", "segment", "relationship")
+_PIN_ENDS = ("source_entity", "target_entity")
 _CALENDAR_ID = re.compile(r"[a-z0-9_]+")
 
 # What upsert_model(replace=True) keeps from the model it rewrites.
@@ -1641,6 +1642,7 @@ class ArchitectProject:
                 self._drop_definitions(raw, singular, name, documents, removed)
             else:
                 self._drop_model_field(raw, singular, name, model, documents, removed)
+            self._drop_dangling_pins(raw, documents, removed)
             # Write only what changed, so the other files keep their layout.
             updates = self._file_updates(
                 {path: doc for path, doc in documents.items() if doc != _yaml_load(path)}
@@ -1857,6 +1859,85 @@ class ArchitectProject:
             else:
                 graph.pop("relationships")
             graph_doc["graph"] = graph
+
+    def _drop_dangling_pins(
+        self,
+        raw: dict[str, list[_RawObject]],
+        documents: dict[Path, dict[str, Any] | None],
+        removed: list[dict[str, Any]],
+    ) -> None:
+        """Drop the ``graph.path_preferences`` rows naming an entity or relationship that the
+        staged removal deletes, each listed in ``removed`` so the reviewer sees the route
+        decision go.
+
+        What a removal deletes is the difference between the loaded package before and after
+        it, both loaded without the rows (so no row, dangling or malformed, fails that load):
+        relationships declared on a model count, and a row may name an entity by key, name or
+        id and a relationship by id or its id without the ``relationship.`` prefix, as the
+        loader reads them. A row that isn't a mapping, or a package that doesn't load, is left
+        to the parse gate.
+        """
+        if not raw["entities"]:
+            return
+        path = raw["entities"][0].source_path
+        graph_doc = self._document(documents, path)
+        graph = dict(graph_doc.get("graph", {}) or {})
+        pins = list(graph.get("path_preferences", []) or [])
+        if not pins:
+            return
+
+        def unpinned(doc: dict[str, Any]) -> dict[str, Any]:
+            rest = {k: v for k, v in dict(doc.get("graph", {}) or {}).items()}
+            rest.pop("path_preferences", None)
+            return {**doc, "graph": rest}
+
+        transaction = ProjectTransaction(self.project_path, workspace_root=self.workspace_root)
+        configs = []
+        try:
+            for staged in (
+                {path: unpinned(_yaml_load(path))},
+                {**documents, path: unpinned(graph_doc)},
+            ):
+                changed = {p: d for p, d in staged.items() if d != _yaml_load(p)}
+                with transaction.virtual_project(self._file_updates(changed)) as proposed:
+                    configs.append(load_package_snapshot(str(proposed)).config)
+        except Exception:  # the parse gate reports a package that doesn't load
+            return
+        before, after = configs
+        entity_ids = {
+            **{row.name: row.id for row in before.entities},
+            **{row.key: row.object_id for row in raw["entities"]},
+            **{row.id: row.id for row in before.entities},
+        }
+        relationship_ids: dict[str, str] = {}
+        for rel in before.relationships:
+            relationship_ids[rel.id] = rel.id
+            relationship_ids.setdefault(rel.id.partition(".")[2], rel.id)
+        gone = {row.id for row in before.entities} - {row.id for row in after.entities}
+        gone |= {row.id for row in before.relationships} - {row.id for row in after.relationships}
+
+        def dangling(pin: Any) -> bool:
+            if not isinstance(pin, dict):
+                return False
+            ends = {entity_ids.get(str(pin.get(end, "")).strip()) for end in _PIN_ENDS}
+            routes = [pin.get("relationship_path"), *list(pin.get("preferred_paths") or [])]
+            hops = {relationship_ids.get(hop) for route in routes for hop in _as_list(route)}
+            return bool(gone & (ends | hops))
+
+        dropped = [pin for pin in pins if dangling(pin)]
+        if not dropped:
+            return
+        removed.extend(
+            self._row(
+                "path_preferences", " -> ".join(str(pin.get(e)) for e in _PIN_ENDS), path, pin
+            )
+            for pin in dropped
+        )
+        kept = [pin for pin in pins if not dangling(pin)]
+        graph_doc["graph"] = {
+            **unpinned(graph_doc)["graph"],
+            **({"path_preferences": kept} if kept else {}),
+        }
 
     def _removal_impact(
         self, updates: list[ProjectFileUpdate], removed: list[dict[str, Any]], change: str

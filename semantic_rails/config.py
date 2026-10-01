@@ -229,21 +229,6 @@ def _ensure_list(value: Any) -> list[str]:
     return [str(value)]
 
 
-def _path_preference(value: Any, where: str) -> int:
-    """A relationship's ``path_preference``: lower wins a route, 0 included. Unset is 100."""
-    if value is None or value == "":
-        return 100
-    try:
-        preference = int(value)
-    except (TypeError, ValueError):
-        preference = -1
-    if isinstance(value, bool) or preference < 0:
-        raise SemanticLayerError(
-            "INVALID_CONFIG", f"{where} path_preference must be a non-negative integer"
-        )
-    return preference
-
-
 def _ensure_dict_list(value: Any) -> list[dict[str, Any]]:
     rows = value if isinstance(value, list) else ([] if value is None else [value])
     return [dict(row or {}) for row in rows if isinstance(row, dict)]
@@ -1656,19 +1641,21 @@ def _parse_path_preferences(
         _, _, suffix = known_rel.id.partition(".")
         if suffix:
             rel_lookup.setdefault(suffix, known_rel)
+    # An entity by key, name or id: an AMBIGUOUS_PATH refusal lists its pins by entity id.
+    entities = {**{entity_id: entity_id for entity_id in entity_lookup.values()}, **entity_lookup}
     out: list[PathPreferenceConfig] = []
     for row in rows:
         row_dict = dict(row or {})
         source_ref = str(row_dict.get("source_entity", "")).strip()
         target_ref = str(row_dict.get("target_entity", "")).strip()
         for label, ref in (("source_entity", source_ref), ("target_entity", target_ref)):
-            if ref not in entity_lookup:
+            if ref not in entities:
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
                     f"{path}: path_preferences row references unknown {label} '{ref}'",
                 )
-        source_entity = entity_lookup[source_ref]
-        target_entity = entity_lookup[target_ref]
+        source_entity = entities[source_ref]
+        target_entity = entities[target_ref]
         preferred = row_dict.get("preferred_paths")
         if preferred is not None:
             paths_raw = list(preferred or [])
@@ -2349,11 +2336,20 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     "INVALID_CONFIG",
                     f"{path}: join '{model_id}.{edge_key}' has invalid safety '{safety}' (must be 'safe', 'requires_rewrite', or 'unsafe')",
                 )
+            rel_id = str(join_spec.get("id", f"relationship.{_slug(model_id)}_{_slug(edge_key)}"))
+            if "path_preference" in join_spec:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{path}: relationship '{rel_id}' sets path_preference, which was removed: "
+                    "a weight never decides which route a question means. Delete it, and "
+                    "record the route for each entity pair that needs one as a "
+                    "graph.path_preferences row (source_entity, target_entity, "
+                    "relationship_path).",
+                    details={"relationship": rel_id, "fix": "graph.path_preferences"},
+                )
             relationships.append(
                 RelationshipConfig(
-                    id=str(
-                        join_spec.get("id", f"relationship.{_slug(model_id)}_{_slug(edge_key)}")
-                    ),
+                    id=rel_id,
                     source_entity=entity_id,
                     target_entity=entity_lookup[target_ref],
                     source_column=local_cols[0],
@@ -2367,9 +2363,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     name=str(join_spec.get("name", f"{entity_cfg.name}_TO_{target_cfg.name}")),
                     label=str(join_spec.get("label", f"{entity_cfg.label} to {target_cfg.label}")),
                     description=str(join_spec.get("description", join_spec.get("label", ""))),
-                    path_preference=_path_preference(
-                        join_spec.get("path_preference"), f"{path}: join '{model_id}.{edge_key}'"
-                    ),
                     allowed_directions=list(
                         join_spec.get("traversal", ["forward", "reverse"]) or ["forward", "reverse"]
                     ),
@@ -2699,7 +2692,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     str(k): str(v)
                     for k, v in dict(membership.get("temporal_role_overrides", {}) or {}).items()
                 },
-                path_policy=dict(membership.get("path_policy", {}) or {}),
                 aliases=list(spec.get("synonyms", []) or []),
                 name=str(spec.get("name", segment_id)),
                 label=str(spec.get("label", _titleize(segment_key))),
