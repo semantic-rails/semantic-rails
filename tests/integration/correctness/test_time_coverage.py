@@ -272,7 +272,8 @@ def test_fiscal_coverage_preserves_the_populated_final_quarter(request, backend_
     _assert_rows(
         gold, [(r[f"{ROLE}__quarter"], r["v"]) for r in typed_rows(result)], "fiscal coverage"
     )
-    assert typed_rows(result)[-1]["v"] == 2
+    # The final quarter is populated (other tests may add rows to the shared table, so compare with the reference, not a constant).
+    assert typed_rows(result)[-1]["v"] == gold[-1][1] and gold[-1][1]
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
