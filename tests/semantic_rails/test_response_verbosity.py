@@ -42,7 +42,9 @@ _COMPACT_DROPPED_KEYS = (
 
 _MINIMAL_NONEXECUTE_KEYS = frozenset({"ok", "errors", "warnings"})
 _MINIMAL_COMPILE_KEYS = frozenset({"ok", "errors", "warnings", "rendered_sql"})
-_MINIMAL_EXECUTE_KEYS = frozenset({"ok", "rows", "row_count", "truncated", "errors", "warnings"})
+_MINIMAL_EXECUTE_KEYS = frozenset(
+    {"ok", "rows", "column_types", "row_count", "truncated", "errors", "warnings"}
+)
 
 
 # ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@ from semantic_rails.cli import scaffold
 from semantic_rails.config_validation import PackageReference
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.repl import authoring, backend, shell
+from tests.semantic_rails.result_helpers import typed_rows
 
 
 class _Script:
@@ -297,7 +298,7 @@ def _values(project: Path, key: str, clock: str | None = ORDERED) -> list[Any]:
         query["time"] = {"temporal_role": clock, "grain": grain}
     runtime = Runtime.from_path(str(project))
     try:
-        rows = runtime.query(query)["rows"]
+        rows = typed_rows(runtime.query(query))
     finally:
         runtime.close()
     rows.sort(key=lambda row: [str(value) for name, value in sorted(row.items()) if name != "v"])

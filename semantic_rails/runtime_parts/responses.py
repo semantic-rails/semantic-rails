@@ -31,7 +31,7 @@ _MINIMAL_KEYS_COMPILE: frozenset[str] = frozenset({"ok", "errors", "warnings", "
 
 # Keys preserved on execute responses when verbosity="minimal".
 _MINIMAL_KEYS_EXECUTE: frozenset[str] = frozenset(
-    {"ok", "rows", "row_count", "truncated", "errors", "warnings"}
+    {"ok", "rows", "column_types", "row_count", "truncated", "errors", "warnings"}
 )
 
 # Heavy keys dropped at the top-level response when verbosity="compact".
