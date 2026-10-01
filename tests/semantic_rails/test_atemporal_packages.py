@@ -296,12 +296,46 @@ def test_nested_authored_time_expression_cannot_bypass_guard(runtime) -> None:
         "yearly item count",
         "annual item count",
         "item count annually",
+        "item count every month",
+        "item count by calendar month",
+        "item count tomorrow",
+        "item count trend",
+        "item count each month",
+        "item count time series",
+        "hourly item count",
+        "item count at month grain",
+        "item count trending",
+        "item count history",
+        "item count historical",
+        "item count per second",
+        "item count by minute",
+        "item count per hour",
+        "item count every second",
+        "item count at second grain",
     ],
 )
 def test_plan_time_phrases_refuse(runtime, intent: str) -> None:
     with pytest.raises(SemanticLayerError, match="declares no time") as exc:
         plan_payload(runtime, intent=intent)
     assert exc.value.code == "INVALID_TEMPORAL_ROLE"
+
+
+@pytest.mark.parametrize("detail", ["best", "full", "query", "debug"])
+def test_plan_fallback_cannot_ignore_time_intent(package_path, detail) -> None:
+    package_file = package_path / "package.yml"
+    package = yaml.safe_load(package_file.read_text())
+    package["package"]["planner"] = {"disabled_patterns": ["metric_by_dimension_rollup"]}
+    package_file.write_text(yaml.safe_dump(package, sort_keys=False))
+    runtime = Runtime.from_path(str(package_path))
+    try:
+        from semantic_rails.planner import compose
+
+        assert compose(runtime, "item count every month").draft is None
+        with pytest.raises(SemanticLayerError, match="declares no time") as exc:
+            plan_payload(runtime, intent="item count every month", detail=detail)
+        assert exc.value.code == "INVALID_TEMPORAL_ROLE"
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize(
@@ -311,6 +345,7 @@ def test_plan_time_phrases_refuse(runtime, intent: str) -> None:
         ("item count by daycare", "Item count", "Daycare"),
         ("count of monthly plans", "Monthly plans", "Category"),
         ("moving company count", "Moving company count", "Category"),
+        ("second item count", "Second item count", "Category"),
     ],
 )
 def test_plan_ordinary_time_words_answer(
@@ -345,17 +380,28 @@ def test_plan_ordinary_time_words_answer(
 
 
 @pytest.mark.parametrize(
-    "phrase",
+    ("phrase", "match_by"),
     [
-        "by month",
-        "over time",
-        "year to date",
-        "rolling",
-        "cumulative",
-        "monthly",
-    ],
+        (phrase, match_by)
+        for phrase in (
+            "by month",
+            "over time",
+            "year to date",
+            "rolling",
+            "cumulative",
+            "monthly",
+            "every month",
+            "by calendar month",
+            "trend",
+            "each month",
+            "time series",
+            "at month grain",
+            "İ monthly",
+        )
+        for match_by in ("value", "label", "alias")
+    ]
+    + [("hourly", "value")],
 )
-@pytest.mark.parametrize("match_by", ["value", "label", "alias"])
 def test_plan_time_phrase_category_values_answer(package_path, phrase, match_by) -> None:
     model_path = package_path / "models/core/items.yml"
     model = yaml.safe_load(model_path.read_text())
@@ -385,7 +431,10 @@ def test_plan_time_phrase_category_values_answer(package_path, phrase, match_by)
         runtime.close()
 
 
-@pytest.mark.parametrize("phrase", ["last month", "since 2023-01-01", "in 2023"])
+@pytest.mark.parametrize(
+    "phrase",
+    ["last month", "since 2023-01-01", "in 2023", "tomorrow", "next month", "İ last month"],
+)
 @pytest.mark.parametrize("match_by", ["value", "label", "alias"])
 def test_plan_window_shaped_category_values_downgrade(package_path, phrase, match_by) -> None:
     model_path = package_path / "models/core/items.yml"

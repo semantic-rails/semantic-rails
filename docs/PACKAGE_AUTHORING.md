@@ -881,6 +881,9 @@ cumulative expressions, and plan intents such as "last month" are refused with
 before requesting time analysis. A `defaults.time.default_query_axis: true`
 also requires a declared temporal role. Catalogue labels and dimension values
 can contain time words; a separate request for time analysis still refuses.
+Plan uses its time-window, grain and trend interpretation to check the question:
+"every month", "by calendar month", "hourly", "time series" and "tomorrow" refuse
+unless the time words belong to catalogue names or values carried by the draft.
 Architect and CLI scaffolds accept a blank
 `time_column` to generate a package, seed, examples and tests without dates.
 

@@ -30,10 +30,14 @@ from ..runtime import runtime_request_scope
 from ..temporal_support import require_temporal_support, validate_temporal_support
 from ._base import (
     _PERIOD_SHIFT_TRIGGERS,
+    _TO_DATE_OR_ROLLING_RE,
+    _TREND_CUE_RE,
+    _explicit_grain,
     _time_window,
     _with_fiscal_calendar,
 )
 from .faithfulness import (
+    _CLOCK_WORDS,
     intent_faithfulness_why,
     intent_subject_why,
     unconsumed_terms,
@@ -45,14 +49,7 @@ from .orchestrator import compose
 
 _VERSION = 1
 
-_GRAIN_WORD = r"(?:second|minute|hour|day|week|month|quarter|year)s?"
-_ATEMPORAL_TIME_PHRASE_RE = re.compile(
-    rf"\b(?:(?:by|per)\s+{_GRAIN_WORD}|over\s+time|{_GRAIN_WORD}\s+to\s+date|"
-    rf"ytd|mtd|qtd|rolling|cumulative|running\s+total|"
-    rf"(?:last|this|next|previous)\s+{_GRAIN_WORD}|"
-    r"daily|weekly|monthly|quarterly|yearly|annual(?:ly)?)\b",
-    re.IGNORECASE,
-)
+_CUMULATIVE_CUE_RE = re.compile(r"\b(?:cumulative|running\s+total)\b")
 
 
 def _atemporal_time_intent(runtime: Any, intent: str, query: dict[str, Any]) -> None:
@@ -61,6 +58,7 @@ def _atemporal_time_intent(runtime: Any, intent: str, query: dict[str, Any]) -> 
         return
     from ..metadata import _config_maps  # noqa: WPS433
 
+    lowered = intent.lower()
     maps = _config_maps(runtime._config)
     phrases: set[str] = set()
     for object_id in [*_object_ids_in_node(query), *query.get("group_by", [])]:
@@ -87,19 +85,30 @@ def _atemporal_time_intent(runtime: Any, intent: str, query: dict[str, Any]) -> 
         match.span()
         for phrase in phrases
         if phrase.strip()
-        for match in re.finditer(
-            rf"(?<!\w){re.escape(phrase.strip())}(?!\w)", intent, re.IGNORECASE
-        )
+        for match in re.finditer(rf"(?<!\w){re.escape(phrase.strip().lower())}(?!\w)", lowered)
     ]
-    patterns = [_ATEMPORAL_TIME_PHRASE_RE.pattern, *(p for p, _grain in _PERIOD_SHIFT_TRIGGERS)]
-    cues = list(_time_window(intent).spans) + [
-        match.span()
-        for pattern in patterns
-        for match in re.finditer(pattern, intent, re.IGNORECASE)
+    patterns = [
+        _TREND_CUE_RE.pattern,
+        _TO_DATE_OR_ROLLING_RE.pattern,
+        _CUMULATIVE_CUE_RE.pattern,
+        *(p for p, _grain in _PERIOD_SHIFT_TRIGGERS),
     ]
+    cues = list(_time_window(lowered).spans) + [
+        match.span() for pattern in patterns for match in re.finditer(pattern, lowered)
+    ]
+    # Clock words are the existing faithfulness check's unsupported time terms.
+    cues += [
+        match.span() for match in re.finditer(r"\b\w+\b", lowered) if match.group() in _CLOCK_WORDS
+    ]
+    remaining = list(lowered)
+    for start, end in consumed:
+        remaining[start:end] = " " * (end - start)
+    # Read the uncovered text with the same grain interpreter that builds the
+    # time spec; keep the original question for every downstream diagnostic.
     require_temporal_support(
         runtime._config,
-        requested=any(
+        requested=bool(_explicit_grain("".join(remaining)))
+        or any(
             not any(start <= cue_start and cue_end <= end for start, end in consumed)
             for cue_start, cue_end in cues
         ),

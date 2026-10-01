@@ -82,6 +82,8 @@ _TERM_SYNONYMS = {
     "weekly": "week",
     "quarterly": "quarter",
     "yearly": "year",
+    "annual": "year",
+    "annually": "year",
 }
 
 _NUMBER_WORDS = {
@@ -517,13 +519,15 @@ def _explicit_grain(text: str, clock: str = "") -> str:
                 or (unit == "day" and "daily" in lowered)
             ]
             return (own or cadence or ["day"])[0]
-    for candidate in _TIME_UNITS:
+    for candidate in ("second", "minute", "hour", *_TIME_UNITS):
         if (
             f"by {candidate}" in lowered
             or f"per {candidate}" in lowered
             or f"each {candidate}" in lowered
+            or f"every {candidate}" in lowered
+            or f"{candidate} grain" in lowered
             or f"{candidate}ly" in lowered
-            or candidate in terms
+            or (candidate != "second" and candidate in terms)
         ):
             return candidate
     return ""
@@ -834,6 +838,8 @@ _SINCE_CUE_RE = re.compile(
 _OTHER_TIME_CUE_RES = (
     _TEMPORAL_CUE_RE,
     _SINCE_CUE_RE,
+    # Future windows are time requests even though plan does not resolve them.
+    re.compile(rf"\btomorrow\b|\bnext\s+(?:{_TIME_UNIT_ALT})s?\b"),
     # Numeric dates are ambiguous between month/day and day/month orders.
     re.compile(r"\b\d{1,2}/\d{1,2}/(?:20)?\d{2}\b"),
     # A month named without a year ("in March", "April 3").

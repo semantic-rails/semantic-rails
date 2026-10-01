@@ -122,6 +122,14 @@ def test_quantities_are_not_years(text: str) -> None:
 
 
 @pytest.mark.parametrize(
+    ("text", "grain"),
+    [("orders per second", "second"), ("orders by minute", "minute"), ("hourly orders", "hour")],
+)
+def test_explicit_sub_day_grains_use_the_shared_interpreter(text: str, grain: str) -> None:
+    assert _time_spec("temporal_role.jaffle_order_time", text)["grain"] == grain
+
+
+@pytest.mark.parametrize(
     ("text", "phrase"),
     [
         # Bounds are not windows.
@@ -157,6 +165,8 @@ def test_quantities_are_not_years(text: str) -> None:
         ("revenue on Feb 30, 2017", "feb 30, 2017"),
         ("revenue for Q2", "q2"),
         ("revenue in March", "in march"),
+        ("revenue tomorrow", "tomorrow"),
+        ("revenue next month", "next month"),
         # "and" names two periods; only "between ... and ..." is a range.
         ("revenue in March and May 2017", "march and may 2017"),
         ("revenue in January and December 2017", "january and december 2017"),
