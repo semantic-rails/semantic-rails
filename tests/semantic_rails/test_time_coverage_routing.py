@@ -10,6 +10,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from tests.integration.correctness.conftest import _write_variant
+from tests.semantic_rails.result_helpers import typed_rows
 
 ROLE = "temporal_role.shop_order_ordered_at"
 REVENUE = {"measure": "measure.shop.revenue"}
@@ -35,7 +36,7 @@ def _answers(package, query):
         try:
             result = runtime.query(query)
             assert "FROM orders_monthly" not in result["rendered_sql"]
-            answers.append(sorted(result["rows"], key=lambda r: str(r[f"{ROLE}__month"])))
+            answers.append(sorted(typed_rows(result), key=lambda r: str(r[f"{ROLE}__month"])))
         finally:
             runtime.close()
     return answers

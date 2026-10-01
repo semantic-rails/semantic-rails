@@ -30,6 +30,7 @@ from semantic_rails.policies import row_filters_for_context
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import PathPreferenceConfig, SemanticPolicyConfig
+from tests.semantic_rails.result_helpers import typed_rows
 
 # Order 1 has two beverages (the double-count trap), order 2 a beverage and a jaffle, order 3
 # two jaffles, order 4 a beverage after Q4 2016, order 5 no items, and order 6 a beverage and a
@@ -249,7 +250,7 @@ def _run(package: Path, query: dict[str, Any], *, validate: bool = False) -> dic
 def _rows(package: Path, query: dict[str, Any]) -> list[tuple[Any, ...]]:
     result = _run(package, query)
     assert result.get("ok", True), result
-    return _normal(tuple(row.values()) for row in result["rows"])
+    return _normal(tuple(row.values()) for row in typed_rows(result))
 
 
 def _reference(package: Path, sql: str) -> list[tuple[Any, ...]]:
@@ -372,7 +373,7 @@ def test_child_filters_use_exists_without_multiplying_parent_rows(
     query = {"select": [_measure(measure)], "where": [{"field": field, "op": "=", "value": value}]}
     result = _run(package, query)
     assert (
-        _normal(tuple(row.values()) for row in result["rows"])
+        _normal(tuple(row.values()) for row in typed_rows(result))
         == _reference(package, reference)
         == [(expected,)]
     )
@@ -437,7 +438,9 @@ def test_time_bounded_child_filter_keeps_window_observation(
             LEFT JOIN matching USING (month)
         """
     result = _run(package, query)
-    assert _normal(tuple(row.values()) for row in result["rows"]) == _reference(package, reference)
+    assert _normal(tuple(row.values()) for row in typed_rows(result)) == _reference(
+        package, reference
+    )
     sql = result["rendered_sql"]
     assert "EXISTS (" in sql and "SELECT DISTINCT" not in sql
     # Rewritten fanout leaves retain observation inside the window, including filled buckets.
@@ -871,7 +874,7 @@ def test_a_lookup_joined_outside_exists_is_scanned_again_inside_it(package: Path
         WHERE EXISTS ({_HAS_WEB_SESSION}) GROUP BY 1
     """
     assert (
-        _normal(tuple(row.values()) for row in result["rows"])
+        _normal(tuple(row.values()) for row in typed_rows(result))
         == _reference(package, reference)
         == [("retail", 2, 30.0), ("wholesale", 2, 30.0)]
     )
@@ -1180,7 +1183,7 @@ def test_rollup_safe_package_discloses_each_crossing_leaf(runtime_factory) -> No
             "SELECT product_type, COUNT(DISTINCT order_id), SUM(item_revenue_cents) / 100.0"
             " FROM jaffle_item GROUP BY 1"
         ).fetchall()
-    assert _normal(tuple(row.values()) for row in result["rows"]) == _normal(expected)
+    assert _normal(tuple(row.values()) for row in typed_rows(result)) == _normal(expected)
 
 
 # A customer's items and sessions: the items of its orders and the sessions it held (not the

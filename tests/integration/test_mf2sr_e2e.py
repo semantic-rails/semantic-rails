@@ -39,7 +39,7 @@ from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ConnectionSpec, SeedSpec
 
 from .fixture import JaffleFixture
-from .harness import IntegrationTarget, assert_rows_match, normalize_rows
+from .harness import IntegrationTarget, assert_column_types_match, assert_rows_match, normalize_rows
 
 MF_SOURCE_DIR = Path(__file__).resolve().parent / "mf_jaffle"
 PACKAGE_ID = "mf_jaffle"
@@ -234,14 +234,14 @@ def mf_runtime(target: IntegrationTarget, jaffle_fixture: JaffleFixture, mf_pack
 @pytest.fixture(scope="session")
 def mf_reference_results(
     mf_package_dir: Path, jaffle_fixture: JaffleFixture
-) -> dict[str, list[dict[str, Any]]]:
+) -> dict[str, dict[str, Any]]:
     """The battery executed once on the DuckDB reference target."""
     from .harness import discover_targets
 
     reference = discover_targets()["duckdb"]
     runtime = _build_translated_runtime(mf_package_dir, reference, jaffle_fixture)
     try:
-        results: dict[str, list[dict[str, Any]]] = {}
+        results: dict[str, dict[str, Any]] = {}
         for name, payload in BATTERY:
             result = runtime.query(payload)
             assert result.get("ok", True), (
@@ -249,7 +249,10 @@ def mf_reference_results(
             )
             rows = result.get("rows") or []
             assert rows, f"reference (duckdb) returned no rows for {name}"
-            results[name] = normalize_rows(rows)
+            results[name] = {
+                "rows": normalize_rows(rows, result["column_types"]),
+                "column_types": result["column_types"],
+            }
         return results
     finally:
         runtime.close()
@@ -259,7 +262,7 @@ def mf_reference_results(
 def test_mf2sr_battery_parity(
     mf_runtime: Runtime,
     target: IntegrationTarget,
-    mf_reference_results: dict[str, list[dict[str, Any]]],
+    mf_reference_results: dict[str, dict[str, Any]],
     case_name: str,
 ) -> None:
     """Every warehouse must reproduce the DuckDB reference rows for the
@@ -267,9 +270,20 @@ def test_mf2sr_battery_parity(
     payload = dict(next(payload for name, payload in BATTERY if name == case_name))
     result = mf_runtime.query(payload)
     assert result.get("ok", True), f"{target.warehouse}/{case_name}: query failed — {result}"
-    actual = normalize_rows(result.get("rows") or [])
+    actual = normalize_rows(result.get("rows") or [], result["column_types"])
     assert_rows_match(
-        mf_reference_results[case_name],
+        mf_reference_results[case_name]["rows"],
         actual,
+        column_types={
+            **mf_reference_results[case_name]["column_types"],
+            **{
+                key: value
+                for key, value in result["column_types"].items()
+                if value["type"] == "decimal"
+            },
+        },
         context=f"{target.warehouse}/{case_name}",
+    )
+    assert_column_types_match(
+        mf_reference_results[case_name], result, context=f"{target.warehouse}/{case_name}"
     )

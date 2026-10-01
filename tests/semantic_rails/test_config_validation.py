@@ -27,6 +27,7 @@ from semantic_rails.db import Database, SnowflakeCliAdapter, load_csv_dir_to_duc
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
 from semantic_rails.yaml_loader import safe_load as yaml12_safe_load
+from tests.semantic_rails.result_helpers import typed_rows
 
 
 def _write_yaml(path: Path, payload: dict) -> None:
@@ -2086,7 +2087,7 @@ def test_constant_measure_checks_and_counts_rows(tmp_path: Path, expression: str
                 "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "rows"}],
             }
         )
-        assert result["rows"] == expected["rows"]
+        assert typed_rows(result) == typed_rows(expected)
         assert result["row_count"] == 1
     finally:
         runtime.close()
