@@ -6,6 +6,8 @@ lowering is staged for the next round (see the
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_validate_accepts_canonical_anchor_window_shape(runtime_factory):
     """Parser accepts the canonical shape — anchor + window — and
@@ -52,29 +54,49 @@ def test_validate_accepts_canonical_anchor_window_shape(runtime_factory):
         runtime.close()
 
 
-def test_validate_rejects_half_specified_anchor_window(runtime_factory):
+@pytest.mark.parametrize(
+    ("anchor", "window", "message_part", "lowercase_message"),
+    [
+        pytest.param(None, {"unit": "day", "value": 90}, "anchor", True, id="missing_anchor"),
+        pytest.param(
+            {"temporal_role": "temporal_role.jaffle_customer_first_order_at"},
+            {"unit": "fortnight", "value": 6},
+            "window.unit",
+            False,
+            id="invalid_unit",
+        ),
+        pytest.param(
+            {"temporal_role": "temporal_role.jaffle_customer_first_order_at"},
+            {"unit": "day", "value": 90, "direction": "sideways"},
+            "direction",
+            False,
+            id="invalid_direction",
+        ),
+    ],
+)
+def test_validate_rejects_invalid_anchor_window(
+    runtime_factory, anchor, window, message_part, lowercase_message
+):
+    expression = {
+        "kind": "scoped_aggregate",
+        "measure": "measure.jaffle.revenue_usd",
+        "aggregation": "sum",
+        "window": window,
+    }
+    if anchor is not None:
+        expression["anchor"] = anchor
     runtime = runtime_factory("jaffle_shop")
     try:
         result = runtime.validate(
             {
                 "version": 1,
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "scoped_aggregate",
-                            "measure": "measure.jaffle.revenue_usd",
-                            "aggregation": "sum",
-                            # ``window`` present without ``anchor`` — bad shape.
-                            "window": {"unit": "day", "value": 90},
-                        },
-                        "as": "rev",
-                    }
-                ],
+                "select": [{"expression": expression, "as": "rev"}],
             }
         )
         errors = result.get("errors") or []
         assert errors and errors[0]["code"] == "INVALID_EXPRESSION_AST"
-        assert "anchor" in str(errors[0]["message"]).lower()
+        message = str(errors[0]["message"]).lower() if lowercase_message else errors[0]["message"]
+        assert message_part in message
     finally:
         runtime.close()
 
@@ -110,64 +132,6 @@ def test_validate_rejects_unknown_anchor_role(runtime_factory):
         hints = errors[0].get("recovery_hints") or []
         valid_role_hints = [h for h in hints if h.get("kind") == "use_valid_anchor_role"]
         assert valid_role_hints
-    finally:
-        runtime.close()
-
-
-def test_validate_rejects_invalid_window_unit(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        result = runtime.validate(
-            {
-                "version": 1,
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "scoped_aggregate",
-                            "measure": "measure.jaffle.revenue_usd",
-                            "aggregation": "sum",
-                            "anchor": {
-                                "temporal_role": "temporal_role.jaffle_customer_first_order_at",
-                            },
-                            "window": {"unit": "fortnight", "value": 6},
-                        },
-                        "as": "rev",
-                    }
-                ],
-            }
-        )
-        errors = result.get("errors") or []
-        assert errors and errors[0]["code"] == "INVALID_EXPRESSION_AST"
-        assert "window.unit" in errors[0]["message"]
-    finally:
-        runtime.close()
-
-
-def test_validate_rejects_invalid_window_direction(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        result = runtime.validate(
-            {
-                "version": 1,
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "scoped_aggregate",
-                            "measure": "measure.jaffle.revenue_usd",
-                            "aggregation": "sum",
-                            "anchor": {
-                                "temporal_role": "temporal_role.jaffle_customer_first_order_at",
-                            },
-                            "window": {"unit": "day", "value": 90, "direction": "sideways"},
-                        },
-                        "as": "rev",
-                    }
-                ],
-            }
-        )
-        errors = result.get("errors") or []
-        assert errors and errors[0]["code"] == "INVALID_EXPRESSION_AST"
-        assert "direction" in errors[0]["message"]
     finally:
         runtime.close()
 

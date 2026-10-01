@@ -20,6 +20,7 @@ import tarfile
 import tempfile
 import unicodedata
 from collections.abc import Iterable, Iterator
+from dataclasses import fields
 from decimal import Context, Decimal
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -33,7 +34,7 @@ from .config_validation import (
     validate_config_report,
 )
 from .errors import SemanticLayerError
-from .expressions import expr_to_dict
+from .expressions import CaseWhenExpr, ColumnRefExpr, LiteralExpr, SemanticExpr, expr_to_dict
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import package_release_labels
 from .renderer import _quote_ident
@@ -427,46 +428,16 @@ def _collect_column_refs(expr: Any, *, out: list[str]) -> None:
     Conservative: ignores literals and table-qualified refs we can't
     attribute to a specific entity from the AST alone.
     """
-    if expr is None:
+    # Only AST nodes have traversable children. Literal values are opaque data,
+    # even when they expose attributes also used by expressions (int.numerator).
+    if not isinstance(expr, (SemanticExpr, CaseWhenExpr)) or isinstance(expr, LiteralExpr):
         return
-    # ColumnRefExpr is a frozen dataclass — duck-type by attribute.
-    column = getattr(expr, "column", None)
-    if (
-        isinstance(column, str)
-        and column
-        and not hasattr(expr, "left")
-        and not hasattr(expr, "input")
-    ):
-        # ColumnRefExpr-shaped: only a `column` attribute, plus optional
-        # entity/table. Excludes arithmetic/etc. that happen to expose
-        # an unrelated `column`-named field.
-        out.append(column)
+    if isinstance(expr, ColumnRefExpr):
+        if expr.column:
+            out.append(expr.column)
         return
-    # Recursively walk known compound fields.
-    for attr in (
-        "left",
-        "right",
-        "input",
-        "args",
-        "operand",
-        "condition",
-        "true_branch",
-        "false_branch",
-        "value",
-        "expr",
-        "expression",
-        "predicate",
-        "scope_filter",
-        "left_expr",
-        "right_expr",
-        "numerator",
-        "denominator",
-        "base",
-        "converted",
-    ):
-        child = getattr(expr, attr, None)
-        if child is None:
-            continue
+    for field in fields(expr):
+        child = getattr(expr, field.name)
         if isinstance(child, (list, tuple)):
             for item in child:
                 _collect_column_refs(item, out=out)

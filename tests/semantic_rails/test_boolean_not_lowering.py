@@ -140,36 +140,29 @@ def test_compile_post_expr_not_emits_negation(package_config_factory):
     assert compiled.right.op == ">"
 
 
-def test_compile_post_expr_not_requires_exactly_one_arg(package_config_factory):
+@pytest.mark.parametrize(
+    ("op", "detail_key", "detail_value"),
+    [
+        pytest.param("not", "received_arg_count", 2, id="not-requires-one-arg"),
+        pytest.param("xor", "allowed", ["and", "or", "not"], id="unsupported-op"),
+    ],
+)
+def test_compile_post_expr_rejects_invalid_boolean(
+    package_config_factory, op, detail_key, detail_value
+):
     config, _ = package_config_factory("jaffle_shop")
-    two_args = BooleanExpr(
-        op="not",
+    expression = BooleanExpr(
+        op=op,
         args=[
             ComparisonExpr(op=">", left=LiteralExpr(1), right=LiteralExpr(2)),
             ComparisonExpr(op="<", left=LiteralExpr(3), right=LiteralExpr(4)),
         ],
     )
     with pytest.raises(SemanticLayerError) as exc_info:
-        _compile_post_expr(two_args, config)
+        _compile_post_expr(expression, config)
     err = exc_info.value
     assert err.code == "INVALID_EXPRESSION_AST"
-    assert err.details["received_arg_count"] == 2
-
-
-def test_compile_post_expr_rejects_unsupported_boolean_op(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
-    bogus = BooleanExpr(
-        op="xor",
-        args=[
-            ComparisonExpr(op=">", left=LiteralExpr(1), right=LiteralExpr(2)),
-            ComparisonExpr(op="<", left=LiteralExpr(3), right=LiteralExpr(4)),
-        ],
-    )
-    with pytest.raises(SemanticLayerError) as exc_info:
-        _compile_post_expr(bogus, config)
-    err = exc_info.value
-    assert err.code == "INVALID_EXPRESSION_AST"
-    assert err.details["allowed"] == ["and", "or", "not"]
+    assert err.details[detail_key] == detail_value
 
 
 def test_compile_post_expr_rejects_empty_boolean_args(package_config_factory):
