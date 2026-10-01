@@ -79,6 +79,7 @@ class FirstModel:
     relation: str = "raw_events"
     primary_key: str = "event_id"
     time_column: str = "occurred_at"
+    """A date/timestamp column; empty when the model declares no time."""
     amount_column: str = ""
     """A numeric column summed into a ``total_amount`` metric; empty for none
     (starter data always has an ``amount`` column)."""
@@ -225,7 +226,7 @@ def project_setup_questions(spec: ProjectSpec | None = None) -> list[dict[str, A
         },
         {
             "id": "time_column",
-            "prompt": "Which timestamp or date column anchors the first metric?",
+            "prompt": "Which timestamp or date column anchors the first metric (blank for none)?",
             "default": model.time_column,
         },
         {
@@ -290,19 +291,20 @@ def _plan(spec: ProjectSpec) -> _Plan:
         )
     model = spec.first_model
     entity = slug(model.entity, fallback="event")
+    time_column = model.time_column.strip()
     starter = is_duckdb and warehouse.data == "starter"
     if starter:
         # Starter names describe a CSV this scaffold writes, so they are made safe.
         relation = slug(model.relation, fallback="raw_events")
         primary_key = slug(model.primary_key, fallback="event_id")
-        time_column = slug(model.time_column, fallback="occurred_at")
+        time_column = slug(time_column, fallback="occurred_at") if time_column else ""
         amount_column = slug(model.amount_column or "amount", fallback="amount")
         dimension_column = slug(model.dimension_column or "event_type", fallback="event_type")
     else:
         # Everything else must name what the warehouse already holds.
         relation = _identifier(model.relation, field_name="relation", dotted=True)
         primary_key = _identifier(model.primary_key, field_name="primary_key")
-        time_column = _identifier(model.time_column, field_name="time_column")
+        time_column = _identifier(time_column, field_name="time_column") if time_column else ""
         amount_column = (
             _identifier(model.amount_column, field_name="amount_column")
             if model.amount_column
@@ -406,7 +408,9 @@ def _model_document(plan: _Plan) -> dict[str, Any]:
         "description": f"One row per {rows}.",
         "relation": plan.relation,
         "entities": {plan.entity: {}},
-        "times": {
+    }
+    if plan.time_column:
+        model["times"] = {
             plan.time_column: {
                 "label": _title(plan.time_column),
                 "column": plan.time_column,
@@ -414,8 +418,7 @@ def _model_document(plan: _Plan) -> dict[str, Any]:
                 "class": "event_time",
                 "default": True,
             }
-        },
-    }
+        }
     if plan.dimension_column:
         model["dimensions"] = {
             plan.dimension_column: {"label": _title(plan.dimension_column), "kind": "categorical"}
@@ -455,22 +458,24 @@ def _examples_and_tests(plan: _Plan) -> tuple[dict[str, Any], dict[str, Any]]:
     query: dict[str, Any] = {
         "version": 1,
         "select": [{"expression": {"metric": f"metric.{ns}.{metric_key}"}, "as": metric_key}],
-        "time": {"temporal_role": temporal_role, "grain": "day"},
-        "order_by": [{"field": "time", "direction": "ASC"}],
         "limit": 10,
     }
+    if plan.time_column:
+        query["time"] = {"temporal_role": temporal_role, "grain": "day"}
+        query["order_by"] = [{"field": "time", "direction": "ASC"}]
+    suffix = "_by_day" if plan.time_column else ""
     if plan.dimension_column:
         query["group_by"] = [f"dimension.{ns}_{plan.entity}_{_id_slug(plan.dimension_column)}"]
     examples = {
         "examples": {
-            f"starter_{metric_key}_by_day": {
-                "question": f"{_title(metric_key)} by day",
+            f"starter_{metric_key}{suffix}": {
+                "question": f"{_title(metric_key)}" + (" by day" if plan.time_column else ""),
                 "query": query,
                 "expected_shape": {"min_rows": 1},
             }
         }
     }
-    tests = {
+    tests: dict[str, Any] = {
         "tests": {
             "starter_count_returns_rows": {
                 "kind": "query_row_count_bounds",
@@ -482,19 +487,30 @@ def _examples_and_tests(plan: _Plan) -> tuple[dict[str, Any], dict[str, Any]]:
                             "as": "row_count",
                         }
                     ],
-                    "time": {"temporal_role": temporal_role, "grain": "day"},
                     "limit": 10,
                 },
                 "min_rows": 1,
             }
         }
     }
+    if plan.time_column:
+        tests["tests"]["starter_count_returns_rows"]["query"]["time"] = {
+            "temporal_role": temporal_role,
+            "grain": "day",
+        }
     return examples, tests
 
 
 def _starter_csv(plan: _Plan) -> str:
-    header = [plan.primary_key, plan.time_column, plan.dimension_column]
-    rows = [["1", "2026-01-01T09:00:00", "starter"], ["2", "2026-01-02T09:00:00", "follow_up"]]
+    header = [plan.primary_key]
+    rows = [["1"], ["2"]]
+    if plan.time_column:
+        header.append(plan.time_column)
+        rows[0].append("2026-01-01T09:00:00")
+        rows[1].append("2026-01-02T09:00:00")
+    header.append(plan.dimension_column)
+    rows[0].append("starter")
+    rows[1].append("follow_up")
     if plan.amount_column:
         header.append(plan.amount_column)
         rows[0].append("100.0")

@@ -111,11 +111,11 @@ def _metric_query(key: str, *, by_product_type: bool = False) -> dict[str, Any]:
 
 
 def _gold(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
-    database = Database.connect(runtime.db_path, read_only=True)
+    connection = Database.connect(runtime.db_path, read_only=True)
     try:
-        return database.conn.execute(sql).fetchall()
+        return connection.conn.execute(sql).fetchall()
     finally:
-        database.close()
+        connection.close()
 
 
 def _load_error(tmp_path: Path, metrics: dict[str, dict[str, Any]]) -> SemanticLayerError:
