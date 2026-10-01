@@ -11,13 +11,14 @@ from semantic_rails.cache import CachedCompilation, LruCompiledSqlCache
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config, resolve_repo_path
 from semantic_rails.db import SnowflakeCliAdapter, SnowflakeNativeAdapter, WarehouseAdapter
+from semantic_rails.db_parts.adbc import AdbcAdapter
 from semantic_rails.db_parts.athena import AthenaAdapter
 from semantic_rails.db_parts.bigquery import BigQueryNativeAdapter
 from semantic_rails.db_parts.databricks import DatabricksNativeAdapter
-from semantic_rails.db_parts.postgres import PostgresAdapter
 from semantic_rails.registry import Registry
 from semantic_rails.schema import ConnectionSpec, SeedSpec
 from semantic_rails.sql_preparation import PreparedQuery, prepare_query
+from tests.semantic_rails.test_adbc_adapter import Batch, Reader
 
 _ALIAS = "average_order_value_" * 5
 
@@ -66,12 +67,27 @@ class CaptureCursor:
         self.statements = []
         self.closed = False
         self.fetch_size = None
+        self.parameters = []
+        self.adbc_statement = SimpleNamespace(set_options=lambda **kwargs: None)
 
-    def execute(self, sql):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def execute(self, sql, parameters=None):
         self.statements.append(sql)
+        self.parameters.append(parameters)
 
     def fetchone(self):
-        return ("STATEMENT_TIMEOUT_IN_SECONDS", "30")
+        if self.statements[-1].startswith("show parameters"):
+            return ("STATEMENT_TIMEOUT_IN_SECONDS", "30")
+        return ("Europe/Paris", "5s")
+
+    def fetch_record_batch(self):
+        column = self.description[0][0]
+        return Reader([Batch([{column: 1.25}, {column: 2.5}])])
 
     def fetchmany(self, size):
         self.fetch_size = size
@@ -101,7 +117,7 @@ def test_compiled_sql_is_the_dbapi_statement(package_config, monkeypatch, wareho
         assert "`dimension.jaffle_store_name`" in prepared.sql
 
     adapter = {
-        "postgres": PostgresAdapter,
+        "postgres": AdbcAdapter,
         "databricks": DatabricksNativeAdapter,
         "athena": AthenaAdapter,
         "snowflake": lambda: SnowflakeNativeAdapter("test_connection"),
@@ -109,13 +125,19 @@ def test_compiled_sql_is_the_dbapi_statement(package_config, monkeypatch, wareho
     cursor = CaptureCursor(_physical_alias(prepared))
     adapter._conn = SimpleNamespace(cursor=lambda **kwargs: cursor)
     monkeypatch.setattr("semantic_rails.db_parts.common.prepare_query", _forbid_second_preparation)
+    monkeypatch.setattr("semantic_rails.db_parts.adbc.prepare_query", _forbid_second_preparation)
     monkeypatch.setattr(
         "semantic_rails.db_parts.snowflake.prepare_query", _forbid_second_preparation
     )
     rows = adapter.query_prepared(prepared, limits={"max_rows": 1, "statement_timeout_ms": 1000})
 
     expected = {
-        "postgres": ["SET statement_timeout = 1000", prepared.sql, "RESET statement_timeout"],
+        "postgres": [
+            "SELECT current_setting('TimeZone'), current_setting('statement_timeout')",
+            "SELECT set_config('statement_timeout', $1, false)",
+            prepared.sql,
+            "SELECT set_config('statement_timeout', $1, false)",
+        ],
         "databricks": ["SET STATEMENT_TIMEOUT = 1", prepared.sql, "RESET STATEMENT_TIMEOUT"],
         "athena": [prepared.sql],
         "snowflake": [
@@ -128,7 +150,7 @@ def test_compiled_sql_is_the_dbapi_statement(package_config, monkeypatch, wareho
     assert cursor.statements == expected
     assert rows == [{_ALIAS: 1.25}]
     assert rows.truncated is True
-    assert cursor.fetch_size == 2
+    assert cursor.fetch_size == (None if warehouse == "postgres" else 2)
     assert cursor.closed
 
 
@@ -210,10 +232,13 @@ def test_postgres_direct_query_preserves_long_unicode_aliases():
     assert len(names) == 2
     assert all(len(name.encode("utf-8")) <= 63 for name in names)
     cursor = CaptureCursor(next(iter(names)))
-    adapter = PostgresAdapter()
-    adapter._conn = SimpleNamespace(cursor=lambda **kwargs: cursor)
+    adapter = AdbcAdapter()
+    adapter._conn = SimpleNamespace(cursor=lambda: cursor)
     rows = adapter.query(original, limits={"max_rows": 1})
-    assert cursor.statements == [prepared.sql]
+    assert cursor.statements == [
+        "SELECT current_setting('TimeZone'), current_setting('statement_timeout')",
+        prepared.sql,
+    ]
     assert rows == [{aliases[0]: 1.25}]
     assert rows.truncated is True
 

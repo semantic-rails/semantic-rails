@@ -398,7 +398,7 @@ class DuckDbDialect(SqlDialect):
 
 @dataclass(frozen=True)
 class PostgresDialect(SqlDialect):
-    """PostgreSQL (psycopg 3, ``postgres_native``).
+    """PostgreSQL (ADBC, ``postgres_native``).
 
     Quirks covered here (each verified against PostgreSQL 16):
 

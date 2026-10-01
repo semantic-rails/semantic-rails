@@ -440,6 +440,12 @@ checkpoint the database before invoking either helper. Keep other writers
 stopped through publication: the WAL check cannot prevent a writer from
 creating a new log immediately after it runs.
 
+SQL seed sources and CSV `post_sql` files accept LF or CRLF line endings.
+CRLF bytes inside string literals are preserved as authored, without normalization to LF.
+A bare carriage return refuses the script before any of its statements execute
+with `INVALID_CONFIG`, `details.reason: bare_carriage_return_sql_script` and
+`details.file` naming the SQL file. Save the file with LF or CRLF and retry.
+
 ### `package.environments` and governance `meta:`
 
 ```yaml
@@ -639,7 +645,9 @@ behavior:
   filter. Joins, metric filters, calendar spines (prior-period comparisons, fill) and
   other second scans are refused, and rollups are not routed to. The zero-row
   data-coverage probe is skipped. Such a policy loads for any warehouse, but only
-  DuckDB executes these statements today; every other adapter refuses them.
+  DuckDB and Postgres execute these statements today; every other adapter
+  refuses them. Postgres finalizes the placeholders as `$1`, `$2`, … before
+  execution and binds trusted values through ADBC.
   An unscoped row filter applies to every request. A scoped one applies only
   when the request context carries the listed audience, environment or role,
   so a request without it is not filtered: scope by them only when the host

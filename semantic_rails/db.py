@@ -25,6 +25,7 @@ import hashlib
 import importlib
 import inspect
 import os
+import re
 import sqlite3
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch semantic_rails.db.subprocess
 import threading
@@ -60,7 +61,12 @@ from .dialects import (
 from .errors import SemanticLayerError, query_execution_error
 from .schema import PackageMeta
 from .seed_provenance import record_seed_provenance
-from .sql_preparation import ParameterValue, PreparedQuery, checked_parameter_values
+from .sql_preparation import (
+    _PARAMETER_TOKEN,
+    ParameterValue,
+    PreparedQuery,
+    checked_parameter_values,
+)
 
 __all__ = [
     "Database",
@@ -84,26 +90,70 @@ def _row_to_dict(cursor: Any, row: Any) -> dict[str, Any]:
     return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
 
 
-def _split_sql_statements(sql: str) -> list[str]:
+_SQL_SCRIPT_TOKEN = re.compile(
+    r"[eE]'|[A-Za-z_\u0080-\U0010ffff][A-Za-z_0-9$\u0080-\U0010ffff]*|"
+    r"(?<![A-Za-z_0-9$\u0080-\U0010ffff])"
+    r"\$(?:[A-Za-z_\u0080-\U0010ffff][A-Za-z_0-9\u0080-\U0010ffff]*)?\$|"
+    r"--[^\r\n]*|/\*|['\";]"
+)
+
+
+def _check_script_line_endings(sql: str, source_path: str) -> None:
+    if re.search(r"\r(?!\n)", sql):
+        filename = source_path or "<inline>"
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"SQL script '{filename}' contains a bare carriage return; use LF or CRLF line endings.",
+            details={"reason": "bare_carriage_return_sql_script", "file": filename},
+        )
+
+
+def _split_sql_statements(sql: str, *, source_path: str = "") -> list[str]:
+    """Validate the whole script, then split at unquoted semicolons without rewriting it."""
+    _check_script_line_endings(sql, source_path)
     statements: list[str] = []
-    current: list[str] = []
-    in_single = False
-    in_double = False
-    for ch in sql:
-        if ch == "'" and not in_double:
-            in_single = not in_single
-        elif ch == '"' and not in_single:
-            in_double = not in_double
-        if ch == ";" and not in_single and not in_double:
-            statement = "".join(current).strip()
-            if statement:
-                statements.append(statement)
-            current = []
+    start = position = 0
+    has_statement = False
+
+    def refuse() -> None:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "Unterminated quote or block comment in SQL script.",
+            details={"reason": "unterminated_sql_script"},
+        )
+
+    while match := _SQL_SCRIPT_TOKEN.search(sql, position):
+        has_statement |= bool(sql[position : match.start()].strip())
+        position = match.end()
+        token = match[0]
+        if token.startswith("--"):
             continue
-        current.append(ch)
-    tail = "".join(current).strip()
-    if tail:
-        statements.append(tail)
+        if token == "/*":
+            depth = 1
+            for delimiter in re.compile(r"/\*|\*/").finditer(sql, position):
+                depth += 1 if delimiter[0] == "/*" else -1
+                if not depth:
+                    position = delimiter.end()
+                    break
+            else:
+                refuse()
+            continue
+        if token == ";":
+            if has_statement:
+                statements.append(sql[start : match.start()])
+            start = position
+            has_statement = False
+            continue
+        if token in {"'", '"', "E'", "e'"} or token.startswith("$"):
+            # Reuse the bind scanner's complete quoted spans, including E-string escapes.
+            quoted = _PARAMETER_TOKEN.match(sql, match.start())
+            if quoted is None or not quoted[0].startswith(token):
+                refuse()
+            assert quoted is not None
+            position = quoted.end()
+        has_statement = True
+    if has_statement or sql[position:].strip():
+        statements.append(sql[start:])
     return statements
 
 
@@ -136,11 +186,12 @@ class Database:
         if hasattr(self.conn, "commit"):
             self.conn.commit()
 
-    def execute_script(self, sql: str) -> None:
+    def execute_script(self, sql: str, *, source_path: str = "") -> None:
         if self.engine == "sqlite":
+            _check_script_line_endings(sql, source_path)
             self.conn.executescript(sql)
         else:
-            for statement in _split_sql_statements(sql):
+            for statement in _split_sql_statements(sql, source_path=source_path):
                 self.conn.execute(statement)
         if hasattr(self.conn, "commit"):
             self.conn.commit()
@@ -298,8 +349,8 @@ def _duckdb_string_list(values: Iterable[str]) -> str:
 
 
 def _build_sql_seed(db: Database, seed_sql_path: str) -> None:
-    with open(seed_sql_path, encoding="utf-8") as f:
-        db.execute_script(f.read())
+    with open(seed_sql_path, encoding="utf-8", newline="") as f:
+        db.execute_script(f.read(), source_path=seed_sql_path)
 
 
 def _csv_seed_files(csv_dir: str) -> list[str]:
@@ -344,8 +395,10 @@ def _build_csv_seed(
             ) from exc
     if post_sql_path:
         try:
-            with open(post_sql_path, encoding="utf-8") as f:
-                db.execute_script(f.read())
+            with open(post_sql_path, encoding="utf-8", newline="") as f:
+                db.execute_script(f.read(), source_path=post_sql_path)
+        except SemanticLayerError:
+            raise
         except Exception as exc:
             raise SemanticLayerError(
                 "INVALID_CONFIG",

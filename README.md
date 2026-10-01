@@ -231,6 +231,10 @@ only when you need it, for example Postgres:
 uv tool install 'semantic-rails[postgres]'
 ```
 
+Postgres keeps `connection.kind: postgres_native` and uses ADBC with PyArrow.
+DuckDB and Postgres support bound access-policy row filters; trusted values stay
+out of SQL text. See [row-filter authoring](docs/PACKAGE_AUTHORING.md).
+
 The other connector extras are `snowflake`, `bigquery`, `databricks`, `athena` and
 `clickhouse`, and `all` installs every connector. In a project environment, use
 `uv pip install 'semantic-rails[all]'`. MotherDuck and DuckLake use the core `duckdb`
