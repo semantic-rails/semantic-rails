@@ -337,15 +337,15 @@ def test_today_follows_the_date(monkeypatch: pytest.MonkeyPatch) -> None:
 
     from semantic_rails.planner import _base
 
-    class Tomorrow(date):
+    class OtherDay(date):
         @classmethod
         def today(cls) -> date:
-            return date(2026, 10, 1)
+            return date(2001, 2, 3)
 
     before = _time_bounds_from_text("orders today")
-    monkeypatch.setattr(_base, "date", Tomorrow)
-    assert _time_bounds_from_text("orders today") == {"start": "2026-10-01", "end": "2026-10-02"}
-    assert _time_bounds_from_text("revenue this month")["start"] == "2026-10-01"
+    monkeypatch.setattr(_base, "date", OtherDay)
+    assert _time_bounds_from_text("orders today") == {"start": "2001-02-03", "end": "2001-02-04"}
+    assert _time_bounds_from_text("revenue this month")["start"] == "2001-02-01"
     assert before != _time_bounds_from_text("orders today")
 
 
