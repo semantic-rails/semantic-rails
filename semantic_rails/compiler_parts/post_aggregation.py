@@ -42,6 +42,7 @@ from ..sql_ast import (
     SqlLiteral,
     SqlOrderTerm,
     SqlWindow,
+    build_boolean_condition,
     build_comparison_condition,
     build_negation,
 )
@@ -348,10 +349,7 @@ def _compile_post_expr(
                     },
                 )
             return build_negation(rendered[0])
-        current = rendered[0]
-        for item in rendered[1:]:
-            current = SqlBinary(current, op.upper(), item)
-        return current
+        return build_boolean_condition(op, rendered)
     if isinstance(expr, CallExpr):
         return SqlCall(
             expr.name,

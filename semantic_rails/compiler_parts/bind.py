@@ -50,6 +50,7 @@ from ..sql_ast import (
     SqlCaseWhen,
     SqlIn,
     SqlLiteral,
+    build_boolean_condition,
     build_comparison_condition,
     build_negation,
 )
@@ -312,10 +313,7 @@ def _config_expr_to_sql_inner(
                     f"Boolean 'not' expressions require exactly one arg, got {len(rendered)}",
                 )
             return build_negation(rendered[0])
-        current = rendered[0]
-        for item in rendered[1:]:
-            current = SqlBinary(current, op.upper(), item)
-        return current
+        return build_boolean_condition(op, rendered)
     if isinstance(expr, CallExpr):
         return SqlCall(
             expr.name,

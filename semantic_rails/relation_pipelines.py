@@ -56,6 +56,7 @@ from .sql_ast import (
     SqlTableFunction,
     SqlTableRef,
     SqlWindow,
+    build_boolean_condition,
     build_comparison_condition,
     build_filter_condition,
     build_negation,
@@ -160,10 +161,7 @@ def _semantic_expr_to_sql(
                     f"Boolean 'not' expressions require exactly one arg, got {len(args)}",
                 )
             return build_negation(args[0])
-        current = args[0]
-        for arg in args[1:]:
-            current = SqlBinary(current, expr.op.upper(), arg)
-        return current
+        return build_boolean_condition(expr.op, args)
     if isinstance(expr, CallExpr):
         return SqlCall(
             expr.name,

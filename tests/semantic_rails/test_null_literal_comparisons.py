@@ -11,6 +11,7 @@ import yaml
 
 from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts.bind import _config_expr_to_sql
+from semantic_rails.compiler_parts.post_aggregation import _compile_post_expr
 from semantic_rails.dialects import supported_warehouses
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_semantic_expression
@@ -363,6 +364,42 @@ def test_post_aggregate_false_not_equal_not_null_stays_unknown(runtime, reverse)
     ((n, flag),) = _gold("SELECT COUNT(*), FALSE != (NOT NULL) FROM records")
     assert flag is None
     assert runtime.query(query)["rows"] == [{"n": n, "flag": flag}]
+
+
+@pytest.mark.parametrize("lowering", ["configured", "post_aggregation", "relation"])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("op", ["and", "or"])
+def test_singleton_boolean_null_comparison_stays_unknown(runtime, op, reverse, lowering):
+    boolean_null = {"kind": "boolean", "op": op, "args": [NULL]}
+    false = {"kind": "literal", "value": False}
+    comparison = {
+        "kind": "comparison",
+        "op": "!=",
+        "left": boolean_null if reverse else false,
+        "right": false if reverse else boolean_null,
+    }
+    context = {"configured": "config", "post_aggregation": "query", "relation": "relation"}
+    expr = parse_semantic_expression(comparison, context=context[lowering])
+    if lowering == "configured":
+        measure = next(m for m in runtime.config.measures if m.id == COUNT["measure"])
+        lowered = _config_expr_to_sql(expr, measure, runtime.config)
+    elif lowering == "post_aggregation":
+        lowered = _compile_post_expr(expr, runtime.config)
+    else:
+        lowered = _semantic_expr_to_sql(expr)
+    condition = render_expr(lowered)
+    # Ordinary SQL comparisons against a computed boolean NULL remain UNKNOWN.
+    gold_condition = "FALSE != CAST(NULL AS BOOLEAN)"
+    assert (
+        _gold(f"SELECT {condition} FROM records")
+        == _gold(f"SELECT {gold_condition} FROM records")
+        == [(None,)] * 7
+    )
+    assert (
+        _gold(f"SELECT id FROM records WHERE {condition}")
+        == _gold(f"SELECT id FROM records WHERE {gold_condition}")
+        == []
+    )
 
 
 @pytest.mark.parametrize(
