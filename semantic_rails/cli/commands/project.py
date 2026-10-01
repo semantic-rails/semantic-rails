@@ -277,7 +277,7 @@ def add_developer_cli(sub: argparse._SubParsersAction, package_choices: list[str
     p_project_new.add_argument(
         "--time-column",
         default="occurred_at",
-        help="Timestamp column for the starter metric (default: occurred_at).",
+        help="Timestamp column for the starter metric (default: occurred_at; blank for no time).",
     )
     p_project_new.add_argument(
         "--amount-column",
@@ -465,7 +465,7 @@ def cmd_init_project(args: argparse.Namespace) -> None:
     entity = str(getattr(args, "entity", "") or "event")
     relation = str(getattr(args, "relation", "") or "raw_events")
     primary_key = str(getattr(args, "primary_key", "") or "event_id")
-    time_column = str(getattr(args, "time_column", "") or "occurred_at")
+    time_column = str(getattr(args, "time_column", "occurred_at"))
     amount_column = str(getattr(args, "amount_column", "") or "amount")
     output = str(getattr(args, "output", "") or "")
     if interactive:

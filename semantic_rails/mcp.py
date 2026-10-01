@@ -193,7 +193,7 @@ QUERY_SCHEMA: dict[str, Any] = {
         },
         "time": {
             "type": ["object", "null"],
-            "description": "Time anchor: temporal_role + grain + start|end|range + fill + calendar_id. Omit entirely for an all-time scalar aggregate.",
+            "description": "Optional time: temporal_role, grain, start|end|range, fill, calendar_id. No declared time: INVALID_TEMPORAL_ROLE.",
             "additionalProperties": True,
             "properties": {
                 "temporal_role": {

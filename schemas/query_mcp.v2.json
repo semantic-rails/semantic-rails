@@ -635,7 +635,7 @@
             "properties": {
               "time": {
                 "additionalProperties": true,
-                "description": "Time anchor: temporal_role + grain + start|end|range + fill + calendar_id. Omit entirely for an all-time scalar aggregate.",
+                "description": "Optional time: temporal_role, grain, start|end|range, fill, calendar_id. No declared time: INVALID_TEMPORAL_ROLE.",
                 "properties": {
                   "calendar_id": {
                     "default": "default",
