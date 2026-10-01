@@ -18,7 +18,9 @@ import pytest
 
 from semantic_rails.planner import plan_payload
 from semantic_rails.planner._base import (
+    _explicit_grain,
     _time_bounds_from_text,
+    _time_cues,
     _time_spec,
     _unresolved_time_phrases,
 )
@@ -126,7 +128,16 @@ def test_quantities_are_not_years(text: str) -> None:
     [("orders per second", "second"), ("orders by minute", "minute"), ("hourly orders", "hour")],
 )
 def test_explicit_sub_day_grains_use_the_shared_interpreter(text: str, grain: str) -> None:
-    assert _time_spec("temporal_role.jaffle_order_time", text)["grain"] == grain
+    assert _explicit_grain(text, include_unsupported=True) == grain
+
+
+@pytest.mark.parametrize("phrase", ["tomorrow", "next month"])
+def test_future_time_intent_is_detected_without_resolving_a_window(phrase: str) -> None:
+    question = f"revenue {phrase}"
+    assert _time_bounds_from_text(question) == {}
+    assert [question[start:end] for start, end in _time_cues(question, include_future=True)] == [
+        phrase
+    ]
 
 
 @pytest.mark.parametrize(
@@ -165,8 +176,6 @@ def test_explicit_sub_day_grains_use_the_shared_interpreter(text: str, grain: st
         ("revenue on Feb 30, 2017", "feb 30, 2017"),
         ("revenue for Q2", "q2"),
         ("revenue in March", "in march"),
-        ("revenue tomorrow", "tomorrow"),
-        ("revenue next month", "next month"),
         # "and" names two periods; only "between ... and ..." is a range.
         ("revenue in March and May 2017", "march and may 2017"),
         ("revenue in January and December 2017", "january and december 2017"),

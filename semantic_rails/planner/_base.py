@@ -82,8 +82,6 @@ _TERM_SYNONYMS = {
     "weekly": "week",
     "quarterly": "quarter",
     "yearly": "year",
-    "annual": "year",
-    "annually": "year",
 }
 
 _NUMBER_WORDS = {
@@ -497,16 +495,20 @@ def _dimension_for_value(config: Any, value: str, *, terms: Iterable[str] = ()) 
     return _dimension(config, [*terms, "product"])
 
 
-def _explicit_grain(text: str, clock: str = "") -> str:
+def _explicit_grain(text: str, clock: str = "", *, include_unsupported: bool = False) -> str:
     """Return the grain the intent explicitly cues ("" when absent).
 
     With ``clock``, the label of the query's temporal role, a grouping that names that clock
     ("by order month", "by order date") takes its own unit, else a cadence the question
     names ("monthly", "per week", "at week grain"), else days. A unit that only a window
     names ("for the first quarter of 2017", "last month") doesn't set it.
+    ``include_unsupported`` also reads sub-day and annual requests for the
+    package-without-time guard, without changing the grains plan can draft.
     """
     lowered = str(text or "").lower()
     terms = _runtime_composition_terms(text)
+    if include_unsupported and terms & {"annual", "annually"}:
+        terms.add("year")
     for term in _requested_grouping_terms(text) if clock else ():
         if _names_time_axis(term, clock):
             tokens = set(_tokens(term))
@@ -519,7 +521,8 @@ def _explicit_grain(text: str, clock: str = "") -> str:
                 or (unit == "day" and "daily" in lowered)
             ]
             return (own or cadence or ["day"])[0]
-    for candidate in ("second", "minute", "hour", *_TIME_UNITS):
+    candidates = ("second", "minute", "hour", *_TIME_UNITS) if include_unsupported else _TIME_UNITS
+    for candidate in candidates:
         if (
             f"by {candidate}" in lowered
             or f"per {candidate}" in lowered
@@ -835,11 +838,11 @@ _SINCE_CUE_RE = re.compile(
     r"|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?"
     r"|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b"
 )
+# Future windows are recognizable time intent even though plan does not draft them.
+_FUTURE_TIME_CUE_RE = re.compile(rf"\btomorrow\b|\bnext\s+(?:{_TIME_UNIT_ALT})s?\b")
 _OTHER_TIME_CUE_RES = (
     _TEMPORAL_CUE_RE,
     _SINCE_CUE_RE,
-    # Future windows are time requests even though plan does not resolve them.
-    re.compile(rf"\btomorrow\b|\bnext\s+(?:{_TIME_UNIT_ALT})s?\b"),
     # Numeric dates are ambiguous between month/day and day/month orders.
     re.compile(r"\b\d{1,2}/\d{1,2}/(?:20)?\d{2}\b"),
     # A month named without a year ("in March", "April 3").
@@ -1166,10 +1169,12 @@ def _relative_window(
     return sorted(candidates, key=lambda row: row[0][0])
 
 
-def _time_cues(lowered: str) -> list[tuple[int, int]]:
+def _time_cues(lowered: str, *, include_future: bool = False) -> list[tuple[int, int]]:
     """Every span that scopes the question in time, resolvable or not."""
 
     spans = [match.span() for pattern in _OTHER_TIME_CUE_RES for match in pattern.finditer(lowered)]
+    if include_future:
+        spans.extend(match.span() for match in _FUTURE_TIME_CUE_RE.finditer(lowered))
     for match in _YEAR_TOKEN_RE.finditer(lowered):
         before, after = lowered[: match.start()], lowered[match.end() :]
         if _QUANTITY_BEFORE_RE.search(before) or _QUANTITY_AFTER_RE.search(after):

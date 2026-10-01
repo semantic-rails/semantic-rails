@@ -396,6 +396,8 @@ def test_plan_ordinary_time_words_answer(
             "each month",
             "time series",
             "at month grain",
+            "tomorrow",
+            "next month",
             "İ monthly",
         )
         for match_by in ("value", "label", "alias")
@@ -433,7 +435,7 @@ def test_plan_time_phrase_category_values_answer(package_path, phrase, match_by)
 
 @pytest.mark.parametrize(
     "phrase",
-    ["last month", "since 2023-01-01", "in 2023", "tomorrow", "next month", "İ last month"],
+    ["last month", "since 2023-01-01", "in 2023", "İ last month"],
 )
 @pytest.mark.parametrize("match_by", ["value", "label", "alias"])
 def test_plan_window_shaped_category_values_downgrade(package_path, phrase, match_by) -> None:

@@ -33,6 +33,7 @@ from ._base import (
     _TO_DATE_OR_ROLLING_RE,
     _TREND_CUE_RE,
     _explicit_grain,
+    _time_cues,
     _time_window,
     _with_fiscal_calendar,
 )
@@ -93,7 +94,7 @@ def _atemporal_time_intent(runtime: Any, intent: str, query: dict[str, Any]) -> 
         _CUMULATIVE_CUE_RE.pattern,
         *(p for p, _grain in _PERIOD_SHIFT_TRIGGERS),
     ]
-    cues = list(_time_window(lowered).spans) + [
+    cues = [*_time_window(lowered).spans, *_time_cues(lowered, include_future=True)] + [
         match.span() for pattern in patterns for match in re.finditer(pattern, lowered)
     ]
     # Clock words are the existing faithfulness check's unsupported time terms.
@@ -107,7 +108,7 @@ def _atemporal_time_intent(runtime: Any, intent: str, query: dict[str, Any]) -> 
     # time spec; keep the original question for every downstream diagnostic.
     require_temporal_support(
         runtime._config,
-        requested=bool(_explicit_grain("".join(remaining)))
+        requested=bool(_explicit_grain("".join(remaining), include_unsupported=True))
         or any(
             not any(start <= cue_start and cue_end <= end for start, end in consumed)
             for cue_start, cue_end in cues
