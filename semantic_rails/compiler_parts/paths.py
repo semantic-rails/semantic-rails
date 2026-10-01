@@ -464,11 +464,10 @@ def _joins_for_paths(
     grouping, a filter, the measure's own filter, an aggregate_if's condition or its
     expression). It joins INNER only when a read in ``_INNER_LOOKUP_PURPOSES`` walks the same
     hop, inside a metric predicate's own query or a distribution's per-entity values
-    (``inner_lookups``), on the path to a
-    dimension some rollup of ``source_entity`` holds pre-joined (so the base answers as the
-    rollup does), or on a warehouse whose outer join reads a type default instead of NULL
-    (``_is_lookup_hop``). Hops that fan out join INNER, and every hop after a
-    temporal-validity hop joins LEFT.
+    (``inner_lookups``), on the path to a dimension some rollup of ``source_entity`` holds
+    pre-joined (so the base answers as the rollup does), or on a warehouse whose outer join
+    reads a type default instead of NULL (``_is_lookup_hop``). Hops that fan out join INNER,
+    and every hop after a temporal-validity hop joins LEFT.
     """
     entities = _entity_index(config)
     relationships = _relationship_index(config)

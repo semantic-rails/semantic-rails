@@ -1304,6 +1304,8 @@ Only these reads join a lookup with an inner join, so a row with no match is lef
 - a metric predicate's own query, and its route to the entity it qualifies. Its set is
   matched on that entity and on the query's grouped (context) entities, so a row with none
   of them is not in the set;
+- a distribution's per-entity values (its `over`): a row whose lookup of the entity finds
+  no match belongs to no entity, never to a NULL entity of its own;
 - conversions (their match keys and properties);
 - a dimension a rollup of the measure's model holds (below). That rule covers every
   dimension any rollup of the model holds, even at a grain the rollup can never answer,
@@ -1311,8 +1313,11 @@ Only these reads join a lookup with an inner join, so a row with no match is lef
 - every hop on ClickHouse, where an unmatched outer-join column reads `''` or `0` unless
   it is `Nullable`, not NULL.
 
-Hops that fan out are inner joins too. Because of those inner reads, an `aggregate_if`
-condition that a row with no match could satisfy (such as `IS NULL`) is refused.
+Hops that fan out are inner joins too. A distinct count read from a child model (a
+`rollup_safe` reverse `count_distinct`) joins back to the counted entity with an inner join,
+so a child row whose parent has no record counts nothing; the lookups past that entity keep
+their rows. Because of those inner reads, an `aggregate_if` condition that a row with no
+match could satisfy (such as `IS NULL`) is refused.
 
 Long chains are first-class: a measure can be grouped or filtered by a
 dimension four relationships away (`line_item → order → customer → city →

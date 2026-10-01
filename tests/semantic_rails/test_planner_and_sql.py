@@ -249,8 +249,9 @@ def test_entity_in_terms_of_order_count_by_product_type_allows_root_lookup_filte
         assert report["ok"] is True
         rendered = report["explain"]["rendered_sql"]
         assert "FROM jaffle_item" in rendered
-        # Lookups keep their rows; the filter on the store drops those it finds no match for.
-        assert "LEFT JOIN jaffle_order ON jaffle_item.order_id = jaffle_order.order_id" in rendered
+        # An item whose order has no record counts no order; the store lookup past the order
+        # keeps its rows, and the filter on the store drops those it finds no match for.
+        assert "INNER JOIN jaffle_order ON jaffle_item.order_id = jaffle_order.order_id" in rendered
         assert "LEFT JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id" in rendered
         assert "jaffle_store.store_name = 'Brooklyn'" in rendered
     finally:

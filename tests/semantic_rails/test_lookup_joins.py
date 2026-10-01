@@ -186,6 +186,7 @@ ROLE = "dimension.crew_crew_assignment_crew_role"
 EMPLOYEE = "dimension.crew_person_is_employee"
 CITY = "dimension.crew_airport_city"
 LEG = "dimension.crew_leg_id"
+BOARDING = "dimension.crew_boarding_id"
 
 # Scalar subqueries read NULL where the lookup finds no row, independently of any join.
 SQL_ROLE = (
@@ -748,6 +749,44 @@ def test_a_hop_shared_with_the_time_role_keeps_the_inner_join(runtime, package):
         by_city[row[CITY]] = by_city.get(row[CITY], 0) + row["value"]
     assert by_city == {"New York": 4, "Chicago": 3, None: 3}
     assert _lookup_left_joins(load_package_config(str(package)), query) == ["airports"]
+
+
+@pytest.mark.parametrize(
+    ("group_by", "left_joins"),
+    [([BOARDING], []), ([BOARDING, CITY], ["airports"])],
+    ids=["time-role-alone", "grouping-shares-the-hop"],
+)
+def test_a_dimension_only_query_keeps_the_time_role_inner(
+    runtime, package, gold, group_by, left_joins
+):
+    """Boardings by the month their leg departed, dimensions alone. A boarding with no leg
+    record (11, 12, 13) has no month: it stays out, as the time role does in every leaf, and
+    never shows a NULL month. The airport hop, which only the grouping reads, keeps its rows
+    (boardings 8-10, whose airport has no record, under NULL)."""
+    query = {"version": 1, "group_by": group_by, "time": DEPARTED_MONTHLY}
+
+    rows = runtime.query(query)["rows"]
+
+    role = "temporal_role.crew_leg_departure_date__month"
+    months = {row[BOARDING]: datetime.fromisoformat(row[role]).month for row in rows}
+    assert months == gold(
+        "SELECT b.boarding_id, (SELECT MONTH(l.departure_date) FROM legs AS l"
+        " WHERE l.leg_id = b.leg_id) FROM boardings AS b"
+        " WHERE EXISTS (SELECT 1 FROM legs AS l WHERE l.leg_id = b.leg_id)"
+    )
+    assert set(months) == set(range(1, 11))
+    if CITY in group_by:
+        cities = {row[BOARDING]: row[CITY] for row in rows}
+        assert cities == {
+            **dict.fromkeys(range(1, 5), "New York"),
+            **dict.fromkeys(range(5, 8), "Chicago"),
+            **dict.fromkeys(range(8, 11), None),
+        }
+    config = load_package_config(str(package))
+    assert "INNER JOIN legs" in " ".join(
+        compile_query(config, Registry(config), query)["sql"].split()
+    )
+    assert _lookup_left_joins(config, query) == left_joins
 
 
 def test_a_metric_filter_matches_its_set_on_its_context_entity(runtime, package, gold):

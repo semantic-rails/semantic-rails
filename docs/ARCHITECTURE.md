@@ -407,12 +407,14 @@ Important planner behaviors:
   leaf, whatever reads the looked-up dimension, so a row with a NULL or unmatched foreign key
   keeps its measure value under NULL. Only these reads keep an inner join: a time role
   (`_INNER_LOOKUP_PURPOSES`), a metric predicate's route to its entity and its own nested
-  query (`inner_lookups`), conversions, a dimension any rollup of the measure's model holds
-  (even at a grain that rollup can never answer), and every hop on a dialect without
-  `outer_lookup_joins` (ClickHouse, whose unmatched outer-join columns read a type default,
-  not NULL); a hop any of them walks is inner for every read. Hops that fan out are inner
-  joins. `_joins_for_paths` (`compiler_parts/paths.py`) is the one place that decides, and
-  the only caller of the join-condition builder; leaves cannot opt out
+  query, a distribution's per-entity values (both `inner_lookups`), conversions, the hops
+  from an `entity_in_terms_of` anchor back to the counted entity, a dimension any rollup of
+  the measure's model holds (even at a grain that rollup can never answer; the
+  `entity_in_terms_of` leaf leaves such a query to the measure's own leaf), and every hop on
+  a dialect without `outer_lookup_joins` (ClickHouse, whose unmatched outer-join columns read
+  a type default, not NULL); a hop any of them walks is inner for every read. Hops that fan
+  out are inner joins. `_joins_for_paths` (`compiler_parts/paths.py`) is the one place that
+  decides, and the only caller of the join-condition builder; leaves cannot opt out
 - dense fill uses the declared calendar entity for the requested calendar id, or the implicit
   Gregorian calendar for a default request in a package that declares no default calendar
 - `metric_predicate` compiles as a scoped predicate subplan rather than a projected boolean expression

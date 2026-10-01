@@ -7,5 +7,5 @@
   too, under NULL. The same `IS NULL` condition now returns one answer as a `where`, a
   measure's own `filter` or a segment. Totals change only where such rows exist. A time role
   read through a lookup, a metric filter's own query and the entities its set is matched on,
-  conversions, a dimension a rollup of the measure's model holds, and ClickHouse still leave
-  them out.
+  a distribution's per-entity values, conversions, a dimension a rollup of the measure's model
+  holds, and ClickHouse still leave them out.

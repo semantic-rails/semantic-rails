@@ -38,6 +38,7 @@ from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
+from semantic_rails.schema import AggregateRelationConfig
 from semantic_rails.sql_ast import SqlJoin
 
 SEED_SQL = """
@@ -232,12 +233,12 @@ CONDITIONS = {
 }
 
 
-def _write_package(root: Path, *, rollup_safe: bool = False) -> Path:
+def _write_package(root: Path, *, rollup_safe: bool = False, extra_seed: str = "") -> Path:
     pkg = root / "geo"
     (pkg / "data").mkdir(parents=True)
     (pkg / "models").mkdir()
     (pkg / "segments").mkdir()
-    (pkg / "data" / "seed.sql").write_text(SEED_SQL)
+    (pkg / "data" / "seed.sql").write_text(SEED_SQL + extra_seed)
     (pkg / "package.yml").write_text(PACKAGE)
     (pkg / "graph.yml").write_text(GRAPH + (ROLLUP_SAFE_ITEMS if rollup_safe else ""))
     for name, body in MODELS.items():
@@ -613,6 +614,63 @@ def test_a_dimension_only_query_lists_the_rows_with_no_match(runtime, gold):
     assert (None, "Atlantis") in pairs and ("retail", None) in pairs
 
 
+def _region_amounts(group: str = "") -> str:
+    """Each region's amount, through the lookups: R1 53 (orders 1, 2 and 9), R2 5, R3 7, R4 11
+    and R5 13. Orders 7, 8, 10 and 11 (96 in all) reach no region."""
+    return (
+        f"SELECT {group}r.region_id, SUM(o.amount) AS v FROM orders AS o, customers AS c,"
+        " regions AS r WHERE c.customer_id = o.customer_id AND r.region_id = c.region_id"
+        " GROUP BY ALL"
+    )
+
+
+DISTRIBUTIONS = {"median": "MEDIAN(v)", "avg": "AVG(v)", "percentile": "QUANTILE_CONT(v, 0.25)"}
+
+
+def _distribution(function: str) -> dict[str, Any]:
+    return {
+        "kind": "distribution",
+        "function": function,
+        **({"p": 0.25} if function == "percentile" else {}),
+        "over": {
+            "kind": "entity_value",
+            "entity": "entity.geo_region",
+            "input": {"measure": "measure.geo.amount"},
+        },
+    }
+
+
+@pytest.mark.parametrize("function", list(DISTRIBUTIONS))
+def test_a_distribution_reads_only_the_entities_its_lookups_find(runtime, gold, function):
+    """The regions' values are [53, 5, 7, 11, 13], so the median is 11. The orders that reach
+    no region are no entity, never a sixth NULL region worth 96 (median 12). Beside it, the
+    plain amount grouped by segment keeps its NULL group (orders 9, 10 and 11)."""
+    aggregate = DISTRIBUTIONS[function]
+
+    alone = _rows(runtime, _query(_distribution(function)))[None]
+
+    assert alone == pytest.approx(gold(f"SELECT {aggregate} FROM ({_region_amounts()})")[None])
+    if function == "median":
+        assert alone == 11
+    query = {
+        "version": 1,
+        "select": [
+            {"as": "value", "expression": _distribution(function)},
+            {"as": "amount", "expression": {"measure": "measure.geo.amount"}},
+        ],
+        "group_by": [SEGMENT],
+    }
+    rows = runtime.query(query)["rows"]
+    by_segment = gold(
+        f"SELECT segment, {aggregate} FROM ({_region_amounts('c.segment, ')}) GROUP BY 1"
+    )
+    assert {row[SEGMENT]: _number(row["value"]) for row in rows} == pytest.approx(by_segment)
+    assert {row[SEGMENT]: _number(row["amount"]) for row in rows} == gold(
+        f"SELECT {SQL_SEGMENT}, SUM(o.amount) FROM orders AS o GROUP BY 1"
+    )
+    assert by_segment[None] == pytest.approx(23)  # order 9 alone: C8 has no segment
+
+
 def test_the_entity_in_terms_of_time_role_keeps_the_inner_join(rollup_safe_runtime):
     """The time role is the order's, read from the items through the order hop: that hop stays
     inner, as a time role read through a lookup does in every leaf, and the rest keep rows."""
@@ -629,6 +687,69 @@ def test_the_entity_in_terms_of_time_role_keeps_the_inner_join(rollup_safe_runti
     ]
     # Every order is in January, and every item has its order: no row is lost.
     assert _rows(rollup_safe_runtime, query) == ORDERS_BY_TYPE_AND_COUNTRY
+
+
+# Item 111 names order 999, which has no record.
+ORPHAN_ITEM_SEED = "INSERT INTO items VALUES (111, 999, 'coffee', 'beverage');\n"
+
+
+def test_the_entity_in_terms_of_leaf_counts_no_order_for_an_item_with_no_order(tmp_path):
+    """Counted from the items, item 111 is none of the orders: the hop back to the order joins
+    INNER, and the lookups past it keep rows (orders 3 and 10 still count under NULL)."""
+    query = _query(ORDER_COUNT, group_by=[TYPE, COUNTRY])
+    runtime = Runtime.from_path(
+        str(_write_package(tmp_path, rollup_safe=True, extra_seed=ORPHAN_ITEM_SEED))
+    )
+    connection = duckdb.connect()
+    try:
+        sql = _sql(runtime.config, query)
+        rows = _rows(runtime, query)
+        connection.execute(SEED_SQL + ORPHAN_ITEM_SEED)
+        gold_rows = connection.execute(SQL_ORDERS_BY_TYPE_AND_COUNTRY).fetchall()
+    finally:
+        runtime.close()
+        connection.close()
+
+    assert "FROM items" in sql
+    assert re.findall(r"\b(\w+) JOIN (orders|customers|regions|countries)\b", sql) == [
+        ("INNER", "orders"),
+        ("LEFT", "customers"),
+        ("LEFT", "regions"),
+        ("LEFT", "countries"),
+    ]
+    assert rows == {(kind, country): count for kind, country, count in gold_rows}
+    assert rows == ORDERS_BY_TYPE_AND_COUNTRY
+
+
+def test_the_entity_in_terms_of_leaf_leaves_a_rollup_dimension_to_the_order_s_leaf(tmp_path, gold):
+    """A rollup of the orders holds the country, so the base answers as that rollup does: every
+    hop to the country is INNER. Orders 4, 5 and 11 reach no country record and drop out; order
+    3's country has no name. Counted from the items, the leaf would not see the orders' rollup,
+    so the orders' own leaf answers."""
+    base = load_package_config(str(_write_package(tmp_path, rollup_safe=True)))
+    rollup = AggregateRelationConfig(
+        id="aggregate_relation.geo_orders_by_country",
+        relation="orders_by_country",
+        source_entity="entity.geo_order",
+        dimensions=[COUNTRY],
+    )
+    config = dataclasses.replace(base, aggregate_relations=[rollup])
+
+    sql = _sql(config, _query(ORDER_COUNT, group_by=[TYPE, COUNTRY]))
+
+    assert "FROM orders" in sql
+    assert _lookup_joins(sql) == [
+        ("INNER", table) for table in ("customers", "regions", "countries")
+    ]
+    expected = gold(
+        "SELECT i.item_type, k.country_name, COUNT(DISTINCT o.order_id) FROM orders AS o"
+        " JOIN items AS i ON i.order_id = o.order_id"
+        " JOIN customers AS c ON c.customer_id = o.customer_id"
+        " JOIN regions AS r ON r.region_id = c.region_id"
+        " JOIN countries AS k ON k.country_id = r.country_id GROUP BY 1, 2"
+    )
+    assert gold(sql) == expected
+    assert expected == {("beverage", "Atlantis"): 3, ("beverage", None): 1, ("food", "Atlantis"): 1}
 
 
 def test_a_lookup_after_a_one_to_many_hop_joins_left_inside_exists(runtime, gold):
@@ -688,6 +809,10 @@ def _callers(function: str) -> set[str]:
 def test_one_place_decides_how_a_relationship_joins():
     """Every leaf joins its paths through ``_joins_for_paths``, the one caller of the join
     condition builder, so no leaf can choose a lookup's join type on its own; and only a
-    metric predicate's own query asks it to join lookups INNER."""
+    metric predicate's own query and a distribution's per-entity values ask it to join lookups
+    INNER."""
     assert _callers("_join_on_for_relationship") == {"paths:_joins_for_paths"}
-    assert _callers("inner_lookups") == {"compiler:_compile_predicate_source_ast"}
+    assert _callers("inner_lookups") == {
+        "compiler:_compile_predicate_source_ast",
+        "sql_lowering:_distribution_select",
+    }
