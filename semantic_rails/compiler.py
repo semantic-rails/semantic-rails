@@ -2531,6 +2531,17 @@ def _root_path_summary(
                     )
                 )
                 continue
+            if exc.code == "AMBIGUOUS_PATH":
+                # A calendar date reached through another fact's rows is not the question's
+                # date either way: keep the time-block recovery a calendar group_by gets.
+                recovery = mixed_grain_pairing_enrichment(
+                    config=config,
+                    query=query,
+                    measure_ids=[row.measure_id for row in bound_measures],
+                    target_entity=target_entity,
+                ).get("time_axis_recovery")
+                if recovery:
+                    exc.details["time_axis_recovery"] = recovery
             raise
         selected_paths[target_entity] = list(chosen)
         candidate_paths[target_entity] = [list(path) for path in candidates]

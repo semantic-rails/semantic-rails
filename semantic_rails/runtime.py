@@ -341,14 +341,13 @@ def _path_alternates_warnings(config, compiled) -> list[dict[str, Any]]:
         seen.add((start, target))
         routes = [list(path) for path in candidates]
         meanings = [route_meaning(config, start, path) for path in routes]
-        others = "; ".join(meanings[1:])
         warnings.append(
             semantic_issue(
                 code="PATH_ALTERNATES_UNPINNED",
                 message=(
-                    f"The route from '{start}' to '{target}' is the direct key "
-                    f"{routes[0][0]} ({meanings[0]}). Other routes reach it too ({others}), "
-                    "and no graph.path_preferences row records which one is meant."
+                    f"'{target}' was read through {start}'s direct key {routes[0][0]}; "
+                    f"{len(routes) - 1} other route(s) reach it, and no graph.path_preferences "
+                    "row records which one is meant."
                 ),
                 severity="warning",
                 stage="planning",

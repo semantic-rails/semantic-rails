@@ -25,6 +25,7 @@ from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
+from semantic_rails.schema import PathPreferenceConfig
 
 # Order 1 has two beverages (the double-count trap), order 2 a beverage and a jaffle, order 3
 # two jaffles, order 4 a beverage after Q4 2016, order 5 no items, and order 6 a beverage and a
@@ -605,30 +606,52 @@ def test_rollup_safe_package_discloses_each_crossing_leaf(runtime_factory) -> No
     assert _normal(tuple(row.values()) for row in result["rows"]) == _normal(expected)
 
 
+# A customer's items and sessions: the items of its orders and the sessions it held (not the
+# items or sessions of orders its sessions converted to).
+_CUSTOMER_CHILD_PINS = [
+    PathPreferenceConfig(
+        "entity.jaffle_customer",
+        "entity.jaffle_item",
+        ["relationship.orders_customer", "relationship.order_items_order"],
+    ),
+    PathPreferenceConfig(
+        "entity.jaffle_customer",
+        "entity.jaffle_storefront_session",
+        ["relationship.storefront_sessions_customer"],
+    ),
+]
+
+
 @pytest.mark.parametrize(
-    ("measure", "groups"),
+    ("measure", "groups", "pins"),
     [
         # Two groups on the same child: items.
         (
             "measure.jaffle.order_count",
             ["dimension.jaffle_item_product_type", "dimension.jaffle_item_product_name"],
+            [],
         ),
         # Two groups on different children of a customer: its orders' items and its sessions.
         (
             "measure.jaffle.customer_count",
             ["dimension.jaffle_item_product_type", "dimension.jaffle_storefront_session_store_id"],
+            _CUSTOMER_CHILD_PINS,
         ),
     ],
     ids=["same_child", "different_children"],
 )
 def test_rollup_safe_package_refuses_two_groups_across_a_hop(
-    runtime_factory, measure: str, groups: list[str]
+    runtime_factory, measure: str, groups: list[str], pins: list[PathPreferenceConfig]
 ) -> None:
     """Grouping a distinct count by two dimensions across one-to-many hops was answered before;
     a query may now group or filter across a one-to-many hop once. Both refusal sites raise the
     same error, so the entity_in_terms_of branch is told apart by each group alone planning
     through it."""
     runtime = runtime_factory("jaffle_shop")
+    if pins:
+        config = replace(runtime.config, path_preferences=[*runtime.config.path_preferences, *pins])
+        runtime.close()
+        runtime = Runtime.from_config(config, source_path="configs/semantic_rails/jaffle_shop")
 
     def ask(group_by: list[str]) -> dict[str, Any]:
         select = [{"expression": {"measure": measure}, "as": "value"}]
