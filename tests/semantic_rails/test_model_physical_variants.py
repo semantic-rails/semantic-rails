@@ -155,7 +155,28 @@ def test_model_variants_normalize_to_explicit_aggregate_relations(tmp_path: Path
     assert aggregate.excluded_dimensions == ["dimension.demo_customer_id"]
 
 
-def test_monthly_query_routes_to_lossless_model_variant(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("dimension", "selected_relation", "other_relation", "selected"),
+    [
+        pytest.param(
+            "dimension.demo_store_id",
+            "order_monthly",
+            "order_fact",
+            ["aggregate_relation.orders_monthly"],
+            id="lossless-variant",
+        ),
+        pytest.param(
+            "dimension.demo_customer_id",
+            "order_fact",
+            "order_monthly",
+            [],
+            id="missing-dimension-fallback",
+        ),
+    ],
+)
+def test_monthly_query_variant_routing(
+    tmp_path: Path, dimension, selected_relation, other_relation, selected
+):
     package_dir = tmp_path / "variant_demo"
     _write_variant_package(package_dir)
     config = load_package_config(str(package_dir))
@@ -175,7 +196,7 @@ def test_monthly_query_routes_to_lossless_model_variant(tmp_path: Path):
                     "as": "revenue",
                 }
             ],
-            "group_by": ["dimension.demo_store_id"],
+            "group_by": [dimension],
             "time": {
                 "temporal_role": "temporal_role.demo_order_time",
                 "grain": "month",
@@ -183,44 +204,9 @@ def test_monthly_query_routes_to_lossless_model_variant(tmp_path: Path):
         },
     )
 
-    assert "FROM order_monthly" in compiled["sql"]
-    assert "FROM order_fact" not in compiled["sql"]
-    assert compiled["explain"].performance_plan["aggregate_routing"]["selected"] == [
-        "aggregate_relation.orders_monthly"
-    ]
-
-
-def test_missing_variant_dimension_falls_back_to_raw(tmp_path: Path):
-    package_dir = tmp_path / "variant_demo"
-    _write_variant_package(package_dir)
-    config = load_package_config(str(package_dir))
-
-    compiled = compile_query(
-        config,
-        Registry(config),
-        {
-            "version": 1,
-            "select": [
-                {
-                    "expression": {
-                        "kind": "aggregate",
-                        "measure": "measure.demo.revenue_usd",
-                        "aggregation": "sum",
-                    },
-                    "as": "revenue",
-                }
-            ],
-            "group_by": ["dimension.demo_customer_id"],
-            "time": {
-                "temporal_role": "temporal_role.demo_order_time",
-                "grain": "month",
-            },
-        },
-    )
-
-    assert "FROM order_fact" in compiled["sql"]
-    assert "FROM order_monthly" not in compiled["sql"]
-    assert compiled["explain"].performance_plan["aggregate_routing"]["selected"] == []
+    assert f"FROM {selected_relation}" in compiled["sql"]
+    assert f"FROM {other_relation}" not in compiled["sql"]
+    assert compiled["explain"].performance_plan["aggregate_routing"]["selected"] == selected
 
 
 _ROLLUP_SEED = """
