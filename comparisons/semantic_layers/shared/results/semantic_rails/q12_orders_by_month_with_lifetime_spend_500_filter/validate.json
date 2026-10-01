@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 2.264,
-      "compile_ms": 1.238,
+      "cache_lookup_ms": 0.679,
+      "compile_ms": 0.378,
       "dialect": "duckdb",
       "physical_plan_nodes": 8
     },
@@ -156,10 +156,6 @@
             "field": "temporal_role.jaffle_order_time__month"
           }
         ],
-        "path_policy": {
-          "ask_if_ambiguous": true,
-          "preference": "fewest_hops"
-        },
         "select": [
           {
             "as": "filtered_orders",
@@ -285,10 +281,6 @@
           "field": "temporal_role.jaffle_order_time__month"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "filtered_orders",
@@ -1342,10 +1334,6 @@
           "field": "temporal_role.jaffle_order_time__month"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "filtered_orders",
@@ -1472,10 +1460,6 @@
         "field": "temporal_role.jaffle_order_time__month"
       }
     ],
-    "path_policy": {
-      "ask_if_ambiguous": true,
-      "preference": "fewest_hops"
-    },
     "select": [
       {
         "as": "filtered_orders",
@@ -1570,7 +1554,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 25.637,
+  "timing_ms": 3.727,
   "trace": {
     "fallback": {
       "reason": "",
@@ -1635,6 +1619,23 @@
       "path": "",
       "recovery_hints": [],
       "severity": "warning",
+      "stage": "planning"
+    },
+    {
+      "code": "ROUTE_COLOCATED_KEY",
+      "details": {
+        "route": [
+          "relationship.orders_customer"
+        ]
+      },
+      "message": "Order \u2192 Customer (own key)",
+      "object_ids": [
+        "entity.jaffle_order",
+        "entity.jaffle_customer"
+      ],
+      "path": "",
+      "recovery_hints": [],
+      "severity": "info",
       "stage": "planning"
     }
   ]

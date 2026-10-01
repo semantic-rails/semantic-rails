@@ -39,8 +39,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 2.112,
-      "compile_ms": 1.006,
+      "cache_lookup_ms": 0.694,
+      "compile_ms": 0.339,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -125,10 +125,6 @@
             "field": "temporal_role.jaffle_session_started_at__month"
           }
         ],
-        "path_policy": {
-          "ask_if_ambiguous": true,
-          "preference": "fewest_hops"
-        },
         "select": [
           {
             "as": "session_to_order_conversion_rate_14d",
@@ -278,10 +274,6 @@
           "field": "temporal_role.jaffle_session_started_at__month"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "session_to_order_conversion_rate_14d",
@@ -1128,10 +1120,6 @@
           "field": "temporal_role.jaffle_session_started_at__month"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "session_to_order_conversion_rate_14d",
@@ -1282,10 +1270,6 @@
         "field": "temporal_role.jaffle_session_started_at__month"
       }
     ],
-    "path_policy": {
-      "ask_if_ambiguous": true,
-      "preference": "fewest_hops"
-    },
     "select": [
       {
         "as": "session_to_order_conversion_rate_14d",
@@ -1394,7 +1378,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 9.504,
+  "timing_ms": 3.194,
   "trace": {
     "fallback": {
       "reason": "",
@@ -1431,5 +1415,40 @@
     "snapshot_row_selection": "aggregate_join",
     "timestamp_type": "TIMESTAMP"
   },
-  "warnings": []
+  "warnings": [
+    {
+      "code": "ROUTE_COLOCATED_KEY",
+      "details": {
+        "route": [
+          "relationship.storefront_sessions_customer"
+        ]
+      },
+      "message": "Storefront session \u2192 Customer (own key)",
+      "object_ids": [
+        "entity.jaffle_storefront_session",
+        "entity.jaffle_customer"
+      ],
+      "path": "",
+      "recovery_hints": [],
+      "severity": "info",
+      "stage": "planning"
+    },
+    {
+      "code": "ROUTE_COLOCATED_KEY",
+      "details": {
+        "route": [
+          "relationship.orders_customer"
+        ]
+      },
+      "message": "Order \u2192 Customer (own key)",
+      "object_ids": [
+        "entity.jaffle_order",
+        "entity.jaffle_customer"
+      ],
+      "path": "",
+      "recovery_hints": [],
+      "severity": "info",
+      "stage": "planning"
+    }
+  ]
 }

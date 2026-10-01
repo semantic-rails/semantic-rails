@@ -2,8 +2,8 @@
   "dataset_fingerprint": "4f24ad8276dab30eb897fef24c136c863bf6def1bb1e24d1c0244aa4796b549f",
   "distribution": "PyPI semantic-rails==0.3.1",
   "engine_release": "v0.3.1",
-  "generated_at": "2026-10-01T04:13:59+00:00",
-  "model_sha256": "eba785a8b55e154d5b1adfc5be3b22c4da70b60acb55b2063f2d8f132a35f527",
+  "generated_at": "2026-10-01T04:40:40+00:00",
+  "model_sha256": "581afc679948aa81e223b4397f70cc82c1b2b479d6e00e5cec1f81c2b8c7b95f",
   "queries_sha256": "608e0c912f0000b70f88cceaef9c2ea3ed075c1374f5c4b665cf02dd1521335e",
   "questions": [
     {

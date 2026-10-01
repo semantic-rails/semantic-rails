@@ -11,7 +11,7 @@ from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
-from semantic_rails.schema import SemanticPolicyConfig
+from semantic_rails.schema import PathPreferenceConfig, SemanticPolicyConfig
 
 MEASURE = "measure.jaffle.revenue_usd"
 METRIC = "metric.sales.aov_usd"
@@ -37,7 +37,7 @@ def relationship_config(config, reverse):
         target_column=rel.source_column,
         source_columns=rel.target_columns,
         target_columns=rel.source_columns,
-        cardinality="one_to_many",
+        cardinality="1:N",
         rollup_safe_aggregations=rel.rollup_safe_aggregations_reverse,
         rollup_safe_aggregations_reverse=rel.rollup_safe_aggregations,
     )
@@ -108,11 +108,15 @@ def test_rejected_relationship_candidates_are_not_bound(config, reverse):
         target_column="not_a_key",
         source_columns=["not_a_key"],
         target_columns=["not_a_key"],
-        path_preference=selected.path_preference + 100,
     )
     config = replace(
         config,
         relationships=[candidate, *config.relationships],
+        # Two direct keys are two meanings: the package records the selected one.
+        path_preferences=[
+            PathPreferenceConfig(ENTITY, "entity.jaffle_customer", [RELATIONSHIP]),
+            *config.path_preferences,
+        ],
         semantic_policies=[
             SemanticPolicyConfig(
                 id="policy.test.unused",
