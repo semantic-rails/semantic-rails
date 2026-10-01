@@ -8,4 +8,6 @@
   measure's own `filter` or a segment. Totals change only where such rows exist. A time role
   read through a lookup, a metric filter's own query and the entities its set is matched on,
   a distribution's per-entity values, conversions, a dimension a rollup of the measure's model
-  holds, and ClickHouse still leave them out.
+  holds, and ClickHouse still leave them out. A rollup of another model, such as one of the
+  items for an order count, never does, whichever way the count is read, and no rollup does
+  in a dimension-only query.

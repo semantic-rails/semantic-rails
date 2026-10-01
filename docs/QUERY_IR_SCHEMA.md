@@ -311,7 +311,9 @@ Supported `op` values (all compile end-to-end):
   filters. A time role read through a lookup leaves such a row out, as before;
   so do a metric filter's own query and the entities its set is matched on, a
   distribution's per-entity values, a conversion, and a dimension any rollup of
-  the measure's model holds, even at a grain that rollup can never answer.
+  the measure's model holds, even at a grain that rollup can never answer (a
+  rollup of another model, or any rollup in a query of dimensions alone, keeps
+  the row).
   ClickHouse is the exception: its lookups
   stay inner joins, so it drops such a row from every query that reads the
   looked-up dimension.

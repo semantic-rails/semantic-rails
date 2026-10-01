@@ -1309,7 +1309,10 @@ Only these reads join a lookup with an inner join, so a row with no match is lef
 - conversions (their match keys and properties);
 - a dimension a rollup of the measure's model holds (below). That rule covers every
   dimension any rollup of the model holds, even at a grain the rollup can never answer,
-  so those rows are dropped for that dimension however the query is grouped;
+  so those rows are dropped for that dimension however the query is grouped. A rollup of
+  another model changes nothing: a rollup of the items holding the country keeps an order
+  count's rows, even when the orders are counted from the items, and a query of
+  dimensions alone reads no rollup;
 - every hop on ClickHouse, where an unmatched outer-join column reads `''` or `0` unless
   it is `Nullable`, not NULL.
 

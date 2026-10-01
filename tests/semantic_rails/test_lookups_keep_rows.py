@@ -752,6 +752,77 @@ def test_the_entity_in_terms_of_leaf_leaves_a_rollup_dimension_to_the_order_s_le
     assert expected == {("beverage", "Atlantis"): 3, ("beverage", None): 1, ("food", "Atlantis"): 1}
 
 
+def _with_rollup(config: Any, source_entity: str) -> Any:
+    rollup = AggregateRelationConfig(
+        id="aggregate_relation.geo_by_country",
+        relation="by_country",
+        source_entity=source_entity,
+        dimensions=[COUNTRY],
+    )
+    return dataclasses.replace(config, aggregate_relations=[rollup])
+
+
+@pytest.mark.parametrize("item_rollup", [False, True], ids=["no_rollup", "item_rollup"])
+@pytest.mark.parametrize(
+    ("rollup_safe", "marker"),
+    [(False, "_entity_rows"), (True, "FROM items")],
+    ids=["de_duplicated", "entity_in_terms_of"],
+)
+def test_a_rollup_of_another_model_changes_no_leaf(
+    tmp_path, gold, rollup_safe, marker, item_rollup
+):
+    """A rollup of the items that holds the country belongs to item measures: the order count
+    joins its lookups as the base tables do from either leaf, with both NULL groups."""
+    config = load_package_config(str(_write_package(tmp_path, rollup_safe=rollup_safe)))
+    if item_rollup:
+        config = _with_rollup(config, "entity.geo_item")
+
+    sql = _sql(config, _query(ORDER_COUNT, group_by=[TYPE, COUNTRY]))
+
+    assert marker in sql
+    assert _lookup_joins(sql) == [
+        ("LEFT", table) for table in ("customers", "regions", "countries")
+    ]
+    assert gold(sql) == gold(SQL_ORDERS_BY_TYPE_AND_COUNTRY) == ORDERS_BY_TYPE_AND_COUNTRY
+
+
+def test_a_dimension_only_query_reads_no_rollup(package, gold):
+    """No measure is read, so no rollup applies: the items rollup holding the country leaves
+    the listing's NULL country for food (items 105, 106 and 109) in."""
+    config = _with_rollup(load_package_config(str(package)), "entity.geo_item")
+
+    sql = _sql(config, {"version": 1, "group_by": [TYPE, COUNTRY]})
+
+    assert "FROM items" in sql
+    assert _lookup_joins(sql) == [
+        ("LEFT", table) for table in ("customers", "regions", "countries")
+    ]
+    item_country = (
+        "(SELECT k.country_name FROM orders AS o, customers AS c, regions AS r, countries AS k"
+        " WHERE o.order_id = i.order_id AND c.customer_id = o.customer_id"
+        " AND r.region_id = c.region_id AND k.country_id = r.country_id)"
+    )
+    expected = gold(f"SELECT DISTINCT i.item_type, {item_country}, 1 FROM items AS i")
+    assert gold(f"SELECT *, 1 FROM ({sql})") == expected
+    assert ("food", None) in expected
+
+
+def test_a_leaf_reading_another_model_s_rows_refuses_the_measure_s_rollup(tmp_path, monkeypatch):
+    """The guard behind the entity_in_terms_of leaf's decline: with the decline bypassed, the
+    joins refuse to answer a dimension the orders' rollup holds from the items' rows."""
+    config = _with_rollup(
+        load_package_config(str(_write_package(tmp_path, rollup_safe=True))), "entity.geo_order"
+    )
+    monkeypatch.setattr(sql_lowering, "rollup_held_lookups", lambda *args: set())
+
+    with pytest.raises(SemanticLayerError) as raised:
+        _sql(config, _query(ORDER_COUNT, group_by=[TYPE, COUNTRY]))
+
+    assert raised.value.code == "REWRITE_NOT_SUPPORTED"
+    assert raised.value.details["measure_entity"] == "entity.geo_order"
+    assert raised.value.details["source_entity"] == "entity.geo_item"
+
+
 def test_a_lookup_after_a_one_to_many_hop_joins_left_inside_exists(runtime, gold):
     """A child filter reads the item's product: the lookup joins LEFT inside the EXISTS that
     reads the items, not as an EXISTS of its own."""
@@ -808,11 +879,15 @@ def _callers(function: str) -> set[str]:
 
 def test_one_place_decides_how_a_relationship_joins():
     """Every leaf joins its paths through ``_joins_for_paths``, the one caller of the join
-    condition builder, so no leaf can choose a lookup's join type on its own; and only a
-    metric predicate's own query and a distribution's per-entity values ask it to join lookups
-    INNER."""
+    condition builder, so no leaf can choose a lookup's join type on its own; only a metric
+    predicate's own query and a distribution's per-entity values ask it to join lookups INNER;
+    and only it reads which lookups a rollup holds, for the rollup's own model."""
     assert _callers("_join_on_for_relationship") == {"paths:_joins_for_paths"}
     assert _callers("inner_lookups") == {
         "compiler:_compile_predicate_source_ast",
         "sql_lowering:_distribution_select",
+    }
+    assert _callers("rollup_dimension_entities") == {
+        "paths:_joins_for_paths",
+        "paths:rollup_held_lookups",
     }

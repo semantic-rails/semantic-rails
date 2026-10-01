@@ -410,7 +410,10 @@ Important planner behaviors:
   query, a distribution's per-entity values (both `inner_lookups`), conversions, the hops
   from an `entity_in_terms_of` anchor back to the counted entity, a dimension any rollup of
   the measure's model holds (even at a grain that rollup can never answer; the
-  `entity_in_terms_of` leaf leaves such a query to the measure's own leaf), and every hop on
+  `entity_in_terms_of` leaf leaves such a query to the measure's own leaf, and
+  `_joins_for_paths` refuses it from another model's rows with `REWRITE_NOT_SUPPORTED`; a
+  rollup of any other model, and any rollup in a query of dimensions alone, changes no
+  join), and every hop on
   a dialect without `outer_lookup_joins` (ClickHouse, whose unmatched outer-join columns read
   a type default, not NULL); a hop any of them walks is inner for every read. Hops that fan
   out are inner joins. `_joins_for_paths` (`compiler_parts/paths.py`) is the one place that
