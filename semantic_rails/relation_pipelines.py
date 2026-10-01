@@ -165,7 +165,7 @@ def _semantic_expr_to_sql(
             current = SqlBinary(current, expr.op.upper(), arg)
         return current
     if isinstance(expr, CallExpr):
-        return SqlCall(
+        return dialect_for_warehouse(warehouse).scalar_call(
             expr.name,
             [
                 _semantic_expr_to_sql(arg, default_alias=default_alias, warehouse=warehouse)
