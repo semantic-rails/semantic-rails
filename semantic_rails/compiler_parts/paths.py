@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 from ..ast import NormalizedQuery
@@ -213,26 +213,124 @@ def _entity_key_dimension_ids(entity_id: str, config: PackageConfig) -> list[str
 _OPERATOR_EXPRS = (ArithmeticExpr, ComparisonExpr, RatioExpr, BooleanExpr, CallExpr)
 
 
-def _operand_root_entities(expr: SemanticExpr, config: PackageConfig) -> set[str]:
-    """The root entities of an operator's operands. A literal never changes a predicate
-    input's grain, so literals, and operators made only of literals, add no root."""
+def _is_constant(expr: SemanticExpr) -> bool:
+    """A literal, or arithmetic made only of literals."""
+    if isinstance(expr, ArithmeticExpr):
+        return _is_constant(expr.left) and _is_constant(expr.right)
+    return isinstance(expr, LiteralExpr)
+
+
+def _input_arithmetic(expr: SemanticExpr, config: PackageConfig) -> Iterator[SemanticExpr]:
+    """A predicate input's arithmetic and ratios, node by node, metric recipes expanded."""
+    if isinstance(expr, MetricRecipeRefExpr):
+        recipe = _recipe_index(config).get(expr.metric_recipe)
+        if recipe is not None:
+            yield from _input_arithmetic(recipe.expression, config)
+        return
+    yield expr
+    if isinstance(expr, ArithmeticExpr):
+        yield from _input_arithmetic(expr.left, config)
+        yield from _input_arithmetic(expr.right, config)
+    elif isinstance(expr, RatioExpr):
+        yield from _input_arithmetic(expr.numerator, config)
+        yield from _input_arithmetic(expr.denominator, config)
+
+
+def _holds_literal(expr: SemanticExpr, config: PackageConfig) -> bool:
+    return any(isinstance(node, LiteralExpr) for node in _input_arithmetic(expr, config))
+
+
+def _no_row_reading_known(expr: ArithmeticExpr, config: PackageConfig) -> bool:
+    """Whether arithmetic over an entity with no rows reads what its operands read there.
+
+    It does for a sum or difference, a product with a constant factor and a quotient by a
+    constant, and for a quotient without a literal, whose divisor reads 0 or NULL there, so it
+    reads NULL. Any other product or quotient is not modelled: it reads None, and an input
+    with a literal refuses it.
+    """
+    if expr.op in {"add", "subtract"}:
+        return True
+    if expr.op == "multiply":
+        return _is_constant(expr.left) or _is_constant(expr.right)
+    return expr.op == "divide" and (
+        _is_constant(expr.right) or not _holds_literal(expr, config)
+    )
+
+
+def _require_known_literal_arithmetic(expr: SemanticExpr, config: PackageConfig) -> None:
+    """Refuse a predicate input with a literal unless its reading for no rows is known.
+
+    That reading decides whether an entity with no rows qualifies (``count - 3 < 0`` keeps it,
+    as ``count < 3`` does). Once the input's arithmetic holds a literal, every node must be a
+    number, a measure, arithmetic that passes :func:`_no_row_reading_known`, or a ratio
+    without a literal, which reads NULL there. An input without a literal keeps the reading
+    it always had.
+    """
+    nodes = list(_input_arithmetic(expr, config))
+    if not any(isinstance(node, LiteralExpr) for node in nodes):
+        return
+    for node in nodes:
+        if isinstance(node, LiteralExpr):
+            known = isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
+        elif isinstance(node, ArithmeticExpr):
+            known = _no_row_reading_known(node, config)
+        elif isinstance(node, RatioExpr):
+            known = not _holds_literal(node, config)
+        else:
+            known = isinstance(node, (MeasureRefExpr, AggregateExpr))
+        if not known:
+            raise SemanticLayerError(
+                "PREDICATE_NOT_SUPPORTED",
+                (
+                    "A metric_predicate input with a literal may only add, subtract, multiply by "
+                    "a constant or divide by a constant, over measures, metrics and ratios "
+                    f"without a literal; its '{expr_kind(node)}' operand is not supported"
+                ),
+                details={
+                    "kind": expr_kind(node),
+                    **({"op": node.op} if isinstance(node, ArithmeticExpr) else {}),
+                },
+            )
+
+
+def _operand_root_entities(
+    expr: SemanticExpr, config: PackageConfig, *, literal_operands: bool = False
+) -> set[str]:
+    """The root entities of an operator's operands.
+
+    A literal argument of a boolean or call adds no root. With ``literal_operands`` (a
+    metric_predicate input), neither does a literal operand of the input's arithmetic, nor
+    arithmetic made only of literals: a literal never changes the input's grain. A literal
+    operand anywhere else, such as in a ratio or a comparison, is not supported.
+    """
+    if isinstance(expr, ArithmeticExpr) and literal_operands:
+        roots: set[str] = set()
+        for operand in (expr.left, expr.right):
+            if isinstance(operand, ArithmeticExpr):
+                roots |= _operand_root_entities(operand, config, literal_operands=True)
+            elif not isinstance(operand, LiteralExpr):
+                roots.add(_expression_root_entity(operand, config, literal_operands=True))
+        return roots
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
         operands: Iterable[SemanticExpr] = (expr.left, expr.right)
     elif isinstance(expr, RatioExpr):
         operands = (expr.numerator, expr.denominator)
     else:
         assert isinstance(expr, (BooleanExpr, CallExpr))
-        operands = expr.args
-    roots: set[str] = set()
-    for operand in operands:
-        if isinstance(operand, _OPERATOR_EXPRS):
-            roots |= _operand_root_entities(operand, config)
-        elif not isinstance(operand, LiteralExpr):
-            roots.add(_expression_root_entity(operand, config))
-    return roots
+        operands = (arg for arg in expr.args if not isinstance(arg, LiteralExpr))
+    return {_expression_root_entity(operand, config) for operand in operands}
 
 
-def _expression_root_entity(expr: SemanticExpr, config: PackageConfig) -> str:
+def _expression_root_entity(
+    expr: SemanticExpr, config: PackageConfig, *, literal_operands: bool = False
+) -> str:
+    """The entity ``expr`` is computed at.
+
+    ``literal_operands`` marks a metric_predicate input, whose arithmetic may take literal
+    operands where :func:`_require_known_literal_arithmetic` allows them.
+    """
+    if literal_operands:
+        _require_known_literal_arithmetic(expr, config)
     if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
         measure = _measure_index(config).get(expr.measure)
         if measure is None:
@@ -244,7 +342,9 @@ def _expression_root_entity(expr: SemanticExpr, config: PackageConfig) -> str:
             raise SemanticLayerError(
                 "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
             )
-        return _expression_root_entity(recipe.expression, config)
+        return _expression_root_entity(
+            recipe.expression, config, literal_operands=literal_operands
+        )
     if isinstance(
         expr,
         (
@@ -260,7 +360,7 @@ def _expression_root_entity(expr: SemanticExpr, config: PackageConfig) -> str:
     if isinstance(expr, ConversionExpr):
         return _expression_root_entity(expr.base, config)
     if isinstance(expr, _OPERATOR_EXPRS):
-        roots = _operand_root_entities(expr, config)
+        roots = _operand_root_entities(expr, config, literal_operands=literal_operands)
         if len(roots) == 1:
             return next(iter(roots))
         if not roots:

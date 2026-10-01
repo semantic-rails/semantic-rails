@@ -84,6 +84,7 @@ from .compiler_parts.paths import (
     _join_condition,
     _joins_for_paths,
     _leaf_time_role,
+    _no_row_reading_known,
     _resolve_dimension_expr,
     _split_column_ref,
 )
@@ -1546,12 +1547,6 @@ _ARITHMETIC_OPS: dict[str, Any] = {
 }
 
 
-def _is_constant(expr: SemanticExpr) -> bool:
-    if isinstance(expr, ArithmeticExpr):
-        return _is_constant(expr.left) and _is_constant(expr.right)
-    return isinstance(expr, LiteralExpr)
-
-
 def _predicate_reading_without_rows(
     expr: SemanticExpr,
     config: PackageConfig,
@@ -1562,8 +1557,9 @@ def _predicate_reading_without_rows(
     A count or sum reads 0, and so does an add or subtract of them: the source query settles
     each operand the way any query does (see ``empty_groups``), so this is the same rule, never
     a second one. A literal reads its own value, so ``count - 3`` reads -3, not 0, and a
-    division by 0 reads NULL, as in the SQL. Only a bare measure may also be a distinct
-    population.
+    division by a literal 0 reads NULL, as in the SQL. Other arithmetic reads None here, and
+    the root resolver refuses it once the input holds a literal (``_no_row_reading_known``).
+    Only a bare measure may also be a distinct population.
     """
     if isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_index(config).get(expr.metric_recipe)
@@ -1573,9 +1569,7 @@ def _predicate_reading_without_rows(
     if isinstance(expr, LiteralExpr):
         return expr.value if _is_number(expr.value) else None
     if isinstance(expr, ArithmeticExpr):
-        if expr.op not in {"add", "subtract"} and not (
-            _is_constant(expr.left) or _is_constant(expr.right)
-        ):
+        if not _no_row_reading_known(expr, config):
             return None
         left = _predicate_reading_without_rows(expr.left, config, ZERO_MEASURE_CLASSES)
         right = _predicate_reading_without_rows(expr.right, config, ZERO_MEASURE_CLASSES)
@@ -1724,7 +1718,7 @@ def _expanded_predicate_range(start: Any, end: Any, grain: str) -> tuple[Any, An
 
 
 def _predicate_input_root_entity(predicate: MetricPredicateExpr, config: PackageConfig) -> str:
-    return _expression_root_entity(predicate.input, config)
+    return _expression_root_entity(predicate.input, config, literal_operands=True)
 
 
 def _predicate_context_entity_candidates(
@@ -2127,9 +2121,10 @@ def _predicate_ctes_and_join(
     """Return the predicate's CTEs, the joins to the outer leaf, and extra WHERE conditions.
 
     Usually the set holds the qualifying entities and the join is INNER. When entities
-    with no rows must qualify, the set holds the entities that fail the threshold, and
-    the leaf keeps a row only if that LEFT JOIN finds no failing entity for it, and, for a
-    count or sum, only while the source holds a settled value (see ``empty_groups``).
+    with no rows must qualify, the set holds the entities that fail the threshold or read
+    NULL, and the leaf keeps a row only if that LEFT JOIN finds no failing entity for it,
+    and, for a count or sum, only while the source holds a settled value (see
+    ``empty_groups``).
     """
     entity_cfg = _entity_index(config).get(predicate.entity)
     if entity_cfg is None:
@@ -2197,14 +2192,19 @@ def _predicate_ctes_and_join(
     )
     without_rows = _predicate_includes_entities_without_rows(predicate, config)
     if without_rows:
-        # The set holds the entities that fail the threshold. Never coalesce the value: the
-        # source is settled like any query, so its values are non-NULL on every row or NULL on
-        # every row. In the second case no entity qualifies, and the gate below drops every row.
-        where_condition = build_filter_condition(
-            SqlIdentifier(parts=["predicate_source", "__predicate_value"]),
-            _INVERSE_THRESHOLD_OPS[" ".join(str(predicate.op).upper().split())],
-            predicate.value,
-            path="metric_predicate",
+        # The set holds the entities that fail the threshold. Never coalesce the value: NULL
+        # passes no threshold, so an entity the source lists with a NULL value fails it, and
+        # when every value is NULL the gate below drops every row.
+        value_ref = SqlIdentifier(parts=["predicate_source", "__predicate_value"])
+        where_condition = SqlBinary(
+            build_filter_condition(
+                value_ref,
+                _INVERSE_THRESHOLD_OPS[" ".join(str(predicate.op).upper().split())],
+                predicate.value,
+                path="metric_predicate",
+            ),
+            "OR",
+            SqlIsNull(value_ref),
         )
     set_query = SqlSelect(
         select=select_fields,

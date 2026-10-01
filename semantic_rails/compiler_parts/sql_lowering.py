@@ -2519,7 +2519,7 @@ def _minimal_predicate_set_ctes(
         ),
     )
     _ = group_keys  # retained for naming clarity; no GROUP BY needed
-    root_entity = _expression_root_entity(predicate.input, config)
+    root_entity = _expression_root_entity(predicate.input, config, literal_operands=True)
     return PredicateSetSql(
         ctes=[source_cte, *extra_ctes, set_cte],
         set_name=set_name,
@@ -3178,7 +3178,7 @@ def build_physical_plan(plan: LogicalPlan, config: PackageConfig) -> PhysicalPla
             [*anchored.base_predicates, *anchored.extra_predicates]
         ):
             predicate = _predicate_expr_from_payload(predicate_payload)
-            root_entity = _expression_root_entity(predicate.input, config)
+            root_entity = _expression_root_entity(predicate.input, config, literal_operands=True)
             relation = entities[root_entity].table
             predicate_scan_id = f"predicate_{index + 1}_scan"
             predicate_id = f"predicate_set_{index + 1}"

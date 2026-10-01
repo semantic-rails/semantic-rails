@@ -3,13 +3,16 @@
 Invariant: a literal operand never changes the grain of a predicate input. The input's root
 entity is the root of its non-literal operands; an input made only of literals is refused, and
 two different roots stay ``PREDICATE_GRAIN_UNSAFE``. An entity with no rows reads what the
-arithmetic gives there: ``count - 3`` reads -3, not 0, and a division by 0 reads NULL.
+arithmetic gives there: ``count - 3`` reads -3, not 0, and a division by 0 reads NULL. That
+reading is known only where the arithmetic adds, subtracts, multiplies by a constant or divides
+by a constant, so any other input with a literal is refused with ``PREDICATE_NOT_SUPPORTED``.
 
 Gold values come from independent SQL over the same seed. Customer 5 has no orders.
 """
 
 from __future__ import annotations
 
+import re
 import textwrap
 from pathlib import Path
 
@@ -157,6 +160,15 @@ def _write_package(root: Path) -> None:
                 numerator: returned_orders
                 denominator: order_count
                 value_type: percent
+              orders_less_two:
+                label: Orders less two
+                kind: derived
+                value_type: count
+                expression:
+                  kind: arithmetic
+                  op: subtract
+                  left: {measure: order_count}
+                  right: {kind: literal, value: 2}
               big_spender_orders:
                 label: Orders of customers who spent over 0.1 thousand
                 kind: aggregate
@@ -308,12 +320,26 @@ def test_division_by_a_literal(runtime):
     assert _kept_customers(runtime, _predicate(divided, ">", 0.1)) == expected
 
 
-def test_a_literal_divided_by_a_count(runtime):
-    # Customer 5 reads 5 / 0, which is NULL and passes no threshold.
-    expected = _gold_customers(ORDER_COUNT_SQL, "5 / nullif(v, 0) > 1")
-    assert expected == {1, 2, 4}
-    divided = _arith("divide", _lit(5), ORDERS)
-    assert _kept_customers(runtime, _predicate(divided, ">", 1)) == expected
+@pytest.mark.parametrize(
+    ("divisor", "op", "value", "kept"),
+    [(2, "<", 2, {2, 4, 5}), (100, "<", 0.03, {2, 5})],
+    ids=["by_two", "by_a_hundred"],
+)
+def test_a_count_divided_by_a_literal_keeps_customers_without_orders(
+    runtime, divisor, op, value, kept
+):
+    expected = _gold_customers(ORDER_COUNT_SQL, f"v / {divisor} {op} {value}")
+    assert expected == kept
+    divided = _arith("divide", ORDERS, _lit(divisor))
+    assert _kept_customers(runtime, _predicate(divided, op, value)) == expected
+
+
+def test_a_literal_inside_a_metric_recipe_input(runtime):
+    # orders_less_two is order_count - 2: customer 5 reads -2.
+    expected = _gold_customers(ORDER_COUNT_SQL, "v - 2 < 0")
+    assert expected == {5}
+    recipe = {"metric": "metric.lit.orders_less_two"}
+    assert _kept_customers(runtime, _predicate(recipe, "<", 0)) == expected
 
 
 @pytest.mark.parametrize(("op", "value"), [(">", 0), ("<", 1), ("=", 0), ("!=", 1), ("<=", 0)])
@@ -328,6 +354,16 @@ def test_division_by_a_literal_zero_is_null_not_an_error(runtime, op, value):
         }
     )["rows"]
     assert rows and all(row["v"] is None for row in rows)
+
+
+def test_a_listed_entity_reading_null_fails_a_threshold_zero_passes(runtime):
+    # Customers with no orders qualify here, so the set holds the customers that fail; one the
+    # source lists with a NULL value fails too, or it would survive the anti-join.
+    query = _customers_query(_predicate(_arith("subtract", ORDERS, _lit(3)), "<", 0))
+    sql = runtime.compile(query)["rendered_sql"]
+    (failing,) = re.findall(r"WHERE\n(.*__predicate_value.*)", sql)
+    assert "__predicate_value >= 0" in failing
+    assert "__predicate_value IS NULL" in failing
 
 
 @pytest.mark.parametrize(
@@ -438,13 +474,59 @@ def _refusal_codes(runtime: Runtime, predicate: dict) -> tuple[list[str], str, s
     [
         _arith("multiply", _lit(2), _lit(3)),
         _arith("add", _arith("multiply", _lit(2), _lit(3)), _lit(1)),
-        {"kind": "ratio", "numerator": _lit(1), "denominator": _lit(2)},
     ],
-    ids=["literals", "nested_literals", "literal_ratio"],
+    ids=["literals", "nested_literals"],
 )
 def test_an_input_made_only_of_literals_is_refused(runtime, input_):
     codes, plan_code, execute_code = _refusal_codes(runtime, _predicate(input_, ">", 1))
     assert codes[0] == plan_code == execute_code == "PREDICATE_INPUT_REQUIRED"
+
+
+def _ratio(numerator: dict, denominator: dict) -> dict:
+    return {"kind": "ratio", "numerator": numerator, "denominator": denominator}
+
+
+PLUS_ONE = _arith("add", ORDERS, _lit(1))
+LESS_TWO = _arith("subtract", ORDERS, _lit(2))
+
+
+@pytest.mark.parametrize(
+    ("input_", "op", "value"),
+    [
+        # A ratio or comparison with a literal operand stays unsupported, as before.
+        (_ratio(ORDERS, _lit(100)), "<", 0.03),
+        (_ratio(ORDERS, _lit(2)), "<", 2),
+        (_ratio(_lit(1), _lit(2)), ">", 1),
+        (_arith("multiply", ORDERS, _ratio(_lit(1), _lit(2))), "<", 1),
+        ({"kind": "comparison", "op": "<", "left": ORDERS, "right": _lit(3)}, "=", 1),
+        # Gold keeps customer 5, which reads 1 there; no product of two counts is modelled.
+        (_arith("multiply", PLUS_ONE, PLUS_ONE), "<", 4),
+        (_arith("add", _arith("multiply", ORDERS, ORDERS), _lit(1)), "<", 4),
+        # A divisor with a literal: customer 2 divides by 0 and reads NULL, customer 5 by -2.
+        (_arith("divide", _lit(5), LESS_TWO), "<", 0),
+        (_arith("divide", _lit(5), LESS_TWO), "!=", 1),
+        (_arith("divide", _lit(5), {"metric": "metric.lit.orders_less_two"}), "<", 0),
+        (_arith("divide", _lit(5), ORDERS), ">", 1),
+        (_arith("add", ORDERS, _lit("3")), "<", 4),
+    ],
+    ids=[
+        "ratio_by_a_literal",
+        "ratio_by_two",
+        "literal_ratio",
+        "times_a_literal_ratio",
+        "comparison_with_a_literal",
+        "product_of_shifted_counts",
+        "product_of_counts_plus_one",
+        "literal_over_a_shifted_count",
+        "literal_over_a_shifted_count_not_one",
+        "literal_over_a_recipe_with_a_literal",
+        "literal_over_a_count",
+        "text_literal",
+    ],
+)
+def test_a_literal_whose_reading_without_rows_is_unknown_is_refused(runtime, input_, op, value):
+    codes, plan_code, execute_code = _refusal_codes(runtime, _predicate(input_, op, value))
+    assert codes[0] == plan_code == execute_code == "PREDICATE_NOT_SUPPORTED"
 
 
 @pytest.mark.parametrize(
