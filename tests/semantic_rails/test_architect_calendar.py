@@ -143,12 +143,13 @@ def test_mcp_session_adds_the_package_calendar(workspace: Path) -> None:
     assert _model(workspace, "calendar")["calendar_id"] == "default"
     rows, sql = _monthly_orders(workspace)
     assert "main_marts.dim_date" in sql and "implicit_calendar" not in sql
+    # Orders are loaded from January to March 2024: the months either side have no data.
     assert rows == [
-        (date(2023, 12, 1), 0),
+        (date(2023, 12, 1), None),
         (date(2024, 1, 1), 2),
         (date(2024, 2, 1), 3),
         (date(2024, 3, 1), 3),
-        (date(2024, 4, 1), 0),
+        (date(2024, 4, 1), None),
     ]
     assert [(month.date(), orders) for month, orders in implicit_rows] == rows
 
