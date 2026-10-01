@@ -15,7 +15,6 @@ from semantic_rails.db_parts.clickhouse import ClickHouseAdapter
 from semantic_rails.db_parts.databricks import DatabricksNativeAdapter
 from semantic_rails.db_parts.ducklake import DuckLakeAdapter
 from semantic_rails.db_parts.motherduck import MotherDuckAdapter
-from semantic_rails.db_parts.postgres import PostgresAdapter
 from semantic_rails.db_parts.snowflake import SnowflakeCliAdapter, SnowflakeNativeAdapter
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.request_context import RequestContext
@@ -249,7 +248,6 @@ class _Legacy:
         DatabricksNativeAdapter,
         DuckLakeAdapter,
         MotherDuckAdapter,
-        PostgresAdapter,
         SnowflakeCliAdapter,
         SnowflakeNativeAdapter,
         _Custom,

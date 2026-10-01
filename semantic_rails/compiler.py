@@ -192,7 +192,7 @@ from .sql_ast import (
     build_filter_condition,
     validate_single_value_filter_shape,
 )
-from .sql_preparation import ParameterSlot
+from .sql_preparation import ParameterSlot, finalize_parameters
 from .temporal_support import validate_temporal_support
 
 __all__ = [
@@ -4421,6 +4421,7 @@ def compile_query(
         dialect=dialect,
     )
     prepared = replace(dialect.prepare_query(rendered), parameters=bound.parameters)
+    prepared = finalize_parameters(prepared, config.package.connection.kind)
     rendered = prepared.sql
     from .compiler_parts.sql_lowering import build_performance_plan, build_physical_plan
 

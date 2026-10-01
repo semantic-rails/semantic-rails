@@ -12,6 +12,69 @@ This guide uses **Redshift** as the worked example because it is the
 next connector scheduled to land (the env-var names are already
 reserved in `.env.example`).
 
+### ADBC profiles
+
+Postgres uses `AdbcAdapter` with `POSTGRES_PROFILE`, selected by the existing
+`connection.kind: postgres_native` and its validated option vocabulary. Install
+`semantic-rails[postgres]` (or `[all]`) for the pinned ADBC manager and Postgres
+driver plus PyArrow. PyArrow supplies DB-API parameter binding, bounded batch
+conversion and PostgreSQL extension type metadata; converting through DuckDB
+would add another type-conversion boundary.
+
+A profile names the driver, connection kind and allowed options. Only the
+Postgres profile is qualified today; the adapter refuses another profile until
+its session setup, timeout, binding and type conversion have been implemented
+and tested. Credentials stay in the in-memory libpq connection string, with
+keyword values escaped. Packages cannot choose a driver or native library path.
+The `schema` option selects one exact, case-sensitive schema name.
+
+The compiler finalizes typed row-filter slots as Postgres `$1`, `$2`, … before
+execution. The adapter checks slot types, counts and placeholder order before
+connecting, binds values separately and sends prepared SQL unchanged. In the
+compiler's ANSI SQL, every placeholder corresponds to one authored slot. Direct
+parameterized calls use the same strict check and refuse `?` JSON operators;
+plain SQL without slots allows those operators and refuses unbound `$n` tokens.
+The shared finalization and validation scanner skips complete Postgres identifiers
+(including `$` suffixes), E-string backslash escapes, ordinary quoted text,
+dollar-quoted literals and nested comments when locating standalone placeholders.
+Arrow batches are sliced before Python row conversion to at most
+`max_rows + 1`, with `QueryRows.truncated` and semantic aliases preserved. The
+64 KiB driver batch hint bounds typical batches, not arbitrarily large cells.
+
+NUMERIC returns `Decimal` with its scale intact, including aggregate results;
+numeric-looking TEXT stays text. Positional correctness reads share this
+Arrow-type conversion while retaining duplicate column names. Aware timestamps retain
+microseconds and use the requested query zone (otherwise the current session
+zone, falling back to aware UTC when Python cannot load it). PostgreSQL stores
+instants, so the originally authored offset cannot be recovered. Arrow
+`MonthDayNano` intervals become Python `timedelta` values, matching DuckDB's
+driver convention of 30 days per month and preserving exact microseconds.
+Their public JSON values and interval metadata therefore match DuckDB.
+Sub-microsecond intervals or durations outside Python's range refuse with
+`RESULT_VALUE_UNSUPPORTED`. Each query restores the session's previous zone. The
+adapter preserves inherited statement timeouts unless a request or connection
+option overrides them, then restores the exact previous value. It changes the
+zone only when needed. A query without overrides takes two round trips: read
+the session settings, then execute. For overrides, the adapter sets millisecond
+server deadlines and uses `adbc_cancel()` as a watchdog through execution and
+Arrow fetching. Failed queries discard the connection
+before reuse. The libpq connect timeout is ten seconds; a separate network-read
+deadline is not exposed.
+
+The hosted Postgres correctness job runs the Arrow adapter unit tests, the conformance battery and
+`tests/integration/test_adbc_postgres.py` with the standard `SR_POSTGRES_*`
+fixture variables. Exact-type, two-tenant isolation and timeout tests supplement
+normalized parity. The conformance loader uses `adbc_ingest` on the production
+connection; psycopg is not a runtime or test dependency.
+
+Seed scripts split only at semicolons outside quoted literals, identifiers,
+E-string escapes, dollar quotes and comments. Each statement retains its authored
+text and comments. An unterminated quote or block comment refuses the entire
+script before execution with `INVALID_CONFIG` (`unterminated_sql_script`).
+LF and CRLF line endings terminate line comments identically. A bare carriage
+return anywhere in a script refuses before execution with `INVALID_CONFIG`
+(`bare_carriage_return_sql_script`), naming the SQL source or `post_sql` file.
+
 ## 1. Dialect class — `semantic_rails/dialects.py`
 
 Subclass `SqlDialect` and override only what differs from the portable
@@ -83,7 +146,7 @@ Method-by-method checklist (compare against the warehouse docs):
 ## 2. Adapter — `semantic_rails/db_parts/redshift.py`
 
 Implement the `WarehouseAdapter` contract. If the driver is DB-API
-(PEP 249) — psycopg, redshift_connector, PyAthena, databricks-sql —
+(PEP 249) — redshift_connector, PyAthena, databricks-sql —
 subclass `DbApiAdapter` from `semantic_rails.db_parts.common` and you
 only write `_create_connection()` plus the timeout hooks:
 
@@ -194,9 +257,9 @@ coerced. Only an adapter that sets `supports_parameters = True` receives such a
 statement, as `query_prepared(prepared, limits=..., parameters=values)`, and it
 must send the values to its driver separately from the SQL. Every other adapter,
 including the base fallback, denies it before reaching its driver. Never render a
-value into SQL text as a fallback. `DuckDBAdapter` is the only adapter with
-support today; qualify a driver's parameter API with tests before enabling
-another.
+value into SQL text as a fallback. `DuckDBAdapter` and the Postgres ADBC
+profile support binding today; qualify a driver's parameter API with tests
+before enabling another.
 
 Rules every adapter follows:
 

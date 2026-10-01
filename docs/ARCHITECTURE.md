@@ -468,7 +468,9 @@ from trusted attributes; only adapters that bind values separately execute it
 them: after lowering, `semantic_rails.row_filters` adds `<column> = ?` to the one
 ordinary scan and every engine-tagged observation or coverage scan of a filtered relation.
 It denies other repeated reads, joins, other relations and rollups (routing is off under
-a row filter). Empty-group settlement lives in `compiler_parts/empty_groups.py`: untimed
+a row filter). DuckDB binds `?` directly; Postgres preparation finalizes slots as
+`$1`, `$2`, … and ADBC validates them before connecting. Other adapters deny
+parameterized SQL. Empty-group settlement lives in `compiler_parts/empty_groups.py`: untimed
 observation determines whether zero is defined, and base time coverage bounds only zero
 substitution on filled, dense or combined leaves. One predicate decides both coverage and
 rollup refusal, on DuckDB and Postgres only. Populated values pass through; routed
