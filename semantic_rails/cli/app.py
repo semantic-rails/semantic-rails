@@ -832,7 +832,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_init.add_argument(
         "--time-column",
         default="occurred_at",
-        help="Starter time column for split-layout packages.",
+        help="Starter time column for split-layout packages (blank for no time).",
     )
     p_init.add_argument(
         "--amount-column",
