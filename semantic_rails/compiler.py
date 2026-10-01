@@ -140,6 +140,8 @@ from .expressions import (
     SemanticExpr,
     expr_kind,
     expr_to_dict,
+    is_constant_expression,
+    validate_expression_calls,
     validate_expression_shapes,
 )
 from .fanout import (
@@ -3919,18 +3921,36 @@ def plan_query(
     *,
     collapse_window: bool = True,
 ) -> LogicalPlan:
+    raw_query = normalize_query(payload)
+
     with candidate_planning():
-        return _plan_query(config, registry, payload, collapse_window=collapse_window)
+        return _plan_query(
+            config, registry, raw_query, collapse_window=collapse_window, top_level=True
+        )
 
 
 def _plan_query(
     config: PackageConfig,
     registry: Registry | None,
-    payload: dict[str, Any],
+    raw_query: NormalizedQuery,
     *,
     collapse_window: bool,
+    top_level: bool = False,
 ) -> LogicalPlan:
-    raw_query = normalize_query(payload)
+    validate_expression_calls(raw_query, config)
+    if (
+        top_level
+        and raw_query.select
+        and all(is_constant_expression(item.expression) for item in raw_query.select)
+        and not (
+            raw_query.group_by or raw_query.where or raw_query.time or raw_query.metric_filters
+        )
+    ):
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            "A select of literals only reads no data; add a measure, a group_by dimension or time",
+            details={"reason": "literal_only_select"},
+        )
 
     # Lift inline ``aggregate_if`` shorthand into synthetic measures. The
     # rest of plan_query (and every downstream pass) operates on
@@ -4156,7 +4176,8 @@ def _compile_query_sql_ast(
     guard_empty: bool = True,
 ) -> SqlSelect:
     """Compile a nested query; ``guard_empty=False`` for a distribution's per-entity values."""
-    plan = plan_query(config, None, payload, collapse_window=False)
+    with candidate_planning():
+        plan = _plan_query(config, None, normalize_query(payload), collapse_window=False)
     config = resolve_compile_config(plan, config)
     with plan_bindings(plan, project_cut=project_cut) as leaves:
         _record_bound_plan(plan, config, leaves.leaves)

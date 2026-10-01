@@ -34,8 +34,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 2.875,
-      "compile_ms": 1.515,
+      "cache_lookup_ms": 1.734,
+      "compile_ms": 0.657,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -1825,7 +1825,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 12.591,
+  "timing_ms": 8.727,
   "trace": {
     "fallback": {
       "reason": "",

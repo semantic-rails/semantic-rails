@@ -51,8 +51,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 6.239,
-      "compile_ms": 1.708,
+      "cache_lookup_ms": 4.703,
+      "compile_ms": 1.757,
       "dialect": "duckdb",
       "physical_plan_nodes": 12
     },
@@ -2545,62 +2545,62 @@
   "rows": [
     {
       "large_order_revenue_usd": 2376.5,
-      "revenue_usd": 18053.27999999999,
+      "revenue_usd": 18053.28,
       "temporal_role.jaffle_order_time__month": "2016-09-01T00:00:00"
     },
     {
       "large_order_revenue_usd": 2642.57,
-      "revenue_usd": 21923.950000000004,
+      "revenue_usd": 21923.94999999999,
       "temporal_role.jaffle_order_time__month": "2016-10-01T00:00:00"
     },
     {
       "large_order_revenue_usd": 2192.04,
-      "revenue_usd": 27916.82,
+      "revenue_usd": 27916.819999999952,
       "temporal_role.jaffle_order_time__month": "2016-11-01T00:00:00"
     },
     {
-      "large_order_revenue_usd": 3549.9200000000005,
-      "revenue_usd": 35677.60000000002,
+      "large_order_revenue_usd": 3549.920000000001,
+      "revenue_usd": 35677.60000000006,
       "temporal_role.jaffle_order_time__month": "2016-12-01T00:00:00"
     },
     {
       "large_order_revenue_usd": 5175.9,
-      "revenue_usd": 45017.94999999991,
+      "revenue_usd": 45017.94999999982,
       "temporal_role.jaffle_order_time__month": "2017-01-01T00:00:00"
     },
     {
-      "large_order_revenue_usd": 4959.690000000001,
-      "revenue_usd": 43358.11999999968,
+      "large_order_revenue_usd": 4959.6900000000005,
+      "revenue_usd": 43358.11999999985,
       "temporal_role.jaffle_order_time__month": "2017-02-01T00:00:00"
     },
     {
-      "large_order_revenue_usd": 6553.24,
-      "revenue_usd": 73950.32000000023,
+      "large_order_revenue_usd": 6553.240000000001,
+      "revenue_usd": 73950.32000000002,
       "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
     },
     {
-      "large_order_revenue_usd": 9694.400000000005,
-      "revenue_usd": 83316.99000000158,
+      "large_order_revenue_usd": 9694.400000000003,
+      "revenue_usd": 83316.99000000114,
       "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
     },
     {
-      "large_order_revenue_usd": 7801.520000000003,
-      "revenue_usd": 96070.3500000034,
+      "large_order_revenue_usd": 7801.520000000006,
+      "revenue_usd": 96070.35000000357,
       "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00"
     },
     {
       "large_order_revenue_usd": 10121.239999999998,
-      "revenue_usd": 98378.87000000275,
+      "revenue_usd": 98378.87000000296,
       "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
     },
     {
-      "large_order_revenue_usd": 12161.110000000004,
-      "revenue_usd": 94857.1900000022,
+      "large_order_revenue_usd": 12161.109999999999,
+      "revenue_usd": 94857.19000000211,
       "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00"
     },
     {
-      "large_order_revenue_usd": 10629.820000000005,
-      "revenue_usd": 107371.59000000394,
+      "large_order_revenue_usd": 10629.819999999998,
+      "revenue_usd": 107371.59000000445,
       "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
     }
   ],
