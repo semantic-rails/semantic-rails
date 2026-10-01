@@ -149,7 +149,8 @@ MCP_SERVER_INSTRUCTIONS = (
     "SQL.\n"
     "\n"
     'Query IR: select measures or metrics, group_by dimension ids, where filters (op "in"'
-    " for several values), and time {temporal_role, grain, start, end}, where end is "
+    " for several values; a child group {child, match, where} for conditions on one child "
+    "row), and time {temporal_role, grain, start, end}, where end is "
     "exclusive. A window without a grain returns one total, with no time column. The execute tool "
     "schema lists expression shapes.\n"
     "\n"
@@ -182,6 +183,17 @@ QUERY_SCHEMA: dict[str, Any] = {
     ),
     "additionalProperties": True,
     "properties": {
+        "where": {
+            "type": "array",
+            "description": (
+                "Filters {field, op, value}, and child groups {child, match: 'any'|'none', "
+                "where: [filters]}: conditions that one row of a child entity, across a "
+                "one-to-many hop, meets together ('any') or that no child row meets ('none'). "
+                "Two plain filters on one child, or a negated one, fail as "
+                "AMBIGUOUS_CHILD_SCOPE: resend one option's where from details.clarification."
+            ),
+            "items": {"type": "object"},
+        },
         "time": {
             "type": ["object", "null"],
             "description": "Time anchor: temporal_role + grain + start|end|range + fill + calendar_id. Omit entirely for an all-time scalar aggregate.",

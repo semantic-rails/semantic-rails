@@ -718,6 +718,13 @@
                   "object",
                   "null"
                 ]
+              },
+              "where": {
+                "description": "Filters {field, op, value}, and child groups {child, match: 'any'|'none', where: [filters]}: conditions that one row of a child entity, across a one-to-many hop, meets together ('any') or that no child row meets ('none'). Two plain filters on one child, or a negated one, fail as AMBIGUOUS_CHILD_SCOPE: resend one option's where from details.clarification.",
+                "items": {
+                  "type": "object"
+                },
+                "type": "array"
               }
             },
             "type": "object"
