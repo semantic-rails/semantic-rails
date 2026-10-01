@@ -418,6 +418,10 @@ Important planner behaviors:
   a type default, not NULL); a hop any of them walks is inner for every read. Hops that fan
   out are inner joins. `_joins_for_paths` (`compiler_parts/paths.py`) is the one place that
   decides, and the only caller of the join-condition builder; leaves cannot opt out
+- an `entity_in_terms_of` count always requires a matching row of the counted entity,
+  including when grouping only by the child's lookup without a parent dimension or time
+  axis. Its anchor plan always adds that path; `_joins_for_paths` checks the emitted joins
+  and refuses a missing or nullable parent check with `REWRITE_NOT_SUPPORTED`
 - dense fill uses the declared calendar entity for the requested calendar id, or the implicit
   Gregorian calendar for a default request in a package that declares no default calendar
 - `metric_predicate` compiles as a scoped predicate subplan rather than a projected boolean expression

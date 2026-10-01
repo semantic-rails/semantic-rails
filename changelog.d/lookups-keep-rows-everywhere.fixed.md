@@ -11,3 +11,6 @@
   holds, and ClickHouse still leave them out. A rollup of another model, such as one of the
   items for an order count, never does, whichever way the count is read, and no rollup does
   in a dimension-only query.
+- A parent count grouped by a child's looked-up dimension counts only parents that exist,
+  with or without a time axis. Orphan children no longer inflate the NULL group, while
+  existing parents whose children have a NULL or unmatched lookup key still count there.

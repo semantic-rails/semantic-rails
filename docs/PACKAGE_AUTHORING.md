@@ -1334,7 +1334,10 @@ Only these reads join a lookup with an inner join, so a row with no match is lef
 
 Hops that fan out are inner joins too. A distinct count read from a child model (a
 `rollup_safe` reverse `count_distinct`) joins back to the counted entity with an inner join,
-so a child row whose parent has no record counts nothing; the lookups past that entity keep
+even when grouping only by a child's looked-up dimension and reading no parent dimension
+or time axis. A child row whose parent has no record counts nothing; valid parents whose
+child lookup finds no match still count under NULL. A leaf that cannot require the counted
+entity's own row is refused with `REWRITE_NOT_SUPPORTED`. The lookups past that entity keep
 their rows. Because of those inner reads, an `aggregate_if` condition that a row with no
 match could satisfy (such as `IS NULL`) is refused.
 

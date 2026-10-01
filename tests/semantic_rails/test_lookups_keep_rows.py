@@ -721,6 +721,79 @@ def test_the_entity_in_terms_of_leaf_counts_no_order_for_an_item_with_no_order(t
     assert rows == ORDERS_BY_TYPE_AND_COUNTRY
 
 
+@pytest.mark.parametrize(
+    "sku", ["NULL", "'missing'", "'coffee'"], ids=["null", "unmatched", "matched"]
+)
+@pytest.mark.parametrize("with_time", [False, True], ids=["no_time", "monthly"])
+@pytest.mark.parametrize("rollup_safe", [False, True], ids=["de_duplicated", "entity_in_terms_of"])
+def test_a_child_lookup_grouping_counts_only_existing_parents(
+    tmp_path, sku, with_time, rollup_safe
+):
+    """Both leaves count existing orders, even when an orphan item's product lookup finds no
+    match. Reading the order's time axis preserves that count and the valid NULL group."""
+    seed = f"INSERT INTO items VALUES (111, 999, {sku}, 'beverage');\n"
+    query = _query(ORDER_COUNT, group_by=[CATEGORY], **({"time": MONTHLY} if with_time else {}))
+    runtime = Runtime.from_path(
+        str(_write_package(tmp_path, rollup_safe=rollup_safe, extra_seed=seed))
+    )
+    connection = duckdb.connect()
+    try:
+        sql = _sql(runtime.config, query)
+        rows = _rows(runtime, query)
+        connection.execute(SEED_SQL + seed)
+        expected = dict(
+            connection.execute(
+                "SELECT (SELECT p.category FROM products AS p WHERE p.sku = i.sku),"
+                " COUNT(DISTINCT o.order_id) FROM orders AS o"
+                " JOIN items AS i ON i.order_id = o.order_id GROUP BY 1"
+            ).fetchall()
+        )
+    finally:
+        runtime.close()
+        connection.close()
+
+    assert rows == expected == {"hot": 4, "cold": 2, None: 3}
+    assert _lookup_joins(sql) == [("LEFT", "products")]
+    if rollup_safe:
+        assert "FROM items" in sql
+        assert "INNER JOIN orders ON items.order_id = orders.order_id" in sql
+    else:
+        assert "_entity_rows" in sql
+
+
+@pytest.mark.parametrize("bypass", ["missing", "left"])
+def test_a_child_anchored_count_refuses_a_bypassed_parent_check(tmp_path, monkeypatch, bypass):
+    """The shared join builder refuses the leaf if its parent check is absent or nullable."""
+    from semantic_rails.compiler_parts import paths
+
+    config = load_package_config(str(_write_package(tmp_path, rollup_safe=True)))
+    if bypass == "missing":
+        anchor_plan = sql_lowering._entity_in_terms_of_anchor_plan
+
+        def without_parent_check(*args):
+            result = anchor_plan(*args)
+            assert result is not None
+            result["path_selections"] = [
+                row for row in result["path_selections"] if row.purpose != "entity_in_terms_of_root"
+            ]
+            return result
+
+        monkeypatch.setattr(sql_lowering, "_entity_in_terms_of_anchor_plan", without_parent_check)
+    else:
+        monkeypatch.setattr(
+            paths,
+            "_INNER_LOOKUP_PURPOSES",
+            paths._INNER_LOOKUP_PURPOSES - {"entity_in_terms_of_root"},
+        )
+
+    with pytest.raises(SemanticLayerError) as raised:
+        _sql(config, _query(ORDER_COUNT, group_by=[CATEGORY]))
+
+    assert raised.value.code == "REWRITE_NOT_SUPPORTED"
+    assert raised.value.details["measure_entity"] == "entity.geo_order"
+    assert raised.value.details["source_entity"] == "entity.geo_item"
+
+
 def test_the_entity_in_terms_of_leaf_leaves_a_rollup_dimension_to_the_order_s_leaf(tmp_path, gold):
     """A rollup of the orders holds the country, so the base answers as that rollup does: every
     hop to the country is INNER. Orders 4, 5 and 11 reach no country record and drop out; order

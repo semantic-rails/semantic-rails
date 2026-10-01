@@ -489,7 +489,9 @@ def _joins_for_paths(
     model's own rows (``source_entity``). Every other leaf joins as the base tables do: a
     rollup of an entity_in_terms_of anchor's model never applies to the measure counted from
     it. Such a leaf that looks up a dimension a rollup of the measure's model holds is refused:
-    only the measure's own leaf answers as that rollup does.
+    only the measure's own leaf answers as that rollup does. It must also join the measure's
+    own rows INNER: a child whose parent has no record counts no parent. The internal guard
+    checks the emitted joins, so a missing or nullable parent check cannot silently count it.
     """
     entities = _entity_index(config)
     relationships = _relationship_index(config)
@@ -591,6 +593,17 @@ def _joins_for_paths(
             if rel.temporal_validity:
                 nullable_path = True
             current_entity = next_entity
+    if measure_entity is not None and measure_entity != source_entity:
+        measure_table = overrides.get(measure_entity, entities[measure_entity].table)
+        if not any(
+            join.table.name == measure_table and join.join_type == "INNER" for join in joins
+        ):
+            raise SemanticLayerError(
+                "REWRITE_NOT_SUPPORTED",
+                f"A measure of '{measure_entity}' read from the rows of '{source_entity}' "
+                "must require a matching row of the counted entity.",
+                details={"measure_entity": measure_entity, "source_entity": source_entity},
+            )
     return joins
 
 

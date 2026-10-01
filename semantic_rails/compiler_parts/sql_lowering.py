@@ -1859,17 +1859,18 @@ def _entity_in_terms_of_anchor_plan(
             if current_entity == measure.entity:
                 root_paths.add(tuple(row.chosen_path[: index + 1]))
                 break
-    if root_paths:
-        root = _anchor_path_selection(
-            config=config,
-            plan=plan,
-            start_entity=anchor_entity,
-            target_entity=measure.entity,
-            purpose="entity_in_terms_of_root",
-        )
-        if root is None or root_paths != {tuple(root.chosen_path)}:
-            return None
-        supplemental_selections.append(root)
+    # The counted entity must exist even when every grouping reads only the child's rows
+    # or its lookups, so no supplemental dimension path happens to reach the parent.
+    root = _anchor_path_selection(
+        config=config,
+        plan=plan,
+        start_entity=anchor_entity,
+        target_entity=measure.entity,
+        purpose="entity_in_terms_of_root",
+    )
+    if root is None or (root_paths and root_paths != {tuple(root.chosen_path)}):
+        return None
+    supplemental_selections.append(root)
     return {
         "anchor_entity": anchor_entity,
         "anchor_key_columns": anchor_key_columns,
