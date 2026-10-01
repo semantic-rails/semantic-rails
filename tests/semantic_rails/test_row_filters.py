@@ -429,6 +429,70 @@ def test_a_read_inside_a_cte_is_filtered_there():
         apply_row_filters(statement, [ROW, shadowed])
 
 
+@pytest.mark.parametrize(
+    "statement",
+    [
+        # An unrelated physical scan cannot hide beside an EXISTS scan.
+        _scan(
+            SqlTableRef("parents"),
+            where=[SqlExists(_scan(SqlTableRef("t")))],
+            ctes=[SqlCte("extra", _scan(SqlTableRef("extra_rows")))],
+        ),
+        # A join inside EXISTS still falls outside the qualified family.
+        _scan(
+            SqlTableRef("parents"),
+            where=[
+                SqlExists(
+                    _scan(
+                        SqlTableRef("t"),
+                        joins=[SqlJoin("INNER", SqlTableRef("other"), SqlLiteral(True))],
+                    )
+                )
+            ],
+        ),
+        _scan(
+            SqlTableRef("parents"), where=[SqlExists(_scan(SqlTableFunction("UNNEST", alias="t")))]
+        ),
+        # An EXISTS in the projection is not a child-row filter.
+        SqlSelect([SqlField(SqlExists(_scan(SqlTableRef("t"))), "value")], SqlTableRef("parents")),
+        # Nor is one projected by a child scan inside the parent's EXISTS.
+        _scan(
+            SqlTableRef("parents"),
+            where=[
+                SqlExists(
+                    SqlSelect(
+                        [SqlField(SqlExists(_scan(SqlTableRef("grandchildren"))), "match")],
+                        SqlTableRef("t"),
+                        where=[
+                            SqlBinary(
+                                SqlIdentifier(["t", "parent_id"]),
+                                "=",
+                                SqlIdentifier(["parents", "id"]),
+                            )
+                        ],
+                    )
+                )
+            ],
+        ),
+        # "Has no matching child" is not "has a matching child".
+        _scan(SqlTableRef("parents"), where=[SqlExists(_scan(SqlTableRef("t")), negated=True)]),
+    ],
+    ids=[
+        "extra_scan",
+        "joined_child",
+        "table_function",
+        "projected_exists",
+        "nested_projected_exists",
+        "not_exists",
+    ],
+)
+def test_exists_does_not_bypass_row_filter_scan_guard(statement):
+    with pytest.raises(SemanticLayerError) as caught:
+        apply_row_filters(statement, [ROW])
+    assert caught.value.code == "POLICY_DENIED"
+    assert caught.value.details["reason"] == "row_filter_unsupported_query"
+
+
 def test_a_rewrite_that_misses_the_scan_is_denied(monkeypatch):
     monkeypatch.setattr(row_filters_module, "_rewrite", lambda node, target, new: node)
     with pytest.raises(SemanticLayerError, match="only a query that reads"):
