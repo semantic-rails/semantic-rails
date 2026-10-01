@@ -21,6 +21,7 @@ from semantic_rails.expressions import (
     expr_to_dict,
     parse_config_expression,
     parse_semantic_expression,
+    validate_expression_calls,
 )
 
 
@@ -579,3 +580,14 @@ def test_parse_between_rejects_unknown_keys():
             context="config",
         )
     assert exc.value.code == "INVALID_EXPRESSION_KEY"
+
+
+@pytest.mark.parametrize("name", ["NOW", "now", "PG_TYPEOF", "pg_typeof"])
+def test_coverage_cutoff_functions_are_engine_only(name):
+    config = load_package_config(resolve_repo_path("configs/semantic_rails/jaffle_shop"))
+    expression = parse_semantic_expression(
+        {"kind": "call", "name": name, "args": []}, context="query"
+    )
+    with pytest.raises(SemanticLayerError) as caught:
+        validate_expression_calls(expression, config)
+    assert caught.value.code == "INVALID_EXPRESSION_AST"

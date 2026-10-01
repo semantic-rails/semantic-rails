@@ -20,6 +20,7 @@ import tarfile
 import tempfile
 import unicodedata
 from collections.abc import Iterable, Iterator
+from dataclasses import fields
 from decimal import Context, Decimal
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -33,11 +34,13 @@ from .config_validation import (
     validate_config_report,
 )
 from .errors import SemanticLayerError
-from .expressions import expr_to_dict
+from .expressions import CaseWhenExpr, ColumnRefExpr, LiteralExpr, SemanticExpr, expr_to_dict
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import package_release_labels
 from .renderer import _quote_ident
-from .runtime import Runtime
+from .result_values import result_rows
+from .runtime import Runtime, _time_zone
+from .runtime_parts.responses import output_columns
 from .yaml_loader import safe_load as yaml_safe_load
 
 ARTIFACT_MANIFEST_NAME = "semantic-rails-manifest.json"
@@ -427,46 +430,16 @@ def _collect_column_refs(expr: Any, *, out: list[str]) -> None:
     Conservative: ignores literals and table-qualified refs we can't
     attribute to a specific entity from the AST alone.
     """
-    if expr is None:
+    # Only AST nodes have traversable children. Literal values are opaque data,
+    # even when they expose attributes also used by expressions (int.numerator).
+    if not isinstance(expr, (SemanticExpr, CaseWhenExpr)) or isinstance(expr, LiteralExpr):
         return
-    # ColumnRefExpr is a frozen dataclass — duck-type by attribute.
-    column = getattr(expr, "column", None)
-    if (
-        isinstance(column, str)
-        and column
-        and not hasattr(expr, "left")
-        and not hasattr(expr, "input")
-    ):
-        # ColumnRefExpr-shaped: only a `column` attribute, plus optional
-        # entity/table. Excludes arithmetic/etc. that happen to expose
-        # an unrelated `column`-named field.
-        out.append(column)
+    if isinstance(expr, ColumnRefExpr):
+        if expr.column:
+            out.append(expr.column)
         return
-    # Recursively walk known compound fields.
-    for attr in (
-        "left",
-        "right",
-        "input",
-        "args",
-        "operand",
-        "condition",
-        "true_branch",
-        "false_branch",
-        "value",
-        "expr",
-        "expression",
-        "predicate",
-        "scope_filter",
-        "left_expr",
-        "right_expr",
-        "numerator",
-        "denominator",
-        "base",
-        "converted",
-    ):
-        child = getattr(expr, attr, None)
-        if child is None:
-            continue
+    for field in fields(expr):
+        child = getattr(expr, field.name)
         if isinstance(child, (list, tuple)):
             for item in child:
                 _collect_column_refs(item, out=out)
@@ -1187,8 +1160,13 @@ def _run_test(runtime: Runtime, test_id: str, spec: dict[str, Any]) -> dict[str,
     if kind == "query_matches_snapshot":
         result = runtime.query(query)
         expected_rows = list(spec.get("expected_rows", []) or [])
-        actual_rows = _normalize_rows(result["rows"])
-        ok = actual_rows == _normalize_rows(expected_rows)
+        compiled = runtime._compile(query, policy_context={})
+        columns = output_columns(runtime._config, compiled)
+        encoded_expected = result_rows(
+            expected_rows, output_columns=columns, zone=_time_zone(runtime._config, compiled)
+        )
+        actual_rows = _typed_rows(result)
+        ok = actual_rows == _typed_rows(encoded_expected)
         return _test_result(
             test_id,
             ok,
@@ -1199,8 +1177,8 @@ def _run_test(runtime: Runtime, test_id: str, spec: dict[str, Any]) -> dict[str,
     if kind == "metric_equals_query":
         metric_query = dict(spec.get("metric_query", query) or {})
         expected_query = dict(spec.get("expected_query", {}) or {})
-        metric_rows = _normalize_rows(runtime.query(metric_query)["rows"])
-        expected_rows = _normalize_rows(runtime.query(expected_query)["rows"])
+        metric_rows = _typed_rows(runtime.query(metric_query))
+        expected_rows = _typed_rows(runtime.query(expected_query))
         ok = metric_rows == expected_rows
         return _test_result(
             test_id,
@@ -1545,6 +1523,20 @@ def _package_file_parts(name: str, prefix: str) -> tuple[str, ...] | None:
     if not inside or any("\\" in part or ":" in part for part in inside):
         return None
     return inside
+
+
+def _typed_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Compare numbers by value while keeping encoded decimal strings distinct from text."""
+    return _normalize_rows(
+        {
+            key: _canonical_number(Decimal(str(value)))
+            if value is not None
+            and result["column_types"].get(key, {}).get("type") in {"decimal", "float", "integer"}
+            else value
+            for key, value in row.items()
+        }
+        for row in result["rows"]
+    )
 
 
 def _normalize_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:

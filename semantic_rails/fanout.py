@@ -148,10 +148,23 @@ def choose_path(
                 for path in ranked
                 if (len(path), sum(rel_index[r].path_preference for r in path)) == first_score
             ]
+            routes = "; ".join(" -> ".join(path) for path in tied)
             raise SemanticLayerError(
                 "AMBIGUOUS_PATH",
-                f"Ambiguous path from '{start}' to '{target}'",
-                details={"start": start, "target": target, "candidates": tied},
+                f"Ambiguous path from '{start}' to '{target}': {routes}",
+                details={
+                    "start": start,
+                    "target": target,
+                    "candidates": tied,
+                    "hint": (
+                        "These routes can give different answers. "
+                        "Pin the one the question means: give the intended relationship a lower "
+                        "path_preference (it applies to every query), or add "
+                        "graph.path_preferences with source_entity, target_entity and "
+                        "relationship_path set to one of the routes (it applies only to "
+                        "queries from that source entity to that target entity)."
+                    ),
+                },
             )
     analysis.path_cache[cache_key] = (tuple(ranked[0]), tuple(tuple(path) for path in ranked))
     return list(ranked[0]), [list(path) for path in ranked]
@@ -276,3 +289,54 @@ def analyze_fanout(
         "status": "rewrite_required" if rewrite_required else "ok",
         "requires_rewrite_relationships": rewrite_required,
     }
+
+
+def one_to_many_descent(analysis: dict[str, Any], entity_keys: dict[str, list[str]]) -> bool:
+    """True when a rewrite-required path only goes down one-to-many hops, then looks up.
+
+    Every hop that needs a rewrite must be a plain one-to-many (the reverse of N:1, or a
+    forward 1:N) with no temporal validity, whose one side joins on exactly its declared key
+    (``entity_keys``), and it must come before any many-to-one lookup. Then each row of the
+    start entity has its own set of target rows, so a query can keep one row per (start key,
+    output grain) and count every start row once per group. A lookup followed by a fan-out
+    (orders -> customer -> sessions), an M:N hop or a join off the key relates the two
+    entities many-to-many, and stays refused.
+    """
+    descended = looked_up = False
+    for row in analysis.get("relationships", []) or []:
+        cardinality = str(row.get("cardinality", "")).upper().replace(" ", "")
+        forward = row.get("traversal") == "forward"
+        status = row.get("directional_safety")
+        if status == "requires_rewrite":
+            side = "source" if forward else "target"
+            one = str(row.get(f"{side}_entity", ""))
+            columns = list(row.get(f"{side}_columns") or [row.get(f"{side}_column")])
+            if (
+                cardinality != ("1:N" if forward else "N:1")
+                or looked_up
+                or row.get("temporal_validity")
+                or sorted(columns) != sorted(entity_keys.get(one, []))
+            ):
+                return False
+            descended = True
+        elif status != "safe":
+            return False
+        elif cardinality != "1:1":
+            looked_up = True
+    return descended
+
+
+def filter_only_semijoin(analysis: dict[str, Any]) -> bool:
+    """A declared non-temporal path can filter rows with EXISTS without expanding them.
+
+    Unlike grouped de-duplication, this does not need a descent before every lookup or a
+    join on the parent's primary key: the correlation uses the authored join columns.
+    Undeclared cardinalities, unsafe hops and temporal paths still need other semantics.
+    """
+    rows = analysis.get("relationships", []) or []
+    return bool(rows) and all(
+        str(row.get("cardinality", "")).upper().replace(" ", "") in {"1:1", "N:1", "1:N"}
+        and row.get("directional_safety") in {"safe", "requires_rewrite"}
+        and not row.get("temporal_validity")
+        for row in rows
+    )

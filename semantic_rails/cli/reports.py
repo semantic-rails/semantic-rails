@@ -231,6 +231,7 @@ def ask_report(
             out["result"] = {
                 "ok": bool(result.get("ok", True)),
                 "rows": rows,
+                "column_types": result.get("column_types", {}),
                 "row_count": result.get("row_count", len(rows)),
                 "row_limit": row_limit,
                 "planned_limit": planned_limit,
@@ -444,6 +445,7 @@ def _compact_plan(plan: dict[str, Any]) -> dict[str, Any]:
         "resolved": resolved,
         "rationale": list(best.get("rationale", []) or []),
         "warnings": list(plan.get("warnings", []) or []),
+        "assumptions": list(plan.get("assumptions", []) or []),
     }
 
 

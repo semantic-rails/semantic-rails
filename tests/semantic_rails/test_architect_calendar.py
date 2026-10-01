@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -100,7 +100,9 @@ def _monthly_orders(workspace: Path) -> tuple[list[tuple[Any, Any]], str]:
         )
     finally:
         engine.close()
-    return [(row[month], row["orders"]) for row in result["rows"]], str(result["rendered_sql"])
+    return [
+        (datetime.fromisoformat(row[month]).date(), row["orders"]) for row in result["rows"]
+    ], str(result["rendered_sql"])
 
 
 def test_mcp_session_adds_the_package_calendar(workspace: Path) -> None:
@@ -143,14 +145,15 @@ def test_mcp_session_adds_the_package_calendar(workspace: Path) -> None:
     assert _model(workspace, "calendar")["calendar_id"] == "default"
     rows, sql = _monthly_orders(workspace)
     assert "main_marts.dim_date" in sql and "implicit_calendar" not in sql
+    # Orders are loaded from January to March 2024: the months either side have no data.
     assert rows == [
-        (date(2023, 12, 1), 0),
+        (date(2023, 12, 1), None),
         (date(2024, 1, 1), 2),
         (date(2024, 2, 1), 3),
         (date(2024, 3, 1), 3),
-        (date(2024, 4, 1), 0),
+        (date(2024, 4, 1), None),
     ]
-    assert [(month.date(), orders) for month, orders in implicit_rows] == rows
+    assert implicit_rows == rows
 
 
 def test_date_dimensions_on_a_regular_entity_are_rolled_back(workspace: Path) -> None:
@@ -231,7 +234,7 @@ def test_a_second_calendar_buckets_by_its_own_months(workspace: Path) -> None:
     finally:
         engine.close()
 
-    assert [(row[month], row["orders"]) for row in rows] == [
+    assert [(datetime.fromisoformat(row[month]).date(), row["orders"]) for row in rows] == [
         (date(2024, 1, 6), 4),
         (date(2024, 2, 6), 2),
         (date(2024, 3, 6), 2),

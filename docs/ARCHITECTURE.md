@@ -212,6 +212,8 @@ Aggregate relation rules:
   don't route
 - all selected measures, grouped dimensions, and filtered dimensions must be
   covered by the relation
+- on DuckDB and Postgres, filled, dense-series and combined plans read base relations
+  to preserve time coverage; candidates report `base_time_coverage_required`
 - unsupported rollups fall back to the raw model relation rather than compiling
   an unsafe shortcut
 
@@ -295,6 +297,11 @@ Core query rules:
   `INCOMPATIBLE_TEMPORAL_ROLE` unless its aggregate's `temporal_role` or
   `temporal_role_overrides` names one (a declared `default_temporal_role` doesn't; conversion
   operands keep their own clock rules)
+- a measure with no clock at all (no `times:` of its own and no model `default` time) can't be
+  bucketed: any query with `time` that binds it fails with `INCOMPATIBLE_TEMPORAL_ROLE`
+  (`details.compatible: []`, hint `declare_measure_time_role`); it still answers without `time`
+  or grouped by a plain date dimension; an `aggregate_if` has no clock, so `time` refuses it
+  with its own message and no hint (declare a measure with `times:` and aggregate that)
 
 ## Expression Surface
 
@@ -397,6 +404,16 @@ Important planner behaviors:
   leaves; routed leaves expose `aggregate_relation_id` and physical/performance
   plan metadata
 - historical joins use temporal-validity conditions anchored to the effective time axis
+- a dimension the query groups or filters by, looked up through a many-to-one or one-to-one
+  hop from the request's own measure leaf, is a left join, so a row with a NULL or unmatched
+  foreign key keeps its measure value under NULL. Every other read of a lookup stays an inner
+  join: a time role, a measure or metric filter and its context entities, conversions, qualified
+  sets and metric predicates (including the queries nested in them), anchored entity-set
+  ratios, a dimension any rollup of the measure's model holds (even at a grain that rollup can
+  never answer), hops that fan out, and every hop
+  on a dialect without `outer_lookup_joins` (ClickHouse, whose unmatched outer-join columns
+  read a type default, not NULL). `_lookup_selections` (`compiler_parts/sql_lowering.py`) is the
+  one place that decides which path selections are left joins
 - dense fill uses the declared calendar entity for the requested calendar id, or the implicit
   Gregorian calendar for a default request in a package that declares no default calendar
 - `metric_predicate` compiles as a scoped predicate subplan rather than a projected boolean expression
@@ -441,8 +458,13 @@ A statement may carry typed parameter slots that the runtime binds per request
 from trusted attributes; only adapters that bind values separately execute it
 (see [ADDING_A_DIALECT.md](ADDING_A_DIALECT.md)). Row-filter policies produce
 them: after lowering, `semantic_rails.row_filters` adds `<column> = ?` to the one
-scan of a filtered relation, and denies any statement that reads another
-relation, reads it twice or reads a rollup (routing is off under a row filter).
+ordinary scan and every engine-tagged observation or coverage scan of a filtered relation.
+It denies other repeated reads, joins, other relations and rollups (routing is off under
+a row filter). Empty-group settlement lives in `compiler_parts/empty_groups.py`: untimed
+observation determines whether zero is defined, and base time coverage bounds only zero
+substitution on filled, dense or combined leaves. One predicate decides both coverage and
+rollup refusal, on DuckDB and Postgres only. Populated values pass through; routed
+queries keep the window test and never scan a shadow raw leaf.
 Segment preview and count execute their prepared statements independently; the
 preview response includes both statements. Live valid-values uses the ordinary
 query path and includes the loaded semantic identity in its provenance.

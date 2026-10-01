@@ -194,6 +194,21 @@ def _prejoined_dimensions(row: AggregateRelationConfig, config: PackageConfig) -
     return prejoined
 
 
+def rollup_dimension_entities(config: PackageConfig, source_entity: str) -> set[str]:
+    """The models whose dimensions a rollup of ``source_entity`` holds, pre-joined or not.
+
+    Read from the config, not the binding index: this is a routing fact, not an object read.
+    """
+    entity_of = {dim.id: dim.entity for dim in config.dimensions}
+    return {
+        entity_of[dim_id]
+        for row in config.aggregate_relations
+        if row.source_entity == source_entity
+        for dim_id in _aggregate_dimension_coverage(row)
+        if dim_id in entity_of
+    }
+
+
 def _aggregate_relation_rejection_reason(
     row: AggregateRelationConfig, leaf: _Leaf, config: PackageConfig
 ) -> str:
@@ -313,6 +328,8 @@ def _select_aggregate_relation(
         return "", {}
     leaf_time_role = _leaf_time_role(bound, query, config)
     blocker = _leaf_rollup_blocker(bound, query, config, leaf_time_role)
+    if not blocker and any(item.analysis.get("status") != "ok" for item in path_selections):
+        blocker = "one_to_many_hop"  # the leaf rewrites the hop; a rollup would re-multiply it
     if blocker:
         return "", {row.id: blocker for row in rows}
     filters = [

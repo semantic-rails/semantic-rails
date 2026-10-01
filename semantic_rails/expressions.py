@@ -11,8 +11,9 @@ these nodes; the compiler consumes them.
 from __future__ import annotations
 
 import ast as pyast
+import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
@@ -21,11 +22,110 @@ from .errors import SemanticLayerError
 if TYPE_CHECKING:
     from .schema import MeasureConfig, PackageConfig
 
-# Row generators only the engine emits (the implicit calendar's day series, in
-# dialects.SqlDialect.day_series). A query or package `call` may not name them.
-ENGINE_ONLY_FUNCTIONS = frozenset(
-    {"ARRAY_GENERATE_RANGE", "EXPLODE", "GENERATE_DATE_ARRAY", "SEQUENCE"}
-)
+
+CALL_CAST_FORMS = ("DOUBLE", "DECIMAL(p,s)", "INTEGER", "BIGINT", "VARCHAR")
+
+
+def call_cast_type(value: Any, warehouse: str = "duckdb") -> str:
+    """Validate the authored logical type before it can become a SQL token."""
+    if isinstance(value, str):
+        normalized = value.strip().upper()
+        normalized = re.sub(r"\s*([(),])\s*", r"\1", normalized)
+        if normalized in {"DOUBLE", "INTEGER", "BIGINT", "VARCHAR"}:
+            return normalized
+        match = re.fullmatch(r"DECIMAL\(([0-9]+),([0-9]+)\)", normalized)
+        if match:
+            # Strip zero padding and bound tokens before Python's integer conversion.
+            precision, scale = (token.lstrip("0") or "0" for token in match.groups())
+            if (
+                len(precision) <= 2
+                and len(scale) <= 2
+                and 0 <= int(scale) <= int(precision) <= 38
+                and int(precision) > 0
+            ):
+                if warehouse == "bigquery":
+                    raise SemanticLayerError(
+                        "INVALID_EXPRESSION_AST",
+                        "BigQuery CAST cannot enforce DECIMAL precision and scale; "
+                        "use DOUBLE or a warehouse column with a parameterized decimal type.",
+                        details={"warehouse": warehouse, "target_type": normalized},
+                    )
+                return f"DECIMAL({int(precision)},{int(scale)})"
+    raise SemanticLayerError(
+        "INVALID_EXPRESSION_AST",
+        "CAST requires two args, with a string literal type: " + ", ".join(CALL_CAST_FORMS),
+        details={"accepted_types": list(CALL_CAST_FORMS)},
+    )
+
+
+def accepted_call_names(warehouse: str = "duckdb") -> frozenset[str]:
+    """Scalar spellings valid as plain calls, independently of engine SQL tokens."""
+    common = frozenset(
+        {
+            "ABS",
+            "CAST",
+            "CEIL",
+            "CEILING",
+            "COALESCE",
+            "CONCAT",
+            "EXP",
+            "FLOOR",
+            "LENGTH",
+            "LN",
+            "LOG",
+            "LOWER",
+            "NULLIF",
+            "POWER",
+            "REPLACE",
+            "ROUND",
+            "SQRT",
+            "SUBSTR",
+            "SUBSTRING",
+            "TRIM",
+            "UPPER",
+        }
+    )
+    extras = {
+        "duckdb": {
+            "DATE_PART",
+            "DATE_TRUNC",
+            "LEFT",
+            "RIGHT",
+            "JSON_EXTRACT",
+            "JSON_EXTRACT_STRING",
+            "SPLIT",
+            "STRING_SPLIT",
+            "STR_SPLIT",
+        },
+        "postgres": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT"},
+        "snowflake": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"},
+        "bigquery": {"LEFT", "RIGHT", "JSON_EXTRACT", "SPLIT"},
+        "databricks": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"},
+        "athena": {"DATE_TRUNC", "JSON_EXTRACT", "SPLIT"},
+        "clickhouse": set(),
+    }
+    warehouse = {"motherduck": "duckdb", "ducklake": "duckdb"}.get(warehouse, warehouse)
+    if warehouse == "clickhouse":
+        return common - {"TRIM"}
+    return common | frozenset(extras[warehouse]) if warehouse in extras else frozenset()
+
+
+def validate_call_name(name: str, warehouse: str = "duckdb") -> str:
+    normalized = name.strip().upper()
+    allowed = accepted_call_names(warehouse)
+    if normalized not in allowed:
+        raise SemanticLayerError(
+            "INVALID_EXPRESSION_AST",
+            f"Unsupported scalar call: {name!r}"
+            + ("; use CAST with " + ", ".join(CALL_CAST_FORMS) if normalized == "TRY_CAST" else ""),
+            details={
+                "function": name,
+                "token_kind": "function",
+                "token": name,
+                "allowed": sorted(allowed),
+            },
+        )
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -68,7 +168,6 @@ class ArithmeticExpr:
     op: str
     left: SemanticExpr
     right: SemanticExpr
-    null_behavior: str = ""
 
 
 @dataclass(frozen=True)
@@ -84,17 +183,17 @@ class BooleanExpr:
     args: list[SemanticExpr] = field(default_factory=list)
 
 
+def validate_boolean_argument_count(op: str, count: int) -> None:
+    """AND/OR must have at least two operands, before parsing or lowering children."""
+    if op.strip().lower() in {"and", "or"} and count < 2:
+        raise SemanticLayerError("INVALID_EXPRESSION_AST", "and/or need at least two arguments")
+
+
 @dataclass(frozen=True)
 class CallExpr:
     name: str
     args: list[SemanticExpr] = field(default_factory=list)
     distinct: bool = False
-
-    def __post_init__(self) -> None:
-        if " ".join(self.name.split()).upper() in ENGINE_ONLY_FUNCTIONS:
-            raise SemanticLayerError(
-                "INVALID_EXPRESSION_AST", f"Unsafe SQL function token: {self.name!r}"
-            )
 
 
 @dataclass(frozen=True)
@@ -211,7 +310,6 @@ class ScopedAggregateExpr:
     parameters: dict[str, Any] = field(default_factory=dict)
     where: list[dict[str, Any]] = field(default_factory=list)
     predicates: list[dict[str, Any]] = field(default_factory=list)
-    null_behavior: str = ""
     # Per-row event-anchored window (round-three Phase 2). When set,
     # the lowering path materialises an anchor CTE and constrains the
     # measure source to events within the per-entity window.
@@ -228,7 +326,6 @@ class ScopedAggregateExpr:
 class RatioExpr:
     numerator: SemanticExpr
     denominator: SemanticExpr
-    null_behavior: str = "null_if_zero"
 
 
 @dataclass(frozen=True)
@@ -381,6 +478,47 @@ def validate_expression_shapes(value: Any) -> None:
             validate_expression_shapes(child)
 
 
+def validate_expression_calls(value: Any, config: PackageConfig) -> None:
+    """Validate call names and CAST shapes; argument types belong to the warehouse.
+
+    Literal data, metadata and parameters remain opaque.
+    """
+    if isinstance(value, LiteralExpr):
+        return
+    if isinstance(value, CallExpr):
+        name = validate_call_name(value.name, config.package.warehouse)
+        if value.distinct:
+            raise SemanticLayerError(
+                "INVALID_EXPRESSION_AST", "Scalar calls do not support distinct"
+            )
+        if name == "CAST":
+            call_cast_type(
+                value.args[1].value
+                if len(value.args) == 2 and isinstance(value.args[1], LiteralExpr)
+                else None,
+                config.package.warehouse,
+            )
+    if is_dataclass(value) and not isinstance(value, type):
+        for item in fields(value):
+            if item.name not in {"meta", "parameters"}:
+                validate_expression_calls(getattr(value, item.name), config)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            validate_expression_calls(child, config)
+
+
+def is_constant_expression(expr: SemanticExpr | None) -> bool:
+    if isinstance(expr, LiteralExpr):
+        return True
+    if isinstance(expr, ArithmeticExpr):
+        return is_constant_expression(expr.left) and is_constant_expression(expr.right)
+    return (
+        isinstance(expr, CallExpr)
+        and expr.name.upper() == "CAST"
+        and all(is_constant_expression(arg) for arg in expr.args)
+    )
+
+
 def collect_object_references(
     value: Any, config: PackageConfig | None = None, *, owner: str = ""
 ) -> list[str]:
@@ -470,15 +608,12 @@ def expr_to_dict(expr: SemanticExpr) -> dict[str, Any]:
     if isinstance(expr, LiteralExpr):
         return {"kind": "literal", "value": expr.value}
     if isinstance(expr, ArithmeticExpr):
-        out = {
+        return {
             "kind": "arithmetic",
             "op": expr.op,
             "left": expr_to_dict(expr.left),
             "right": expr_to_dict(expr.right),
         }
-        if expr.null_behavior:
-            out["null_behavior"] = expr.null_behavior
-        return out
     if isinstance(expr, ComparisonExpr):
         return {
             "kind": "comparison",
@@ -620,8 +755,6 @@ def expr_to_dict(expr: SemanticExpr) -> dict[str, Any]:
             out["where"] = [dict(item) for item in expr.where]
         if expr.predicates:
             out["predicates"] = [dict(item) for item in expr.predicates]
-        if expr.null_behavior:
-            out["null_behavior"] = expr.null_behavior
         if expr.anchor:
             out["anchor"] = dict(expr.anchor)
         if expr.window:
@@ -632,7 +765,6 @@ def expr_to_dict(expr: SemanticExpr) -> dict[str, Any]:
             "kind": "ratio",
             "numerator": expr_to_dict(expr.numerator),
             "denominator": expr_to_dict(expr.denominator),
-            "null_behavior": expr.null_behavior,
         }
     if isinstance(expr, EntityValueExpr):
         return {
@@ -781,8 +913,8 @@ _VALID_KEYS_BY_KIND: dict[str, set] = {
     "metric": _COMMON_KEYS | {"metric"},
     "column": _COMMON_KEYS | {"column", "entity", "table"},
     "literal": _COMMON_KEYS | {"value"},
-    "arithmetic": _COMMON_KEYS | {"op", "left", "right", "null_behavior"},
-    "binary": _COMMON_KEYS | {"op", "left", "right", "null_behavior"},
+    "arithmetic": _COMMON_KEYS | {"op", "left", "right"},
+    "binary": _COMMON_KEYS | {"op", "left", "right"},
     "comparison": _COMMON_KEYS | {"op", "left", "right"},
     "boolean": _COMMON_KEYS | {"op", "args"},
     "call": _COMMON_KEYS | {"name", "args", "distinct"},
@@ -816,13 +948,12 @@ _VALID_KEYS_BY_KIND: dict[str, set] = {
         "parameters",
         "where",
         "predicates",
-        "null_behavior",
         # Round 3: per-row event-anchored window keys. SQL lowering
         # is staged; parser + validator land here.
         "anchor",
         "window",
     },
-    "ratio": _COMMON_KEYS | {"numerator", "denominator", "null_behavior"},
+    "ratio": _COMMON_KEYS | {"numerator", "denominator"},
     "entity_value": _COMMON_KEYS | {"entity", "input", "where"},
     "distribution": _COMMON_KEYS | {"function", "over", "p", "parameters"},
     "conversion": _COMMON_KEYS
@@ -961,6 +1092,13 @@ def _aggregate_filter(raw: Any) -> dict[str, Any]:
     )
 
 
+NULL_BEHAVIOR_REMOVED = (
+    "`null_behavior` was removed; delete the line. Empty groups now follow "
+    "https://github.com/semantic-rails/semantic-rails/blob/main/docs/QUERY_IR_SCHEMA.md"
+    "#empty-groups-null-or-0"
+)
+
+
 def _reject_unknown_expression_keys(expr: dict[str, Any], *, kind: str, context: str) -> None:
     """Raise ``INVALID_EXPRESSION_KEY`` when an expression dict carries a
     top-level key that the kind's dispatch arm does not recognise. This
@@ -974,6 +1112,12 @@ def _reject_unknown_expression_keys(expr: dict[str, Any], *, kind: str, context:
     unknown = sorted(set(expr.keys()) - valid)
     if not unknown:
         return
+    if "null_behavior" in unknown:
+        raise SemanticLayerError(
+            "INVALID_EXPRESSION_KEY",
+            f"{context} expression with kind={kind!r}: {NULL_BEHAVIOR_REMOVED}",
+            details={"expression_kind": kind, "expression_position": context},
+        )
     # Pick the first unknown key for closest_matches — agents typically
     # mistype one field per retry, and listing every match for every
     # unknown key bloats the envelope.
@@ -1159,7 +1303,15 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
                     ],
                 },
             )
-        raise SemanticLayerError("INVALID_EXPRESSION_AST", "Expression requires a 'kind'")
+        raise SemanticLayerError(
+            "INVALID_EXPRESSION_AST",
+            (
+                "Expression requires a 'kind'. Send "
+                '{"kind": "measure", "measure": "<measure id>", "aggregation": "sum"} or '
+                '{"kind": "metric", "metric": "<metric id>"}.'
+            ),
+            details={"expression_position": context, "received_keys": sorted(expr)},
+        )
 
     if kind == "column":
         column = str(expr.get("column", "")).strip()
@@ -1179,7 +1331,6 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
             op=_normalize_arithmetic_op(expr.get("op", "")),
             left=parse_semantic_expression(expr.get("left"), context=context),
             right=parse_semantic_expression(expr.get("right"), context=context),
-            null_behavior=str(expr.get("null_behavior", "")).strip(),
         )
     if kind == "comparison":
         return ComparisonExpr(
@@ -1213,10 +1364,9 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
                     ],
                 },
             )
-        args = [
-            parse_semantic_expression(arg, context=context)
-            for arg in list(expr.get("args", []) or [])
-        ]
+        raw_args = list(expr.get("args", []) or [])
+        validate_boolean_argument_count(op, len(raw_args))
+        args = [parse_semantic_expression(arg, context=context) for arg in raw_args]
         if not args:
             raise SemanticLayerError("INVALID_EXPRESSION_AST", "Boolean expressions require args")
         if op == "not" and len(args) != 1:
@@ -1381,7 +1531,10 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
             )
         window = dict(raw_window)
         unit = str(window.get("unit", "")).strip()
-        window_value = int(window.get("value", 0) or 0)
+        try:
+            window_value = int(window.get("value", 0) or 0)
+        except (TypeError, ValueError):
+            window_value = 0
         if not unit or window_value <= 0:
             raise SemanticLayerError(
                 "INVALID_EXPRESSION_AST",
@@ -1625,6 +1778,20 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
                 "INVALID_METRIC_PREDICATE",
                 "metric_predicate time_alignment is only supported for entity_only bounded-window predicates",
             )
+        if expr.get("value") is None:
+            # The input is 0 for an entity with no rows and NULL for one with no data, so a
+            # null threshold would keep the wrong entities.
+            hint = (
+                "A count of none is op '=' with value 0; a null test belongs inside the "
+                "input, as an aggregate_if condition."
+            )
+            raise SemanticLayerError(
+                "INVALID_METRIC_PREDICATE",
+                f"metric_predicate 'value' cannot be null. {hint}",
+                details={
+                    "recovery_hints": [{"code": "USE_ZERO_OR_INPUT_NULL_TEST", "message": hint}]
+                },
+            )
         # ``value`` accepts either a literal or an expression-shaped
         # dict for inline thresholds. The only expression kind supported
         # today is ``percentile`` — wider support waits until the
@@ -1708,6 +1875,20 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
         # rejecting at parse-time avoids a confusing downstream error.
         raw_anchor = expr.get("anchor")
         raw_window = expr.get("window")
+        for part_name, raw_part in (("anchor", raw_anchor), ("window", raw_window)):
+            # A present part that is not an object (`anchor: role_id`, `window: 90`,
+            # `{}`) would leave the metric unwindowed and answer a lifetime value.
+            if raw_part is not None and not (isinstance(raw_part, dict) and raw_part):
+                raise SemanticLayerError(
+                    "INVALID_EXPRESSION_AST",
+                    f"scoped_aggregate.{part_name} must be a non-empty object",
+                    details={
+                        "expression_kind": "scoped_aggregate",
+                        "expression_position": context,
+                        "invalid_key": part_name,
+                        "received_type": type(raw_part).__name__,
+                    },
+                )
         has_anchor = isinstance(raw_anchor, dict) and bool(raw_anchor)
         has_window = isinstance(raw_window, dict) and bool(raw_window)
         if has_anchor != has_window:
@@ -1795,7 +1976,6 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
             parameters=dict(expr.get("parameters", {}) or {}),
             where=[dict(item) for item in list(expr.get("where", []) or [])],
             predicates=[dict(item) for item in list(expr.get("predicates", []) or [])],
-            null_behavior=str(expr.get("null_behavior", "")).strip(),
             anchor=anchor_payload,
             window=window_payload,
         )
@@ -1807,7 +1987,6 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
         return RatioExpr(
             numerator=parse_semantic_expression(expr.get("numerator"), context=context),
             denominator=parse_semantic_expression(expr.get("denominator"), context=context),
-            null_behavior=str(expr.get("null_behavior", "null_if_zero") or "null_if_zero"),
         )
     if kind == "entity_value":
         entity = str(expr.get("entity", "")).strip()

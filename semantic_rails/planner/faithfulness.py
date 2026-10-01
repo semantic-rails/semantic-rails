@@ -16,15 +16,20 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
+from ..ast import _relative_range_bounds
+from ..errors import SemanticLayerError
 from ._base import (
+    _BOUNDARY_BEFORE_RE,
     _FISCAL_BUCKET_RE,
     _FISCAL_RE,
+    _MAX_TIME_TEXT,
     _MONTH_NUMBERS,
     _NUMBER_WORDS,
     _ORDINALS,
+    _QUANTITY_AFTER_RE,
     _TERM_SYNONYMS,
     _TIME_UNITS,
     _TO_DATE_OR_ROLLING_RE,
@@ -234,7 +239,13 @@ _NOT_RANKED = frozenset(
         "your",
     }
 )
-_SUBJECT_CONJUNCTION_RE = re.compile(r"\s+(?:and|plus)\s+|\s*,\s*", re.IGNORECASE)
+_SUBJECT_CONJUNCTION_RE = re.compile(
+    r"\s+(?:and|plus|as\s+well\s+as|along\s+with|together\s+with)\s+|\s*,\s*", re.IGNORECASE
+)
+# The preposition that opens a time clause, cut off with the clause.
+_TIME_LEAD_RE = re.compile(
+    r"\s+(?:in|for|during|from|between|on|over|of)(?:\s+the)?\s*$", re.IGNORECASE
+)
 _SUBJECT_BOUNDARY_RE = re.compile(
     r"\s+(?:by|where|during|over\s+time|for\s+(?:customers?|stores?|accounts?|users?)|"
     r"with\s+(?:at\s+least|more\s+than|over|under))\b",
@@ -487,10 +498,11 @@ def intent_faithfulness_why(
             )
 
     caller_time = (partial_query or {}).get("time")
-    if not (
-        isinstance(caller_time, dict)
-        and any(caller_time.get(key) for key in ("start", "end", "range"))
+    if isinstance(caller_time, dict) and any(
+        caller_time.get(key) for key in ("start", "end", "range")
     ):
+        gaps.extend(_caller_window_gaps(runtime, text, query))
+    else:
         gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
     gaps.extend(_subject_window_gaps(runtime._config, query))
@@ -579,20 +591,32 @@ def _time_block(query: dict[str, Any]) -> dict[str, Any]:
     return time if isinstance(time, dict) else {}
 
 
+def _is_prior_period_offset(
+    runtime: Any, query: dict[str, Any], windows: list[dict[str, Any]]
+) -> bool:
+    """Whether the question's one window is the offset of a prior-period comparison.
+
+    "alongside the previous month's revenue" names the comparison's offset, not a window, when
+    the draft carries one. Both window checks (the window plan reads, and the caller's) share it.
+    """
+
+    if len(windows) != 1:
+        return False
+    last = (windows[0].get("range") or {}).get("last") or {}
+    return (
+        set(windows[0]) == {"range"}
+        and last.get("value") == 1
+        and _query_contains_prior_period(runtime, query)
+    )
+
+
 def _time_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
     """The draft doesn't carry the window the question names, or carries another one."""
 
     expected = _time_bounds_from_text(text)
     if not expected:
         return []
-    last = (expected.get("range") or {}).get("last") or {}
-    # "alongside the previous month's revenue" names a prior-period
-    # comparison's offset, not a window, when the draft carries one.
-    if (
-        set(expected) == {"range"}
-        and last.get("value") == 1
-        and _query_contains_prior_period(runtime, query)
-    ):
+    if _is_prior_period_offset(runtime, query, [expected]):
         return []
     time = _time_block(query)
     carried = {key: time[key] for key in ("start", "end", "range") if time.get(key)}
@@ -794,7 +818,7 @@ def _fiscal_calendar_gaps(config: Any, text: str, query: dict[str, Any]) -> list
 
 
 def _ranking_request(text: str, nouns: frozenset[str] = frozenset()) -> dict[str, Any] | None:
-    """Parse a ranking request into (clause, limit, direction, noun, requires_order).
+    """Parse a ranking request into (clause, limit, direction, noun, requires_order, count_at).
 
     ``limit`` is None when the question fixes no count ("the top products"),
     and ``direction`` is None when it fixes no order ("rank stores by
@@ -805,15 +829,35 @@ def _ranking_request(text: str, nouns: frozenset[str] = frozenset()) -> dict[str
     highest revenue", revenue is what is measured, not what is ranked.
     """
 
-    lowered = " ".join(str(text or "").lower().split())
-    # "top-3 stores" is "top 3 stores".
-    lowered = re.sub(r"\b(top|bottom|best|worst)-(\d+)\b", r"\1 \2", lowered)
-    words = _WORD_RE.findall(lowered)
+    words = [word for word, _start, _end in _ranking_words(text)]
     for index in range(len(words)):
         request = _ranking_at(words, index, nouns)
         if request is not None:
             return request
     return None
+
+
+def _ranking_words(text: str) -> list[tuple[str, int, int]]:
+    """The words of a ranking question with their character spans in its lowercase form."""
+
+    # "top-3 stores" is "top 3 stores" (the same length, so spans still index the question).
+    lowered = re.sub(r"\b(top|bottom|best|worst)-(\d+)\b", r"\1 \2", str(text or "").lower())
+    return [(match.group(0), *match.span()) for match in _WORD_RE.finditer(lowered)]
+
+
+def _ranking_count_spans(text: str, limit: int, nouns: frozenset[str]) -> list[tuple[int, int]]:
+    """Where the question states ``limit`` as the count of a ranking ("top 5 stores", "the 5
+    customers who spent the most", "3 stores with the least revenue", "which 2 stores ...")."""
+
+    scanned = _ranking_words(text)
+    words = [word for word, _start, _end in scanned]
+    spans: list[tuple[int, int]] = []
+    for index in range(len(words)):
+        request = _ranking_at(words, index, nouns)
+        if request is not None and request["limit"] == limit and request["count_at"] is not None:
+            _word, start, end = scanned[request["count_at"]]
+            spans.append((start, end))
+    return spans
 
 
 def _ranking_at(words: list[str], index: int, nouns: frozenset[str]) -> dict[str, Any] | None:
@@ -850,7 +894,8 @@ def _ranking_at(words: list[str], index: int, nouns: frozenset[str]) -> dict[str
         if not noun:
             return None
         limit = count if count is not None else (1 if _singular(noun) == noun else None)
-        return _ranking(words, index, end, limit, direction, noun, False)
+        at = index + 1 if count is not None else None
+        return _ranking(words, index, end, limit, direction, noun, False, at)
     count = _count(words, index, years=False)
     if count is not None:
         # "the 3 lowest-selling products", "5 best-selling products",
@@ -870,7 +915,7 @@ def _ranking_at(words: list[str], index: int, nouns: frozenset[str]) -> dict[str
         if not noun or not direction or not qualified:
             return None
         start = index - 1 if before == "the" else index
-        return _ranking(words, start, end, count, direction, noun, False)
+        return _ranking(words, start, end, count, direction, noun, False, index)
     if word == "the" and index + 1 < len(words) and words[index + 1] not in _NOT_RANKED:
         # "the store with the most orders", "the product that sold the least"
         noun, end = _noun_phrase(words, index + 1)
@@ -884,6 +929,7 @@ def _ranking_at(words: list[str], index: int, nouns: frozenset[str]) -> dict[str
         # "which 2 stores ..."
         cursor = index + 1
         count = _count(words, cursor, years=False)
+        at = cursor if count is not None else None
         if count is not None:
             cursor += 1
         one = words[cursor : cursor + 1] == ["of"] and cursor + 1 < len(words)
@@ -894,14 +940,14 @@ def _ranking_at(words: list[str], index: int, nouns: frozenset[str]) -> dict[str
         if not noun or not direction:
             return None
         limit = count if count is not None else (1 if one or _singular(noun) == noun else None)
-        return _ranking(words, index, end, limit, direction, noun, False)
+        return _ranking(words, index, end, limit, direction, noun, False, at)
     superlative = _superlative(words, index)
     if superlative and _count(words, index + 1, years=True) is not None:
         # "best 3 stores by revenue", "highest 5 products"
         noun, end = _noun_phrase(words, index + 2)
         if noun:
             count = _count(words, index + 1, years=True)
-            return _ranking(words, index, end, count, superlative, noun, False)
+            return _ranking(words, index, end, count, superlative, noun, False, index + 1)
     if superlative:
         # "the best-selling product", "the highest revenue month", "the best store"
         noun, end = _noun_phrase(words, index + 1)
@@ -924,6 +970,7 @@ def _ranking(
     direction: str | None,
     noun: str,
     requires_order: bool,
+    count_at: int | None = None,
 ) -> dict[str, Any]:
     return {
         "clause": " ".join(words[start:end]),
@@ -931,6 +978,8 @@ def _ranking(
         "direction": direction,
         "noun": noun,
         "requires_order": requires_order,
+        # The index of the word that states the count, when the question states one.
+        "count_at": count_at,
     }
 
 
@@ -1759,6 +1808,9 @@ def _conjoined_subjects(runtime: Any, text: str) -> list[dict[str, Any]]:
     """
 
     target_text = _SUBJECT_BOUNDARY_RE.split(str(text or ""), maxsplit=1)[0]
+    # The time clause is no part of the last subject: "revenue and orders in Q1 2017".
+    for start, end in sorted(_time_window(target_text).spans, reverse=True):
+        target_text = _TIME_LEAD_RE.sub("", target_text[:start]) + target_text[end:]
     pieces = [
         piece.strip() for piece in _SUBJECT_CONJUNCTION_RE.split(target_text) if piece.strip()
     ]
@@ -1788,11 +1840,14 @@ def _conjoined_subjects(runtime: Any, text: str) -> list[dict[str, Any]]:
 def _matches_exact_subject_field(row: Any, piece_tokens: tuple[str, ...]) -> bool:
     object_id = str(getattr(row, "id", "") or "")
     id_suffix = object_id.rsplit(".", 1)[-1]
+    label = str(getattr(row, "label", "") or "")
     fields = (
         object_id,
         id_suffix,
         str(getattr(row, "name", "") or ""),
-        str(getattr(row, "label", "") or ""),
+        label,
+        # "item revenue" names "Item revenue (USD)".
+        re.sub(r"\s*\(.*?\)", "", label),
         *[str(value) for value in list(getattr(row, "aliases", []) or [])],
     )
     # Filler goes on both sides: "order count" names the "Order count" measure.
@@ -1883,6 +1938,17 @@ _FRAMING_WORDS = frozenset(
             "sells",
             "sold",
             "spent",
+            # Verbs and function words that restate the request ("orders dated in March",
+            # "customers who placed", "counted using").
+            "anchored",
+            "came",
+            "counted",
+            "dated",
+            "only",
+            "placed",
+            "such",
+            "using",
+            "while",
             # Comparison and combination words; the select list carries them.
             "across",
             "against",
@@ -1965,15 +2031,81 @@ _MAX_UNMATCHED_TERMS = 8
 _MAX_SCANNED_WORDS = 256
 
 
-def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
-    """Question words the draft accounts for nowhere, in question order.
+# Words that state a clock time or a zone. Like a numeral, one no part of the draft consumes
+# means the answer may differ from the question (see unconsumed_terms). "second" alone is an
+# ordinal ("second order"); a count of seconds is caught as a numeral. "min", "hr" and "am"
+# are left out: they only carry meaning beside a numeral, and the numeral is caught.
+_CLOCK_WORDS = frozenset(
+    {"seconds", "minute", "minutes", "hour", "hours", "hourly", "clock"}
+    | {"noon", "midnight", "midday", "morning", "afternoon", "evening", "overnight", "tonight"}
+    | {"utc", "gmt", "zulu", "tz", "timezone", "timezones"}
+)
+# Spelled-out numbers: "from nine to five", "at twelve", "half past two".
+_SPOKEN_NUMBERS: dict[str, float] = {
+    "one": 1.0,
+    "two": 2.0,
+    "three": 3.0,
+    "four": 4.0,
+    "five": 5.0,
+    "six": 6.0,
+    "seven": 7.0,
+    "eight": 8.0,
+    "nine": 9.0,
+    "ten": 10.0,
+    "eleven": 11.0,
+    "twelve": 12.0,
+    "thirteen": 13.0,
+    "fourteen": 14.0,
+    "fifteen": 15.0,
+    "sixteen": 16.0,
+    "seventeen": 17.0,
+    "eighteen": 18.0,
+    "nineteen": 19.0,
+    "twenty": 20.0,
+    "thirty": 30.0,
+    "forty": 40.0,
+    "fifty": 50.0,
+    "sixty": 60.0,
+    "seventy": 70.0,
+    "eighty": 80.0,
+    "ninety": 90.0,
+    "hundred": 100.0,
+    "half": 0.5,
+}
+# "quarter" is a period ("last quarter"); only "quarter past" and "quarter to" tell a time.
+_QUARTER_CLOCK_RE = re.compile(r"\bquarter\s+(?:past|to|after|till|until|before)\b")
+# The zone codes a question can carry; docs/MCP_INTERFACE.md lists them. Codes that are also
+# words ("cat", "eat", "west") never count by their lowercase spelling.
+_ZONE_CODES = frozenset(
+    {"est", "edt", "cst", "cdt", "mst", "mdt", "pst", "pdt", "akst", "akdt", "hst", "cet", "cest"}
+    | {"eet", "eest", "bst", "ist", "jst", "kst", "msk", "aest", "aedt", "acst", "acdt", "awst"}
+    | {"nzst", "nzdt", "sgt", "hkt", "wib", "sast", "pkt"}
+)
+# Short codes count only in capitals, in a question that isn't all capitals ("in ET",
+# "12:00 PT", "12:00 Z"; "Z" is Zulu). Words that are also zone codes ("west", "cat") never do.
+_CASED_ZONE_CODES = frozenset({"Z", "ET", "PT", "CT", "MT"})
+_ZONE_NAME_RE = re.compile(
+    r"\b(?:africa|america|antarctica|arctic|asia|atlantic|australia|europe|indian|pacific|etc)"
+    r"/[a-z_]+",
+    re.IGNORECASE,
+)
+_TERM_RE = re.compile(r"\d+(?:[.,]\d+)+(?![^\W_])|[^\W_]+")
+_YEAR_WORD_RE = re.compile(r"(?:19|20)\d{2}")
 
-    A word is accounted for when it frames the question, sits in a time phrase
-    the planner read, counts or orders ("five", "3rd"), or appears (allowing a
-    plural or one typo) in the text of an object the draft uses or in one of
-    its filter values. Words come back as the question spells them, at most
-    eight.
-    """
+
+def _number_key(value: float) -> str | None:
+    """A number as digits, or ``None`` for one too large to read (a caller's 10**400)."""
+
+    try:
+        number = float(value)
+        return str(int(number)) if number.is_integer() else repr(number)
+    except (OverflowError, ValueError):
+        return None
+
+
+def _unmatched_words(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
+    """Question words the draft accounts for nowhere (the warning; readiness is
+    ``unconsumed_terms``)."""
 
     from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
 
@@ -1999,32 +2131,475 @@ def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -
         by_initial.setdefault(known[:1], []).append(known)
     skipped = _INTENT_STOPWORDS | _FRAMING_WORDS | set(_NUMBER_WORDS) | set(_ORDINALS)
     text = str(question or "")
+    lowered = text.lower()
     time_spans = _time_window(text).spans
-    seen: set[str] = set()
+    tokens = [(match.group(0), *match.span()) for match in _TERM_RE.finditer(lowered)]
+    consumed = _consumed_spans(runtime, lowered, tokens, query)
+
+    def in_time(start: int, end: int) -> bool:
+        return any(start < span_end and span_start < end for span_start, span_end in time_spans)
+
+    scanned: set[str] = set()
+    reported: set[str] = set()
     out: list[str] = []
-    for match in re.finditer(r"[^\W_]+", text.lower()):
-        word = match.group(0)
-        if word in seen:
-            continue
-        seen.add(word)
-        if len(seen) > _MAX_SCANNED_WORDS or len(out) >= _MAX_UNMATCHED_TERMS:
+    for word, start, end in tokens:
+        scanned.add(word)
+        if len(scanned) > _MAX_SCANNED_WORDS:
             break
+        if word in reported:
+            continue
+        numeral = any(char.isdigit() for char in word)
+        plain = re.fullmatch(r"\d+(?:[.,]\d+)*", word) is not None
         token = _TERM_SYNONYMS.get(word, word)
-        start, end = match.span()
         if (
-            len(word) < 2
-            or word.isdigit()
+            (len(word) < 2 and not numeral)
+            # A number counts, so a construct of the draft must read it where the question
+            # states it: a "2 or more" the draft dropped is named.
+            or (plain and any(low <= start and end <= high for low, high in consumed))
             or _ORDINAL_RE.fullmatch(word)
             or word in skipped
             or token in skipped
             or token in vocabulary
             or _singular(token) in vocabulary
-            or any(start < span_end and span_start < end for span_start, span_end in time_spans)
-            or _one_typo_away(token, by_initial)
+            or in_time(start, end)
+            or (not numeral and _one_typo_away(token, by_initial))
         ):
             continue
+        reported.add(word)
         out.append(word)
+    for zone_name in _ZONE_NAME_RE.finditer(text):
+        # "Europe/Berlin" reads as two plain words, so it is named whole.
+        name = zone_name.group(0).lower()
+        if name not in reported and not in_time(*zone_name.span()):
+            reported.add(name)
+            out.append(name)
     return out
+
+
+def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
+    """Question words the draft accounts for nowhere, in question order.
+
+    A word is accounted for when it frames the question, sits in a time phrase
+    the planner read, counts or orders ("five", "3rd"), or appears (allowing a
+    plural or one typo) in the text of an object the draft uses or in one of
+    its filter values. Words come back as the question spells them, at most
+    eight.
+    """
+
+    return _unmatched_words(runtime, question, query)[:_MAX_UNMATCHED_TERMS]
+
+
+def unconsumed_terms(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
+    """The numerals, number words and clock or zone words no part of the draft consumes.
+
+    The invariant plan holds a draft to before it calls it ready: every number ("9", "14h30",
+    "nine"), clock word ("hour", "noon", "o'clock") and zone ("UTC", "EST", "Z",
+    "Europe/Berlin") in the question sits inside the character span of a construct the draft
+    carries: a date or window, the limit, threshold or percentile it states, a filter value, or
+    the name of an object it selects. Consumption is by span, never by value alone: a "1930"
+    that no window phrase or threshold's own number holds is left over, and so is any number
+    no construct reads. One left over is an hour, a range or a threshold the draft silently
+    dropped.
+    """
+
+    text = str(question or "")
+    lowered = text.lower()
+    tokens = [(match.group(0), *match.span()) for match in _TERM_RE.finditer(lowered)]
+    terms = _time_and_number_terms(text, lowered, tokens)
+    # "Europe/Berlin" reads as two plain words, so it is one term, named whole.
+    terms.extend((zone.group(0), *zone.span()) for zone in _ZONE_NAME_RE.finditer(lowered))
+    if not terms:
+        return []
+    consumed = _consumed_spans(runtime, lowered, tokens, query)
+    out: list[str] = []
+    for word, start, end in sorted(terms, key=lambda term: term[1]):
+        inside = any(low <= start and end <= high for low, high in consumed)
+        if not inside and word not in out:
+            out.append(word)
+    return out
+
+
+def _time_and_number_terms(
+    text: str, lowered: str, tokens: list[tuple[str, int, int]]
+) -> list[tuple[str, int, int]]:
+    """Every numeral, number word, clock word and zone code of the question, with its span."""
+
+    # Short codes are read in the question's own case; the lengths must agree to slice by span.
+    cased = len(lowered) == len(text)
+    mixed = not cased or text != text.upper()
+    quarters = {match.start() for match in _QUARTER_CLOCK_RE.finditer(lowered)}
+    out: list[tuple[str, int, int]] = []
+    for word, start, end in tokens:
+        original = text[start:end] if cased else word.upper()
+        if (
+            any(char.isdigit() for char in word)
+            or word in _SPOKEN_NUMBERS
+            or word in _CLOCK_WORDS
+            or word in _ZONE_CODES
+            or start in quarters
+            or (mixed and original in _CASED_ZONE_CODES)
+        ):
+            out.append((word, start, end))
+    return out
+
+
+def _consumed_spans(
+    runtime: Any, lowered: str, tokens: list[tuple[str, int, int]], query: dict[str, Any]
+) -> list[tuple[int, int]]:
+    """The character spans of the question the draft's constructs consume.
+
+    A window consumes the date phrases the planner resolved when the draft carries one (a
+    start, an end or a range) that agrees with them (``_window_agrees``), and the phrases it could
+    not resolve; never a clock time or a bare year. A limit
+    consumes the count of the ranking that states it ("top 5", "the 5 customers who spent the
+    most"); a threshold, percentile or numeric filter value consumes its own number token, found
+    where the question states it ("over 12.50", "90th percentile", "1,000 or more", "size 12").
+    A filter value, or the name of an object the draft selects, consumes the tokens that spell it.
+    """
+
+    spans: list[tuple[int, int]] = []
+    time = _time_block(query)
+    if any(time.get(key) for key in ("start", "end", "range")):
+        spans.extend(_window_spans(lowered, time))
+    normal = [_singular(_TERM_SYNONYMS.get(word, word)) for word, _start, _end in tokens]
+    referenced = set(_referenced_ids(query))
+    calendar_id = str(time.get("calendar_id") or "default")
+    rows = _catalog_rows(runtime._config)
+    for row in rows:
+        if str(getattr(row, "id", "")) in referenced or (
+            calendar_id != "default" and getattr(row, "calendar_id", "") == calendar_id
+        ):
+            # An object's own names only: a description that says "per hour" consumes nothing.
+            names = [str(getattr(row, attr, "") or "") for attr in ("id", "name", "label")]
+            names.extend(str(alias) for alias in getattr(row, "aliases", None) or [])
+            spans.extend(_name_spans(tokens, normal, names, whole=False))
+    labels = _value_phrases(runtime._config)
+    fields = {str(getattr(row, "id", "")): row for row in rows}
+    for node in _dict_nodes(query):
+        if "field" not in node or "value" not in node:
+            continue
+        value = node.get("value")
+        items = value if isinstance(value, list) else [value]
+        names = [str(item) for item in items if not _is_number(item)]
+        for item in list(names):
+            # A filter on 'jaffle' consumes the question's "food".
+            for _domain, row in labels.get(_plain(item), []):
+                names.extend(_value_names(row))
+        spans.extend(_name_spans(tokens, normal, names, whole=True))
+        row = fields.get(str(node["field"]))
+        if row is not None:
+            # A number filter consumes the number token beside its field's name ("size 12").
+            field_words = {
+                word
+                for attr in ("id", "name", "label")
+                for word in _normal_tokens(str(getattr(row, attr, "") or ""))
+            }
+            spans.extend(
+                _number_spans(
+                    lowered, tokens, *_draft_numbers({"value": items}), normal, field_words
+                )
+            )
+    spans.extend(_number_spans(lowered, tokens, *_draft_numbers(query)))
+    limit = query.get("limit")
+    limit = _number_key(limit) if isinstance(limit, (int, float)) else None
+    if limit is not None and limit.isdigit():
+        # A ranking's count is read where the ranking parser reads it, whatever words sit beside
+        # it. A limit the draft carries and the question doesn't state stays unconsumed.
+        nouns = _dimension_nouns(runtime._config)
+        spans.extend(_ranking_count_spans(lowered, int(limit), nouns))
+    return spans
+
+
+def _normal_tokens(text: str) -> tuple[str, ...]:
+    return tuple(_singular(token) for token in _tokens(text))
+
+
+def _name_spans(
+    tokens: list[tuple[str, int, int]], normal: list[str], names: list[str], whole: bool
+) -> list[tuple[int, int]]:
+    """Where the question spells a name: all of it (a filter value), or any run of its words (an
+    object's name: "by hour" for "Hour of day")."""
+
+    spans: list[tuple[int, int]] = []
+    for name in names:
+        phrase = _normal_tokens(name)
+        if not phrase:
+            continue
+        for first in range(len(normal)):
+            for offset in range(len(phrase)):
+                if whole and offset:
+                    break
+                length = 0
+                while (
+                    first + length < len(normal)
+                    and offset + length < len(phrase)
+                    and normal[first + length] == phrase[offset + length]
+                ):
+                    length += 1
+                if length and (not whole or length == len(phrase)):
+                    spans.append((tokens[first][1], tokens[first + length - 1][2]))
+    return spans
+
+
+# Where a question states a threshold or a percentile: a comparison before its number ("over
+# 12.50", "at least 2") or after it ("1,000 or more", "5+"). Never a ranking's cue ("top",
+# "first", "10 largest"): a ranking's count is the limit's, read by the ranking parser, so a
+# threshold cannot consume it and the limit cannot consume a threshold.
+_NUMBER_BEFORE_RE = re.compile(
+    r"(?:\b(?:more\s+than|greater\s+than|over|above|exceeds?|exceeded|exceeding|at\s+least"
+    r"|no\s+fewer\s+than|minimum\s+of|less\s+than|fewer\s+than|under|below|at\s+most"
+    r"|no\s+more\s+than|maximum\s+of|equals?|equal\s+to)|[<>=]=?)[\s-]*[$£€]?$"
+)
+_NUMBER_AFTER_RE = re.compile(
+    r"^\s*(?:\+|or\s+(?:more|less|fewer|greater|higher|lower|above|below|over|under)\b)"
+)
+# A number is a percentage only when the question says so: "50 %", "50 percent", "90th percentile".
+_PERCENT_AFTER_RE = re.compile(r"^\s*(?:%|percent\b|pct\b|(?:st|nd|rd|th)?\s*percentile\b)")
+
+
+def _token_value(word: str) -> float | None:
+    """The number a token states: "12.50" is 12.5, "90th" is 90, "five" is 5."""
+
+    plain = re.fullmatch(r"(\d+(?:[.,]\d+)*)(?:st|nd|rd|th)?", word)
+    try:
+        return float(plain.group(1).replace(",", "")) if plain else _SPOKEN_NUMBERS.get(word)
+    except ValueError:
+        return None
+
+
+def _number_spans(
+    lowered: str,
+    tokens: list[tuple[str, int, int]],
+    numbers: set[str],
+    percents: set[str],
+    normal: list[str] | None = None,
+    near: set[str] | None = None,
+) -> list[tuple[int, int]]:
+    """The number tokens that state one of the draft's numbers where a construct states it: a
+    threshold or percentile cue beside it, or (with ``near``) a filter's field name.
+
+    A token is a percentage only with a percent cue after it: "50 percent" states 0.5 (and
+    "10 percent" the 0.9 of a "top 10 percent" cut), while a bare "50" or "500" never does.
+    """
+
+    spans: list[tuple[int, int]] = []
+    for index, (word, start, end) in enumerate(tokens):
+        value = _token_value(word)
+        if value is None:
+            continue
+        percent = _PERCENT_AFTER_RE.match(lowered[end : end + 60]) is not None
+        key = _number_key(value)
+        if not (
+            key in numbers or (percent and (key in percents or _number_key(value / 100) in numbers))
+        ):
+            continue
+        if near is not None and normal is not None:
+            stated = bool(near & set(normal[max(index - 1, 0) : index + 2]))
+        else:
+            stated = (
+                percent
+                or _NUMBER_BEFORE_RE.search(lowered[max(start - 40, 0) : start]) is not None
+                or _NUMBER_AFTER_RE.match(lowered[end : end + 60]) is not None
+            )
+        if stated:
+            spans.append((start, end))
+    return spans
+
+
+# A year a date phrase states: after "in", "for" or "during", or the word "year". Only the 2000s,
+# as when plan reads a short question ("1930" is never a date there).
+_YEAR_CUE_RE = re.compile(r"\b(?:in|for|during|year)\s+(20\d{2})\b")
+# The rest of a bound after its date, when it is midnight.
+_MIDNIGHT_RE = re.compile(r"(?:[t ]00:00(?::00(?:\.0+)?)?(?:z|[+-]00:?00)?)?")
+
+
+def _question_time(
+    lowered: str,
+) -> tuple[list[tuple[tuple[int, int], dict[str, Any]]], list[tuple[int, int]]]:
+    """The windows plan reads from the question, and the other spans it reads as time.
+
+    The other spans are time phrases plan cannot resolve ("last 24 hours", "before 2017"). A
+    bare year is one only with the bound word plan reports it by ("before 2017"); on its own it
+    may be an hour ("at 2000"), so it is never returned.
+
+    A question too long to read has a window only when its date phrases state one calendar year
+    ("in 2017", "for 2017"; never "at 2000" or "in 2000+"). Two different years cannot be told
+    from a quantity ("in 2017 ... for 2000 customers") without the resolver, so such a question
+    states no window and each year in it is left unconsumed.
+    """
+
+    if len(lowered) > _MAX_TIME_TEXT:
+        years = [
+            (match.span(1), int(match.group(1)))
+            for match in _YEAR_CUE_RE.finditer(lowered)
+            if _QUANTITY_AFTER_RE.match(lowered[match.end(1) :]) is None
+        ]
+        if len({year for _span, year in years}) > 1:
+            return [], []
+        return [
+            (span, {"start": f"{year:04d}-01-01", "end": f"{year + 1:04d}-01-01"})
+            for span, year in years
+        ], []
+    read = _time_window(lowered)
+    windows = list(read.windows)
+    others: list[tuple[int, int]] = []
+    for low, high in read.spans:
+        if any(start <= low and high <= end for (start, end), _bounds in windows):
+            continue
+        if _YEAR_WORD_RE.fullmatch(lowered[low:high].strip()):
+            # A bare year is a date only as the phrase plan reports it: after a bound word
+            # ("before 2017", "of 2017"), the span starting at that word. "at 2000" is not one.
+            bound = _BOUNDARY_BEFORE_RE.search(lowered[:low])
+            if bound is None:
+                continue
+            low = bound.start()
+        others.append((low, high))
+    return windows, others
+
+
+def _window_days(bounds: dict[str, Any]) -> tuple[date | None, date | None] | None:
+    """The first day a window covers and the first day after it, or None where unreadable.
+
+    A bound with a time of day is floored (a start) or rounded up (an end) to the day, the
+    grain of every window plan reads; a missing bound comes back None.
+    """
+
+    if bounds.get("range"):
+        try:
+            bounds = _relative_range_bounds(bounds["range"], policy_context=None)
+        except SemanticLayerError:
+            return None
+    days: list[date | None] = []
+    for key in ("start", "end"):
+        text = str(bounds.get(key) or "").strip().lower()
+        if not text:
+            days.append(None)
+            continue
+        try:
+            day = date.fromisoformat(text[:10])
+        except ValueError:
+            return None
+        days.append(
+            day + timedelta(days=1)
+            if key == "end" and not _MIDNIGHT_RE.fullmatch(text[10:])
+            else day
+        )
+    return days[0], days[1]
+
+
+def _window_agrees(
+    windows: list[tuple[tuple[int, int], dict[str, Any]]], time: dict[str, Any]
+) -> bool:
+    """Whether the draft's window is the one the question's date phrases state.
+
+    The one rule for a window in the draft: every bound it carries, read at the day (the grain
+    of every window plan reads), is the earliest start or the latest end among the windows the
+    question states, and it carries at least one. A draft that cannot be read does not agree. A
+    question that states no window agrees with any draft.
+    """
+
+    if not windows:
+        return True
+    carried = _window_days(time)
+    starts: list[date] = []
+    ends: list[date] = []
+    for _span, bounds in windows:
+        asked = _window_days(bounds)
+        if asked is None or asked[0] is None or asked[1] is None:
+            return False
+        starts.append(asked[0])
+        ends.append(asked[1])
+    if carried is None or carried == (None, None):
+        return False
+    return carried[0] in (None, min(starts)) and carried[1] in (None, max(ends))
+
+
+def _window_spans(lowered: str, time: dict[str, Any]) -> list[tuple[int, int]]:
+    """The spans of the question a window in the draft's ``query.time`` consumes.
+
+    One rule: the draft's window consumes the date phrases plan resolved only if it agrees with
+    them (``_window_agrees``); otherwise it consumes none. It also answers a phrase plan cannot
+    resolve ("last 24 hours"). It never consumes a bare year, a time of day, an hour, a bare
+    number or a zone, whatever the window's bounds say, so a question that states one is
+    refused rather than matched to the window by value.
+    """
+
+    windows, others = _question_time(lowered)
+    if not _window_agrees(windows, time):
+        return []
+    return [span for span, _bounds in windows] + others
+
+
+def _caller_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
+    """The window a caller passed is not the one the question's date phrases state."""
+
+    lowered = text.lower()
+    windows, _others = _question_time(lowered)
+    time = _time_block(query)
+    if _window_agrees(windows, time) or _is_prior_period_offset(
+        runtime, query, [bounds for _span, bounds in windows]
+    ):
+        return []
+    return [
+        CoverageGap(
+            kind="time_window_unrealized",
+            clause=", ".join(lowered[low:high].strip() for (low, high), _bounds in windows),
+            message="The question names a time window, but the draft's window is a different one.",
+            expected={"time": [bounds for _span, bounds in windows]},
+            actual={"time": time or None},
+            recovery_hint={
+                "kind": "provide_time_window",
+                "message": (
+                    "Pass the window the question states in Query IR time (start inclusive, end "
+                    "exclusive), or ask about the window you passed."
+                ),
+            },
+        )
+    ]
+
+
+def _draft_numbers(query: dict[str, Any]) -> tuple[set[str], set[str]]:
+    """Every number the draft carries outside its time block and its limit (a threshold, a
+    filter value, a percentile), as digits, and the percentages its fractions state (0.9 is the
+    "top 10 percent" it cuts). The limit is read by the ranking that states it, never here: a
+    threshold that repeats its number ("top 10 stores with at least 10 orders") is not the limit."""
+
+    return _number_sets(
+        {key: value for key, value in query.items() if key not in ("time", "limit")}
+    )
+
+
+def _number_sets(query: dict[str, Any]) -> tuple[set[str], set[str]]:
+    """The numbers a query carries as digits, and the percentages its fractions state: 0.5
+    states "50" (and the "50" of a "top 50 percent" cut)."""
+
+    plain: set[str] = set()
+    percents: set[str] = set()
+
+    def add(value: float) -> None:
+        key = _number_key(value)
+        if key is None:
+            return
+        plain.add(key)
+        if 0 < value < 1 and float(value * 100).is_integer():
+            percents.update({str(int(value * 100)), str(100 - int(value * 100))})
+
+    def walk(value: Any) -> None:
+        if isinstance(value, bool):
+            return
+        if isinstance(value, (int, float)):
+            add(value)
+        elif isinstance(value, str) and re.fullmatch(r"\d+(?:\.\d+)?", value.strip()):
+            add(float(value))
+        elif isinstance(value, dict):
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk({key: value for key, value in query.items() if key != "version"})
+    return plain, percents
 
 
 def _one_typo_away(word: str, by_initial: dict[str, list[str]]) -> bool:
@@ -2068,4 +2643,4 @@ def _within_one_edit(left: str, right: str) -> bool:
     return shorter[index:] == longer[index + 1 :]
 
 
-__all__ = ["CoverageGap", "intent_faithfulness_why", "unmatched_intent_terms"]
+__all__ = ["CoverageGap", "intent_faithfulness_why", "unconsumed_terms", "unmatched_intent_terms"]

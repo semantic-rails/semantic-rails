@@ -29,6 +29,7 @@ from ..expressions import (
     ScopedAggregateExpr,
     SemanticExpr,
     expr_to_dict,
+    validate_boolean_argument_count,
 )
 from ..schema import PackageConfig
 from ..sql_ast import (
@@ -42,9 +43,11 @@ from ..sql_ast import (
     SqlLiteral,
     SqlOrderTerm,
     SqlWindow,
+    build_comparison_condition,
+    build_negation,
 )
 from .bind import _expression_alias
-from .dependencies import recipe_objects, record_leaf_reference
+from .dependencies import _recipes, recipe_objects, record_leaf_reference
 from .indexes import _recipe_index
 from .namespacing import _namespace_sql_select
 from .temporal import _period_to_date_period, _window_unit_to_rows
@@ -65,11 +68,8 @@ def _base_alias_ref(alias: str, table_alias: str = "base") -> SqlIdentifier:
     return SqlIdentifier(parts=[table_alias, alias])
 
 
-def _window_partition_exprs(
-    table_alias: str, group_aliases: list[str], explicit: list[str]
-) -> list[SqlExpr]:
-    aliases = list(dict.fromkeys([*group_aliases, *explicit]))
-    return [SqlIdentifier(parts=[table_alias, alias]) for alias in aliases]
+def _window_partition_exprs(table_alias: str, group_aliases: list[str]) -> list[SqlExpr]:
+    return [SqlIdentifier(parts=[table_alias, alias]) for alias in dict.fromkeys(group_aliases)]
 
 
 def _as_offset_window_expr(expr: SemanticExpr) -> OffsetWindowExpr | None:
@@ -138,7 +138,7 @@ def _compile_offset_window_expr(
     order_by = [SqlOrderTerm(expr=SqlIdentifier(parts=[table_alias, time_alias]), direction="ASC")]
     if expr.kind == "prior_period":
         offset_rows = _window_unit_to_rows(expr.unit, expr.value, query_grain)
-        lag_partition_by = _window_partition_exprs(table_alias, group_aliases, [])
+        lag_partition_by = _window_partition_exprs(table_alias, group_aliases)
         # Dialect hook for warehouses without a LAG window function
         # (e.g. ClickHouse 24.x, which only ships lagInFrame). Dialects
         # that define `window_lag` build their own equivalent window
@@ -151,7 +151,19 @@ def _compile_offset_window_expr(
             partition_by=lag_partition_by,
             order_by=order_by,
         )
-    partition_by: list[Any] = _window_partition_exprs(table_alias, group_aliases, expr.partition_by)
+    # The one place every window compiles: a partition the query does not group by has no
+    # column to partition on, so it is refused rather than left to fail in the warehouse.
+    missing = [alias for alias in expr.partition_by if alias not in group_aliases]
+    if missing:
+        recipes = _recipes.get()
+        owner = f" of metric '{recipes[-1]}'" if recipes else ""
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"partition_by{owner} names {', '.join(missing)}, which the query does not "
+            "group by; add it to group_by or remove it from partition_by",
+            details={"partition_by_missing_from_group_by": missing},
+        )
+    partition_by: list[Any] = _window_partition_exprs(table_alias, group_aliases)
     frame = expr.frame
     if expr.kind == "rolling":
         rows = _window_unit_to_rows(expr.unit, expr.value, query_grain)
@@ -229,9 +241,6 @@ def _compile_post_expr(
             # NULLIF(right, 0) returns NULL when right=0, and x / NULL = NULL,
             # so an outer CASE WHEN right = 0 THEN NULL is dead code.
             return SqlBinary(left, "/", SqlCall("NULLIF", [right, SqlLiteral(0)]))
-        if expr.null_behavior == "coalesce_zero" and op in {"+", "-"}:
-            left = SqlCall("COALESCE", [left, SqlLiteral(0)])
-            right = SqlCall("COALESCE", [right, SqlLiteral(0)])
         return SqlBinary(left, op, right)
     if isinstance(expr, RatioExpr):
         left = _compile_post_expr(
@@ -252,7 +261,7 @@ def _compile_post_expr(
         )
         return SqlBinary(left, "/", SqlCall("NULLIF", [right, SqlLiteral(0)]))
     if isinstance(expr, ComparisonExpr):
-        return SqlBinary(
+        return build_comparison_condition(
             _compile_post_expr(
                 expr.left,
                 config,
@@ -295,6 +304,7 @@ def _compile_post_expr(
             negated=expr.negated,
         )
     if isinstance(expr, BooleanExpr):
+        validate_boolean_argument_count(expr.op, len(expr.args))
         op = expr.op.strip().lower()
         if op not in {"and", "or", "not"}:
             raise SemanticLayerError(
@@ -339,20 +349,13 @@ def _compile_post_expr(
                         ],
                     },
                 )
-            # The SQL AST has no unary-NOT node (sql_ast.py is owned by the
-            # renderer layer), so compose negation from existing nodes:
-            # ``FALSE = arg`` has the same three-valued truth table as
-            # ``NOT arg`` (TRUE -> FALSE, FALSE -> TRUE, NULL -> NULL).
-            # The arg goes on the right so the renderer parenthesizes
-            # same-precedence comparisons (``FALSE = (x > y)``) — chained
-            # comparisons are non-associative in Snowflake/Postgres.
-            return SqlBinary(SqlLiteral(False), "=", rendered[0])
+            return build_negation(rendered[0])
         current = rendered[0]
         for item in rendered[1:]:
             current = SqlBinary(current, op.upper(), item)
         return current
     if isinstance(expr, CallExpr):
-        return SqlCall(
+        return dialect_for_warehouse(config.package.warehouse).scalar_call(
             expr.name,
             [
                 _compile_post_expr(

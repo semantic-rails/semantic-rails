@@ -838,6 +838,149 @@ def _normalize_group_by_list(raw_items: Any) -> list[str]:
     return out
 
 
+_BARE_SELECT_MEASURE_KEYS: frozenset[str] = frozenset({"measure", "aggregation", "as"})
+_SELECT_TARGET_KEYS: frozenset[str] = frozenset({"metric", "measure", "dimension"})
+
+
+def _bare_select_expression(row: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the canonical expression for a select item sent without ``expression``.
+
+    Only the two unambiguous shapes convert: ``{metric, as?}`` and
+    ``{measure, aggregation?, as?}``. Anything else (both ``metric`` and ``measure``,
+    ``aggregation`` on a metric, unknown keys) returns None and stays an error.
+    """
+    keys = set(row) - {"as"}
+    if keys == {"metric"}:
+        return {"kind": "metric", "metric": row["metric"]}
+    if "measure" in keys and keys <= _BARE_SELECT_MEASURE_KEYS:
+        return {"kind": "measure", **{key: row[key] for key in keys}}
+    return None
+
+
+def _reject_select_row(
+    row: dict[str, Any], idx: int, why: str, *, hint_code: str = "WRAP_SELECT_EXPRESSION"
+) -> SemanticLayerError:
+    return SemanticLayerError(
+        "INVALID_EXPRESSION_AST",
+        (
+            f"select[{idx}] {why}. Send one select item per metric or measure, "
+            '{"expression": {"kind": "measure", "measure": "<measure id>", "aggregation": '
+            '"sum"}, "as": "<alias>"} or '
+            '{"expression": {"kind": "metric", "metric": "<metric id>"}, "as": "<alias>"}, '
+            'and list each dimension in group_by: ["<dimension id>"].'
+        ),
+        details={
+            "path": f"select[{idx}]",
+            "received_keys": sorted(row),
+            "recovery_hints": [
+                {
+                    "code": hint_code,
+                    "message": (
+                        "Each select item is {expression, as} for one metric (kind 'metric') or "
+                        "measure (kind 'measure', with 'aggregation'). Dimensions go in "
+                        "group_by, not in select, and cannot carry an alias there."
+                    ),
+                }
+            ],
+        },
+    )
+
+
+def _rewrite_select_item(
+    row: dict[str, Any], idx: int, group_by: list[str], *, partial: bool
+) -> tuple[dict[str, Any] | None, str, dict[str, Any] | None]:
+    """Decide one select item: ``(item to keep or None, dimension moved to group_by, note)``.
+
+    The one place a shorthand is accepted or refused. An item that would lose a key
+    (a dimension beside a metric, measure, alias or unknown key) is refused, never
+    rewritten.
+    """
+    path = f"select[{idx}]"
+    if "expression" in row:
+        named = sorted(_SELECT_TARGET_KEYS & set(row))
+        if named:
+            raise _reject_select_row(row, idx, f"has 'expression' and also {named}")
+        expression = row["expression"]
+        if not isinstance(expression, dict) or set(expression) != {"dimension"}:
+            return row, "", None
+        dim_id = str(expression["dimension"] or "").strip()
+        # With other group_by entries, adding this one would be a guess: the
+        # expression parser keeps its MOVE_DIMENSION_TO_GROUP_BY error for that.
+        if not dim_id or (group_by and dim_id not in group_by):
+            return row, "", None
+        extra = sorted(set(row) - {"expression"})
+        if extra:
+            raise _reject_select_row(
+                row,
+                idx,
+                f"moves a dimension to group_by, which has no place for {extra}",
+                hint_code="MOVE_DIMENSION_TO_GROUP_BY",
+            )
+        return None, dim_id, _note(path, row, {"group_by": [dim_id]})
+    if "dimension" in row:
+        extra = sorted(set(row) - {"dimension"})
+        if extra:
+            raise _reject_select_row(
+                row,
+                idx,
+                f"names a dimension together with {extra}, and group_by has no place for them",
+                hint_code="MOVE_DIMENSION_TO_GROUP_BY",
+            )
+        dim_id = str(row["dimension"] or "").strip()
+        if not dim_id:
+            raise SemanticLayerError(
+                "INVALID_QUERY", f"select[{idx}].dimension must be a non-empty dimension id"
+            )
+        return None, dim_id, _note(path, row, {"group_by": [dim_id]})
+    if partial and set(row) <= {"as"}:
+        return row, "", None
+    expression = _bare_select_expression(row)
+    if expression is None:
+        raise _reject_select_row(
+            row, idx, f"has no 'expression', and its keys {sorted(row)} do not match one shape"
+        )
+    canonical = {"expression": expression, **({"as": row["as"]} if "as" in row else {})}
+    return canonical, "", _note(path, row, canonical)
+
+
+def _note(path: str, received: dict[str, Any], canonical: dict[str, Any]) -> dict[str, Any]:
+    return {"path": path, "received": dict(received), "canonical": canonical}
+
+
+def rewrite_select_shorthand(
+    payload: dict[str, Any], partial: bool = False
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Return ``payload`` with select shorthands rewritten, and a note per rewrite.
+
+    Every query entry point (validate, compile, execute, plan) rewrites through this one
+    function. validate, compile and execute report its notes as response warnings; plan
+    discards them and returns the canonical form in ``best.query_ir``. The returned payload
+    is the canonical form: rewriting it again changes nothing.
+    """
+    raw_select = payload.get("select", [])
+    if not isinstance(raw_select, list):
+        return payload, []
+    group_by = _normalize_group_by_list(payload.get("group_by", []))
+    select: list[Any] = []
+    moved: list[str] = []
+    notes: list[dict[str, Any]] = []
+    for idx, row in enumerate(raw_select):
+        if not isinstance(row, dict):
+            raise SemanticLayerError("INVALID_QUERY", f"select[{idx}] must be an object")
+        kept, dim_id, note = _rewrite_select_item(row, idx, group_by, partial=partial)
+        if note is None:
+            select.append(row)
+            continue
+        if kept is not None:
+            select.append(kept)
+        if dim_id and dim_id not in group_by and dim_id not in moved:
+            moved.append(dim_id)
+        notes.append(note)
+    if not notes:
+        return payload, []
+    return {**payload, "select": select, "group_by": [*group_by, *moved]}, notes
+
+
 def normalize_query(payload: dict[str, Any]) -> NormalizedQuery:
     _check_unknown_top_level_keys(payload)
     _check_supported_version(payload)
@@ -853,26 +996,10 @@ def normalize_query(payload: dict[str, Any]) -> NormalizedQuery:
             f"query.select must be a list of select items; got {type(raw_select).__name__}",
             details={"path": "select", "received_type": type(raw_select).__name__},
         )
-    select_rows = list(raw_select or [])
+    payload, _ = rewrite_select_shorthand(payload)
     select: list[QuerySelect] = []
-    # Dimension ids passed via ``select[]`` as the shorthand
-    # ``{"dimension": "<id>"}`` shape get promoted to ``group_by[]`` so
-    # the same reachability / path validation fires (otherwise a dim
-    # bound to an unreachable entity would be silently dropped from
-    # the SQL output).
-    promoted_group_by: list[str] = []
-    for idx, row in enumerate(select_rows):
-        if not isinstance(row, dict):
-            raise SemanticLayerError("INVALID_QUERY", f"select[{idx}] must be an object")
-        if "dimension" in row and "expression" not in row:
-            dim_id = str(row.get("dimension", "") or "").strip()
-            if not dim_id:
-                raise SemanticLayerError(
-                    "INVALID_QUERY",
-                    f"select[{idx}].dimension must be a non-empty dimension id",
-                )
-            promoted_group_by.append(dim_id)
-            continue
+    group_by = _normalize_group_by_list(payload.get("group_by", []))
+    for idx, row in enumerate(list(payload.get("select", []) or [])):
         expression = parse_semantic_expression(row.get("expression", {}) or {}, context="query")
         _validate_query_expr(expression)
         if isinstance(expression, MetricPredicateExpr):
@@ -931,14 +1058,6 @@ def normalize_query(payload: dict[str, Any]) -> NormalizedQuery:
             item.expression is not None
         )  # parse_semantic_expression returns non-None for non-empty payload
         _validate_query_expr(item.expression)
-    group_by = _normalize_group_by_list(payload.get("group_by", []))
-    # Append dim ids promoted from select[].dimension shorthand,
-    # de-duplicating against any already-present group_by entries.
-    seen_group = set(group_by)
-    for dim_id in promoted_group_by:
-        if dim_id not in seen_group:
-            group_by.append(dim_id)
-            seen_group.add(dim_id)
     time = _time_spec_from_payload(
         payload.get("time"), policy_context=dict(payload.get("policy_context", {}) or {})
     )
@@ -1034,6 +1153,7 @@ def normalize_partial_query(payload: dict[str, Any]) -> PartialQueryState:
     # unknown top-level keys with the same USE_CANONICAL_KEY hint.
     _check_unknown_top_level_keys(payload)
     _check_supported_version(payload)
+    payload, _ = rewrite_select_shorthand(payload, partial=True)
     select: list[QuerySelect] = []
     for idx, row in enumerate(list(payload.get("select", []) or [])):
         if not isinstance(row, dict):

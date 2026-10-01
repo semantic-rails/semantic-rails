@@ -44,6 +44,8 @@ def test_written_package_loads_back_identical_and_validates_alike(package, tmp_p
     original = [e.replace(str(package), "<pkg>") for e in validate_runtime_package(package)]
     written = [e.replace(str(directory), "<pkg>") for e in validate_runtime_package(directory)]
     assert written == original
+    # A rewrite never writes the removed `null_behavior:`.
+    assert not any("null_behavior" in p.read_text() for p in directory.rglob("*.yml"))
 
 
 def test_contracts_path_policy_and_authored_values_are_written(tmp_path) -> None:
@@ -85,11 +87,6 @@ def _relation_pipeline(config):
             lambda c: {"aggregate_relations": [AggregateRelationConfig("agg.daily", "t", "e")]},
             ["aggregate_relations agg.daily"],
         ),
-        # The loader keeps one join per entity pair, so the first of two is lost.
-        (
-            lambda c: {"relationships": [*c.relationships, replace(c.relationships[0], id="r.2")]},
-            [f"relationships {STARTER.config.relationships[0].id}"],
-        ),
         (_relation_pipeline, ["entities entity.shop_customer", "relations relation.customers"]),
         # An entity id the loader can't derive from a graph key is written with `as:`, but the
         # loader derives its key dimension from the key, so that comes back under another id.
@@ -126,6 +123,21 @@ def test_what_does_not_come_back_is_refused_by_name(changes, refused, tmp_path) 
         write_package(config, tmp_path / "out/shop_starter", namespace="shop")
     assert set(refused) <= set(caught.value.details["objects"]), caught.value.details
     assert not (tmp_path / "out").exists()  # nor the parent directory it created
+
+
+def test_two_relationships_on_the_same_columns_are_refused_naming_both(tmp_path) -> None:
+    """The writer refuses because the loader does: the message names both relationships."""
+    first = STARTER.config.relationships[0]
+    config = replace(
+        STARTER.config, relationships=[*STARTER.config.relationships, replace(first, id="r.2")]
+    )
+    with pytest.raises(SemanticLayerError) as caught:
+        write_package(config, tmp_path / "out/shop_starter", namespace="shop")
+    assert caught.value.code == "INVALID_CONFIG"
+    assert caught.value.details["objects"] == ["package"]
+    message = str(caught.value)
+    assert f"r.2, {first.id} all join" in message
+    assert "keep one" in message
 
 
 def test_write_package_refuses_an_existing_directory(tmp_path) -> None:

@@ -337,15 +337,15 @@ def test_today_follows_the_date(monkeypatch: pytest.MonkeyPatch) -> None:
 
     from semantic_rails.planner import _base
 
-    class Tomorrow(date):
+    class OtherDay(date):
         @classmethod
         def today(cls) -> date:
-            return date(2026, 10, 1)
+            return date(2001, 2, 3)
 
     before = _time_bounds_from_text("orders today")
-    monkeypatch.setattr(_base, "date", Tomorrow)
-    assert _time_bounds_from_text("orders today") == {"start": "2026-10-01", "end": "2026-10-02"}
-    assert _time_bounds_from_text("revenue this month")["start"] == "2026-10-01"
+    monkeypatch.setattr(_base, "date", OtherDay)
+    assert _time_bounds_from_text("orders today") == {"start": "2001-02-03", "end": "2001-02-04"}
+    assert _time_bounds_from_text("revenue this month")["start"] == "2001-02-01"
     assert before != _time_bounds_from_text("orders today")
 
 
@@ -449,9 +449,16 @@ def test_one_endpoint_does_not_settle_a_long_question(
 
 
 @pytest.mark.parametrize("detail", ["query", "best", "full"])
-@pytest.mark.parametrize("bounds", [YEAR_2017, {"range": {"last": {"unit": "year", "value": 1}}}])
+@pytest.mark.parametrize(
+    ("bounds", "suffix"),
+    [
+        (YEAR_2017, "in 2017"),
+        # A question that states no year has none to disagree with a relative window.
+        ({"range": {"last": {"unit": "year", "value": 1}}}, "for the last year"),
+    ],
+)
 def test_public_query_argument_settles_complete_long_question_bounds(
-    runtime_factory: Any, detail: str, bounds: dict[str, Any]
+    runtime_factory: Any, detail: str, bounds: dict[str, Any], suffix: str
 ) -> None:
     from semantic_rails.mcp import SemanticLayerMCPAdapter
 
@@ -460,7 +467,7 @@ def test_public_query_argument_settles_complete_long_question_bounds(
         payload = SemanticLayerMCPAdapter(runtime).call_tool(
             "plan",
             {
-                "intent": "revenue " + "please " * 300 + "in 2017",
+                "intent": "revenue " + "please " * 300 + suffix,
                 "detail": detail,
                 "query": {
                     "time": {

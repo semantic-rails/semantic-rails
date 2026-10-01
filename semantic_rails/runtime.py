@@ -34,7 +34,7 @@ from .acceleration.routing import (
     aggregate_routing_enabled,
     parse_aggregate_routing,
 )
-from .ast import normalize_query
+from .ast import normalize_query, rewrite_select_shorthand
 from .cache import (
     CachedCompilation,
     CompiledSqlCache,
@@ -92,9 +92,13 @@ from .request_context import (
     request_context_payload,
     without_trusted_attributes,
 )
+from .result_values import result_rows
 from .runtime_parts.responses import (
+    TIME_SHAPE_WINDOW_TOTAL,
+    WINDOW_TOTAL_ASSUMPTION,
     apply_response_verbosity,
     compile_response_metadata,
+    output_columns,
     resolve_sql_profile,
     resolve_verbosity,
 )
@@ -756,10 +760,39 @@ def _compiled_warnings(
         *_time_zone_warnings(config, compiled),
     ]
     if payload is not None:
-        warnings.extend(caveat_warnings(config, compiled, payload))
-        warnings.extend(_expression_normalized_away_warnings(payload, compiled))
-        warnings.extend(_ungrained_time_projection_warnings(payload))
+        # Every check reads the canonical query the compiler saw, not the caller's shorthand.
+        canonical, notes = rewrite_select_shorthand(payload)
+        warnings.extend(caveat_warnings(config, compiled, canonical))
+        warnings.extend(_expression_normalized_away_warnings(canonical, compiled))
+        if not compiled["logical_plan"].time.get("window_total"):
+            warnings.extend(_ungrained_time_projection_warnings(canonical))
+        warnings.extend(_shorthand_normalized_warnings(notes))
     return warnings
+
+
+def _window_total_fields(compiled) -> dict[str, Any]:
+    """``assumptions`` for every response, plus ``time_shape`` when the window was collapsed."""
+    if not compiled["logical_plan"].time.get("window_total"):
+        return {"assumptions": []}
+    return {"assumptions": [WINDOW_TOTAL_ASSUMPTION], "time_shape": TIME_SHAPE_WINDOW_TOTAL}
+
+
+def _shorthand_normalized_warnings(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Tell the caller which select shorthands were rewritten, with the canonical form."""
+    return [
+        semantic_issue(
+            code="QUERY_SHORTHAND_NORMALIZED",
+            message=(
+                f"{note['path']} was accepted as shorthand and rewritten; next time send "
+                f"{json.dumps(note['canonical'], separators=(',', ':'))}."
+            ),
+            severity="warning",
+            stage="compile",
+            path=note["path"],
+            details=note,
+        )
+        for note in notes
+    ]
 
 
 _UNGRAINED_INLINE_WINDOW_KINDS = frozenset(
@@ -1103,6 +1136,48 @@ def _stock_key_gap_warnings(compiled) -> list[dict[str, Any]]:
             object_ids=[gap["measure_id"]],
         )
         for gap in gaps.values()
+    ]
+
+
+def _no_data_in_scope_warnings(compiled, rows) -> list[dict[str, Any]]:
+    """Say when a measure that reads 0 for empty groups had no data at all, so it read NULL.
+
+    A sum, count or distinct count is 0 in a group with no rows only while its measure has
+    data somewhere in scope; with none, every group reads NULL. A misspelled filter value
+    produces exactly that, so the answer names the outputs that came back NULL on every row
+    (or, when nothing came back and no time bounds explain it, every such output). One
+    warning covers them all, and it needs no query beyond the answer.
+    """
+    outputs = {item["output"]: item for item in list(compiled.get("zero_outputs") or [])}
+    window = compiled["logical_plan"].time
+    if getattr(rows, "truncated", False) or not outputs:
+        return []
+    if rows:
+        outputs = {
+            name: item
+            for name, item in outputs.items()
+            if all(row.get(name) is None for row in rows)
+        }
+    elif window.get("start") is not None or window.get("end") is not None:
+        return []  # a window with no rows is EMPTY_RESULT_WINDOW's to explain
+    elif compiled["logical_plan"].query.get("metric_filters"):
+        return []  # a metric filter may have removed every group that holds data
+    if not outputs:
+        return []
+    return [
+        semantic_issue(
+            code="NO_DATA_IN_SCOPE",
+            message=(
+                f"No data in scope for {', '.join(outputs)}: nothing in this query's filters and "
+                f"time window holds a value, so {'it reads' if len(outputs) == 1 else 'they read'}"
+                " NULL rather than 0. A sum or count reads 0 only where its measure has data "
+                "elsewhere in scope; check the filter values."
+            ),
+            severity="warning",
+            stage="execution",
+            details={"outputs": list(outputs)},
+            object_ids=[measure for item in outputs.values() for measure in item["measures"]],
+        )
     ]
 
 
@@ -1875,10 +1950,6 @@ class Runtime:
                             "entity_value",
                             "distribution",
                         ],
-                        "runtime_expression_options": {
-                            "arithmetic_null_behavior": ["null_propagate", "coalesce_zero"],
-                            "ratio_null_behavior": ["null_if_zero"],
-                        },
                         "aggregate_relation_candidates": [
                             asdict(row) for row in self._config.aggregate_relations
                         ],
@@ -2032,7 +2103,7 @@ class Runtime:
             out["query"] = without_trusted_attributes(payload)
             out["normalized_query"] = compiled["explain"].normalized_query
             out["recovery_hints"] = []
-            out["assumptions"] = []
+            out.update(_window_total_fields(compiled))
             out["methodology_hints"] = _methodology_hints(self._config, payload, compiled)
             out["freshness_by_leaf"] = freshness_rows
             out["freshness_as_of"] = _freshness_as_of(freshness_rows)
@@ -2130,7 +2201,7 @@ class Runtime:
             "recovery_hints": [],
             "authoring_hints": [],
             "query_ir_hints": [],
-            "assumptions": [],
+            **_window_total_fields(compiled),
             "methodology_hints": _methodology_hints(self._config, payload, compiled),
             "freshness_by_leaf": freshness_rows,
             "freshness_as_of": _freshness_as_of(freshness_rows),
@@ -2241,7 +2312,11 @@ class Runtime:
             ) from exc
         out: dict[str, Any] = {
             "ok": True,
-            "rows": rows,
+            **result_rows(
+                rows,
+                output_columns=output_columns(self._config, compiled),
+                zone=_time_zone(self._config, compiled),
+            ),
             "row_count": len(rows),
             "truncated": bool(getattr(rows, "truncated", False)),
             "rendered_sql": compiled["sql"],
@@ -2252,11 +2327,12 @@ class Runtime:
             "errors": [],
             "warnings": [
                 *_compiled_warnings(self._config, compiled, payload),
+                *_no_data_in_scope_warnings(compiled, rows),
                 *limits_warnings,
                 *self._seed_warnings,
             ],
             "recovery_hints": [],
-            "assumptions": [],
+            **_window_total_fields(compiled),
             "methodology_hints": _methodology_hints(self._config, payload, compiled),
             "freshness_by_leaf": freshness_rows,
             "freshness_as_of": _freshness_as_of(freshness_rows),
@@ -2605,7 +2681,11 @@ class Runtime:
             "normalized_segment": normalized.to_dict(),
             "member_key_dimensions": list(normalized.member_key_dimensions),
             "preview_dimensions": list(normalized.preview_dimensions),
-            "rows": visible_rows,
+            **result_rows(
+                visible_rows,
+                output_columns=output_columns(self._config, preview_compiled),
+                zone=_time_zone(self._config, preview_compiled),
+            ),
             "preview_row_count": len(visible_rows),
             "member_count": member_count,
             "policy_effects": [*segment_policy_effects, *query_policy_effects],

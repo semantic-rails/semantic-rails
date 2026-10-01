@@ -16,6 +16,20 @@ model:
       accumulation: {kind: flow}, rollup: additive}
     average_order: {label: Average order, kind: aggregate, expr: amount, default_agg: avg,
       value_type: currency}
+    smallest_order: {label: Smallest order, kind: aggregate, expr: amount, default_agg: min,
+      value_type: currency}
+    largest_order: {label: Largest order, kind: aggregate, expr: amount, default_agg: max,
+      value_type: currency}
+    # Conditional counts, like COUNT(CASE WHEN ... THEN order_id END): 0 for a customer whose
+    # orders all fall short, never NULL. Two orders reach 10 and none reaches 1000.
+    large_order_count: {label: Large orders, kind: entity_count, accumulation: {kind: flow},
+      expr: {kind: case, whens: [{when: {kind: comparison, op: '>=',
+        left: {kind: column, column: amount}, right: {kind: literal, value: 10}},
+        then: {kind: column, column: order_id}}], else: {kind: literal, value: null}}}
+    huge_order_count: {label: Huge orders, kind: entity_count, accumulation: {kind: flow},
+      expr: {kind: case, whens: [{when: {kind: comparison, op: '>=',
+        left: {kind: column, column: amount}, right: {kind: literal, value: 1000}},
+        then: {kind: column, column: order_id}}], else: {kind: literal, value: null}}}
   variants:
     tx: {relation: orders, grain: {time: transaction, entities: [order]}, covers: inherit_all}
     monthly:

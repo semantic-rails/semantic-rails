@@ -36,7 +36,6 @@ tests:
           expression:
             kind: arithmetic
             op: divide
-            null_behavior: null_if_zero
             left:
               measure: measure.jaffle.revenue_usd
               aggregation: sum

@@ -111,6 +111,7 @@ def _print_ask_report(report: dict[str, Any]) -> None:
     result = report.get("result")
     compiled = report.get("compile")
     warnings: list[Any] = list(plan.get("warnings", []) or [])
+    warnings.extend(list(plan.get("assumptions", []) or []))
     if isinstance(result, dict):
         warnings.extend(list(result.get("warnings", []) or []))
         warnings.extend(list(result.get("assumptions", []) or []))
@@ -150,7 +151,7 @@ def _print_ask_report(report: dict[str, Any]) -> None:
             limit_note = ""
         print(f"Rows: {count}{limit_note}")
         shown = rows[:_MAX_HUMAN_ROWS]
-        _print_rows(shown, list(result.get("output_columns", []) or []))
+        _print_rows(shown, list(result.get("output_columns", []) or []), result.get("column_types"))
         if len(rows) > len(shown):
             print(f"... {len(rows) - len(shown)} more rows not shown; use --json to see them all.")
         if truncated and not plan_capped:
@@ -327,16 +328,22 @@ def _print_named_check(name: str, check: dict[str, Any]) -> None:
 
 
 def _print_rows(
-    rows: list[dict[str, Any]], output_columns: list[dict[str, Any]] | None = None
+    rows: list[dict[str, Any]],
+    output_columns: list[dict[str, Any]] | None = None,
+    column_types: dict[str, dict[str, str]] | None = None,
 ) -> None:
-    for line in _table_lines(rows, output_columns or []):
+    for line in _table_lines(rows, output_columns or [], column_types):
         print(line)
 
 
 _DATE_GRAINS = frozenset({"day", "week", "month", "quarter", "year"})
 
 
-def _table_lines(rows: list[dict[str, Any]], output_columns: list[dict[str, Any]]) -> list[str]:
+def _table_lines(
+    rows: list[dict[str, Any]],
+    output_columns: list[dict[str, Any]],
+    column_types: dict[str, dict[str, str]] | None = None,
+) -> list[str]:
     """Render result rows as an aligned text table for people.
 
     Numbers get thousands separators and consistent decimals per column and
@@ -362,11 +369,27 @@ def _table_lines(rows: list[dict[str, Any]], output_columns: list[dict[str, Any]
     for column in columns:
         info = dict(meta.get(column, {}) or {})
         values = [row.get(column) for row in rows]
+        wire_type = (column_types or {}).get(column, {}).get("type")
+        if wire_type == "decimal":
+            values = [Decimal(value) if isinstance(value, str) else value for value in values]
+        elif wire_type == "timestamp" and column.rsplit("__", 1)[-1] in _DATE_GRAINS:
+            values = [
+                datetime.fromisoformat(value)
+                if isinstance(value, str) and value[11:19] == "00:00:00" and value[19:20] != "."
+                else value
+                for value in values
+            ]
         if info.get("type") == "time" and column.rsplit("__", 1)[-1] in _DATE_GRAINS:
             # A month bucket is a date, whether the clock is a date or a timestamp column.
             values = [
                 value.date() if isinstance(value, datetime) and value.time() == dt_time() else value
                 for value in values
+            ]
+        if wire_type == "timestamp":
+            # Fine-grained timestamps remain text so Python's microsecond
+            # limit cannot shorten a warehouse's full seconds fraction.
+            values = [
+                value.replace("T", " ", 1) if isinstance(value, str) else value for value in values
             ]
         cells[column], numeric[column] = _format_column(
             values,

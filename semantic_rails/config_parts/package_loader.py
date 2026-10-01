@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..errors import SemanticLayerError
+
 
 def _slug(value: str) -> str:
     raw = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or ""))
@@ -41,6 +43,14 @@ def _apply_as_override(mapping: dict[str, Any], expected_kind: str, *, namespace
     if not text:
         return
     mapping["id"] = text
+
+
+def _column_list(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        value = value.get("columns", value.get("column"))
+    if value is None:
+        return []
+    return [str(col) for col in (value if isinstance(value, list) else [value])]
 
 
 def _model_mapping(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -528,7 +538,47 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             # bidirectional rollup checks.
             if reverse_rollup:
                 edge_spec["rollup_safe_aggregations_reverse"] = reverse_rollup
-            joins[b] = edge_spec
+            # A model keeps every relationship to an entity. A route is its source
+            # columns (an unset `via` is the model's foreign key to the entity).
+            # An entry on the columns of the inferred join replaces it; another
+            # column set is another role of the same entity, kept under its own
+            # key. Two authored relationships on the same columns are refused
+            # rather than merged, so no declaration order decides which one a
+            # query gets and no authored attribute is dropped.
+            foreign = (model.get("keys") or {}).get("foreign") or {}
+            source_columns = _column_list(edge_spec.get("via")) or _column_list(foreign.get(b))
+            same_route = [
+                key
+                for key, join in joins.items()
+                if source_columns
+                and (key == b or join.get("to") == b)
+                and (_column_list(join.get("via")) or _column_list(foreign.get(key)))
+                == source_columns
+            ]
+            if len(same_route) > 1 or any(joins[key].get("id") is not None for key in same_route):
+                names = {str(joins[key].get("id") or f"joins.{key}") for key in same_route}
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"relationships {', '.join(sorted({*names, str(edge_spec['id'])}))} all "
+                    f"join {a} to {b} on {source_columns}: keep one, or give each a different "
+                    "`via:` if they are different roles.",
+                )
+            if same_route:
+                joins[same_route[0]] = edge_spec
+            elif b not in joins:
+                joins[b] = edge_spec
+            else:
+                if not source_columns:
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        f"relationship '{edge_spec['id']}' joins {a} to {b}, which the model "
+                        "already reaches another way, but names no source columns: set `via:`.",
+                    )
+                edge_spec["via"] = source_columns
+                join_key = f"{b}__{_slug(rel_name)}"
+                while join_key in joins:
+                    join_key += "_"
+                joins[join_key] = edge_spec
             model["joins"] = joins
             models[source_model] = model
 

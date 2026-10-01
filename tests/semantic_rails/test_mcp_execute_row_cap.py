@@ -1,10 +1,11 @@
 """MCP execute caps rows and says so when it does.
 
-An agent's plausible mistake, a time window with no grain, used to return one
-row per order timestamp: hundreds of thousands of tokens in a single result.
-Execute returns at most ``max_rows`` rows (default 200). A truncated
-result carries ``truncated``, ``total_row_count`` and a warning that says how
-to narrow the query.
+An agent's plausible mistake, a time role with no grain, returns one row per
+order timestamp: hundreds of thousands of tokens in a single result. Execute
+returns at most ``max_rows`` rows (default 200). A truncated result carries
+``truncated``, ``total_row_count`` and a warning that says how to narrow the
+query. (A bounded window with no grain is a single total instead; see
+``test_window_total.py``.)
 """
 
 from __future__ import annotations
@@ -30,17 +31,21 @@ DAILY_REVENUE = {
     "select": REVENUE,
     "time": {"temporal_role": ORDER_TIME, "grain": "day"},
 }
-# A window with no grain, grouped by store: one row per store and order timestamp.
+# A time role with no grain or window, grouped by store: one row per store and order timestamp.
 NO_GRAIN_WINDOW = {
     "version": 2,
     "select": REVENUE,
     "group_by": [STORE],
-    "time": {"temporal_role": ORDER_TIME, "start": "2017-04-01", "end": "2017-07-01"},
+    "time": {"temporal_role": ORDER_TIME},
 }
 
 
 @pytest.fixture()
-def adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
+def adapter(
+    runtime_factory: Any, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[SemanticLayerMCPAdapter]:
+    # These tests are about the row cap; the character cap has its own tests.
+    monkeypatch.setenv("SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS", "10000000")
     mcp = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
     try:
         yield mcp
@@ -204,7 +209,7 @@ def test_running_totals_do_not_hide_the_missing_grain() -> None:
         return {**NO_GRAIN_WINDOW, "select": [{"as": "v", "expression": expression}]}
 
     # A running total's buckets come from time.grain, so its absence still matters...
-    assert _grouped_ungrained_time_warning(query("cumulative")) is not None
-    assert _grouped_ungrained_time_warning(query("period_to_date")) is not None
+    assert _grouped_ungrained_time_warning(query("cumulative"), {}) is not None
+    assert _grouped_ungrained_time_warning(query("period_to_date"), {}) is not None
     # ...while kinds on their own clock don't project the raw timestamp.
-    assert _grouped_ungrained_time_warning(query("rolling")) is None
+    assert _grouped_ungrained_time_warning(query("rolling"), {}) is None

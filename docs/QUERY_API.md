@@ -302,8 +302,9 @@ When package authors declare physical rollups with `model.variants:` or explicit
   rollup of the leaf's entity to a reason code, such as `missing_dimension`,
   `non_nesting_grain`, `time_bounds_not_aligned`, `timezone_mismatch`,
   `calendar_mismatch`, `rollup_filter_not_implied`, `metric_predicate_filter`,
-  `join_path_mismatch`, `aggregation_not_reaggregable` or `not_certified`. It is
-  empty for a package without rollups.
+  `join_path_mismatch`, `aggregation_not_reaggregable`, `one_to_many_hop` (the
+  leaf crosses a one-to-many hop, which a rollup would multiply) or
+  `not_certified`. It is empty for a package without rollups.
 - `performance_plan.aggregate_routing.candidates` lists every rollup considered
   for each measure leaf: `{leaf_id, measure_id, relation_id, decision, reason}`,
   where `decision` is `selected`, `eligible` (it passed every rule but wasn't
@@ -430,6 +431,13 @@ set `end` to `"2017-01-01 00:00:00"`. Half-open bounds let adjacent windows comp
 overlap. See [QUERY_IR_SCHEMA.md](QUERY_IR_SCHEMA.md#timeblock) for the full `TimeBlock`
 contract, including the object-only `range.last` relative window
 (`unit` ∈ `day | week | month | quarter | year`).
+
+A window (`start` and/or `end`) with no `time.grain` is one total over the window per `group_by`
+group, with no time column, including a window inside one day. The response says so in
+`assumptions` and sets `time_shape: "window_total"`. Setting `time.grain` returns one row per
+period instead. Queries that need a time axis, such as a rolling or prior-period expression, a
+metric predicate (including one in an aggregate's `filter` or a metric recipe), and a `time` block
+with no window are not collapsed.
 
 `policy_context` is optional and scopes visibility, access, and metric-constraint policies for metadata, validation, and query routes.
 
@@ -604,8 +612,10 @@ Supported in metric definitions and in `metric_filters.expression`. Predicate ex
 - contextual predicates inherit the outer time bucket and compatible grouped context entities
 - outer `where` filters are inherited when they are compatible, but they do not widen the scoped join key
 - optional `time_grain` is only valid for contextual predicates and must be a coarser deterministic ancestor of the outer query grain on the same calendar
-- contextual predicates should omit `time_alignment`; they inherit the query period by default
-- public `time_alignment` values are `query_window` and `rolling_window_in_period`, and only for `entity_only` bounded-window predicates
+- contextual predicates inherit the query period by default; omit `time_alignment` unless the input is measured on another clock (next bullet). Plan drafts never set it
+- a contextual predicate whose input is measured on another clock than `time.temporal_role` is refused with `INVALID_TEMPORAL_BINDING`: matching the two clocks' calendar buckets is a different question. Query on the input's clock, use `scope_mode: "entity_only"` for all time, or set `time_alignment: "same_query_period"` (pinning one clock with the input's `temporal_role` if it has several) to compare the calendar periods on purpose
+- `time_alignment` values are `same_query_period` (contextual only), `query_window` and `rolling_window_in_period` (both only for `entity_only` bounded-window predicates)
+- a threshold that zero satisfies (`= 0`, `< 3`, `<= 0`, `!= 1`) counts an entity with no rows at all as 0 when the input is a count or a sum, or an add or subtract of them, so "customers with no orders" works. Every entity, with rows or none, reads by one rule (see [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0)): an operand is 0 where its measure has data somewhere in the predicate's scope, and `NULL` where it has none. So `large_orders = 0` keeps every customer without a large order when some order in scope is large, and keeps nobody when none is (with no large order anywhere in scope there is no data, not a count of zero), and `orders - returned_orders` is `NULL` for every customer in a window where nothing was returned. `NULL` satisfies no threshold, as with a `metric_filter` on the same expression. An average, minimum, maximum, median or ratio over no rows is `NULL` too (an average of nothing is undefined), so `average_order_value < 20` keeps only customers that have orders, as SQL `HAVING AVG(x) < 20` does. Conversion metrics and anchored `scoped_aggregate` ratios refuse a count or sum threshold that zero satisfies for now
 
 Monthly contextual example:
 
@@ -761,6 +771,11 @@ Supported request controls:
 
 - `stage`
 - `verbosity`
+- `kinds` — an array, a comma-separated string, or a JSON array in a string. Ranked kinds are
+  `measure`, `metric`, `segment`, `dimension`, `entity` and `dimension_value`; a value that
+  does not parse or names another kind is refused with `400` instead of returning empty buckets.
+  In resource-grant mode only `metric`, `dimension` and `temporal_role` are produced, and the
+  refusal lists them in `details.valid_kinds`. A `limit` below 1 is refused.
 
 ### `POST /api/v1/inspect`
 
@@ -964,11 +979,13 @@ Response keys:
 - `best` (`null` unless a draft exists)
 - `next`
 - `why` when `status != "ok"`
+- `assumptions` when the draft's window rests on a reading of the question's open end, such
+  as an inclusive last day
 - `alternatives` and `blocked` when `detail` is `full` or `debug`
 - `compose_hints` when `detail` is `debug`
 
 `detail="query"` is an MCP-oriented compact projection. It preserves
-`plan_version`, `intent`, `status`, `why`, `tie_break_hints`, and a compact
+`plan_version`, `intent`, `status`, `why`, `tie_break_hints`, `assumptions`, `warnings`, and a compact
 `best` containing `pattern`, `query_ir`, `resolved`, `validation_ok`, and
 `subject_ids_used`.
 
@@ -1009,6 +1026,7 @@ Response keys:
 - `warnings`
 - `recovery_hints`
 - `assumptions`
+- `time_shape` (only `"window_total"`, when the window was one total)
 - `policy_effects`
 - `provenance_summary`
 - `disabled_options`
@@ -1039,6 +1057,7 @@ Response keys:
 - `errors`
 - `recovery_hints`
 - `assumptions`
+- `time_shape` (only `"window_total"`, when the window was one total)
 - `policy_effects`
 - `provenance_summary`
 
@@ -1100,18 +1119,29 @@ Canonical public error codes:
 The response `warnings` array can carry these non-error signals:
 
 - `UNGRAINED_TIME_PROJECTION` — fires when `time.temporal_role` is set
-  without `time.grain` AND the query has no `group_by` AND no inline
+  without `time.grain` or a `start`/`end` window (a window returns one total instead) AND the query has no `group_by` AND no inline
   window expression (prior_period / rolling / cumulative /
   period_to_date) carries its own grain. The planner will group by the
   raw timestamp column and return one row per distinct value;
   `details.recovery_hints[0]` (`SET_TIME_GRAIN`) recommends adding
   `time.grain`: a grain whose one calendar bucket covers `[start, end)`
   returns one total.
+- `NO_DATA_IN_SCOPE` — fires on `execute` when a sum, count or distinct count (or a sum or
+  difference of them) reads `NULL` on every returned row, or nothing came back and neither a
+  `start`/`end` window nor a metric filter explains it. Such a
+  measure reads `0` in an empty group only where it has data in scope; here it has none, so it
+  is `NULL`. `details.outputs` names the outputs. It never fires on a clipped (`truncated`)
+  result. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
 - `EXPRESSION_NORMALIZED_AWAY` — fires when an input expression `kind`
   was recognized by the parser but did not survive normalization (or
   the user's `as:` alias is missing from compiled output). Carries
   `details.dropped_expression` and `details.compiled_kind` so the agent
   can decide whether to retry with a different shape.
+- `QUERY_SHORTHAND_NORMALIZED` — fires on `validate`, `compile` and `execute`
+  (not `plan`) once per select item that was accepted as shorthand and
+  rewritten to its canonical form. Carries `details.path` (the item as
+  the caller numbered it), `details.received` and `details.canonical`. See
+  [Query IR schema](QUERY_IR_SCHEMA.md#selectitem).
 - `SEMANTIC_CAVEAT_APPLIED` — fires when a package-authored caveat is
   relevant to the compiled query shape and time window. Caveats are
   advisory interpretation context: they do not alter SQL, rows, access,

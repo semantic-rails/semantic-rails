@@ -39,10 +39,10 @@ QUERY = {
     "time": {"temporal_role": ORDER_TIME, "grain": "month", "start": "2017-01-01"},
     "order_by": [{"field": "time", "direction": "ASC"}, {"field": STORE, "direction": "ASC"}],
 }
-# A window without a grain groups by the raw timestamp: thousands of rows.
+# A time role without a grain or window groups by the raw timestamp: thousands of rows.
 UNGRAINED = {
     **QUERY,
-    "time": {"temporal_role": ORDER_TIME, "start": "2017-01-01"},
+    "time": {"temporal_role": ORDER_TIME},
     "order_by": [{"field": STORE, "direction": "ASC"}],
 }
 V2_TOOLS = ["discover", "inspect", "valid-values", "plan", "execute", "segment"]
@@ -465,3 +465,87 @@ def test_every_v2_call_works_behind_an_authenticated_transport(
     assert payload["request_id"] == "trusted"
     assert payload["request_context"]["roles"] == ["analyst"]
     assert not [w for w in payload["warnings"] if str(w.get("code", "")).endswith("_UNKNOWN_ARG")]
+
+
+def test_envelopes_state_each_fact_once(v2: SemanticLayerMCPAdapter) -> None:
+    ok = v2.call_tool("plan", {"intent": "revenue by store"})
+    assert "request_context" not in ok and "recovery_hints" not in ok
+    assert {
+        "ok",
+        "status",
+        "api_version",
+        "request_id",
+        "package_id",
+        "warnings",
+        "errors",
+        "timing_ms",
+    } <= set(ok)
+    # Main accepts an unambiguous unwrapped metric; conflicting targets still carry recovery.
+    bare = {"version": 2, "select": [{"metric": "metric.sales.aov_usd", "as": "aov"}]}
+    assert v2.call_tool("execute", {"query": bare, "mode": "validate"})["ok"]
+    bad = {
+        "version": 2,
+        "select": [{"metric": "metric.sales.aov_usd", "measure": "measure.jaffle.revenue_usd"}],
+    }
+    failed = v2.call_tool("execute", {"query": bad})
+    issue = failed["errors"][0]
+    assert failed["error"] == issue
+    assert issue["code"] == "INVALID_EXPRESSION_AST"
+    assert "expression" in issue["message"] and "group_by" in issue["message"]
+    assert failed["recovery_hints"] == issue["recovery_hints"]
+    empty = [key for key, value in issue.items() if value in (None, "", [], {})]
+    assert empty == [] and "why_invalid" not in issue and "unsupported_construct" not in issue
+
+
+def test_lean_issues_drop_only_empty_fields_and_echoes() -> None:
+    from semantic_rails.mcp import _lean_issue
+
+    details = {"path": "select[0]"}
+    issue = {
+        "code": "C",
+        "message": "m",
+        "why_invalid": "m",
+        "unsupported_construct": "C",
+        "details": details,
+        "path": "",
+        "object_ids": [],
+        "recovery_hints": [{"kind": "k", "message": "h", "details": details, "shape": {}}],
+    }
+    assert _lean_issue(issue) == {
+        "code": "C",
+        "message": "m",
+        "details": details,
+        "recovery_hints": [{"kind": "k", "message": "h", "details": details}],
+    }
+    kept = {"code": "C", "message": "m", "why_invalid": "w", "unsupported_construct": "U"}
+    assert _lean_issue(kept) == kept
+
+
+@pytest.mark.parametrize("channel", ["errors", "warnings"])
+def test_lean_envelopes_preserve_distinct_issues_and_recovery(
+    v2: SemanticLayerMCPAdapter, channel: str
+) -> None:
+    hint = {
+        "code": "RETRY",
+        "message": "Use execute mode validate",
+        "details": {"mode": "validate"},
+    }
+    issue = {
+        "code": "C",
+        "message": "m",
+        "why_invalid": "distinct reason",
+        "unsupported_construct": "distinct construct",
+        "details": {"value": "", "enabled": False},
+        "recovery_hints": [hint],
+        "closest_matches": ["measure.jaffle.revenue_usd"],
+    }
+    policy = {"roles": ["analyst"], "environment": "dev"}
+    payload = {channel: [issue], "request_context": policy, "recovery_hints": [hint]}
+    response = v2._envelope(payload, request_id="test", started_at=0)
+    assert response[channel] == [issue]
+    assert response["request_context"] == policy
+    assert response["recovery_hints"] == [hint]
+    if channel == "errors":
+        assert response["error"] == issue and response["ok"] is False
+    else:
+        assert "error" not in response and response["ok"] is True

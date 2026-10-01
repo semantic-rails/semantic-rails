@@ -14,18 +14,9 @@
 # A layer not listed here isn't assessed on the variants.
 semantic_rails:
   model: [semantic_rails/package]
-  sha256: 0cb15a8c4e73df9e1f2ce418f9d4c5a581c784d96371f7765db6944cb8b0bc9d
+  sha256: eba785a8b55e154d5b1adfc5be3b22c4da70b60acb55b2063f2d8f132a35f527
   interface: The Query API (conversion, rolling, prior_period, aggregate overrides, scoped aggregates and metric_filters).
-  requires_model_change:
-    q19_trailing_3_month_revenue_by_month: &sr_calendar
-      reason: >-
-        `rolling` and `prior_period` are query-time expressions, but they run over a dense
-        calendar, and this package declares no calendar entity. The engine refuses the query
-        ("time.fill requires a calendar entity in the package"; the refused query and its
-        validation errors are in the Semantic Rails results), so the package needs a calendar
-        entity first.
-      doc: https://github.com/semantic-rails/semantic-rails/blob/main/docs/PACKAGE_AUTHORING.md#quickstart-init-a-directory-package
-    q20_revenue_and_prior_month_revenue_by_month: *sr_calendar
+  requires_model_change: {}
 
 metricflow:
   model: [metricflow/models, metricflow/dbt_project.yml]

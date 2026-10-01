@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 from semantic_rails.compiler import compile_query
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.planner import plan_payload
 from semantic_rails.registry import Registry
 from tests.plan_candidate_envelope import plan_candidate_envelope
+
+
+def _wire_oracle(rows):
+    return [
+        {
+            key: value.isoformat() if isinstance(value, datetime) else value
+            for key, value in row.items()
+        }
+        for row in rows
+    ]
 
 
 def _snapshot_parent_metric_query() -> dict:
@@ -25,6 +38,7 @@ def _snapshot_parent_metric_query() -> dict:
                             "scope_mode": "contextual",
                             "op": ">",
                             "value": 1,
+                            "time_alignment": "same_query_period",
                         },
                         {
                             "measure": "measure.jaffle.session_starts",
@@ -32,6 +46,7 @@ def _snapshot_parent_metric_query() -> dict:
                             "scope_mode": "contextual",
                             "op": ">",
                             "value": 1,
+                            "time_alignment": "same_query_period",
                         },
                     ],
                 },
@@ -131,7 +146,7 @@ def test_snapshot_parent_rollup_with_two_contextual_predicates_executes_once_per
             ORDER BY snapshot_base.month_start ASC, snapshot_base.store_name ASC
             """
         )
-        assert actual == oracle
+        assert actual == _wire_oracle(oracle)
     finally:
         runtime.close()
 
@@ -154,6 +169,7 @@ def test_monthly_snapshot_metric_for_session_qualified_stores_matches_oracle(run
                             "scope_mode": "contextual",
                             "op": ">",
                             "value": 0,
+                            "time_alignment": "same_query_period",
                         }
                     ],
                 },
@@ -221,7 +237,7 @@ def test_monthly_snapshot_metric_for_session_qualified_stores_matches_oracle(run
             ORDER BY snapshot_base.month_start ASC, snapshot_base.store_name ASC
             """
         )
-        assert actual == oracle
+        assert actual == _wire_oracle(oracle)
     finally:
         runtime.close()
 
@@ -411,7 +427,7 @@ def test_28d_adoption_funnel_applies_order_rate_filter_inside_conversion_base(ru
             ORDER BY month_start ASC, store_name ASC
             """
         )
-        assert result["rows"] == oracle
+        assert result["rows"] == _wire_oracle(oracle)
     finally:
         runtime.close()
 
@@ -419,12 +435,13 @@ def test_28d_adoption_funnel_applies_order_rate_filter_inside_conversion_base(ru
 def test_plan_composes_exact_complex_question_shapes(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        snapshot = plan_candidate_envelope(
+        snapshot = plan_payload(
             runtime,
             intent=(
                 "Give me the sum of active menu snapshot at the store dimension for stores "
                 "that have done more than one order and more than one session grouped by month"
             ),
+            detail="full",
             limit=1,
         )
         adoption = plan_candidate_envelope(
@@ -433,10 +450,17 @@ def test_plan_composes_exact_complex_question_shapes(runtime_factory):
             limit=1,
         )
 
-        assert snapshot["interpreted_intent"]["pattern"] == "qualified_metric_rollup"
-        snapshot_query = snapshot["candidates"][0]["candidate_ir"]
+        assert snapshot["best"]["pattern"] == "qualified_metric_rollup"
+        # Its qualifiers are measured on other clocks than the snapshot's, so the engine refuses
+        # the draft and the plan does not offer it as ready; the drafted shape is unchanged.
+        assert snapshot["status"] == "low_confidence"
+        assert "ready_for" not in snapshot["next"]
+        snapshot_query = snapshot["best"]["query_ir"]
         snapshot_expr = snapshot_query["select"][0]["expression"]
-        assert snapshot["candidates"][0]["validation"]["ok"] is True
+        assert snapshot["best"]["validation_ok"] is False
+        assert [error["code"] for error in runtime.validate(snapshot_query)["errors"]] == [
+            "INVALID_TEMPORAL_BINDING"
+        ]
         assert snapshot_expr["measure"] == "measure.jaffle.active_menu_count_eop"
         assert snapshot_expr["aggregation"] == "sum"
         # Predicate inputs may be measures or metrics depending on which
@@ -478,6 +502,50 @@ def test_plan_composes_exact_complex_question_shapes(runtime_factory):
             "op": "=",
             "value": True,
         }
+    finally:
+        runtime.close()
+
+
+def test_conversion_metric_refuses_a_threshold_that_zero_satisfies(runtime_factory):
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        report = runtime.validate(
+            {
+                "version": 1,
+                "select": [
+                    {
+                        "as": "signup_to_send_28d",
+                        "expression": {
+                            "metric": "metric.adoption.signup_to_send_conversion_rate_28d"
+                        },
+                    }
+                ],
+                "group_by": ["dimension.jaffle_store_name"],
+                "time": {
+                    "temporal_role": "temporal_role.jaffle_session_started_at",
+                    "grain": "month",
+                },
+                "metric_filters": [
+                    {
+                        "expression": {
+                            "kind": "metric_predicate",
+                            "entity": "entity.jaffle_store",
+                            "scope_mode": "contextual",
+                            "input": {"measure": "measure.jaffle.order_count"},
+                            "op": "=",
+                            "value": 0,
+                            "time_alignment": "same_query_period",
+                        },
+                        "op": "=",
+                        "value": True,
+                    }
+                ],
+            }
+        )
+        assert report["ok"] is False
+        error = report["errors"][0]
+        assert error["code"] == "INVALID_METRIC_PREDICATE"
+        assert "a conversion metric" in error["message"]
     finally:
         runtime.close()
 

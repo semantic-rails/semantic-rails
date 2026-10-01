@@ -109,8 +109,7 @@ import leaves no files behind.
   - metrics are imported when their SQL is the aggregate SQL the export writes:
     - `SUM`, `AVG`, `MIN`, `MAX` or `COUNT(DISTINCT ...)` over `dataset.field`;
     - numbers, parentheses, and `+`, `-` and `*`;
-    - division by `NULLIF(denominator, 0)`;
-    - `COALESCE(x, 0)` on both sides of `+` or `-`.
+    - division by `NULLIF(denominator, 0)`.
 
   Anything else is skipped with a warning: computed dimensions, other SQL, datasets defined by a
   query, `unique_keys`, `custom_extensions`, `ai_context` beyond `synonyms`, and elements whose

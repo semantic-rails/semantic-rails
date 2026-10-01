@@ -9,6 +9,7 @@ import yaml
 
 from semantic_rails.acceleration import routing
 from semantic_rails.acceleration.routing import ROUTING_OFF, aggregate_routing
+from semantic_rails.acceleration.selection import rollup_dimension_entities
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
@@ -154,7 +155,28 @@ def test_model_variants_normalize_to_explicit_aggregate_relations(tmp_path: Path
     assert aggregate.excluded_dimensions == ["dimension.demo_customer_id"]
 
 
-def test_monthly_query_routes_to_lossless_model_variant(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("dimension", "selected_relation", "other_relation", "selected"),
+    [
+        pytest.param(
+            "dimension.demo_store_id",
+            "order_monthly",
+            "order_fact",
+            ["aggregate_relation.orders_monthly"],
+            id="lossless-variant",
+        ),
+        pytest.param(
+            "dimension.demo_customer_id",
+            "order_fact",
+            "order_monthly",
+            [],
+            id="missing-dimension-fallback",
+        ),
+    ],
+)
+def test_monthly_query_variant_routing(
+    tmp_path: Path, dimension, selected_relation, other_relation, selected
+):
     package_dir = tmp_path / "variant_demo"
     _write_variant_package(package_dir)
     config = load_package_config(str(package_dir))
@@ -174,7 +196,7 @@ def test_monthly_query_routes_to_lossless_model_variant(tmp_path: Path):
                     "as": "revenue",
                 }
             ],
-            "group_by": ["dimension.demo_store_id"],
+            "group_by": [dimension],
             "time": {
                 "temporal_role": "temporal_role.demo_order_time",
                 "grain": "month",
@@ -182,44 +204,9 @@ def test_monthly_query_routes_to_lossless_model_variant(tmp_path: Path):
         },
     )
 
-    assert "FROM order_monthly" in compiled["sql"]
-    assert "FROM order_fact" not in compiled["sql"]
-    assert compiled["explain"].performance_plan["aggregate_routing"]["selected"] == [
-        "aggregate_relation.orders_monthly"
-    ]
-
-
-def test_missing_variant_dimension_falls_back_to_raw(tmp_path: Path):
-    package_dir = tmp_path / "variant_demo"
-    _write_variant_package(package_dir)
-    config = load_package_config(str(package_dir))
-
-    compiled = compile_query(
-        config,
-        Registry(config),
-        {
-            "version": 1,
-            "select": [
-                {
-                    "expression": {
-                        "kind": "aggregate",
-                        "measure": "measure.demo.revenue_usd",
-                        "aggregation": "sum",
-                    },
-                    "as": "revenue",
-                }
-            ],
-            "group_by": ["dimension.demo_customer_id"],
-            "time": {
-                "temporal_role": "temporal_role.demo_order_time",
-                "grain": "month",
-            },
-        },
-    )
-
-    assert "FROM order_fact" in compiled["sql"]
-    assert "FROM order_monthly" not in compiled["sql"]
-    assert compiled["explain"].performance_plan["aggregate_routing"]["selected"] == []
+    assert f"FROM {selected_relation}" in compiled["sql"]
+    assert f"FROM {other_relation}" not in compiled["sql"]
+    assert compiled["explain"].performance_plan["aggregate_routing"]["selected"] == selected
 
 
 _ROLLUP_SEED = """
@@ -833,6 +820,15 @@ _SHIP_TO_KEY = {
             id="rollup-pre-joined-one-to-many",  # each order's revenue once per line
         ),
         pytest.param(
+            ({}, [_PRODUCT], {"lines": True}),
+            _grouped(
+                _rollup_query(_REVENUE, "sum", "month"),
+                where=[{"field": "dimension.product", "op": "=", "value": "a"}],
+            ),
+            "one_to_many_hop",
+            id="rollup-pre-joined-one-to-many-filter",  # the base counts each order once
+        ),
+        pytest.param(
             ({"monthly": _MONTHLY}, [], {"ship_to": None}),
             _rollup_query("measure.weight", "sum", "month"),
             "join_path_mismatch",
@@ -1047,9 +1043,20 @@ def _routed_answers(tmp_path: Path, rollups: tuple, query: dict) -> dict:
         compiled[name] = compile_query(config, Registry(config), query)
     with aggregate_routing(False):
         compiled["off"] = compile_query(config, Registry(config), query)
-    rows = {name: sorted(connection.execute(c["sql"]).fetchall()) for name, c in compiled.items()}
+    rows = {
+        name: sorted(connection.execute(c["sql"]).fetchall(), key=str)
+        for name, c in compiled.items()
+    }
 
-    assert rows["rollup"] == rows["base"] == rows["off"]
+    assert rows["rollup"] == rows["off"]
+    # A dimension a rollup holds from another model keeps its inner join in this package (see
+    # test_lookup_joins), so that routing never changes an answer; the package without the
+    # rollup has no such dimension to keep, and keeps the rows the lookup found no match for.
+    if not any(
+        rollup_dimension_entities(config, row.source_entity) - {row.source_entity}
+        for row in config.aggregate_relations
+    ):
+        assert rows["base"] == rows["off"]
     tables = {row.id: row.relation for row in config.aggregate_relations}
 
     def read(sql: str) -> set[str]:

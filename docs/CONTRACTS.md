@@ -23,6 +23,8 @@ The Python distribution version, package schema, Query IR, HTTP API, query MCP,
 semantic contract, and validation-report format are separate version
 identities. A release may add behavior without advancing every contract.
 
+The [result-value contract](QUERY_IR_SCHEMA.md#result-values) defines JSON rows and `column_types`.
+
 ## Semantic validation ownership
 
 The engine is the sole producer of the framework-neutral `semantic` section:

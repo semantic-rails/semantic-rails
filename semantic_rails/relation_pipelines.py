@@ -30,6 +30,7 @@ from .expressions import (
     SemanticExpr,
     parse_config_expression,
     parse_semantic_expression,
+    validate_boolean_argument_count,
 )
 from .schema import PackageConfig, RelationConfig, RelationPipelineStep
 from .sql_ast import (
@@ -56,6 +57,10 @@ from .sql_ast import (
     SqlTableFunction,
     SqlTableRef,
     SqlWindow,
+    build_comparison_condition,
+    build_filter_condition,
+    build_negation,
+    is_null_literal,
 )
 
 
@@ -128,7 +133,7 @@ def _semantic_expr_to_sql(
             _semantic_expr_to_sql(expr.right, default_alias=default_alias, warehouse=warehouse),
         )
     if isinstance(expr, ComparisonExpr):
-        return SqlBinary(
+        return build_comparison_condition(
             _semantic_expr_to_sql(expr.left, default_alias=default_alias, warehouse=warehouse),
             expr.op,
             _semantic_expr_to_sql(expr.right, default_alias=default_alias, warehouse=warehouse),
@@ -143,6 +148,7 @@ def _semantic_expr_to_sql(
             negated=expr.negated,
         )
     if isinstance(expr, BooleanExpr):
+        validate_boolean_argument_count(expr.op, len(expr.args))
         args = [
             _semantic_expr_to_sql(arg, default_alias=default_alias, warehouse=warehouse)
             for arg in expr.args
@@ -155,15 +161,13 @@ def _semantic_expr_to_sql(
                     "INVALID_EXPRESSION_AST",
                     f"Boolean 'not' expressions require exactly one arg, got {len(args)}",
                 )
-            # No unary-NOT node exists in the SQL AST; FALSE = (arg) has the
-            # same three-valued truth table and forces parens around the arg.
-            return SqlBinary(SqlLiteral(False), "=", args[0])
+            return build_negation(args[0])
         current = args[0]
         for arg in args[1:]:
             current = SqlBinary(current, expr.op.upper(), arg)
         return current
     if isinstance(expr, CallExpr):
-        return SqlCall(
+        return dialect_for_warehouse(warehouse).scalar_call(
             expr.name,
             [
                 _semantic_expr_to_sql(arg, default_alias=default_alias, warehouse=warehouse)
@@ -221,9 +225,7 @@ def _predicate(raw: Any, *, default_alias: str = "src", warehouse: str = "duckdb
                 values=[SqlLiteral(item) for item in list(value or [])],
                 negated=op == "NOT IN",
             )
-        if value is None and op in {"=", "IS"}:
-            return SqlIsNull(left)
-        return SqlBinary(left, op, SqlLiteral(value))
+        return build_filter_condition(left, op, value, path="relation.filter")
     return _expr(raw, default_alias=default_alias, warehouse=warehouse)
 
 
@@ -449,10 +451,12 @@ def _join_condition(
     left = _expr(config.get("left"), default_alias=left_alias, warehouse=warehouse)
     right = _expr(config.get("right"), default_alias=right_alias, warehouse=warehouse)
     op = str(config.get("op", "=") or "=")
-    condition: SqlExpr = SqlBinary(left, op, right)
-    transform = str(config.get("transform", "") or "").lower()
-    if transform == "lower":
-        condition = SqlBinary(SqlCall("LOWER", [left]), op, SqlCall("LOWER", [right]))
+    lower = str(config.get("transform", "") or "").lower() == "lower"
+    # A null literal stays bare under the transform, so the comparison still sees it.
+    sides = [
+        SqlCall("LOWER", [s]) if lower and not is_null_literal(s) else s for s in (left, right)
+    ]
+    condition: SqlExpr = build_comparison_condition(sides[0], op, sides[1], path="relation.join")
     lag = config.get("date_lag")
     if isinstance(lag, dict):
         unit = str(lag.get("unit", "day") or "day")

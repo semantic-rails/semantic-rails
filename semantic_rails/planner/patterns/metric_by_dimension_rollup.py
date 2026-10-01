@@ -28,6 +28,7 @@ from .._base import (
     _explicit_grain,
     _implied_window_grain,
     _maybe_group_by,
+    _named_measure,
     _named_metric,
     _object_by_id,
     _preferred_measure,
@@ -133,6 +134,11 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
                 target = _preferred_metric(config, terms)
     if target is None:
         return None
+    if named is None and not metric_first:
+        # A measure the question names in full ("item revenue") is not the shorter one it
+        # shares a word with ("revenue"), but a name that only sits inside other words
+        # ("large order revenue") leaves the ordinary target alone.
+        target = _named_measure(config, target_focus or text, target) or target
 
     # Build the time spec from the target's default temporal role (if
     # any). Without a temporal role we still emit a query without a

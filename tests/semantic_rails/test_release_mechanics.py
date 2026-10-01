@@ -482,7 +482,7 @@ def test_distribution_boundary_gate_rejects_private_paths_and_symbols():
 
 def test_node_dependency_audits_are_ci_gates_and_the_cube_install_is_locked():
     ci = CI_WORKFLOW.read_text(encoding="utf-8")
-    assert "uv export --quiet --format requirements-txt --all-extras" in ci
+    assert "uv run --no-sync python scripts/audit_dependencies.py" in ci
     assert "deploy/cloudflare" not in ci
     assert "npm audit --prefix comparisons/semantic_layers/malloy --audit-level=high" in ci
     # Cube's install surface: exact pins, a committed lockfile and a recorded audit, which CI

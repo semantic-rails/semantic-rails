@@ -77,35 +77,22 @@ def test_shorthand_negative_offset_uses_magnitude() -> None:
     assert short.value == 3
 
 
-def test_shorthand_rejects_zero_offset() -> None:
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        pytest.param({"offset": 0, "grain": "year"}, "non-zero", id="zero-offset"),
+        pytest.param({"offset": -1}, "grain", id="missing-grain"),
+    ],
+)
+def test_shorthand_rejects_invalid_options(options, message) -> None:
     from semantic_rails.errors import SemanticLayerError
 
     with pytest.raises(SemanticLayerError) as excinfo:
         parse_semantic_expression(
-            {
-                "kind": "prior_period",
-                "measure": "measure.jaffle.revenue_usd",
-                "offset": 0,
-                "grain": "year",
-            },
+            {"kind": "prior_period", "measure": "measure.jaffle.revenue_usd", **options},
             context="query",
         )
-    assert "non-zero" in str(excinfo.value).lower()
-
-
-def test_shorthand_rejects_missing_grain() -> None:
-    from semantic_rails.errors import SemanticLayerError
-
-    with pytest.raises(SemanticLayerError) as excinfo:
-        parse_semantic_expression(
-            {
-                "kind": "prior_period",
-                "measure": "measure.jaffle.revenue_usd",
-                "offset": -1,
-            },
-            context="query",
-        )
-    assert "grain" in str(excinfo.value).lower()
+    assert message in str(excinfo.value).lower()
 
 
 # ---------------------------------------------------------------------------

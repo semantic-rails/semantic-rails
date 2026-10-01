@@ -1,0 +1,399 @@
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import time
+from datetime import date, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+import yaml
+
+from scripts import flake_guard, test_quarantine
+
+TODAY = date(2026, 9, 30)
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def manifest(path, **overrides):
+    entry = {
+        "id": "tests/test_sample.py::test_failure",
+        "reason": "Known upstream failure",
+        "upstream": "https://github.com/example/project/issues/1",
+        "review_by": str(TODAY + timedelta(days=10)),
+    }
+    entry.update(overrides)
+    path.write_text(
+        "[[tests]]\n" + "\n".join(f'{key} = "{value}"' for key, value in entry.items()) + "\n"
+    )
+    return entry["id"]
+
+
+@pytest.mark.parametrize("offset", [0, 1, 30])
+def test_quarantine_accepts_dates_within_window(tmp_path, offset):
+    path = tmp_path / "quarantine.toml"
+    nodeid = manifest(path, review_by=str(TODAY + timedelta(days=offset)))
+    result = test_quarantine.load_quarantine(path, TODAY)
+    assert list(result) == [nodeid]
+    assert "Known upstream failure" in result[nodeid]
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        ({"review_by": "2026-09-29"}, "expired"),
+        ({"review_by": "2026-10-31"}, "exceeds 30 days"),
+        ({"review_by": "tomorrow"}, "Invalid isoformat"),
+        ({"id": ""}, "id must be a nonempty"),
+        ({"reason": " "}, "reason must be a nonempty"),
+        ({"upstream": "https:///issues/1"}, "HTTPS link"),
+        ({"upstream": "http://github.com/example/project/issues/1"}, "HTTPS link"),
+    ],
+)
+def test_quarantine_rejects_bad_entries(tmp_path, overrides, message):
+    path = tmp_path / "quarantine.toml"
+    manifest(path, **overrides)
+    with pytest.raises(ValueError, match=message):
+        test_quarantine.load_quarantine(path, TODAY)
+
+
+@pytest.mark.parametrize(
+    "body, message",
+    [
+        ("tests = []", None),
+        ("tests = {}", "tests array"),
+        ("tests = [1]", "entries require"),
+        ("[[tests]]\nid = 'x'", "entries require"),
+        ("tests = []\nextra = 1", "tests array"),
+        ("tests = [", "Invalid value"),
+    ],
+)
+def test_quarantine_structure(tmp_path, body, message):
+    path = tmp_path / "quarantine.toml"
+    path.write_text(body)
+    if message:
+        with pytest.raises(ValueError, match=message):
+            test_quarantine.load_quarantine(path, TODAY)
+    else:
+        assert test_quarantine.load_quarantine(path, TODAY) == {}
+
+
+def test_quarantine_rejects_duplicates_and_accepts_toml_date(tmp_path):
+    path = tmp_path / "quarantine.toml"
+    manifest(path)
+    body = path.read_text().replace('"2026-10-10"', "2026-10-10")
+    path.write_text(body)
+    assert len(test_quarantine.load_quarantine(path, TODAY)) == 1
+    path.write_text(body + body)
+    with pytest.raises(ValueError, match="duplicate"):
+        test_quarantine.load_quarantine(path, TODAY)
+
+
+def plugin_run(tmp_path, source, *, parallel=False, **overrides):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_sample.py").write_text(source)
+    manifest(tmp_path / "quarantine.toml", **{"review_by": str(date.today()), **overrides})
+    (tmp_path / "conftest.py").write_text(
+        "from pathlib import Path\n"
+        "from scripts import test_quarantine\n"
+        "test_quarantine.QUARANTINE = Path(__file__).parent / 'quarantine.toml'\n"
+        "pytest_plugins = ['scripts.test_quarantine']\n"
+    )
+    config = tmp_path / "pytest.ini"
+    config.write_text("[pytest]\n")
+    command = [sys.executable, "-m", "pytest", "-q", "-c", str(config), "--validate-quarantine"]
+    if parallel:
+        command.extend(["-p", "xdist.plugin", "-n", "2"])
+    return subprocess.run(
+        command,
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(ROOT), "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        ("def test_failure(): assert False\n", "1 xfailed"),
+        ("def test_failure(): pass\n", "1 xpassed"),
+        ("import pytest\n@pytest.mark.xfail(strict=True)\ndef test_failure(): pass\n", "1 xpassed"),
+    ],
+)
+def test_collection_hook_runs_quarantined_tests_with_nonstrict_xfail(tmp_path, source, expected):
+    result = plugin_run(tmp_path, source)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert expected in result.stdout
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+def test_collection_hook_rejects_stale_exact_parameter_id(tmp_path, parallel):
+    result = plugin_run(
+        tmp_path,
+        "import pytest\n@pytest.mark.parametrize('x', [1])\ndef test_failure(x): pass\n",
+        parallel=parallel,
+        id="tests/test_sample.py::test_failure[removed]",
+    )
+    assert result.returncode != 0
+    output = result.stdout + result.stderr
+    assert "quarantine tests no longer exist" in output
+    assert "test_failure[removed]" in output
+    assert "INTERNALERROR" not in output
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+def test_collection_hook_reports_expiry_before_tests_run(tmp_path, parallel):
+    result = plugin_run(
+        tmp_path,
+        "def test_failure(): assert False, 'must not run'\n",
+        parallel=parallel,
+        review_by=str(date.today() - timedelta(days=1)),
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "review_by expired" in output
+    assert "INTERNALERROR" not in output
+    assert "must not run" not in output
+
+
+def write_file(root, name, source):
+    path = root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source)
+
+
+def test_guard_selects_changed_tests_and_all_direct_import_forms(tmp_path):
+    imports = [
+        "import semantic_rails.db",
+        "from semantic_rails.db import Adapter",
+        "from semantic_rails import db as adapter",
+        "def helper():\n    from semantic_rails.db import Adapter",
+    ]
+    for i, source in enumerate(imports):
+        write_file(tmp_path, f"tests/semantic_rails/test_{i}.py", source)
+    write_file(tmp_path, "tests/mf2sr/test_changed.py", "")
+    write_file(tmp_path, "tests/semantic_rails/test_unrelated.py", "import semantic_rails.config")
+    write_file(tmp_path, "tests/integration/test_warehouse.py", "import semantic_rails.db")
+    selected = flake_guard.select_tests(
+        tmp_path,
+        ["semantic_rails/db.py", "tests/mf2sr/test_changed.py", "tests/mf2sr/test_deleted.py"],
+    )
+    assert selected == ["tests/mf2sr/test_changed.py"] + [
+        f"tests/semantic_rails/test_{i}.py" for i in range(4)
+    ]
+
+
+def test_guard_package_change_and_cap_prioritize_changed_test(tmp_path, capsys):
+    for i in range(3):
+        write_file(tmp_path, f"tests/semantic_rails/test_{i}.py", "import semantic_rails.db")
+    selected = flake_guard.select_tests(
+        tmp_path, ["semantic_rails/__init__.py", "tests/semantic_rails/test_2.py"], cap=2
+    )
+    assert selected == ["tests/semantic_rails/test_2.py", "tests/semantic_rails/test_0.py"]
+    assert "capped out 1 files" in capsys.readouterr().out
+
+
+def test_guard_does_not_select_tests_for_unrelated_change(tmp_path):
+    write_file(tmp_path, "tests/semantic_rails/test_sample.py", "import semantic_rails.db")
+    assert flake_guard.select_tests(tmp_path, ["README.md"]) == []
+
+
+@pytest.mark.parametrize("failed_repetition", [None, 1, 2, 3])
+def test_guard_repeats_three_times_but_never_retries_failure(
+    monkeypatch, tmp_path, capsys, failed_repetition
+):
+    calls = []
+
+    class Process:
+        def __init__(self, command, **kwargs):
+            calls.append(command)
+            if len(calls) == failed_repetition:
+                report = next(
+                    part.split("=", 1)[1] for part in command if part.startswith("--junitxml=")
+                )
+                Path(report).write_text(
+                    '<testsuites><testsuite><testcase classname="tests.test_sample" '
+                    'name="test_failure"><failure/></testcase></testsuite></testsuites>'
+                )
+
+        def wait(self, timeout=None):
+            return int(len(calls) == failed_repetition)
+
+    monkeypatch.setattr(flake_guard.subprocess, "Popen", Process)
+    result = flake_guard.run_repetitions(["tests/test_sample.py"], tmp_path, time.monotonic() + 30)
+    assert result == int(failed_repetition is not None)
+    assert len(calls) == (failed_repetition or 3)
+    seeds = {next(part for part in call if part.startswith("--flake-seed=")) for call in calls}
+    assert len(seeds) == len(calls)
+    assert all(call[call.index("-n") + 1] == "auto" for call in calls)
+    output = capsys.readouterr().out
+    if failed_repetition:
+        assert f"intermittent: investigate; repetition {failed_repetition}" in output
+        assert "tests.test_sample::test_failure" in output
+
+
+def test_guard_timeout_kills_workers_and_fails(monkeypatch, tmp_path, capsys):
+    killed = []
+
+    class Process:
+        pid = 123
+
+        def __init__(self, command, **kwargs):
+            assert kwargs["start_new_session"]
+
+        def wait(self, timeout=None):
+            if timeout is not None:
+                raise subprocess.TimeoutExpired("pytest", timeout)
+            return -9
+
+    monkeypatch.setattr(flake_guard.subprocess, "Popen", Process)
+    monkeypatch.setattr(flake_guard.os, "killpg", lambda *args: killed.append(args))
+    assert (
+        flake_guard.run_repetitions(["tests/test_sample.py"], tmp_path, time.monotonic() + 30) == 1
+    )
+    assert killed == [(123, flake_guard.signal.SIGKILL)]
+    output = capsys.readouterr().out
+    assert "repetition 1; timed out" in output and "tests/test_sample.py" in output
+
+
+def test_guard_skips_a_repetition_that_cannot_fit_and_passes_inconclusive(
+    monkeypatch, tmp_path, capsys
+):
+    calls = []
+    clock = [1000.0]
+
+    class Process:
+        def __init__(self, command, **kwargs):
+            calls.append(command)
+
+        def wait(self, timeout=None):
+            clock[0] += 100.0  # each repetition takes 100 s
+            return 0
+
+    monkeypatch.setattr(flake_guard.subprocess, "Popen", Process)
+    monkeypatch.setattr(flake_guard.time, "monotonic", lambda: clock[0])
+    # 290 s budget: repetitions 1 and 2 fit; repetition 3 would need ~100 s with 90 s left.
+    assert flake_guard.run_repetitions(["tests/test_sample.py"], tmp_path, clock[0] + 290) == 0
+    assert len(calls) == 2
+    output = capsys.readouterr().out
+    assert "Flake guard inconclusive: 2 of 3 repetitions passed" in output
+    assert "intermittent" not in output
+
+
+def test_guard_still_fails_a_repetition_that_hangs(monkeypatch, tmp_path, capsys):
+    killed = []
+    clock = [1000.0]
+    calls = []
+
+    class Process:
+        pid = 123
+
+        def __init__(self, command, **kwargs):
+            calls.append(command)
+
+        def wait(self, timeout=None):
+            if len(calls) == 2 and timeout is not None:
+                clock[0] += timeout
+                raise subprocess.TimeoutExpired("pytest", timeout)
+            clock[0] += 50.0
+            return 0 if timeout is not None else -9
+
+    monkeypatch.setattr(flake_guard.subprocess, "Popen", Process)
+    monkeypatch.setattr(flake_guard.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(flake_guard.os, "killpg", lambda *args: killed.append(args))
+    # Repetition 2 fits (240 s left, ~50 s expected) but hangs: that is still a failure.
+    assert flake_guard.run_repetitions(["tests/test_sample.py"], tmp_path, clock[0] + 290) == 1
+    assert killed == [(123, flake_guard.signal.SIGKILL)]
+    assert "repetition 2; timed out" in capsys.readouterr().out
+
+
+def test_guard_expired_budget_and_empty_selection(monkeypatch, tmp_path):
+    def no_process(*args, **kwargs):
+        pytest.fail("must not start pytest")
+
+    monkeypatch.setattr(flake_guard.subprocess, "Popen", no_process)
+    assert flake_guard.run_repetitions([], tmp_path, time.monotonic() - 1) == 0
+    assert flake_guard.run_repetitions(["test.py"], tmp_path, time.monotonic() - 1) == 1
+
+
+def test_seeded_collection_is_repeatable_and_changes_order(monkeypatch):
+    monkeypatch.setattr(test_quarantine, "load_quarantine", lambda _: {})
+
+    class Config:
+        def getoption(self, name):
+            return 42 if name == "--flake-seed" else False
+
+    original = [SimpleNamespace(nodeid=str(i)) for i in range(20)]
+    first, second = original.copy(), original.copy()
+    test_quarantine.pytest_collection_modifyitems(Config(), first)
+    test_quarantine.pytest_collection_modifyitems(Config(), second)
+    assert first == second and first != original
+
+
+@pytest.mark.parametrize("content", [None, "<truncated", "<testsuites/>"])
+def test_guard_handles_missing_or_incomplete_failure_reports(tmp_path, content):
+    report = tmp_path / "results.xml"
+    if content is not None:
+        report.write_text(content)
+    assert "pytest" in flake_guard.failure_names(report)[0]
+
+
+def test_guard_diffs_merge_group_base_including_removed_and_renamed_modules(monkeypatch):
+    base = "a" * 40
+    commands = []
+    selected = []
+    monkeypatch.setattr(sys, "argv", ["flake_guard.py", "--base", base])
+
+    def diff(command, **kwargs):
+        commands.append(command)
+        assert kwargs["timeout"] == 20
+        return SimpleNamespace(stdout="semantic_rails/old.py\nsemantic_rails/new.py\n")
+
+    def select(root, changed):
+        selected.extend(changed)
+        return []
+
+    monkeypatch.setattr(flake_guard.subprocess, "run", diff)
+    monkeypatch.setattr(flake_guard, "select_tests", select)
+    assert flake_guard.main() == 0
+    assert commands == [
+        ["git", "diff", "--name-only", "--no-renames", "--diff-filter=ACDM", base, "HEAD", "--"]
+    ]
+    assert selected == ["semantic_rails/old.py", "semantic_rails/new.py"]
+
+
+def test_workflow_limits_guard_to_hosted_merge_groups_and_validates_quarantine():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    backend = workflow["jobs"]["backend"]
+    assert backend["runs-on"] == "ubuntu-latest"
+    guard = next(
+        step for step in backend["steps"] if step.get("name") == "Catch intermittent failures"
+    )
+    assert guard["if"] == "github.event_name == 'merge_group' && matrix.python-version == '3.12'"
+    assert guard["timeout-minutes"] <= 5
+    assert guard["env"]["MERGE_BASE"] == "${{ github.event.merge_group.base_sha }}"
+    assert not guard.get("continue-on-error")
+    assert any("--validate-quarantine" in step.get("run", "") for step in backend["steps"])
+
+
+def test_dependabot_updates_uv_lock_weekly_and_keeps_actions():
+    config = yaml.safe_load((ROOT / ".github/dependabot.yml").read_text())
+    assert [entry["package-ecosystem"] for entry in config["updates"]] == ["uv", "github-actions"]
+    python = config["updates"][0]
+    assert python["schedule"]["interval"] == "weekly"
+    assert set(python["groups"]) == {"python-deps", "python-deps-major"}
+
+
+def test_release_hygiene_accepts_only_the_quarantine_manifest():
+    from scripts.verify_release_readiness import HYGIENE_FORBIDDEN_PATH_PATTERNS
+
+    assert not any(
+        pattern.search("tests/quarantine.toml") for pattern in HYGIENE_FORBIDDEN_PATH_PATTERNS
+    )
+    assert any(
+        pattern.search("tests/unrelated.toml") for pattern in HYGIENE_FORBIDDEN_PATH_PATTERNS
+    )

@@ -40,6 +40,7 @@ from ..expressions import (
     parse_semantic_expression,
     resolve_filter_dimension,
     resolve_measure_temporal_role,
+    validate_boolean_argument_count,
 )
 from ..ir import BoundMeasure
 from ..schema import MeasureConfig, PackageConfig
@@ -50,6 +51,8 @@ from ..sql_ast import (
     SqlCaseWhen,
     SqlIn,
     SqlLiteral,
+    build_comparison_condition,
+    build_negation,
 )
 from .dependencies import binding_cut, measure_cut_owners, measure_objects
 from .indexes import (
@@ -57,9 +60,10 @@ from .indexes import (
     _entity_index,
     _measure_index,
     _recipe_index,
+    _relationship_index,
     _resolve_table_entity,
 )
-from .paths import _column_ref
+from .paths import _column_ref, _reaches_at_most_one
 
 
 def _freeze_payload(value: Any) -> str:
@@ -262,6 +266,8 @@ def _config_expr_to_sql_inner(
     if isinstance(expr, ColumnRefExpr):
         entity_id = _resolve_expr_entity(expr, measure, config)
         entity = entities[entity_id]
+        if is_conditional_aggregate(measure):
+            bind_conditional_aggregate_column(measure, entity_id, expr.column, config)
         # For a measure's own entity, prefer source_relation (fact table)
         # over entity.table (which is typically the calendar relation for
         # fact measures that bind to a time entity).
@@ -284,7 +290,7 @@ def _config_expr_to_sql_inner(
             _config_expr_to_sql(expr.right, measure, config),
         )
     if isinstance(expr, ComparisonExpr):
-        return SqlBinary(
+        return build_comparison_condition(
             _config_expr_to_sql(expr.left, measure, config),
             expr.op,
             _config_expr_to_sql(expr.right, measure, config),
@@ -296,6 +302,7 @@ def _config_expr_to_sql_inner(
             negated=expr.negated,
         )
     if isinstance(expr, BooleanExpr):
+        validate_boolean_argument_count(expr.op, len(expr.args))
         rendered = [_config_expr_to_sql(arg, measure, config) for arg in expr.args]
         if not rendered:
             raise SemanticLayerError("INVALID_EXPRESSION_AST", "Boolean expressions require args")
@@ -306,15 +313,13 @@ def _config_expr_to_sql_inner(
                     "INVALID_EXPRESSION_AST",
                     f"Boolean 'not' expressions require exactly one arg, got {len(rendered)}",
                 )
-            # No unary-NOT node exists in the SQL AST; FALSE = (arg) has the
-            # same three-valued truth table and forces parens around the arg.
-            return SqlBinary(SqlLiteral(False), "=", rendered[0])
+            return build_negation(rendered[0])
         current = rendered[0]
         for item in rendered[1:]:
             current = SqlBinary(current, op.upper(), item)
         return current
     if isinstance(expr, CallExpr):
-        return SqlCall(
+        return dialect_for_warehouse(config.package.warehouse).scalar_call(
             expr.name,
             [_config_expr_to_sql(arg, measure, config) for arg in expr.args],
             distinct=expr.distinct,
@@ -419,12 +424,37 @@ def _bind_measure(
         query.time.temporal_role if query.time else "",
     )
     if temporal_role and temporal_role not in measure.compatible_temporal_roles:
+        details: dict[str, Any] = {
+            "measure": measure_id,
+            "compatible": list(measure.compatible_temporal_roles),
+        }
+        if not measure.compatible_temporal_roles:
+            # No clock at all: name the role asked for, so the hint says to declare one.
+            details["requested"] = temporal_role
         raise SemanticLayerError(
             "INCOMPATIBLE_TEMPORAL_ROLE",
             f"Temporal role '{temporal_role}' is not compatible with '{measure_id}'",
-            details={"measure": measure_id, "compatible": list(measure.compatible_temporal_roles)},
+            details=details,
         )
     query_role = query.time.temporal_role if query.time else ""
+    if query_role and not temporal_role and not conversion_operand:
+        if measure_id.startswith("measure.__aggif__."):
+            # An aggregate_if has no model or measure of its own to declare a clock on.
+            raise SemanticLayerError(
+                "INCOMPATIBLE_TEMPORAL_ROLE",
+                f"aggregate_if can't be used with time ('{query_role}'); declare a measure "
+                "with `times:` and aggregate that instead, or drop `time` from the query.",
+                details={"requested": query_role, "compatible": [], "source": "aggregate_if"},
+            )
+        # No clock to bucket by: the plan has no role to read, so refuse here, in the one
+        # place every measure is bound, instead of failing later on a missing role.
+        raise SemanticLayerError(
+            "INCOMPATIBLE_TEMPORAL_ROLE",
+            f"'{measure_id}' has no time role, so it can't be placed on '{query_role}'. Mark "
+            f"a time on its model `default: true`, or list `times:` on the measure; or drop "
+            f"`time` from the query.",
+            details={"measure": measure_id, "requested": query_role, "compatible": []},
+        )
     compatible = list(measure.compatible_temporal_roles)
     # Conversion operands keep their own rules (_validate_conversion_temporal_bindings).
     named = (
@@ -558,10 +588,11 @@ def _bind_scoped_aggregate(
                 "parsed and validated, but SQL lowering ships in the "
                 "next round. The IR contract is stable; the compiler "
                 "stub blocks execution to avoid silently aggregating "
-                "events outside the requested window. Until the "
-                "lowering lands, pre-author the windowed measure in the "
-                "package (kind: scoped_aggregate inside a metric "
-                "recipe) or run a two-step pipeline."
+                "events outside the requested window. A metric recipe "
+                "that authors the same anchor and window is refused the "
+                "same way. Until the lowering lands, expose the offset "
+                "from the anchor as a column (for example days since "
+                "the first order) and filter a measure on it."
             ),
             details={
                 "anchor": dict(expr.anchor or {}),
@@ -844,15 +875,36 @@ def _collect_conversion_exprs(
 # occurrence to a normal ``AggregateExpr`` backed by an anonymous
 # synthetic measure (held on ``LogicalPlan.synthetic_measures``).
 #
+# An aggregate_if aggregates at the grain of its value's entity (the base);
+# every other column it reads must be reachable from the base by one
+# unambiguous chain of declared many-to-one hops.
+# ``check_conditional_aggregate_path`` holds that rule, and every measure
+# leaf that plans the synthetic measure's joins runs it on the path a
+# ``where`` filter on that entity would take.
+#
 # Constraints surfaced through ``UNSUPPORTED_CONDITIONAL_AGGREGATE``:
 #  - Every column ref inside ``condition`` / ``value`` must resolve to an
 #    entity via ``entity`` or ``table`` (no surrounding-measure
 #    fallback exists for an inline aggregate_if).
-#  - All resolved columns must share a single entity. Cross-entity
-#    aggregate_if is rejected.
+#  - The ``value`` columns share one entity, the base. Without a value
+#    column, the condition's columns must share one entity: which rows a
+#    count counts is otherwise ambiguous.
+#  - Each other entity the condition reads is reached from the base over
+#    N:1 or 1:1 hops only: no one-to-many, many-to-many or bridge hop, no
+#    hop valid over time, and one route (pin ambiguous routes and roles
+#    with a path preference).
+#  - A value row with no match on the path never satisfies the condition:
+#    for each such entity, a top-level AND term compares a bare column of
+#    it (=, !=, <, <=, >, >=, IN, NOT IN, IS NOT NULL). A condition such a
+#    row could satisfy (IS NULL, an OR with the base's own column) is
+#    refused, so whether the lookup joins LEFT or INNER changes no value.
 #  - The aggregation must be a scalar aggregation that
 #    ``_aggregation_expr`` already supports (count, sum, avg, min, max,
 #    median, percentile). Window-only aggregations are rejected.
+#
+# When it reads another entity, each column it reads binds the dimensions
+# over that column, as a ``where`` filter binds its dimension, so object
+# policies on them refuse it (``bind_conditional_aggregate_column``).
 
 
 _AGGIF_SCALAR_AGGREGATIONS = frozenset(
@@ -886,26 +938,245 @@ def _resolve_column_entity(ref: ColumnRefExpr, config: PackageConfig) -> str:
 
 
 def _conditional_aggregate_entity(expr: ConditionalAggregateExpr, config: PackageConfig) -> str:
-    refs: list[ColumnRefExpr] = []
-    refs.extend(collect_column_refs(expr.condition))
-    if expr.value is not None:
-        refs.extend(collect_column_refs(expr.value))
-    if not refs:
+    """The base entity: the one entity of the value's columns, else of the condition's."""
+    value_refs = collect_column_refs(expr.value) if expr.value is not None else []
+    condition_refs = collect_column_refs(expr.condition)
+    if not value_refs and not condition_refs:
         raise SemanticLayerError(
             "UNSUPPORTED_CONDITIONAL_AGGREGATE",
             "aggregate_if expressions must reference at least one column",
         )
-    entities = {_resolve_column_entity(ref, config) for ref in refs}
-    if len(entities) > 1:
+    value_entities = {_resolve_column_entity(ref, config) for ref in value_refs}
+    condition_entities = {_resolve_column_entity(ref, config) for ref in condition_refs}
+    if len(value_entities) > 1:
         raise SemanticLayerError(
             "UNSUPPORTED_CONDITIONAL_AGGREGATE",
             (
-                f"aggregate_if references columns from multiple entities {sorted(entities)} "
-                "— inline conditional aggregates must resolve to a single entity"
+                f"aggregate_if value reads columns from several entities {sorted(value_entities)}; "
+                "it aggregates the rows of one entity, so its value must come from that entity"
             ),
-            details={"entities": sorted(entities)},
+            details={
+                "entities": sorted(value_entities),
+                "reason": "value_spans_entities",
+                "hint": (
+                    "Take the value from one entity; the condition may read the entities it "
+                    "reaches over many-to-one hops."
+                ),
+            },
         )
-    return next(iter(entities))
+    if value_entities:
+        return next(iter(value_entities))
+    if len(condition_entities) > 1:
+        raise SemanticLayerError(
+            "UNSUPPORTED_CONDITIONAL_AGGREGATE",
+            (
+                f"aggregate_if({expr.aggregation}) has no value column and its condition reads "
+                f"several entities {sorted(condition_entities)}, so which entity's rows it "
+                "aggregates is ambiguous"
+            ),
+            details={
+                "entities": sorted(condition_entities),
+                "reason": "ambiguous_grain",
+                "hint": (
+                    "Add a 'value' column of the entity whose rows to aggregate, e.g. its key "
+                    "to count its rows."
+                ),
+            },
+        )
+    return next(iter(condition_entities))
+
+
+# A NULL operand makes these comparisons NULL, so a row with no match fails them.
+_NULL_REJECTING_OPS = frozenset({"=", "!=", "<>", "<", "<=", ">", ">=", "IN", "NOT IN"})
+
+
+def _and_terms(expr: SemanticExpr) -> list[SemanticExpr]:
+    if isinstance(expr, BooleanExpr) and expr.op.lower() == "and":
+        return [term for arg in expr.args for term in _and_terms(arg)]
+    return [expr]
+
+
+def _null_rejected_entities(term: SemanticExpr, config: PackageConfig) -> set[str]:
+    """The entities one of whose bare columns, read as NULL, makes ``term`` not true."""
+    if isinstance(term, InExpr):
+        if isinstance(term.expr, ColumnRefExpr) and not any(
+            isinstance(value, LiteralExpr) and value.value is None for value in term.values
+        ):
+            return {_resolve_column_entity(term.expr, config)}
+        return set()
+    if not isinstance(term, ComparisonExpr):
+        return set()
+    op = " ".join(term.op.split()).upper()
+    rejected = set()
+    for column, other in ((term.left, term.right), (term.right, term.left)):
+        if not isinstance(column, ColumnRefExpr):
+            continue
+        # `= null` reads as IS NULL, which a row with no match satisfies.
+        if isinstance(other, LiteralExpr) and other.value is None:
+            rejects = op in {"!=", "<>", "IS NOT"}
+        else:
+            rejects = op in _NULL_REJECTING_OPS
+        if rejects:
+            rejected.add(_resolve_column_entity(column, config))
+    return rejected
+
+
+def _require_null_rejecting_condition(
+    expr: ConditionalAggregateExpr, base: str, config: PackageConfig
+) -> None:
+    """Refuse a condition that a value row with no match on its path could satisfy.
+
+    Each entity other than the base that the condition reads needs a top-level AND term
+    comparing a bare column of it, so that such a row fails the condition whether its lookup
+    joins LEFT or INNER, and the join kind never changes a value.
+    """
+    terms = _and_terms(expr.condition)
+    rejected = {entity for term in terms for entity in _null_rejected_entities(term, config)}
+    read = {_resolve_column_entity(ref, config) for ref in collect_column_refs(expr.condition)}
+    accepting = sorted(read - rejected - {base})
+    if accepting:
+        entity = accepting[0]
+        raise _conditional_path_refusal(
+            base,
+            entity,
+            "a value row with no match there could satisfy the condition",
+            "null_accepting_condition",
+            (
+                f"Compare a column of '{entity}' with =, !=, <, <=, >, >=, IN, NOT IN or "
+                "IS NOT NULL in a top-level AND term of the condition, or use a where filter "
+                "on its dimension with the plain measure."
+            ),
+        )
+
+
+def is_conditional_aggregate(measure: MeasureConfig) -> bool:
+    return measure.meta.get("source") == "aggregate_if"
+
+
+# Policy kinds that refuse a query by the ids of the objects it reads.
+_OBJECT_POLICY_KINDS = frozenset({"object_access", "object_visibility"})
+
+
+def bind_conditional_aggregate_column(
+    measure: MeasureConfig, entity_id: str, column: str, config: PackageConfig
+) -> None:
+    """Bind a column a cross-entity aggregate_if reads as a where filter binds its dimension.
+
+    Every lowering of the measure's expression reads its columns here, so each dimension over
+    the column becomes a dependency that object policies see before SQL is rendered. A column
+    of another entity that no dimension declares cannot be named by a policy, so it is refused
+    whenever the package declares an object policy. A single-entity aggregate_if is unchanged.
+    """
+    joined = _measure_required_entities(measure, config) - {measure.entity}
+    if not joined:
+        return
+    dimensions = [
+        row.id
+        for row in config.dimensions
+        if row.entity == entity_id and row.column.casefold() == column.casefold()
+    ]
+    if (
+        not dimensions
+        and entity_id in joined
+        and any(policy.kind in _OBJECT_POLICY_KINDS for policy in config.semantic_policies)
+    ):
+        raise SemanticLayerError(
+            "POLICY_DENIED",
+            (
+                f"aggregate_if over '{measure.entity}' reads column '{column}' of "
+                f"'{entity_id}', which no dimension declares, so object policies "
+                "cannot govern it"
+            ),
+            details={
+                "reason": "column_without_dimension",
+                "entity": entity_id,
+                "column": column,
+                "hint": (
+                    "Declare a dimension on the column, or use a where filter on a "
+                    "dimension of that entity with the plain measure."
+                ),
+            },
+        )
+    index = _dimension_index(config)
+    for dimension_id in dimensions:
+        index.get(dimension_id)
+
+
+def _conditional_path_refusal(
+    base: str, target: str, message: str, reason: str, hint: str, **details: Any
+) -> SemanticLayerError:
+    return SemanticLayerError(
+        "UNSUPPORTED_CONDITIONAL_AGGREGATE",
+        f"aggregate_if over '{base}' reads '{target}': {message}",
+        details={
+            "base_entity": base,
+            "entity": target,
+            "reason": reason,
+            "hint": hint,
+            **details,
+        },
+    )
+
+
+def conditional_aggregate_route_refusal(
+    measure: MeasureConfig, target: str, exc: SemanticLayerError
+) -> SemanticLayerError:
+    """The aggregate_if refusal for an entity its base reaches by no route, or by two."""
+    return _conditional_path_refusal(
+        measure.entity,
+        target,
+        str(exc),
+        exc.code.lower(),
+        str(exc.details.get("hint", ""))
+        or "Declare a many-to-one relationship from the value's entity to this entity.",
+        candidates=exc.details.get("candidates", []),
+    )
+
+
+def check_conditional_aggregate_path(
+    measure: MeasureConfig, target: str, path: list[str], config: PackageConfig
+) -> None:
+    """Refuse an aggregate_if unless every hop of its path to ``target`` reaches at most one row.
+
+    The path is the one a ``where`` filter on that entity's dimension takes (path
+    preferences and role rules included), so no value row is counted twice.
+    """
+    relationships = _relationship_index(config)
+    current = measure.entity
+    for rel_id in path:
+        rel = relationships[rel_id]
+        forward = current == rel.source_entity
+        following = rel.target_entity if forward else rel.source_entity
+        if rel.temporal_validity or not _reaches_at_most_one(rel, current):
+            cardinality = rel.cardinality if forward else ":".join(rel.cardinality.split(":")[::-1])
+            why, hint = (
+                (
+                    "is valid over time",
+                    "An aggregate_if has no time to pick one version by; read an entity "
+                    "that holds one row per key instead.",
+                )
+                if rel.temporal_validity
+                else (
+                    f"is {cardinality}: it can reach many rows",
+                    "A condition may read only the entities its value's entity reaches "
+                    "over many-to-one hops. To keep rows by what their related rows hold, "
+                    "use a metric_predicate on the value's entity instead.",
+                )
+            )
+            raise _conditional_path_refusal(
+                measure.entity,
+                target,
+                f"the hop '{rel.id}' from '{current}' to '{following}' {why}, so one value "
+                "row could be aggregated more than once",
+                "fanout_hop",
+                hint,
+                path=list(path),
+                relationship=rel.id,
+                from_entity=current,
+                to_entity=following,
+                cardinality=cardinality,
+            )
+        current = following
 
 
 def _synthetic_conditional_measure(
@@ -922,6 +1193,7 @@ def _synthetic_conditional_measure(
             details={"aggregation": expr.aggregation},
         )
     entity_id = _conditional_aggregate_entity(expr, config)
+    _require_null_rejecting_condition(expr, entity_id, config)
     entities = _entity_index(config)
     entity = entities[entity_id]
 
@@ -991,7 +1263,6 @@ def _rewrite_conditional_aggregates(
             op=expr.op,
             left=_rewrite_conditional_aggregates(expr.left, config, synthetic),
             right=_rewrite_conditional_aggregates(expr.right, config, synthetic),
-            null_behavior=expr.null_behavior,
         )
     if isinstance(expr, ComparisonExpr):
         return ComparisonExpr(
@@ -1014,7 +1285,6 @@ def _rewrite_conditional_aggregates(
         return RatioExpr(
             numerator=_rewrite_conditional_aggregates(expr.numerator, config, synthetic),
             denominator=_rewrite_conditional_aggregates(expr.denominator, config, synthetic),
-            null_behavior=expr.null_behavior,
         )
     if isinstance(expr, CaseExpr):
         return CaseExpr(

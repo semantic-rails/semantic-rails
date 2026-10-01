@@ -329,6 +329,7 @@ def test_jaffle_shop_advanced_examples_execute_hard_questions(runtime_factory):
                                         "entity": "entity.jaffle_customer",
                                         "op": ">",
                                         "value": 0,
+                                        "time_alignment": "same_query_period",
                                     }
                                 ],
                             },

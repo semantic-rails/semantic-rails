@@ -304,12 +304,50 @@ def test_a_prior_period_comparison_is_not_a_window(adapter: SemanticLayerMCPAdap
     assert _gap_kinds(adapter, text, last_month) == ["prior_period_comparison_unrealized"]
 
 
-def test_a_callers_window_settles_the_question(adapter: SemanticLayerMCPAdapter) -> None:
-    caller = {"time": {"start": "2017-03-01", "end": "2017-06-01"}}
-    draft = _query(time={"temporal_role": ORDER_TIME, "grain": "month", **caller["time"]})
+def test_a_callers_window_never_turns_a_prior_period_offset_into_a_gap(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    # Pinning the window is the caller's choice; the "previous month" is still the offset.
+    march = {"start": "2017-03-01", "end": "2017-04-01"}
+    alongside = {
+        "version": 2,
+        "select": [
+            REVENUE,
+            {
+                "as": "revenue_prior_month",
+                "expression": {
+                    "kind": "prior_period",
+                    "measure": "measure.jaffle.revenue_usd",
+                    "offset": -1,
+                    "grain": "month",
+                },
+            },
+        ],
+        "time": {"temporal_role": ORDER_TIME, "grain": "month", **march},
+    }
+    text = "monthly revenue alongside the previous month's revenue"
+    assert _gap_kinds(adapter, text, alongside, partial_query={"time": march}) == []
+    # Without a prior-period expression the same window is the wrong one for "previous month".
+    plain = _query(time={"temporal_role": ORDER_TIME, "grain": "month", **march})
+    assert _gap_kinds(adapter, text, plain, partial_query={"time": march}) == [
+        "prior_period_comparison_unrealized",
+        "time_window_unrealized",
+    ]
+
+
+def test_a_callers_window_settles_the_question_only_when_it_is_the_questions(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
     text = "orders in March 2017"
-    assert _gap_kinds(adapter, text, draft) == ["time_window_unrealized"]
-    assert _gap_kinds(adapter, text, draft, partial_query=caller) == []
+    for bounds, gaps in (
+        ({"start": "2017-03-01", "end": "2017-06-01"}, ["time_window_unrealized"]),
+        ({"start": "2017-03-01", "end": "2017-04-01"}, []),
+    ):
+        caller = {"time": bounds}
+        draft = _query(time={"temporal_role": ORDER_TIME, "grain": "month", **bounds})
+        # The gap the planner's own reading raises is the same one a caller's window is held to.
+        assert _gap_kinds(adapter, text, draft) == gaps
+        assert _gap_kinds(adapter, text, draft, partial_query=caller) == gaps
 
 
 # --- filter values ------------------------------------------------------------
