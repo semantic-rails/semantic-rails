@@ -557,7 +557,11 @@ behavior:
   it directly is governed by `object_access`, not visibility.
 - **`object_access`** — enforced at query time. `action: deny` refuses the
   query with a structured policy error; `action: redact` executes but replaces
-  the governed object's values in the result.
+  the governed object's values in the result. An `aggregate_if` whose condition
+  reads another entity reads the dimensions over its columns, as a `where` filter
+  on them does, so their policies apply. While any `object_access` or
+  `object_visibility` policy is declared, it may not read a column of that entity
+  that no dimension declares (`POLICY_DENIED`, reason `column_without_dimension`).
 - **`protected_object`** — pins an object as protected in the named
   environments; `promote-package` and `impact-report` treat changes to
   protected objects as release-gated.
@@ -590,9 +594,10 @@ behavior:
   needs `type:`. The policy takes no `object_ids`, `action` or operator. A request
   it applies to is denied if the attribute is missing or of another type, and
   so is any query outside the qualified family: the compiled statement must
-  read the filtered relation exactly once, as its only relation. Joins, metric
-  filters, calendar spines (prior-period comparisons, fill) and other second
-  scans are refused, and rollups are not routed to. The zero-row
+  read one ordinary scan of the filtered relation, as its only relation. Engine-generated
+  observation and coverage scans may repeat that relation; each receives the same policy
+  filter. Joins, metric filters, calendar spines (prior-period comparisons, fill) and
+  other second scans are refused, and rollups are not routed to. The zero-row
   data-coverage probe is skipped. Such a policy loads for any warehouse, but only
   DuckDB executes these statements today; every other adapter refuses them.
   An unscoped row filter applies to every request. A scoped one applies only
@@ -1308,12 +1313,33 @@ dimension four relationships away (`line_item → order → customer → city �
 region`), with each hop cardinality-checked. Every hop must be `N:1`/`1:1` in
 the traversal direction (or carry a declared rewrite, e.g. `rollup_safe`
 reverse aggregations or `temporal_validity`); anything else is a structured
-refusal, never a silently fanned-out number. The one exception needs no
-declaration: a path that only goes down one-to-many hops before any lookup
+refusal, never a silently fanned-out number. A positive child filter needs no
+`rollup_safe` opt-in: it lowers to correlated `EXISTS` and keeps each parent row
+once when at least one child matches. Non-temporal paths of declared `N:1`,
+`1:N` and `1:1` hops may include a lookup before reaching children, and may
+use an alternate parent key; all authored join columns participate in the
+correlation. This supports parent counts and sums without multiplying their
+values. A lookup-before-child or alternate-key path requires exactly one
+candidate route after authored `graph.path_preferences` pins. Several
+remaining routes retain `MIXED_GRAIN_INVALID`, even when one is shorter.
+This applies to query filters and measure-bound filters, including beside
+a lookup. Unsafe, unknown-cardinality and temporal paths retain their refusals.
+ClickHouse retains a deduplicated-parent leaf for servers without correlated
+subqueries. Key-based descents retain their existing SQL shape, including
+beside lookup selections, groupings and filters; those lookups remain inner
+joins. It refuses paths that look up a parent before reaching children and
+paths joined off the parent's declared key, including beside a lookup, with
+`MIXED_GRAIN_INVALID`.
+
+Grouping retains a narrower exception: a path that only goes down one-to-many hops before any lookup
 (`order → order_item → product`), each hop joined on the declared key of its
-one side, lets a measure be filtered by the far dimension, counting each of its
-rows once, and lets a distinct count be grouped by it; the entity's key is what
+one side, lets a distinct parent count be grouped by the far dimension; the entity's key is what
 the engine de-duplicates on.
+At most one group or filter may cross a one-to-many hop. Negated child filters
+and `IS NULL` stay refused because "has a non-matching child" and "has no matching
+child" differ; the IR has no explicit `NOT EXISTS` predicate. A parent sum
+grouped by child dimensions, or a child value authored at parent grain, stays
+`MIXED_GRAIN_INVALID`.
 
 ### `graph.path_policy:` — hop ceiling
 

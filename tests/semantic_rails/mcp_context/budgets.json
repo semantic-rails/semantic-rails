@@ -18,7 +18,7 @@
   "query.v2.default.discover_ids_tokens": 2349,
   "query.v2.default.discover_tokens": 1823,
   "query.v2.default.execute_no_grain_window_tokens": 6144,
-  "query.v2.default.execute_sql_tokens": 914,
+  "query.v2.default.execute_sql_tokens": 963,
   "query.v2.default.execute_tokens": 1200,
   "query.v2.default.execute_validate_tokens": 700,
   "query.v2.default.inspect_tokens": 545,

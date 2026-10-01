@@ -393,3 +393,22 @@ def test_clickhouse_statements_set_join_use_nulls(config: Any, warehouse: str) -
     query = {"version": 2, "select": _select(revenue=REVENUE, items=ITEMS), "group_by": [STORE]}
     sql = compile_query(config, Registry(config), query)["sql"]
     assert sql.endswith("\nSETTINGS join_use_nulls = 1") is (warehouse == "clickhouse")
+
+
+def test_a_plain_time_leaf_cannot_bypass_scope_recording(config, monkeypatch):
+    monkeypatch.setattr(sql_lowering, "record_leaf_scope", lambda *args: None)
+    with pytest.raises(SemanticLayerError) as caught:
+        compile_query(
+            config,
+            Registry(config),
+            {
+                "select": _select(revenue=REVENUE),
+                "time": {
+                    "temporal_role": ORDER_TIME,
+                    "grain": "month",
+                    "start": "2017-04-01",
+                    "end": "2017-05-01",
+                },
+            },
+        )
+    assert caught.value.code == "EMPTY_GROUPS_UNSETTLED"
