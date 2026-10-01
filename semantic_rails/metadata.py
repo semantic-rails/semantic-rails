@@ -153,7 +153,6 @@ def _relationship_card_payload(config: PackageConfig, relationship_id: str) -> d
         "cardinality": rel.cardinality,
         "safety": rel.safety,
         "allowed_directions": list(rel.allowed_directions),
-        "path_preference": rel.path_preference,
         "temporal_validity": dict(rel.temporal_validity or {}),
         "contract": relationship_contract_payload(rel),
     }
@@ -1138,7 +1137,6 @@ def _summary_row(
                     "source_columns": rel_payload["source_columns"],
                     "target_columns": rel_payload["target_columns"],
                     "allowed_directions": rel_payload["allowed_directions"],
-                    "path_preference": rel_payload["path_preference"],
                     "temporal_validity": rel_payload["temporal_validity"],
                     "contract": rel_payload["contract"],
                 }

@@ -81,7 +81,7 @@ from .diagnostics import (
 from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError, query_execution_error
 from .expressions import collect_object_references, expr_to_dict
-from .fanout import build_hop_profile, is_functional_route
+from .fanout import build_hop_profile, route_meaning, route_pin
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import enforce_query_policies, query_policy_effects, row_filters_for_context
@@ -311,55 +311,58 @@ def _metric_payload(config, object_id: str, kind: str) -> dict[str, Any]:
 _LOG = logging.getLogger(__name__)
 
 
-def _path_alternates_warnings(config, logical_plan) -> list[dict[str, Any]]:
-    """Warn when hop count alone decided between join routes that each cross a
-    one-to-many hop.
+def _path_alternates_warnings(config, compiled) -> list[dict[str, Any]]:
+    """Disclose every route the compiled query reads that the route rule chose by its direct
+    key (rule 3 of ``fanout.resolve_path``): another route reaches the same entity and no
+    ``graph.path_preferences`` row records which one is meant.
 
-    Fires only when (a) more than one candidate path reached the target,
-    (b) none of them is functional (with a functional route the resolver
-    either takes the only eligible route or refuses AMBIGUOUS_PATH), (c) the
-    runner-up has a different hop count (equal-score ties already raise
-    AMBIGUOUS_PATH), and (d) no ``path_preferences`` pin covers the pair,
-    whatever the relationships' ``path_preference`` weights say. Adding a
-    shortcut relationship to a package can silently reroute existing
-    queries; this warning is the tripwire.
+    ``resolve_path`` returns more than one route exactly then, so a pinned or single-route
+    pair never warns. The routes come from the plan's root and leaf paths and from the paths
+    lowering read (predicates, conversions, rewrite anchors, nested compiles, direct key
+    reads). Adding a route to a package never changes an answer silently: a pair with a
+    direct key keeps it and gains this warning, and any other pair is refused.
     """
-    pinned = {(row.source_entity, row.target_entity) for row in config.path_preferences}
-    root_entity = str(getattr(logical_plan, "root_entity", "") or "")
-    selected = dict(getattr(logical_plan, "selected_paths", {}) or {})
+    plan = compiled["logical_plan"]
+    choices = [
+        (plan.root_entity, target, routes)
+        for target, routes in sorted(dict(plan.candidate_paths or {}).items())
+    ]
+    for measure_plan in plan.measure_plans:
+        choices.extend(
+            (measure_plan.source_entity, selection.target_entity, selection.candidate_paths)
+            for selection in measure_plan.path_selections
+        )
+    choices.extend(compiled.get("route_choices") or [])
+    seen: set[tuple[str, str]] = set()
     warnings: list[dict[str, Any]] = []
-    for target, candidates in sorted(
-        dict(getattr(logical_plan, "candidate_paths", {}) or {}).items()
-    ):
-        if len(candidates) < 2:
+    for start, target, candidates in choices:
+        if len(candidates) < 2 or (start, target) in seen:
             continue
-        chosen = list(selected.get(target) or candidates[0])
-        runner_up = next((list(path) for path in candidates if list(path) != chosen), None)
-        if runner_up is None or len(runner_up) == len(chosen):
-            continue
-        if (root_entity, target) in pinned:
-            continue
-        if any(is_functional_route(config, root_entity, list(path)) for path in candidates):
-            continue
+        seen.add((start, target))
+        routes = [list(path) for path in candidates]
+        meanings = [route_meaning(config, start, path) for path in routes]
+        others = "; ".join(meanings[1:])
         warnings.append(
             semantic_issue(
                 code="PATH_ALTERNATES_UNPINNED",
                 message=(
-                    f"Join route from '{root_entity}' to '{target}' was chosen by hop count "
-                    "alone; an alternate route exists and no path_preferences row pins one. "
-                    "The routes may have different semantics (e.g. role-playing foreign keys)."
+                    f"The route from '{start}' to '{target}' is the direct key "
+                    f"{routes[0][0]} ({meanings[0]}). Other routes reach it too ({others}), "
+                    "and no graph.path_preferences row records which one is meant."
                 ),
                 severity="warning",
                 stage="planning",
                 details={
-                    "root_entity": root_entity,
-                    "target_entity": target,
-                    "chosen_path": chosen,
-                    "alternate_path": runner_up,
+                    "start": start,
+                    "target": target,
+                    "chosen_path": routes[0],
+                    "alternate_paths": routes[1:],
+                    "meanings": meanings,
+                    "pins": [route_pin(start, target, path) for path in routes],
                     "hint": (
-                        "Declare a graph.path_preferences row for this entity pair to pin "
-                        "the route; path_preference weights never choose between routes of "
-                        "different lengths."
+                        "Which route is meant is a business definition. Record it once as a "
+                        "graph.path_preferences row in the package (details.pins has the row "
+                        "for each route); then every query uses it, without this warning."
                     ),
                 },
                 object_ids=[target],
@@ -750,7 +753,7 @@ def _compiled_warnings(
         *_history_warnings(config, compiled["logical_plan"]),
         *_measure_validity_warnings(config, compiled["logical_plan"]),
         *_stock_key_gap_warnings(compiled),
-        *_path_alternates_warnings(config, compiled["logical_plan"]),
+        *_path_alternates_warnings(config, compiled),
         *_time_zone_warnings(config, compiled),
     ]
     if payload is not None:

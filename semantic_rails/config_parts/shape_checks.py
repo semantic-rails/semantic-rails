@@ -293,7 +293,6 @@ _JOIN_KEYS: frozenset[str] = frozenset(
         "name",
         "label",
         "description",
-        "path_preference",
         "traversal",
         "allowed_directions",
         "temporal_validity",

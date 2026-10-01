@@ -596,6 +596,7 @@ def recovery_hints_for_error(
                     or "Choose a more specific grouping, filter, or root entity to break the path ambiguity."
                 ),
                 "candidates": list(details.get("candidates", []) or []),
+                "pins": list(details.get("pins", []) or []),
             }
         ]
     if code == "FANOUT_UNSAFE":

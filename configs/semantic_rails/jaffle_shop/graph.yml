@@ -93,7 +93,6 @@ graph:
       id: relationship.orders_customer
       entities: [order, customer]
       cardinality: many_to_one
-      path_preference: 10
       rollup_safe:
         reverse: [count_distinct]
 
@@ -101,7 +100,6 @@ graph:
       id: relationship.orders_store
       entities: [order, store]
       cardinality: many_to_one
-      path_preference: 10
       allowed_directions: [forward]
 
     order_to_customer_history:
@@ -115,9 +113,6 @@ graph:
       # the join with a temporal-validity predicate, so safety is
       # `requires_rewrite` rather than the default `safe`.
       safety: requires_rewrite
-      # Prefer this denormalized many_to_one over multi-hop alternatives
-      # (default path_preference is 100; lower wins).
-      path_preference: 50
       # Per-direction rollup safety: forward (order → customer_history),
       # additive aggregations roll up cleanly across the temporal slice.
       # Reverse (customer_history → order) cannot fan out without the
@@ -184,33 +179,28 @@ graph:
       target: [order_id]
       allowed_directions: [forward]
 
-  # Orders, items, lifecycle events and sessions reach customer and store both
-  # directly and through the order's customer_history row, and those routes can
-  # mean different things. The engine never picks one by hop count, so each pair
-  # pins the direct route: the customer who placed the order and the store it was
-  # placed at.
+  # Which of two routes to one entity a question means is a business definition, so the
+  # engine never picks one: each pair a query needs records its route here. A pair with
+  # one direct key (an order's own customer_id) uses it without a row.
   path_preferences:
-    - source_entity: order
-      target_entity: customer
-      relationship_path: [relationship.orders_customer]
-    - source_entity: order
-      target_entity: store
-      relationship_path: [relationship.orders_store]
+    # An item's customer: the customer who placed the item's order.
     - source_entity: item
       target_entity: customer
       relationship_path: [relationship.order_items_order, relationship.orders_customer]
+    # An item's store: the store the item's order was placed at.
     - source_entity: item
       target_entity: store
       relationship_path: [relationship.order_items_order, relationship.orders_store]
-    - source_entity: order_lifecycle
-      target_entity: customer
-      relationship_path: [relationship.order_lifecycle_customer]
-    - source_entity: order_lifecycle
+    # A customer's stores: the stores the customer ordered at ("How many customers ordered
+    # by store?"), not the stores of their sessions or their preferred store.
+    - source_entity: customer
       target_entity: store
-      relationship_path: [relationship.order_lifecycle_store]
-    - source_entity: storefront_session
-      target_entity: customer
-      relationship_path: [relationship.storefront_sessions_customer]
-    - source_entity: storefront_session
-      target_entity: store
-      relationship_path: [relationship.storefront_sessions_store]
+      relationship_path: [relationship.orders_customer, relationship.orders_store]
+    # A customer's products: the products in the customer's orders ("How many customers
+    # bought each product type?"), not those of orders their sessions converted to.
+    - source_entity: customer
+      target_entity: product
+      relationship_path:
+        - relationship.orders_customer
+        - relationship.order_items_order
+        - relationship.order_items_product

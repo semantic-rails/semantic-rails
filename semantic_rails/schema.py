@@ -147,7 +147,6 @@ class RelationshipConfig:
     name: str = ""
     label: str = ""
     description: str = ""
-    path_preference: int = 100
     allowed_directions: list[str] = field(default_factory=lambda: ["forward", "reverse"])
     temporal_validity: dict[str, str] = field(default_factory=dict)
     target_key_type: str = "primary"

@@ -10,6 +10,10 @@ under a hop limit.
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import asdict
 from typing import Any
 
@@ -92,36 +96,82 @@ def hop_is_functional(rel: RelationshipConfig, current_entity: str) -> bool:
     return (target_side if current_entity == rel.source_entity else source_side) == "1"
 
 
-def is_functional_route(config: PackageConfig, start: str, path: list[str]) -> bool:
-    """True when every hop of ``path``, walked from ``start``, reaches at most one row."""
-    rel_index = get_package_analysis(config).relationships
+def route_pin(start: str, target: str, path: list[str]) -> dict[str, Any]:
+    """The ``graph.path_preferences`` row that records ``path`` as the route for the pair."""
+    return {"source_entity": start, "target_entity": target, "relationship_path": list(path)}
+
+
+def route_meaning(config: PackageConfig, start: str, path: list[str]) -> str:
+    """``path`` as a readable chain of labels, e.g. "Account → Owner → Home region": the start
+    entity, then per hop the relationship's own label when the author gave one and the hop
+    looks it up (walked forward), else the label of the entity it reaches."""
+    analysis = get_package_analysis(config)
+
+    def label(entity_id: str) -> str:
+        entity = analysis.entities.get(entity_id)
+        return (entity.label or entity.name) if entity is not None else entity_id
+
+    chain = [label(start)]
     current = start
     for rel_id in path:
-        rel = rel_index[rel_id]
-        if not hop_is_functional(rel, current):
-            return False
-        current = rel.target_entity if current == rel.source_entity else rel.source_entity
-    return True
+        rel = analysis.relationships[rel_id]
+        forward = current == rel.source_entity
+        current = rel.target_entity if forward else rel.source_entity
+        default = f"{label(rel.source_entity)} to {label(rel.target_entity)}"
+        chain.append(rel.label if forward and rel.label not in ("", default) else label(current))
+    return " → ".join(chain)
 
 
-def _ambiguous_path(
-    start: str, target: str, routes: list[list[str]], hint: str
+def _route_decision_required(
+    config: PackageConfig, start: str, target: str, routes: list[list[str]]
 ) -> SemanticLayerError:
-    listed = "; ".join(" -> ".join(path) for path in routes)
+    meanings = [route_meaning(config, start, path) for path in routes]
+    if len(set(meanings)) < len(meanings):  # parallel roles without their own labels
+        meanings = [
+            f"{meaning} ({', '.join(path)})" for meaning, path in zip(meanings, routes, strict=True)
+        ]
     return SemanticLayerError(
         "AMBIGUOUS_PATH",
-        f"Ambiguous path from '{start}' to '{target}': {listed}",
+        f"Ambiguous path from '{start}' to '{target}': " + "; ".join(meanings),
         details={
+            "reason": "route_decision_required",
             "start": start,
             "target": target,
             "candidates": [list(path) for path in routes],
-            "pins": [
-                {"source_entity": start, "target_entity": target, "relationship_path": list(path)}
-                for path in routes
-            ],
-            "hint": hint,
+            "meanings": meanings,
+            "pins": [route_pin(start, target, path) for path in routes],
+            "hint": (
+                "Which route is meant is a business definition. Record it once as a "
+                "graph.path_preferences row in the package (details.pins has the row for each "
+                "route); then every query uses it."
+            ),
         },
     )
+
+
+RouteChoice = tuple[str, str, tuple[tuple[str, ...], ...]]
+_route_choices: ContextVar[list[RouteChoice] | None] = ContextVar("route_choices", default=None)
+
+
+@contextmanager
+def recording_route_choices() -> Iterator[list[RouteChoice]]:
+    """Collect, as (start, target, routes), each route rule 3 of ``resolve_path`` chose that
+    the SQL lowered in this block reads, nested compiles included, so the response discloses
+    it (``PATH_ALTERNATES_UNPINNED``)."""
+    choices: list[RouteChoice] = []
+    token = _route_choices.set(choices)
+    try:
+        yield choices
+    finally:
+        _route_choices.reset(token)
+
+
+def record_route_choice(start: str, target: str, routes: Sequence[Sequence[str]]) -> None:
+    """Note a route the SQL reads, with every route ``resolve_path`` returned for the pair:
+    more than one means rule 3 chose it."""
+    choices = _route_choices.get()
+    if choices is not None and len(routes) > 1:
+        choices.append((start, target, tuple(tuple(path) for path in routes)))
 
 
 def resolve_path(
@@ -130,27 +180,41 @@ def resolve_path(
     """The route from ``start`` to ``target``, and every route considered (the chosen first).
 
     The one route chooser: compilation, grain recovery, discovery and the direct key read
-    all ask it. It never chooses between routes that can mean different things by hop count
-    or by ``path_preference`` weights:
+    all ask it. Which of two routes a question means is a business definition, so it never
+    guesses one, by hop count or otherwise:
 
     1. A ``graph.path_preferences`` row for the pair wins.
-    2. Eligible routes are every functional route (each hop reaches at most one row in the
-       direction walked) and every route with a one-to-many hop that is no longer than the
-       shortest functional route.
-    3. Eligible routes of different lengths refuse ``AMBIGUOUS_PATH``, listing each route
-       with the ``graph.path_preferences`` row that would pin it. Otherwise they share one
-       length, and the lowest ``path_preference`` sum wins; equal sums refuse.
-    4. With no functional route at all, the shortest route wins, then the lowest sum;
-       equal length and sum refuse.
+    2. Exactly one route: it is used.
+    3. Otherwise, when exactly one route is a direct relationship from ``start`` that reaches
+       at most one row (the start row holds the target's key), it is used, and every route is
+       returned with it, so the response discloses the choice (``PATH_ALTERNATES_UNPINNED``).
+    4. Otherwise ``AMBIGUOUS_PATH`` (``reason: route_decision_required``), whatever the
+       routes' lengths, naming each route, its meaning and the row that would record it.
+
+    So more than one route comes back exactly when rule 3 chose. Routes and refusals are
+    cached per pair.
     """
     analysis = get_package_analysis(config)
     pinned = analysis.path_preferences.get((start, target))
     if pinned is not None:
         return list(pinned), [list(pinned)]
     cached = analysis.path_cache.get((start, target))
+    if isinstance(cached, SemanticLayerError):
+        raise SemanticLayerError(cached.code, str(cached), details=deepcopy(cached.details))
     if cached is not None:
         return list(cached[0]), [list(path) for path in cached]
+    try:
+        routes = _resolve_uncached(config, start=start, target=target)
+    except SemanticLayerError as exc:
+        analysis.path_cache[(start, target)] = exc
+        raise SemanticLayerError(exc.code, str(exc), details=deepcopy(exc.details)) from None
+    analysis.path_cache[(start, target)] = tuple(tuple(path) for path in routes)
+    return list(routes[0]), [list(path) for path in routes]
 
+
+def _resolve_uncached(config: PackageConfig, *, start: str, target: str) -> list[list[str]]:
+    """Every route for an unpinned pair, the chosen first (rules 2-4 of ``resolve_path``)."""
+    analysis = get_package_analysis(config)
     hop_limit = package_hop_limit(config)
     candidates = enumerate_paths(analysis.graph, start, target, hop_limit)
     if not candidates:
@@ -183,50 +247,17 @@ def resolve_path(
                 "reason": "no_relationship_chain",
             },
         )
-    rel_index = analysis.relationships
-
-    def _score(path: list[str]) -> tuple[int, int]:
-        return len(path), sum(rel_index[rel_id].path_preference for rel_id in path)
-
-    ranked = sorted(
-        candidates,
-        key=lambda path: (
-            *_score(path),
-            sum(1000 if rel_index[rel_id].safety == "unsafe" else 0 for rel_id in path),
-        ),
-    )
-    functional = [is_functional_route(config, start, path) for path in ranked]
-    if any(functional):
-        # ``ranked`` is shortest first, so the first functional route is the shortest one.
-        shortest = len(ranked[functional.index(True)])
-        eligible = [
-            path
-            for path, is_functional in zip(ranked, functional, strict=True)
-            if is_functional or len(path) <= shortest
-        ]
-        if len({len(path) for path in eligible}) > 1:
-            raise _ambiguous_path(
-                start,
-                target,
-                eligible,
-                "These routes can give different answers, and neither hop count nor "
-                "path_preference chooses between routes of different lengths. Pin the one the "
-                "question means: add the graph.path_preferences row for it from details.pins "
-                "(it applies only to queries from that source entity to that target entity).",
-            )
-    if len(ranked) > 1 and _score(ranked[0]) == _score(ranked[1]):
-        raise _ambiguous_path(
-            start,
-            target,
-            [path for path in ranked if _score(path) == _score(ranked[0])],
-            "These routes can give different answers. "
-            "Pin the one the question means: give the intended relationship a lower "
-            "path_preference (it applies to every query), or add the "
-            "graph.path_preferences row for it from details.pins (it applies only to "
-            "queries from that source entity to that target entity).",
-        )
-    analysis.path_cache[(start, target)] = tuple(tuple(path) for path in ranked)
-    return list(ranked[0]), [list(path) for path in ranked]
+    routes = sorted(candidates, key=lambda path: (len(path), path))
+    if len(routes) == 1:
+        return routes
+    direct = [
+        path
+        for path in routes
+        if len(path) == 1 and hop_is_functional(analysis.relationships[path[0]], start)
+    ]
+    if len(direct) == 1:
+        return [direct[0], *(path for path in routes if path != direct[0])]
+    raise _route_decision_required(config, start, target, routes)
 
 
 def build_hop_profile(

@@ -139,7 +139,13 @@ from .expressions import (
     expr_to_dict,
     validate_expression_shapes,
 )
-from .fanout import analyze_fanout, one_to_many_descent, resolve_path
+from .fanout import (
+    RouteChoice,
+    analyze_fanout,
+    one_to_many_descent,
+    recording_route_choices,
+    resolve_path,
+)
 from .ir import (
     BoundMeasure,
     ExplainArtifact,
@@ -2592,14 +2598,12 @@ def _preferred_root_order(query: NormalizedQuery, config: PackageConfig) -> list
 def _candidate_root_summary(
     root_entity: str, query: NormalizedQuery, config: PackageConfig
 ) -> dict[str, Any]:
-    relationships = _relationship_index(config)
     targets = _query_target_entities(query, config)
     selected_paths: dict[str, list[str]] = {}
     candidate_paths: dict[str, list[list[str]]] = {}
     analyses: dict[str, dict[str, Any]] = {}
     total_hops = 0
     max_hops = 0
-    total_preference = 0
     for target_entity, purpose in sorted(targets.items()):
         if target_entity == root_entity:
             continue
@@ -2627,7 +2631,6 @@ def _candidate_root_summary(
         analyses[target_entity] = analysis
         total_hops += len(chosen)
         max_hops = max(max_hops, len(chosen))
-        total_preference += sum(relationships[rel_id].path_preference for rel_id in chosen)
     preferred_roots = _preferred_root_order(query, config)
     return {
         "root_entity": root_entity,
@@ -2640,7 +2643,6 @@ def _candidate_root_summary(
             if root_entity in preferred_roots
             else len(preferred_roots) + 1,
             max_hops,
-            total_preference,
         ),
     }
 
@@ -4181,6 +4183,9 @@ class BoundQuery:
     stock_key_gaps: tuple[dict[str, Any], ...] = ()
     # Every output that reads 0 or NULL for an empty group, with the measures behind it.
     zero_outputs: tuple[dict[str, Any], ...] = ()
+    # Every route the SQL reads that the route rule chose by its direct key, nested compiles
+    # included (the plan's own root and leaf paths are in the plan).
+    route_choices: tuple[RouteChoice, ...] = ()
 
     def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:
         """Whole-query cuts plus the cuts of leaves computing ``object_id``.
@@ -4280,6 +4285,7 @@ def _bind_query(
         recording_rollup_scans() as rollup_scans,
         recording_stock_key_gaps() as stock_key_gaps,
         recording_zero_outputs() as zero_outputs,
+        recording_route_choices() as route_choices,
     ):
         _record_bound_plan(plan, config, leaves.leaves)
         sql_ast = attach_relation_ctes(config, lower_to_sql(plan, config))
@@ -4303,6 +4309,7 @@ def _bind_query(
         frozenset(rollup_scans),
         stock_key_gaps=tuple(stock_key_gaps),
         zero_outputs=tuple(zero_outputs),
+        route_choices=tuple(route_choices),
     )
 
 
@@ -4384,4 +4391,5 @@ def compile_query(
         "compile_stats": compile_stats,
         "stock_key_gaps": list(bound.stock_key_gaps),
         "zero_outputs": list(bound.zero_outputs),
+        "route_choices": list(bound.route_choices),
     }

@@ -4,6 +4,7 @@ import weakref
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..errors import SemanticLayerError
 from ..expressions import resolve_table_entity
 from ..schema import (
     DimensionConfig,
@@ -31,8 +32,11 @@ class PackageAnalysis:
     graph: GraphIndex
     path_preferences: dict[tuple[str, str], list[str]]
     temporal_relationship_ids: set[str]
-    # (start, target) -> every route, the chosen first. Keyed only by package inputs.
-    path_cache: dict[tuple[str, str], tuple[tuple[str, ...], ...]] = field(default_factory=dict)
+    # (start, target) -> every route, the chosen first, or the refusal. Keyed only by package
+    # inputs.
+    path_cache: dict[tuple[str, str], tuple[tuple[str, ...], ...] | SemanticLayerError] = field(
+        default_factory=dict
+    )
 
     @classmethod
     def from_config(cls, config: PackageConfig) -> PackageAnalysis:
