@@ -272,6 +272,8 @@ def test_fiscal_coverage_preserves_the_populated_final_quarter(request, backend_
     _assert_rows(
         gold, [(r[f"{ROLE}__quarter"], r["v"]) for r in typed_rows(result)], "fiscal coverage"
     )
+    quarters = [r[f"{ROLE}__quarter"] for r in typed_rows(result)]
+    assert quarters == sorted(quarters)
     assert typed_rows(result)[-1]["v"] == 2
 
 
