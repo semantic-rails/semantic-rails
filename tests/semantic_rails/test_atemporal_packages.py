@@ -339,17 +339,19 @@ def test_plan_fallback_cannot_ignore_time_intent(package_path, detail) -> None:
 
 
 @pytest.mark.parametrize(
-    ("intent", "measure_label", "dimension_label"),
+    ("intent", "measure_label", "dimension_label", "time_phrase"),
     [
-        ("item count for the History category", "Item count", "Category"),
-        ("item count by daycare", "Item count", "Daycare"),
-        ("count of monthly plans", "Monthly plans", "Category"),
-        ("moving company count", "Moving company count", "Category"),
-        ("second item count", "Second item count", "Category"),
+        ("item count for the History category", "Item count", "Category", "history"),
+        ("item count by daycare", "Item count", "Daycare", "daycare"),
+        ("count of monthly plans", "Monthly plans", "Category", "monthly"),
+        ("moving company count", "Moving company count", "Category", "moving"),
+        ("second item count", "Second item count", "Category", ""),
+        ("item count", "Item count", "Category", ""),
+        ("item count by category", "Item count", "Category", ""),
     ],
 )
 def test_plan_ordinary_time_words_answer(
-    package_path, intent: str, measure_label: str, dimension_label: str
+    package_path, intent: str, measure_label: str, dimension_label: str, time_phrase: str
 ) -> None:
     model_path = package_path / "models/core/items.yml"
     model = yaml.safe_load(model_path.read_text())
@@ -367,13 +369,20 @@ def test_plan_ordinary_time_words_answer(
     runtime = Runtime.from_path(str(package_path))
     try:
         result = plan_payload(runtime, intent=intent)
-        assert result["status"] == "ok", result
+        assert result["status"] == ("low_confidence" if time_phrase else "ok"), result
+        if time_phrase:
+            assert any(
+                warning["code"] == "INVALID_TEMPORAL_ROLE"
+                and time_phrase in warning["message"].lower()
+                and "declares no time" in warning["message"]
+                for warning in result["warnings"]
+            )
         query = result["best"]["query_ir"]
         assert "time" not in query
         rows = runtime.query(query)["rows"]
         values = [next(value for key, value in row.items() if key != CATEGORY) for row in rows]
         assert sorted(values) == (
-            [2] if "History" in intent else [2, 2] if "daycare" in intent else [4]
+            [2] if "History" in intent else [2, 2] if "by " in intent else [4]
         )
     finally:
         runtime.close()
@@ -419,7 +428,11 @@ def test_plan_time_phrase_category_values_answer(package_path, phrase, match_by)
     runtime = Runtime.from_path(str(package_path))
     try:
         result = plan_payload(runtime, intent=f"item count for the {phrase} category")
-        assert result["status"] == "ok", result.get("why")
+        assert result["status"] == "low_confidence", result
+        assert any(
+            warning["code"] == "INVALID_TEMPORAL_ROLE" and "declares no time" in warning["message"]
+            for warning in result["warnings"]
+        )
         query = result["best"]["query_ir"]
         assert "time" not in query
         assert query["where"] == [{"field": CATEGORY, "op": "=", "value": value}]
@@ -429,6 +442,112 @@ def test_plan_time_phrase_category_values_answer(package_path, phrase, match_by)
         with pytest.raises(SemanticLayerError, match="declares no time") as exc:
             plan_payload(runtime, intent=f"item count for the {phrase} category per day")
         assert exc.value.code == "INVALID_TEMPORAL_ROLE"
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("detail", ["best", "full", "query", "debug"])
+@pytest.mark.parametrize("match_by", ["value", "label", "alias"])
+@pytest.mark.parametrize(
+    ("phrase", "intent"),
+    [
+        ("monthly", "monthly item count for the monthly category"),
+        ("hourly", "hourly item count for the hourly category"),
+        ("tomorrow", "item count for the tomorrow category tomorrow"),
+    ],
+)
+def test_plan_repeated_catalogue_time_phrase_downgrades(
+    package_path, phrase, intent, match_by, detail
+):
+    model_path = package_path / "models/core/items.yml"
+    model = yaml.safe_load(model_path.read_text())
+    value = phrase if match_by == "value" else "A"
+    entry = {"value": value, "label": phrase if match_by == "label" else value}
+    if match_by == "alias":
+        entry["aliases"] = [phrase]
+    model["model"]["dimensions"]["category"]["domain"] = [entry, "B"]
+    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
+    (package_path / "data/catalogue_csv/items.csv").write_text(
+        f"item_id,category,amount\n1,{value},10\n2,{value},20\n3,B,30\n4,B,40\n"
+    )
+    runtime = Runtime.from_path(str(package_path))
+    try:
+        result = plan_payload(runtime, intent=intent, detail=detail)
+        assert result["status"] == "low_confidence", result
+        assert any(
+            warning["code"] == "INVALID_TEMPORAL_ROLE"
+            and phrase in warning["message"]
+            and "declares no time" in warning["message"]
+            for warning in result["warnings"]
+        )
+        assert "execute" not in result.get("next", {}).get("ready_for", [])
+        query = result["best"]["query_ir"]
+        assert "time" not in query
+        assert query["where"] == [{"field": CATEGORY, "op": "=", "value": value}]
+        rows = runtime.query(query)["rows"]
+        assert len(rows) == 1
+        assert [v for k, v in rows[0].items() if k != CATEGORY] == [2]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("detail", ["best", "full", "query", "debug"])
+def test_plan_fallback_catalogue_time_phrase_downgrades(package_path, detail):
+    package_file = package_path / "package.yml"
+    package = yaml.safe_load(package_file.read_text())
+    package["package"]["planner"] = {"disabled_patterns": ["metric_by_dimension_rollup"]}
+    package_file.write_text(yaml.safe_dump(package, sort_keys=False))
+    model_path = package_path / "models/core/items.yml"
+    model = yaml.safe_load(model_path.read_text())
+    model["model"]["dimensions"]["category"]["domain"] = ["monthly", "B"]
+    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
+    runtime = Runtime.from_path(str(package_path))
+    try:
+        from semantic_rails.planner import compose
+
+        intent = "monthly item count for the monthly category"
+        assert compose(runtime, intent).draft is None
+        result = plan_payload(
+            runtime,
+            intent=intent,
+            partial_query={
+                **BASE,
+                "group_by": None,
+                "where": [{"field": CATEGORY, "op": "=", "value": "monthly"}],
+            },
+            detail=detail,
+        )
+        assert result["status"] == "low_confidence", result
+        assert result["best"]["query_ir"]["where"] == [
+            {"field": CATEGORY, "op": "=", "value": "monthly"}
+        ]
+        assert any(
+            warning["code"] == "INVALID_TEMPORAL_ROLE"
+            and "monthly" in warning["message"]
+            and "declares no time" in warning["message"]
+            for warning in result["warnings"]
+        )
+        assert "execute" not in result.get("next", {}).get("ready_for", [])
+    finally:
+        runtime.close()
+
+
+def test_plan_fallback_accepts_null_group_by(package_path):
+    package_file = package_path / "package.yml"
+    package = yaml.safe_load(package_file.read_text())
+    package["package"]["planner"] = {"disabled_patterns": ["metric_by_dimension_rollup"]}
+    package_file.write_text(yaml.safe_dump(package, sort_keys=False))
+    runtime = Runtime.from_path(str(package_path))
+    try:
+        from semantic_rails.planner import compose
+
+        assert compose(runtime, "item count").draft is None
+        result = plan_payload(
+            runtime, intent="item count", partial_query={"select": BASE["select"], "group_by": None}
+        )
+        assert result["status"] in {"ok", "low_confidence"}, result
+        assert result["best"]["validation_ok"]
+        assert runtime.query(result["best"]["query_ir"])["rows"] == [{"value": 4}]
     finally:
         runtime.close()
 
@@ -454,8 +573,13 @@ def test_plan_window_shaped_category_values_downgrade(package_path, phrase, matc
     try:
         result = plan_payload(runtime, intent=f"item count for the {phrase} category")
         assert result["status"] == "low_confidence", result.get("why")
-        query = result["best"].get("query_ir")
-        assert query is None or "time" not in query
+        assert any(
+            warning["code"] == "INVALID_TEMPORAL_ROLE" and "declares no time" in warning["message"]
+            for warning in result["warnings"]
+        )
+        query = result["best"]["query_ir"]
+        assert "time" not in query
+        assert [v for k, v in runtime.query(query)["rows"][0].items() if k != CATEGORY] == [2]
         with pytest.raises(SemanticLayerError, match="declares no time") as exc:
             plan_payload(runtime, intent=f"item count for the {phrase} category per day")
         assert exc.value.code == "INVALID_TEMPORAL_ROLE"
@@ -519,7 +643,13 @@ def test_plan_measure_label_without_recipe_answers(package_path, measure, label,
     runtime = Runtime.from_path(str(package_path))
     try:
         result = plan_payload(runtime, intent=intent)
-        assert result["status"] == "ok", result
+        assert result["status"] == "low_confidence", result
+        assert any(
+            warning["code"] == "INVALID_TEMPORAL_ROLE"
+            and "monthly" in warning["message"]
+            and "declares no time" in warning["message"]
+            for warning in result["warnings"]
+        )
         assert "time" not in result["best"]["query_ir"]
         with pytest.raises(SemanticLayerError) as exc:
             plan_payload(runtime, intent=f"{intent} last month")
@@ -612,7 +742,13 @@ def test_plan_dimension_label_with_time_word_answers(package_path) -> None:
     runtime = Runtime.from_path(str(package_path))
     try:
         result = plan_payload(runtime, intent="item count by monthly plans")
-        assert result["status"] == "ok", result
+        assert result["status"] == "low_confidence", result
+        assert any(
+            warning["code"] == "INVALID_TEMPORAL_ROLE"
+            and "monthly" in warning["message"]
+            and "declares no time" in warning["message"]
+            for warning in result["warnings"]
+        )
         query = result["best"]["query_ir"]
         assert query["group_by"] == [CATEGORY]
         assert "time" not in query

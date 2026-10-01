@@ -172,7 +172,9 @@ Statuses are:
   filters, or time scope. For `TIME_WINDOW_UNRESOLVED`, follow `why.recovery_hints`; when
   `why.details.conflicting_phrases` names two windows that differ, as in "Q2 2017 (April 1 to
   June 29, 2017)", keep the one you mean and plan again. (One window stated twice the same way
-  resolves.)
+  resolves.) On a package without time, recognized time words inside catalogue names or
+  values also yield `low_confidence`: the catalogue answer is retained, with an
+  `INVALID_TEMPORAL_ROLE` warning naming the words and explaining that the package has no time.
 - `unrealizable`: the intent parsed, but no pattern or fallback produced Query IR.
 - `out_of_scope`: the classifier or relevance gate rejected the request as outside the package.
 
