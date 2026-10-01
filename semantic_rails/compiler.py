@@ -1082,9 +1082,10 @@ def _group_payload(child: str, match: str, conditions: list[Filter]) -> dict[str
 
 def _condition_text(item: Filter, dim: Any) -> str:
     op = _compact_token(str(item.op or "=")).upper()
+    label = dim.label or dim.id
     if op in {"IS NULL", "IS NOT NULL"}:
-        return f"{dim.label} {op}"
-    return f"{dim.label} {op} {json.dumps(item.value, default=str)}"
+        return f"{label} {op}"
+    return f"{label} {op} {json.dumps(item.value, default=str)}"
 
 
 def _scope_error(
@@ -1139,7 +1140,9 @@ def _child_scope_clarification(
     if len(anys) == 1:
         index, group = anys[0]
         same = _rewritten_where(
-            query, {index: _group_payload(child, "any", [*group.where, *conditions])}, set(positions)
+            query,
+            {index: _group_payload(child, "any", [*group.where, *conditions])},
+            set(positions),
         )
     else:
         same = _rewritten_where(
@@ -1151,7 +1154,7 @@ def _child_scope_clarification(
             {
                 "id": "same_row",
                 "meaning": f"One {label} meets {' and '.join(texts)}"
-                + (", and the conditions of its child group." if anys else "."),
+                + (", and the conditions of its child group." if len(anys) == 1 else "."),
                 "where": same,
             }
         )
@@ -4480,7 +4483,9 @@ def _require_child_group_leaves(
     children = {group.child for group in groups}
     for measure_plan in plan.measure_plans:
         routed = {
-            row.target_entity for row in measure_plan.path_selections if row.purpose == "child_group"
+            row.target_entity
+            for row in measure_plan.path_selections
+            if row.purpose == "child_group"
         }
         if (
             measure_plan.rewrite_strategy != "fanout_dedup"

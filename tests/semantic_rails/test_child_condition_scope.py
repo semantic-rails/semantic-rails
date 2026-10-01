@@ -405,7 +405,9 @@ def test_two_flat_conditions_on_one_child_ask_for_the_scope(package: Path) -> No
 def test_the_other_where_items_stay_unchanged_in_each_option(package: Path) -> None:
     region = {"field": REGION, "op": "=", "value": "North"}
     error = _refusal(package, _query([region, BEVERAGE, WEB, OVER_5]))
-    options = {option["id"]: option["where"] for option in error["details"]["clarification"]["options"]}
+    options = {
+        option["id"]: option["where"] for option in error["details"]["clarification"]["options"]
+    }
     assert options["same_row"] == [region, SAME_ROW[0], WEB]
     assert options["separate_rows"] == [region, SEPARATE_ROWS[0], WEB, SEPARATE_ROWS[1]]
     assert error["details"]["paths"] == ["where[1]", "where[3]"]
@@ -417,7 +419,9 @@ def test_a_flat_condition_through_a_lookup_from_the_child_shares_its_scope(
     hot = {"field": CATEGORY, "op": "=", "value": "hot"}
     error = _refusal(package, _query([BEVERAGE, hot]))
     assert error["code"] == "AMBIGUOUS_CHILD_SCOPE"
-    options = {option["id"]: option["where"] for option in error["details"]["clarification"]["options"]}
+    options = {
+        option["id"]: option["where"] for option in error["details"]["clarification"]["options"]
+    }
     assert options["same_row"] == [{"child": ITEM, "match": "any", "where": [BEVERAGE, hot]}]
 
 
@@ -426,7 +430,9 @@ def test_a_flat_condition_beside_a_group_on_its_child_asks_too(package: Path) ->
     query = _query([group, OVER_5])
     error = _refusal(package, query)
     assert error["code"] == "AMBIGUOUS_CHILD_SCOPE"
-    options = {option["id"]: option["where"] for option in error["details"]["clarification"]["options"]}
+    options = {
+        option["id"]: option["where"] for option in error["details"]["clarification"]["options"]
+    }
     assert options["same_row"] == SAME_ROW
     assert options["separate_rows"] == SEPARATE_ROWS
     for option, sql in [("same_row", SAME_ROW_SQL), ("separate_rows", SEPARATE_ROWS_SQL)]:
@@ -482,7 +488,9 @@ def test_a_negated_flat_condition_asks_which_negation(
     query = _query([condition])
     error = _refusal(package, query)
     assert error["code"] == "AMBIGUOUS_CHILD_SCOPE"
-    options = {option["id"]: option["where"] for option in error["details"]["clarification"]["options"]}
+    options = {
+        option["id"]: option["where"] for option in error["details"]["clarification"]["options"]
+    }
     assert options == {
         "any_not": [{"child": ITEM, "match": "any", "where": [condition]}],
         "none": [{"child": ITEM, "match": "none", "where": [none_condition]}],
@@ -497,7 +505,9 @@ def test_a_negated_flat_condition_asks_which_negation(
 
 def test_not_a_beverage_versus_no_beverage(package: Path) -> None:
     error = _refusal(package, _query([{"field": TYPE, "op": "!=", "value": "beverage"}]))
-    options = {option["id"]: option["where"] for option in error["details"]["clarification"]["options"]}
+    options = {
+        option["id"]: option["where"] for option in error["details"]["clarification"]["options"]
+    }
     assert _who(package, options["any_not"]) == [1, 6]
     assert _who(package, options["none"]) == [3, 5]
 
@@ -520,10 +530,37 @@ def test_a_measure_filter_keeps_its_refusal(package: Path) -> None:
 @pytest.mark.parametrize(
     ("where", "path"),
     [
-        ([{"child": "entity.scope_region", "match": "any", "where": [{"field": REGION, "op": "=", "value": "North"}]}], "where[].child"),
-        ([{"child": "entity.scope_customer", "match": "any", "where": [{"field": REGION, "op": "=", "value": "North"}]}], "where[].child"),
+        (
+            [
+                {
+                    "child": "entity.scope_region",
+                    "match": "any",
+                    "where": [{"field": REGION, "op": "=", "value": "North"}],
+                }
+            ],
+            "where[].child",
+        ),
+        (
+            [
+                {
+                    "child": "entity.scope_customer",
+                    "match": "any",
+                    "where": [{"field": REGION, "op": "=", "value": "North"}],
+                }
+            ],
+            "where[].child",
+        ),
         ([{"child": ITEM, "match": "any", "where": [WEB]}], "where[].child"),
-        ([{"child": ITEM, "match": "any", "where": [{"child": ITEM, "match": "any", "where": [BEVERAGE]}]}], "where[0].where[0]"),
+        (
+            [
+                {
+                    "child": ITEM,
+                    "match": "any",
+                    "where": [{"child": ITEM, "match": "any", "where": [BEVERAGE]}],
+                }
+            ],
+            "where[0].where[0]",
+        ),
         ([{"child": ITEM, "match": "all", "where": [BEVERAGE]}], "where[0].match"),
         ([{"child": ITEM, "where": [BEVERAGE]}], "where[0].match"),
         ([{"child": ITEM, "match": "any", "where": []}], "where[0].where"),
@@ -540,9 +577,7 @@ def test_a_measure_filter_keeps_its_refusal(package: Path) -> None:
         "group_and_filter_keys",
     ],
 )
-def test_malformed_groups_are_invalid_queries(
-    package: Path, where: list[Any], path: str
-) -> None:
+def test_malformed_groups_are_invalid_queries(package: Path, where: list[Any], path: str) -> None:
     error = _refusal(package, _query(where))
     assert error["code"] == "INVALID_QUERY"
     assert error["details"]["path"] == path
@@ -625,7 +660,10 @@ def test_a_cut_policy_sees_the_conditions_inside_a_group(package: Path) -> None:
     context = {"roles": ["analyst"]}
     try:
         allowed = engine.validate(
-            {**_query([{"child": ITEM, "match": "any", "where": [BEVERAGE]}]), "policy_context": context}
+            {
+                **_query([{"child": ITEM, "match": "any", "where": [BEVERAGE]}]),
+                "policy_context": context,
+            }
         )
         denied = engine.validate({**_query(SAME_ROW), "policy_context": context})
     finally:
@@ -650,7 +688,10 @@ def test_a_denied_dimension_inside_a_group_is_denied(package: Path) -> None:
     context = {"audience": "partner"}
     try:
         allowed = engine.validate(
-            {**_query([{"child": ITEM, "match": "any", "where": [BEVERAGE]}]), "policy_context": context}
+            {
+                **_query([{"child": ITEM, "match": "any", "where": [BEVERAGE]}]),
+                "policy_context": context,
+            }
         )
         denied = engine.validate({**_query(NO_SAME_ROW), "policy_context": context})
     finally:
@@ -721,7 +762,9 @@ def test_groups_are_denied_under_a_row_policy(
     config = load_package_config(str(package))
     config = replace(
         config,
-        semantic_policies=[SemanticPolicyConfig(id="policy.scope.rows", kind="row_filter", config=policy)],
+        semantic_policies=[
+            SemanticPolicyConfig(id="policy.scope.rows", kind="row_filter", config=policy)
+        ],
     )
     context = RequestContext(attributes=attributes).to_policy_context()
     with pytest.raises(SemanticLayerError) as caught:
@@ -780,7 +823,13 @@ def test_clickhouse_answers_any_with_its_distinct_parent_leaf(package: Path) -> 
     [
         NO_SAME_ROW,
         SEPARATE_ROWS,
-        [{"child": ITEM, "match": "any", "where": [{"field": CATEGORY, "op": "=", "value": "hot"}]}],
+        [
+            {
+                "child": ITEM,
+                "match": "any",
+                "where": [{"field": CATEGORY, "op": "=", "value": "hot"}],
+            }
+        ],
         [SAME_ROW[0], WEB],
     ],
     ids=["none", "two_groups", "lookup_from_the_child", "beside_a_flat_child_filter"],
@@ -797,7 +846,9 @@ def test_other_dialects_render_each_group_as_correlated_exists(package: Path) ->
     config = load_package_config(str(package))
     for warehouse in ("postgres", "snowflake", "bigquery", "databricks"):
         dialect_config = replace(config, package=replace(config.package, warehouse=warehouse))
-        sql = compile_query(dialect_config, Registry(dialect_config), _query([*SAME_ROW, *NO_SAME_ROW]))["sql"]
+        sql = compile_query(
+            dialect_config, Registry(dialect_config), _query([*SAME_ROW, *NO_SAME_ROW])
+        )["sql"]
         assert sql.count("NOT EXISTS (") == 1
         assert sql.count("EXISTS (") == 4  # two nested hops per group
 
@@ -839,7 +890,9 @@ def test_a_lookup_first_route_beside_another_candidate_is_ambiguous(package: Pat
     """An order reaches sessions through its customer, or through its customer's region if
     sessions carried one. A shorter route doesn't say which sessions the question means."""
     config = load_package_config(str(package))
-    [customer_region] = [rel for rel in config.relationships if rel.id == "relationship.customers_region"]
+    [customer_region] = [
+        rel for rel in config.relationships if rel.id == "relationship.customers_region"
+    ]
     session_region = replace(
         customer_region, id="relationship.sessions_region", source_entity=SESSION
     )
@@ -855,7 +908,10 @@ def test_a_lookup_first_route_beside_another_candidate_is_ambiguous(package: Pat
             PathPreferenceConfig(
                 source_entity="entity.scope_order",
                 target_entity=SESSION,
-                relationship_path=["relationship.orders_customer", "relationship.sessions_customer"],
+                relationship_path=[
+                    "relationship.orders_customer",
+                    "relationship.sessions_customer",
+                ],
             )
         ],
     )
@@ -882,7 +938,13 @@ SHAPES = {
     "negated_flat": _query([{"field": TYPE, "op": "!=", "value": "beverage"}]),
     "one_flat": _query([BEVERAGE]),
     "lookup_only_child": _query(
-        [{"child": "entity.scope_region", "match": "any", "where": [{"field": REGION, "op": "=", "value": "North"}]}]
+        [
+            {
+                "child": "entity.scope_region",
+                "match": "any",
+                "where": [{"field": REGION, "op": "=", "value": "North"}],
+            }
+        ]
     ),
     "child_grouping": {**_query(SEPARATE_ROWS), "group_by": [TYPE]},
 }
@@ -902,7 +964,10 @@ def test_validate_compile_execute_and_plan_agree(package: Path, shape: str) -> N
                 outcomes.append(("ok", result.get("rendered_sql") or result.get("sql")))
             except SemanticLayerError as exc:
                 outcomes.append((exc.code, None))
-        tool = [mcp.call_tool("execute", {"query": query, "mode": mode}) for mode in ("validate", "sql", "run")]
+        tool = [
+            mcp.call_tool("execute", {"query": query, "mode": mode})
+            for mode in ("validate", "sql", "run")
+        ]
         planned = plan_payload(engine, intent="customers", partial_query=query)
     finally:
         mcp.close()

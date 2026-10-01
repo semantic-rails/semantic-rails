@@ -2854,7 +2854,9 @@ def _anchored_snapshot_ctes(
     )
     where_clauses: list[Any] = []
     source_filters = _source_local_filter_conditions(
-        measure.entity, refuse_child_groups(plan.query.get("where"), "in an entity-set ratio"), config
+        measure.entity,
+        refuse_child_groups(plan.query.get("where"), "in an entity-set ratio"),
+        config,
     )
     bound_filters = _source_local_filter_conditions(
         measure.entity,

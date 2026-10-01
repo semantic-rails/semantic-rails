@@ -335,7 +335,10 @@ def _select_aggregate_relation(
     if blocker:
         return "", {row.id: blocker for row in rows}
     filters = [
-        *((item.field, item.op, item.value) for item in refuse_child_groups(query.where, "on a rollup")),
+        *(
+            (item.field, item.op, item.value)
+            for item in refuse_child_groups(query.where, "on a rollup")
+        ),
         *(
             (item["field"], item["op"], item["value"])
             for item in _bound_filter_clauses(bound, config)

@@ -551,7 +551,7 @@ def _filter_from_payload(item: Any, path: str) -> Filter:
             "INVALID_EXPRESSION_AST",
             f"{path} must be an object",
             details={
-                "path": f"{path}",
+                "path": path,
                 "why_invalid": "where filters require field/op/value keys",
             },
         )

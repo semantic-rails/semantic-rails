@@ -208,7 +208,9 @@ class ResourceAccess:
         dimensions = set(self.context.dimension_allowlist or ())
         known_dimensions = {row.id for row in self.config.dimensions}
         # A child group's conditions read dimensions as plain filters do: each is checked.
-        requested_dimensions = set(query.group_by) | {row.field for row in every_filter(query.where)}
+        requested_dimensions = set(query.group_by) | {
+            row.field for row in every_filter(query.where)
+        }
         if not requested_dimensions <= dimensions & known_dimensions:
             raise access_denied()
         references.update(requested_dimensions)
