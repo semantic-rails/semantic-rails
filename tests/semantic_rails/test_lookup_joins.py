@@ -1,14 +1,14 @@
-"""Lookups keep the rows they find no match for, on the main path.
+"""Lookups keep the rows they find no match for.
 
 A many-to-one (or one-to-one) hop only adds attributes, so a row whose foreign key is NULL or
 matches no row must keep its measure value when the query groups or filters by a dimension the
 hop looks up: it groups under NULL, and grouped rows add up to the ungrouped total. A filter on
 a looked-up dimension still drops such rows unless it asks for NULL, as it does for a NULL value
-in the row itself.
+in the row itself. ``test_lookups_keep_rows.py`` checks every query shape.
 
-Every other read of a lookup keeps the inner join it always had (see the last section): a time
-role, a metric filter and its context, a conversion, a qualified set, an entity-set ratio, and
-a dimension a rollup holds.
+A few reads keep the inner join they always had (see the last section): a time role, a metric
+filter's own query and its route to its entity, a conversion, and a dimension a rollup holds.
+A metric filter's set is matched on its context entities, so a row with none is not in it.
 
 Fixture: boardings of flight legs, with a crew roster keyed by (leg, person). Boarding 7 has
 no person, boarding 8 a person with no record (P9), boarding 11 a leg with no record (L9),
@@ -750,11 +750,11 @@ def test_a_hop_shared_with_the_time_role_keeps_the_inner_join(runtime, package):
     assert _lookup_left_joins(load_package_config(str(package)), query) == ["airports"]
 
 
-def test_a_metric_filter_and_its_context_keep_the_inner_join(runtime, package, gold):
+def test_a_metric_filter_matches_its_set_on_its_context_entity(runtime, package, gold):
     """Boardings whose leg has any boarding that month, grouped by the boarder's kind: the
     person is a context entity of the filter. The filter's set is matched on the person, so a
     boarding whose person lookup found nothing (7 and 8) has no set to be in: it stays out, as
-    before, and the query joins nothing with LEFT."""
+    before, although the person hop joins LEFT like every grouping's."""
     query = _monthly_query(
         _scoped("boarding_count", _busy_leg("boarding_count", 1)), group_by=[EMPLOYEE]
     )
@@ -769,7 +769,7 @@ def test_a_metric_filter_and_its_context_keep_the_inner_join(runtime, package, g
         f"SELECT {SQL_EMPLOYEE}, COUNT(*) FROM boardings AS b"
         f" WHERE b.leg_id IS NOT NULL AND {SQL_EMPLOYEE} IS NOT NULL GROUP BY 1"
     )
-    assert _lookup_left_joins(load_package_config(str(package)), query) == []
+    assert _lookup_left_joins(load_package_config(str(package)), query) == ["people"]
 
 
 def test_an_entity_set_ratio_keeps_the_inner_join(runtime):
@@ -865,27 +865,29 @@ def test_a_dimension_a_rollup_holds_keeps_the_inner_join(package):
             ),
             id="nested-query-of-a-qualified-set",
         ),
-        pytest.param(
-            {
-                "version": 1,
-                "select": [{"as": "value", "expression": {"measure": "measure.crew.meal_count"}}],
-                "group_by": [LEG],
-                "metric_filters": [_contextual_person_filter("boarding_count", 2)],
-            },
-            id="metric-filter-context",
-        ),
-        pytest.param(
-            {
-                "version": 1,
-                "select": [
-                    {"as": "value", "expression": {"measure": "measure.crew.boarding_count"}}
-                ],
-                "group_by": [EMPLOYEE],
-                "metric_filters": [_contextual_person_filter("boarding_count", 2)],
-            },
-            id="metric-filter-with-a-lookup-grouping",
-        ),
     ],
 )
 def test_every_other_read_of_a_lookup_keeps_the_inner_join(package, query):
     assert _lookup_left_joins(load_package_config(str(package)), query) == []
+
+
+@pytest.mark.parametrize(
+    ("measure", "group_by", "left_joins"),
+    [
+        # The filter's route to the person walks the boarding hop, which stays inner; the leg
+        # is its context entity, matched in its set (see the orphan-leg test above).
+        pytest.param("meal_count", LEG, ["legs"], id="metric-filter-context"),
+        pytest.param("boarding_count", EMPLOYEE, ["people"], id="metric-filter-entity-grouped"),
+    ],
+)
+def test_a_metric_filter_leaves_the_query_s_own_lookups_left(
+    package, measure, group_by, left_joins
+):
+    query = {
+        "version": 1,
+        "select": [{"as": "value", "expression": {"measure": f"measure.crew.{measure}"}}],
+        "group_by": [group_by],
+        "metric_filters": [_contextual_person_filter("boarding_count", 2)],
+    }
+
+    assert _lookup_left_joins(load_package_config(str(package)), query) == left_joins

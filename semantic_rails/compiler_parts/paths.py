@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from ..ast import NormalizedQuery
@@ -417,6 +419,26 @@ def _is_lookup_hop(rel: RelationshipConfig, current_entity: str, config: Package
     return _reaches_at_most_one(rel, current_entity)
 
 
+# The reads that need the looked-up row, so they join every hop of their path INNER: a time
+# role (a row with no time has no bucket), a metric predicate's route to the entity its set is
+# matched on, and a conversion's events.
+_INNER_LOOKUP_PURPOSES = frozenset(
+    {"time", "metric_predicate", "conversion_dimension", "conversion_match_entity"}
+)
+_inner_lookups: ContextVar[bool] = ContextVar("inner_lookups", default=False)
+
+
+@contextmanager
+def inner_lookups() -> Iterator[None]:
+    """Join every lookup INNER while a metric predicate's own query lowers: its set holds the
+    entities that have rows, never a NULL key for rows that have none."""
+    token = _inner_lookups.set(True)
+    try:
+        yield
+    finally:
+        _inner_lookups.reset(token)
+
+
 def _joins_for_paths(
     source_entity: str,
     path_selections: Iterable[PathSelection],
@@ -424,28 +446,39 @@ def _joins_for_paths(
     *,
     time_spec: dict[str, Any] | None = None,
     table_overrides: dict[str, str] | None = None,
-    lookup_selections: frozenset[tuple[str, str]] = frozenset(),
 ) -> list[SqlJoin]:
-    """The joins for ``path_selections``, all INNER unless the path is temporal.
+    """The joins for ``path_selections``. Every leaf joins its paths here, so this is the one
+    place that decides whether a hop can remove a row.
 
-    The one exception is the lookup left join: a selection named in ``lookup_selections``
-    (by ``(target_entity, purpose)``) joins its N:1 and 1:1 hops with LEFT, so a row whose
-    foreign key is NULL or unmatched stays, with NULL for what the hop looks up. A hop that
-    any other selection also walks stays INNER.
+    An N:1 or 1:1 hop never removes a row: it joins LEFT, so a row whose foreign key is NULL
+    or unmatched stays, with NULL for everything the hop looks up, whatever reads it (a
+    grouping, a filter, the measure's own filter, an aggregate_if's condition or its
+    expression). It joins INNER only when a read in ``_INNER_LOOKUP_PURPOSES`` walks the same
+    hop, inside a metric predicate's own query (``inner_lookups``), on the path to a
+    dimension some rollup of ``source_entity`` holds pre-joined (so the base answers as the
+    rollup does), or on a warehouse whose outer join reads a type default instead of NULL
+    (``_is_lookup_hop``). Hops that fan out join INNER, and every hop after a
+    temporal-validity hop joins LEFT.
     """
+    from ..acceleration.selection import rollup_dimension_entities
+
     entities = _entity_index(config)
     relationships = _relationship_index(config)
     path_selections = list(path_selections)
+    prejoined = rollup_dimension_entities(config, source_entity)
     inner_hops: set[tuple[str, str]] = set()
-    if lookup_selections:
-        for selection in path_selections:
-            if (selection.target_entity, selection.purpose) in lookup_selections:
-                continue
-            current = source_entity
-            for rel_id in selection.chosen_path:
-                rel = relationships[rel_id]
-                inner_hops.add((rel.id, current))
-                current = rel.target_entity if current == rel.source_entity else rel.source_entity
+    for selection in path_selections:
+        if (
+            selection.purpose not in _INNER_LOOKUP_PURPOSES
+            and selection.target_entity not in prejoined
+        ):
+            continue
+        current = source_entity
+        for rel_id in selection.chosen_path:
+            rel = relationships[rel_id]
+            inner_hops.add((rel.id, current))
+            current = rel.target_entity if current == rel.source_entity else rel.source_entity
+    keep_rows = not _inner_lookups.get()
     joins: list[SqlJoin] = []
     overrides = dict(table_overrides or {})
     # Each physical table may appear in the FROM clause once, so it can
@@ -471,15 +504,15 @@ def _joins_for_paths(
             join_key = (rel.id, current_entity)
             existing = joined_via.get(right_table)
             if existing is None:
-                keep_rows = (
-                    (selection.target_entity, selection.purpose) in lookup_selections
+                lookup = (
+                    keep_rows
                     and join_key not in inner_hops
                     and _is_lookup_hop(rel, current_entity, config)
                 )
                 joins.append(
                     SqlJoin(
                         join_type="LEFT"
-                        if nullable_path or rel.temporal_validity or keep_rows
+                        if nullable_path or rel.temporal_validity or lookup
                         else "INNER",
                         table=SqlTableRef(name=right_table),
                         on=join_on,

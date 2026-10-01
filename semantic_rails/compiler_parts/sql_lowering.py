@@ -10,7 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..acceleration.routing import aggregate_routing_report, record_rollup_scan
-from ..acceleration.selection import recombine_aggregation, rollup_dimension_entities
+from ..acceleration.selection import recombine_aggregation
 from ..ast import normalize_query
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
@@ -1784,14 +1784,15 @@ def _entity_in_terms_of_anchor_plan(
     if not anchor_entity:
         return None
     supplemental_selections: list[PathSelection] = []
-    required_dimension_ids = list(plan.group_by)
+    lookup = "entity_in_terms_of_lookup"
+    required_dimension_ids = [(dim_id, lookup) for dim_id in plan.group_by]
     required_dimension_ids.extend(
-        str(item.get("field"))
+        (str(item.get("field")), lookup)
         for item in list(plan.query.get("where", []) or [])
         if item.get("field")
     )
     required_dimension_ids.extend(
-        str(item.get("field"))
+        (str(item.get("field")), lookup)
         for item in _bound_filter_clauses(measure_plan.bound_measure, config)
         if item.get("field")
     )
@@ -1799,10 +1800,12 @@ def _entity_in_terms_of_anchor_plan(
         role = _temporal_role_index(config)[
             _leaf_time_role(measure_plan.bound_measure, normalize_query(plan.query), config)
         ]
-        required_dimension_ids.append(role.dimension)
+        # Read through a lookup, the time role joins INNER as in every other leaf.
+        required_dimension_ids.append((role.dimension, "time"))
 
-    covered_targets = {selection.target_entity for selection in transformed_selections}
-    for dim_id in dict.fromkeys(required_dimension_ids):
+    transformed_by_target = {row.target_entity: row for row in transformed_selections}
+    covered_targets = {(target, lookup) for target in transformed_by_target}
+    for dim_id, purpose in dict.fromkeys(required_dimension_ids):
         dim = dimensions.get(dim_id)
         if dim is None:
             return None
@@ -1811,19 +1814,24 @@ def _entity_in_terms_of_anchor_plan(
             or _direct_dimension_source_expr(anchor_entity, dim_id, config) is not None
         ):
             continue
-        if dim.entity in covered_targets:
+        if (dim.entity, purpose) in covered_targets:
             continue
-        new_selection = _anchor_path_selection(
-            config=config,
-            plan=plan,
-            start_entity=anchor_entity,
-            target_entity=dim.entity,
-            purpose="entity_in_terms_of_lookup",
+        new_selection = (
+            # The time role, read on a grouping's own path.
+            replace(transformed_by_target[dim.entity], purpose=purpose)
+            if dim.entity in transformed_by_target
+            else _anchor_path_selection(
+                config=config,
+                plan=plan,
+                start_entity=anchor_entity,
+                target_entity=dim.entity,
+                purpose=purpose,
+            )
         )
         if new_selection is None:
             return None
         supplemental_selections.append(new_selection)
-        covered_targets.add(dim.entity)
+        covered_targets.add((dim.entity, purpose))
     return {
         "anchor_entity": anchor_entity,
         "anchor_key_columns": anchor_key_columns,
@@ -1962,6 +1970,21 @@ def _fanout_dedup_leaf_select(
     )
 
 
+def _join_table_name(join: SqlJoin) -> str:
+    return join.table.name if isinstance(join.table, SqlTableRef) else ""
+
+
+def _tables_read(condition: Any) -> set[str]:
+    """The tables a join condition reads; an expression it doesn't know reads an unknown one."""
+    if isinstance(condition, SqlIdentifier):
+        return {".".join(condition.parts[:-1])}
+    if isinstance(condition, SqlBinary):
+        return _tables_read(condition.left) | _tables_read(condition.right)
+    if isinstance(condition, SqlIsNull):
+        return _tables_read(condition.expr)
+    return set() if isinstance(condition, SqlLiteral) else {""}
+
+
 def _fanout_filter_leaf_select(
     plan: LogicalPlan,
     measure_plan: MeasurePlan,
@@ -1975,24 +1998,40 @@ def _fanout_filter_leaf_select(
 ) -> SqlSelect:
     """Filter the measure's rows with correlated EXISTS, never join copies into its sum.
 
-    Each hop is nested so its authored join condition correlates with the preceding row.
-    Lookups outside EXISTS keep rows they find no match for, as in the ordinary leaf.
+    Each hop is nested so its authored join condition correlates with the preceding row. A
+    lookup on the rows an EXISTS reads joins LEFT inside it instead, so a child row it finds
+    no match for stays, with NULL for the lookup, as do the lookups outside EXISTS.
     """
     measure = _measure_index(config)[measure_plan.bound_measure.measure_id]
     crossing = [row for row in measure_plan.path_selections if row.analysis.get("status") != "ok"]
     child_joins = _joins_for_paths(measure.entity, crossing, config, time_spec=plan.time)
-    conditions = child_where
-    for join in reversed(child_joins):
+    levels: list[tuple[SqlJoin, SqlExpr, list[SqlJoin]]] = []
+    for join in child_joins:
         if join.on is None:
             raise SemanticLayerError(
                 "MIXED_GRAIN_INVALID", "A child filter needs a correlated join."
             )
+        # A lookup from the measure's own row nests like any hop: the hop after it needs its
+        # match anyway.
+        holders = [
+            lookups
+            for level, _, lookups in reversed(levels)
+            if join.join_type == "LEFT"
+            and _tables_read(join.on) <= {_join_table_name(row) for row in (level, *lookups, join)}
+        ]
+        if holders:
+            holders[0].append(join)
+        else:
+            levels.append((join, join.on, []))
+    conditions = child_where
+    for join, on, lookups in reversed(levels):
         conditions = [
             SqlExists(
                 SqlSelect(
                     select=[SqlField(SqlLiteral(1), "match")],
                     from_table=join.table,
-                    where=[join.on, *conditions],
+                    joins=lookups,
+                    where=[on, *conditions],
                 )
             )
         ]
@@ -2001,7 +2040,6 @@ def _fanout_filter_leaf_select(
         [row for row in measure_plan.path_selections if row.analysis.get("status") == "ok"],
         config,
         time_spec=plan.time,
-        lookup_selections=_lookup_selections(plan, [measure_plan], config),
     )
     return SqlSelect(
         select=[
@@ -2145,31 +2183,6 @@ def _source_rollup_leaf_select(
             table_overrides={measure.entity: rollup_name},
         ),
         group_by=final_group_fields,
-    )
-
-
-def _lookup_selections(
-    plan: LogicalPlan, measure_plans: list[MeasurePlan], config: PackageConfig
-) -> frozenset[tuple[str, str]]:
-    """The path selections whose N:1 and 1:1 hops keep the rows they find no match for.
-
-    Only the request's own measure leaf, and only the dimensions the query groups or filters
-    by and the entities an aggregate_if's condition reads. Every other read of a lookup keeps
-    its INNER join: a time role, a measure or metric filter, a metric predicate and its
-    context, a nested query, a conversion, an entity-set ratio, and a dimension some rollup of
-    the measure's model holds pre-joined.
-    """
-    from ..compiler import _all_metric_predicates
-
-    if not plan_is_root() or any(_all_metric_predicates(plan, mp) for mp in measure_plans):
-        return frozenset()
-    first = measure_plans[0]
-    prejoined = rollup_dimension_entities(config, first.source_entity)
-    return frozenset(
-        (selection.target_entity, selection.purpose)
-        for selection in first.path_selections
-        if selection.purpose in {"group_by", "where", "aggregate_if"}
-        and selection.target_entity not in prejoined
     )
 
 
@@ -2357,11 +2370,7 @@ def _measure_leaf_select(
         return source_rollup
     joins = [
         *_joins_for_paths(
-            measure.entity,
-            measure_plan.path_selections,
-            config,
-            time_spec=plan.time,
-            lookup_selections=_lookup_selections(plan, [measure_plan], config),
+            measure.entity, measure_plan.path_selections, config, time_spec=plan.time
         ),
         *predicate_joins,
     ]
@@ -4134,11 +4143,7 @@ def _measure_group_leaf_select(
 
     joins = list(
         _joins_for_paths(
-            first_measure.entity,
-            first_plan.path_selections,
-            config,
-            time_spec=plan.time,
-            lookup_selections=_lookup_selections(plan, measure_plans, config),
+            first_measure.entity, first_plan.path_selections, config, time_spec=plan.time
         )
     )
     if leaf_calendar_join is not None:

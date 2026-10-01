@@ -403,16 +403,16 @@ Important planner behaviors:
   leaves; routed leaves expose `aggregate_relation_id` and physical/performance
   plan metadata
 - historical joins use temporal-validity conditions anchored to the effective time axis
-- a dimension the query groups or filters by, looked up through a many-to-one or one-to-one
-  hop from the request's own measure leaf, is a left join, so a row with a NULL or unmatched
-  foreign key keeps its measure value under NULL. Every other read of a lookup stays an inner
-  join: a time role, a measure or metric filter and its context entities, conversions, qualified
-  sets and metric predicates (including the queries nested in them), anchored entity-set
-  ratios, a dimension any rollup of the measure's model holds (even at a grain that rollup can
-  never answer), hops that fan out, and every hop
-  on a dialect without `outer_lookup_joins` (ClickHouse, whose unmatched outer-join columns
-  read a type default, not NULL). `_lookup_selections` (`compiler_parts/sql_lowering.py`) is the
-  one place that decides which path selections are left joins
+- a many-to-one or one-to-one hop never removes a measure's row: it is a left join in every
+  leaf, whatever reads the looked-up dimension, so a row with a NULL or unmatched foreign key
+  keeps its measure value under NULL. Only these reads keep an inner join: a time role
+  (`_INNER_LOOKUP_PURPOSES`), a metric predicate's route to its entity and its own nested
+  query (`inner_lookups`), conversions, a dimension any rollup of the measure's model holds
+  (even at a grain that rollup can never answer), and every hop on a dialect without
+  `outer_lookup_joins` (ClickHouse, whose unmatched outer-join columns read a type default,
+  not NULL); a hop any of them walks is inner for every read. Hops that fan out are inner
+  joins. `_joins_for_paths` (`compiler_parts/paths.py`) is the one place that decides, and
+  the only caller of the join-condition builder; leaves cannot opt out
 - dense fill uses the declared calendar entity for the requested calendar id, or the implicit
   Gregorian calendar for a default request in a package that declares no default calendar
 - `metric_predicate` compiles as a scoped predicate subplan rather than a projected boolean expression
