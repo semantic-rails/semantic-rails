@@ -194,10 +194,17 @@ Different shape from `select`. The most common pattern is `kind: metric_predicat
 `entity_only`. `time_alignment` is one of `same_query_period`,
 `query_window`, or `rolling_window_in_period`.
 
-`input` may combine a metric with literals, such as `rate * 100` or `orders - 3`; a literal
-never changes the predicate's entity grain, and an entity with no rows reads the arithmetic's
-value (`orders - 3` reads `-3`, a division by `0` reads `NULL`). An input made only of literals
-is refused with `PREDICATE_INPUT_REQUIRED`, and one that combines two root entities with
+`input` may combine measures, metrics and ratios with numeric literals in `arithmetic` that
+adds, subtracts, multiplies by a constant or divides by a constant, such as `rate * 100`,
+`orders - 3` or `revenue / 1000`; a literal never changes the predicate's entity grain, and an
+entity with no rows reads the arithmetic's value (`orders - 3` reads `-3`, a division by `0`
+reads `NULL`). Any other input with a literal is refused with `PREDICATE_NOT_SUPPORTED`,
+because what an entity with no rows reads there is not known: a literal in a `ratio` or
+`comparison`, a text literal, a product of two non-constant operands such as
+`(orders + 1) * (orders + 1)`, a division that holds a literal but not a constant divisor,
+such as `5 / orders` or `5 / (orders - 2)`, or an operand of any other kind. An input made only
+of literals is
+refused with `PREDICATE_INPUT_REQUIRED`, and one that combines two root entities with
 `PREDICATE_GRAIN_UNSAFE`.
 
 ## WhereFilter

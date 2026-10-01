@@ -252,9 +252,7 @@ def _no_row_reading_known(expr: ArithmeticExpr, config: PackageConfig) -> bool:
         return True
     if expr.op == "multiply":
         return _is_constant(expr.left) or _is_constant(expr.right)
-    return expr.op == "divide" and (
-        _is_constant(expr.right) or not _holds_literal(expr, config)
-    )
+    return expr.op == "divide" and (_is_constant(expr.right) or not _holds_literal(expr, config))
 
 
 def _require_known_literal_arithmetic(expr: SemanticExpr, config: PackageConfig) -> None:
@@ -342,9 +340,7 @@ def _expression_root_entity(
             raise SemanticLayerError(
                 "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
             )
-        return _expression_root_entity(
-            recipe.expression, config, literal_operands=literal_operands
-        )
+        return _expression_root_entity(recipe.expression, config, literal_operands=literal_operands)
     if isinstance(
         expr,
         (
