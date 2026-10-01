@@ -40,7 +40,14 @@ ENVELOPE = {
 EXPECTED = {
     "validate": {"segment", "normalized_segment", "derived_query"},
     "explain": {"segment", "normalized_segment", "derived_query", "rendered_sql"},
-    "preview": {"segment", "rows", "preview_row_count", "member_count", "derived_query"},
+    "preview": {
+        "segment",
+        "column_types",
+        "rows",
+        "preview_row_count",
+        "member_count",
+        "derived_query",
+    },
 }
 
 

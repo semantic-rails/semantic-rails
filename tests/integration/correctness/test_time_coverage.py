@@ -9,6 +9,7 @@ from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.result_helpers import typed_rows
 
 from .conftest import _rows, _write_variant
 from .test_correctness import (
@@ -79,7 +80,9 @@ def test_loaded_buckets_use_the_whole_base_not_the_filtered_measure(
       FROM generate_series(TIMESTAMP '{bucket}', TIMESTAMP '{int(bucket[:4]) + 1}-01-01' - INTERVAL '1 month',
         INTERVAL '1 month') g(b) CROSS JOIN scope CROSS JOIN coverage LEFT JOIN m ON m.b=g.b
     """
-    _assert_rows(backend.reference(reference), [tuple(r.values()) for r in result["rows"]], variant)
+    _assert_rows(
+        backend.reference(reference), [tuple(r.values()) for r in typed_rows(result)], variant
+    )
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
@@ -102,7 +105,7 @@ def test_conditional_observation_does_not_count_rows_that_fail_the_condition(
     gold = backend.reference(
         f"SELECT CASE WHEN EXISTS (SELECT 1 FROM orders WHERE {condition}) THEN 0 END"
     )
-    assert [r["v"] for r in result["rows"]] == [r[0] for r in gold]
+    assert [r["v"] for r in typed_rows(result)] == [r[0] for r in gold]
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
@@ -134,7 +137,7 @@ def test_placeholder_rows_do_not_extend_coverage(request, backend_name, tmp_path
             "date_trunc('month', MAX(CASE WHEN ordered_at <= CURRENT_TIMESTAMP THEN ordered_at END)) "
             "THEN 0 END FROM orders",
         )
-        assert [r["v"] for r in result["rows"]] == [r[0] for r in gold] == [None]
+        assert [r["v"] for r in typed_rows(result)] == [r[0] for r in gold] == [None]
     finally:
         if backend_name == "duckdb":
             rt.close()
@@ -197,7 +200,7 @@ def test_populated_values_survive_coverage(changed_runtime, stamp, fill):
         "SELECT date_trunc('month', ordered_at), SUM(amount), COUNT(order_id) "
         "FROM orders WHERE order_id = 999 GROUP BY 1",
     )
-    got = [(r[f"{ROLE}__month"], r["v"], r["n"]) for r in result["rows"]]
+    got = [(r[f"{ROLE}__month"], r["v"], r["n"]) for r in typed_rows(result)]
     _assert_rows(gold, [row for row in got if row[0] == gold[0][0]], "populated coverage")
 
 
@@ -243,7 +246,7 @@ def test_recent_observation_uses_the_roles_current_instant(changed_runtime, vari
     )
     _assert_rows(
         gold,
-        [(r[f"{ROLE}__day"], r["v"], r["n"], r["b"]) for r in result["rows"]],
+        [(r[f"{ROLE}__day"], r["v"], r["n"], r["b"]) for r in typed_rows(result)],
         "recent observation",
     )
 
@@ -266,8 +269,10 @@ def test_fiscal_coverage_preserves_the_populated_final_quarter(request, backend_
         f"SELECT {bucket}, SUM(amount) FROM orders "
         "WHERE ordered_at >= TIMESTAMP '2024-05-01' GROUP BY 1"
     )
-    _assert_rows(gold, [(r[f"{ROLE}__quarter"], r["v"]) for r in result["rows"]], "fiscal coverage")
-    assert result["rows"][-1]["v"] == 2
+    _assert_rows(
+        gold, [(r[f"{ROLE}__quarter"], r["v"]) for r in typed_rows(result)], "fiscal coverage"
+    )
+    assert typed_rows(result)[-1]["v"] == 2
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
@@ -299,7 +304,7 @@ def test_routed_values_survive_shorter_raw_retention(changed_runtime, expression
     gold = _rows(rt, f"SELECT {columns} FROM orders_monthly WHERE month_start = DATE '2023-11-01'")
     _assert_rows(
         gold,
-        [tuple(row[f"v{i}"] for i in range(len(expressions))) for row in result["rows"]],
+        [tuple(row[f"v{i}"] for i in range(len(expressions))) for row in typed_rows(result)],
         "routed retention",
     )
 
@@ -342,7 +347,7 @@ def test_aware_coverage_cutoff_ignores_the_session_zone(changed_runtime, backend
         "SELECT CASE WHEN ordered_at_tz <= CURRENT_TIMESTAMP THEN 0 END "
         "FROM orders WHERE order_id = 999",
     )
-    assert [r["v"] for r in result["rows"]] == [r[0] for r in gold]
+    assert [r["v"] for r in typed_rows(result)] == [r[0] for r in gold]
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
@@ -425,5 +430,5 @@ def test_a_secondary_zone_aware_role_keeps_its_populated_value(changed_runtime):
             fill=True,
         )
     )
-    rows = [(str(r[f"{ROLE}__day"])[:10], r["v"], r["n"]) for r in result["rows"]]
+    rows = [(str(r[f"{ROLE}__day"])[:10], r["v"], r["n"]) for r in typed_rows(result)]
     assert rows == [("2024-03-01", 8, 1)]
