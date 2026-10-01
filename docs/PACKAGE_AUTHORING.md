@@ -1494,7 +1494,10 @@ Four guard rails back this up:
   minimal response (the MCP default) leaves the notes out. So adding a route
   never changes an answer silently: a pair whose one route is its own key keeps
   its answer and now notes it, and any other pair is refused until a row
-  records it.
+  records it. Notes reuse the resolver's candidates for an unpinned pair. For
+  a recorded route, they check whether multiple routes fit `max_hops` using
+  bounded reachability scans, without enumerating alternatives or caching a
+  route refusal just to produce a note.
 - **`AMBIGUOUS_PATH` error** — rule 4 above. A `graph.relationships:` entry
   never replaces a foreign key on other columns: the model keeps both, so an
   origin and a destination key into one `airport` entity are two routes. Any
