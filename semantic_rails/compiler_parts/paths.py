@@ -245,9 +245,10 @@ def _holds_literal(expr: SemanticExpr, config: PackageConfig) -> bool:
 def _no_row_reading_known(expr: ArithmeticExpr) -> bool:
     """Whether arithmetic over an entity with no rows reads exactly what its operands give there.
 
-    It does for a sum, a difference and a product with a constant factor. A quotient without a
-    literal reads NULL there, as its divisor reads 0 or NULL, and any other product is not
-    modelled. Both read None, and an input with a literal refuses both.
+    It does for a sum, a difference and a product with a constant factor. Any other product is
+    not modelled, and a quotient without a literal reads NULL there, as its divisor reads 0 or
+    NULL. Both read None, and an input with a literal refuses any other product and any quotient
+    that holds a literal.
     """
     if expr.op in {"add", "subtract"}:
         return True
@@ -296,12 +297,13 @@ def _require_known_literal_arithmetic(expr: SemanticExpr, config: PackageConfig)
     That reading decides whether an entity with no rows qualifies (``count - 3 < 0`` keeps it,
     as ``count < 3`` does), and it is computed in exact decimals from each literal's SQL text.
     Once the input's arithmetic holds a literal, every node must be a plain decimal number, a
-    measure, arithmetic that passes :func:`_no_row_reading_known`, or a ratio without a
-    literal, which reads NULL there. A literal with a fraction also needs a warehouse that reads
-    it exactly and measures that count, whose SQL type is an integer: float arithmetic, as over
-    a sum of a float column, reads ``0 - 0.1 - 0.2`` as ``-0.30000000000000004``. Any other
-    input with a literal, a quotient or a call included, keeps the refusal of a literal operand.
-    An input without a literal keeps the reading it always had.
+    measure, arithmetic that passes :func:`_no_row_reading_known`, or a quotient or ratio
+    without a literal, which reads NULL there. A literal with a fraction also needs a warehouse
+    that reads it exactly and measures that count, whose SQL type is an integer: float
+    arithmetic, as over a sum of a float column, reads ``0 - 0.1 - 0.2`` as
+    ``-0.30000000000000004``. Any other input with a literal, a division by a literal or a call
+    included, keeps the refusal of a literal operand. An input without a literal keeps the
+    reading it always had.
     """
     nodes = list(_input_arithmetic(expr, config))
     literals = [_sql_number(node.value) for node in nodes if isinstance(node, LiteralExpr)]
@@ -315,9 +317,9 @@ def _require_known_literal_arithmetic(expr: SemanticExpr, config: PackageConfig)
     ):
         raise _unsupported_literal()
     for node in nodes:
-        if isinstance(node, ArithmeticExpr):
+        if isinstance(node, ArithmeticExpr) and node.op != "divide":
             known = _no_row_reading_known(node)
-        elif isinstance(node, RatioExpr):
+        elif isinstance(node, (ArithmeticExpr, RatioExpr)):
             known = not _holds_literal(node, config)
         elif isinstance(node, (MeasureRefExpr, AggregateExpr)):
             known = not fractional or _counts_rows(node, config)

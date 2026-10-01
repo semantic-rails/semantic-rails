@@ -2,10 +2,12 @@
 
 Invariant: a literal operand never changes the grain of a predicate input. The input's root
 entity is the root of its non-literal operands; an input made only of literals is refused, and
-two different roots stay ``PREDICATE_GRAIN_UNSAFE``. An entity with no rows reads what the
-arithmetic gives there: ``count - 3`` reads -3, not 0, and a division by 0 reads NULL. That
-reading is known only where the arithmetic adds, subtracts, multiplies by a constant or divides
-by a constant, so any other input with a literal is refused with ``PREDICATE_NOT_SUPPORTED``.
+two different roots stay ``PREDICATE_GRAIN_UNSAFE``. An entity with no rows reads exactly what
+the arithmetic gives there in the SQL: ``count - 3`` reads -3, not 0, and ``count - 0.1 - 0.2``
+reads -0.3, never the float -0.30000000000000004. That reading is known only where the
+arithmetic adds, subtracts or multiplies by a constant, over literals the warehouse reads
+exactly, so any other input with a literal, a division included, keeps the refusal it had
+before literal operands ran.
 
 Gold values come from independent SQL over the same seed. Customer 5 has no orders.
 """
@@ -14,11 +16,15 @@ from __future__ import annotations
 
 import re
 import textwrap
+from dataclasses import replace
 from pathlib import Path
 
 import duckdb
 import pytest
 
+from semantic_rails.compiler import _predicate_includes_entities_without_rows
+from semantic_rails.compiler_parts.bind import _parse_public_expr
+from semantic_rails.compiler_parts.paths import _expression_root_entity
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.planner.plan import plan_payload
 from semantic_rails.runtime import Runtime
@@ -170,7 +176,7 @@ def _write_package(root: Path) -> None:
                   left: {measure: order_count}
                   right: {kind: literal, value: 2}
               big_spender_orders:
-                label: Orders of customers who spent over 0.1 thousand
+                label: Orders of customers who spent over 100
                 kind: aggregate
                 value_type: count
                 expression:
@@ -184,11 +190,11 @@ def _write_package(root: Path) -> None:
                           scope_mode: entity_only
                           input:
                             kind: arithmetic
-                            op: divide
+                            op: subtract
                             left: {measure: revenue}
-                            right: {kind: literal, value: 1000}
+                            right: {kind: literal, value: 100}
                           op: ">"
-                          value: 0.1
+                          value: 0
             """
         )
     )
@@ -292,7 +298,6 @@ def test_a_scaled_rate_keeps_the_customers_the_unscaled_rate_keeps(runtime, rate
             (ORDERS, "<", 3),
             "v < 3",
         ),
-        ((_arith("divide", ORDERS, _lit(2)), "<=", 1), (ORDERS, "<=", 2), "v <= 2"),
     ],
     ids=[
         "minus_gt",
@@ -302,7 +307,6 @@ def test_a_scaled_rate_keeps_the_customers_the_unscaled_rate_keeps(runtime, rate
         "literal_plus",
         "times_lt",
         "times_nested_literal",
-        "divided_le",
     ],
 )
 def test_a_count_shifted_by_a_literal_matches_the_unshifted_threshold(
@@ -313,25 +317,35 @@ def test_a_count_shifted_by_a_literal_matches_the_unshifted_threshold(
     assert _kept_customers(runtime, _predicate(*plain_form)) == expected
 
 
-def test_division_by_a_literal(runtime):
-    expected = _gold_customers(REVENUE_SQL, "v / 1000 > 0.1")
-    assert expected == {1, 4}
-    divided = _arith("divide", REVENUE, _lit(1000))
-    assert _kept_customers(runtime, _predicate(divided, ">", 0.1)) == expected
+SHIFTED_DOWN = _arith("subtract", _arith("subtract", ORDERS, _lit(0.1)), _lit(0.2))
+SHIFTED_UP = _arith("add", _arith("add", ORDERS, _lit(0.1)), _lit(0.2))
 
 
 @pytest.mark.parametrize(
-    ("divisor", "op", "value", "kept"),
-    [(2, "<", 2, {2, 4, 5}), (100, "<", 0.03, {2, 5})],
-    ids=["by_two", "by_a_hundred"],
+    ("input_", "op", "value", "condition", "kept"),
+    [
+        # In floats customer 5 reads -0.30000000000000004 and is dropped; DuckDB reads -0.3.
+        (SHIFTED_DOWN, "=", -0.3, "(v - 0.1) - 0.2 = -0.3", {5}),
+        (SHIFTED_DOWN, "NOT IN", [-0.3], "(v - 0.1) - 0.2 not in (-0.3)", {1, 2, 3, 4, 6}),
+        # In floats customer 5 reads 0.30000000000000004 and is kept; DuckDB reads 0.3.
+        (SHIFTED_UP, ">", 0.3, "(v + 0.1) + 0.2 > 0.3", {1, 2, 3, 4, 6}),
+        (SHIFTED_UP, "IN", [0.3, 2.3], "(v + 0.1) + 0.2 in (0.3, 2.3)", {2, 5}),
+        (
+            _arith("multiply", _arith("add", ORDERS, _lit(0.1)), _lit(3)),
+            "=",
+            0.3,
+            "(v + 0.1) * 3 = 0.3",
+            {5},
+        ),
+    ],
+    ids=["minus_eq", "minus_not_in", "plus_gt", "plus_in", "times_eq"],
 )
-def test_a_count_divided_by_a_literal_keeps_customers_without_orders(
-    runtime, divisor, op, value, kept
+def test_a_decimal_literal_reads_exactly_as_the_sql_does(
+    runtime, input_, op, value, condition, kept
 ):
-    expected = _gold_customers(ORDER_COUNT_SQL, f"v / {divisor} {op} {value}")
+    expected = _gold_customers(ORDER_COUNT_SQL, condition)
     assert expected == kept
-    divided = _arith("divide", ORDERS, _lit(divisor))
-    assert _kept_customers(runtime, _predicate(divided, op, value)) == expected
+    assert _kept_customers(runtime, _predicate(input_, op, value)) == expected
 
 
 def test_a_literal_inside_a_metric_recipe_input(runtime):
@@ -340,20 +354,6 @@ def test_a_literal_inside_a_metric_recipe_input(runtime):
     assert expected == {5}
     recipe = {"metric": "metric.lit.orders_less_two"}
     assert _kept_customers(runtime, _predicate(recipe, "<", 0)) == expected
-
-
-@pytest.mark.parametrize(("op", "value"), [(">", 0), ("<", 1), ("=", 0), ("!=", 1), ("<=", 0)])
-def test_division_by_a_literal_zero_is_null_not_an_error(runtime, op, value):
-    divided = _arith("divide", ORDERS, _lit(0))
-    assert _kept_customers(runtime, _predicate(divided, op, value)) == set()
-    rows = runtime.query(
-        {
-            "version": 1,
-            "select": [{"as": "v", "expression": divided}],
-            "group_by": [CUSTOMER_ID],
-        }
-    )["rows"]
-    assert rows and all(row["v"] is None for row in rows)
 
 
 def test_a_listed_entity_reading_null_fails_a_threshold_zero_passes(runtime):
@@ -431,17 +431,17 @@ def test_time_anchored_literal_operand_matches_gold(runtime):
 def _big_spender_orders_gold() -> int:
     (expected,) = _gold(
         "select count(*) from orders o where o.customer_id in (select customer_id from orders "
-        "group by customer_id having sum(amount) / 1000 > 0.1)"
+        "group by customer_id having sum(amount) - 100 > 0)"
     )[0]
     return expected
 
 
 def test_a_literal_operand_inside_an_aggregate_filter(runtime):
-    divided = _arith("divide", REVENUE, _lit(1000))
+    shifted = _arith("subtract", REVENUE, _lit(100))
     filtered = {
         "kind": "aggregate",
         "measure": "measure.lit.order_count",
-        "filter": {"all": [{"expression": _predicate(divided, ">", 0.1)["expression"]}]},
+        "filter": {"all": [{"expression": _predicate(shifted, ">", 0)["expression"]}]},
     }
     rows = runtime.query({"version": 1, "select": [{"as": "n", "expression": filtered}]})["rows"]
     assert [row["n"] for row in rows] == [_big_spender_orders_gold()] == [7]
@@ -507,7 +507,21 @@ LESS_TWO = _arith("subtract", ORDERS, _lit(2))
         (_arith("divide", _lit(5), LESS_TWO), "!=", 1),
         (_arith("divide", _lit(5), {"metric": "metric.lit.orders_less_two"}), "<", 0),
         (_arith("divide", _lit(5), ORDERS), ">", 1),
+        # Any division with a literal, even by a constant, as before.
+        (_arith("divide", ORDERS, _lit(2)), "<", 2),
+        (_arith("divide", REVENUE, _lit(1000)), ">", 0.1),
+        (_arith("divide", ORDERS, _lit(0)), "=", 0),
+        (
+            _arith("add", {"kind": "call", "name": "COALESCE", "args": [ORDERS, _lit(0)]}, _lit(1)),
+            "<",
+            2,
+        ),
         (_arith("add", ORDERS, _lit("3")), "<", 4),
+        # A sum may be a float column, whose arithmetic reads 0 - 0.1 as a float.
+        (_arith("subtract", REVENUE, _lit(0.1)), "<", 0),
+        # DuckDB reads 1e-05 as a float, so neither the literal nor the comparison is exact.
+        (_arith("add", ORDERS, _lit(1e-05)), ">", 0),
+        (_arith("subtract", ORDERS, _lit(0.1)), "<", 1e-05),
     ],
     ids=[
         "ratio_by_a_literal",
@@ -521,12 +535,46 @@ LESS_TWO = _arith("subtract", ORDERS, _lit(2))
         "literal_over_a_shifted_count_not_one",
         "literal_over_a_recipe_with_a_literal",
         "literal_over_a_count",
+        "count_by_two",
+        "sum_by_a_thousand",
+        "count_by_zero",
+        "call_plus_one",
         "text_literal",
+        "decimal_over_a_sum",
+        "float_literal",
+        "float_threshold",
     ],
 )
 def test_a_literal_whose_reading_without_rows_is_unknown_is_refused(runtime, input_, op, value):
-    codes, plan_code, execute_code = _refusal_codes(runtime, _predicate(input_, op, value))
+    predicate = _predicate(input_, op, value)
+    codes, plan_code, execute_code = _refusal_codes(runtime, predicate)
     assert codes[0] == plan_code == execute_code == "PREDICATE_NOT_SUPPORTED"
+    errors = runtime.validate(_customers_query(predicate))["errors"]
+    assert errors[0]["message"] == LITERAL_REFUSAL
+
+
+LITERAL_REFUSAL = "Expression kind 'literal' is not supported for predicate planning"
+
+
+@pytest.mark.parametrize("warehouse", ["bigquery", "clickhouse"])
+def test_a_decimal_literal_is_refused_where_the_warehouse_reads_a_float(runtime, warehouse):
+    config = runtime._config
+    floats = replace(config, package=replace(config.package, warehouse=warehouse))
+    whole = _parse_public_expr(_arith("subtract", ORDERS, _lit(3)))
+    expected_root = _expression_root_entity(whole, config, literal_operands=True)
+    assert _expression_root_entity(whole, floats, literal_operands=True) == expected_root
+    decimal = _parse_public_expr(_predicate(SHIFTED_DOWN, "=", -0.3)["expression"])
+    for refused in (
+        lambda: _expression_root_entity(decimal.input, floats, literal_operands=True),
+        # A path that reads the value for no rows before it resolves roots is refused too.
+        lambda: _predicate_includes_entities_without_rows(decimal, floats),
+    ):
+        with pytest.raises(SemanticLayerError) as raised:
+            refused()
+        assert (raised.value.code, str(raised.value)) == (
+            "PREDICATE_NOT_SUPPORTED",
+            LITERAL_REFUSAL,
+        )
 
 
 @pytest.mark.parametrize(
