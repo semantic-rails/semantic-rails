@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .errors import SemanticLayerError
+from .expressions import call_cast_type, validate_call_name
 from .sql_ast import (
     SqlBinary,
     SqlCall,
@@ -92,6 +93,40 @@ def _day_rows(day: Any, source: str, series: SqlTableFunction | None = None) -> 
 @dataclass(frozen=True)
 class SqlDialect:
     name: str
+
+    def scalar_call(self, name: str, args: list[Any], *, distinct: bool = False) -> Any:
+        """Central lowering guard for every query, package and relation call."""
+        name = validate_call_name(name, self.name)
+        if distinct:
+            raise SemanticLayerError(
+                "INVALID_EXPRESSION_AST", "Scalar calls do not support distinct"
+            )
+        if name != "CAST":
+            return SqlCall(name, args)
+        value = args[1].value if len(args) == 2 and isinstance(args[1], SqlLiteral) else None
+        logical_type = call_cast_type(value, self.name)
+        base = logical_type.split("(")[0]
+        type_name = "BIGINT" if base in {"INTEGER", "BIGINT"} else logical_type
+        if self.name == "postgres" and base == "DOUBLE":
+            type_name = "FLOAT8"
+        elif self.name == "bigquery":
+            type_name = {
+                "DOUBLE": "FLOAT64",
+                "INTEGER": "INT64",
+                "BIGINT": "INT64",
+                "VARCHAR": "STRING",
+            }[base]
+        elif self.name == "databricks" and base == "VARCHAR":
+            type_name = "STRING"
+        elif self.name == "clickhouse":
+            type_name = {
+                "DOUBLE": "Float64",
+                "INTEGER": "Int64",
+                "BIGINT": "Int64",
+                "VARCHAR": "String",
+            }.get(base, logical_type)
+            type_name = f"Nullable({type_name})"
+        return SqlCast(args[0], type_name)
 
     def prepare_query(self, sql: str) -> PreparedQuery:
         """Finalize the executable statement and result-column mapping."""

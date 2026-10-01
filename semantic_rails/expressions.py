@@ -11,8 +11,11 @@ these nodes; the compiler consumes them.
 from __future__ import annotations
 
 import ast as pyast
+import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
+from datetime import date, datetime
+from decimal import Decimal
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
@@ -21,12 +24,110 @@ from .errors import SemanticLayerError
 if TYPE_CHECKING:
     from .schema import MeasureConfig, PackageConfig
 
-# Row generators only the engine emits (the implicit calendar's day series, in
-# dialects.SqlDialect.day_series) and the time coverage cutoff (dialects.SqlDialect.now and
-# utc_timestamp). A query or package `call` may not name them.
-ENGINE_ONLY_FUNCTIONS = frozenset(
-    {"ARRAY_GENERATE_RANGE", "EXPLODE", "GENERATE_DATE_ARRAY", "SEQUENCE"}
-) | {"NOW", "PG_TYPEOF"}
+
+CALL_CAST_FORMS = ("DOUBLE", "DECIMAL(p,s)", "INTEGER", "BIGINT", "VARCHAR")
+
+
+def call_cast_type(value: Any, warehouse: str = "duckdb") -> str:
+    """Validate the authored logical type before it can become a SQL token."""
+    if isinstance(value, str):
+        normalized = value.strip().upper()
+        normalized = re.sub(r"\s*([(),])\s*", r"\1", normalized)
+        if normalized in {"DOUBLE", "INTEGER", "BIGINT", "VARCHAR"}:
+            return normalized
+        match = re.fullmatch(r"DECIMAL\(([0-9]+),([0-9]+)\)", normalized)
+        if match:
+            # Strip zero padding and bound tokens before Python's integer conversion.
+            precision, scale = (token.lstrip("0") or "0" for token in match.groups())
+            if (
+                len(precision) <= 2
+                and len(scale) <= 2
+                and 0 <= int(scale) <= int(precision) <= 38
+                and int(precision) > 0
+            ):
+                if warehouse == "bigquery":
+                    raise SemanticLayerError(
+                        "INVALID_EXPRESSION_AST",
+                        "BigQuery CAST cannot enforce DECIMAL precision and scale; "
+                        "use DOUBLE or a warehouse column with a parameterized decimal type.",
+                        details={"warehouse": warehouse, "target_type": normalized},
+                    )
+                return f"DECIMAL({int(precision)},{int(scale)})"
+    raise SemanticLayerError(
+        "INVALID_EXPRESSION_AST",
+        "CAST requires two args, with a string literal type: " + ", ".join(CALL_CAST_FORMS),
+        details={"accepted_types": list(CALL_CAST_FORMS)},
+    )
+
+
+def accepted_call_names(warehouse: str = "duckdb") -> frozenset[str]:
+    """Scalar spellings valid as plain calls, independently of engine SQL tokens."""
+    common = frozenset(
+        {
+            "ABS",
+            "CAST",
+            "CEIL",
+            "CEILING",
+            "COALESCE",
+            "CONCAT",
+            "EXP",
+            "FLOOR",
+            "LENGTH",
+            "LN",
+            "LOG",
+            "LOWER",
+            "NULLIF",
+            "POWER",
+            "REPLACE",
+            "ROUND",
+            "SQRT",
+            "SUBSTR",
+            "SUBSTRING",
+            "TRIM",
+            "UPPER",
+        }
+    )
+    extras = {
+        "duckdb": {
+            "DATE_PART",
+            "DATE_TRUNC",
+            "LEFT",
+            "RIGHT",
+            "JSON_EXTRACT",
+            "JSON_EXTRACT_STRING",
+            "SPLIT",
+            "STRING_SPLIT",
+            "STR_SPLIT",
+        },
+        "postgres": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT"},
+        "snowflake": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"},
+        "bigquery": {"LEFT", "RIGHT", "JSON_EXTRACT", "SPLIT"},
+        "databricks": {"DATE_PART", "DATE_TRUNC", "LEFT", "RIGHT", "SPLIT"},
+        "athena": {"DATE_TRUNC", "JSON_EXTRACT", "SPLIT"},
+        "clickhouse": set(),
+    }
+    warehouse = {"motherduck": "duckdb", "ducklake": "duckdb"}.get(warehouse, warehouse)
+    if warehouse == "clickhouse":
+        return common - {"TRIM"}
+    return common | frozenset(extras[warehouse]) if warehouse in extras else frozenset()
+
+
+def validate_call_name(name: str, warehouse: str = "duckdb") -> str:
+    normalized = name.strip().upper()
+    allowed = accepted_call_names(warehouse)
+    if normalized not in allowed:
+        raise SemanticLayerError(
+            "INVALID_EXPRESSION_AST",
+            f"Unsupported scalar call: {name!r}"
+            + ("; use CAST with " + ", ".join(CALL_CAST_FORMS) if normalized == "TRY_CAST" else ""),
+            details={
+                "function": name,
+                "token_kind": "function",
+                "token": name,
+                "allowed": sorted(allowed),
+            },
+        )
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -84,17 +185,17 @@ class BooleanExpr:
     args: list[SemanticExpr] = field(default_factory=list)
 
 
+def validate_boolean_argument_count(op: str, count: int) -> None:
+    """AND/OR must have at least two operands, before parsing or lowering children."""
+    if op.strip().lower() in {"and", "or"} and count < 2:
+        raise SemanticLayerError("INVALID_EXPRESSION_AST", "and/or need at least two arguments")
+
+
 @dataclass(frozen=True)
 class CallExpr:
     name: str
     args: list[SemanticExpr] = field(default_factory=list)
     distinct: bool = False
-
-    def __post_init__(self) -> None:
-        if " ".join(self.name.split()).upper() in ENGINE_ONLY_FUNCTIONS:
-            raise SemanticLayerError(
-                "INVALID_EXPRESSION_AST", f"Unsafe SQL function token: {self.name!r}"
-            )
 
 
 @dataclass(frozen=True)
@@ -377,6 +478,172 @@ def validate_expression_shapes(value: Any) -> None:
     elif isinstance(value, (list, tuple)):
         for child in value:
             validate_expression_shapes(child)
+
+
+def validate_expression_calls(value: Any, config: PackageConfig, *, owner: str = "") -> None:
+    """One type walker for normalized queries and parsed package expressions.
+
+    Only known types refuse. Literal data, metadata and parameters remain opaque.
+    """
+    numeric = {"ABS", "CEIL", "CEILING", "EXP", "FLOOR", "LN", "LOG", "POWER", "ROUND", "SQRT"}
+    text = {
+        "LOWER",
+        "UPPER",
+        "TRIM",
+        "REPLACE",
+        "LENGTH",
+        "LEFT",
+        "RIGHT",
+        "SUBSTR",
+        "SUBSTRING",
+    }
+
+    def family(data_type: str) -> str:
+        base = data_type.lower().split("(")[0].strip()
+        if base in {
+            "number",
+            "numeric",
+            "decimal",
+            "integer",
+            "int",
+            "int32",
+            "int64",
+            "bigint",
+            "float",
+            "float8",
+            "float64",
+            "double",
+            "real",
+            "smallint",
+        }:
+            return "number"
+        if base in {"text", "string", "varchar", "char"}:
+            return "text"
+        if base in {"date", "datetime", "timestamp", "timestamp_ntz", "timestamptz"}:
+            return "date"
+        return "boolean" if base in {"bool", "boolean"} else "unknown"
+
+    def walk(node: Any, entity: str) -> str:
+        if isinstance(node, LiteralExpr):
+            val = node.value
+            if val is None:
+                return "null"
+            if isinstance(val, bool):
+                return "boolean"
+            if isinstance(val, (int, float, Decimal)):
+                return "number"
+            if isinstance(val, str):
+                # PostgreSQL resolves untyped SQL string literals against the signature.
+                return "unknown" if config.package.warehouse == "postgres" else "text"
+            if isinstance(val, (list, tuple)):
+                return "array"
+            return "date" if isinstance(val, (date, datetime)) else "unknown"
+        if isinstance(node, ColumnRefExpr):
+            column_owner = node.entity or (
+                resolve_table_entity(config, node.table, owner=entity) if node.table else entity
+            )
+            if not column_owner:
+                return "unknown"
+            types = {
+                "unknown" if dim.semantic_kind == "categorical" else family(dim.data_type)
+                for dim in config.dimensions
+                if dim.column == node.column and dim.entity == column_owner
+            }
+            return next(iter(types)) if len(types) == 1 else "unknown"
+        if isinstance(node, CallExpr):
+            name = validate_call_name(node.name, config.package.warehouse)
+            if node.distinct:
+                raise SemanticLayerError(
+                    "INVALID_EXPRESSION_AST", "Scalar calls do not support distinct"
+                )
+            arg_types = [walk(arg, entity) for arg in node.args]
+            if name == "CAST":
+                target = call_cast_type(
+                    node.args[1].value
+                    if len(node.args) == 2 and isinstance(node.args[1], LiteralExpr)
+                    else None,
+                    config.package.warehouse,
+                )
+                return "text" if target == "VARCHAR" else "number"
+            for index, received in enumerate(arg_types):
+                expected = "unknown"
+                if name in numeric:
+                    expected = "number"
+                elif name in text:
+                    expected = (
+                        "number"
+                        if name in {"LEFT", "RIGHT", "SUBSTR", "SUBSTRING"} and index > 0
+                        else "text"
+                    )
+                elif name in {"DATE_PART", "DATE_TRUNC"}:
+                    expected = "text" if index == 0 else "date"
+                # These coarse families cannot establish compatibility for warehouses
+                # with implicit conversions or additional overloads. Defer to execution.
+                if config.package.warehouse not in {
+                    "duckdb",
+                    "motherduck",
+                    "ducklake",
+                    "postgres",
+                    "bigquery",
+                }:
+                    expected = "unknown"
+                if (
+                    name == "LENGTH"
+                    and received == "array"
+                    and config.package.warehouse in {"duckdb", "motherduck", "ducklake"}
+                ):
+                    expected = "unknown"
+                if name == "ROUND" and index > 1:
+                    expected = "unknown"
+                if expected != "unknown" and received not in {expected, "unknown", "null"}:
+                    raise SemanticLayerError(
+                        "CALL_ARGUMENT_TYPE",
+                        f"{name} argument {index} requires {expected}, received {received}.",
+                        details={
+                            "function": name,
+                            "argument_index": index,
+                            "expected": expected,
+                            "received": received,
+                        },
+                    )
+            if name in numeric or name in {"LENGTH", "DATE_PART"}:
+                return "number"
+            if name == "DATE_TRUNC":
+                return "date"
+            if name in {"SPLIT", "STR_SPLIT", "STRING_SPLIT"}:
+                return "array"
+            if name in {"JSON_EXTRACT", "JSON_EXTRACT_STRING", "CONCAT"}:
+                return "unknown"
+            if name in text:
+                return "text"
+            known = {t for t in arg_types if t != "null"}
+            return next(iter(known)) if len(known) == 1 else "unknown"
+        if isinstance(node, ArithmeticExpr):
+            types = {walk(node.left, entity), walk(node.right, entity)}
+            return "number" if types <= {"number", "null"} else "unknown"
+        if is_dataclass(node) and not isinstance(node, type):
+            entity = getattr(node, "entity", "") or entity
+            for item in fields(node):
+                if item.name not in {"meta", "parameters"}:
+                    walk(getattr(node, item.name), entity)
+        elif isinstance(node, (list, tuple)):
+            for child in node:
+                walk(child, entity)
+        return "unknown"
+
+    walk(value, owner)
+
+
+def is_constant_expression(expr: SemanticExpr | None) -> bool:
+    if isinstance(expr, LiteralExpr):
+        return True
+    if isinstance(expr, ArithmeticExpr):
+        return is_constant_expression(expr.left) and is_constant_expression(expr.right)
+    return (
+        isinstance(expr, CallExpr)
+        and expr.name.upper() == "CAST"
+        and all(is_constant_expression(arg) for arg in expr.args)
+    )
 
 
 def collect_object_references(
@@ -1224,10 +1491,9 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
                     ],
                 },
             )
-        args = [
-            parse_semantic_expression(arg, context=context)
-            for arg in list(expr.get("args", []) or [])
-        ]
+        raw_args = list(expr.get("args", []) or [])
+        validate_boolean_argument_count(op, len(raw_args))
+        args = [parse_semantic_expression(arg, context=context) for arg in raw_args]
         if not args:
             raise SemanticLayerError("INVALID_EXPRESSION_AST", "Boolean expressions require args")
         if op == "not" and len(args) != 1:
