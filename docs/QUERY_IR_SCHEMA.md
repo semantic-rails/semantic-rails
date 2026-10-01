@@ -255,13 +255,86 @@ joins. It refuses paths that look up a parent before reaching children and
 paths joined off the parent's declared key, including beside a lookup, with
 `MIXED_GRAIN_INVALID`.
 
-At most one group or filter may cross a one-to-many hop. Negated child predicates
-and child `IS NULL` tests remain `MIXED_GRAIN_INVALID`: "has a child that is not X"
-and "has no child that is X" have different answers, and the IR has no explicit
-`NOT EXISTS` predicate. Grouped child dimensions retain their distinct-parent
-count rules; summing a parent amount by a child dimension or reading a child
-measure expression at parent grain remains refused. Under a row policy these
-queries are refused with `POLICY_DENIED`, as before.
+Grouped child dimensions retain their distinct-parent count rules; summing a
+parent amount by a child dimension or reading a child measure expression at
+parent grain remains refused. Under a row policy these queries are refused with
+`POLICY_DENIED`, as before.
+
+### Child groups
+
+"Customers with an item that is a beverage and costs over 5" may mean one item that
+is both, or a beverage and some item over 5. Only the question can say which, so the
+query states it. A child group is a `where` item of its own:
+
+```jsonc
+{
+  "child": "entity.shop_item",              // entity id of the child
+  "match": "any",                           // "any" | "none"
+  "where": [                                // filters, as above
+    {"field": "dimension.shop_item_product_type", "op": "=", "value": "beverage"},
+    {"field": "dimension.shop_item_price", "op": ">", "value": 5}
+  ]
+}
+```
+
+- `any` keeps a row of the measure's entity when at least one of its child rows meets
+  every condition: a correlated `EXISTS` over the conjunction. `none` keeps it when no
+  child row does: `NOT EXISTS`, so a row with no child rows at all is kept.
+- Conditions are dimensions of the child, or of a declared many-to-one or one-to-one
+  lookup from it. A lookup that finds no row reads NULL, and NULL fails a comparison:
+  under `none`, a child row with a NULL value never excludes its parent.
+- Several groups are separate subqueries, ANDed with the other `where` items. Two
+  groups on one child mean separate child rows; one group with both conditions means
+  the same row. Groups on different children (items and sessions) combine the same way.
+- The child must sit across a one-to-many hop from each measure's entity. Its route
+  follows the usual rule: a tie between routes, or a route that looks up a parent before
+  reaching children (or joins off an alternate key) beside another candidate, is refused
+  with `AMBIGUOUS_PATH` until `graph.path_preferences` pins one.
+- Refused with `INVALID_QUERY`: a child reached only through lookups, or the measure's
+  own entity (use a plain filter); nested groups; a condition that is not on the child
+  or a lookup from it; a condition whose lookup reads a table the route already reads;
+  and a group in a query without a measure, beside a conversion or a distribution, or in
+  a segment's membership.
+- A group never reads a rollup. Grouping by a child dimension beside a group is
+  `MIXED_GRAIN_INVALID`, and the measure must meet the same rules as under a plain child
+  filter (one value per row of its entity, no window or metric predicate across the hop).
+  Under a row policy the query is refused with `POLICY_DENIED`.
+- ClickHouse answers one `any` group on the child's own columns, as the only condition
+  across a one-to-many hop, with its de-duplicated parent leaf. A `none` group (a NULL-safe
+  anti-join is unproven there), several groups, a lookup from the child, or another child
+  condition beside the group are refused with `MIXED_GRAIN_INVALID`.
+
+Plain filters on a child:
+
+- One positive plain filter reaching a child keeps its meaning: an `any` group of one.
+- Two or more plain filters reaching one child entity by one route (a lookup from the
+  child counts as that child), or a plain filter beside a group on that child, are
+  refused with `AMBIGUOUS_CHILD_SCOPE`. So is a negated plain filter on a child (`!=`,
+  `<>`, `NOT IN`, `NOT LIKE`, `IS DISTINCT FROM`, `IS NULL`, a null value, or on a boolean
+  anything but `= true`): "has an item that is not a beverage" and "has no beverage
+  item" differ.
+- The refusal carries `details.clarification`:
+
+  ```jsonc
+  {
+    "kind": "child_scope",
+    "apply": ["query"],
+    "question": "Do Product type = \"beverage\" and Price > 5 apply to the same Order item or to separate ones?",
+    "options": [
+      {"id": "same_row", "meaning": "One Order item meets ...", "where": [/* whole rewritten where */]},
+      {"id": "separate_rows", "meaning": "Each of ... may hold on a different Order item.", "where": [/* ... */]}
+    ]
+  }
+  ```
+
+  A negated filter's options are `any_not` (an `any` group with the condition as
+  written) and `none` (a `none` group with its opposite: `=` for `!=`, `IN` for `NOT IN`,
+  `IS NOT NULL` for `IS NULL`). Each option's `where` is the query's whole `where`, with
+  the other items unchanged; resend it as is. `recovery_hints` carry the same options.
+- Plain filters on different children (an item and a payment of a customer's orders)
+  remain `MIXED_GRAIN_INVALID`: they may mean the same order or any orders. State each
+  with its own group. A measure's own `filter` keeps its rules: one positive condition
+  across a hop means `EXISTS`, and a negated one is `MIXED_GRAIN_INVALID`.
 
 ## OrderBy
 

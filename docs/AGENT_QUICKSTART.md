@@ -273,6 +273,11 @@ consistently across discovery, metadata, validation, compile, and query calls.
    output.
 6. Call `execute` when the user wants rows. It validates and compiles first, so it needs no
    separate dry run; use `mode: "validate"` for diagnostics without running the query.
+7. On `AMBIGUOUS_CHILD_SCOPE`, the conditions on a child entity can mean the same child row or
+   separate ones (or, negated, "has a row that is not X" or "has no row that is X"). Answer
+   `details.clarification.question` from the user's question, or ask the user, then resend the
+   chosen option's `where` unchanged. Write a child group (`{child, match, where}`) up front when
+   the question already says it.
 
 Use `minimal` or `compact` verbosity unless the user asks for debugging detail. Request
 `full` only for explainability, test failure triage, or query review.
@@ -316,7 +321,8 @@ orient -> discover -> draft -> execute
 Branch on structured status fields: a `plan` draft that isn't `ok`, or has warnings, goes to a
 repair node before `execute`. `INVALID_QUERY`, `PATH_JOIN_CONFLICT`,
 `MIXED_GRAIN_INVALID`, `POLICY_DENIED`, and low-relevance results should route to repair or refusal
-nodes instead of being retried as raw SQL.
+nodes instead of being retried as raw SQL. `AMBIGUOUS_CHILD_SCOPE` routes to a clarification
+node: each of its `details.clarification.options` is a complete `where` to resend.
 
 ## Local Warehouse Defaults
 
