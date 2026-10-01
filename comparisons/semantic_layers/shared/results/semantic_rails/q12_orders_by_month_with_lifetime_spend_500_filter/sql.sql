@@ -46,10 +46,16 @@ FROM comparison_orders
 INNER JOIN leaf_1__qualified_customers_by_lifetime_spend_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_spend_1."dimension.jaffle_customer_id"
 GROUP BY
   DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))
+),
+guarded_base AS (
+SELECT
+  base.t AS t,
+  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1
+FROM leaf_1 AS base
 )
 SELECT
   base.t AS "temporal_role.jaffle_order_time__month",
   base.m1 AS filtered_orders
-FROM leaf_1 AS base
+FROM guarded_base AS base
 ORDER BY
   t ASC

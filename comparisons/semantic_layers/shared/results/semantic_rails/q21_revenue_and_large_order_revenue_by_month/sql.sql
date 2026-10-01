@@ -16,12 +16,19 @@ GROUP BY
   comparison_orders.order_id,
   DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))
 ),
+leaf_2__revenue_usd_order_month_source_1__guarded_base AS (
+SELECT
+  base.g1 AS g1,
+  base.t AS t,
+  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1
+FROM leaf_2__revenue_usd_order_month_source_1__leaf_1 AS base
+),
 leaf_2__revenue_usd_order_month_source_1 AS (
 SELECT
   base.g1 AS "dimension.jaffle_order_id",
   base.t AS t,
   base.m1 AS __predicate_value
-FROM leaf_2__revenue_usd_order_month_source_1__leaf_1 AS base
+FROM leaf_2__revenue_usd_order_month_source_1__guarded_base AS base
 ),
 leaf_2__qualified_orders_month_by_revenue_usd_1 AS (
 SELECT DISTINCT
@@ -47,11 +54,25 @@ SELECT
   right_side.m2 AS m2
 FROM leaf_1 AS left_side
 FULL OUTER JOIN leaf_2 AS right_side ON left_side.t IS NOT DISTINCT FROM right_side.t
+),
+coverage_1 AS (
+SELECT
+  MIN(DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))) AS loaded_from,
+  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(comparison_orders.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(comparison_orders.ordered_at AS TIMESTAMP))) END <= TIMEZONE('UTC', NOW()) THEN DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) END) AS loaded_to
+FROM comparison_orders
+),
+guarded_base AS (
+SELECT
+  base.t AS t,
+  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) THEN 0 END) AS m1,
+  CASE WHEN COUNT(base.m2) OVER () > 0 THEN COALESCE(base.m2, 0) END AS m2
+FROM combined_2 AS base
+CROSS JOIN coverage_1
 )
 SELECT
   base.t AS "temporal_role.jaffle_order_time__month",
   base.m1 AS revenue_usd,
   base.m2 AS large_order_revenue_usd
-FROM combined_2 AS base
+FROM guarded_base AS base
 ORDER BY
   t ASC
