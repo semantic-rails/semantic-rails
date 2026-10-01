@@ -23,18 +23,24 @@ Connection contract (see ``DATABRICKS_CONNECTION_OPTIONS`` in
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from ..dialects import DATABRICKS_CONNECTION_OPTIONS
 from ..errors import SemanticLayerError
 from .base import WarehouseAdapter
 from .common import (
+    DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    DEFAULT_READ_TIMEOUT_SECONDS,
     DbApiAdapter,
+    client_wait_timeout,
     import_driver,
     normalize_connection_options,
     option_or_env,
     require_missing_env,
     secret_value,
+    timeout_option,
 )
 
 _SCHEME_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
@@ -114,14 +120,55 @@ class DatabricksNativeAdapter(DbApiAdapter):
                 kwargs[key] = self.options[key]
         return kwargs
 
-    def _create_connection(self) -> Any:
+    @contextmanager
+    def _query_connection(self, timeout_seconds: int) -> Iterator[Any]:
+        read_timeout = timeout_option(
+            self.options,
+            "read_timeout_seconds",
+            DEFAULT_READ_TIMEOUT_SECONDS,
+            engine=self.engine,
+            connection_kind=self.connection_kind,
+            label="Databricks",
+        )
+        wait = client_wait_timeout(read_timeout, timeout_seconds)
+        if wait <= read_timeout:
+            yield self._connection()
+        else:
+            connection = self._create_connection(read_timeout=wait)
+            try:
+                yield connection
+            finally:
+                connection.close()
+
+    def _create_connection(self, *, read_timeout: int | None = None) -> Any:
         driver = import_driver(
             "databricks.sql",
             extra="databricks",
             engine=self.engine,
             connection_kind=self.connection_kind,
         )
-        return driver.connect(**self._connect_kwargs(), use_cloud_fetch=False)
+        connect_timeout = timeout_option(
+            self.options,
+            "connect_timeout_seconds",
+            DEFAULT_CONNECT_TIMEOUT_SECONDS,
+            engine=self.engine,
+            connection_kind=self.connection_kind,
+            label="Databricks",
+        )
+        read_timeout = read_timeout or timeout_option(
+            self.options,
+            "read_timeout_seconds",
+            DEFAULT_READ_TIMEOUT_SECONDS,
+            engine=self.engine,
+            connection_kind=self.connection_kind,
+            label="Databricks",
+        )
+        # The connector exposes one socket deadline for connect/send/receive.
+        return driver.connect(
+            **self._connect_kwargs(),
+            use_cloud_fetch=False,
+            _socket_timeout=max(connect_timeout, read_timeout),
+        )
 
     def _apply_statement_timeout(self, cursor: Any, timeout_seconds: int) -> None:
         cursor.execute(f"SET STATEMENT_TIMEOUT = {int(timeout_seconds)}")

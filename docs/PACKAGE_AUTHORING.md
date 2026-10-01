@@ -500,6 +500,46 @@ Two connection kinds are supported:
 
 Literal credentials in YAML are rejected.
 
+### Native adapter timeouts
+
+Postgres, ClickHouse, Databricks, Snowflake native, BigQuery, and Athena
+connections accept `connect_timeout_seconds` and `read_timeout_seconds` in
+`package.connection.options`. Both must be positive integers. The defaults are
+10 seconds for connecting and 65 seconds for network reads or query waiting.
+Set a larger read timeout when queries normally take longer. Postgres and
+Snowflake native also accept `statement_timeout_seconds`; server statement
+limits remain opt-in. An explicit `"0"` preserves the server default on
+Postgres and disables the session limit on Snowflake, as before. Without an
+authored positive Postgres limit or any Snowflake limit, role/user/account
+defaults are preserved.
+An explicit statement timeout raises the default read timeout to at least five
+seconds beyond it. Snowflake named profiles retain their inherited login,
+network/socket and session settings unless the package explicitly overrides
+numeric timeout options. With a named profile, a nonempty authored `query_tag`
+is refused with `INVALID_CONFIG` before connecting; configure `QUERY_TAG` in
+the named profile instead. Inherited `QUERY_TAG` and `TIMEZONE` remain intact
+when a numeric timeout is overridden. Direct connections still pass authored
+tags through the connector's `session_parameters`.
+
+The drivers apply these limits differently: ClickHouse bounds connection and
+HTTP send/receive time; Snowflake bounds login, network, and socket operations;
+BigQuery bounds query submission and result waiting; Athena bounds API calls
+and query polling. Databricks exposes one socket timeout for connection and
+reads, so the larger configured value applies to both. Postgres uses libpq's
+connection timeout and TCP keepalives; libpq has no separate socket read
+deadline, and healthy queries without an authored server timeout can continue.
+These network limits apply per driver operation/attempt; driver retries and
+Databricks polling can extend total elapsed time. MotherDuck and Snowflake CLI
+are outside these client-wait defaults.
+
+Per-request `limits.statement_timeout_ms` sets each supported warehouse's
+statement deadline. ClickHouse, Databricks, Snowflake native, BigQuery and
+Athena client waits accommodate a longer request with a five-second margin.
+BigQuery sets a server job deadline to the read wait when no request limit is
+supplied and attempts cancellation if result waiting times out. Athena cancels
+an unfinished query before returning its polling timeout; its request limit
+remains best-effort, with the client polling margin and workgroup server limits.
+
 ### Secrets
 
 **Secrets must come from process environment or an external secret store. Package

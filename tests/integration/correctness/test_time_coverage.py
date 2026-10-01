@@ -252,7 +252,10 @@ def test_recent_observation_uses_the_roles_current_instant(changed_runtime, vari
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
-def test_fiscal_coverage_preserves_the_populated_final_quarter(request, backend_name, raw_runtime):
+@pytest.mark.parametrize("reverse_rows", [False, True])
+def test_fiscal_coverage_preserves_the_populated_final_quarter(
+    request, backend_name, raw_runtime, reverse_rows
+):
     backend = _backend(request, backend_name)
     result = raw_runtime("utc_authored").query(
         _ask(
@@ -269,12 +272,14 @@ def test_fiscal_coverage_preserves_the_populated_final_quarter(request, backend_
         f"SELECT {bucket}, SUM(amount) FROM orders "
         "WHERE ordered_at >= TIMESTAMP '2024-05-01' GROUP BY 1"
     )
-    _assert_rows(
-        gold, [(r[f"{ROLE}__quarter"], r["v"]) for r in typed_rows(result)], "fiscal coverage"
-    )
-    quarters = [r[f"{ROLE}__quarter"] for r in typed_rows(result)]
+    rows = typed_rows(result)
+    quarters = [r[f"{ROLE}__quarter"] for r in rows]
     assert quarters == sorted(quarters)
-    assert typed_rows(result)[-1]["v"] == 2
+    # Exercise the value comparison in both result orders on each backend.
+    if reverse_rows:
+        rows.reverse()
+    _assert_rows(gold, [(r[f"{ROLE}__quarter"], r["v"]) for r in rows], "fiscal coverage")
+    assert max(rows, key=lambda row: row[f"{ROLE}__quarter"])["v"] == 2
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
