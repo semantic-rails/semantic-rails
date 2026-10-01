@@ -152,7 +152,7 @@ def test_fill_bounds_the_window_by_date_day_not_the_calendar_key(runtime_factory
     assert key[0] not in sql
     alias = "temporal_role.jaffle_order_time__week"
     assert min(_as_date(row[alias]) for row in rows) == date(2017, 6, 26)
-    assert sum(row["orders"] for row in rows) == 7438
+    assert sum(row["orders"] or 0 for row in rows) == 7438
 
 
 def test_fill_without_a_date_day_column_bounds_the_window_by_bucket(runtime_factory):
@@ -597,7 +597,7 @@ def test_fill_boundary_dates_do_not_overflow(
         assert "1 = 0" in sql
     else:
         assert rows
-        assert sum(row["orders"] for row in rows) >= 1
+        assert sum(row["orders"] or 0 for row in rows) >= 1
         assert f"jaffle_calendar.date_day {expected_operator} '{expected_day}'" in sql
 
 
@@ -821,9 +821,7 @@ def test_fill_date_extremes_with_representable_zone_conversion(
         ).fetchall()
 
     assert [day for day, _ in rows] == expected
-    # Orders exist, but none inside these windows. Known limitation: a bucket in a window with no
-    # rows reads NULL until the engine checks for data outside the window, then it reads 0. The
-    # correctness corpus holds the 0 as a strict xfail; this test is about which days come back.
+    # These buckets are outside the loaded date range, including placeholder dates.
     assert all(count is None for _, count in rows)
 
 

@@ -260,6 +260,57 @@ def test_guard_timeout_kills_workers_and_fails(monkeypatch, tmp_path, capsys):
     assert "repetition 1; timed out" in output and "tests/test_sample.py" in output
 
 
+def test_guard_skips_a_repetition_that_cannot_fit_and_passes_inconclusive(
+    monkeypatch, tmp_path, capsys
+):
+    calls = []
+    clock = [1000.0]
+
+    class Process:
+        def __init__(self, command, **kwargs):
+            calls.append(command)
+
+        def wait(self, timeout=None):
+            clock[0] += 100.0  # each repetition takes 100 s
+            return 0
+
+    monkeypatch.setattr(flake_guard.subprocess, "Popen", Process)
+    monkeypatch.setattr(flake_guard.time, "monotonic", lambda: clock[0])
+    # 290 s budget: repetitions 1 and 2 fit; repetition 3 would need ~100 s with 90 s left.
+    assert flake_guard.run_repetitions(["tests/test_sample.py"], tmp_path, clock[0] + 290) == 0
+    assert len(calls) == 2
+    output = capsys.readouterr().out
+    assert "Flake guard inconclusive: 2 of 3 repetitions passed" in output
+    assert "intermittent" not in output
+
+
+def test_guard_still_fails_a_repetition_that_hangs(monkeypatch, tmp_path, capsys):
+    killed = []
+    clock = [1000.0]
+    calls = []
+
+    class Process:
+        pid = 123
+
+        def __init__(self, command, **kwargs):
+            calls.append(command)
+
+        def wait(self, timeout=None):
+            if len(calls) == 2 and timeout is not None:
+                clock[0] += timeout
+                raise subprocess.TimeoutExpired("pytest", timeout)
+            clock[0] += 50.0
+            return 0 if timeout is not None else -9
+
+    monkeypatch.setattr(flake_guard.subprocess, "Popen", Process)
+    monkeypatch.setattr(flake_guard.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(flake_guard.os, "killpg", lambda *args: killed.append(args))
+    # Repetition 2 fits (240 s left, ~50 s expected) but hangs: that is still a failure.
+    assert flake_guard.run_repetitions(["tests/test_sample.py"], tmp_path, clock[0] + 290) == 1
+    assert killed == [(123, flake_guard.signal.SIGKILL)]
+    assert "repetition 2; timed out" in capsys.readouterr().out
+
+
 def test_guard_expired_budget_and_empty_selection(monkeypatch, tmp_path):
     def no_process(*args, **kwargs):
         pytest.fail("must not start pytest")

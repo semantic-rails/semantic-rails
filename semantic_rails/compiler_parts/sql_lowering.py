@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
@@ -95,11 +95,16 @@ from .dependencies import (
 )
 from .empty_groups import (
     GUARDED_BASE,
+    LeafScope,
     base_reads,
     expr_resolves_to_zero,
     guard_empty_groups,
+    record_leaf_scope,
     record_zero_output,
+    recording_leaf_scopes,
     refuse_unsettled,
+    require_time_scopes,
+    sql_nodes,
     zero_aliases,
     zero_outputs,
 )
@@ -404,6 +409,73 @@ def _time_bucket_expr(time: dict[str, Any], raw_expr: Any, config: PackageConfig
             whens=[SqlCaseWhen(SqlIsNull(raw_expr), SqlLiteral(0))], else_expr=SqlLiteral(0)
         )
     return raw_expr
+
+
+def _emits_time_coverage(plan: LogicalPlan, config: PackageConfig) -> bool:
+    """The one boundary for base time coverage: the guard emits it, routing refuses rollups.
+
+    A fill, a dense series or combined branches can show a bucket no leaf has, which reads 0
+    only inside the base's loaded range. Only DuckDB and Postgres execute that coverage.
+    Branches are counted unrouted, so the answer never depends on routing.
+    """
+    if not plan.time or plan.time.get("window_total") or not _dialect(config).has_time_coverage:
+        return False
+    if _query_requires_dense_series(plan, config):
+        return True
+    unrouted = [replace(row, aggregate_relation_id="") for row in plan.measure_plans]
+    return len(_measure_plan_groups(replace(plan, measure_plans=unrouted), config)) > 1
+
+
+def _needs_time_scope(plan: LogicalPlan, config: PackageConfig) -> bool:
+    """Whether base leaves record their scope: for coverage, or a window's observation."""
+    return _emits_time_coverage(plan, config) or bool(
+        plan.time
+        and not plan.time.get("window_total")
+        and (plan.time.get("start") or plan.time.get("end"))
+        and _dialect(config).has_time_coverage
+    )
+
+
+def _record_time_scope(
+    plan: LogicalPlan,
+    config: PackageConfig,
+    leaf: SqlSelect,
+    rows: list[MeasurePlan],
+    untimed: list[Any],
+    *,
+    raw_time: Any,
+    bucket: Any,
+    calendar: SqlJoin | None,
+    local: bool,
+) -> None:
+    if not plan.time or plan.time.get("window_total") or leaf.ctes:
+        return
+    if not _needs_time_scope(plan, config):
+        return
+    if not isinstance(leaf.from_table, SqlTableRef):
+        raise SemanticLayerError("EMPTY_GROUPS_UNSETTLED", "A time scope needs a base relation.")
+    dialect = _dialect(config)
+    for row in rows:
+        alias = row.bound_measure.alias
+        value = next(field.expression for field in leaf.select if field.alias == alias)
+        role = _temporal_role_index(config)[
+            _leaf_time_role(row.bound_measure, normalize_query(plan.query), config)
+        ]
+        record_leaf_scope(
+            alias,
+            LeafScope(
+                from_table=leaf.from_table,
+                joins=tuple(j for j in leaf.joins if j is not calendar),
+                where=tuple(untimed),
+                value=value,
+                bucket=bucket if local else None,
+                raw_time=raw_time,
+                storage_zone=role.column_timezone or role.timezone or "UTC",
+                calendar=calendar,
+                now=dialect.now("UTC"),
+                bounded=bool(plan.time.get("start") or plan.time.get("end")),
+            ),
+        )
 
 
 def _is_window_total_key(expr: Any, time_alias: str) -> bool:
@@ -1266,7 +1338,7 @@ def _lower_agent_dag_to_sql(
     # those outputs again over the combined result, the same way each branch did.
     guard_ctes: list[SqlCte] = []
     if guard_empty and (zero := zero_outputs(plan, config)):
-        guard_ctes.append(guard_empty_groups(combined_name, key_aliases, output_aliases, zero))
+        guard_ctes.extend(guard_empty_groups(combined_name, key_aliases, output_aliases, zero))
         combined_name = GUARDED_BASE
 
     final_source = "agent_projected"
@@ -1535,6 +1607,12 @@ def _paths_have_temporal_validity(
             if rel is not None and rel.temporal_validity:
                 return True
     return False
+
+
+def _expression_reads_joined_entity(path_selections: Iterable[PathSelection]) -> bool:
+    """Whether the measure's expression reads a joined entity, so it can't aggregate before
+    the join (an authored cross-entity expression, or an aggregate_if's condition)."""
+    return any(row.purpose in {"measure_expr", "aggregate_if"} for row in path_selections)
 
 
 def _paths_are_single_hop_safe(
@@ -1905,6 +1983,8 @@ def _source_rollup_leaf_select(
         return None
     if _paths_are_single_hop_safe(measure_plan.path_selections, config):
         return None
+    if _expression_reads_joined_entity(measure_plan.path_selections):
+        return None
     if time_alias and not time_source_local:
         return None
     if _paths_have_temporal_validity(measure_plan.path_selections, config):
@@ -2012,9 +2092,10 @@ def _lookup_selections(
     """The path selections whose N:1 and 1:1 hops keep the rows they find no match for.
 
     Only the request's own measure leaf, and only the dimensions the query groups or filters
-    by. Every other read of a lookup keeps its INNER join: a time role, a measure or metric
-    filter, a metric predicate and its context, a nested query, a conversion, an entity-set
-    ratio, and a dimension some rollup of the measure's model holds pre-joined.
+    by and the entities an aggregate_if's condition reads. Every other read of a lookup keeps
+    its INNER join: a time role, a measure or metric filter, a metric predicate and its
+    context, a nested query, a conversion, an entity-set ratio, and a dimension some rollup of
+    the measure's model holds pre-joined.
     """
     from ..compiler import _all_metric_predicates
 
@@ -2025,7 +2106,8 @@ def _lookup_selections(
     return frozenset(
         (selection.target_entity, selection.purpose)
         for selection in first.path_selections
-        if selection.purpose in {"group_by", "where"} and selection.target_entity not in prejoined
+        if selection.purpose in {"group_by", "where", "aggregate_if"}
+        and selection.target_entity not in prejoined
     )
 
 
@@ -2096,6 +2178,7 @@ def _measure_leaf_select(
             if direct_time is not None
             else _column_ref(_measure_dim_relation(measure, dim, entities), dim.column)
         )
+        coverage_time = raw_expr
         raw_expr = _apply_role_timezone(raw_expr, role, config)
         cal_binding = _leaf_calendar_binding(plan, config)
         if cal_binding is not None and time.get("grain"):
@@ -2129,22 +2212,9 @@ def _measure_leaf_select(
             source_relation_override=measure_source_override,
         ) or _resolve_dimension_expr(str(item["field"]), config)
         where_clauses.append(_value_filter_condition(expr, item))
+    untimed = list(where_clauses)
     if plan.time:
         time = dict(plan.time)
-        role = temporal_roles[leaf_time_role]
-        dim = dimensions[role.dimension]
-        direct_time = _direct_dimension_source_expr(
-            measure.entity,
-            role.dimension,
-            config,
-            source_relation_override=measure_source_override,
-        )
-        raw_expr = (
-            direct_time[0]
-            if direct_time is not None
-            else _column_ref(_measure_dim_relation(measure, dim, entities), dim.column)
-        )
-        raw_expr = _apply_role_timezone(raw_expr, role, config)
         if time.get("start") is not None:
             where_clauses.append(SqlBinary(raw_expr, ">=", SqlLiteral(time["start"])))
         if time.get("end") is not None:
@@ -2250,7 +2320,7 @@ def _measure_leaf_select(
             leaf_alias,
         )
     )
-    return SqlSelect(
+    leaf = SqlSelect(
         ctes=predicate_ctes,
         select=select_fields,
         from_table=SqlTableRef(name=_measure_source_relation(measure, entities[measure.entity])),
@@ -2258,6 +2328,19 @@ def _measure_leaf_select(
         where=where_clauses,
         group_by=group_fields,
     )
+    if plan.time:
+        _record_time_scope(
+            plan,
+            config,
+            leaf,
+            [measure_plan],
+            untimed,
+            raw_time=coverage_time,
+            bucket=time_expr,
+            calendar=leaf_calendar_join,
+            local=time_source_local,
+        )
+    return leaf
 
 
 def _minimal_predicate_set_ctes(
@@ -2829,6 +2912,8 @@ def _foldable_leaf_signature(
         return None
     if any(row.analysis.get("status") != "ok" for row in measure_plan.path_selections):
         return None  # a one-to-many hop: the leaf rewrites (entity_in_terms_of, fanout_dedup)
+    if any(row.purpose == "aggregate_if" for row in measure_plan.path_selections):
+        return None  # a folded scan joins as its first leaf does; this leaf's joins are its own
     if measure_plan.path_selections and not _paths_are_single_hop_safe(
         measure_plan.path_selections, config
     ):
@@ -2887,6 +2972,8 @@ def _source_rollup_strategy(
         return {"strategy": "direct_aggregate", "reason": "metric_predicate_scope"}
     if _paths_are_single_hop_safe(measure_plan.path_selections, config):
         return {"strategy": "direct_aggregate", "reason": "single_hop_safe_join"}
+    if _expression_reads_joined_entity(measure_plan.path_selections):
+        return {"strategy": "direct_aggregate", "reason": "measure_expression_reads_joined_entity"}
     if _paths_have_temporal_validity(measure_plan.path_selections, config):
         return {"strategy": "direct_aggregate", "reason": "temporal_validity_path"}
     if not _filter_dimensions_are_source_local(
@@ -3640,6 +3727,7 @@ def build_performance_plan(
     physical_plan: PhysicalPlan,
     rendered_sql: str,
     rollup_scans: frozenset[str],
+    sql_ast: SqlSelect,
 ) -> PerformancePlan:
     nodes = _physical_node_index(physical_plan)
     scans = [node for node in physical_plan.nodes if node.kind == "Scan"]
@@ -3689,6 +3777,42 @@ def build_performance_plan(
             }
         )
 
+    # These reads deliberately omit the request window. Count the emitted AST nodes,
+    # including nested probes, rather than inferring them from the logical leaves.
+    for read in sql_nodes(sql_ast):
+        if not isinstance(read, SqlSelect) or not read.observation_scan:
+            continue
+        if not isinstance(read.from_table, SqlTableRef):
+            continue
+        relation = read.from_table.name
+        scan_id = f"scope_scan_{len(estimated_scan_relations) + 1}"
+        estimated_scan_relations.append(
+            {
+                "scan_id": scan_id,
+                "relation": relation,
+                "source_entity": next((e.id for e in config.entities if e.table == relation), ""),
+                "selected_relation_type": "raw",
+                "measures": [],
+                "estimated_rows": "unknown_compile_only",
+                "has_time_filter": False,
+                "time_filter_has_start": False,
+                "time_filter_has_end": False,
+                "has_source_filter": bool(read.where),
+                "large_relation_hint": _relation_has_large_hint(relation),
+            }
+        )
+        date_filter_pushdown.append(
+            {
+                "scan_id": scan_id,
+                "relation": relation,
+                "pushed_to_scan": bool(read.where),
+                "has_time_filter": False,
+                "has_start": False,
+                "has_end": False,
+                "time_filter": {},
+            }
+        )
+
     pre_aggregation_grain: dict[str, list[str]] = {}
     joins_before_aggregate: list[dict[str, Any]] = []
     joins_after_aggregate: list[dict[str, Any]] = []
@@ -3712,7 +3836,9 @@ def build_performance_plan(
         full_outer_alignments = rendered_sql.upper().count("FULL OUTER JOIN")
 
     raw_scans = [row for row in estimated_scan_relations if row["selected_relation_type"] == "raw"]
-    raw_fact_count = len(raw_scans)
+    raw_fact_count = sum(
+        scan.details.get("selected_relation_type", "raw") == "raw" for scan in scans
+    )
     bounded_raw_scans = [
         row
         for row in date_filter_pushdown
@@ -3723,7 +3849,7 @@ def build_performance_plan(
         and row["has_start"]
         and row["has_end"]
     ]
-    all_raw_bounded = bool(raw_scans) and len(bounded_raw_scans) == raw_fact_count
+    all_raw_bounded = bool(raw_scans) and len(bounded_raw_scans) == len(raw_scans)
     window_days = _time_window_days(dict(plan.time or {}))
     large_raw_relations = [row["relation"] for row in raw_scans if row.get("large_relation_hint")]
     multi_hop_after_aggregate = any(
@@ -3846,11 +3972,13 @@ def _measure_group_leaf_select(
         role = temporal_roles[leaf_time_role]
         dim = dimensions[role.dimension]
         direct_time = _direct_dimension_source_expr(first_measure.entity, role.dimension, config)
+        time_source_local = dim.entity == first_measure.entity or direct_time is not None
         raw_expr = (
             direct_time[0]
             if direct_time is not None
             else _column_ref(_measure_dim_relation(first_measure, dim, entities), dim.column)
         )
+        coverage_time = raw_expr
         raw_expr = _apply_role_timezone(raw_expr, role, config)
         cal_binding = _leaf_calendar_binding(plan, config)
         if cal_binding is not None and time.get("grain"):
@@ -3878,17 +4006,9 @@ def _measure_group_leaf_select(
             first_measure.entity, str(item["field"]), config
         ) or _resolve_dimension_expr(str(item["field"]), config)
         where_clauses.append(_value_filter_condition(expr, item))
+    untimed = list(where_clauses)
     if plan.time:
         time = dict(plan.time)
-        role = temporal_roles[leaf_time_role]
-        dim = dimensions[role.dimension]
-        direct_time = _direct_dimension_source_expr(first_measure.entity, role.dimension, config)
-        raw_expr = (
-            direct_time[0]
-            if direct_time is not None
-            else _column_ref(_measure_dim_relation(first_measure, dim, entities), dim.column)
-        )
-        raw_expr = _apply_role_timezone(raw_expr, role, config)
         if time.get("start") is not None:
             where_clauses.append(SqlBinary(raw_expr, ">=", SqlLiteral(time["start"])))
         if time.get("end") is not None:
@@ -3927,13 +4047,26 @@ def _measure_group_leaf_select(
     )
     if leaf_calendar_join is not None:
         joins.append(leaf_calendar_join)
-    return SqlSelect(
+    leaf = SqlSelect(
         select=select_fields,
         from_table=SqlTableRef(name=_measure_owned_relation(first_measure, entities)),
         joins=joins,
         where=where_clauses,
         group_by=group_fields,
     )
+    if plan.time:
+        _record_time_scope(
+            plan,
+            config,
+            leaf,
+            measure_plans,
+            untimed,
+            raw_time=coverage_time,
+            bucket=time_expr,
+            calendar=leaf_calendar_join,
+            local=time_source_local,
+        )
+    return leaf
 
 
 def _query_requires_dense_series(plan: LogicalPlan, config: PackageConfig) -> bool:
@@ -3945,6 +4078,33 @@ def _query_requires_dense_series(plan: LogicalPlan, config: PackageConfig) -> bo
     ):
         return True
     return _metric_filters_require_dense_series(plan, config)
+
+
+def coverage_base_plan(
+    plan: LogicalPlan, config: PackageConfig, strategies: Sequence[str]
+) -> LogicalPlan:
+    """A plan that emits base coverage reads the base, with each leaf's pre-routing strategy."""
+    if not _emits_time_coverage(plan, config):
+        return plan
+    return replace(
+        plan,
+        measure_plans=[
+            replace(
+                row,
+                aggregate_relation_id="",
+                rewrite_strategy=strategy,
+                aggregate_relation_rejections={
+                    **{
+                        rel.id: "base_time_coverage_required"
+                        for rel in config.aggregate_relations
+                        if rel.source_entity == row.source_entity
+                    },
+                    **row.aggregate_relation_rejections,
+                },
+            )
+            for row, strategy in zip(plan.measure_plans, strategies, strict=True)
+        ],
+    )
 
 
 def _metric_filters_require_dense_series(plan: LogicalPlan, config: PackageConfig) -> bool:
@@ -4476,6 +4636,12 @@ def _conversion_exprs_for_plan(plan: LogicalPlan, config: PackageConfig) -> list
 def lower_to_sql(
     plan: LogicalPlan, config: PackageConfig, *, guard_empty: bool = True
 ) -> SqlSelect:
+    if _emits_time_coverage(plan, config) and any(
+        row.aggregate_relation_id for row in plan.measure_plans
+    ):
+        raise SemanticLayerError(
+            "EMPTY_GROUPS_UNSETTLED", "A coverage-dependent plan must read the base relation."
+        )
     select = _lower_query_to_sql(plan, config, guard_empty)
     if not plan.time.get("window_total"):
         return select
@@ -4497,15 +4663,27 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     if plan.measure_plans or conversion_exprs:
         leaf_ctes: list[SqlCte] = []
         measure_groups = _measure_plan_groups(plan, config)
-        for measure_group in measure_groups:
-            cte_name = measure_group[0].cte_name
-            # A folded group shares one scan, so its filters cut every leaf in it.
-            with cut_owners(*(row.bound_measure.alias for row in measure_group)):
-                leaf_select = _measure_group_leaf_select(plan, measure_group, config)
-            _refuse_varying_time_key(plan, leaf_select)
-            leaf_ctes.append(
-                SqlCte(name=cte_name, query=_namespace_sql_select(leaf_select, f"{cte_name}__"))
-            )
+        # A window on the request's own query hides data outside it: keep what each leaf reads.
+        with recording_leaf_scopes() as scopes:
+            for measure_group in measure_groups:
+                cte_name = measure_group[0].cte_name
+                # A folded group shares one scan, so its filters cut every leaf in it.
+                with cut_owners(*(row.bound_measure.alias for row in measure_group)):
+                    leaf_select = _measure_group_leaf_select(plan, measure_group, config)
+                if (
+                    guard_empty
+                    and plan_is_root()
+                    and _needs_time_scope(plan, config)
+                    and not leaf_select.ctes
+                    and isinstance(leaf_select.from_table, SqlTableRef)
+                    and not any(row.aggregate_relation_id for row in measure_group)
+                    and _entity_in_terms_of_anchor_plan(plan, measure_group[0], config) is None
+                ):
+                    require_time_scopes((row.bound_measure.alias for row in measure_group), scopes)
+                _refuse_varying_time_key(plan, leaf_select)
+                leaf_ctes.append(
+                    SqlCte(name=cte_name, query=_namespace_sql_select(leaf_select, f"{cte_name}__"))
+                )
 
         conversion_aliases: list[str] = []
         for index, expr in enumerate(conversion_exprs):
@@ -4679,7 +4857,17 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     # every such measure through this CTE, so nothing after it can change what it sees.
     zero = zero_aliases(plan.measure_plans, config) if guard_empty else {}
     if zero:
-        ctes.append(guard_empty_groups(base_table.name, key_aliases, measure_aliases, zero))
+        ctes.extend(
+            guard_empty_groups(
+                base_table.name,
+                key_aliases,
+                measure_aliases,
+                zero,
+                scopes,
+                time_key=time_alias if _emits_time_coverage(plan, config) else "",
+                dialect=_dialect(config),
+            )
+        )
         base_table = SqlTableRef(name=GUARDED_BASE, alias="base")
 
     projected_fields: list[SqlField] = [

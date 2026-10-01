@@ -557,7 +557,11 @@ behavior:
   it directly is governed by `object_access`, not visibility.
 - **`object_access`** — enforced at query time. `action: deny` refuses the
   query with a structured policy error; `action: redact` executes but replaces
-  the governed object's values in the result.
+  the governed object's values in the result. An `aggregate_if` whose condition
+  reads another entity reads the dimensions over its columns, as a `where` filter
+  on them does, so their policies apply. While any `object_access` or
+  `object_visibility` policy is declared, it may not read a column of that entity
+  that no dimension declares (`POLICY_DENIED`, reason `column_without_dimension`).
 - **`protected_object`** — pins an object as protected in the named
   environments; `promote-package` and `impact-report` treat changes to
   protected objects as release-gated.
@@ -590,9 +594,10 @@ behavior:
   needs `type:`. The policy takes no `object_ids`, `action` or operator. A request
   it applies to is denied if the attribute is missing or of another type, and
   so is any query outside the qualified family: the compiled statement must
-  read the filtered relation exactly once, as its only relation. Joins, metric
-  filters, calendar spines (prior-period comparisons, fill) and other second
-  scans are refused, and rollups are not routed to. The zero-row
+  read one ordinary scan of the filtered relation, as its only relation. Engine-generated
+  observation and coverage scans may repeat that relation; each receives the same policy
+  filter. Joins, metric filters, calendar spines (prior-period comparisons, fill) and
+  other second scans are refused, and rollups are not routed to. The zero-row
   data-coverage probe is skipped. Such a policy loads for any warehouse, but only
   DuckDB executes these statements today; every other adapter refuses them.
   An unscoped row filter applies to every request. A scoped one applies only
