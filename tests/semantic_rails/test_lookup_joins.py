@@ -99,14 +99,17 @@ graph:
     boarding: {label: Boarding, key: [boarding_id], model: boardings}
     checkin: {label: Check-in, key: [checkin_id], model: checkins}
     meal: {label: Meal, key: [meal_id], model: meals}
-  # A boarding reaches its leg and person directly or through its crew assignment: routes of
-  # different lengths, which the engine won't choose between, so each pair is pinned.
+  # A boarding or a check-in also reaches a leg and a person through crew assignments, so
+  # the package records what each question here means: the airport of the boarding's or
+  # check-in's own leg, and a meal's boarding's leg, person and airport. (A boarding's own
+  # leg and person are its direct keys, which need no row.)
   path_preferences:
-    - {source_entity: boarding, target_entity: leg, relationship_path: [boardings_leg]}
-    - {source_entity: boarding, target_entity: person, relationship_path: [boardings_person]}
     - source_entity: boarding
       target_entity: airport
       relationship_path: [boardings_leg, legs_airport]
+    - source_entity: checkin
+      target_entity: airport
+      relationship_path: [checkins_leg, legs_airport]
     - source_entity: meal
       target_entity: leg
       relationship_path: [meals_boarding, boardings_leg]

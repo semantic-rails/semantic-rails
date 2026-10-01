@@ -293,12 +293,9 @@ def test_resolve_path_handles_cycles_without_recursing_indefinitely():
         segments=[],
     )
 
-    # Both routes around the cycle are found, and as one-to-one routes of different lengths
-    # they are refused rather than chosen by hop count.
-    with pytest.raises(SemanticLayerError) as exc:
-        resolve_path(config, start="A", target="C")
-    assert exc.value.code == "AMBIGUOUS_PATH"
-    assert exc.value.details["candidates"] == [["C_A"], ["A_B", "B_C"]]
+    # Both routes around the cycle are found. A's own one-to-one key is the one direct key, so
+    # it is used, and the other route comes back with it for the response to disclose.
+    assert resolve_path(config, start="A", target="C") == (["C_A"], [["C_A"], ["A_B", "B_C"]])
 
 
 def test_distinct_values_root_selection_uses_deterministic_tie_breaker():

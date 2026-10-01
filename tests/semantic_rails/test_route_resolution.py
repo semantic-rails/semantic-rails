@@ -1,24 +1,28 @@
-"""The engine never chooses between join routes that can mean different things by hop count
-or by path_preference weights.
+"""Which of two routes to one entity a question means is a business definition, so the engine
+never guesses one.
 
-For each (start, target) the one route resolver (``fanout.resolve_path``) takes a
-``graph.path_preferences`` pin; otherwise the eligible routes are every functional route
-(each hop reaches at most one row in the direction walked) and every route with a one-to-many
-hop that is no longer than the shortest functional route. Eligible routes of different lengths
-are refused as AMBIGUOUS_PATH, naming each route with the pin that would choose it.
+For each (start, target) the one route resolver (``fanout.resolve_path``) takes, in order: a
+``graph.path_preferences`` row for the pair; the only route; the one direct relationship from
+the start that reaches at most one row (its own key), disclosed as PATH_ALTERNATES_UNPINNED.
+Anything else is refused as AMBIGUOUS_PATH, whatever the routes' lengths, naming each route,
+its meaning and the row that would record it. So adding a route never changes an answer
+silently.
 
 Fixture: accounts, their owners, regions, memberships and invoices, on DuckDB. The routes
 disagree on the data, so an answer shows which route it took:
 
-    account -> region                  the account's branch region
+    account -> region                  the account's branch region (its own key)
+    account -> region                  the account's billing region (a second own key)
     account -> owner -> region         the owner's home region
     account <- membership              memberships held on the account (one-to-many)
     account -> owner -> membership     the owner's primary membership
     invoice -> account
+    invoice -> region                  the region the invoice was issued in (its own key)
 """
 
 from __future__ import annotations
 
+import json
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -27,9 +31,11 @@ import duckdb
 import pytest
 import yaml
 
+import semantic_rails.fanout as fanout_module
 from semantic_rails.compiler_parts.grain_recovery import _chosen_path
 from semantic_rails.compiler_parts.paths import _direct_entity_key_source_expr
 from semantic_rails.config import load_package_config
+from semantic_rails.diagnostics import exception_issue
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.fanout import resolve_path
 from semantic_rails.metadata_parts.path_coverage import _path_availability
@@ -60,11 +66,13 @@ INSERT INTO memberships VALUES
   (100, 1, 'premium'), (101, 1, 'basic'), (102, 2, 'basic'),
   (103, 4, 'basic'), (104, 3, 'premium'), (105, 5, 'basic');
 CREATE TABLE invoices (
-  invoice_id INTEGER, account_id INTEGER, amount INTEGER, issued_at TIMESTAMP
+  invoice_id INTEGER, account_id INTEGER, amount INTEGER, issued_at TIMESTAMP,
+  issued_region_id INTEGER
 );
 INSERT INTO invoices VALUES
-  (1000, 1, 10, '2024-01-05'), (1001, 2, 20, '2024-01-06'), (1002, 3, 40, '2024-02-01'),
-  (1003, 4, 80, '2024-02-10'), (1004, 5, 160, '2024-03-01'), (1005, 1, 5, '2024-03-02');
+  (1000, 1, 10, '2024-01-05', 2), (1001, 2, 20, '2024-01-06', 3),
+  (1002, 3, 40, '2024-02-01', 3), (1003, 4, 80, '2024-02-10', 1),
+  (1004, 5, 160, '2024-03-01', 2), (1005, 1, 5, '2024-03-02', 1);
 """
 
 ACCOUNT, OWNER, REGION = "entity.bank_account", "entity.bank_owner", "entity.bank_region"
@@ -77,9 +85,12 @@ OWNER_NAME, TIER = "dimension.bank_owner_name", "dimension.bank_membership_tier"
 ACCOUNT_KIND = "dimension.bank_account_kind"
 
 BRANCH = ["relationship.accounts_branch_region"]
+BILLING = ["relationship.accounts_billing_region"]
 HOME = ["relationship.accounts_owner", "relationship.owners_home_region"]
 HELD = ["relationship.memberships_account"]
 PRIMARY = ["relationship.accounts_owner", "relationship.owners_primary_membership"]
+ISSUED = ["relationship.invoices_issued_region"]
+INVOICE_ACCOUNT = ["relationship.invoices_account"]
 
 _RELATIONSHIPS = {
     "accounts_branch_region": ("account", "region", "branch_region_id", "region_id"),
@@ -89,8 +100,9 @@ _RELATIONSHIPS = {
     "memberships_account": ("membership", "account", "account_id", "account_id"),
     "owners_primary_membership": ("owner", "membership", "primary_membership_id", "membership_id"),
     "invoices_account": ("invoice", "account", "account_id", "account_id"),
+    "invoices_issued_region": ("invoice", "region", "issued_region_id", "region_id"),
 }
-# The two roles of a region and of a membership, and invoices.
+# The branch and home roles of a region, the two roles of a membership, and invoices.
 DIAMOND = (
     "accounts_branch_region",
     "accounts_owner",
@@ -111,8 +123,9 @@ def _write_package(
     root: Path,
     *,
     relationships: tuple[str, ...] = DIAMOND,
-    weights: dict[str, int] | None = None,
     pins: list[dict[str, Any]] | None = None,
+    labels: dict[str, str] | None = None,
+    extra: dict[str, dict[str, Any]] | None = None,
 ) -> Path:
     pkg = root / "bank"
     (pkg / "data").mkdir(parents=True)
@@ -153,9 +166,9 @@ def _write_package(
             "cardinality": "many_to_one",
             "via": [via],
             "target": [key],
+            **({"label": labels[name]} if name in (labels or {}) else {}),
+            **(extra or {}).get(name, {}),
         }
-        if name in (weights or {}):
-            edges[name]["path_preference"] = (weights or {})[name]
         if name in _ROLLUP_SAFE_REVERSE:
             edges[name]["rollup_safe"] = {"reverse": ["count_distinct"]}
     graph: dict[str, Any] = {
@@ -263,8 +276,7 @@ def _gold(sql: str) -> list[tuple]:
     return sorted(tuple(row) for row in con.execute(sql).fetchall())
 
 
-def _rows(runtime: Runtime, query: dict[str, Any], columns: list[str]) -> list[tuple]:
-    out = runtime.query(query)
+def _rows(out: dict[str, Any], columns: list[str]) -> list[tuple]:
     return sorted(tuple(row[column] for column in columns) for row in out["rows"])
 
 
@@ -273,26 +285,12 @@ def _query(select: str, **parts: Any) -> dict[str, Any]:
     return {"version": 1, "select": [{"expression": {kind: select}, "as": "v"}], **parts}
 
 
-# Balance by region, through each route.
-BY_BRANCH = (
-    "SELECT r.region_name, SUM(a.balance) FROM accounts a "
-    "JOIN regions r ON r.region_id = a.branch_region_id GROUP BY 1"
-)
-HOME_ROWS = (
-    "SELECT r.region_name, a.balance FROM accounts a JOIN owners o USING (owner_id) "
-    "JOIN regions r ON r.region_id = o.home_region_id"
-)
-BY_HOME = f"SELECT region_name, SUM(balance) FROM ({HOME_ROWS}) GROUP BY 1"
-NORTH_BY_HOME = f"SELECT SUM(balance) FROM ({HOME_ROWS}) WHERE region_name = 'North'"
-# Accounts by membership tier: memberships held, or the owner's primary membership.
-TIER_HELD = (
-    "SELECT m.tier, COUNT(DISTINCT a.account_id) FROM accounts a "
-    "JOIN memberships m USING (account_id) GROUP BY 1"
-)
-TIER_PRIMARY = (
-    "SELECT m.tier, COUNT(DISTINCT a.account_id) FROM accounts a JOIN owners o USING (owner_id) "
-    "JOIN memberships m ON m.membership_id = o.primary_membership_id GROUP BY 1"
-)
+def _disclosed(out: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
+    return {
+        (w["details"]["start"], w["details"]["target"]): w["details"]
+        for w in out["warnings"]
+        if w["code"] == "PATH_ALTERNATES_UNPINNED"
+    }
 
 
 def _refusal(pkg: Path, query: dict[str, Any]) -> SemanticLayerError:
@@ -302,125 +300,215 @@ def _refusal(pkg: Path, query: dict[str, Any]) -> SemanticLayerError:
     return exc_info.value
 
 
+# The balance rows of each account with the region each route gives it.
+ROUTE_ROWS = {
+    "branch": (
+        "SELECT r.region_id, r.region_name, r.launched_at, a.balance FROM accounts a "
+        "JOIN regions r ON r.region_id = a.branch_region_id"
+    ),
+    "home": (
+        "SELECT r.region_id, r.region_name, r.launched_at, a.balance FROM accounts a "
+        "JOIN owners o USING (owner_id) JOIN regions r ON r.region_id = o.home_region_id"
+    ),
+}
+BY_BRANCH = f"SELECT region_name, SUM(balance) FROM ({ROUTE_ROWS['branch']}) GROUP BY 1"
+BY_HOME = f"SELECT region_name, SUM(balance) FROM ({ROUTE_ROWS['home']}) GROUP BY 1"
+# Accounts by membership tier: memberships held, or the owner's primary membership.
+TIER_HELD = (
+    "SELECT m.tier, COUNT(DISTINCT a.account_id) FROM accounts a "
+    "JOIN memberships m USING (account_id) GROUP BY 1"
+)
+TIER_PRIMARY = (
+    "SELECT m.tier, COUNT(DISTINCT a.account_id) FROM accounts a JOIN owners o USING (owner_id) "
+    "JOIN memberships m ON m.membership_id = o.primary_membership_id GROUP BY 1"
+)
+# Invoice amount by region: through the account's branch, or its owner's home.
+AMOUNT_BY_BRANCH = (
+    "SELECT r.region_name, SUM(i.amount) FROM invoices i JOIN accounts a USING (account_id) "
+    "JOIN regions r ON r.region_id = a.branch_region_id GROUP BY 1"
+)
+AMOUNT_BY_HOME = (
+    "SELECT r.region_name, SUM(i.amount) FROM invoices i JOIN accounts a USING (account_id) "
+    "JOIN owners o USING (owner_id) JOIN regions r ON r.region_id = o.home_region_id GROUP BY 1"
+)
+INVOICE_HOME = [*INVOICE_ACCOUNT, *HOME]
+INVOICE_BRANCH = [*INVOICE_ACCOUNT, *BRANCH]
+
+
+def test_a_direct_key_answers_with_the_disclosure_and_the_owner_pin_answers_without(tmp_path):
+    """Account to region: the account's own branch key, or its owner's home region. The direct
+    key answers, and the response names the other route and the row that records each; with
+    the owner route recorded, the owner's answer comes back with no disclosure."""
+    query = _query(BALANCE, group_by=[REGION_NAME])
+    out = Runtime.from_path(str(_write_package(tmp_path / "direct"))).query(query)
+    assert _rows(out, [REGION_NAME, "v"]) == _gold(BY_BRANCH)
+    disclosed = _disclosed(out)
+    assert list(disclosed) == [(ACCOUNT, REGION)]
+    details = disclosed[(ACCOUNT, REGION)]
+    assert details["chosen_path"] == BRANCH
+    assert HOME in details["alternate_paths"]
+    routes = [details["chosen_path"], *details["alternate_paths"]]
+    assert details["pins"] == [_pin(ACCOUNT, REGION, path) for path in routes]
+    assert details["meanings"][0] == "Account → Region"
+    assert "graph.path_preferences" in details["hint"]
+
+    pinned = _write_package(tmp_path / "home", pins=[_pin("account", "region", HOME)])
+    out = Runtime.from_path(str(pinned)).query(query)
+    assert _rows(out, [REGION_NAME, "v"]) == _gold(BY_HOME)
+    assert _disclosed(out) == {}
+    assert _gold(BY_BRANCH) != _gold(BY_HOME)
+
+
 @pytest.mark.parametrize(
-    ("query", "columns", "start", "target", "golds"),
+    ("relationships", "query", "columns", "start", "target", "golds"),
     [
         pytest.param(
-            _query(BALANCE, group_by=[REGION_NAME]),
-            [REGION_NAME, "v"],
-            ACCOUNT,
-            REGION,
-            {tuple(BRANCH): BY_BRANCH, tuple(HOME): BY_HOME},
-            id="accounts-by-region",
-        ),
-        pytest.param(
+            DIAMOND,
             _query(ACCOUNT_COUNT, group_by=[TIER]),
             [TIER, "v"],
             ACCOUNT,
             MEMBERSHIP,
             {tuple(HELD): TIER_HELD, tuple(PRIMARY): TIER_PRIMARY},
-            id="accounts-by-membership-tier",
+            id="direct-key-fans-out",
+        ),
+        pytest.param(
+            DIAMOND,
+            _query(AMOUNT, group_by=[REGION_NAME]),
+            [REGION_NAME, "v"],
+            INVOICE,
+            REGION,
+            {tuple(INVOICE_BRANCH): AMOUNT_BY_BRANCH, tuple(INVOICE_HOME): AMOUNT_BY_HOME},
+            id="different-lengths",
+        ),
+        pytest.param(
+            ("invoices_account", "accounts_branch_region", "accounts_billing_region"),
+            _query(AMOUNT, group_by=[REGION_NAME]),
+            [REGION_NAME, "v"],
+            INVOICE,
+            REGION,
+            {
+                tuple(INVOICE_BRANCH): AMOUNT_BY_BRANCH,
+                tuple([*INVOICE_ACCOUNT, *BILLING]): AMOUNT_BY_BRANCH.replace(
+                    "branch_region_id", "billing_region_id"
+                ),
+            },
+            id="equal-lengths",
+        ),
+        pytest.param(
+            ("accounts_branch_region", "accounts_billing_region"),
+            _query(BALANCE, group_by=[REGION_NAME]),
+            [REGION_NAME, "v"],
+            ACCOUNT,
+            REGION,
+            {tuple(BRANCH): BY_BRANCH, tuple(BILLING): BY_BRANCH.replace("branch", "billing")},
+            id="two-direct-keys",
+        ),
+        pytest.param(
+            DIAMOND,
+            _query(REGION_COUNT, group_by=[ACCOUNT_KIND]),
+            [ACCOUNT_KIND, "v"],
+            REGION,
+            ACCOUNT,
+            {
+                tuple(BRANCH): (
+                    "SELECT a.account_kind, COUNT(DISTINCT r.region_id) FROM regions r "
+                    "JOIN accounts a ON a.branch_region_id = r.region_id GROUP BY 1"
+                ),
+                tuple(reversed(HOME)): (
+                    "SELECT a.account_kind, COUNT(DISTINCT r.region_id) FROM regions r "
+                    "JOIN owners o ON o.home_region_id = r.region_id "
+                    "JOIN accounts a USING (owner_id) GROUP BY 1"
+                ),
+            },
+            id="fan-out-only",
         ),
     ],
 )
-@pytest.mark.parametrize(
-    "weights",
-    [
-        None,
-        {"accounts_owner": 1, "owners_home_region": 1, "accounts_branch_region": 500},
-        {"accounts_owner": 1, "owners_primary_membership": 1, "memberships_account": 500},
-    ],
-    ids=["unweighted", "weights-favour-the-longer-region-route", "weights-favour-primary"],
-)
-def test_routes_of_different_lengths_are_refused_and_each_pin_answers_its_gold(
-    tmp_path, query, columns, start, target, golds, weights
+def test_routes_without_one_direct_key_are_refused_and_each_pin_answers_its_gold(
+    tmp_path, relationships, query, columns, start, target, golds
 ):
-    err = _refusal(_write_package(tmp_path / "refused", weights=weights), query)
-    assert err.details["start"] == start
-    assert err.details["target"] == target
-    assert sorted(map(tuple, err.details["candidates"])) == sorted(golds)
-    assert "path_preferences" in err.details["hint"]
-    # Each suggested pin row loads as written, and the query then answers with its route.
-    for index, pin in enumerate(err.details["pins"]):
-        assert pin == _pin(start, target, err.details["candidates"][index])
-        runtime = Runtime.from_path(str(_write_package(tmp_path / f"pin{index}", pins=[pin])))
-        gold = _gold(golds[tuple(pin["relationship_path"])])
-        assert _rows(runtime, query, columns) == gold
-    assert _gold(BY_BRANCH) != _gold(BY_HOME)
-    assert _gold(TIER_HELD) != _gold(TIER_PRIMARY)
+    pkg = _write_package(tmp_path / "refused", relationships=relationships)
+    err = _refusal(pkg, query)
+    assert err.details["reason"] == "route_decision_required"
+    assert (err.details["start"], err.details["target"]) == (start, target)
+    assert set(golds) <= set(map(tuple, err.details["candidates"]))
+    assert len(err.details["meanings"]) == len(err.details["candidates"])
+    assert len(set(err.details["meanings"])) == len(err.details["meanings"])
+    assert "business definition" in err.details["hint"]
+    # Each route's row loads as written, and the query then answers with that route.
+    for index, path in enumerate(err.details["candidates"]):
+        pin = err.details["pins"][index]
+        assert pin == _pin(start, target, path)
+        if tuple(path) not in golds:
+            continue
+        pinned = _write_package(tmp_path / f"pin{index}", relationships=relationships, pins=[pin])
+        out = Runtime.from_path(str(pinned)).query(query)
+        assert _rows(out, columns) == _gold(golds[tuple(path)])
+        assert _disclosed(out) == {}
+    assert len({tuple(_gold(sql)) for sql in golds.values()}) == len(golds)
 
 
-def test_a_parent_measure_filtered_by_a_child_is_refused_when_a_longer_lookup_exists(tmp_path):
-    """Invoice amount where the membership tier is premium: the memberships held on the
-    invoice's account (a one-to-many hop) or the account owner's primary membership (three
-    lookups). Neither is answered by the shorter route."""
-    query = _query(AMOUNT, where=[{"field": TIER, "op": "=", "value": "premium"}])
-    err = _refusal(_write_package(tmp_path), query)
-    assert err.details["candidates"] == [
-        ["relationship.invoices_account", *HELD],
-        ["relationship.invoices_account", *PRIMARY],
+def test_the_refusal_reads_the_routes_by_their_labels(tmp_path):
+    pkg = _write_package(
+        tmp_path,
+        labels={"owners_home_region": "Home region", "accounts_branch_region": "Branch region"},
+    )
+    err = _refusal(pkg, _query(AMOUNT, group_by=[REGION_NAME]))
+    assert err.details["meanings"][:2] == [
+        "Invoice → Account → Branch region",
+        "Invoice → Account → Owner → Home region",
+    ]
+    # Parallel roles with no label of their own are told apart by their relationships.
+    err = _refusal(
+        _write_package(tmp_path / "roles", relationships=tuple(_RELATIONSHIPS)[:2]),
+        _query(BALANCE, group_by=[REGION_NAME]),
+    )
+    assert err.details["meanings"] == [
+        "Account → Region (relationship.accounts_billing_region)",
+        "Account → Region (relationship.accounts_branch_region)",
     ]
 
 
-def test_a_longer_one_to_many_route_leaves_the_functional_route_alone(tmp_path):
-    """Account to owner is one lookup; through the branch region or a membership it fans out.
-    Only the lookup is eligible: it answers, with no refusal and no warning."""
-    runtime = Runtime.from_path(str(_write_package(tmp_path)))
-    out = runtime.query(_query(BALANCE, group_by=[OWNER_NAME]))
-    gold = _gold(
-        "SELECT o.owner_name, SUM(a.balance) FROM accounts a JOIN owners o USING (owner_id) "
-        "GROUP BY 1"
-    )
-    assert sorted((row[OWNER_NAME], row["v"]) for row in out["rows"]) == gold
-    assert not [w for w in out["warnings"] if w["code"] == "PATH_ALTERNATES_UNPINNED"]
-    _, candidates = resolve_path(runtime.config, start=ACCOUNT, target=OWNER)
-    assert len(candidates) == 3  # the two fan-out routes were considered, not chosen
-
-
 @pytest.mark.parametrize(
-    ("weights", "gold"),
+    ("before", "added", "query", "columns", "gold"),
     [
-        (
-            {"accounts_billing_region": 50},
-            "SELECT r.region_name, SUM(a.balance) FROM accounts a "
-            "JOIN regions r ON r.region_id = a.billing_region_id GROUP BY 1",
+        pytest.param(
+            ("invoices_account", "accounts_branch_region"),
+            ("accounts_owner", "owners_home_region"),
+            _query(AMOUNT, group_by=[REGION_NAME]),
+            [REGION_NAME, "v"],
+            None,
+            id="one-route-pair-refuses",
         ),
-        ({"accounts_branch_region": 50}, BY_BRANCH),
-        (None, None),
+        pytest.param(
+            ("accounts_branch_region",),
+            ("accounts_owner", "owners_home_region"),
+            _query(BALANCE, group_by=[REGION_NAME]),
+            [REGION_NAME, "v"],
+            BY_BRANCH,
+            id="direct-key-pair-discloses",
+        ),
     ],
-    ids=["billing-weighted", "branch-weighted", "equal-sums"],
 )
-def test_equal_length_routes_keep_the_weight_tie_break(tmp_path, weights, gold):
-    pkg = _write_package(
-        tmp_path,
-        relationships=("accounts_branch_region", "accounts_billing_region", "accounts_owner"),
-        weights=weights,
+def test_adding_a_route_never_changes_an_answer_silently(
+    tmp_path, before, added, query, columns, gold
+):
+    """A pair with one route answers by it. Give it a longer route: a pair with no direct key
+    is refused from then on, and a pair whose one route is its own key keeps the answer and
+    now says another route exists."""
+    out = Runtime.from_path(str(_write_package(tmp_path / "before", relationships=before))).query(
+        query
     )
-    query = _query(BALANCE, group_by=[REGION_NAME])
+    assert _disclosed(out) == {}
+    after = _write_package(tmp_path / "after", relationships=(*before, *added))
     if gold is None:
-        err = _refusal(pkg, query)
-        assert len(err.details["candidates"]) == 2
+        assert _rows(out, columns) == _gold(AMOUNT_BY_BRANCH)
+        _refusal(after, query)
         return
-    assert _rows(Runtime.from_path(str(pkg)), query, [REGION_NAME, "v"]) == _gold(gold)
-
-
-@pytest.mark.parametrize(
-    "weights",
-    [None, {"accounts_branch_region": 500, "accounts_owner": 1, "owners_home_region": 1}],
-    ids=["unweighted", "weighted"],
-)
-def test_fan_out_only_routes_keep_the_shortest_and_always_warn(tmp_path, weights):
-    """Every route from a region to an account fans out, so today's rule stands (the
-    shortest, the branch accounts) and the warning is there whatever the weights say."""
-    runtime = Runtime.from_path(str(_write_package(tmp_path, weights=weights)))
-    out = runtime.query(_query(REGION_COUNT, group_by=[ACCOUNT_KIND]))
-    gold = _gold(
-        "SELECT a.account_kind, COUNT(DISTINCT r.region_id) FROM regions r "
-        "JOIN accounts a ON a.branch_region_id = r.region_id GROUP BY 1"
-    )
-    assert sorted((row[ACCOUNT_KIND], row["v"]) for row in out["rows"]) == gold
-    warnings = [w for w in out["warnings"] if w["code"] == "PATH_ALTERNATES_UNPINNED"]
-    assert [w["details"]["chosen_path"] for w in warnings] == [BRANCH]
+    assert _rows(out, columns) == _gold(gold)
+    out = Runtime.from_path(str(after)).query(query)
+    assert _rows(out, columns) == _gold(gold)
+    assert _disclosed(out)[(ACCOUNT, REGION)]["alternate_paths"] == [HOME]
 
 
 def test_discovery_grain_recovery_and_compile_report_the_pinned_route(tmp_path):
@@ -456,72 +544,138 @@ _CONVERSION = {
         }
     ],
 }
-# Every way a query reaches the region from an account (or an invoice), with the home-region
-# gold for the pinned package; None where the answer isn't a plain table (checked by its SQL).
+# Every way a query reaches the region from an account (or an invoice), with its columns;
+# None where the answer isn't a plain table (checked by its SQL).
 ENTRY_POINTS = {
-    "group_by": (_query(BALANCE, group_by=[REGION_NAME]), [REGION_NAME, "v"], BY_HOME),
-    "where": (
-        _query(BALANCE, where=[{"field": REGION_NAME, "op": "=", "value": "North"}]),
-        ["v"],
-        NORTH_BY_HOME,
-    ),
-    "measure_filter": (
-        _query("metric.bank.north_balance"),
-        ["v"],
-        NORTH_BY_HOME,
-    ),
+    "group_by": (_query(BALANCE, group_by=[REGION_NAME]), [REGION_NAME, "v"]),
+    "where": (_query(BALANCE, where=[{"field": REGION_NAME, "op": "=", "value": "North"}]), ["v"]),
+    "measure_filter": (_query("metric.bank.north_balance"), ["v"]),
     "metric_predicate": (
         _query(
             BALANCE, metric_filters=[{"expression": _METRIC_PREDICATE, "op": "=", "value": True}]
         ),
         ["v"],
-        "SELECT SUM(a.balance) FROM accounts a JOIN owners o USING (owner_id) "
-        "WHERE o.home_region_id IN (SELECT o2.home_region_id FROM accounts a2 "
-        "JOIN owners o2 USING (owner_id) GROUP BY 1 HAVING SUM(a2.balance) >= 500)",
     ),
     "time_role": (
         _query(LAUNCH_BALANCE, time={"temporal_role": "temporal_role.bank_region_launched"}),
         ["v"],
-        f"SELECT SUM(balance) FROM ({HOME_ROWS}) GROUP BY region_name",
     ),
-    "direct_key_read": (
-        _query(BALANCE, group_by=[REGION_KEY]),
-        [REGION_KEY, "v"],
-        "SELECT o.home_region_id, SUM(a.balance) FROM accounts a JOIN owners o USING (owner_id) "
-        "GROUP BY 1",
-    ),
-    "conversion": (_CONVERSION, None, None),
+    "direct_key_read": (_query(BALANCE, group_by=[REGION_KEY]), [REGION_KEY, "v"]),
+    "conversion": (_CONVERSION, None),
 }
-_PINS = [
-    _pin("account", "region", HOME),
-    _pin("invoice", "region", ["relationship.invoices_account", *HOME]),
-]
+
+
+def _entry_gold(entry: str, route: str) -> str:
+    rows = ROUTE_ROWS[route]
+    return {
+        "group_by": f"SELECT region_name, SUM(balance) FROM ({rows}) GROUP BY 1",
+        "where": f"SELECT SUM(balance) FROM ({rows}) WHERE region_name = 'North'",
+        "measure_filter": f"SELECT SUM(balance) FROM ({rows}) WHERE region_name = 'North'",
+        "metric_predicate": (
+            f"SELECT SUM(balance) FROM ({rows}) WHERE region_id IN "
+            f"(SELECT region_id FROM ({rows}) GROUP BY 1 HAVING SUM(balance) >= 500)"
+        ),
+        "time_role": f"SELECT SUM(balance) FROM ({rows}) GROUP BY launched_at",
+        "direct_key_read": f"SELECT region_id, SUM(balance) FROM ({rows}) GROUP BY 1",
+    }[entry]
+
+
+# Two direct keys to the region (branch and billing) and the owner's home: no route is chosen.
+TWO_KEYS = (*DIAMOND, "accounts_billing_region")
+_PINS = [_pin("account", "region", HOME), _pin("invoice", "region", INVOICE_HOME)]
 
 
 @pytest.mark.parametrize("entry", ENTRY_POINTS)
-def test_every_entry_point_refuses_unpinned_and_follows_the_pin(tmp_path, entry):
-    """The bypass guard: no code path reaches the region by the branch route on its own."""
-    query, columns, gold = ENTRY_POINTS[entry]
-    _refusal(_write_package(tmp_path / "refused"), query)
-    runtime = Runtime.from_path(str(_write_package(tmp_path / "pinned", pins=_PINS)))
-    if gold is not None:
-        assert _rows(runtime, query, columns) == _gold(gold)
+def test_every_entry_point_refuses_unrecorded_routes_and_follows_the_pin(tmp_path, entry):
+    """The bypass guard: no code path reaches the region by a route of its own choosing."""
+    query, columns = ENTRY_POINTS[entry]
+    err = _refusal(_write_package(tmp_path / "refused", relationships=TWO_KEYS), query)
+    assert err.details["target"] == REGION
+    pinned = _write_package(tmp_path / "pinned", relationships=TWO_KEYS, pins=_PINS)
+    runtime = Runtime.from_path(str(pinned))
+    if columns is not None:
+        out = runtime.query(query)
+        assert _rows(out, columns) == _gold(_entry_gold(entry, "home"))
+        assert _disclosed(out) == {}
     sql = runtime.compile(query)["explain"]["rendered_sql"]
     assert "owners" in sql  # the home route, through the owner
-    assert "branch_region_id" not in sql
+    assert "branch_region_id" not in sql and "billing_region_id" not in sql
+
+
+@pytest.mark.parametrize("entry", ENTRY_POINTS)
+def test_every_entry_point_discloses_the_direct_key_it_reads(tmp_path, entry):
+    """Each path a query reads by its direct key (root, leaf, predicate, conversion and the
+    key read) answers by that key and is disclosed with the other routes and their rows."""
+    query, columns = ENTRY_POINTS[entry]
+    pkg = _write_package(tmp_path, relationships=(*DIAMOND, "invoices_issued_region"))
+    out = Runtime.from_path(str(pkg)).query(query)
+    if columns is not None:
+        assert _rows(out, columns) == _gold(_entry_gold(entry, "branch"))
+    start, chosen = (INVOICE, ISSUED) if entry == "conversion" else (ACCOUNT, BRANCH)
+    details = _disclosed(out)[(start, REGION)]
+    assert details["chosen_path"] == chosen
+    routes = [chosen, *details["alternate_paths"]]
+    assert details["pins"] == [_pin(start, REGION, path) for path in routes]
+    assert len(details["meanings"]) == len(routes) > 1
 
 
 def test_the_direct_key_read_and_discovery_follow_the_resolver(tmp_path):
-    refused = load_package_config(str(_write_package(tmp_path / "refused")))
+    refused = load_package_config(str(_write_package(tmp_path / "refused", relationships=TWO_KEYS)))
     assert _direct_entity_key_source_expr(ACCOUNT, REGION, "region_id", refused) is None
     availability = _path_availability(refused, ACCOUNT, REGION)
     assert (availability["available"], availability["error_code"]) == (False, "AMBIGUOUS_PATH")
-    branch = load_package_config(
-        str(_write_package(tmp_path / "branch", pins=[_pin("account", "region", BRANCH)]))
-    )
-    expr = _direct_entity_key_source_expr(ACCOUNT, REGION, "region_id", branch)
+    direct = load_package_config(str(_write_package(tmp_path / "direct")))
+    expr = _direct_entity_key_source_expr(ACCOUNT, REGION, "region_id", direct)
     assert expr is not None and expr.parts[-1] == "branch_region_id"
-    assert _path_availability(branch, ACCOUNT, REGION)["path"] == BRANCH
+    assert _path_availability(direct, ACCOUNT, REGION)["path"] == BRANCH
+    home = load_package_config(
+        str(_write_package(tmp_path / "home", pins=[_pin("account", "region", HOME)]))
+    )
+    assert _direct_entity_key_source_expr(ACCOUNT, REGION, "region_id", home) is None
+    assert _path_availability(home, ACCOUNT, REGION)["path"] == HOME
+
+
+def test_a_refusal_is_cached_and_its_recovery_hint_carries_the_rows(tmp_path, monkeypatch):
+    config = load_package_config(str(_write_package(tmp_path)))
+    with pytest.raises(SemanticLayerError) as first:
+        resolve_path(config, start=INVOICE, target=REGION)
+
+    def fail_enumerate_paths(*_args, **_kwargs):
+        raise AssertionError("a refused pair should not enumerate the graph again")
+
+    monkeypatch.setattr(fanout_module, "enumerate_paths", fail_enumerate_paths)
+    with pytest.raises(SemanticLayerError) as second:
+        resolve_path(config, start=INVOICE, target=REGION)
+    assert (second.value.code, second.value.details) == (first.value.code, first.value.details)
+    second.value.details["pins"].clear()  # a caller's copy, not the cached refusal
+    with pytest.raises(SemanticLayerError) as third:
+        resolve_path(config, start=INVOICE, target=REGION)
+    assert third.value.details == first.value.details
+    (hint,) = exception_issue(first.value, stage="compile")["recovery_hints"]
+    assert hint["pins"] == first.value.details["pins"]
+
+
+@pytest.mark.parametrize("form", ["graph_relationship", "model_join"])
+def test_a_package_that_weights_a_relationship_is_refused_at_load(tmp_path, form):
+    """The relationship weight is gone: the package fails to load, naming the relationship and
+    pointing at graph.path_preferences, rather than quietly answering by another route."""
+    if form == "graph_relationship":
+        pkg = _write_package(tmp_path, extra={"accounts_owner": {"path_preference": 10}})
+        rel_id = "relationship.accounts_owner"
+    else:
+        pkg = _write_package(tmp_path)
+        path = pkg / "models" / "invoices.yml"
+        spec = yaml.safe_load(path.read_text())
+        spec["model"]["joins"] = {
+            "region": {"to": "region", "via": ["issued_region_id"], "path_preference": 10}
+        }
+        path.write_text(yaml.safe_dump(spec))
+        rel_id = "relationship.invoices_region"
+    with pytest.raises(SemanticLayerError) as exc_info:
+        load_package_config(str(pkg))
+    assert exc_info.value.code == "INVALID_CONFIG"
+    assert rel_id in str(exc_info.value)
+    assert "graph.path_preferences" in str(exc_info.value)
 
 
 SHIPPED_PACKAGES = [
@@ -531,22 +685,34 @@ SHIPPED_PACKAGES = [
     "tests/integration/correctness/shop",
     "configs/examples/semantic_rails_package_starter.yml",
 ]
+ROUTE_DECISIONS = Path(__file__).parent / "fixtures" / "route_decisions.json"
 
 
-@pytest.mark.parametrize("package", SHIPPED_PACKAGES)
-def test_no_shipped_pair_is_refused_for_routes_of_different_lengths(package):
-    """A relationship edit that adds a second role must pin it: every pair resolves, or is an
-    equal-length tie refused as before."""
+def _route_decisions(package: str) -> dict[str, list[list[str]]]:
+    """Every entity pair that is refused, and every pair answered by its direct key."""
     config = load_package_config(str(ROOT / package))
+    refused: list[list[str]] = []
+    direct_key: list[list[str]] = []
     for start in config.entities:
         for target in config.entities:
             if start.id == target.id:
                 continue
             try:
-                resolve_path(config, start=start.id, target=target.id)
+                _, routes = resolve_path(config, start=start.id, target=target.id)
             except SemanticLayerError as exc:
-                if exc.code == "PATH_NOT_FOUND":
-                    continue
-                assert exc.code == "AMBIGUOUS_PATH"
-                lengths = {len(path) for path in exc.details["candidates"]}
-                assert len(lengths) == 1, (start.id, target.id, exc.details["candidates"])
+                if exc.code == "AMBIGUOUS_PATH":
+                    refused.append([start.id, target.id])
+                continue
+            if len(routes) > 1:
+                direct_key.append([start.id, target.id])
+    return {"refused": sorted(refused), "direct_key": sorted(direct_key)}
+
+
+@pytest.mark.parametrize("package", SHIPPED_PACKAGES)
+def test_shipped_route_decisions_match_the_reviewed_snapshot(package):
+    """A relationship or pin edit that changes which pairs are refused or answered by a direct
+    key fails here, so a new route can't change an answer unreviewed. Review the pairs, record
+    each pair a question needs in graph.path_preferences, then update the snapshot."""
+    snapshot = json.loads(ROUTE_DECISIONS.read_text(encoding="utf-8"))
+    current = _route_decisions(package)
+    assert current == snapshot[package], json.dumps({package: current}, indent=2)

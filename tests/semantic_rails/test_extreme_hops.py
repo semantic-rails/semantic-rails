@@ -87,7 +87,6 @@ def _write_geo_package(
     root: Path,
     *,
     ship_city: bool = False,
-    ship_city_preference: int | None = None,
     rollup_safe_reverse: bool = False,
     path_preferences: list[dict] | None = None,
     pref_key: str = "preferred_paths",
@@ -148,8 +147,6 @@ def _write_geo_package(
             "      target: [city_id]",
             "      allowed_directions: [forward]",
         ]
-        if ship_city_preference is not None:
-            rel_lines.append(f"      path_preference: {ship_city_preference}")
     if rollup_safe_reverse:
         rel_lines += [
             "    orders_customer:",
@@ -376,14 +373,11 @@ SHIP_ROUTE_TO_REGION = [
 ]
 
 
-@pytest.mark.parametrize("ship_city_preference", [None, 10], ids=["unweighted", "weighted"])
-def test_shortcut_relationship_makes_the_route_ambiguous(tmp_path, ship_city_preference):
+def test_shortcut_relationship_makes_the_route_ambiguous(tmp_path):
     """A role-playing shortcut gives region two routes of different lengths, the ship-to
-    region and the home region. Neither hop count nor a path_preference weight on the
-    shortcut chooses between them: the query is refused, naming each route with its pin."""
-    runtime = Runtime.from_path(
-        str(_write_geo_package(tmp_path, ship_city=True, ship_city_preference=ship_city_preference))
-    )
+    region and the home region. Hop count doesn't choose between them: the query is refused,
+    naming each route with its pin."""
+    runtime = Runtime.from_path(str(_write_geo_package(tmp_path, ship_city=True)))
     with pytest.raises(SemanticLayerError) as exc_info:
         runtime.query(_query("measure.geo.revenue_usd", ["dimension.geo_region_name"]))
 
