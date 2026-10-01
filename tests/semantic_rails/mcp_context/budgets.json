@@ -11,7 +11,7 @@
   "query.prompts_list_tokens": 225,
   "query.resource.capabilities-summary_tokens": 545,
   "query.resource.capabilities_tokens": 3856,
-  "query.resource.catalog-full_tokens": 207164,
+  "query.resource.catalog-full_tokens": 211455,
   "query.resource.catalog-index_tokens": 2344,
   "query.resource.catalog-summary_tokens": 44596,
   "query.resources_list_tokens": 270,

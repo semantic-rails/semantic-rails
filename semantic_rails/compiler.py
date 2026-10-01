@@ -2572,7 +2572,10 @@ def _root_path_summary(
             measure = next(
                 row for row in bound_measures if measures[row.measure_id].entity == target_entity
             )
-            analyses[target_entity] = {"status": "rewrite_required", "reason": exc.details["reason"]}
+            analyses[target_entity] = {
+                "status": "rewrite_required",
+                "reason": exc.details["reason"],
+            }
             rewrite_steps.append(
                 RewriteStep(
                     kind="leaf_preaggregate_join",

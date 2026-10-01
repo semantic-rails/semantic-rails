@@ -800,6 +800,10 @@ History-backed cards can also expose:
 - `coverage_notes`
 - `null_bucket_meaning`
 
+A dimension card read through a time-valid relationship, inspected with a `partial_query` that
+has no `time`, carries `blocked_reason` (naming the relationship) and `recovery_hints` (add
+`time`) instead of a `group_by` starter patch.
+
 Packages that opt into `defaults.operational` can also expose a nested `operational` block on measure and metric cards.
 
 Useful card fields for measures:

@@ -513,9 +513,7 @@ def _metric_object_payload(
         valid_grouping_entities: list[dict[str, Any]] = []
         disabled_grouping_entities: list[dict[str, Any]] = []
         for entity in config.entities:
-            availability = _path_availability(
-                config, root_entity, entity.id, query_time=query_time
-            )
+            availability = _path_availability(config, root_entity, entity.id, query_time=query_time)
             row = {
                 "id": entity.id,
                 "available": availability["available"],

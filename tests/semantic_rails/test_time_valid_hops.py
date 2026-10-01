@@ -36,6 +36,7 @@ from semantic_rails.metadata import build_options_payload, discover_payload, ins
 from semantic_rails.metadata_parts.path_coverage import _path_availability
 from semantic_rails.metadata_parts.valid_values import valid_values_payload
 from semantic_rails.planner._base import _dimension, _score
+from semantic_rails.planner.plan import plan_payload
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 
@@ -151,7 +152,11 @@ FILES = {
 # The bidirectional pair of the authoring guide: from an account, the reverse hop into the segment
 # table joins every version of the account, unless a time picks one.
 BIDIRECTIONAL = {
-    **{name: body for name, body in FILES.items() if name not in {"models/usage.yml", "models/tiers.yml"}},
+    **{
+        name: body
+        for name, body in FILES.items()
+        if name not in {"models/usage.yml", "models/tiers.yml"}
+    },
     "graph.yml": """
         graph:
           entities:
@@ -479,9 +484,7 @@ def _order_conversion(
         ),
     ],
 )
-def test_a_conversion_reading_a_history_dimension_without_a_time_is_refused(
-    runtime_factory, query
-):
+def test_a_conversion_reading_a_history_dimension_without_a_time_is_refused(runtime_factory, query):
     """Each order would join every version of its customer's history."""
     runtime = runtime_factory("jaffle_shop")
     try:
@@ -612,6 +615,23 @@ def test_the_planner_prefers_the_dimension_that_needs_no_time_on_an_equal_score(
     assert chosen.id == "dimension.hist_account_id"
     assert _score(chosen, ["account"]) == _score(history, ["account"])
     assert chosen.label > history.label
+
+
+def test_the_planner_keeps_a_history_filter_when_the_question_gives_a_time(runtime_factory):
+    """The planner reads the filter before it adds the month from the text, so it asks whether
+    the history is reachable given a time; the plan carries both, and validates."""
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        plan = plan_payload(runtime, intent="revenue from high_value customers by month")
+        query = plan["best"]["query_ir"]
+        report = runtime.validate(query)
+    finally:
+        runtime.close()
+
+    assert plan["status"] == "ok"
+    assert {"field": CUSTOMER_SEGMENT, "op": "=", "value": "high_value"} in query["where"]
+    assert query["time"]["temporal_role"] == "temporal_role.jaffle_order_time"
+    assert report["ok"] is True
 
 
 def test_recovery_hints_skip_a_dimension_behind_a_time_valid_hop(package):

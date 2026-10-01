@@ -750,7 +750,9 @@ A query that joins into the table holding the window needs a `time`, so each row
 version valid at its time. Without one, a many-to-one hop into it is refused with
 `FANOUT_UNSAFE`, naming the relationship and the entity, because joining every version would
 count a row once per version. A hop out of that table (`customer_history → customer` here)
-reads one version per row and needs no time.
+reads one version per row and needs no time. A metric predicate is stricter: when the path from
+its input to its entity, context or filters crosses a time-valid relationship in either
+direction, it needs a time of its own (a contextual predicate takes the query's `time`).
 
 ### `disallowed_names:` — explicit anti-pattern guard
 
