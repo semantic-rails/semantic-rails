@@ -975,10 +975,10 @@ def test_validate_compile_execute_and_plan_agree(package: Path, shape: str) -> N
     assert [outcome[0] for outcome in outcomes] == [code, code]
     assert [("ok" if row["ok"] else row["error"]["code"]) for row in tool] == [code] * 3
     if code == "ok":
-        assert outcomes[0][1] == outcomes[1][1]
+        assert outcomes[0][1] and outcomes[0][1] == outcomes[1][1]
     # plan carries the caller's where unchanged and validates it the same way.
     best = planned["best"]
-    assert best["query_ir"]["where"][: len(query["where"])] == query["where"]
-    validation = best.get("validation") or {}
-    if validation:
-        assert bool(validation.get("ok")) == (code == "ok")
+    assert best["query_ir"]["where"] == query["where"]
+    assert best["validation_ok"] is (code == "ok")
+    plan_codes = [error["code"] for error in (planned.get("why") or {}).get("errors", [])]
+    assert plan_codes == ([] if code == "ok" else [code])
