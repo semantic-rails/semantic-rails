@@ -168,7 +168,6 @@ COUNTRY = "dimension.geo_country_country_name"
 TYPE = "dimension.geo_item_item_type"
 CATEGORY = "dimension.geo_product_category"
 MONTHLY = {"temporal_role": "temporal_role.geo_order_ordered_at", "grain": "month"}
-MONTH = "temporal_role.geo_order_ordered_at__month"
 LOOKUP_TABLES = ("customers", "regions", "countries", "products")
 
 # Scalar subqueries read NULL where a lookup finds no row, independently of any join.
@@ -225,7 +224,7 @@ AGGREGATIONS = {
     ),
 }
 
-# (name, filter clause, gold condition): each holds for rows of every filtered form.
+# Per segment name: a filter clause, and the same condition in gold SQL.
 CONDITIONS = {
     "no_region": ({"field": REGION, "op": "IS NULL"}, f"{SQL_REGION} IS NULL"),
     "north": ({"field": REGION, "op": "=", "value": "North"}, f"{SQL_REGION} = 'North'"),
@@ -243,8 +242,11 @@ def _write_package(root: Path, *, rollup_safe: bool = False) -> Path:
     (pkg / "graph.yml").write_text(GRAPH + (ROLLUP_SAFE_ITEMS if rollup_safe else ""))
     for name, body in MODELS.items():
         (pkg / "models" / f"{name}.yml").write_text(textwrap.dedent(body))
-    recipe = {"as": "metric.geo.order_amount", "kind": "derived"}
-    recipe["expression"] = {"measure": "measure.geo.amount"}
+    recipe = {
+        "as": "metric.geo.order_amount",
+        "kind": "derived",
+        "expression": {"measure": "measure.geo.amount"},
+    }
     (pkg / "metrics.yml").write_text(yaml.safe_dump({"metrics": {"geo.order_amount": recipe}}))
     segments = {
         name: {
@@ -403,9 +405,9 @@ def test_a_metric_filter_leaves_the_groups_adding_up(runtime, gold, dimension):
 
 
 # The orders that hold an item of each type, by country; the gold de-duplicates by order.
-ORDERS_BY_TYPE = (
-    "SELECT i.item_type, {field}, COUNT(DISTINCT o.order_id) FROM orders AS o"
-    " JOIN items AS i ON i.order_id = o.order_id {where} GROUP BY 1, 2"
+SQL_ORDERS_BY_TYPE_AND_COUNTRY = (
+    f"SELECT i.item_type, {SQL_COUNTRY}, COUNT(DISTINCT o.order_id) FROM orders AS o"
+    " JOIN items AS i ON i.order_id = o.order_id GROUP BY 1, 2"
 )
 # Beverages: orders 1, 6 and 9 in Atlantis, 3 and 10 under NULL. Food: order 2 in Atlantis, and
 # 4, 5 and 11 under NULL.
@@ -469,13 +471,13 @@ LEAVES = {
     "de_duplicated": Leaf(
         _query(ORDER_COUNT, group_by=[TYPE, COUNTRY]),
         "_entity_rows",
-        ORDERS_BY_TYPE.format(field=SQL_COUNTRY, where=""),
+        SQL_ORDERS_BY_TYPE_AND_COUNTRY,
         _query(ORDER_COUNT, group_by=[TYPE]),
     ),
     "entity_in_terms_of": Leaf(
         _query(ORDER_COUNT, group_by=[TYPE, COUNTRY]),
         "FROM items",
-        ORDERS_BY_TYPE.format(field=SQL_COUNTRY, where=""),
+        SQL_ORDERS_BY_TYPE_AND_COUNTRY,
         _query(ORDER_COUNT, group_by=[TYPE]),
         rollup_safe=True,
     ),
