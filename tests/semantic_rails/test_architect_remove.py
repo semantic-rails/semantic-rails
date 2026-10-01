@@ -273,21 +273,36 @@ def test_a_model_goes_with_its_entity_and_the_references_to_it(workspace: Path) 
     assert {path: path.read_bytes() for path in (workspace / "shop").rglob("*.yml")} == before
 
 
+ORDER_CUSTOMER_PINS = {
+    "keys": {"source_entity": "order", "target_entity": "customer"},
+    "ids": {"source_entity": "entity.shop_order", "target_entity": "entity.shop_customer"},
+}
+# A row the loader reads that names nothing the removal deletes, and one that isn't a mapping.
+UNRELATED_PIN = {
+    "source_entity": "customer",
+    "target_entity": "customer",
+    "relationship_path": ["relationship.orders_customer", "relationship.orders_customer"],
+}
+
+
+@pytest.mark.parametrize("form", ORDER_CUSTOMER_PINS)
+@pytest.mark.parametrize("declared", ["graph_relationships", "model_entities_only"])
 @pytest.mark.parametrize(
     ("kind", "key", "model"), [("model", "customers", ""), ("relationship", "customer", "orders")]
 )
 def test_a_removal_drops_the_route_pins_through_what_it_removes(
-    workspace: Path, kind: str, key: str, model: str
+    workspace: Path, kind: str, key: str, model: str, declared: str, form: str
 ) -> None:
+    """What goes is worked out from the loaded package, so a pin naming entities by id, or a
+    relationship the orders model declares in its entities: block, goes with it; each dropped
+    pin is in the report, and the package that's left loads."""
     graph = _yaml(workspace, "graph.yml")
-    graph["graph"]["path_preferences"] = [
-        {
-            "source_entity": "order",
-            "target_entity": "customer",
-            "relationship_path": ["relationship.orders_customer"],
-        }
-    ]
+    if declared == "model_entities_only":
+        del graph["graph"]["relationships"]
+    pin = {**ORDER_CUSTOMER_PINS[form], "relationship_path": ["relationship.orders_customer"]}
+    graph["graph"]["path_preferences"] = [pin]
     _dump(workspace / "shop" / "graph.yml", graph)
+    load_package_config(str(workspace / "shop"))  # the pin loads before the removal
     project = _project(workspace)
     project.remove_object(kind="metric", key="customers")
 
@@ -295,6 +310,48 @@ def test_a_removal_drops_the_route_pins_through_what_it_removes(
 
     assert report["ok"] is True, report
     assert "path_preferences" not in _yaml(workspace, "graph.yml")["graph"]
+    dropped = [row for row in report["removed"] if row["kind"] == "path_preferences"]
+    assert [row["key"] for row in dropped] == [f"{pin['source_entity']} -> {pin['target_entity']}"]
+    load_package_config(str(workspace / "shop"))
+
+
+def test_removing_the_signups_model_drops_an_id_form_pin_in_the_correctness_shop(
+    tmp_path: Path,
+) -> None:
+    """The signups model holds the customer entity, and the orders model's entities: block
+    relates orders to it: removing the model drops a pin written with ids along the way."""
+    shop = tmp_path / "shop"
+    shutil.copytree(Path(__file__).resolve().parents[1] / "integration/correctness/shop", shop)
+    project = ArchitectProject(shop, workspace_root=tmp_path)
+    assert project.remove_object(kind="metric", key="shop.signup_to_order_7d").report["ok"]
+    graph = yaml.safe_load((shop / "graph.yml").read_text(encoding="utf-8"))
+    graph["graph"]["path_preferences"] = [
+        {
+            **ORDER_CUSTOMER_PINS["ids"],
+            "relationship_path": ["relationship.orders_customer"],
+        },
+        "not a mapping",
+    ]
+    _dump(shop / "graph.yml", graph)
+
+    report = project.remove_object(kind="model", key="signups").report
+
+    assert [row["key"] for row in report["removed"] if row["kind"] == "path_preferences"] == [
+        "entity.shop_order -> entity.shop_customer"
+    ]
+    # The row that isn't a mapping is left for the parse gate, which refuses it.
+    assert report["ok"] is False
+    graph = yaml.safe_load((shop / "graph.yml").read_text(encoding="utf-8"))
+    graph["graph"]["path_preferences"] = [
+        {**ORDER_CUSTOMER_PINS["ids"], "relationship_path": ["relationship.orders_customer"]}
+    ]
+    _dump(shop / "graph.yml", graph)
+
+    report = project.remove_object(kind="model", key="signups").report
+
+    assert report["ok"] is True, report
+    assert "path_preferences" not in yaml.safe_load((shop / "graph.yml").read_text())["graph"]
+    load_package_config(str(shop))
 
 
 def test_every_definition_goes_and_mentions_are_reported(workspace: Path) -> None:

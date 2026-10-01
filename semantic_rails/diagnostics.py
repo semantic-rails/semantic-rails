@@ -623,7 +623,7 @@ def recovery_hints_for_error(
                 ),
                 "candidates": list(details.get("candidates", []) or []),
                 "pins": list(details.get("pins", []) or []),
-            }
+            },
         ]
     if code == "FANOUT_UNSAFE":
         return [
