@@ -14,8 +14,6 @@ import ast as pyast
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
-from datetime import date, datetime
-from decimal import Decimal
 from functools import cache
 from typing import TYPE_CHECKING, Any
 
@@ -480,158 +478,33 @@ def validate_expression_shapes(value: Any) -> None:
             validate_expression_shapes(child)
 
 
-def validate_expression_calls(value: Any, config: PackageConfig, *, owner: str = "") -> None:
-    """One type walker for normalized queries and parsed package expressions.
+def validate_expression_calls(value: Any, config: PackageConfig) -> None:
+    """Validate call names and CAST shapes; argument types belong to the warehouse.
 
-    Only known types refuse. Literal data, metadata and parameters remain opaque.
+    Literal data, metadata and parameters remain opaque.
     """
-    numeric = {"ABS", "CEIL", "CEILING", "EXP", "FLOOR", "LN", "LOG", "POWER", "ROUND", "SQRT"}
-    text = {
-        "LOWER",
-        "UPPER",
-        "TRIM",
-        "REPLACE",
-        "LENGTH",
-        "LEFT",
-        "RIGHT",
-        "SUBSTR",
-        "SUBSTRING",
-    }
-
-    def family(data_type: str) -> str:
-        base = data_type.lower().split("(")[0].strip()
-        if base in {
-            "number",
-            "numeric",
-            "decimal",
-            "integer",
-            "int",
-            "int32",
-            "int64",
-            "bigint",
-            "float",
-            "float8",
-            "float64",
-            "double",
-            "real",
-            "smallint",
-        }:
-            return "number"
-        if base in {"text", "string", "varchar", "char"}:
-            return "text"
-        if base in {"date", "datetime", "timestamp", "timestamp_ntz", "timestamptz"}:
-            return "date"
-        return "boolean" if base in {"bool", "boolean"} else "unknown"
-
-    def walk(node: Any, entity: str) -> str:
-        if isinstance(node, LiteralExpr):
-            val = node.value
-            if val is None:
-                return "null"
-            if isinstance(val, bool):
-                return "boolean"
-            if isinstance(val, (int, float, Decimal)):
-                return "number"
-            if isinstance(val, str):
-                # PostgreSQL resolves untyped SQL string literals against the signature.
-                return "unknown" if config.package.warehouse == "postgres" else "text"
-            if isinstance(val, (list, tuple)):
-                return "array"
-            return "date" if isinstance(val, (date, datetime)) else "unknown"
-        if isinstance(node, ColumnRefExpr):
-            column_owner = node.entity or (
-                resolve_table_entity(config, node.table, owner=entity) if node.table else entity
+    if isinstance(value, LiteralExpr):
+        return
+    if isinstance(value, CallExpr):
+        name = validate_call_name(value.name, config.package.warehouse)
+        if value.distinct:
+            raise SemanticLayerError(
+                "INVALID_EXPRESSION_AST", "Scalar calls do not support distinct"
             )
-            if not column_owner:
-                return "unknown"
-            types = {
-                "unknown" if dim.semantic_kind == "categorical" else family(dim.data_type)
-                for dim in config.dimensions
-                if dim.column == node.column and dim.entity == column_owner
-            }
-            return next(iter(types)) if len(types) == 1 else "unknown"
-        if isinstance(node, CallExpr):
-            name = validate_call_name(node.name, config.package.warehouse)
-            if node.distinct:
-                raise SemanticLayerError(
-                    "INVALID_EXPRESSION_AST", "Scalar calls do not support distinct"
-                )
-            arg_types = [walk(arg, entity) for arg in node.args]
-            if name == "CAST":
-                target = call_cast_type(
-                    node.args[1].value
-                    if len(node.args) == 2 and isinstance(node.args[1], LiteralExpr)
-                    else None,
-                    config.package.warehouse,
-                )
-                return "text" if target == "VARCHAR" else "number"
-            for index, received in enumerate(arg_types):
-                expected = "unknown"
-                if name in numeric:
-                    expected = "number"
-                elif name in text:
-                    expected = (
-                        "number"
-                        if name in {"LEFT", "RIGHT", "SUBSTR", "SUBSTRING"} and index > 0
-                        else "text"
-                    )
-                elif name in {"DATE_PART", "DATE_TRUNC"}:
-                    expected = "text" if index == 0 else "date"
-                # These coarse families cannot establish compatibility for warehouses
-                # with implicit conversions or additional overloads. Defer to execution.
-                if config.package.warehouse not in {
-                    "duckdb",
-                    "motherduck",
-                    "ducklake",
-                    "postgres",
-                    "bigquery",
-                }:
-                    expected = "unknown"
-                if (
-                    name == "LENGTH"
-                    and received == "array"
-                    and config.package.warehouse in {"duckdb", "motherduck", "ducklake"}
-                ):
-                    expected = "unknown"
-                if name == "ROUND" and index > 1:
-                    expected = "unknown"
-                if expected != "unknown" and received not in {expected, "unknown", "null"}:
-                    raise SemanticLayerError(
-                        "CALL_ARGUMENT_TYPE",
-                        f"{name} argument {index} requires {expected}, received {received}.",
-                        details={
-                            "function": name,
-                            "argument_index": index,
-                            "expected": expected,
-                            "received": received,
-                        },
-                    )
-            if name in numeric or name in {"LENGTH", "DATE_PART"}:
-                return "number"
-            if name == "DATE_TRUNC":
-                return "date"
-            if name in {"SPLIT", "STR_SPLIT", "STRING_SPLIT"}:
-                return "array"
-            if name in {"JSON_EXTRACT", "JSON_EXTRACT_STRING", "CONCAT"}:
-                return "unknown"
-            if name in text:
-                return "text"
-            known = {t for t in arg_types if t != "null"}
-            return next(iter(known)) if len(known) == 1 else "unknown"
-        if isinstance(node, ArithmeticExpr):
-            types = {walk(node.left, entity), walk(node.right, entity)}
-            return "number" if types <= {"number", "null"} else "unknown"
-        if is_dataclass(node) and not isinstance(node, type):
-            entity = getattr(node, "entity", "") or entity
-            for item in fields(node):
-                if item.name not in {"meta", "parameters"}:
-                    walk(getattr(node, item.name), entity)
-        elif isinstance(node, (list, tuple)):
-            for child in node:
-                walk(child, entity)
-        return "unknown"
-
-    walk(value, owner)
+        if name == "CAST":
+            call_cast_type(
+                value.args[1].value
+                if len(value.args) == 2 and isinstance(value.args[1], LiteralExpr)
+                else None,
+                config.package.warehouse,
+            )
+    if is_dataclass(value) and not isinstance(value, type):
+        for item in fields(value):
+            if item.name not in {"meta", "parameters"}:
+                validate_expression_calls(getattr(value, item.name), config)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            validate_expression_calls(child, config)
 
 
 def is_constant_expression(expr: SemanticExpr | None) -> bool:
