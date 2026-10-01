@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 CALL_CAST_FORMS = ("DOUBLE", "DECIMAL(p,s)", "INTEGER", "BIGINT", "VARCHAR")
 
 
-def call_cast_type(value: Any) -> str:
+def call_cast_type(value: Any, warehouse: str = "duckdb") -> str:
     """Validate the authored logical type before it can become a SQL token."""
     if isinstance(value, str):
         normalized = value.strip().upper()
@@ -36,8 +36,23 @@ def call_cast_type(value: Any) -> str:
         if normalized in {"DOUBLE", "INTEGER", "BIGINT", "VARCHAR"}:
             return normalized
         match = re.fullmatch(r"DECIMAL\(([0-9]+),([0-9]+)\)", normalized)
-        if match and 0 <= int(match[2]) <= int(match[1]) <= 38 and int(match[1]) > 0:
-            return f"DECIMAL({int(match[1])},{int(match[2])})"
+        if match:
+            # Strip zero padding and bound tokens before Python's integer conversion.
+            precision, scale = (token.lstrip("0") or "0" for token in match.groups())
+            if (
+                len(precision) <= 2
+                and len(scale) <= 2
+                and 0 <= int(scale) <= int(precision) <= 38
+                and int(precision) > 0
+            ):
+                if warehouse == "bigquery":
+                    raise SemanticLayerError(
+                        "INVALID_EXPRESSION_AST",
+                        "BigQuery CAST cannot enforce DECIMAL precision and scale; "
+                        "use DOUBLE or a warehouse column with a parameterized decimal type.",
+                        details={"warehouse": warehouse, "target_type": normalized},
+                    )
+                return f"DECIMAL({int(precision)},{int(scale)})"
     raise SemanticLayerError(
         "INVALID_EXPRESSION_AST",
         "CAST requires two args, with a string literal type: " + ", ".join(CALL_CAST_FORMS),
@@ -512,7 +527,8 @@ def validate_expression_calls(value: Any, config: PackageConfig, *, owner: str =
             if isinstance(val, (int, float, Decimal)):
                 return "number"
             if isinstance(val, str):
-                return "text"
+                # PostgreSQL resolves untyped SQL string literals against the signature.
+                return "unknown" if config.package.warehouse == "postgres" else "text"
             if isinstance(val, (list, tuple)):
                 return "array"
             return "date" if isinstance(val, (date, datetime)) else "unknown"
@@ -539,7 +555,8 @@ def validate_expression_calls(value: Any, config: PackageConfig, *, owner: str =
                 target = call_cast_type(
                     node.args[1].value
                     if len(node.args) == 2 and isinstance(node.args[1], LiteralExpr)
-                    else None
+                    else None,
+                    config.package.warehouse,
                 )
                 return "text" if target == "VARCHAR" else "number"
             for index, received in enumerate(arg_types):
@@ -554,6 +571,24 @@ def validate_expression_calls(value: Any, config: PackageConfig, *, owner: str =
                     )
                 elif name in {"DATE_PART", "DATE_TRUNC"}:
                     expected = "text" if index == 0 else "date"
+                # These coarse families cannot establish compatibility for warehouses
+                # with implicit conversions or additional overloads. Defer to execution.
+                if config.package.warehouse not in {
+                    "duckdb",
+                    "motherduck",
+                    "ducklake",
+                    "postgres",
+                    "bigquery",
+                }:
+                    expected = "unknown"
+                if (
+                    name == "LENGTH"
+                    and received == "array"
+                    and config.package.warehouse in {"duckdb", "motherduck", "ducklake"}
+                ):
+                    expected = "unknown"
+                if name == "ROUND" and index > 1:
+                    expected = "unknown"
                 if expected != "unknown" and received not in {expected, "unknown", "null"}:
                     raise SemanticLayerError(
                         "CALL_ARGUMENT_TYPE",

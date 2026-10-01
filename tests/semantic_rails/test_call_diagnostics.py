@@ -123,6 +123,16 @@ def test_numeric_cast_max_and_post_aggregation_subtraction(package):
 def test_cast_sql_for_every_dialect(package, warehouse, target):
     config = load_package_config(str(package))
     config = replace(config, package=replace(config.package, warehouse=warehouse))
+    if warehouse == "bigquery" and target.startswith("DECIMAL"):
+        with pytest.raises(SemanticLayerError) as exc:
+            compile_query(config, None, query(maximum(cast(column("text_value"), target))))
+        assert exc.value.code == "INVALID_EXPRESSION_AST"
+        with pytest.raises(SemanticLayerError) as exc:
+            dialect_for_warehouse(warehouse).scalar_call(
+                "CAST", [SqlLiteral(1), SqlLiteral(target)]
+            )
+        assert exc.value.code == "INVALID_EXPRESSION_AST"
+        return
     sql = compile_query(config, None, query(maximum(cast(column("text_value"), target))))["sql"]
     expected = "BIGINT" if target in {"INTEGER", "BIGINT"} else target
     if warehouse == "postgres" and target == "DOUBLE":
@@ -132,9 +142,6 @@ def test_cast_sql_for_every_dialect(package, warehouse, target):
             "DOUBLE": "FLOAT64",
             "INTEGER": "INT64",
             "BIGINT": "INT64",
-            "DECIMAL(12,3)": "NUMERIC(12,3)",
-            "DECIMAL(38,10)": "BIGNUMERIC(38,10)",
-            "DECIMAL(38,0)": "BIGNUMERIC(38,0)",
             "VARCHAR": "STRING",
         }[target]
     elif warehouse == "databricks" and target == "VARCHAR":
@@ -360,6 +367,109 @@ def test_package_cast_and_package_type_error_fails_check(package):
     assert not report["ok"]
     assert report["blockers"][0]["code"] == "CALL_ARGUMENT_TYPE"
     assert report["blockers"][0]["details"]["function"] == "ROUND"
+    assert [error["code"] for error in report["blockers"]] == [
+        "CALL_ARGUMENT_TYPE",
+        "INVALID_CONFIG",
+        "INVALID_CONFIG",
+    ]
+    assert "package.id must equal directory name" in report["blockers"][1]["message"]
+    assert "dimension rows.text_value has unknown kind 'string'" in report["blockers"][2]["message"]
+    assert not any(
+        "failed to load package config" in error["message"] for error in report["blockers"]
+    )
+
+
+@pytest.mark.parametrize("parameter", ["precision", "scale"])
+def test_oversized_decimal_parameters_are_structured_errors(package, parameter):
+    digits = "9" * 5000
+    target = f"DECIMAL({digits},0)" if parameter == "precision" else f"DECIMAL(38,{digits})"
+    runtime = Runtime.from_path(str(package))
+    try:
+        payload = query(maximum(cast(column("text_value"), target)))
+        report = runtime.validate(payload)
+        assert not report["ok"]
+        assert report["errors"][0]["code"] == "INVALID_EXPRESSION_AST"
+        with pytest.raises(SemanticLayerError) as exc:
+            plan_query(runtime.config, None, payload)
+        assert exc.value.code == "INVALID_EXPRESSION_AST"
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("target", ["DECIMAL(12,3)", "DECIMAL(38,10)", "DECIMAL(38,0)"])
+def test_bigquery_decimal_constraints_refused_at_load_and_validation(package, target):
+    config = load_package_config(str(package))
+    config = replace(config, package=replace(config.package, warehouse="bigquery"))
+    runtime = Runtime.from_config(config, source_path=str(package))
+    try:
+        report = runtime.validate(query(maximum(cast(column("text_value"), target))))
+        assert not report["ok"]
+        assert report["errors"][0]["code"] == "INVALID_EXPRESSION_AST"
+    finally:
+        runtime.close()
+    path = package / "package.yml"
+    raw = yaml.safe_load(path.read_text())
+    raw["package"]["warehouse"] = "bigquery"
+    raw["package"]["connection"] = {"kind": "bigquery_native", "project": "test"}
+    path.write_text(yaml.safe_dump(raw))
+    path = package / "models/rows.yml"
+    raw = yaml.safe_load(path.read_text())
+    raw["model"]["measures"]["amount"]["expr"] = cast(
+        {"kind": "column", "column": "text_value"}, target
+    )
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(package))
+    assert exc.value.code == "INVALID_EXPRESSION_AST"
+
+
+@pytest.mark.parametrize(
+    "warehouse,expression,expected",
+    [
+        (warehouse, call("LENGTH", call("SPLIT", literal("a,b"), literal(","))), 2)
+        for warehouse in ["duckdb", "motherduck", "ducklake"]
+    ]
+    + [
+        (
+            "snowflake",
+            call(
+                "ROUND", cast(literal("2.5"), "DECIMAL(10,1)"), literal(0), literal("HALF_TO_EVEN")
+            ),
+            None,
+        ),
+        ("snowflake", call("ROUND", column("text_value"), literal(0)), None),
+        ("databricks", call("UPPER", column("amount")), None),
+        ("clickhouse", call("LENGTH", literal([1, 2])), None),
+        ("postgres", call("ROUND", cast(literal("2.5"), "DECIMAL(10,1)"), literal("0")), None),
+    ],
+)
+def test_supported_overloads_compile_in_queries_and_packages(
+    package, warehouse, expression, expected
+):
+    config = load_package_config(str(package))
+    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    assert compile_query(config, None, query(maximum(expression)))["sql"]
+    runtime = Runtime.from_config(config, source_path=str(package))
+    try:
+        assert runtime.validate(query(maximum(expression)))["ok"]
+    finally:
+        runtime.close()
+    if warehouse == "duckdb":
+        assert execute(config, maximum(expression)) == [(expected,)]
+    path = package / "models/rows.yml"
+    raw = yaml.safe_load(path.read_text())
+    raw["model"]["measures"]["amount"]["expr"] = expression
+    path.write_text(yaml.safe_dump(raw))
+    path = package / "package.yml"
+    raw = yaml.safe_load(path.read_text())
+    raw["package"]["warehouse"] = warehouse
+    if warehouse == "snowflake":
+        raw["package"]["connection"] = {"kind": "snowflake_cli", "name": "test"}
+    elif warehouse != "duckdb":
+        raw["package"]["connection"] = {"kind": f"{warehouse}_native"}
+    path.write_text(yaml.safe_dump(raw))
+    config = load_package_config(str(package))
+    assert compile_query(config, None, query({"measure": "measure.numbers.amount"}))["sql"]
 
 
 def test_direct_lowering_cannot_bypass_call_guard(package):

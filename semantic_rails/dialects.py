@@ -104,7 +104,7 @@ class SqlDialect:
         if name != "CAST":
             return SqlCall(name, args)
         value = args[1].value if len(args) == 2 and isinstance(args[1], SqlLiteral) else None
-        logical_type = call_cast_type(value)
+        logical_type = call_cast_type(value, self.name)
         base = logical_type.split("(")[0]
         type_name = "BIGINT" if base in {"INTEGER", "BIGINT"} else logical_type
         if self.name == "postgres" and base == "DOUBLE":
@@ -114,13 +114,8 @@ class SqlDialect:
                 "DOUBLE": "FLOAT64",
                 "INTEGER": "INT64",
                 "BIGINT": "INT64",
-                "DECIMAL": "NUMERIC",
                 "VARCHAR": "STRING",
             }[base]
-            if base == "DECIMAL":
-                precision, scale = map(int, logical_type[8:-1].split(","))
-                decimal_type = "BIGNUMERIC" if scale > 9 or precision - scale > 29 else "NUMERIC"
-                type_name = f"{decimal_type}({precision},{scale})"
         elif self.name == "databricks" and base == "VARCHAR":
             type_name = "STRING"
         elif self.name == "clickhouse":

@@ -200,30 +200,40 @@ The rendered targets are:
 | --- | --- | --- | --- | --- |
 | DuckDB, MotherDuck, DuckLake, Snowflake, Athena | `DOUBLE` | `DECIMAL(p,s)` | `BIGINT` | `VARCHAR` |
 | Postgres | `FLOAT8` | `DECIMAL(p,s)` | `BIGINT` | `VARCHAR` |
-| BigQuery | `FLOAT64` | `NUMERIC(p,s)` or `BIGNUMERIC(p,s)` | `INT64` | `STRING` |
+| BigQuery | `FLOAT64` | Refused (`INVALID_EXPRESSION_AST`) | `INT64` | `STRING` |
 | Databricks | `DOUBLE` | `DECIMAL(p,s)` | `BIGINT` | `STRING` |
 | ClickHouse | `Nullable(Float64)` | `Nullable(DECIMAL(p,s))` | `Nullable(Int64)` | `Nullable(String)` |
 
-BigQuery uses `BIGNUMERIC(p,s)` when scale exceeds 9 or precision minus scale
-exceeds 29, preserving the authored precision and scale. ClickHouse emits
+BigQuery only supports parameterized decimal types on columns and script
+variables, not CAST targets. Decimal casts are refused rather than silently
+discarding the authored precision and scale; use `DOUBLE` for approximate
+conversion or declare a parameterized decimal column in the warehouse.
+See [BigQuery parameterized type rules](https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/data-types#parameterized_data_types).
+ClickHouse emits
 nullable targets so NULL inputs remain NULL. Invalid conversions fail execution;
 CAST does not silently return NULL. `DATE`, `TIMESTAMP`, other target types, non-literal targets and
 `TRY_CAST` are refused. The same AST works in package expressions,
 conditional aggregates and post-aggregation expressions.
 
-Known argument mismatches fail before SQL lowering with `CALL_ARGUMENT_TYPE`
+Certainly incompatible arguments fail before SQL lowering with `CALL_ARGUMENT_TYPE`
 and `details: {function, argument_index, expected, received}`. Indices are
 zero-based and the type families are `number`, `text`, `date`, `boolean`
 and `array`. Declared dimension types, literals, casts and known nested-call
 return types are checked; a defaulted or authored `categorical` semantic kind
 and columns without a resolved entity have unknown types and pass to the
-warehouse.
+warehouse. Coarse family checks apply to DuckDB (including MotherDuck and
+DuckLake), Postgres and BigQuery. Other warehouses' implicit conversions and
+overloads are deferred to execution. Postgres string literals are unknown until
+the warehouse resolves them against a function signature. DuckDB-family `LENGTH` accepts arrays as
+well as text. Additional `ROUND` arguments are deferred to the warehouse;
+Snowflake's text rounding-mode argument is supported.
 Arguments to `CONCAT`, `JSON_EXTRACT`, `JSON_EXTRACT_STRING` and the `SPLIT`
 family are unchecked because warehouse overloads accept multiple type families.
 The package walker visits parsed expressions and leaves metadata, defaults and
 parameters as data. A numeric function receiving text includes a recovery hint to wrap that argument in
 CAST. Package `check`, query validation, planning and execution share this
-check. Warehouse execution errors remain redacted.
+check. Package `check` retains other configuration errors alongside a structured
+call type error. Warehouse execution errors remain redacted.
 
 A top-level request select containing only literals, literal arithmetic or casts
 of literals, with no grouping, where, time or metric filter, returns `INVALID_QUERY` with

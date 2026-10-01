@@ -1508,7 +1508,12 @@ def parse_snapshot_report(
                 load_package_config(ref.source_path)
             except Exception as exc:
                 if isinstance(exc, SemanticLayerError) and exc.code == "CALL_ARGUMENT_TYPE":
-                    raise
+                    call_error = exc
+                    messages = [
+                        message
+                        for message in messages
+                        if not message.endswith(f": failed to load package config: {exc}")
+                    ]
         else:
             snapshot = load_package_snapshot(ref.source_path)
             if snapshot.source_fingerprint != source.fingerprint:
@@ -1521,11 +1526,11 @@ def parse_snapshot_report(
         if exc.code == "CALL_ARGUMENT_TYPE":
             call_error = exc
     warnings: list[dict[str, Any]] = []
-    errors = (
-        [_error_payload(call_error.code, str(call_error), details=call_error.details)]
-        if call_error
-        else [_error_payload("INVALID_CONFIG", message) for message in messages]
-    )
+    errors = [_error_payload("INVALID_CONFIG", message) for message in messages]
+    if call_error:
+        errors.insert(
+            0, _error_payload(call_error.code, str(call_error), details=call_error.details)
+        )
     config = None
     if not errors:
         assert snapshot is not None
