@@ -20,7 +20,6 @@ from typing import Any
 
 import duckdb
 
-from .db_parts.common import connect_read_only_duckdb
 from .errors import SemanticLayerError
 from .sql_identifiers import quote_relation
 
@@ -40,13 +39,6 @@ def _missing_on_connection(conn: Any, relations: Iterable[str]) -> list[str]:
     for relation in sorted(set(relations)):
         try:
             conn.execute(f"SELECT 1 FROM {quote_relation(relation)} LIMIT 0")
-        except duckdb.PermissionException:
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                "A configured relation requires DuckDB external access; materialize external-file "
-                "views into tables before using the read-only engine.",
-                details={"reason": "external_access_disabled", "relation": relation},
-            ) from None
         except Exception:  # noqa: BLE001 — a binder/catalog failure is not a usable relation
             missing.append(relation)
     return missing
@@ -63,7 +55,7 @@ def _probe_cli() -> None:
     path, relations = request["path"], request["relations"]
     try:
         before = _identity(path)
-        conn = connect_read_only_duckdb(path)
+        conn = duckdb.connect(path, read_only=True)
         try:
             missing = _missing_on_connection(conn, relations)
         finally:
@@ -72,8 +64,6 @@ def _probe_cli() -> None:
         if before != after:
             raise OSError(errno.EAGAIN, "database changed during catalog probe", path)
         result: dict[str, Any] = {"identity": before, "missing": missing}
-    except SemanticLayerError as exc:
-        result = {"semantic_error": {"code": exc.code, "message": str(exc), "details": exc.details}}
     except Exception as exc:  # noqa: BLE001 — only a bounded diagnostic crosses process
         result = {"error": type(exc).__name__}
     print(json.dumps(result))
@@ -111,9 +101,6 @@ def missing_duckdb_relations(db: Any, relations: Iterable[str]) -> list[str]:
         raise OSError(errno.EIO, "database catalog probe failed", path)
     try:
         payload = json.loads(result.stdout)
-        if "semantic_error" in payload:
-            error = payload["semantic_error"]
-            raise SemanticLayerError(error["code"], error["message"], details=error["details"])
         if "error" in payload or tuple(payload["identity"]) != before or _identity(path) != before:
             raise OSError(errno.EAGAIN, "database could not be judged consistently", path)
         return list(payload["missing"])

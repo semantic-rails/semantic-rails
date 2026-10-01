@@ -137,7 +137,7 @@ python scripts/check_contract_compatibility.py \
 The compatibility checker is deliberately conservative. Contract owners review
 any flagged change and either preserve compatibility or introduce a new major.
 
-## Warehouse wait and read-only compatibility
+## Warehouse wait compatibility
 
 The optional `connect_timeout_seconds` and `read_timeout_seconds` connection
 options are additive and leave contract artifact shapes unchanged. Native
@@ -152,17 +152,7 @@ authored. Named profiles refuse a nonempty authored `query_tag` with redacted
 `INVALID_CONFIG` before connecting; configure `QUERY_TAG` in the profile.
 Direct connections retain their connector session-parameter tag support.
 
-New read-only DuckDB catalogs reject external-file views during bootstrap and
-execution. Packages using those views must materialize them into tables before
-upgrading. If a file already has an in-process connection with different
-settings, readers reuse those settings without adding the lock, retaining
-read-write mode when necessary. Only DuckDB's configuration-conflict error
-allows this fallback; other open errors propagate. The isolated bootstrap
-probe still uses a new locked catalog. This behavior compatibility change
-leaves query/package schema shapes unchanged. An in-process reader beside a
-live locked runtime must use the same configuration;
-`Database.connect(..., read_only=True)` supplies it. See
-[Native adapter timeouts](PACKAGE_AUTHORING.md#native-adapter-timeouts) for
+See [Native adapter timeouts](PACKAGE_AUTHORING.md#native-adapter-timeouts) for
 request margins, cancellation, driver retry limits and excluded adapters.
 
 Named Snowflake profile connections are cached only after any authored server

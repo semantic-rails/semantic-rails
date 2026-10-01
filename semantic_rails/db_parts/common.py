@@ -50,29 +50,6 @@ FORBIDDEN_LITERAL_SECRET_KEYS = frozenset(
 )
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 10
 DEFAULT_READ_TIMEOUT_SECONDS = 65
-READ_ONLY_DUCKDB_CONFIG: dict[str, Any] = {
-    "enable_external_access": False,
-    "autoinstall_known_extensions": False,
-    "autoload_known_extensions": False,
-    "lock_configuration": True,
-    "allowed_configs": ["TimeZone"],
-}
-
-
-def connect_read_only_duckdb(path: str) -> Any:
-    """Lock a new catalog, or reuse an existing in-process catalog's settings."""
-    import duckdb
-
-    conflict = "Can't open a connection to same database file with a different configuration"
-    for read_only, config in ((True, READ_ONLY_DUCKDB_CONFIG), (True, {})):
-        try:
-            return duckdb.connect(path, read_only=read_only, config=config)
-        except duckdb.ConnectionException as exc:
-            # Only this conflict proves another connection already owns the catalog.
-            # Permission, IO and other failures must not weaken the requested lock.
-            if conflict not in str(exc):
-                raise
-    return duckdb.connect(path)
 
 
 def client_wait_timeout(read_timeout: int, statement_timeout: int) -> int:
