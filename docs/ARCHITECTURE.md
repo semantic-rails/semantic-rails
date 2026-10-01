@@ -290,7 +290,9 @@ Core query rules:
 - `time.calendar_id` selects a declared calendar when more than one exists
 - a query with a time axis and no explicit `order_by` orders its final SQL projection by
   time ascending, then by `group_by` dimensions ascending in their stated order; this
-  shared lowering rule also covers dense series and combined or accelerated plans
+  shared lowering rule also covers dense series and combined or accelerated plans.
+  Internal branches, distribution inputs and contextual predicate sources receive
+  no default ordering; explicit `order_by` still takes precedence
 - `metric_filters` are applied after projected expressions except for `metric_predicate`, which is planned semantically at entity plus contextual time/group scope
 - `temporal_role_overrides` must only reference declared temporal roles
 - when only some measures have the query's clock, each other measure is timed by its own

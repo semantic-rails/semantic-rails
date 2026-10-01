@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from semantic_rails.compiler import compile_query, lower_to_sql
+from semantic_rails.compiler import _compile_query_sql_ast, compile_query, lower_to_sql
 from semantic_rails.compiler_parts import sql_lowering
 from semantic_rails.dialects import supported_warehouses
 from semantic_rails.errors import SemanticLayerError
@@ -133,6 +133,75 @@ def test_default_order_covers_alternate_lowering_paths(package_config_factory, s
         [expected_time],
         *[[group] for group in GROUPS],
     ]
+
+
+@pytest.mark.parametrize("warehouse", supported_warehouses())
+@pytest.mark.parametrize("explicit", [False, True])
+@pytest.mark.parametrize(
+    "shape", ["distribution", "branches", "nested-distribution", "predicate", "metric-filter"]
+)
+def test_only_the_request_result_is_ordered(package_config_factory, warehouse, explicit, shape):
+    config, _ = package_config_factory("jaffle_shop")
+    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    query = _query(groups=GROUPS[:1])
+    measure = {"measure": "measure.jaffle.order_count"}
+
+    def distribution(input_, entity="entity.jaffle_order"):
+        return {
+            "kind": "distribution",
+            "function": "avg",
+            "over": {"kind": "entity_value", "entity": entity, "input": input_},
+        }
+
+    expression = distribution(measure)
+    if shape == "nested-distribution":
+        expression = distribution(expression, "entity.jaffle_customer")
+    elif shape in {"predicate", "metric-filter"}:
+        expression = {
+            "kind": "scoped_aggregate",
+            "measure": "measure.jaffle.revenue_usd",
+            "aggregation": "sum",
+            "predicates": [
+                {
+                    "entity": "entity.jaffle_customer",
+                    "input": measure,
+                    "op": ">",
+                    "value": 0,
+                    "time_alignment": "same_query_period",
+                }
+            ],
+        }
+    query["select"] = [{"expression": expression, "as": "value"}]
+    if shape == "metric-filter":
+        query["select"] = [{"expression": measure, "as": "orders"}]
+        query["metric_filters"] = [
+            {
+                "expression": {"kind": "metric_predicate", **expression["predicates"][0]},
+                "op": "=",
+                "value": True,
+            }
+        ]
+    if shape == "branches":
+        query["select"].append({"expression": measure, "as": "orders"})
+    if explicit:
+        query["order_by"] = [{"field": "time", "direction": "DESC"}]
+    compiled = compile_query(config, None, query)
+    assert compiled["sql_ast"].order_by
+    assert compiled["sql"].count("\nORDER BY\n") == 1
+    assert [o.direction for o in compiled["sql_ast"].order_by] == (
+        ["DESC"] if explicit else ["ASC", "ASC"]
+    )
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_nested_query_preserves_only_explicit_order(package_config_factory, explicit):
+    config, _ = package_config_factory("jaffle_shop")
+    query = _query(limit=3)
+    if explicit:
+        query["order_by"] = [{"field": "time", "direction": "DESC"}]
+    select = _compile_query_sql_ast(config, query)
+    assert select.limit == 3
+    assert [o.direction for o in select.order_by] == (["DESC"] if explicit else [])
 
 
 @pytest.mark.parametrize("missing", [TIME, GROUPS[0]])

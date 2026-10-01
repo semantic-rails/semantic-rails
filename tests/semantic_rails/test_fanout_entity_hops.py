@@ -1358,7 +1358,9 @@ FROM leaf_1 AS base
 SELECT
   base.t AS "temporal_role.hop_order_ordered_at__month",
   base.m1 AS revenue
-FROM guarded_base AS base""",
+FROM guarded_base AS base
+ORDER BY
+  "temporal_role.hop_order_ordered_at__month" ASC""",
     "median": """WITH leaf_1 AS (
 SELECT
   {median} AS m1
@@ -1429,7 +1431,9 @@ FROM leaf_1 AS base
 SELECT
   base.t AS "temporal_role.hop_order_ordered_at__month",
   base.m1 AS revenue
-FROM guarded_base AS base""",
+FROM guarded_base AS base
+ORDER BY
+  "temporal_role.hop_order_ordered_at__month" ASC""",
     "median": """WITH leaf_1__leaf_1_entity_rows AS (
 SELECT DISTINCT
   orders.order_id AS __entity_key_1,

@@ -4711,7 +4711,11 @@ def _conversion_exprs_for_plan(plan: LogicalPlan, config: PackageConfig) -> list
 
 
 def lower_to_sql(
-    plan: LogicalPlan, config: PackageConfig, *, guard_empty: bool = True
+    plan: LogicalPlan,
+    config: PackageConfig,
+    *,
+    guard_empty: bool = True,
+    default_order: bool = True,
 ) -> SqlSelect:
     if _emits_time_coverage(plan, config) and any(
         row.aggregate_relation_id for row in plan.measure_plans
@@ -4724,8 +4728,9 @@ def lower_to_sql(
         # One total over the window: the constant time key isn't a column.
         time_alias = _time_alias_for_plan(plan)
         return replace(select, select=[item for item in select.select if item.alias != time_alias])
-    if plan.time and not plan.query.get("order_by"):
-        # Every lowering path orders its final output by time, then the authored groups.
+    if default_order and plan.time and not plan.query.get("order_by"):
+        # Every request's final projection orders by time, then the authored groups.
+        # Nested query sources opt out at their shared compilation boundary.
         # Use output aliases after internal aliasing so this also covers dense and combined SQL.
         order_keys = [_time_alias_for_plan(plan), *plan.group_by]
         output_aliases = {item.alias for item in select.select}

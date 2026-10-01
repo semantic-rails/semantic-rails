@@ -4163,11 +4163,15 @@ def _calendar_fill_binding(
 
 
 def lower_to_sql(
-    plan: LogicalPlan, config: PackageConfig, *, guard_empty: bool = True
+    plan: LogicalPlan,
+    config: PackageConfig,
+    *,
+    guard_empty: bool = True,
+    default_order: bool = True,
 ) -> SqlSelect:
     from .compiler_parts.sql_lowering import lower_to_sql as _lower_to_sql
 
-    return _lower_to_sql(plan, config, guard_empty=guard_empty)
+    return _lower_to_sql(plan, config, guard_empty=guard_empty, default_order=default_order)
 
 
 def _compile_query_sql_ast(
@@ -4184,7 +4188,9 @@ def _compile_query_sql_ast(
     config = resolve_compile_config(plan, config)
     with plan_bindings(plan, project_cut=project_cut) as leaves:
         _record_bound_plan(plan, config, leaves.leaves)
-        return attach_relation_ctes(config, lower_to_sql(plan, config, guard_empty=guard_empty))
+        return attach_relation_ctes(
+            config, lower_to_sql(plan, config, guard_empty=guard_empty, default_order=False)
+        )
 
 
 def _compile_predicate_source_ast(config: PackageConfig, payload: dict[str, Any]) -> SqlSelect:
