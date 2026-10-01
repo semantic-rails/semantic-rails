@@ -13,6 +13,7 @@ layer.
 
 from __future__ import annotations
 
+import json
 import operator
 import time
 from collections.abc import Iterable, Sequence
@@ -22,7 +23,17 @@ from typing import Any
 
 from .acceleration.routing import aggregate_routing, recording_rollup_scans
 from .acceleration.selection import _select_aggregate_relation
-from .ast import NormalizedQuery, _time_output_alias, normalize_query
+from .ast import (
+    ChildGroup,
+    Filter,
+    NormalizedQuery,
+    _time_output_alias,
+    child_groups,
+    every_filter,
+    normalize_query,
+    plain_filters,
+    refuse_child_groups,
+)
 from .compiler_parts.bind import (
     _aggregation_expr,
     _bind_measure,
@@ -95,8 +106,10 @@ from .compiler_parts.post_aggregation import (
 from .compiler_parts.sql_lowering import (
     _count_key_expr,
     _last_token,
+    _plan_requires_agent_dag_lowering,
     _preferred_path,
     _slug,
+    child_group_route,
     recording_stock_key_gaps,
 )
 from .compiler_parts.temporal import (
@@ -573,7 +586,7 @@ def _single_valued_columns(
     """
     dimensions = _dimension_index(config)
     pinned = set(query.group_by)
-    for item in query.where:
+    for item in plain_filters(query.where):  # a child group pins no output row's value
         op = str(item.op or "=").strip().lower()
         if (op in {"=", "=="} and not isinstance(item.value, (list, tuple, set))) or (
             op == "in" and isinstance(item.value, (list, tuple)) and len(item.value) == 1
@@ -804,7 +817,7 @@ def _entity_in_terms_of_rewrite_supported(
 # Query roles a de-duplicated leaf serves across a one-to-many hop, and the aggregations it
 # answers: any one-value-per-row aggregation under a filter, and only a distinct count when the
 # child dimension splits the output ("orders that included it").
-_FANOUT_DEDUP_PURPOSES = frozenset({"group_by", "where", "metric_filter"})
+_FANOUT_DEDUP_PURPOSES = frozenset({"group_by", "where", "metric_filter", "child_group"})
 _FANOUT_DEDUP_AGGREGATIONS = frozenset(
     {"sum", "count", "count_distinct", "avg", "min", "max", "median", "percentile"}
 )
@@ -858,6 +871,15 @@ def _fanout_dedup_refusal(
                 row,
             )
     grouped = [row for row in selections if row.purpose == "group_by"]
+    groups = child_groups(query.where)
+    if groups and grouped:
+        return (
+            f"A child group filters '{measure.entity}' rows by their child rows, and grouping "
+            f"the same leaf by a dimension of '{grouped[0].target_entity}' splits them by child "
+            "rows too; the two together are not supported. Group by a dimension of the "
+            "measure's own grain.",
+            grouped[0],
+        )
     keys = {entity.id: list(entity.key or [entity.primary_key]) for entity in config.entities}
     for row in selections:
         # Preserve existing descent shapes, including ClickHouse's DISTINCT-parent
@@ -927,6 +949,10 @@ def _fanout_dedup_refusal(
             (grouped or selections)[0],
         )
     conditions = _hop_conditions(bound, selections, config, query)
+    if all(hop.purpose == "where" for _, _, hop in conditions):
+        ambiguous = _ambiguous_child_scope(measure, selections, config, query)
+        if ambiguous is not None:
+            raise ambiguous
     if len(conditions) > 1:
         return _two_hop_conditions(conditions)
     for dim, item, hop in conditions:
@@ -937,7 +963,261 @@ def _fanout_dedup_refusal(
                 "values to keep instead.",
                 hop,
             )
+    if groups and config.package.warehouse == "clickhouse":
+        return _clickhouse_child_group_refusal(measure, selections, conditions, config, query)
     return None
+
+
+def _clickhouse_child_group_refusal(
+    measure: MeasureConfig,
+    selections: list[PathSelection],
+    conditions: list[tuple[Any, dict[str, Any], PathSelection]],
+    config: PackageConfig,
+    query: NormalizedQuery,
+) -> tuple[str, PathSelection] | None:
+    """ClickHouse answers one ``any`` group on the child's own columns, beside no other child
+    condition, with its de-duplicated parent leaf. A ``none`` group would need an anti-join
+    whose NULL handling is unproven there."""
+    groups = child_groups(query.where)
+    route = next(row for row in selections if row.purpose == "child_group")
+    reason = ""
+    if any(group.match == "none" for group in groups):
+        reason = "a 'none' child group needs a NULL-safe anti-join, which is unproven there"
+    elif len(groups) > 1 or conditions:
+        reason = "it answers one child group, as the only condition across a one-to-many hop"
+    elif any(child_group_route(config, query, measure, groups[0])[1]):
+        reason = "a child group's conditions must be on the child's own columns there"
+    if not reason:
+        return None
+    return (f"ClickHouse cannot answer this child group: {reason}.", route)
+
+
+# The complement of each comparison: what a 'none' group reads for a negated flat filter.
+_COMPLEMENT_OPS = {
+    "=": "!=",
+    "==": "!=",
+    "!=": "=",
+    "<>": "=",
+    "<": ">=",
+    ">=": "<",
+    ">": "<=",
+    "<=": ">",
+    "IN": "NOT IN",
+    "NOT IN": "IN",
+    "LIKE": "NOT LIKE",
+    "NOT LIKE": "LIKE",
+    "IS": "IS NOT",
+    "IS NOT": "IS",
+    "IS DISTINCT FROM": "IS NOT DISTINCT FROM",
+    "IS NOT DISTINCT FROM": "IS DISTINCT FROM",
+    "<=>": "IS DISTINCT FROM",
+    "IS NULL": "IS NOT NULL",
+    "IS NOT NULL": "IS NULL",
+}
+
+
+def _child_scope(start_entity: str, selection: PathSelection) -> tuple[str, tuple[str, ...]]:
+    """The child a flat filter's path reaches across its last one-to-many hop, and the route
+    there; lookups after that hop read one row of that child."""
+    entity, child, route = start_entity, start_entity, 0
+    for index, row in enumerate(selection.analysis.get("relationships", []) or []):
+        forward = row.get("traversal") == "forward"
+        entity = str(row.get("target_entity" if forward else "source_entity", ""))
+        if row.get("directional_safety") == "requires_rewrite":
+            child, route = entity, index + 1
+    return child, tuple(selection.chosen_path[:route])
+
+
+def _ambiguous_child_scope(
+    measure: MeasureConfig,
+    selections: list[PathSelection],
+    config: PackageConfig,
+    query: NormalizedQuery,
+) -> SemanticLayerError | None:
+    """AMBIGUOUS_CHILD_SCOPE when the query's flat filters leave a child row's scope unsaid.
+
+    Two flat filters reaching one child entity by one route ("an item that is a beverage and
+    costs over 5") may mean the same child row or separate ones, and a flat filter beside a
+    child group on that child may or may not belong in it. A negated flat filter on a child
+    may mean "has a row that is not X" or "has no row that is X". The clarification offers
+    each reading as the query's whole rewritten ``where``. One positive flat filter reads as
+    an ``any`` group, as it always has.
+    """
+    dimensions = _dimension_index(config)
+    crossing = {(row.target_entity, row.purpose): row for row in selections}
+    flat: list[tuple[int, Filter, Any, tuple[str, tuple[str, ...]]]] = []
+    scoped_groups: dict[int, tuple[str, tuple[str, ...]]] = {}
+    for index, item in enumerate(query.where):
+        if isinstance(item, ChildGroup):
+            route = crossing[(item.child, "child_group")]
+            scoped_groups[index] = (item.child, tuple(route.chosen_path))
+            continue
+        dim = dimensions[item.field]
+        hop = crossing.get((dim.entity, "where"))
+        if hop is not None:
+            flat.append((index, item, dim, _child_scope(measure.entity, hop)))
+    for index, item, dim, scope in flat:
+        same = [row for row in flat if row[3] == scope]
+        beside = [position for position, key in scoped_groups.items() if key == scope]
+        if len(same) > 1 or beside:
+            return _child_scope_clarification(scope[0], same, beside, config, query)
+        if _negated_filter(asdict(item), dim):
+            return _negation_clarification(scope[0], index, item, dim, config, query)
+    return None
+
+
+def _rewritten_where(
+    query: NormalizedQuery, replace_at: dict[int, dict[str, Any]], drop: set[int]
+) -> list[dict[str, Any]]:
+    return [
+        replace_at.get(index, asdict(item))
+        for index, item in enumerate(query.where)
+        if index not in drop
+    ]
+
+
+def _group_payload(child: str, match: str, conditions: list[Filter]) -> dict[str, Any]:
+    return {"child": child, "match": match, "where": [asdict(item) for item in conditions]}
+
+
+def _condition_text(item: Filter, dim: Any) -> str:
+    op = _compact_token(str(item.op or "=")).upper()
+    if op in {"IS NULL", "IS NOT NULL"}:
+        return f"{dim.label} {op}"
+    return f"{dim.label} {op} {json.dumps(item.value, default=str)}"
+
+
+def _scope_error(
+    message: str, child: str, paths: list[int], question: str, options: list[dict[str, Any]]
+) -> SemanticLayerError:
+    return SemanticLayerError(
+        "AMBIGUOUS_CHILD_SCOPE",
+        message,
+        details={
+            "child_entity": child,
+            "paths": [f"where[{index}]" for index in sorted(paths)],
+            "why_invalid": question,
+            "clarification": {
+                "kind": "child_scope",
+                "apply": ["query"],
+                "question": question,
+                "options": options,
+            },
+            "recovery_hints": [
+                {
+                    "kind": "choose_child_scope",
+                    "message": f"{option['meaning']} Resend the query with this option's where.",
+                    "option": option["id"],
+                    "suggested_query_ir_change": {"where": option["where"]},
+                }
+                for option in options
+            ],
+        },
+    )
+
+
+def _child_scope_clarification(
+    child: str,
+    flat: list[tuple[int, Filter, Any, Any]],
+    beside: list[int],
+    config: PackageConfig,
+    query: NormalizedQuery,
+) -> SemanticLayerError:
+    """Same child row or separate ones, for the flat filters on one child scope."""
+    label = _entity_index(config)[child].label or child
+    positions = [index for index, *_ in flat]
+    conditions = [item for _, item, *_ in flat]
+    texts = [_condition_text(item, dim) for _, item, dim, _ in flat]
+    separate = _rewritten_where(
+        query, {index: _group_payload(child, "any", [item]) for index, item, *_ in flat}, set()
+    )
+    anys = [
+        (index, group)
+        for index in beside
+        if isinstance(group := query.where[index], ChildGroup) and group.match == "any"
+    ]
+    if len(anys) == 1:
+        index, group = anys[0]
+        same = _rewritten_where(
+            query, {index: _group_payload(child, "any", [*group.where, *conditions])}, set(positions)
+        )
+    else:
+        same = _rewritten_where(
+            query, {positions[0]: _group_payload(child, "any", conditions)}, set(positions[1:])
+        )
+    options = []
+    if same != separate:
+        options.append(
+            {
+                "id": "same_row",
+                "meaning": f"One {label} meets {' and '.join(texts)}"
+                + (", and the conditions of its child group." if anys else "."),
+                "where": same,
+            }
+        )
+    options.append(
+        {
+            "id": "separate_rows",
+            "meaning": (
+                f"Each of {', '.join(texts)} may hold on a different {label}."
+                if len(texts) > 1
+                else f"Some {label} meets {texts[0]}, not necessarily the child group's {label}."
+            ),
+            "where": separate,
+        }
+    )
+    question = (
+        f"Does {' and '.join(texts)} apply to the {label} of the child group beside it?"
+        if beside
+        else f"Do {' and '.join(texts)} apply to the same {label} or to separate ones?"
+    )
+    return _scope_error(
+        f"Filters on '{child}' cross a one-to-many hop without saying whether one {label} must "
+        "meet them together.",
+        child,
+        [*positions, *beside],
+        question,
+        options,
+    )
+
+
+def _negation_clarification(
+    child: str, index: int, item: Filter, dim: Any, config: PackageConfig, query: NormalizedQuery
+) -> SemanticLayerError:
+    """'Has a child row that is not X' or 'has no child row that is X', for a negated filter."""
+    label = _entity_index(config)[child].label or child
+    op = _compact_token(str(item.op or "=")).upper()
+    text = _condition_text(item, dim)
+    options = [
+        {
+            "id": "any_not",
+            "meaning": f"Has a {label} where {text}.",
+            "where": _rewritten_where(query, {index: _group_payload(child, "any", [item])}, set()),
+        }
+    ]
+    complement = _COMPLEMENT_OPS.get(op)
+    if complement is not None:
+        positive = Filter(field=item.field, op=complement, value=item.value)
+        options.append(
+            {
+                "id": "none",
+                "meaning": f"Has no {label} where {_condition_text(positive, dim)}.",
+                "where": _rewritten_where(
+                    query, {index: _group_payload(child, "none", [positive])}, set()
+                ),
+            }
+        )
+    question = (
+        f"Does '{text}' mean some {label} fails the condition, or no {label} meets its opposite?"
+    )
+    return _scope_error(
+        f"A negated or null test on '{dim.id}' across a one-to-many hop may mean a {label} "
+        f"that fails it or no {label} that meets its opposite.",
+        child,
+        [index],
+        question,
+        options,
+    )
 
 
 def _hop_conditions(
@@ -954,7 +1234,8 @@ def _hop_conditions(
     candidates: list[tuple[str, dict[str, Any], str]] = [
         (dim_id, {}, "group_by") for dim_id in query.group_by
     ]
-    candidates += [(row.field, asdict(row), "where") for row in query.where]
+    # A child group says its own scope; only flat filters can collide (_ambiguous_child_scope).
+    candidates += [(row.field, asdict(row), "where") for row in plain_filters(query.where)]
     candidates += [
         (str(clause.get("field", "")), clause, "metric_filter")
         for clause in _bound_filter_clauses(bound, config)
@@ -982,7 +1263,11 @@ def _two_hop_conditions(
 
 
 def _hop_steps(
-    crossing: str, bound: BoundMeasure, path_selections: list[PathSelection], config: PackageConfig
+    crossing: str,
+    bound: BoundMeasure,
+    path_selections: list[PathSelection],
+    config: PackageConfig,
+    query: NormalizedQuery,
 ) -> list[RewriteStep]:
     """Disclose how a leaf crosses its one-to-many hops, so REWRITE_APPLIED reports it."""
     entity = _measure_index(config)[bound.measure_id].entity
@@ -1008,6 +1293,7 @@ def _hop_steps(
         ]
     if crossing != "fanout_dedup":
         return []
+    none = any(group.match == "none" for group in child_groups(query.where))
     return [
         RewriteStep(
             kind="fanout_dedup",
@@ -1016,7 +1302,8 @@ def _hop_steps(
             reason=(
                 f"Each '{entity}' counts once per group across the one-to-many hop to "
                 f"{', '.join(repr(target) for target in sorted(crossed))}; a filter there means "
-                "it has at least one matching row."
+                "it has at least one matching row"
+                + ("; a 'none' child group means it has none." if none else ".")
             ),
             details={"paths": crossed},
         )
@@ -2015,7 +2302,7 @@ def _predicate_scope(
                         "path": selection.chosen_path,
                     },
                 )
-        for item in list(query.where or []):
+        for item in refuse_child_groups(query.where, "in a metric predicate's scope"):
             dim = _dimension_index(config)[item.field]
             selection = _path_selection(
                 config=config,
@@ -2341,7 +2628,7 @@ def _leaf_path_selections(
             )
             if selection is not None:
                 selections.append(selection)
-    for item in query.where:
+    for item in plain_filters(query.where):  # child groups route below
         dim = dimensions[item.field]
         required_entities.add(dim.entity)
         if _direct_dimension_source_expr(measure.entity, item.field, config) is not None:
@@ -2371,6 +2658,12 @@ def _leaf_path_selections(
         )
         if selection is not None:
             selections.append(selection)
+    groups = child_groups(query.where)
+    for group in groups:
+        route, lookups = child_group_route(config, query, measure, group)
+        required_entities.add(group.child)
+        required_entities.update(row.target_entity for row in lookups if row is not None)
+        selections.append(route)
     for predicate in _bound_metric_predicates(bound):
         required_entities.add(predicate.entity)
         if _can_project_entity_key_from_source(measure.entity, predicate.entity, config):
@@ -2413,7 +2706,8 @@ def _leaf_path_selections(
 
     unsupported = [row for row in selections if row.analysis.get("status") != "ok"]
     if unsupported:
-        if all(
+        # A child group is a filter: only the semi-join leaf applies it.
+        if not groups and all(
             _entity_in_terms_of_rewrite_supported(
                 measure=measure, bound=bound, selection=row, config=config, query=query
             )
@@ -2493,6 +2787,45 @@ def _mixed_grain_error(
     )
 
 
+def _checked_where_dimension(
+    item: Filter, dimensions: dict[str, Any], measures: dict[str, Any]
+) -> Any:
+    """The dimension a where filter compares, once its value suits it."""
+    if item.field not in dimensions:
+        if item.field in measures:
+            raise SemanticLayerError(
+                "OBJECT_NOT_FOUND",
+                f"where filter field '{item.field}' is a measure, not a dimension",
+                details={
+                    "dimension": item.field,
+                    "measure": item.field,
+                    "path": "where[].field",
+                    "why_invalid": (
+                        "where filters compare row-level dimensions to literal values. "
+                        "Measures require metric_filters, a governed segment, or an "
+                        "authored dimension value that represents the cohort."
+                    ),
+                    "recovery_hints": [
+                        {
+                            "kind": "use_metric_filter_or_segment",
+                            "message": (
+                                "Move aggregate/cohort predicates to metric_filters, "
+                                "or filter by a reachable dimension/segment that encodes "
+                                "the governed cohort."
+                            ),
+                        }
+                    ],
+                },
+            )
+        raise SemanticLayerError(
+            "OBJECT_NOT_FOUND",
+            f"Unknown dimension '{item.field}'",
+            details={"dimension": item.field},
+        )
+    _validate_where_value_type(dimensions[item.field], item)
+    return dimensions[item.field]
+
+
 def _root_path_summary(
     root_entity: str,
     bound_measures: list[BoundMeasure],
@@ -2518,39 +2851,18 @@ def _root_path_summary(
             )
         targets[dimensions[dim_id].entity] = "group_by"
     for item in query.where:
-        if item.field not in dimensions:
-            if item.field in measures:
+        if isinstance(item, ChildGroup):
+            if item.child not in _entity_index(config):
                 raise SemanticLayerError(
                     "OBJECT_NOT_FOUND",
-                    f"where filter field '{item.field}' is a measure, not a dimension",
-                    details={
-                        "dimension": item.field,
-                        "measure": item.field,
-                        "path": "where[].field",
-                        "why_invalid": (
-                            "where filters compare row-level dimensions to literal values. "
-                            "Measures require metric_filters, a governed segment, or an "
-                            "authored dimension value that represents the cohort."
-                        ),
-                        "recovery_hints": [
-                            {
-                                "kind": "use_metric_filter_or_segment",
-                                "message": (
-                                    "Move aggregate/cohort predicates to metric_filters, "
-                                    "or filter by a reachable dimension/segment that encodes "
-                                    "the governed cohort."
-                                ),
-                            }
-                        ],
-                    },
+                    f"Unknown entity '{item.child}'",
+                    details={"entity": item.child, "path": "where[].child"},
                 )
-            raise SemanticLayerError(
-                "OBJECT_NOT_FOUND",
-                f"Unknown dimension '{item.field}'",
-                details={"dimension": item.field},
-            )
-        _validate_where_value_type(dimensions[item.field], item)
-        targets[dimensions[item.field].entity] = "where"
+            for condition in item.where:
+                _checked_where_dimension(condition, dimensions, measures)
+            targets[item.child] = "child_group"
+            continue
+        targets[_checked_where_dimension(item, dimensions, measures).entity] = "where"
     for target_entity, purpose in sorted(targets.items()):
         if target_entity == root_entity:
             continue
@@ -2613,7 +2925,7 @@ def _query_target_entities(query: NormalizedQuery, config: PackageConfig) -> dic
     targets: dict[str, str] = {}
     for dim_id in query.group_by:
         targets.setdefault(dimensions[dim_id].entity, "group_by")
-    for item in query.where:
+    for item in refuse_child_groups(query.where, "in a query without a measure"):
         targets.setdefault(dimensions[item.field].entity, "where")
     if query.time is not None:
         role = temporal_roles.get(query.time.temporal_role)
@@ -2638,7 +2950,7 @@ def _preferred_root_order(query: NormalizedQuery, config: PackageConfig) -> list
                 "INVALID_TEMPORAL_ROLE", f"Unknown temporal role '{query.time.temporal_role}'"
             )
         preferred.append(dimensions[role.dimension].entity)
-    for item in query.where:
+    for item in refuse_child_groups(query.where, "in a query without a measure"):
         preferred.append(dimensions[item.field].entity)
     return list(dict.fromkeys(preferred))
 
@@ -3466,7 +3778,7 @@ def _conversion_leaf_cte(
         if plan.time.get("end") is not None:
             base_group_where.append(SqlBinary(raw_expr, "<", SqlLiteral(plan.time["end"])))
 
-    for item in list(query.where or []):
+    for item in refuse_child_groups(query.where, "in a conversion metric"):
         where_target = (
             converted_group_where
             if str(item.field) in converted_side_group_dim_set
@@ -4048,7 +4360,7 @@ def _plan_query(
             if crossing == "fanout_dedup":
                 rewrite_strategy = "fanout_dedup"
             # Every leaf that crosses a one-to-many hop says how.
-            rewrite_steps.extend(_hop_steps(crossing, bound, path_selections, config))
+            rewrite_steps.extend(_hop_steps(crossing, bound, path_selections, config, query))
             aggregate_relation_id, aggregate_relation_rejections = _select_aggregate_relation(
                 bound=bound,
                 query=query,
@@ -4142,9 +4454,51 @@ def _plan_query(
         semantic_dag=_semantic_dag_for_query(query, config),
         synthetic_measures=dict(synthetic_measures),
     )
+    _require_child_group_leaves(plan, query, conversion_exprs)
     from .compiler_parts.sql_lowering import coverage_base_plan
 
     return coverage_base_plan(plan, config, leaf_strategies)
+
+
+def _require_child_group_leaves(
+    plan: LogicalPlan, query: NormalizedQuery, conversion_exprs: list[ConversionExpr]
+) -> None:
+    """Refuse a plan whose child groups some lowering would not apply.
+
+    Only the semi-join leaf (``_fanout_filter_leaf_select``, or ClickHouse's de-duplicated
+    parent leaf) lowers a group, so every measure leaf must cross to each group's child with
+    the fanout_dedup rewrite and read no rollup; a conversion or distribution branch lowers
+    its own filters and must not see one.
+    """
+    groups = child_groups(query.where)
+    if not groups:
+        return
+    if conversion_exprs:
+        refuse_child_groups(query.where, "in a conversion metric")
+    if _plan_requires_agent_dag_lowering(plan):
+        refuse_child_groups(query.where, "beside a distribution")
+    children = {group.child for group in groups}
+    for measure_plan in plan.measure_plans:
+        routed = {
+            row.target_entity for row in measure_plan.path_selections if row.purpose == "child_group"
+        }
+        if (
+            measure_plan.rewrite_strategy != "fanout_dedup"
+            or measure_plan.aggregate_relation_id
+            or routed != children
+        ):
+            raise SemanticLayerError(
+                "INVALID_QUERY",
+                f"The child groups in 'where' cannot filter '{measure_plan.bound_measure.measure_id}'.",
+                details={
+                    "path": "where",
+                    "measure": measure_plan.bound_measure.measure_id,
+                    "why_invalid": (
+                        "A child group filters a measure's rows with a semi-join on its child; "
+                        "this measure's leaf is planned another way."
+                    ),
+                },
+            )
 
 
 def _calendar_fill_binding(
@@ -4198,8 +4552,10 @@ def _record_bound_plan(
     dimensions = _dimension_index(config)
     for dimension in plan.group_by:
         dimensions.get(dimension)
-    for clause in plan.query.get("where", []):
+    for clause in every_filter(plan.query.get("where")):
         dimensions.get(str(clause.get("field", "")))
+    for group in child_groups(plan.query.get("where")):
+        _entity_index(config).get(str(group.get("child", "")))
     _temporal_role_index(config).get(str(plan.time.get("temporal_role", "")))
     for bound in plan.bound_measures:
         with capture_objects(leaves[bound.alias]):

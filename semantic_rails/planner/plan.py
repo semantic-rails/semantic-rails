@@ -24,7 +24,7 @@ import re
 from dataclasses import replace
 from typing import Any
 
-from ..ast import rewrite_select_shorthand
+from ..ast import every_filter, is_child_group, rewrite_select_shorthand
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ._base import _time_window, _with_fiscal_calendar
@@ -982,6 +982,15 @@ def _where_filters(query: dict[str, Any]) -> list[dict[str, Any]]:
     for row in list((query or {}).get("where") or []):
         if not isinstance(row, dict):
             continue
+        if is_child_group(row):
+            out.append(
+                {
+                    "child": str(row.get("child", "")),
+                    "match": str(row.get("match", "")),
+                    "where": _where_filters({"where": list(row.get("where") or [])}),
+                }
+            )
+            continue
         field = row.get("field") or row.get("dimension")
         if not field:
             continue
@@ -1692,7 +1701,7 @@ def _valid_values_next_steps(query: dict[str, Any]) -> list[dict[str, Any]]:
     """
 
     out: list[dict[str, Any]] = []
-    for filter_spec in list(query.get("where") or []):
+    for filter_spec in every_filter(query.get("where")):  # a child group's conditions too
         if not isinstance(filter_spec, dict):
             continue
         dim = filter_spec.get("dimension") or filter_spec.get("field")

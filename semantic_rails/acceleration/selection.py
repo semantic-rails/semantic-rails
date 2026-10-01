@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from ..ast import NormalizedQuery
+from ..ast import NormalizedQuery, child_groups, refuse_child_groups
 from ..compiler_parts.bind import (
     _bound_filter_clauses,
     _bound_metric_predicates,
@@ -328,12 +328,14 @@ def _select_aggregate_relation(
         return "", {}
     leaf_time_role = _leaf_time_role(bound, query, config)
     blocker = _leaf_rollup_blocker(bound, query, config, leaf_time_role)
+    if not blocker and child_groups(query.where):
+        blocker = "child_group"  # a rollup holds no child rows for the group's EXISTS to read
     if not blocker and any(item.analysis.get("status") != "ok" for item in path_selections):
         blocker = "one_to_many_hop"  # the leaf rewrites the hop; a rollup would re-multiply it
     if blocker:
         return "", {row.id: blocker for row in rows}
     filters = [
-        *((item.field, item.op, item.value) for item in query.where),
+        *((item.field, item.op, item.value) for item in refuse_child_groups(query.where, "on a rollup")),
         *(
             (item["field"], item["op"], item["value"])
             for item in _bound_filter_clauses(bound, config)

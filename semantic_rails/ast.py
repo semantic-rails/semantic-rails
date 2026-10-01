@@ -10,6 +10,7 @@ regardless of which surface (HTTP, MCP, CLI) the request came in on.
 from __future__ import annotations
 
 from calendar import monthrange
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -57,6 +58,81 @@ class Filter:
     value: Any
 
 
+CHILD_GROUP_MATCHES = ("any", "none")
+
+
+@dataclass(frozen=True)
+class ChildGroup:
+    """Conditions that one row of a child entity meets together.
+
+    ``any`` keeps a row of the measure's entity when at least one of its child rows meets every
+    condition; ``none`` keeps it when none does. It is a ``where`` item of its own, so a reader
+    of ``where`` applies it or refuses it; it is never read as a plain filter.
+    """
+
+    child: str
+    match: str
+    where: list[Filter]
+
+
+WhereItem = Filter | ChildGroup
+
+
+def is_child_group(item: Any) -> bool:
+    """A child group, normalized or in its payload form."""
+    return isinstance(item, ChildGroup) or (isinstance(item, dict) and "child" in item)
+
+
+def child_groups(items: Iterable[Any] | None) -> list[Any]:
+    """The child groups of a ``where`` list, in either form."""
+    return [item for item in items or [] if is_child_group(item)]
+
+
+def plain_filters(items: Iterable[Any] | None) -> list[Any]:
+    """The filters on the query's own rows: every ``where`` item but the child groups.
+
+    Only for a reader that applies the groups itself or for which a group is no filter on
+    the output rows (a required filter, a pinned value).
+    """
+    return [item for item in items or [] if not is_child_group(item)]
+
+
+def every_filter(items: Iterable[Any] | None) -> list[Any]:
+    """Every filter of a ``where`` list, a child group's conditions included: the dimensions a
+    query reads, for access checks and bindings."""
+    out: list[Any] = []
+    for item in items or []:
+        if isinstance(item, ChildGroup):
+            out.extend(item.where)
+        elif is_child_group(item):
+            out.extend(list(item.get("where") or []))
+        else:
+            out.append(item)
+    return out
+
+
+def refuse_child_groups(items: Iterable[Any] | None, reader: str) -> list[Any]:
+    """The ``where`` items, when none is a child group; ``reader`` cannot apply one."""
+    rows = list(items or [])
+    groups = child_groups(rows)
+    if groups:
+        group = groups[0]
+        child = group.child if isinstance(group, ChildGroup) else str(group.get("child", ""))
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"A child group in 'where' is not supported {reader}.",
+            details={
+                "path": f"where[{rows.index(group)}]",
+                "child": child,
+                "why_invalid": (
+                    f"Child groups filter a measure's rows by their child rows; {reader} "
+                    "they cannot be applied, and dropping one would answer a wider question."
+                ),
+            },
+        )
+    return rows
+
+
 @dataclass(frozen=True)
 class MetricFilter:
     expression: SemanticExpr | None
@@ -91,7 +167,7 @@ class NormalizedQuery:
     version: int
     select: list[QuerySelect]
     group_by: list[str] = field(default_factory=list)
-    where: list[Filter] = field(default_factory=list)
+    where: list[WhereItem] = field(default_factory=list)
     metric_filters: list[MetricFilter] = field(default_factory=list)
     time: TimeSpec | None = None
     temporal_role_overrides: dict[str, str] = field(default_factory=dict)
@@ -142,7 +218,7 @@ class PartialQueryState:
     version: int
     select: list[QuerySelect] = field(default_factory=list)
     group_by: list[str] = field(default_factory=list)
-    where: list[Filter] = field(default_factory=list)
+    where: list[WhereItem] = field(default_factory=list)
     metric_filters: list[MetricFilter] = field(default_factory=list)
     time: TimeSpec | None = None
     temporal_role_overrides: dict[str, str] = field(default_factory=dict)
@@ -469,13 +545,13 @@ def _time_spec_from_payload(
     )
 
 
-def _filter_from_payload(item: Any, index: int) -> Filter:
+def _filter_from_payload(item: Any, path: str) -> Filter:
     if not isinstance(item, dict):
         raise SemanticLayerError(
             "INVALID_EXPRESSION_AST",
-            f"where[{index}] must be an object",
+            f"{path} must be an object",
             details={
-                "path": f"where[{index}]",
+                "path": f"{path}",
                 "why_invalid": "where filters require field/op/value keys",
             },
         )
@@ -483,9 +559,9 @@ def _filter_from_payload(item: Any, index: int) -> Filter:
     if not field:
         raise SemanticLayerError(
             "INVALID_EXPRESSION_AST",
-            f"where[{index}].field is required",
+            f"{path}.field is required",
             details={
-                "path": f"where[{index}].field",
+                "path": f"{path}.field",
                 "why_invalid": (
                     "where filters target a dimension by id; the key is ``field`` "
                     "(same vocabulary as ``order_by[].field``). Expression filters "
@@ -507,9 +583,9 @@ def _filter_from_payload(item: Any, index: int) -> Filter:
     if isinstance(value, dict):
         raise SemanticLayerError(
             "INVALID_QUERY",
-            f"where[{index}].value must be a scalar (or list for IN), not an object.",
+            f"{path}.value must be a scalar (or list for IN), not an object.",
             details={
-                "path": f"where[{index}].value",
+                "path": f"{path}.value",
                 "received_kind": str(value.get("kind", "")),
                 "why_invalid": (
                     "where filters compare a dimension to a literal. "
@@ -528,9 +604,9 @@ def _filter_from_payload(item: Any, index: int) -> Filter:
         if value is None:
             raise SemanticLayerError(
                 "INVALID_QUERY",
-                f"where[{index}].value is required for op '{op}'",
+                f"{path}.value is required for op '{op}'",
                 details={
-                    "path": f"where[{index}].value",
+                    "path": f"{path}.value",
                     "op": op,
                     "why_invalid": f"'{op}' compares a dimension against a list of scalars.",
                     "recovery_hints": [
@@ -554,13 +630,77 @@ def _filter_from_payload(item: Any, index: int) -> Filter:
             if isinstance(v, dict):
                 raise SemanticLayerError(
                     "INVALID_QUERY",
-                    f"where[{index}].value[{vi}] must be a scalar, not an object.",
+                    f"{path}.value[{vi}] must be a scalar, not an object.",
                     details={
-                        "path": f"where[{index}].value[{vi}]",
+                        "path": f"{path}.value[{vi}]",
                         "why_invalid": "IN-list elements must be literal scalars.",
                     },
                 )
     return Filter(field=field, op=str(item.get("op", "=")), value=value)
+
+
+_CHILD_GROUP_KEYS = ("child", "match", "where")
+
+
+def _where_item_from_payload(item: Any, index: int) -> WhereItem:
+    if is_child_group(item):
+        return _child_group_from_payload(item, f"where[{index}]")
+    return _filter_from_payload(item, f"where[{index}]")
+
+
+def _child_group_from_payload(item: dict[str, Any], path: str) -> ChildGroup:
+    """``{child, match, where}``: one child row meets every condition (``any``) or none does."""
+
+    def invalid(message: str, at: str, why: str, **details: Any) -> SemanticLayerError:
+        return SemanticLayerError(
+            "INVALID_QUERY",
+            message,
+            details={"path": at, "why_invalid": why, **details},
+        )
+
+    unknown = sorted(set(item) - set(_CHILD_GROUP_KEYS))
+    if unknown:
+        raise invalid(
+            f"{path} has keys a child group does not take: {unknown}",
+            path,
+            "A child group is {child, match, where}; a plain filter is {field, op, value}.",
+            unsupported_keys=unknown,
+            supported_keys=list(_CHILD_GROUP_KEYS),
+        )
+    child = item.get("child")
+    if not isinstance(child, str) or not child.strip():
+        raise invalid(
+            f"{path}.child must be an entity id",
+            f"{path}.child",
+            "A child group names the entity whose rows its conditions apply to.",
+        )
+    match = item.get("match")
+    if match not in CHILD_GROUP_MATCHES:
+        raise invalid(
+            f"{path}.match must be one of {list(CHILD_GROUP_MATCHES)}",
+            f"{path}.match",
+            "'any' keeps a row with at least one child row meeting every condition; "
+            "'none' keeps a row with no such child row.",
+            supported_values=list(CHILD_GROUP_MATCHES),
+        )
+    conditions = item.get("where")
+    if not isinstance(conditions, list) or not conditions:
+        raise invalid(
+            f"{path}.where must be a non-empty list of filters",
+            f"{path}.where",
+            "A child group's conditions are filters {field, op, value} on the child.",
+        )
+    filters: list[Filter] = []
+    for position, condition in enumerate(conditions):
+        at = f"{path}.where[{position}]"
+        if is_child_group(condition):
+            raise invalid(
+                f"{at} is a child group inside a child group",
+                at,
+                "Child groups do not nest; each one is a where item of its own.",
+            )
+        filters.append(_filter_from_payload(condition, at))
+    return ChildGroup(child=child.strip(), match=match, where=filters)
 
 
 def _require_metric_filter_object(item: Any, index: int) -> dict[str, Any]:
@@ -1017,7 +1157,7 @@ def normalize_query(payload: dict[str, Any]) -> NormalizedQuery:
                 alias = f"expr_{idx + 1}"
         select.append(QuerySelect(expression=expression, as_=alias))
     where = [
-        _filter_from_payload(item, idx)
+        _where_item_from_payload(item, idx)
         for idx, item in enumerate(list(payload.get("where", []) or []))
     ]
     metric_filters: list[MetricFilter] = []
@@ -1170,7 +1310,7 @@ def normalize_partial_query(payload: dict[str, Any]) -> PartialQueryState:
         alias = str(row.get("as", "")).strip() or f"expr_{idx + 1}"
         select.append(QuerySelect(expression=expression, as_=alias))
     where = [
-        _filter_from_payload(item, idx)
+        _where_item_from_payload(item, idx)
         for idx, item in enumerate(list(payload.get("where", []) or []))
     ]
     metric_filters = []

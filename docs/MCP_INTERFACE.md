@@ -716,6 +716,7 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 | Code | One-line description |
 |------|----------------------|
 | `AMBIGUOUS_ALIAS` | Alias resolves to multiple semantic objects; pick one from `details.candidates`. |
+| `AMBIGUOUS_CHILD_SCOPE` | Filters on a child entity across a one-to-many hop don't say which child rows they mean: two or more on one child (the same row or separate ones), one beside a child group on that child, or a negated one ("has a row that is not X" or "has no row that is X"). `details.clarification.options` holds each reading as the query's whole rewritten `where`; resend one. |
 | `AMBIGUOUS_PATH` | Path between root entity and target is ambiguous; `details.candidates` lists the tied routes and `details.hint` says how to pin one. |
 | `DUPLICATE_OUTPUT_ALIAS` | Two projected columns share an alias; rename one. |
 | `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. |

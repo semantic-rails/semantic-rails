@@ -587,6 +587,8 @@ def recovery_hints_for_error(
             },
         ]
         return hints
+    if code == "AMBIGUOUS_CHILD_SCOPE":
+        return list(details.get("recovery_hints", []) or [])
     if code == "AMBIGUOUS_PATH":
         return [
             {
