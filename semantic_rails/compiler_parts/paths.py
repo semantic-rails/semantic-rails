@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Iterator
+from decimal import Decimal
 from typing import Any
 
 from ..ast import NormalizedQuery
-from ..dialects import dialect_for_warehouse
+from ..dialects import DuckDbDialect, PostgresDialect, dialect_for_warehouse
 from ..errors import SemanticLayerError
 from ..expressions import (
     AggregateExpr,
@@ -240,55 +242,89 @@ def _holds_literal(expr: SemanticExpr, config: PackageConfig) -> bool:
     return any(isinstance(node, LiteralExpr) for node in _input_arithmetic(expr, config))
 
 
-def _no_row_reading_known(expr: ArithmeticExpr, config: PackageConfig) -> bool:
-    """Whether arithmetic over an entity with no rows reads what its operands read there.
+def _no_row_reading_known(expr: ArithmeticExpr) -> bool:
+    """Whether arithmetic over an entity with no rows reads exactly what its operands give there.
 
-    It does for a sum or difference, a product with a constant factor and a quotient by a
-    constant, and for a quotient without a literal, whose divisor reads 0 or NULL there, so it
-    reads NULL. Any other product or quotient is not modelled: it reads None, and an input
-    with a literal refuses it.
+    It does for a sum, a difference and a product with a constant factor. A quotient without a
+    literal reads NULL there, as its divisor reads 0 or NULL, and any other product is not
+    modelled. Both read None, and an input with a literal refuses both.
     """
     if expr.op in {"add", "subtract"}:
         return True
-    if expr.op == "multiply":
-        return _is_constant(expr.left) or _is_constant(expr.right)
-    return expr.op == "divide" and (_is_constant(expr.right) or not _holds_literal(expr, config))
+    return expr.op == "multiply" and (_is_constant(expr.left) or _is_constant(expr.right))
+
+
+# Plain decimal text, which these warehouses read as an exact DECIMAL or NUMERIC and add,
+# subtract and multiply exactly or fail. BigQuery and ClickHouse read ``0.1`` as a float.
+_PLAIN_DECIMAL = re.compile(r"-?\d+(\.\d+)?")
+_EXACT_DECIMAL_DIALECTS = (DuckDbDialect, PostgresDialect)
+_COUNTING_AGGREGATIONS = {"count", "count_distinct"}
+
+
+def _sql_number(value: Any) -> Decimal | None:
+    """A number's exact value, read from the text the SQL renders for it.
+
+    None unless that text is a plain decimal: DuckDB reads ``1e-05`` as a float.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    text = str(value)
+    return Decimal(text) if _PLAIN_DECIMAL.fullmatch(text) else None
+
+
+def _is_integral(number: Decimal) -> bool:
+    return number == number.to_integral_value()
+
+
+def _unsupported_literal() -> SemanticLayerError:
+    """The refusal of a predicate input's literal operand, unchanged from before they ran."""
+    return SemanticLayerError(
+        "PREDICATE_NOT_SUPPORTED",
+        "Expression kind 'literal' is not supported for predicate planning",
+    )
+
+
+def _counts_rows(expr: MeasureRefExpr | AggregateExpr, config: PackageConfig) -> bool:
+    measure = _measure_index(config).get(expr.measure)
+    aggregation = expr.aggregation or (measure.default_aggregation if measure else "")
+    return aggregation.lower() in _COUNTING_AGGREGATIONS
 
 
 def _require_known_literal_arithmetic(expr: SemanticExpr, config: PackageConfig) -> None:
-    """Refuse a predicate input with a literal unless its reading for no rows is known.
+    """Refuse a predicate input with a literal unless its exact reading for no rows is known.
 
     That reading decides whether an entity with no rows qualifies (``count - 3 < 0`` keeps it,
-    as ``count < 3`` does). Once the input's arithmetic holds a literal, every node must be a
-    number, a measure, arithmetic that passes :func:`_no_row_reading_known`, or a ratio
-    without a literal, which reads NULL there. An input without a literal keeps the reading
-    it always had.
+    as ``count < 3`` does), and it is computed in exact decimals from each literal's SQL text.
+    Once the input's arithmetic holds a literal, every node must be a plain decimal number, a
+    measure, arithmetic that passes :func:`_no_row_reading_known`, or a ratio without a
+    literal, which reads NULL there. A literal with a fraction also needs a warehouse that reads
+    it exactly and measures that count, whose SQL type is an integer: float arithmetic, as over
+    a sum of a float column, reads ``0 - 0.1 - 0.2`` as ``-0.30000000000000004``. Any other
+    input with a literal, a quotient or a call included, keeps the refusal of a literal operand.
+    An input without a literal keeps the reading it always had.
     """
     nodes = list(_input_arithmetic(expr, config))
-    if not any(isinstance(node, LiteralExpr) for node in nodes):
+    literals = [_sql_number(node.value) for node in nodes if isinstance(node, LiteralExpr)]
+    if not literals:
         return
+    numbers = [number for number in literals if number is not None]
+    fractional = not all(map(_is_integral, numbers))
+    dialect = dialect_for_warehouse(config.package.warehouse)
+    if len(numbers) < len(literals) or (
+        fractional and not isinstance(dialect, _EXACT_DECIMAL_DIALECTS)
+    ):
+        raise _unsupported_literal()
     for node in nodes:
-        if isinstance(node, LiteralExpr):
-            known = isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
-        elif isinstance(node, ArithmeticExpr):
-            known = _no_row_reading_known(node, config)
+        if isinstance(node, ArithmeticExpr):
+            known = _no_row_reading_known(node)
         elif isinstance(node, RatioExpr):
             known = not _holds_literal(node, config)
+        elif isinstance(node, (MeasureRefExpr, AggregateExpr)):
+            known = not fractional or _counts_rows(node, config)
         else:
-            known = isinstance(node, (MeasureRefExpr, AggregateExpr))
+            known = isinstance(node, LiteralExpr)
         if not known:
-            raise SemanticLayerError(
-                "PREDICATE_NOT_SUPPORTED",
-                (
-                    "A metric_predicate input with a literal may only add, subtract, multiply by "
-                    "a constant or divide by a constant, over measures, metrics and ratios "
-                    f"without a literal; its '{expr_kind(node)}' operand is not supported"
-                ),
-                details={
-                    "kind": expr_kind(node),
-                    **({"op": node.op} if isinstance(node, ArithmeticExpr) else {}),
-                },
-            )
+            raise _unsupported_literal()
 
 
 def _operand_root_entities(

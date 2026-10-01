@@ -18,6 +18,7 @@ import time
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from datetime import datetime
+from decimal import MAX_EMAX, MAX_PREC, MIN_EMIN, Context, Decimal, Inexact
 from typing import Any
 
 from .acceleration.routing import aggregate_routing, recording_rollup_scans
@@ -81,12 +82,16 @@ from .compiler_parts.paths import (
     _direct_entity_key_source_expr,
     _entity_key_dimension_ids,
     _expression_root_entity,
+    _is_integral,
     _join_condition,
     _joins_for_paths,
     _leaf_time_role,
     _no_row_reading_known,
+    _require_known_literal_arithmetic,
     _resolve_dimension_expr,
     _split_column_ref,
+    _sql_number,
+    _unsupported_literal,
 )
 from .compiler_parts.post_aggregation import (
     _compile_post_expr,
@@ -1509,7 +1514,22 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def _reading_satisfies_threshold(reading: Any, op: str, value: Any) -> bool:
+def _exact_comparison(reading: Decimal, values: list[Any]) -> tuple[Decimal | int, list[Any]]:
+    """``reading`` and the threshold numbers as the SQL compares them: exactly.
+
+    A whole reading compares as an integer with any number, which floats compare exactly too.
+    A reading with a fraction compares only with plain decimals, each read from its SQL text;
+    DuckDB reads ``1e-05`` as a float and compares in floats, so any other refuses the input.
+    """
+    if _is_integral(reading):
+        return int(reading), values
+    numbers = [_sql_number(value) for value in values]
+    if None in numbers:
+        raise _unsupported_literal()
+    return reading, numbers
+
+
+def _reading_satisfies_threshold(reading: Decimal | None, op: str, value: Any) -> bool:
     """Whether ``reading`` passes the ``op value`` threshold of a metric_predicate; NULL never does."""
     if reading is None:
         return False
@@ -1520,9 +1540,13 @@ def _reading_satisfies_threshold(reading: Any, op: str, value: Any) -> bool:
             return token == "NOT IN"  # NOT IN () is always true, IN () never
         if not all(_is_number(item) for item in values):
             return False
-        return (reading in values) == (token == "IN")
+        exact, numbers = _exact_comparison(reading, values)
+        return (exact in numbers) == (token == "IN")
     compare = _ZERO_COMPARISONS.get(token)
-    return compare is not None and _is_number(value) and bool(compare(reading, value))
+    if compare is None or not _is_number(value):
+        return False
+    exact, (number,) = _exact_comparison(reading, [value])
+    return bool(compare(exact, number))
 
 
 def _require_predicate_over_rows(
@@ -1541,11 +1565,12 @@ def _require_predicate_over_rows(
         )
 
 
-_ARITHMETIC_OPS: dict[str, Any] = {
-    "add": operator.add,
-    "subtract": operator.sub,
-    "multiply": operator.mul,
-    "divide": operator.truediv,
+# Exact decimal arithmetic: an add, subtract or multiply never rounds at this precision.
+_EXACT = Context(prec=MAX_PREC, Emax=MAX_EMAX, Emin=MIN_EMIN, traps=[Inexact])
+_EXACT_OPS: dict[str, Any] = {
+    "add": _EXACT.add,
+    "subtract": _EXACT.subtract,
+    "multiply": _EXACT.multiply,
 }
 
 
@@ -1553,14 +1578,15 @@ def _predicate_reading_without_rows(
     expr: SemanticExpr,
     config: PackageConfig,
     classes: Collection[str] = _ZERO_ON_MISSING_PREDICATE_CLASSES,
-) -> Any:
-    """What the predicate input reads for an entity with no rows: a number, or None for NULL.
+) -> Decimal | None:
+    """What the predicate input reads for an entity with no rows, exactly, or None for NULL.
 
     A count or sum reads 0, and so does an add or subtract of them: the source query settles
     each operand the way any query does (see ``empty_groups``), so this is the same rule, never
-    a second one. A literal reads its own value, so ``count - 3`` reads -3, not 0, and a
-    division by a literal 0 reads NULL, as in the SQL. Other arithmetic reads None here, and
-    the root resolver refuses it once the input holds a literal (``_no_row_reading_known``).
+    a second one. A literal reads the decimal its SQL text holds, never a float, so
+    ``count - 3`` reads -3, not 0, and ``count - 0.1 - 0.2`` reads -0.3, as in the SQL. Other
+    arithmetic reads None here, and the root resolver refuses it, and any literal it can't
+    read exactly, once the input holds a literal (``_require_known_literal_arithmetic``).
     Only a bare measure may also be a distinct population.
     """
     if isinstance(expr, MetricRecipeRefExpr):
@@ -1569,17 +1595,16 @@ def _predicate_reading_without_rows(
             return None
         return _predicate_reading_without_rows(recipe.expression, config, classes)
     if isinstance(expr, LiteralExpr):
-        return expr.value if _is_number(expr.value) else None
+        return _sql_number(expr.value)
     if isinstance(expr, ArithmeticExpr):
-        if not _no_row_reading_known(expr, config):
+        if not _no_row_reading_known(expr):
             return None
         left = _predicate_reading_without_rows(expr.left, config, ZERO_MEASURE_CLASSES)
         right = _predicate_reading_without_rows(expr.right, config, ZERO_MEASURE_CLASSES)
-        combine = _ARITHMETIC_OPS.get(expr.op)
-        if left is None or right is None or combine is None:
+        if left is None or right is None:
             return None
-        return None if expr.op == "divide" and right == 0 else combine(left, right)
-    return 0 if expr_resolves_to_zero(expr, config, classes) else None
+        return _EXACT_OPS[expr.op](left, right)
+    return Decimal(0) if expr_resolves_to_zero(expr, config, classes) else None
 
 
 def _predicate_includes_entities_without_rows(
@@ -1593,8 +1618,10 @@ def _predicate_includes_entities_without_rows(
     literals combined with it) does the entity qualify, and, as for every entity the
     source lists, only while the measure has data somewhere in the predicate's scope. An
     average, minimum, maximum or ratio over no rows is NULL, which no threshold satisfies,
-    so those entities stay out.
+    so those entities stay out. The reading is used only once the root resolver's guard
+    accepts the input, whichever path asks first.
     """
+    _require_known_literal_arithmetic(predicate.input, config)
     return _reading_satisfies_threshold(
         _predicate_reading_without_rows(predicate.input, config), predicate.op, predicate.value
     )
