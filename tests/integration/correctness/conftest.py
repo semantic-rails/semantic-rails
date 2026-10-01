@@ -14,6 +14,7 @@ import shutil
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ import yaml
 
 from semantic_rails.config import load_package_config
 from semantic_rails.db import _split_sql_statements
+from semantic_rails.db_parts.adbc import _postgres_value
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ConnectionSpec, SeedSpec
 
@@ -89,8 +91,8 @@ def _runtime(package: Path, **overrides: Any) -> Runtime:
 def _rows(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
     """Run SQL on the runtime's own connection, as positional rows.
 
-    The driver connection, not ``adapter.query``: that maps rows to dicts by column name,
-    and reference SQL leaves most columns unnamed (Postgres names several ``coalesce``).
+    Preserve positional columns: reference SQL can repeat names such as ``coalesce``.
+    Arrow values use the production conversion so NUMERIC stays exact and numeric.
     """
     adapter = runtime._get_adapter()  # noqa: SLF001 - the reference shares the connection
     if hasattr(adapter, "_db"):  # DuckDB
@@ -99,7 +101,17 @@ def _rows(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
         rows = []
         for statement in _split_sql_statements(sql):
             cursor.execute(statement)
-            rows = [tuple(row) for row in cursor.fetchall()]
+            rows = []
+            with cursor.fetch_record_batch() as reader:
+                for batch in reader:
+                    columns = [column.to_pylist() for column in batch.columns]
+                    rows.extend(
+                        tuple(
+                            _postgres_value(value, field.type, UTC)
+                            for value, field in zip(row, reader.schema, strict=True)
+                        )
+                        for row in zip(*columns, strict=True)
+                    )
         return rows
 
 

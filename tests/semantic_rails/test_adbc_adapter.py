@@ -344,6 +344,49 @@ def test_exact_numeric_and_aware_timestamp_conversion():
     assert row["instant"].astimezone(UTC) == datetime(2026, 9, 30, 7, 4, 56, 123456, tzinfo=UTC)
 
 
+def test_positional_postgres_results_preserve_exact_numeric_types_and_duplicate_names():
+    from decimal import Decimal
+
+    from tests.integration.correctness.conftest import _rows
+
+    pa = pytest.importorskip("pyarrow")
+    numeric = pa.opaque(pa.string(), "numeric", "PostgreSQL")
+    batch = pa.record_batch(
+        [
+            pa.array(["123456789.4500", None], type=numeric),
+            pa.array(["70.00", "0.0000"], type=numeric),
+            pa.array(["123.4500", "70.00"]),
+        ],
+        names=["coalesce", "coalesce", "text"],
+    )
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def execute(self, sql):
+            assert sql == "SELECT 1"
+
+        def fetch_record_batch(self):
+            return pa.RecordBatchReader.from_batches(batch.schema, [batch])
+
+        def fetchall(self):
+            return [("123456789.4500", "70.00", "123.4500"), (None, "0.0000", "70.00")]
+
+    adapter = SimpleNamespace(_connection=lambda: SimpleNamespace(cursor=Cursor))
+    rows = _rows(SimpleNamespace(_get_adapter=lambda: adapter), "SELECT 1")
+    assert rows == [
+        (Decimal("123456789.4500"), Decimal("70.00"), "123.4500"),
+        (None, Decimal("0.0000"), "70.00"),
+    ]
+    assert type(rows[0][0]) is Decimal and rows[0][0].as_tuple().exponent == -4
+    assert type(rows[0][1]) is Decimal and rows[0][1].as_tuple().exponent == -2
+    assert type(rows[0][2]) is str
+
+
 @pytest.mark.parametrize("failure", ["execute", "fetch", "timeout_reset", "zone_reset"])
 def test_failures_finish_watchdog_before_discarding_connection(failure, monkeypatch):
     events = []

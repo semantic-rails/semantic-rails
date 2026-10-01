@@ -53,6 +53,17 @@ def test_postgres_exact_types(adbc):
     assert adbc.query("SELECT current_setting('TimeZone') z")[0]["z"] == original_zone
 
 
+@pytest.mark.parametrize("value", ["70.00", "123456789.4500", "0.0000"])
+def test_postgres_numeric_remains_exact_in_aggregate_results(adbc, value):
+    row = adbc.query(
+        f"SELECT SUM(n) AS n, '{value}'::TEXT AS t FROM (VALUES ('{value}'::NUMERIC)) AS amounts(n)"
+    )[0]
+    assert type(row["n"]) is Decimal
+    assert row["n"] == Decimal(value)
+    assert row["n"].as_tuple().exponent == Decimal(value).as_tuple().exponent
+    assert type(row["t"]) is str and row["t"] == value
+
+
 def test_postgres_binds_all_slot_types_without_interpolation(adbc):
     prepared = finalize_parameters(
         PreparedQuery(

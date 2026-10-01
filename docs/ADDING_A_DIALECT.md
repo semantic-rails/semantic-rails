@@ -41,7 +41,9 @@ Arrow batches are sliced before Python row conversion to at most
 `max_rows + 1`, with `QueryRows.truncated` and semantic aliases preserved. The
 64 KiB driver batch hint bounds typical batches, not arbitrarily large cells.
 
-NUMERIC returns `Decimal` with its scale intact. Aware timestamps retain
+NUMERIC returns `Decimal` with its scale intact, including aggregate results;
+numeric-looking TEXT stays text. Positional correctness reads share this
+Arrow-type conversion while retaining duplicate column names. Aware timestamps retain
 microseconds and use the requested query zone (otherwise the current session
 zone, falling back to aware UTC when Python cannot load it). PostgreSQL stores
 instants, so the originally authored offset cannot be recovered. Intervals retain
@@ -61,6 +63,11 @@ The hosted Postgres correctness job runs the conformance battery and
 fixture variables. Exact-type, two-tenant isolation and timeout tests supplement
 normalized parity. The conformance loader uses `adbc_ingest` on the production
 connection; psycopg is not a runtime or test dependency.
+
+Seed scripts split only at semicolons outside quoted literals, identifiers,
+E-string escapes, dollar quotes and comments. Each statement retains its authored
+text and comments. An unterminated quote or block comment refuses the entire
+script before execution with `INVALID_CONFIG` (`unterminated_sql_script`).
 
 ## 1. Dialect class — `semantic_rails/dialects.py`
 

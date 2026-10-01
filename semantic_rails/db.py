@@ -61,7 +61,12 @@ from .dialects import (
 from .errors import SemanticLayerError, query_execution_error
 from .schema import PackageMeta
 from .seed_provenance import record_seed_provenance
-from .sql_preparation import ParameterValue, PreparedQuery, checked_parameter_values
+from .sql_preparation import (
+    _PARAMETER_TOKEN,
+    ParameterValue,
+    PreparedQuery,
+    checked_parameter_values,
+)
 
 __all__ = [
     "Database",
@@ -85,63 +90,59 @@ def _row_to_dict(cursor: Any, row: Any) -> dict[str, Any]:
     return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
 
 
-_DOLLAR_QUOTE = re.compile(
+_SQL_SCRIPT_TOKEN = re.compile(
+    r"[eE]'|[A-Za-z_\u0080-\U0010ffff][A-Za-z_0-9$\u0080-\U0010ffff]*|"
     r"(?<![A-Za-z_0-9$\u0080-\U0010ffff])"
-    r"\$(?:[A-Za-z_\u0080-\U0010ffff][A-Za-z_0-9\u0080-\U0010ffff]*)?\$"
+    r"\$(?:[A-Za-z_\u0080-\U0010ffff][A-Za-z_0-9\u0080-\U0010ffff]*)?\$|"
+    r"--[^\n]*|/\*|['\";]"
 )
 
 
 def _split_sql_statements(sql: str) -> list[str]:
+    """Validate the whole script, then split at unquoted semicolons without rewriting it."""
     statements: list[str] = []
-    current: list[str] = []
-    in_single = False
-    in_double = False
-    i = 0
-    while i < len(sql):
-        if not in_single and not in_double:
-            if dollar := _DOLLAR_QUOTE.match(sql, i):
-                end = sql.find(dollar[0], dollar.end())
-                if end < 0:
-                    raise ValueError("Unterminated dollar-quoted SQL literal")
-                end += len(dollar[0])
-                current.append(sql[i:end])
-                i = end
-                continue
-            if sql.startswith("--", i):
-                end = sql.find("\n", i + 2)
-                i = len(sql) if end < 0 else end
-                current.append(" ")
-                continue
-            if sql.startswith("/*", i):
-                depth = 1
-                i += 2
-                while i < len(sql) and depth:
-                    if sql.startswith("/*", i):
-                        depth += 1
-                        i += 2
-                    elif sql.startswith("*/", i):
-                        depth -= 1
-                        i += 2
-                    else:
-                        i += 1
-                current.append(" ")
-                continue
-        ch = sql[i]
-        i += 1
-        if ch == "'" and not in_double:
-            in_single = not in_single
-        elif ch == '"' and not in_single:
-            in_double = not in_double
-        if ch == ";" and not in_single and not in_double:
-            statement = "".join(current).strip()
-            if statement:
-                statements.append(statement)
-            current = []
+    start = position = 0
+    has_statement = False
+
+    def refuse() -> None:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "Unterminated quote or block comment in SQL script.",
+            details={"reason": "unterminated_sql_script"},
+        )
+
+    while match := _SQL_SCRIPT_TOKEN.search(sql, position):
+        has_statement |= bool(sql[position : match.start()].strip())
+        position = match.end()
+        token = match[0]
+        if token.startswith("--"):
             continue
-        current.append(ch)
-    tail = "".join(current).strip()
-    if tail:
-        statements.append(tail)
+        if token == "/*":
+            depth = 1
+            for delimiter in re.compile(r"/\*|\*/").finditer(sql, position):
+                depth += 1 if delimiter[0] == "/*" else -1
+                if not depth:
+                    position = delimiter.end()
+                    break
+            else:
+                refuse()
+            continue
+        if token == ";":
+            if has_statement:
+                statements.append(sql[start : match.start()])
+            start = position
+            has_statement = False
+            continue
+        if token in {"'", '"', "E'", "e'"} or token.startswith("$"):
+            # Reuse the bind scanner's complete quoted spans, including E-string escapes.
+            quoted = _PARAMETER_TOKEN.match(sql, match.start())
+            if quoted is None or not quoted[0].startswith(token):
+                refuse()
+            assert quoted is not None
+            position = quoted.end()
+        has_statement = True
+    if has_statement or sql[position:].strip():
+        statements.append(sql[start:])
     return statements
 
 

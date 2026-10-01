@@ -55,6 +55,19 @@ POSTGRES_PROFILE = AdbcProfile(
 )
 
 
+def _postgres_value(value: Any, data_type: Any, result_zone: tzinfo) -> Any:
+    """Convert a driver value by its Arrow type, never by the text's appearance."""
+    if (
+        value is not None
+        and getattr(data_type, "type_name", "") == "numeric"
+        and getattr(data_type, "vendor_name", "") == "PostgreSQL"
+    ):
+        return Decimal(value)
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        return value.astimezone(result_zone)
+    return value
+
+
 class AdbcAdapter(WarehouseAdapter):
     engine = POSTGRES_PROFILE.engine
     connection_kind = POSTGRES_PROFILE.connection_kind
@@ -208,21 +221,13 @@ class AdbcAdapter(WarehouseAdapter):
             result_zone = UTC
         rows: list[dict[str, Any]] = []
         with cursor.fetch_record_batch() as reader:
-            numeric = {
-                field.name
-                for field in reader.schema
-                if getattr(field.type, "type_name", "") == "numeric"
-                and getattr(field.type, "vendor_name", "") == "PostgreSQL"
-            }
+            data_types = {field.name: field.type for field in reader.schema}
             for batch in reader:
                 if cap is not None:
                     batch = batch.slice(0, max(0, cap + 1 - len(rows)))
                 for row in batch.to_pylist():
                     for key, value in row.items():
-                        if value is not None and key in numeric:
-                            row[key] = Decimal(value)
-                        elif isinstance(value, datetime) and value.tzinfo is not None:
-                            row[key] = value.astimezone(result_zone)
+                        row[key] = _postgres_value(value, data_types.get(key), result_zone)
                     rows.append(row)
                 if cap is not None and len(rows) > cap:
                     break

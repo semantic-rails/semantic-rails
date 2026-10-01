@@ -8,6 +8,7 @@ from semantic_rails.db import Database, _split_sql_statements
 from semantic_rails.db_parts.common import (
     option_or_env,
 )
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.sql_preparation import (
     float_nullif_divisions,
     map_double_quoted_identifiers,
@@ -21,15 +22,15 @@ from semantic_rails.sql_preparation import (
 )
 def test_seed_splitting_ignores_comment_quotes_and_semicolons(comment):
     assert _split_sql_statements(f"{comment} SELECT 'a;b'; SELECT 2;") == [
-        "SELECT 'a;b'",
-        "SELECT 2",
+        f"{comment} SELECT 'a;b'",
+        " SELECT 2",
     ]
 
 
 def test_seed_splitting_preserves_quoted_comments_and_token_boundaries():
     assert _split_sql_statements("SELECT/**/1; SELECT '-- /* ; */' AS \"a;b\"; -- tail") == [
-        "SELECT 1",
-        "SELECT '-- /* ; */' AS \"a;b\"",
+        "SELECT/**/1",
+        " SELECT '-- /* ; */' AS \"a;b\"",
     ]
 
 
@@ -52,8 +53,10 @@ def test_seed_splitting_preserves_dollar_quoted_values(tag, value):
 def test_unclosed_seed_dollar_quote_refuses_before_any_execution(literal):
     db = Database.connect_in_memory()
     try:
-        with pytest.raises(ValueError, match="Unterminated dollar-quoted SQL literal"):
+        with pytest.raises(SemanticLayerError) as caught:
             db.execute_script(f"CREATE TABLE seed_example(value TEXT); SELECT {literal}")
+        assert caught.value.code == "INVALID_CONFIG"
+        assert caught.value.details == {"reason": "unterminated_sql_script"}
         assert (
             db.query(
                 "SELECT table_name FROM information_schema.tables WHERE table_name = 'seed_example'"
@@ -62,6 +65,56 @@ def test_unclosed_seed_dollar_quote_refuses_before_any_execution(literal):
         )
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("value", ["/*x*/", "--x", "; /*x*/ --x"])
+def test_seed_escape_strings_execute_with_data_intact(value):
+    statement = rf"CREATE TABLE seed_example AS SELECT E'it\'s {value}' AS value"
+    assert _split_sql_statements(statement) == [statement]
+    db = Database.connect_in_memory()
+    try:
+        db.execute_script(statement + "; SELECT 2;")
+        assert db.query("SELECT value FROM seed_example") == [{"value": f"it's {value}"}]
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    ["/* unterminated", "/* outer /* inner */", "'unterminated", '"unterminated', r"E'x\'"],
+)
+def test_unclosed_seed_construct_refuses_before_any_execution(fragment):
+    db = Database.connect_in_memory()
+    try:
+        with pytest.raises(SemanticLayerError) as caught:
+            db.execute_script(f"CREATE TABLE seed_example(value TEXT); SELECT {fragment}")
+        assert caught.value.code == "INVALID_CONFIG"
+        assert caught.value.details == {"reason": "unterminated_sql_script"}
+        assert (
+            db.query(
+                "SELECT table_name FROM information_schema.tables WHERE table_name = 'seed_example'"
+            )
+            == []
+        )
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        r" SELECT e'it\'s; /*x*/ --x' AS value",
+        " SELECT 'it''s; /*x*/' AS value",
+        ' SELECT 1 AS "a"";b"',
+        " SELECT 1 AS account$tag$name",
+        " SELECT $é$a; /*x*/ --x$é$ AS value",
+    ],
+)
+def test_seed_statement_text_is_unchanged(statement):
+    assert _split_sql_statements(statement + "; /* keep */ SELECT 2; -- tail") == [
+        statement,
+        " /* keep */ SELECT 2",
+    ]
 
 
 def test_rewrites_identifiers_to_backticks():

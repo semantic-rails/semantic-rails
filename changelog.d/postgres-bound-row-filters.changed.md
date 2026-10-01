@@ -6,7 +6,7 @@
   Plain SQL accepts JSON operators; parameterized SQL still refuses `?` operators.
   Bind scanning preserves identifiers containing `$` and E-string escapes.
   Session zones unavailable to Python return aware UTC timestamps.
-- Split seed scripts around SQL comments without treating comment apostrophes
-  or semicolons as literal or statement boundaries. Tagged and untagged
-  dollar-quoted values retain comment delimiters and semicolons verbatim;
-  unterminated dollar quotes refuse the script before any statement executes.
+- Split seed scripts only at unquoted semicolons, preserving statement text,
+  comments and E-string escapes. Tagged and untagged dollar-quoted values retain
+  comment delimiters and semicolons verbatim; unterminated quotes or block
+  comments refuse the script before any statement executes.
