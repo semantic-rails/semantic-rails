@@ -57,6 +57,34 @@ def test_postgres_exact_types(adbc):
     assert adbc.query("SELECT current_setting('TimeZone') z")[0]["z"] == original_zone
 
 
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "ARRAY[1.20, 2.30, NULL]::NUMERIC[]",
+        "ARRAY[123456789012345678.123456789]::NUMERIC[]",
+        "NULL::NUMERIC[]",
+        "'{\"n\":1}'::JSON",
+        "'[1,2,null]'::JSON",
+        "'1'::JSON",
+        "NULL::JSON",
+        "'{\"n\":1}'::JSONB",
+        "'[1,2,null]'::JSONB",
+        "'1'::JSONB",
+        "NULL::JSONB",
+    ],
+)
+def test_postgres_unsupported_result_columns_refuse_and_recover(adbc, expression, empty):
+    sql = f"SELECT {expression} AS payload" + (" WHERE FALSE" if empty else "")
+    with pytest.raises(SemanticLayerError) as caught:
+        adbc.query(sql)
+    assert caught.value.code == "RESULT_TYPE_UNSUPPORTED"
+    assert caught.value.details["column"] == "payload"
+    assert caught.value.details["type"]
+    assert adbc._conn is None
+    assert adbc.query("SELECT 42 n") == [{"n": 42}]
+
+
 @pytest.mark.parametrize(
     "literal",
     [

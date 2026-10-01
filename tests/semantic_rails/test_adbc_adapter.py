@@ -21,6 +21,173 @@ from semantic_rails.sql_preparation import (
 SLOT = ParameterSlot("tenant", "string")
 
 
+def _arrow_cursor(batch):
+    pa = pytest.importorskip("pyarrow")
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def execute(self, sql):
+            assert sql == "SELECT 1"
+
+        def fetch_record_batch(self):
+            return pa.RecordBatchReader.from_batches(batch.schema, [batch])
+
+    return Cursor()
+
+
+def _arrow_rows(cursor, positional):
+    if positional:
+        from tests.integration.correctness.conftest import _rows
+
+        adapter = SimpleNamespace(_connection=lambda: SimpleNamespace(cursor=lambda: cursor))
+        return [
+            {"payload": row[0]}
+            for row in _rows(SimpleNamespace(_get_adapter=lambda: adapter), "SELECT 1")
+        ]
+    return AdbcAdapter._rows(cursor, {"max_rows": 1}, "UTC")
+
+
+@pytest.mark.parametrize("positional", [False, True])
+@pytest.mark.parametrize("contents", ["value", "null", "empty"])
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "numeric_list",
+        "list",
+        "large_list",
+        "fixed_list",
+        "struct",
+        "map",
+        "json",
+        "unknown_extension",
+        "invalid_numeric_storage",
+        "binary",
+        "time",
+        "duration",
+        "date64",
+        "timestamp_ns",
+        "dictionary",
+    ],
+)
+def test_unsupported_postgres_result_types_refuse_before_reading_values(kind, contents, positional):
+    pa = pytest.importorskip("pyarrow")
+    numeric = pa.opaque(pa.string(), "numeric", "PostgreSQL")
+    data_type, value = {
+        "numeric_list": (pa.list_(numeric), ["1.20", "123456789012345678.123456789", None]),
+        "list": (pa.list_(pa.int64()), [1, None]),
+        "large_list": (pa.large_list(numeric), ["1.20"]),
+        "fixed_list": (pa.list_(numeric, 1), ["1.20"]),
+        "struct": (pa.struct([("n", numeric)]), {"n": "1.20"}),
+        "map": (pa.map_(pa.string(), numeric), [("n", "1.20")]),
+        "json": (pa.json_(), '{"n":1,"secret":"row-canary"}'),
+        "unknown_extension": (pa.opaque(pa.string(), "unknown", "PostgreSQL"), "row-canary"),
+        "invalid_numeric_storage": (pa.opaque(pa.int64(), "numeric", "PostgreSQL"), 1),
+        "binary": (pa.binary(), b"row-canary"),
+        "time": (pa.time64("us"), 1),
+        "duration": (pa.duration("us"), 1),
+        "date64": (pa.date64(), 0),
+        "timestamp_ns": (pa.timestamp("ns"), 1),
+        "dictionary": (pa.dictionary(pa.int8(), pa.string()), "row-canary"),
+    }[kind]
+    values = [value] if contents == "value" else [None] if contents == "null" else []
+    # Build nested extension arrays from their storage layouts: PyArrow's
+    # Python sequence builder does not construct extension children directly.
+    storage_type = {
+        "numeric_list": pa.list_(pa.string()),
+        "large_list": pa.large_list(pa.string()),
+        "fixed_list": pa.list_(pa.string(), 1),
+        "struct": pa.struct([("n", pa.string())]),
+        "map": pa.map_(pa.string(), pa.string()),
+    }.get(kind, data_type)
+    array = pa.array(values, type=storage_type).view(data_type)
+    batch = pa.record_batch([array], names=["payload"])
+    with pytest.raises(SemanticLayerError) as caught:
+        _arrow_rows(_arrow_cursor(batch), positional)
+    assert caught.value.code == "RESULT_TYPE_UNSUPPORTED"
+    assert caught.value.details == {"column": "payload", "type": str(data_type)}
+    assert "payload" in str(caught.value) and str(data_type) in str(caught.value)
+    assert "row-canary" not in str(caught.value)
+
+
+@pytest.mark.parametrize("positional", [False, True])
+@pytest.mark.parametrize(
+    "type_name, value, literal",
+    [
+        ("int8", -128, "(-128)::TINYINT"),
+        ("int16", -32768, "(-32768)::SMALLINT"),
+        ("int32", -2147483648, "(-2147483648)::INTEGER"),
+        ("int64", 9007199254740993, "9007199254740993::BIGINT"),
+        ("uint64", 18446744073709551615, "18446744073709551615::UBIGINT"),
+        ("float32", 1.25, "1.25::FLOAT"),
+        ("float64", 1.25, "1.25::DOUBLE"),
+        ("string", "123.4500", "'123.4500'::VARCHAR"),
+        ("bool_", True, "TRUE"),
+        ("null", None, "NULL"),
+        ("numeric", "123456789.4500", "123456789.4500::DECIMAL(20,4)"),
+        ("decimal128", "123456789.4500", "123456789.4500::DECIMAL(20,4)"),
+        ("decimal256", "123456789.4500", "123456789.4500::DECIMAL(20,4)"),
+        ("date32", "2026-09-30", "DATE '2026-09-30'"),
+        ("timestamp", "2026-09-30T12:34:56.123456", "TIMESTAMP '2026-09-30 12:34:56.123456'"),
+        (
+            "timestamptz",
+            "2026-09-30T07:04:56.123456+00:00",
+            "TIMESTAMPTZ '2026-09-30 12:34:56.123456+05:30'",
+        ),
+        ("interval", (1, 2, 3123456000), "INTERVAL '1 month 2 days 3.123456 seconds'"),
+    ],
+)
+def test_supported_postgres_scalars_encode_identically_to_duckdb(
+    type_name, value, literal, positional
+):
+    import json
+    from datetime import date, datetime
+    from decimal import Decimal
+
+    pa = pytest.importorskip("pyarrow")
+    if type_name == "numeric":
+        data_type = pa.opaque(pa.string(), "numeric", "PostgreSQL")
+    elif type_name.startswith("decimal"):
+        data_type = getattr(pa, type_name)(20, 4)
+        value = Decimal(value)
+    elif type_name == "date32":
+        data_type, value = pa.date32(), date.fromisoformat(value)
+    elif type_name in ("timestamp", "timestamptz"):
+        data_type = pa.timestamp("us", tz="UTC" if type_name == "timestamptz" else None)
+        value = datetime.fromisoformat(value)
+    elif type_name == "interval":
+        data_type = pa.month_day_nano_interval()
+    else:
+        data_type = getattr(pa, type_name)()
+    batch = pa.record_batch([pa.array([value, None], type=data_type)], names=["payload"])
+    # The dict path also exercises bounded conversion; compare its first row.
+    rows = _arrow_rows(_arrow_cursor(batch), positional)
+    if type_name in ("numeric", "decimal128", "decimal256"):
+        assert type(rows[0]["payload"]) is Decimal
+        assert rows[0]["payload"].as_tuple().exponent == -4
+    db = Database.connect_in_memory()
+    try:
+        if type_name == "timestamptz":
+            reference_rows = (
+                db.conn.execute(f"SELECT {literal} AS payload").to_arrow_table().to_pylist()
+            )
+        else:
+            reference_rows = db.query(f"SELECT {literal} AS payload")
+        reference = result_rows(reference_rows)
+    finally:
+        db.close()
+    assert (
+        json.dumps(result_rows(rows[:1]), allow_nan=False, sort_keys=True).encode()
+        == json.dumps(reference, allow_nan=False, sort_keys=True).encode()
+    )
+    if positional:
+        assert rows[1] == {"payload": None}
+
+
 def _interval_cursor(values):
     pa = pytest.importorskip("pyarrow")
     batch = pa.record_batch(
@@ -399,25 +566,21 @@ def test_exact_numeric_and_aware_timestamp_conversion():
     from datetime import UTC, datetime, timedelta
     from decimal import Decimal
 
-    numeric = SimpleNamespace(type_name="numeric", vendor_name="PostgreSQL")
-    reader = Reader(
+    pa = pytest.importorskip("pyarrow")
+    numeric = pa.opaque(pa.string(), "numeric", "PostgreSQL")
+    batch = pa.record_batch(
         [
-            Batch(
-                [
-                    {
-                        "amount": "123456789.4500",
-                        "text": "123.4500",
-                        "missing": None,
-                        "instant": datetime(2026, 9, 30, 7, 4, 56, 123456, tzinfo=UTC),
-                    }
-                ]
-            )
-        ]
+            pa.array(["123456789.4500"], type=numeric),
+            pa.array(["123.4500"]),
+            pa.array([None], type=numeric),
+            pa.array(
+                [datetime(2026, 9, 30, 7, 4, 56, 123456, tzinfo=UTC)],
+                type=pa.timestamp("us", tz="UTC"),
+            ),
+        ],
+        names=["amount", "text", "missing", "instant"],
     )
-    reader.schema = [SimpleNamespace(name=name, type=numeric) for name in ("amount", "missing")]
-    row = AdbcAdapter._rows(
-        SimpleNamespace(fetch_record_batch=lambda: reader), None, "Asia/Kolkata"
-    )[0]
+    row = AdbcAdapter._rows(_arrow_cursor(batch), None, "Asia/Kolkata")[0]
     assert type(row["amount"]) is Decimal
     assert row["amount"] == Decimal("123456789.4500")
     assert row["amount"].as_tuple().exponent == -4
@@ -426,6 +589,23 @@ def test_exact_numeric_and_aware_timestamp_conversion():
     assert row["instant"].microsecond == 123456
     assert row["instant"].utcoffset() == timedelta(hours=5, minutes=30)
     assert row["instant"].astimezone(UTC) == datetime(2026, 9, 30, 7, 4, 56, 123456, tzinfo=UTC)
+
+
+def test_unsupported_result_type_keeps_its_code_and_discards_the_session(monkeypatch):
+    pa = pytest.importorskip("pyarrow")
+    batch = pa.record_batch(
+        [pa.array(['{"secret":"row-canary"}'], type=pa.json_())], names=["payload"]
+    )
+    adapter, cursor = _recording_adapter(monkeypatch)
+    closed = []
+    adapter._conn.close = lambda: closed.append(True)
+    monkeypatch.setattr(cursor, "fetch_record_batch", _arrow_cursor(batch).fetch_record_batch)
+    with pytest.raises(SemanticLayerError) as caught:
+        adapter.query("SELECT 1")
+    assert caught.value.code == "RESULT_TYPE_UNSUPPORTED"
+    assert caught.value.details == {"column": "payload", "type": str(pa.json_())}
+    assert "row-canary" not in str(caught.value)
+    assert adapter._conn is None and closed == [True]
 
 
 def test_positional_postgres_results_preserve_exact_numeric_types_and_duplicate_names():

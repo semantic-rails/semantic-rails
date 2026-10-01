@@ -441,6 +441,7 @@ stopped through publication: the WAL check cannot prevent a writer from
 creating a new log immediately after it runs.
 
 SQL seed sources and CSV `post_sql` files accept LF or CRLF line endings.
+CRLF bytes inside string literals are preserved as authored, without normalization to LF.
 A bare carriage return refuses the script before any of its statements execute
 with `INVALID_CONFIG`, `details.reason: bare_carriage_return_sql_script` and
 `details.file` naming the SQL file. Save the file with LF or CRLF and retry.

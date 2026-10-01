@@ -883,6 +883,17 @@ Inside arrays and objects, native integers remain exact JSON integer tokens,
 including `9007199254740993`; they do not pass through binary64 conversion.
 Booleans remain booleans, and nested decimal/float values retain their normalization.
 
+The Postgres ADBC adapter accepts only Arrow scalar types with exact mappings:
+integers, decimals (including PostgreSQL NUMERIC stored as text and converted
+to `Decimal`), float32/float64, text, booleans, date32, microsecond timestamps
+with or without a time zone, month-day-nanosecond intervals, and NULL.
+Other Arrow types, including lists, structs, maps, nested NUMERIC, JSON/JSONB
+and unknown extensions, refuse with `RESULT_TYPE_UNSUPPORTED` before rows
+are read, even for empty or all-null results. The error names the column and
+Arrow type in `details.column` and `details.type`, without exposing values.
+Intervals still refuse with `RESULT_VALUE_UNSUPPORTED` when their duration
+cannot be represented as an exact Python `timedelta`.
+
 The same aggregate can have a different SQL result type per warehouse: `AVG`
 is DOUBLE on DuckDB and NUMERIC on Postgres. `column_types` reports the driver's
 result type. Cross-warehouse conformance and package tests compare numeric

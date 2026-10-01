@@ -23,7 +23,7 @@ import yaml
 
 from semantic_rails.config import load_package_config
 from semantic_rails.db import _split_sql_statements
-from semantic_rails.db_parts.adbc import _postgres_value
+from semantic_rails.db_parts.adbc import _check_postgres_result_types, _postgres_value
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ConnectionSpec, SeedSpec
 
@@ -103,6 +103,7 @@ def _rows(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
             cursor.execute(statement)
             rows = []
             with cursor.fetch_record_batch() as reader:
+                _check_postgres_result_types(reader.schema)
                 for batch in reader:
                     columns = [column.to_pylist() for column in batch.columns]
                     rows.extend(

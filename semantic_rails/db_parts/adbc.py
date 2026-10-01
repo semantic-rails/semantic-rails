@@ -55,6 +55,42 @@ POSTGRES_PROFILE = AdbcProfile(
 )
 
 
+def _check_postgres_result_types(schema: Any) -> None:
+    """Allow only exact scalar mappings, before reading even null or empty results."""
+    if not len(schema):
+        return
+    pa = import_driver(
+        "pyarrow", extra="postgres", engine="postgres", connection_kind="postgres_native"
+    )
+    for field in schema:
+        data_type = field.type
+        numeric = (
+            isinstance(data_type, pa.OpaqueType)
+            and data_type.type_name == "numeric"
+            and data_type.vendor_name == "PostgreSQL"
+            and data_type.storage_type == pa.string()
+        )
+        if (
+            numeric
+            or pa.types.is_integer(data_type)
+            or pa.types.is_decimal(data_type)
+            or pa.types.is_float32(data_type)
+            or pa.types.is_float64(data_type)
+            or pa.types.is_string(data_type)
+            or pa.types.is_boolean(data_type)
+            or pa.types.is_date32(data_type)
+            or (pa.types.is_timestamp(data_type) and data_type.unit == "us")
+            or data_type == pa.month_day_nano_interval()
+            or pa.types.is_null(data_type)
+        ):
+            continue
+        raise SemanticLayerError(
+            "RESULT_TYPE_UNSUPPORTED",
+            f"Postgres result column {field.name!r} has unsupported Arrow type {data_type}.",
+            details={"column": field.name, "type": str(data_type)},
+        )
+
+
 def _postgres_value(value: Any, data_type: Any, result_zone: tzinfo) -> Any:
     """Convert a driver value by its Arrow type, never by the text's appearance."""
     if (
@@ -234,6 +270,7 @@ class AdbcAdapter(WarehouseAdapter):
             result_zone = UTC
         rows: list[dict[str, Any]] = []
         with cursor.fetch_record_batch() as reader:
+            _check_postgres_result_types(reader.schema)
             data_types = {field.name: field.type for field in reader.schema}
             for batch in reader:
                 if cap is not None:
