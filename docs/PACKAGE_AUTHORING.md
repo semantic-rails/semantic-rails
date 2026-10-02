@@ -1331,8 +1331,8 @@ Warnings (advisory only):
   [`package.environments` and governance `meta:`](#packageenvironments-and-governance-meta)).
 - A measure omits an explicit `default_temporal_role` while declaring
   compatible temporal roles.
-- Several relationships join one pair of entities on different columns
-  (`RELATIONSHIP_ROLES_UNPINNED`), whichever side each is declared from.
+- Entity pairs a question can need have two or more routes and no recorded
+  decision (`ROUTES_UNDECIDED`; see [the route census](#route-census-and-route-changes)).
 
 ## Path-finding behavior (entity hopping)
 
@@ -1520,17 +1520,75 @@ Four guard rails back this up:
   sends every read of the key, a filter on it and a metric predicate through the
   recorded route, so the key and the airport's other columns always come from
   the same airport.
-- **`RELATIONSHIP_ROLES_UNPINNED` warning** — reported when the package is
-  parsed (`semantic-rails check`, `validate`): several relationships join the
-  same pair of entities on different columns. It names the relationships, says
-  whether a `path_preferences` row covers the pair and what that row covers, and
-  asks for a row for each entity pair a query needs.
+- **Route census** — parsing the package (`semantic-rails check`, `validate`)
+  lists every entity pair a question can need that is still refused for want of
+  a decision, role-playing keys included, and warns once with `ROUTES_UNDECIDED`
+  ([below](#route-census-and-route-changes)).
 - **`PATH_JOIN_CONFLICT` error** — one query needs the same physical table
   through two different relationships (e.g. region recorded as the home-city
   route while city is read through the ship-to key). One table instance
   cannot serve both semantics, so the compiler refuses with both routes
   named. Fix by recording a consistent route for every affected target, or by
   modeling the second role as its own entity over a dedicated relation.
+
+### Route census and route changes
+
+A route is a business definition, so a package needs one for every entity pair
+a question can need: from the entity of each measure (entity counts included)
+to each other entity with a dimension that its relationships reach. Each pair
+is resolved once, by the same route rule queries use.
+
+**Census.** The parse report (`semantic-rails check`, `validate`, and
+Architect's `project_status`) carries `route_census`:
+
+- `undecided`: `[{source_entity, target_entity, details}]`, the pairs refused
+  with `AMBIGUOUS_PATH`, where `details` is the refusal's own (each route, its
+  meaning and the row that records it). One `ROUTES_UNDECIDED` warning gives
+  their `count` and `pairs`. Record the route each pair means as a
+  `graph.path_preferences` row before a question needs it. The warning is
+  advisory and never blocks a promotion.
+- `assumed`: `[{source_entity, target_entity, relationship_path, basis}]`, the
+  pairs answered by a rule rather than a row or the only route: today the
+  start's own key (`basis: colocated_key`). Confirm the route, or record
+  another.
+
+**Route changes.** A new relationship can give a pair a second route, so a
+question that answered before is refused, or now takes the start's own key.
+`impact-report` (Architect's `impact_project`) resolves every census pair of
+either package, between entities both declare, and lists each one the change
+resolves differently under `route_changes`:
+
+```json
+{"source_entity": "entity.bank_invoice", "target_entity": "entity.bank_region",
+ "base": {"relationship_path": ["relationship.invoices_account", "relationship.accounts_branch_region"]},
+ "head": {"refused": "AMBIGUOUS_PATH"},
+ "keep_base": {"source_entity": "entity.bank_invoice", "target_entity": "entity.bank_region",
+               "relationship_path": ["relationship.invoices_account", "relationship.accounts_branch_region"]}}
+```
+
+`base` and `head` hold the pair's route or the code it is refused with.
+`keep_base` is the `graph.path_preferences` row that keeps the base route, or
+`null` when the base refused or its route no longer exists. Any entry makes the
+risk `high` and counts in `changed_behavior_count`, and the Markdown summary
+lists each one in entity labels ("Invoice to Region: was Invoice → Account →
+Region, now refused (AMBIGUOUS_PATH)").
+
+**Architect keeps the earlier route.** Every Architect write goes through one
+transaction, which compares the package before and after the change. Each pair
+the package answered, and that the change would refuse or answer by another
+route, gets its earlier route as its `graph.path_preferences` row in the same
+change: shortest route first, re-resolving after each row, so no row is
+redundant. The result lists each row in `route_decisions_added` with the
+change's `new_routes`, to name as an alternative or make the default later, and
+a dry run shows the rows in its diff. The rows go where the loader reads them
+(a top-level `path_preferences` block in `package.yml`, else `graph.yml`, else
+`package.yml`'s `graph` block), and that file is rewritten the way Architect
+writes YAML. No row is added for a pair whose own row the change writes, or
+whose route the change removes (`remove_object`, or an edit that drops a
+relationship): the result's `route_changes` lists every pair that answered
+before and answers differently after. If an added row would not take effect,
+the change is refused with `ROUTE_DECISION_NOT_RECORDED` and nothing is
+written. Hand edits get the same `route_changes` from `impact-report`.
 
 ### `hop_profile` — observing entity hops
 

@@ -295,7 +295,37 @@ on. It loads a metric whose measure or input metric is gone, which fails only wh
 `remove_object` refuses a removal that leaves a metric naming a removed object and names those
 metrics. The report lists `removed`, and `impact` holds the `impact_project` summary of the change
 (`risk`, `impacted_metrics`, `changes`) plus `references`: authored files, such as examples and
-tests, that still name a removed id.
+tests, that still name a removed id. A removed route can't be kept, so `route_changes` lists each
+entity pair that answered before the removal and is refused or routed differently after it (see
+[Join Routes](#join-routes)); no row is added.
+
+## Join Routes
+
+Which route between two entities a question means is a business definition (see
+[the route census](PACKAGE_AUTHORING.md#route-census-and-route-changes)).
+
+- `project_status` returns `route_census` (also in `parse.route_census`): `undecided` lists the
+  entity pairs a question can need that are refused until a `graph.path_preferences` row records
+  their route, each with the `AMBIGUOUS_PATH` refusal's `details`; `assumed` lists the pairs
+  answered by the start entity's own key, to confirm. While pairs are undecided, `next_actions`
+  starts with deciding them. `create_project` and `setup_project_dialog` say to decide them once
+  entities are related.
+- `promotion_check` lists them under `advisories` (`ROUTES_UNDECIDED`), never as a blocker.
+- Every mutation keeps the answers the package already gives. Before writing, the transaction
+  compares the package with the change applied; each pair the package answered that the change
+  would refuse, or answer by another route, gets its current route as its
+  `graph.path_preferences` row in the same change (the fewest rows, shortest route first). The
+  result's `route_decisions_added` lists `{row, new_routes}` for each: the row, and the routes the
+  change added, to name as an alternative or make the default later. A dry run shows the rows in
+  its diff.
+- No row is added for a pair whose own row the change writes, or whose route it removes. The
+  result's `route_changes` lists every pair that answered before and answers differently after,
+  as `impact_project` does: `base` and `head` hold the route or the refusal code, and
+  `keep_base` the row that keeps the base route (`null` when that route is gone). `create_project`
+  and undo keep nothing: one starts a package, the other restores files exactly.
+- If an added row would not take effect, the mutation is refused with
+  `ROUTE_DECISION_NOT_RECORDED` and nothing is written; record each listed pair's route in the
+  change itself.
 
 ## Examples, Package Tests and Query Previews
 

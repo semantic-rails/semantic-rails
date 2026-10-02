@@ -29,7 +29,7 @@ from .architect_scaffold import dump_project_yaml
 from .config_validation import PackageReference, parse_config_report
 from .errors import SemanticLayerError
 from .package_snapshot import load_package_snapshot
-from .route_census import keep_routes, route_changes
+from .route_census import keep_routes, route_changes, unkept_route_changes
 from .yaml_loader import safe_load as yaml_safe_load
 
 ABSENT_PROJECT_REVISION = "absent"
@@ -826,8 +826,9 @@ class ProjectTransaction:
 
         The report names the rows (``route_decisions_added``, each with the change's new
         routes) and every pair that still answered before and answers differently after
-        (``route_changes``). When a recorded row does not take effect, the change is
-        refused with ``ROUTE_DECISION_NOT_RECORDED`` before anything is written.
+        (``route_changes``). The guard reloads the package as it will be written: if any
+        pair is still moved without a row (``unkept_route_changes``), the change is refused
+        with ``ROUTE_DECISION_NOT_RECORDED`` before anything is written.
         """
         try:
             base = load_package_snapshot(str(self.project_path)).config
@@ -835,7 +836,7 @@ class ProjectTransaction:
                 head = load_package_snapshot(str(staged)).config
         except Exception:  # nothing answered before, or the parse gate reports the staged package
             return updates, {}
-        added = keep_routes(base, head)[0] if record else []
+        added = keep_routes(base, head) if record else []
         final = head
         if added:
             updates = self._normalize_updates(
@@ -847,11 +848,9 @@ class ProjectTransaction:
                     final = load_package_snapshot(str(staged)).config
             except SemanticLayerError as exc:
                 raise _routes_not_recorded(added, [], str(exc)) from exc
-        changes = route_changes(base, final)
-        pinned = {(entry["row"]["source_entity"], entry["row"]["target_entity"]) for entry in added}
-        unkept = [row for row in changes if (row["source_entity"], row["target_entity"]) in pinned]
-        if unkept:
+        if record and (unkept := unkept_route_changes(base, final)):
             raise _routes_not_recorded(added, unkept, "")
+        changes = route_changes(base, final)
         return updates, {
             "route_decisions_added": added,
             "route_changes": [row for row in changes if "relationship_path" in row["base"]],

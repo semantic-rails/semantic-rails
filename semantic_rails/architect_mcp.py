@@ -150,17 +150,8 @@ class ArchitectMutationResult(BaseModel):
     changed_files: list[str]
     changes: list[ArchitectFileChange]
     parse: dict[str, Any] | None = None
-    route_decisions_added: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description=(
-            "graph.path_preferences rows this change added to keep a route it would have "
-            "moved, each with the change's new_routes."
-        ),
-    )
-    route_changes: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description="Entity pairs that answered before and answer differently or refuse after.",
-    )
+    route_decisions_added: list[dict[str, Any]] = Field(default_factory=list)
+    route_changes: list[dict[str, Any]] = Field(default_factory=list)
     error: ArchitectMutationIssue | None = None
     errors: list[ArchitectMutationIssue] = Field(default_factory=list)
 

@@ -11,7 +11,8 @@ with a dimension, reachable from it, as the target.
 * :func:`route_changes` lists the pairs whose resolution differs between two versions of a
   package, with the ``graph.path_preferences`` row that keeps the earlier route.
 * :func:`keep_routes` gives the fewest such rows that make a changed package answer every
-  pair it answered before, unless the change decides that pair itself.
+  pair it answered before, unless the change decides that pair itself;
+  :func:`unkept_route_changes` lists the pairs still moved without such a row.
 """
 
 from __future__ import annotations
@@ -166,29 +167,34 @@ def route_changes(base: PackageConfig, head: PackageConfig) -> list[dict[str, An
     return [change.payload() for change in _changes(base, head)]
 
 
-def keep_routes(
-    base: PackageConfig, head: PackageConfig
-) -> tuple[list[dict[str, Any]], PackageConfig]:
-    """The rows that keep ``base``'s answers in ``head``, and ``head`` with them.
-
-    A pair needs a row when ``base`` answered it, ``head`` refuses it or takes another route,
-    the base route still exists, and ``head`` leaves the pair's own row as ``base`` had it
-    (otherwise the change decides the pair itself). Rows are added shortest base route first,
-    re-resolving the rest after each, so a row that also settles another pair is the only one
-    added. Each entry is ``{"row": ..., "new_routes": [...]}``: the routes ``head`` offers
-    besides the base route, to name as alternatives or make the default later.
-    """
+def _unkept(base: PackageConfig, head: PackageConfig) -> list[RouteChange]:
+    """The changes a row must undo: ``base`` answered the pair, ``head`` refuses it or takes
+    another route, the base route still exists, and ``head`` leaves the pair's own row as
+    ``base`` had it (otherwise the change decides the pair itself)."""
     base_rows = get_package_analysis(base).path_preferences
     head_rows = get_package_analysis(head).path_preferences
-    pending = sorted(
-        (
-            change
-            for change in _changes(base, head)
-            if change.keep_base is not None
-            and head_rows.get(change.pair) == base_rows.get(change.pair)
-        ),
-        key=lambda change: (len(change.base.path), change.pair),
-    )
+    return [
+        change
+        for change in _changes(base, head)
+        if change.keep_base is not None and head_rows.get(change.pair) == base_rows.get(change.pair)
+    ]
+
+
+def unkept_route_changes(base: PackageConfig, head: PackageConfig) -> list[dict[str, Any]]:
+    """The ``route_changes`` entries that :func:`keep_routes` records a row for; once its rows
+    are in ``head``, there are none."""
+    return [change.payload() for change in _unkept(base, head)]
+
+
+def keep_routes(base: PackageConfig, head: PackageConfig) -> list[dict[str, Any]]:
+    """The fewest rows that keep ``base``'s answers in ``head`` (see :func:`_unkept`).
+
+    Rows are added shortest base route first, re-resolving the rest after each, so a row that
+    also settles another pair is the only one added. Each entry is ``{"row": ...,
+    "new_routes": [...]}``: the routes ``head`` offers besides the base route, to name as
+    alternatives or make the default later.
+    """
+    pending = sorted(_unkept(base, head), key=lambda change: (len(change.base.path), change.pair))
     added: list[dict[str, Any]] = []
     kept = head
     while pending:
@@ -213,7 +219,7 @@ def keep_routes(
         )
         outcomes = resolve_pairs(kept, [rest.pair for rest in pending])
         pending = [rest for rest in pending if outcomes[rest.pair].shape() != rest.base.shape()]
-    return added, kept
+    return added
 
 
 def route_change_lines(
