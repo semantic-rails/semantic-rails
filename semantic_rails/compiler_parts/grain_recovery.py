@@ -39,7 +39,7 @@ from copy import deepcopy
 from difflib import SequenceMatcher
 from typing import Any
 
-from ..ast import NormalizedQuery
+from ..ast import NormalizedQuery, every_filter
 from ..errors import SemanticLayerError
 from ..expressions import MetricPredicateExpr
 from ..fanout import analyze_fanout, resolve_path
@@ -141,7 +141,7 @@ def _offending_dimension_ids(
         dim = dimensions.get(dim_id)
         if dim is not None and dim.entity == target_entity:
             offending.append(dim_id)
-    for item in query.where:
+    for item in every_filter(query.where):
         dim = dimensions.get(item.field)
         if dim is not None and dim.entity == target_entity:
             offending.append(item.field)

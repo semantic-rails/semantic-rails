@@ -718,6 +718,13 @@
                   "object",
                   "null"
                 ]
+              },
+              "where": {
+                "description": "Filters {field,op,value}. A child group {child, match: any|none, where} holds filters one row of a child entity must meet together. On AMBIGUOUS_CHILD_SCOPE, resend an option's where from details.clarification.",
+                "items": {
+                  "type": "object"
+                },
+                "type": "array"
               }
             },
             "type": "object"

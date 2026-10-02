@@ -1467,11 +1467,17 @@ Grouping retains a narrower exception: a path that only goes down one-to-many ho
 (`order → order_item → product`), each hop joined on the declared key of its
 one side, lets a distinct parent count be grouped by the far dimension; the entity's key is what
 the engine de-duplicates on.
-At most one group or filter may cross a one-to-many hop. Negated child filters
-and `IS NULL` stay refused because "has a non-matching child" and "has no matching
-child" differ; the IR has no explicit `NOT EXISTS` predicate. A parent sum
-grouped by child dimensions, or a child value authored at parent grain, stays
-`MIXED_GRAIN_INVALID`.
+A query states which child rows its conditions mean with a child group in `where`
+(`{child, match: any|none, where}`, see
+[QUERY_IR_SCHEMA.md](QUERY_IR_SCHEMA.md#child-groups)); two or more positive plain filters
+on one child, or one negated one, are refused with `AMBIGUOUS_CHILD_SCOPE` and a
+clarification. Its readings are child groups, so it is offered only when a group on that
+child takes the plain filters' own route; otherwise the refusal is `MIXED_GRAIN_INVALID`,
+naming the `graph.path_preferences` row that records that route. A
+measure's own `filter` may cross a one-to-many hop with one positive condition;
+negated ones stay refused because "has a non-matching child" and "has no matching
+child" differ. A parent sum grouped by child dimensions, or a child value authored
+at parent grain, stays `MIXED_GRAIN_INVALID`.
 
 ### `graph.path_policy:` — hop ceiling
 

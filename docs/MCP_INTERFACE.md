@@ -723,6 +723,7 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 | Code | One-line description |
 |------|----------------------|
 | `AMBIGUOUS_ALIAS` | Alias resolves to multiple semantic objects; pick one from `details.candidates`. |
+| `AMBIGUOUS_CHILD_SCOPE` | Plain filters on one child entity across a one-to-many hop don't say which child rows they mean: two or more positive ones (the same row or separate ones), or one negated one ("has a row that is not X" or "has no row that is X"). `details.clarification.options` holds both readings, each as the query's whole rewritten `where`; resend one. Offered only when both answer for this caller. |
 | `AMBIGUOUS_PATH` | Several routes between root entity and target can answer differently and the package records none (`details.reason: route_decision_required`); `details.candidates` lists them, `details.meanings` reads each, `details.pins` holds the `graph.path_preferences` row that records each route whose row would load beside the package's rows, `details.conflicts_with` lists any other route with the rows its row would disagree with, and `details.hint` says how. |
 | `DUPLICATE_OUTPUT_ALIAS` | Two projected columns share an alias; rename one. |
 | `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. |

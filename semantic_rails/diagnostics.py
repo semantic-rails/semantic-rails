@@ -626,6 +626,8 @@ def recovery_hints_for_error(
             },
         ]
         return hints
+    if code == "AMBIGUOUS_CHILD_SCOPE":
+        return list(details.get("recovery_hints", []) or [])
     if code == "AMBIGUOUS_PATH":
         # A calendar-date group_by reached only through other facts: the time block first.
         return [

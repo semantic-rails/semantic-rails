@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterable, Mapping
 from functools import cache
 from typing import Any
 
-from .ast import normalize_query
+from .ast import every_filter, normalize_query, plain_filters
 from .compiler import BoundQuery, bind_query
 from .errors import SemanticLayerError
 from .request_context import context_from_policy_context
@@ -384,9 +384,13 @@ def _metric_constraint_violations(
                 }
             )
 
+    # A required filter must cut the query's own rows; a child group's condition cuts child
+    # rows, so it never meets one. Every condition, a group's included, must be allowed.
     where_rows = [
-        {"field": item.field, "op": item.op, "value": item.value} for item in list(query.where)
+        {"field": item.field, "op": item.op, "value": item.value}
+        for item in plain_filters(query.where)
     ]
+    condition_fields = [item.field for item in every_filter(query.where)]
     if "required_where" in policy_config:
         required_filters = _normalize_where_specs(policy_config.get("required_where"))
         missing_filters = [
@@ -405,7 +409,7 @@ def _metric_constraint_violations(
 
     if "allowed_where" in policy_config:
         allowed = set(_config_str_list(policy_config, "allowed_where"))
-        disallowed = [row["field"] for row in where_rows if row["field"] not in allowed]
+        disallowed = [field for field in condition_fields if field not in allowed]
         if disallowed:
             violations.append(
                 {"kind": "disallowed_where", "disallowed": disallowed, "allowed": sorted(allowed)}

@@ -6,7 +6,9 @@ context. The headings below keep old links working.
 
 ## Recommended Loop
 
-Moved to [Agent quickstart: Recommended Loop](AGENT_QUICKSTART.md#recommended-loop).
+Moved to [Agent quickstart: Recommended Loop](AGENT_QUICKSTART.md#recommended-loop). A refusal
+with `AMBIGUOUS_CHILD_SCOPE` is answered by resending one option's `where` from
+`details.clarification` ([Agent quickstart: Recommended Agent Policy](AGENT_QUICKSTART.md#recommended-agent-policy)).
 
 ## Plan Status And Detail
 

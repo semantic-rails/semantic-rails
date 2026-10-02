@@ -28,8 +28,8 @@
     },
     "where": {
       "type": "array",
-      "description": "Dimension-level filters. Each item targets a dimension id with op/value. Expression-shaped filters belong in metric_filters.",
-      "items": { "$ref": "#/$defs/WhereFilter" }
+      "description": "Dimension-level filters, and child groups. A filter targets a dimension id with op/value; a child group {child, match, where} says whether its conditions apply to the same row of a child entity. Expression-shaped filters belong in metric_filters.",
+      "items": { "oneOf": [{ "$ref": "#/$defs/WhereFilter" }, { "$ref": "#/$defs/ChildGroup" }] }
     },
     "metric_filters": {
       "type": "array",
@@ -111,6 +111,17 @@
           "items": { "type": ["string", "number", "boolean"] },
           "description": "Comparison literal. Scalar for comparison/LIKE ops; a list of scalars for IN / NOT IN (a bare scalar is accepted as a one-element list); omitted for IS NULL / IS NOT NULL. Objects are rejected — inline expression thresholds belong in metric_predicate.value inside metric_filters."
         }
+      }
+    },
+    "ChildGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["child", "match", "where"],
+      "description": "Conditions on one row of a child entity, reached across a one-to-many hop from the measure's entity. 'any' keeps a row with at least one child row meeting every condition (correlated EXISTS); 'none' keeps a row with no such child row (NOT EXISTS). Conditions are dimensions of the child, or of a many-to-one or one-to-one lookup from it; a lookup that finds no row reads NULL, and NULL fails a comparison. Groups do not nest. Several groups are separate conditions, ANDed with the other where items; beside a group nothing else may cross a one-to-many hop, and groups on different children are refused. Two or more positive plain filters on one child, or one negated plain filter on a child, are refused with AMBIGUOUS_CHILD_SCOPE, whose clarification offers each reading as a where list.",
+      "properties": {
+        "child": { "type": "string", "description": "Entity id of the child." },
+        "match": { "type": "string", "enum": ["any", "none"] },
+        "where": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/WhereFilter" } }
       }
     },
     "MetricFilter": {

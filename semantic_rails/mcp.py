@@ -182,6 +182,15 @@ QUERY_SCHEMA: dict[str, Any] = {
     ),
     "additionalProperties": True,
     "properties": {
+        "where": {
+            "type": "array",
+            "description": (
+                "Filters {field,op,value}. A child group {child, match: any|none, where} holds "
+                "filters one row of a child entity must meet together. On "
+                "AMBIGUOUS_CHILD_SCOPE, resend an option's where from details.clarification."
+            ),
+            "items": {"type": "object"},
+        },
         "time": {
             "type": ["object", "null"],
             "description": "Optional time: temporal_role, grain, start|end|range, fill, calendar_id. No declared time: INVALID_TEMPORAL_ROLE.",
