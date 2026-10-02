@@ -926,6 +926,22 @@ def _fanout_dedup_refusal(
             "or a measure whose rows are finer than its entity's key).",
             (grouped or selections)[0],
         )
+    # ClickHouse keeps one row per key before it aggregates. An aggregate_if's rows are one per
+    # key only when a measure of its model says so; without one, rows sharing a key could
+    # merge, which only a distinct count, a minimum or a maximum ignores.
+    if (
+        is_conditional_aggregate(measure)
+        and not measure.row_grain
+        and config.package.warehouse == "clickhouse"
+        and aggregation not in {"count_distinct", "min", "max"}
+    ):
+        return (
+            f"ClickHouse keeps one row per '{measure.entity}' key here, and no measure of its "
+            f"model declares the grain of its rows, so '{aggregation}' of {subject} could merge "
+            "rows that share a key. Use count_distinct, min or max, or declare a measure on "
+            "that model.",
+            (grouped or selections)[0],
+        )
     roots: list[Any] = [item.expression for item in query.select if item.expression is not None]
     roots += [item.expression for item in query.metric_filters if item.expression is not None]
     if (

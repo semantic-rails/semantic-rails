@@ -599,6 +599,39 @@ def test_clickhouse_refuses_child_filter_paths_requiring_exists(
     assert "ClickHouse" in caught.value.details["why_invalid"]
 
 
+def test_a_conditional_aggregate_of_rows_of_unknown_grain(package: Path) -> None:
+    """Without the paid measure nothing says receipts hold a row per payment. EXISTS reads each
+    payment once anyway; ClickHouse's one row per receipt would merge order 1's two payments of
+    5, so it refuses all but the aggregations that merging cannot change."""
+    config = load_package_config(str(package))
+    config = replace(config, measures=[m for m in config.measures if m.id != "measure.hop.paid"])
+    receipt = "entity.hop_receipt"
+    payments = _if("count_distinct", _compare("amount", ">", 0, receipt), "payment_id", receipt)
+    for expression, value in ((PAID_IF, 10), (payments, 2)):
+        query = {
+            "version": 1,
+            "select": [{"expression": expression, "as": "v"}],
+            "where": [BEVERAGE],
+        }
+        compiled = compile_query(config, Registry(config), query)
+        with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
+            assert conn.execute(compiled["prepared_query"].sql).fetchall() == [(value,)]
+    reference = """
+        SELECT SUM(p.amount), COUNT(DISTINCT p.payment_id) FROM payments p WHERE EXISTS (
+          SELECT 1 FROM order_items i WHERE i.order_id = p.order_id AND i.product_type = 'beverage')
+    """
+    assert _reference(package, reference) == [(10.0, 2)]
+    clickhouse = replace(config, package=replace(config.package, warehouse="clickhouse"))
+    query["select"] = [{"expression": payments, "as": "v"}]
+    sql = compile_query(clickhouse, Registry(clickhouse), query)["sql"]
+    assert "SELECT DISTINCT" in sql
+    query["select"] = [{"expression": PAID_IF, "as": "v"}]
+    with pytest.raises(SemanticLayerError) as caught:
+        compile_query(clickhouse, Registry(clickhouse), query)
+    assert caught.value.code == "MIXED_GRAIN_INVALID"
+    assert "could merge rows that share a key" in caught.value.details["why_invalid"]
+
+
 @pytest.mark.parametrize(
     "lookup",
     [
