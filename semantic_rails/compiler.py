@@ -86,6 +86,7 @@ from .compiler_parts.paths import (
     _leaf_time_role,
     _resolve_dimension_expr,
     _split_column_ref,
+    inner_lookups,
 )
 from .compiler_parts.post_aggregation import (
     _compile_post_expr,
@@ -3117,6 +3118,7 @@ def _conversion_event_cte(
             ]
         ),
         config,
+        measure_entity=None,
         time_spec=(
             query.time.to_dict()
             if query.time is not None and hasattr(query.time, "to_dict")
@@ -4219,9 +4221,9 @@ def _compile_predicate_source_ast(config: PackageConfig, payload: dict[str, Any]
     data in the predicate's scope), so a predicate and a projection of the same expression
     agree. An entity with no rows at all is absent from the source, and the anti-join reads it
     like the entities the source lists (``absent_entities_gate``). The value is internal, so it
-    never becomes a ``NO_DATA_IN_SCOPE`` output.
+    never becomes a ``NO_DATA_IN_SCOPE`` output. Its lookups join INNER (``inner_lookups``).
     """
-    with recording_zero_outputs():
+    with recording_zero_outputs(), inner_lookups():
         return _compile_query_sql_ast(config, payload, project_cut=True)
 
 

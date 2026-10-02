@@ -127,8 +127,12 @@ def test_invalid_temporal_role_is_reported_by_validate(runtime_factory):
             "measure.jaffle.order_count",
             "orders",
             "dimension.jaffle_product_type",
-            ["COUNT(DISTINCT jaffle_item.order_id)", "FROM jaffle_item"],
-            ["jaffle_order"],
+            [
+                "COUNT(DISTINCT jaffle_item.order_id)",
+                "FROM jaffle_item",
+                "INNER JOIN jaffle_order ON jaffle_item.order_id = jaffle_order.order_id",
+            ],
+            ["FROM jaffle_order"],
             "jaffle_item",
             id="order_count_by_product_type",
         ),
@@ -136,8 +140,12 @@ def test_invalid_temporal_role_is_reported_by_validate(runtime_factory):
             "measure.jaffle.customer_count",
             "customers",
             "dimension.jaffle_product_type",
-            ["COUNT(DISTINCT jaffle_order.customer_id)", "FROM jaffle_order"],
-            ["JOIN jaffle_customer"],
+            [
+                "COUNT(DISTINCT jaffle_order.customer_id)",
+                "FROM jaffle_order",
+                "INNER JOIN jaffle_customer ON jaffle_order.customer_id = jaffle_customer.customer_id",
+            ],
+            ["FROM jaffle_customer"],
             "jaffle_order",
             id="customer_count_by_product_type",
         ),
@@ -145,8 +153,13 @@ def test_invalid_temporal_role_is_reported_by_validate(runtime_factory):
             "measure.jaffle.customer_count",
             "customers",
             "dimension.jaffle_store_name",
-            ["COUNT(DISTINCT jaffle_order.customer_id)", "FROM jaffle_order", "JOIN jaffle_store"],
-            ["jaffle_storefront_session", "JOIN jaffle_customer"],
+            [
+                "COUNT(DISTINCT jaffle_order.customer_id)",
+                "FROM jaffle_order",
+                "INNER JOIN jaffle_customer ON jaffle_order.customer_id = jaffle_customer.customer_id",
+                "JOIN jaffle_store",
+            ],
+            ["jaffle_storefront_session", "FROM jaffle_customer"],
             "jaffle_order",
             id="customer_count_by_store",
         ),
@@ -249,10 +262,10 @@ def test_entity_in_terms_of_order_count_by_product_type_allows_root_lookup_filte
         assert report["ok"] is True
         rendered = report["explain"]["rendered_sql"]
         assert "FROM jaffle_item" in rendered
+        # An item whose order has no record counts no order; the store lookup past the order
+        # keeps its rows, and the filter on the store drops those it finds no match for.
         assert "INNER JOIN jaffle_order ON jaffle_item.order_id = jaffle_order.order_id" in rendered
-        assert (
-            "INNER JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id" in rendered
-        )
+        assert "LEFT JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id" in rendered
         assert "jaffle_store.store_name = 'Brooklyn'" in rendered
     finally:
         runtime.close()
@@ -1316,7 +1329,7 @@ def test_anchored_ratio_delays_dimension_joins_and_prunes_predicate_context(pack
 
     predicate_section = rendered.split("predicate_jaffle_store_set_1 AS (", 1)[0]
     assert "jaffle_store.store_name" not in predicate_section
-    assert "INNER JOIN jaffle_store ON" in rendered
+    assert "LEFT JOIN jaffle_store ON" in rendered
     assert "LEFT JOIN predicate_jaffle_store_set_1" in rendered
     assert "FULL OUTER JOIN" not in rendered
     assert compiled["explain"].performance_plan["full_outer_alignments"] == 0

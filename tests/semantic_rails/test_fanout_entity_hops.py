@@ -990,6 +990,27 @@ def test_a_lookup_beside_a_child_filter_keeps_parents_it_finds_no_match_for(
     assert ungrouped == _normal([(sum(row[-1] for row in rows),)])
 
 
+def test_a_lookup_beside_a_child_grouping_keeps_parents_it_finds_no_match_for(
+    package: Path,
+) -> None:
+    """Grouped by type and coupon, the de-duplicated leaf keeps orders 4 and 6 (a beverage
+    each, no coupon) under a NULL coupon, so its groups add up to the count by type alone."""
+    by_coupon = _rows(package, {"select": [_measure("order_count")], "group_by": [TYPE, COUPON]})
+    reference = """
+        SELECT i.product_type, c.coupon_id, COUNT(DISTINCT o.order_id) FROM orders o
+        JOIN order_items i ON i.order_id = o.order_id LEFT JOIN coupons c ON c.code = o.coupon_code
+        GROUP BY 1, 2
+    """
+    assert by_coupon == _reference(package, reference)
+    assert ("beverage", None, 2) in by_coupon
+    by_type: dict[str, int] = {}
+    for product_type, _coupon, orders in by_coupon:
+        by_type[product_type] = by_type.get(product_type, 0) + orders
+    assert _rows(package, {"select": [_measure("order_count")], "group_by": [TYPE]}) == sorted(
+        by_type.items()
+    )
+
+
 def test_a_lookup_joined_outside_exists_is_scanned_again_inside_it(package: Path) -> None:
     """Customers are joined for the group and read again on the path to sessions."""
     query = {

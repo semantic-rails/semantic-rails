@@ -2242,6 +2242,10 @@ server = [
 snowflake = [
     { name = "snowflake-connector-python" },
 ]
+snowflake-adbc = [
+    { name = "adbc-driver-manager" },
+    { name = "pyarrow" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -2261,6 +2265,7 @@ dev = [
 requires-dist = [
     { name = "adbc-driver-manager", marker = "extra == 'all'", specifier = "==1.12.0" },
     { name = "adbc-driver-manager", marker = "extra == 'postgres'", specifier = "==1.12.0" },
+    { name = "adbc-driver-manager", marker = "extra == 'snowflake-adbc'", specifier = "==1.12.0" },
     { name = "adbc-driver-postgresql", marker = "extra == 'all'", specifier = "==1.12.0" },
     { name = "adbc-driver-postgresql", marker = "extra == 'postgres'", specifier = "==1.12.0" },
     { name = "clickhouse-connect", marker = "extra == 'all'", specifier = ">=1.3.0" },
@@ -2273,6 +2278,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.27.0,<2" },
     { name = "pyarrow", marker = "extra == 'all'", specifier = ">=25.0.1" },
     { name = "pyarrow", marker = "extra == 'postgres'", specifier = ">=25.0.1" },
+    { name = "pyarrow", marker = "extra == 'snowflake-adbc'", specifier = ">=25.0.1" },
     { name = "pyathena", marker = "extra == 'all'", specifier = ">=3.32.0" },
     { name = "pyathena", marker = "extra == 'athena'", specifier = ">=3.32.0" },
     { name = "pydantic", specifier = ">=2.13.0" },
@@ -2287,7 +2293,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'all'", specifier = ">=0.49.0" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.49.0" },
 ]
-provides-extras = ["server", "snowflake", "postgres", "bigquery", "databricks", "athena", "clickhouse", "repl", "all"]
+provides-extras = ["server", "snowflake", "snowflake-adbc", "postgres", "bigquery", "databricks", "athena", "clickhouse", "repl", "all"]
 
 [package.metadata.requires-dev]
 dev = [
