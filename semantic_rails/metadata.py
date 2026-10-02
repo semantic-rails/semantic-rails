@@ -27,6 +27,7 @@ from .compiler import (
     _reduced_context_entities,
     _requires_query_time,
     _time_bound_relationship_ids,
+    bind_query,
     query_route_rows,
 )
 from .diagnostics import relationship_contract_payload
@@ -3303,6 +3304,18 @@ def _build_options_payload(
             }
         )
 
+    if raw_query.get("route_decisions"):
+        # A patch that would leave one of the caller's route rows unused is refused as it
+        # stands: offer it blocked with that refusal, never with the row stripped.
+        for bucket in (recommended, available):
+            for row in list(bucket):
+                refusal = _unused_route_decision(runtime, row.get("query_patch"))
+                if refusal:
+                    bucket.remove(row)
+                    row.pop("query_patch")
+                    row.update(available=False, blocked_reason=refusal, rationale=[refusal])
+                    if include_blocked:
+                        blocked.append(row)
     recommended = sorted(
         recommended,
         key=lambda row: (-float(row.get("rank", 0.0)), row.get("label", ""), row.get("id", "")),
@@ -3356,6 +3369,18 @@ def _build_options_payload(
         "blocked": blocked if include_blocked else [],
         "query_patches": query_patches[:shortlist_limit],
     }
+
+
+def _unused_route_decision(runtime: Runtime, patch: dict[str, Any] | None) -> str:
+    """The ``route_decision_unused`` refusal ``patch`` would get, naming the row, else ``""``."""
+    if not patch or not patch.get("route_decisions"):
+        return ""
+    try:
+        bind_query(runtime._config, runtime.registry, patch)
+    except SemanticLayerError as exc:
+        if exc.details.get("reason") == "route_decision_unused":
+            return str(exc)
+    return ""
 
 
 def _select_expr_for_choice(runtime: Runtime, chosen: dict[str, Any]) -> dict[str, Any]:

@@ -942,6 +942,31 @@ def test_discovery_follows_a_query_row(tmp_path):
             assert row["blocked_reason"] == "route decision required"
 
 
+def test_every_available_build_options_patch_validates(tmp_path):
+    """A patch that would leave the caller's route row unused is offered blocked with that
+    refusal, never with the row stripped; every patch offered as available validates."""
+    runtime = Runtime.from_path(str(_write_package(tmp_path)))
+    partial = {
+        "version": 1,
+        "select": BALANCE_BY_DISTRICT["select"],
+        "route_decisions": [DIAMOND_ROW],
+    }
+    payload = build_options_payload(
+        runtime, partial_query=partial, step="group_by", verbosity="full", limit=50
+    )
+    offered = [row for bucket in ("recommended", "available") for row in payload[bucket]]
+    assert {"dimension.bank_district_name", "dimension.bank_district_id"} <= {
+        row["id"] for row in offered
+    }
+    for row in offered:
+        assert row["query_patch"]["route_decisions"] == [DIAMOND_ROW]
+        assert runtime.validate(row["query_patch"])["ok"] is True, row["id"]
+    (owner,) = [row for row in payload["blocked"] if row["id"] == "dimension.bank_owner_name"]
+    assert owner["available"] is False and "query_patch" not in owner
+    assert "route_decisions[0]" in owner["blocked_reason"]
+    assert "never walks" in owner["blocked_reason"]
+
+
 # --- Live valid values read through the query's own route ---------------------------------
 
 DISTRICTS_BY_OWNER = (
