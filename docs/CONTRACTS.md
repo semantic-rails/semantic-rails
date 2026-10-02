@@ -23,6 +23,8 @@ The Python distribution version, package schema, Query IR, HTTP API, query MCP,
 semantic contract, and validation-report format are separate version
 identities. A release may add behavior without advancing every contract.
 
+The [result-value contract](QUERY_IR_SCHEMA.md#result-values) defines JSON rows and `column_types`.
+
 ## Semantic validation ownership
 
 The engine is the sole producer of the framework-neutral `semantic` section:
@@ -134,6 +136,29 @@ python scripts/check_contract_compatibility.py \
 
 The compatibility checker is deliberately conservative. Contract owners review
 any flagged change and either preserve compatibility or introduce a new major.
+
+## Warehouse wait compatibility
+
+The optional `connect_timeout_seconds` and `read_timeout_seconds` connection
+options are additive and leave contract artifact shapes unchanged. Native
+adapter defaults are 10 seconds for connection operations and 65 seconds for
+network operations/query waits where the driver supports them; they are
+per-operation bounds rather than a universal elapsed-time deadline. Longer
+queries may require larger configured waits. Postgres/Snowflake server
+statement limits remain opt-in and accept an explicit `"0"` (defer to the
+server on Postgres, disable the session limit on Snowflake); named Snowflake
+profiles retain inherited settings unless a numeric timeout override is
+authored. Named profiles refuse a nonempty authored `query_tag` with redacted
+`INVALID_CONFIG` before connecting; configure `QUERY_TAG` in the profile.
+Direct connections retain their connector session-parameter tag support.
+
+See [Native adapter timeouts](PACKAGE_AUTHORING.md#native-adapter-timeouts) for
+request margins, cancellation, driver retry limits and excluded adapters.
+
+Named Snowflake profile connections are cached only after any authored server
+statement timeout is applied successfully. Cursor creation, setup or cleanup
+failure discards the session, including when closing the connection also fails;
+later requests must connect again.
 
 ## Concurrent cross-repository changes
 

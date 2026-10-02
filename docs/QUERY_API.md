@@ -404,10 +404,6 @@ At least one of `select`, `group_by`, or `time` must be present.
     "calendar_id": "default"
   },
   "temporal_role_overrides": {},
-  "path_policy": {
-    "preference": "fewest_hops",
-    "ask_if_ambiguous": true
-  },
   "order_by": [
     {
       "field": "orders",
@@ -475,6 +471,12 @@ per-tenant policies without forking; the OSS default has no limits.
 - a projected alias like `orders`
 - a grouped dimension ID like `dimension.jaffle_store_name`
 - the stable reserved alias `time` whenever the query has a time axis
+
+When `order_by` is omitted or empty, a query with a time axis returns rows
+in ascending time-bucket order, followed by its `group_by` dimensions in their
+stated order (also ascending). This applies on every warehouse, including
+`time.fill` results. An explicit `order_by` replaces this default. A time window
+without a time axis (one total per group) has no default ordering.
 
 Output column names must be unique across:
 
@@ -1161,6 +1163,17 @@ The response `warnings` array can carry these non-error signals:
 - `SEMANTIC_CAVEATS_TRUNCATED` — fires when more caveats matched than
   the current verbosity returns. Increase `verbosity` to inspect the
   omitted advisory context.
+- `ROUTE_COLOCATED_KEY`, `ROUTE_RECORDED` — severity `info`, at `compact`
+  and `full` verbosity: the query reads an entity pair with two or more
+  routes, and the engine used the start entity's own key or the package's
+  `graph.path_preferences` rows. `details.route` is the chosen route; the
+  message reads it (`Order → Store (own key)`). On `ROUTE_COLOCATED_KEY`,
+  `details.alternatives` holds the row that would make each other route the
+  default when that row would load beside the package's rows, and
+  `details.conflicts_with` lists any other route with the rows its row would
+  disagree with; on `ROUTE_RECORDED` for a route inherited from rows for the pairs
+  it walks through, `details.rows` names them. See
+  [the route rule](PACKAGE_AUTHORING.md#the-route-rule).
 
 HTTP failures return:
 

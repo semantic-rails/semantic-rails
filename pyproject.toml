@@ -65,8 +65,15 @@ server = [
 snowflake = [
   "snowflake-connector-python>=4.6.0",
 ]
+# Opt-in connection kind; install its native driver separately with dbc.
+snowflake-adbc = [
+  "adbc-driver-manager==1.12.0",
+  "pyarrow>=25.0.1",
+]
 postgres = [
-  "psycopg[binary]>=3.3.4",
+  "adbc-driver-manager==1.12.0",
+  "adbc-driver-postgresql==1.12.0",
+  "pyarrow>=25.0.1",
 ]
 bigquery = [
   "google-cloud-bigquery>=3.41.0",
@@ -90,7 +97,9 @@ repl = [
 all = [
   "uvicorn>=0.49.0",
   "snowflake-connector-python>=4.6.0",
-  "psycopg[binary]>=3.3.4",
+  "adbc-driver-manager==1.12.0",
+  "adbc-driver-postgresql==1.12.0",
+  "pyarrow>=25.0.1",
   "google-cloud-bigquery>=3.41.0",
   "databricks-sql-connector>=4.3.0",
   "pyathena>=3.32.0",
@@ -169,6 +178,7 @@ mf2sr = ["py.typed"]
 [dependency-groups]
 dev = [
   "pytest>=9.1.0",
+  "pytest-timeout>=2.4.0",
   "pytest-xdist>=3.8.0",
   "uvicorn>=0.49.0",
   "ruff>=0.15.17",
@@ -186,6 +196,8 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests/semantic_rails", "tests/mf2sr"]
+timeout = 300
+timeout_method = "thread"
 markers = [
   "integration: cross-warehouse conformance suite in tests/integration (`make test-integration`)",
 ]

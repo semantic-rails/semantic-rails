@@ -27,7 +27,6 @@ and the comparison fixtures: see
 | `limit` | `integer` (or `null`) | Optional row cap. |
 | `time` | `TimeBlock` (or `null`) | Query-level time anchor: temporal_role + grain + bounds. `start` is inclusive, `end` is exclusive. |
 | `temporal_role_overrides` | `object<measure_id, temporal_role_id>` | Per-measure clock bindings. |
-| `path_policy` | `object` | Path resolution preferences. |
 | `policy_context` | `object` | Caller-supplied access context (`environment`, `audience`, `roles`, `now`, ...). |
 | `limits` | `object` | Per-request `statement_timeout_ms`, `max_rows`. |
 | `verbosity` | `"summary"\|"minimal"\|"compact"\|"full"` | Response detail level (default `compact`). On `catalog`, `summary` returns counts + flat ID lists per kind (under 10KB) — recommended for cold-start orientation. |
@@ -43,6 +42,25 @@ surface as structured errors instead of silently no-op'ing. There is
 top-level extras accepted by the runtime and schema are
 underscore-prefixed annotations such as `_note`, which are ignored before
 planning and SQL generation.
+
+### Removed: `path_policy`
+
+`path_policy` (`preference`, `ask_if_ambiguous`) is no longer a Query IR key,
+in v1 or preview v2. This is a breaking change made within v1: before 1.0 the
+project follows Semantic Versioning's major-zero rule (see
+[CHANGELOG.md](../CHANGELOG.md)), under which a 0.x release may change the
+public API. The key never changed an answer. A query that still sends it is
+refused with `INVALID_QUERY` and `details.unsupported_keys: ["path_policy"]`;
+delete it.
+
+A query can't choose a join route. The package records one with a
+`graph.path_preferences` row, which also decides every route that walks its
+pair. Without a row, a query whose routes can answer differently uses the
+start entity's one direct key or is refused with `AMBIGUOUS_PATH` (see
+[the route rule](PACKAGE_AUTHORING.md#the-route-rule)).
+Where the engine chose one of two or more routes, compact and full responses
+carry an info note, `ROUTE_COLOCATED_KEY` or `ROUTE_RECORDED`, with the chosen
+route in `details.route`.
 
 ## Common gotchas
 
@@ -164,12 +182,90 @@ with `INVALID_QUERY` and the `USE_NULL_TEST_OR_SCALAR` recovery hint, since they
 would always evaluate to unknown in SQL. `IS DISTINCT FROM`, `IS NOT DISTINCT FROM`
 and `<=>` already handle null, so they pass through unchanged. A comparison
 between two nullable columns retains ordinary SQL three-valued semantics, as does
-a comparison against a computed null such as `NOT(NULL)`: `FALSE != NOT(NULL)`
-evaluates to unknown (NULL) and retains no rows when used as a filter.
+a comparison against a computed null such as `NOT(NULL)`: comparing it to `FALSE`
+with `!=` evaluates to unknown (NULL) and retains no rows when used as a filter.
+`NOT(NULL)` renders as `CAST(NULL AS Nullable(Bool))` on
+ClickHouse and `CAST(NULL AS BOOLEAN)` on other warehouses.
+Boolean `and` / `or` expressions require at least two arguments; zero or
+single-argument forms, including negated forms, are refused before SQL with
+`INVALID_EXPRESSION_AST` and the message "and/or need at least two arguments".
 A `metric_predicate` whose `value` is null refuses with `INVALID_METRIC_PREDICATE`:
 its input reads `0` for an entity with no rows and `NULL` for one with no data, so
 a count of none is `= 0`, and a null test belongs inside the input as an
 `aggregate_if` condition.
+
+## Scalar `call` expressions
+
+`{"kind":"call","name":"ROUND","args":[<expression>,{"kind":"literal","value":1}]}`
+applies a scalar function. Names are case-insensitive. Each warehouse accepts
+the common names below plus its additions; aggregate, window and table
+functions must use their semantic expression forms instead of `call`.
+`distinct` is not supported on scalar calls. An unsupported name returns
+`INVALID_EXPRESSION_AST` with `details.allowed` equal to the warehouse's
+accepted set, including `CAST`.
+
+Common names: `ABS`, `CAST`, `CEIL`, `CEILING`, `COALESCE`, `CONCAT`, `EXP`,
+`FLOOR`, `LENGTH`, `LN`, `LOG`, `LOWER`, `NULLIF`, `POWER`, `REPLACE`, `ROUND`,
+`SQRT`, `SUBSTR`, `SUBSTRING`, `TRIM`, `UPPER`.
+
+| Warehouse | Additions or exceptions |
+| --- | --- |
+| DuckDB, MotherDuck, DuckLake | `DATE_PART`, `DATE_TRUNC`, `LEFT`, `RIGHT`, `JSON_EXTRACT`, `JSON_EXTRACT_STRING`, `SPLIT`, `STRING_SPLIT`, `STR_SPLIT` |
+| Postgres | `DATE_PART`, `DATE_TRUNC`, `LEFT`, `RIGHT` |
+| Snowflake | `DATE_PART`, `DATE_TRUNC`, `LEFT`, `RIGHT`, `SPLIT` |
+| BigQuery | `LEFT`, `RIGHT`, `JSON_EXTRACT`, `SPLIT` |
+| Databricks | `DATE_PART`, `DATE_TRUNC`, `LEFT`, `RIGHT`, `SPLIT` |
+| Athena | `DATE_TRUNC`, `JSON_EXTRACT`, `SPLIT` |
+| ClickHouse | No additions; `TRIM` is excluded because its plain uppercase spelling is unavailable |
+
+Use each warehouse's scalar argument signatures. For example, Athena `LOG`
+takes a base and a value. Engine-generated SQL has a separate function list;
+it does not advertise functions that a client can call.
+
+Numeric conversion uses exactly two args:
+
+```json
+{"kind":"call","name":"CAST","args":[
+  {"kind":"column","column":"amount_text","entity":"entity.order"},
+  {"kind":"literal","value":"DOUBLE"}
+]}
+```
+
+The type must be a string literal naming `DOUBLE`, `DECIMAL(p,s)`, `INTEGER`,
+`BIGINT` or `VARCHAR` (case-insensitive). Decimal precision is 1–38 and scale
+is 0–precision. `INTEGER` and `BIGINT` both select a signed 64-bit type.
+The rendered targets are:
+
+| Warehouse | `DOUBLE` | `DECIMAL(p,s)` | `INTEGER`, `BIGINT` | `VARCHAR` |
+| --- | --- | --- | --- | --- |
+| DuckDB, MotherDuck, DuckLake, Snowflake, Athena | `DOUBLE` | `DECIMAL(p,s)` | `BIGINT` | `VARCHAR` |
+| Postgres | `FLOAT8` | `DECIMAL(p,s)` | `BIGINT` | `VARCHAR` |
+| BigQuery | `FLOAT64` | Refused (`INVALID_EXPRESSION_AST`) | `INT64` | `STRING` |
+| Databricks | `DOUBLE` | `DECIMAL(p,s)` | `BIGINT` | `STRING` |
+| ClickHouse | `Nullable(Float64)` | `Nullable(DECIMAL(p,s))` | `Nullable(Int64)` | `Nullable(String)` |
+
+BigQuery only supports parameterized decimal types on columns and script
+variables, not CAST targets. Decimal casts are refused rather than silently
+discarding the authored precision and scale; use `DOUBLE` for approximate
+conversion or declare a parameterized decimal column in the warehouse.
+See [BigQuery parameterized type rules](https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/data-types#parameterized_data_types).
+ClickHouse emits
+nullable targets so NULL inputs remain NULL. Invalid conversions fail execution;
+CAST does not silently return NULL. `DATE`, `TIMESTAMP`, other target types, non-literal targets and
+`TRY_CAST` are refused. The same AST works in package expressions,
+conditional aggregates and post-aggregation expressions.
+
+Scalar-call argument types and overload resolution are checked by the warehouse
+at execution, for query, package and relation-pipeline expressions alike.
+Compilation checks the allowed function name and CAST shape without inferring
+argument categories from literals, dimensions or nested calls. Use CAST when an
+explicit conversion is required. Warehouse execution failures use the stable
+`QUERY_EXECUTION_ERROR` code and remain redacted.
+
+A top-level request select containing only literals, literal arithmetic or casts
+of literals, with no grouping, where, time or metric filter, returns `INVALID_QUERY` with
+`details.reason: "literal_only_select"` and the message “A select of literals
+only reads no data; add a measure, a group_by dimension or time”.
 
 ## MetricFilter expressions
 
@@ -227,13 +323,18 @@ Supported `op` values (all compile end-to-end):
 - A dimension looked up through a many-to-one or one-to-one relationship is
   NULL on a row whose lookup found no match, and a filter treats the row as
   any other NULL: `IS NULL` keeps it (an anti-join, such as boardings with no
-  crew-roster row), while `=`, `!=`, `IN` and `NOT IN` exclude it. This holds for
-  a `group_by` or `where` dimension of the measure. Other reads of a lookup
-  (a time role, a metric filter and its context, a conversion, a qualified
-  set) leave such a row out, as before, and so does a dimension any rollup of the
-  measure's model holds, even at a grain that rollup can never answer. ClickHouse is the exception: its
-  lookups stay inner joins, so it drops such a row from every query that reads
-  the looked-up dimension.
+  crew-roster row), while `=`, `!=`, `IN` and `NOT IN` exclude it. This holds
+  wherever the dimension is read: a `group_by`, a `where`, a measure's own filter,
+  a segment, an `aggregate_if` or a measure expression, with or without metric
+  filters. A time role read through a lookup leaves such a row out, as before;
+  so do a metric filter's own query and the entities its set is matched on, a
+  distribution's per-entity values, a conversion, and a dimension any rollup of
+  the measure's model holds, even at a grain that rollup can never answer (a
+  rollup of another model, or any rollup in a query of dimensions alone, keeps
+  the row).
+  ClickHouse is the exception: its lookups
+  stay inner joins, so it drops such a row from every query that reads the
+  looked-up dimension.
 - Objects are rejected — inline expression thresholds belong in
   `metric_filters` (`metric_predicate`).
 
@@ -243,10 +344,9 @@ children never multiply a parent count or sum. This also applies to an aggregate
 own `filter`, and to non-temporal paths that look up a parent before reaching its
 children or join on an alternate key. Each hop must declare `N:1`, `1:N` or `1:1`;
 unknown, unsafe and temporal paths retain their refusals. A lookup-before-child
-or alternate-key path requires exactly one candidate route after authored
-`graph.path_preferences` pins. When several routes remain, the query retains
-its `MIXED_GRAIN_INVALID` refusal; a shorter route does not establish which
-children the filter means. This also applies beside a lookup and to an
+or alternate-key path is the route the route rule chose; when the rule can't
+choose, the query is refused with `AMBIGUOUS_PATH`; a shorter route does not
+establish which children the filter means. This also applies beside a lookup and to an
 aggregate's own filter.
 ClickHouse retains a deduplicated-parent leaf for servers without correlated
 subqueries. Key-based descents retain their existing SQL shape, including
@@ -254,6 +354,18 @@ beside lookup selections, groupings and filters; those lookups remain inner
 joins. It refuses paths that look up a parent before reaching children and
 paths joined off the parent's declared key, including beside a lookup, with
 `MIXED_GRAIN_INVALID`.
+
+Every leaf of an expression is rewritten the same way. An `aggregate_if` keeps
+the rows of its own entity that have a matching child, so a sum of order amounts
+under a refund-type filter adds each order once, and each operand of a `ratio`
+or arithmetic gets its own `EXISTS`. The route, negation, single-crossing,
+row-policy and ClickHouse rules above apply to each leaf. Grouped by a child
+dimension, an `aggregate_if` follows the grouped rule: only `count_distinct`.
+Its rows have the grain the measures of its entity's model declare. When that
+grain is finer than the entity's key, the rewrite refuses it with
+`MIXED_GRAIN_INVALID`, as it refuses those measures. On ClickHouse, a model
+without measures leaves the grain unknown, so only `count_distinct`, `min` and
+`max` are answered there.
 
 At most one group or filter may cross a one-to-many hop. Negated child predicates
 and child `IS NULL` tests remain `MIXED_GRAIN_INVALID`: "has a child that is not X"
@@ -750,3 +862,81 @@ for e in errors:
 
 The repo's regression suite runs the same loop over every committed
 IR; see `tests/semantic_rails/test_query_ir_schema.py`.
+
+## Result values
+
+HTTP query responses, MCP `execute`, the Python `Runtime.query` SDK, and CLI JSON
+output share one result-value policy. Segment previews use the same policy.
+Python callers receive JSON-ready values, including strings for dates and times.
+`column_types` maps each result field to its observed logical type and survives
+all verbosity levels and MCP record/column row formats. It is separate from
+`output_columns`, which describes semantic lineage and authored types.
+
+| Source value | JSON value | `column_types` metadata |
+|---|---|---|
+| Decimal column | Canonical decimal strings, without redundant fractional zeros, for every non-null cell | `{"type":"decimal"}` |
+| Integer column | Integer JSON numbers, including values larger than binary64's exact integer range | `{"type":"integer"}` |
+| Float/double column | Finite JSON numbers | `{"type":"float"}` |
+| Aware timestamp | ISO 8601 string, normalized to the query time zone; UTC with `+00:00` when no zone is available | `{"type":"timestamp","timezone":"aware"}` |
+| Naive timestamp | ISO 8601 string with `T` and no offset; no zone is inferred | `{"type":"timestamp","timezone":"naive"}` |
+| Date | `YYYY-MM-DD` | `{"type":"date"}` |
+| Time | ISO 8601 string; aware times normalized to UTC with offset, naive times without offset | `{"type":"time","timezone":"aware"}` or `"naive"` |
+| Interval (`timedelta`) | Signed ISO 8601 duration, e.g. `P1DT0H0M2.000003S`; exact microseconds, days/hours/minutes/seconds | `{"type":"interval"}` |
+| SQL NULL | `null` | Does not replace a column's non-null type |
+| Text / boolean | String / boolean, unchanged | `{"type":"string"}` / `{"type":"boolean"}` |
+| Binary | Base64 string | `{"type":"binary","encoding":"base64"}` |
+| UUID | Lowercase, hyphenated string | `{"type":"uuid"}` |
+| JSON array / object | JSON-native structure | `{"type":"array"}` / `{"type":"object"}` |
+
+A column's JSON type follows the driver's result type: DECIMAL/NUMERIC becomes
+canonical strings; FLOAT/DOUBLE and INTEGER become JSON numbers. Authored types
+never convert, re-encode or refuse a value. For mixed numeric driver values,
+Decimal takes precedence over float, then integer, for the entire column.
+An integer mixed with floats converts only if `float(n) == n`; otherwise the
+column refuses with `RESULT_VALUE_UNSUPPORTED` rather than rounding the integer.
+`Decimal("0.10")` becomes `"0.1"` and `Decimal("9007199254740993")` becomes
+`"9007199254740993"`; a native integer `9007199254740993` remains a JSON number.
+Consumers that use binary64 must read integer JSON tokens without first rounding
+them to float. Numeric-looking text remains text with type `string`, even when
+authored as an integer dimension.
+
+Inside arrays and objects, native integers remain exact JSON integer tokens,
+including `9007199254740993`; they do not pass through binary64 conversion.
+Booleans remain booleans, and nested decimal/float values retain their normalization.
+
+The Postgres ADBC adapter accepts only Arrow scalar types with exact mappings:
+integers, decimals (including PostgreSQL NUMERIC stored as text and converted
+to `Decimal`), float32/float64, text, booleans, date32, microsecond timestamps
+with or without a time zone, month-day-nanosecond intervals, and NULL.
+Other Arrow types, including lists, structs, maps, nested NUMERIC, JSON/JSONB
+and unknown extensions, refuse with `RESULT_TYPE_UNSUPPORTED` before rows
+are read, even for empty or all-null results. The error names the column and
+Arrow type in `details.column` and `details.type`, without exposing values.
+Intervals still refuse with `RESULT_VALUE_UNSUPPORTED` when their duration
+cannot be represented as an exact Python `timedelta`.
+
+The same aggregate can have a different SQL result type per warehouse: `AVG`
+is DOUBLE on DuckDB and NUMERIC on Postgres. `column_types` reports the driver's
+result type. Cross-warehouse conformance and package tests compare numeric
+columns numerically using this metadata, preserving the distinction from text.
+
+The engine-derived time-bucket hint (`semantic_id` starting `temporal_role.`)
+is the only column hint used for encoding: a driver's DATE becomes a naive
+midnight timestamp, and ISO timestamp text is parsed with its complete seconds
+fraction, including precision beyond Python's microseconds. Aware values
+preserve the instant in the query's time zone, so month buckets retain their
+own first day. Other date/time values follow their driver types; authored
+temporal types do not parse text. Nonstandard fractional clocks and fractional
+zone offsets in bucket text that cannot be retained refuse with
+`RESULT_VALUE_UNSUPPORTED` before parsing.
+Intervals represent the duration provided by the driver; calendar months/years
+are not inferred from a `timedelta`.
+
+Metadata is inferred from returned values, not the warehouse catalog: an
+all-null column has type `null`, and an empty result has `column_types: {}`.
+Nulls do not erase observed types. Unsupported values, non-finite numbers,
+conflicting non-null column types (including mixed timestamp awareness), and
+nested values requiring typed string metadata inside arrays/objects refuse with
+`RESULT_VALUE_UNSUPPORTED`; raw values never appear in the error. This guard
+also applies to injected adapters, preventing transport stringification from
+silently changing a result's meaning.

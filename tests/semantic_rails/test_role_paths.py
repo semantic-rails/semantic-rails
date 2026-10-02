@@ -3,9 +3,8 @@
 A leg has an origin and a destination airport, both keys into one airports
 table. Neither role is the "right" airport for a question about a leg's city,
 so the loader keeps both relationships and a query that could use either one
-is refused instead of answered from whichever was declared last. Pinning a
-route (``path_preferences`` or a per-relationship ``path_preference``) makes
-the query answerable.
+is refused instead of answered from whichever was declared last. Recording
+the route in ``graph.path_preferences`` makes the query answerable.
 
 Gold values come from plain SQL over the seed, not from the engine.
 """
@@ -30,6 +29,7 @@ from semantic_rails.compiler_parts.paths import (
 from semantic_rails.config import load_package_config, normalize_package
 from semantic_rails.config_validation import _compiled_package_warnings
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.fanout import resolve_path, resolve_route
 from semantic_rails.runtime import Runtime
 
 SEED_SQL = """
@@ -184,7 +184,6 @@ def _write_package(
     *,
     explicit: tuple[str, ...] = ("origin", "destination"),
     inferred_origin: bool = False,
-    preferences: dict[str, int] | None = None,
     path_preferences: str = "",
     reverse: tuple[str, ...] = (),
     extra_seed: str = "",
@@ -193,13 +192,11 @@ def _write_package(
 ) -> Path:
     """Legs and airports. ``explicit`` lists the roles authored in
     ``graph.relationships`` in declaration order; ``inferred_origin`` instead
-    lets the origin come from the leg model's ``entities:`` block.
-    ``preferences`` sets a role's relationship ``path_preference``; ``reverse`` lists roles
+    lets the origin come from the leg model's ``entities:`` block. ``reverse`` lists roles
     declared from the airport's side (``[airport, leg]``); ``extra_seed`` is more seed SQL;
     ``destination_target`` is the airport column the destination role joins to (a column
     other than the key gives a role the key-column filter alone would not see);
     ``gate_hop`` adds a second route from a leg to an airport, through the leg's gate."""
-    preferences = preferences or {}
     if gate_hop:
         extra_seed += GATE_SEED_SQL
     pkg = root / "air"
@@ -244,8 +241,6 @@ def _write_package(
             *extra,
             f"      target: [{target}]",
         ]
-        if role in preferences:
-            relationship_lines.append(f"      path_preference: {preferences[role]}")
     for role in reverse:
         name, _ = _RELATIONSHIPS[role]
         relationship_lines += [
@@ -399,7 +394,6 @@ def test_query_through_two_roles_is_refused_whatever_the_declaration_order(tmp_p
     assert all(len(path) == 1 for path in err.details["candidates"])
     hint = err.details["hint"]
     assert "path_preferences" in hint
-    assert "path_preference" in hint
     assert all(rel_id in str(err) for rel_id in candidates)
 
 
@@ -418,23 +412,20 @@ def test_explicit_relationship_on_the_inferred_columns_replaces_it(tmp_path):
     assert _seats_by_city(runtime) == GOLD_BY_ORIGIN
 
 
-def _pin(role: str, method: str, layout: str) -> dict:
+def _pin(role: str, layout: str) -> dict:
     """``_write_package`` arguments that pin ``role``: a ``path_preferences`` row for the
-    pair, or a lower ``path_preference`` on that role's relationship (the inferred origin
-    has none, so its pin raises the destination's instead)."""
-    if method == "pair":
-        inferred = AUTHORED_LAYOUTS[layout].get("inferred_origin")
-        origin = "relationship.legs_airport" if inferred else ORIGIN
-        relationship = DESTINATION if role == "destination" else origin
-        return {
-            "path_preferences": (
-                "  path_preferences:\n"
-                "    - source_entity: leg\n"
-                "      target_entity: airport\n"
-                f"      relationship_path: [{relationship}]\n"
-            )
-        }
-    return {"preferences": {"destination": 10 if role == "destination" else 200}}
+    pair."""
+    inferred = AUTHORED_LAYOUTS.get(layout, {}).get("inferred_origin")
+    origin = "relationship.legs_airport" if inferred else ORIGIN
+    relationship = DESTINATION if role == "destination" else origin
+    return {
+        "path_preferences": (
+            "  path_preferences:\n"
+            "    - source_entity: leg\n"
+            "      target_entity: airport\n"
+            f"      relationship_path: [{relationship}]\n"
+        )
+    }
 
 
 def _rows(runtime: Runtime, query: dict, columns: list[str], *, key=None) -> list[tuple]:
@@ -458,16 +449,13 @@ def test_every_query_through_two_roles_is_refused_unpinned(tmp_path, layout, que
 
 
 @pytest.mark.parametrize("query_name", ROLE_QUERIES)
-@pytest.mark.parametrize("method", ["pair", "relationship"])
 @pytest.mark.parametrize(
     ("role", "role_column"), [("origin", "origin_code"), ("destination", "destination_code")]
 )
 @pytest.mark.parametrize("layout", AUTHORED_LAYOUTS)
-def test_pinned_role_returns_that_roles_gold_value(
-    tmp_path, layout, role, role_column, method, query_name
-):
+def test_pinned_role_returns_that_roles_gold_value(tmp_path, layout, role, role_column, query_name):
     query, columns, select, where = ROLE_QUERIES[query_name]
-    _write_package(tmp_path, **AUTHORED_LAYOUTS[layout], **_pin(role, method, layout))
+    _write_package(tmp_path, **AUTHORED_LAYOUTS[layout], **_pin(role, layout))
     runtime = Runtime.from_path(str(tmp_path / "air"))
     gold = _gold_rows(select, where, role_column)
     assert gold
@@ -495,7 +483,7 @@ def test_load_warns_when_roles_share_an_entity_pair_unpinned(tmp_path):
     assert details["target_entity"] == "entity.air_airport"
     assert sorted(details["relationships"]) == [DESTINATION, ORIGIN]
     assert details["pair_pinned"] is False
-    assert "path_preference" in warnings[0]["message"]
+    assert "graph.path_preferences" in warnings[0]["message"]
 
 
 def _role_warnings(tmp_path, **kwargs) -> list[dict]:
@@ -508,45 +496,26 @@ def _role_warnings(tmp_path, **kwargs) -> list[dict]:
     ]
 
 
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"preferences": {"origin": 10}},
-        {"preferences": {"destination": 10}},
-        {"explicit": ("origin", "destination", "alternate"), "preferences": {"alternate": 10}},
-        {"explicit": ("destination",)},
-    ],
-    ids=["origin_lowest", "destination_lowest", "unique_lowest_of_three", "single_role"],
-)
-def test_no_load_warning_when_one_relationship_is_preferred_or_single(tmp_path, kwargs):
-    assert _role_warnings(tmp_path, **kwargs) == []
+def test_no_load_warning_for_a_single_role(tmp_path):
+    assert _role_warnings(tmp_path, explicit=("destination",)) == []
 
 
-@pytest.mark.parametrize(
-    "preferences",
-    [{"origin": 50, "destination": 50}, {"origin": 50, "destination": 50, "alternate": 100}],
-    ids=["two_tied", "two_tied_below_a_third"],
-)
-def test_load_warns_when_the_lowest_path_preference_is_tied(tmp_path, preferences):
-    """Ties at the minimum still refuse every query, so they still warn."""
-    warnings = _role_warnings(
-        tmp_path,
-        explicit=("origin", "destination", "alternate"),
-        preferences=preferences,
-    )
+def test_load_warns_once_for_three_roles_of_one_pair(tmp_path):
+    """Every query through the pair is refused until a row records its role."""
+    warnings = _role_warnings(tmp_path, explicit=("origin", "destination", "alternate"))
     assert len(warnings) == 1
     assert len(warnings[0]["details"]["relationships"]) == 3
 
 
 def test_load_warning_for_a_pair_pin_says_what_the_pin_covers(tmp_path):
-    """A pair pin covers queries from the source to the target only, so the warning stays
-    and does not call the pair pinned."""
-    warnings = _role_warnings(tmp_path, **_pin("origin", "pair", "explicit_origin_first"))
+    """A pair pin covers the pair and every route that walks it, except where a query's start
+    holds its own key; the warning stays and does not call the pair pinned."""
+    warnings = _role_warnings(tmp_path, **_pin("origin", "explicit_origin_first"))
     assert len(warnings) == 1
     message = warnings[0]["message"]
     assert warnings[0]["details"]["pair_pinned"] is True
-    assert "only queries that start at entity.air_leg and end at entity.air_airport" in message
-    assert "lower path_preference" in message
+    assert "entity.air_leg -> entity.air_airport, and every route that walks the pair" in message
+    assert "graph.path_preferences row" in message
     assert "are pinned" not in message
 
 
@@ -633,13 +602,17 @@ def test_the_key_shortcut_declines_when_a_pin_names_another_route(tmp_path):
     ]
     assert _direct_entity_key_source_expr(leg, airport, "airport_code", pinned) is None
     assert _direct_dimension_source_expr(leg, CODE, pinned) is None
-    # No pin: path selection prefers the direct relationship, so the shortcut stands.
+    # No pin: the origin is the leg's one direct key, so the route rule takes it (and returns
+    # the gate route with it, for the response to disclose), and the shortcut reads it.
     unpinned = load_package_config(
         str(_write_package(tmp_path / "unpinned", explicit=("origin",), gate_hop=True))
     )
     expr = _direct_entity_key_source_expr(leg, airport, "airport_code", unpinned)
-    assert expr is not None
-    assert expr.parts[-1] == "origin_code"
+    assert expr is not None and expr.parts[-1] == "origin_code"
+    assert resolve_path(unpinned, start=leg, target=airport) == (
+        [ORIGIN],
+        [[ORIGIN], ["relationship.legs_gate", "relationship.gates_airport"]],
+    )
 
 
 def test_the_key_shortcut_stands_when_the_pin_names_only_the_direct_relationship(tmp_path):
@@ -659,7 +632,9 @@ def test_the_key_shortcut_stands_when_the_pin_names_only_the_direct_relationship
     assert expr.parts[-1] == "destination_code"
 
 
-def test_the_key_shortcut_declines_for_a_pin_written_from_the_target_side(tmp_path):
+def test_the_legs_own_key_beats_a_row_written_from_the_target_side(tmp_path):
+    """A row for airport -> leg is not a row for leg -> airport: the leg's one own key still
+    answers, and the key read takes it, as path selection does."""
     pin = (
         "  path_preferences:\n"
         "    - source_entity: airport\n"
@@ -669,12 +644,13 @@ def test_the_key_shortcut_declines_for_a_pin_written_from_the_target_side(tmp_pa
     config = load_package_config(
         str(_write_package(tmp_path, explicit=("origin",), gate_hop=True, path_preferences=pin))
     )
-    assert (
-        _direct_entity_key_source_expr(
-            "entity.air_leg", "entity.air_airport", "airport_code", config
-        )
-        is None
+    resolution = resolve_route(config, start="entity.air_leg", target="entity.air_airport")
+    assert resolution.basis == "colocated_key"
+    expr = _direct_entity_key_source_expr(
+        "entity.air_leg", "entity.air_airport", "airport_code", config
     )
+    assert expr is not None
+    assert expr.parts[-1] == "origin_code"
 
 
 def _normalized_joins(relationships: dict, inferred: list[str] | None = None) -> dict[str, dict]:
@@ -786,21 +762,6 @@ def test_a_relationship_declared_from_the_other_side_on_the_same_columns_is_one_
     assert _role_warnings(tmp_path, explicit=("destination",), reverse=("destination",)) == []
 
 
-def test_path_preference_zero_pins_a_role(tmp_path):
-    """Zero is the lowest preference, not "unset": following the hint with 0 must work."""
-    assert _role_warnings(tmp_path, preferences={"origin": 0}) == []
-    _write_package(tmp_path, preferences={"origin": 0})
-    assert _seats_by_city(Runtime.from_path(str(tmp_path / "air"))) == GOLD_BY_ORIGIN
-
-
-def test_a_negative_path_preference_is_refused(tmp_path):
-    pkg = _write_package(tmp_path, preferences={"origin": -1})
-    with pytest.raises(SemanticLayerError) as exc_info:
-        load_package_config(str(pkg))
-    assert exc_info.value.code == "INVALID_CONFIG"
-    assert "path_preference" in str(exc_info.value)
-
-
 ORPHAN_LEG = "INSERT INTO legs VALUES (5, 'ORD', 'SFO', 7, 'LAX');\n"
 
 
@@ -838,7 +799,7 @@ def test_a_pinned_role_reads_its_key_through_the_join_so_a_leg_without_an_airpor
     assert ("SFO", 7) not in joined
 
     _write_package(
-        tmp_path / "two", extra_seed=ORPHAN_LEG, **_pin("destination", "relationship", "")
+        tmp_path / "two", extra_seed=ORPHAN_LEG, **_pin("destination", "explicit_origin_first")
     )
     two_roles = Runtime.from_path(str(tmp_path / "two" / "air"))
     assert _rows(two_roles, query, [CODE], key=str) == joined

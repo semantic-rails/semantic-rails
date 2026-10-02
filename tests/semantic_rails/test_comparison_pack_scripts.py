@@ -1198,6 +1198,88 @@ def test_semantic_rails_provenance_covers_queries_runner_and_questions() -> None
     }
 
 
+def test_semantic_rails_frozen_queries_reproduce_the_answer_key(tmp_path, monkeypatch) -> None:
+    from semantic_rails import config
+    from semantic_rails.runtime import Runtime
+
+    bootstrap = _load("bootstrap_shared_duckdb")
+    runner = _load_semantic_rails_runner()
+    monkeypatch.setattr(bootstrap, "DB_PATH", tmp_path / "shared.duckdb")
+    bootstrap.main()
+    monkeypatch.setattr(
+        config, "list_package_paths", lambda: {runner.PACKAGE_ID: str(runner.PACKAGE_DIR)}
+    )
+    resolve = Runtime._resolve_asset_path
+    monkeypatch.setattr(
+        Runtime,
+        "_resolve_asset_path",
+        lambda self, value, *, kind: (
+            str(bootstrap.DB_PATH) if kind == "default_db" else resolve(self, value, kind=kind)
+        ),
+    )
+    maps = validator._load_column_maps()["semantic_rails"]
+    variants = {q["id"] for q in generator.load_questions() if q["scope_level"] == "variant"}
+    runtime = Runtime(runner.PACKAGE_ID)
+    try:
+        for qid in sorted(variants):
+            path = runner.QUERY_DIR / f"{qid}.json"
+            query = json.loads(path.read_text("utf-8"))
+            validated = runtime.validate(query)
+            assert validated["ok"], (qid, validated.get("errors"))
+            fresh = runtime.query(query)
+            saved = json.loads(
+                (SCRIPTS.parent / "results" / "oracle" / qid / "result.json").read_text("utf-8")
+            )
+            equal, detail = validator._rows_equal(
+                validator._normalize_rows(qid, saved),
+                validator._normalize_rows(qid, fresh["rows"], maps[qid]),
+            )
+            assert equal, (qid, detail)
+    finally:
+        runtime.close()
+
+
+def test_frozen_count_discloses_the_engine_and_release_capture() -> None:
+    summary = json.loads(
+        (SCRIPTS.parent / "results/semantic_rails/summary.json").read_text("utf-8")
+    )
+    release = json.loads(
+        (SCRIPTS.parent / "results/semantic_rails/latest_release_frozen_model.json").read_text(
+            "utf-8"
+        )
+    )
+    frozen = rubric.load_frozen_models()["semantic_rails"]
+    assert release["model_sha256"] == frozen["sha256"]
+    assert release["queries_sha256"] == rubric.model_digest(["semantic_rails/queries"])
+    answered = sum(q["status"] == "executed" for q in release["questions"])
+    note = generator.semantic_rails_frozen_version_note()
+    assert f"unreleased engine commit {summary['semantic_rails_commit']}" in note
+    assert f"{release['engine_release']}, answers {answered} of {len(release['questions'])}" in note
+    for name in ("capability_matrix.json", "comparison_data.json"):
+        contract = json.loads((SCRIPTS.parent / name).read_text("utf-8"))
+        assert note in contract.get("claims", contract.get("headline_findings"))[0]
+    readme = (SCRIPTS.parents[1] / "README.md").read_text("utf-8")
+    assert note in " ".join(readme.split())
+    table = readme.split("## Frozen-Model Questions:", 1)[1]
+    row = next(line for line in table.splitlines() if line.startswith("| Semantic Rails |"))
+    assert summary["semantic_rails_commit"] in row and "unreleased" in row
+    assert f"{release['engine_release']}: {answered} of {len(release['questions'])}" in row
+
+
+def test_release_count_requires_the_same_dataset(monkeypatch) -> None:
+    load = generator.load_json
+
+    def changed_release(path):
+        payload = load(path)
+        if path.name == "latest_release_frozen_model.json":
+            payload["dataset_fingerprint"] = "different"
+        return payload
+
+    monkeypatch.setattr(generator, "load_json", changed_release)
+    with pytest.raises(SystemExit, match="different dataset"):
+        generator.semantic_rails_frozen_version_note()
+
+
 def test_an_unreleased_engine_is_not_labeled_as_the_release() -> None:
     release = {"semantic_rails_version": "0.2.1", "engine_release": "v0.2.1"}
     assert generator.recorded_version("semantic_rails", release) == "0.2.1"

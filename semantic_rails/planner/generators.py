@@ -451,13 +451,8 @@ def _choose_group_dimensions(
         ]
         chosen = ""
         for row in matched_rows:
-            # Given a time: the text may add one later, and the engine refuses a query without.
             availability = _availability_for_object(
-                runtime._config,
-                selection["root_entity"],
-                str(row["id"]),
-                "dimension",
-                query_time=True,
+                runtime._config, selection["root_entity"], str(row["id"]), "dimension"
             )
             if availability["available"]:
                 chosen = str(row["id"])
@@ -624,9 +619,8 @@ def _matched_value_rows(runtime: Any, query: dict[str, Any], text: str) -> list[
         dim = maps["dimensions"].get(dim_id)
         if not dim_id or dim is None:
             return
-        # Given a time: the text may add one later, and the engine refuses a query without.
         availability = _availability_for_object(
-            runtime._config, selection["root_entity"], dim_id, "dimension", query_time=True
+            runtime._config, selection["root_entity"], dim_id, "dimension"
         )
         if not availability["available"]:
             return

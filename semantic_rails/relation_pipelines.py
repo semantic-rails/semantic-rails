@@ -30,6 +30,7 @@ from .expressions import (
     SemanticExpr,
     parse_config_expression,
     parse_semantic_expression,
+    validate_boolean_argument_count,
 )
 from .schema import PackageConfig, RelationConfig, RelationPipelineStep
 from .sql_ast import (
@@ -147,6 +148,7 @@ def _semantic_expr_to_sql(
             negated=expr.negated,
         )
     if isinstance(expr, BooleanExpr):
+        validate_boolean_argument_count(expr.op, len(expr.args))
         args = [
             _semantic_expr_to_sql(arg, default_alias=default_alias, warehouse=warehouse)
             for arg in expr.args
@@ -165,7 +167,7 @@ def _semantic_expr_to_sql(
             current = SqlBinary(current, expr.op.upper(), arg)
         return current
     if isinstance(expr, CallExpr):
-        return SqlCall(
+        return dialect_for_warehouse(warehouse).scalar_call(
             expr.name,
             [
                 _semantic_expr_to_sql(arg, default_alias=default_alias, warehouse=warehouse)

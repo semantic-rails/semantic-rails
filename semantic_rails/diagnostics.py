@@ -160,6 +160,30 @@ _FILTER_VALUE_FORMS = {
 }
 
 
+def _time_axis_hints(details: dict[str, Any]) -> list[dict[str, Any]]:
+    """The ``use_time_grain`` hint for a refused calendar-date group_by, from the
+    ``time_axis_recovery`` the compiler attached; none without a role that would answer."""
+    time_axis = dict(details.get("time_axis_recovery", {}) or {})
+    grain = str(time_axis.get("grain", "") or "")
+    role = str(time_axis.get("temporal_role", "") or "")
+    if not role:
+        return []
+    example = {"temporal_role": role, "grain": grain or "<grain>"}
+    hint = {
+        "kind": "use_time_grain",
+        "message": (
+            "Group by time via time.grain instead of calendar-date dimensions: "
+            f"drop '{time_axis.get('calendar_dimension', '')}' from group_by and set "
+            f"a time block such as {example!r}."
+        ),
+        "time": example,
+    }
+    closest_query = dict(time_axis.get("closest_valid_query", {}) or {})
+    if closest_query:
+        hint["closest_valid_query"] = closest_query
+    return [hint]
+
+
 def recovery_hints_for_error(
     code: str, details: dict[str, Any] | None = None
 ) -> list[dict[str, Any]]:
@@ -323,6 +347,14 @@ def recovery_hints_for_error(
                 "details": dict(details),
             }
         ]
+    if code == "PATH_NOT_FOUND" and details.get("reason") == "excluded_by_decision":
+        return [
+            {
+                "kind": "follow_recorded_routes",
+                "message": str(details.get("hint", "")),
+                "rows": list(details.get("rows", []) or []),
+            }
+        ]
     if code == "PATH_NOT_FOUND":
         start = str(details.get("start", "") or "")
         target = str(details.get("target", "") or "")
@@ -475,6 +507,13 @@ def recovery_hints_for_error(
             }
         ]
     if code == "INVALID_TEMPORAL_ROLE":
+        if details.get("available_temporal_roles") == []:
+            return [
+                {
+                    "kind": "remove_time_or_declare_role",
+                    "message": "Ask without time, or declare a times: entry on a model before time analysis.",
+                }
+            ]
         compatible = list(details.get("compatible", []) or [])
         return [
             {
@@ -588,7 +627,9 @@ def recovery_hints_for_error(
         ]
         return hints
     if code == "AMBIGUOUS_PATH":
+        # A calendar-date group_by reached only through other facts: the time block first.
         return [
+            *_time_axis_hints(details),
             {
                 "kind": "narrow_query",
                 "message": str(
@@ -596,7 +637,8 @@ def recovery_hints_for_error(
                     or "Choose a more specific grouping, filter, or root entity to break the path ambiguity."
                 ),
                 "candidates": list(details.get("candidates", []) or []),
-            }
+                "pins": list(details.get("pins", []) or []),
+            },
         ]
     if code == "FANOUT_UNSAFE":
         return [
@@ -650,32 +692,13 @@ def recovery_hints_for_error(
         # routes first, generic advice last. Blind-agent evaluation
         # showed agents brute-forcing the registry when this error was
         # a dead end.
-        mixed_grain_hints: list[dict[str, Any]] = []
         compatible_measures = list(details.get("compatible_measures", []) or [])
         closest_measure = str(details.get("closest_compatible_measure", "") or "")
         offending_dims = list(details.get("offending_dimensions", []) or [])
         requested_measures = list(details.get("measures", []) or [])
         # When the offending dimension is a calendar-date dimension the
         # primary recovery is the time block — lead with it.
-        time_axis = dict(details.get("time_axis_recovery", {}) or {})
-        grain = str(time_axis.get("grain", "") or "")
-        role = str(time_axis.get("temporal_role", "") or "")
-        # Without a role the recovery found no time block that would answer: say nothing.
-        if role:
-            example = {"temporal_role": role, "grain": grain or "<grain>"}
-            hint = {
-                "kind": "use_time_grain",
-                "message": (
-                    "Group by time via time.grain instead of calendar-date dimensions: "
-                    f"drop '{time_axis.get('calendar_dimension', '')}' from group_by and set "
-                    f"a time block such as {example!r}."
-                ),
-                "time": example,
-            }
-            closest_query = dict(time_axis.get("closest_valid_query", {}) or {})
-            if closest_query:
-                hint["closest_valid_query"] = closest_query
-            mixed_grain_hints.append(hint)
+        mixed_grain_hints: list[dict[str, Any]] = _time_axis_hints(details)
         # A different measure or dimension answers a different question, so these two
         # hints name the candidates without a query to run in place of the question.
         if compatible_measures and closest_measure:

@@ -15,12 +15,12 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-import duckdb
 import pytest
 import yaml
 
 from semantic_rails import config as config_module
 from semantic_rails.config import load_package_config
+from semantic_rails.db import Database
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import (
     OffsetWindowExpr,
@@ -111,9 +111,9 @@ def _metric_query(key: str, *, by_product_type: bool = False) -> dict[str, Any]:
 
 
 def _gold(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
-    connection = duckdb.connect(runtime.db_path, read_only=True)
+    connection = Database.connect(runtime.db_path, read_only=True)
     try:
-        return connection.execute(sql).fetchall()
+        return connection.conn.execute(sql).fetchall()
     finally:
         connection.close()
 
@@ -423,7 +423,7 @@ def _by_product_type_result(runtime: Runtime, key: str) -> dict[tuple[str, date]
     out: dict[tuple[str, date], float] = {}
     for row in runtime.query(_metric_query(key, by_product_type=True))["rows"]:
         day = row[f"{ORDER_TIME}__day"]
-        day = day.date() if isinstance(day, datetime) else day
+        day = datetime.fromisoformat(day).date()
         out[(row[PRODUCT_TYPE], day)] = float(row["value"])
     return out
 

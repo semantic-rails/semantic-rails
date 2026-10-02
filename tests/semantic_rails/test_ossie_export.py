@@ -118,6 +118,7 @@ def test_jaffle_mapping_and_warning_counts_are_golden() -> None:
         "metrics on semi-additive measures": 1,
         "metrics using prior_period": 1,
         "package attributes": 1,
+        "path preferences": 4,
         "period_to_date metrics": 1,
         "policy enforcement": 5,
         "prior_period metrics": 1,

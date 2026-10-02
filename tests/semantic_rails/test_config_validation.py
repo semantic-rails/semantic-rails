@@ -27,6 +27,7 @@ from semantic_rails.db import Database, SnowflakeCliAdapter, load_csv_dir_to_duc
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
 from semantic_rails.yaml_loader import safe_load as yaml12_safe_load
+from tests.semantic_rails.result_helpers import typed_rows
 
 
 def _write_yaml(path: Path, payload: dict) -> None:
@@ -2086,7 +2087,7 @@ def test_constant_measure_checks_and_counts_rows(tmp_path: Path, expression: str
                 "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "rows"}],
             }
         )
-        assert result["rows"] == expected["rows"]
+        assert typed_rows(result) == typed_rows(expected)
         assert result["row_count"] == 1
     finally:
         runtime.close()
@@ -2586,6 +2587,10 @@ def test_single_file_validation_checks_segment_references(tmp_path: Path):
             ),
             "has 'filters' outside membership: — the loader reads membership.where only",
         ),
+        (
+            lambda segment: segment["membership"].update(path_policy={"preference": "fewest_hops"}),
+            "membership has unknown key 'path_policy'",
+        ),
     ],
     ids=[
         "where-outside-membership",
@@ -2594,6 +2599,7 @@ def test_single_file_validation_checks_segment_references(tmp_path: Path):
         "segment-meta",
         "dimension-filters",
         "top-level-filters",
+        "membership-path-policy",
     ],
 )
 def test_directory_validation_rejects_unknown_segment_keys(
@@ -2651,7 +2657,7 @@ def test_directory_validation_accepts_every_membership_key_the_loader_reads(
     def add_every_key(segment):
         for key in ("where", "metric_filters"):
             segment["membership"].setdefault(key, [])
-        for key in ("time", "temporal_role_overrides", "path_policy"):
+        for key in ("time", "temporal_role_overrides"):
             segment["membership"].setdefault(key, {})
 
     errors = validate_runtime_package(_jaffle_with_segment(package_config_factory, add_every_key))

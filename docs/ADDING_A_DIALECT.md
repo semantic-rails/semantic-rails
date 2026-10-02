@@ -12,6 +12,151 @@ This guide uses **Redshift** as the worked example because it is the
 next connector scheduled to land (the env-var names are already
 reserved in `.env.example`).
 
+### ADBC profiles
+
+Postgres uses `AdbcAdapter` with `POSTGRES_PROFILE`, selected by the existing
+`connection.kind: postgres_native` and its validated option vocabulary. Install
+`semantic-rails[postgres]` (or `[all]`) for the pinned ADBC manager and Postgres
+driver plus PyArrow. PyArrow supplies DB-API parameter binding, bounded batch
+conversion and PostgreSQL extension type metadata; converting through DuckDB
+would add another type-conversion boundary.
+
+A profile names the driver, connection kind and allowed options. Postgres is
+qualified; Snowflake is an opt-in profile described below. Other profiles are
+refused. Postgres credentials stay in the in-memory libpq connection string,
+with keyword values escaped; its packages cannot choose a native library path.
+The `schema` option selects one exact, case-sensitive schema name.
+
+The compiler finalizes typed row-filter slots as Postgres `$1`, `$2`, … before
+execution. The adapter checks slot types, counts and placeholder order before
+connecting, binds values separately and sends prepared SQL unchanged. In the
+compiler's ANSI SQL, every placeholder corresponds to one authored slot. Direct
+parameterized calls use the same strict check and refuse `?` JSON operators;
+plain SQL without slots allows those operators and refuses unbound `$n` tokens.
+The shared finalization and validation scanner skips complete Postgres identifiers
+(including `$` suffixes), E-string backslash escapes, ordinary quoted text,
+dollar-quoted literals and nested comments when locating standalone placeholders.
+Arrow batches are sliced before Python row conversion to at most
+`max_rows + 1`, with `QueryRows.truncated` and semantic aliases preserved. The
+64 KiB driver batch hint bounds typical batches, not arbitrarily large cells.
+
+NUMERIC returns `Decimal` with its scale intact, including aggregate results;
+numeric-looking TEXT stays text. Positional correctness reads share this
+Arrow-type conversion while retaining duplicate column names. Aware timestamps retain
+microseconds and use the requested query zone (otherwise the current session
+zone, falling back to aware UTC when Python cannot load it). PostgreSQL stores
+instants, so the originally authored offset cannot be recovered. Arrow
+`MonthDayNano` intervals become Python `timedelta` values, matching DuckDB's
+driver convention of 30 days per month and preserving exact microseconds.
+Their public JSON values and interval metadata therefore match DuckDB.
+Sub-microsecond intervals or durations outside Python's range refuse with
+`RESULT_VALUE_UNSUPPORTED`. Each query restores the session's previous zone. The
+adapter preserves inherited statement timeouts unless a request or connection
+option overrides them, then restores the exact previous value. It changes the
+zone only when needed. A query without overrides takes two round trips: read
+the session settings, then execute. For overrides, the adapter sets millisecond
+server deadlines and uses `adbc_cancel()` as a watchdog through execution and
+Arrow fetching. Failed queries discard the connection
+before reuse. The libpq connect timeout is ten seconds; a separate network-read
+deadline is not exposed.
+
+The hosted Postgres correctness job runs the Arrow adapter unit tests, the conformance battery and
+`tests/integration/test_adbc_postgres.py` with the standard `SR_POSTGRES_*`
+fixture variables. Exact-type, two-tenant isolation and timeout tests supplement
+normalized parity. The conformance loader uses `adbc_ingest` on the production
+connection; psycopg is not a runtime or test dependency.
+
+Seed scripts split only at semicolons outside quoted literals, identifiers,
+E-string escapes, dollar quotes and comments. Each statement retains its authored
+text and comments. An unterminated quote or block comment refuses the entire
+script before execution with `INVALID_CONFIG` (`unterminated_sql_script`).
+LF and CRLF line endings terminate line comments identically. A bare carriage
+return anywhere in a script refuses before execution with `INVALID_CONFIG`
+(`bare_carriage_return_sql_script`), naming the SQL source or `post_sql` file.
+
+#### Experimental Snowflake profile
+
+Select `package.connection.kind: snowflake_adbc` to use `SNOWFLAKE_PROFILE`.
+This experimental path retains the Snowflake SQL dialect and the existing CLI
+and native connectors. Install the Python manager 1.12.0 and PyArrow with
+`semantic-rails[snowflake-adbc]` (also included in `[all]`), then install the
+target native driver, version **1.14.0**, using an existing `dbc` installation:
+
+```sh
+dbc install snowflake=1.14.0
+```
+
+The [dbc registry](https://docs.columnar.tech/dbc/guides/finding_drivers/)
+distributes the Snowflake driver. The Python manager loads `driver="snowflake"`
+from its standard [driver search paths](https://arrow.apache.org/adbc/23/format/driver_manifests.html),
+including the operator's `ADBC_DRIVER_PATH` and the user installation directory.
+An operator can instead set the runtime environment variable
+`SR_SNOWFLAKE_ADBC_DRIVER_PATH` to a shared-library or manifest path. Package
+connection options cannot select a driver name, library or manifest; such options
+are refused at load with `INVALID_CONFIG`. `dbc` verifies
+the downloaded driver signature during installation; do not disable verification.
+
+Password authentication uses `account_env`, `user_env` and either `password_env`
+or `password_file`. Optional locators are `database`, `schema`, `warehouse` and
+`role`; a named Snowflake connector profile is not used. Key-pair authentication
+instead uses `private_key_env` or `private_key_file` containing PEM PKCS #8 text,
+with optional `private_key_passphrase_env`. Both encrypted and unencrypted keys
+are mapped to the driver's in-memory PKCS #8 options. Exactly one password or
+key source is required. Package loading, config reports and guided setup validate
+these source options without reading credentials; `connection.name` is refused.
+Literal credentials and other authentication modes are refused.
+Key-pair mapping is covered with stubs; live key-pair authentication is unqualified.
+
+`use_high_precision` defaults to `"true"`: the driver returns NUMBER columns as
+Arrow decimals with precision and scale intact. `"false"` opts into the driver's
+integer/float conversion. The [Snowflake driver options](https://arrow.apache.org/adbc/23/driver/snowflake.html#client-options)
+describe that conversion and the authentication vocabulary. An optional `query_tag`
+is set with escaped session SQL. The adapter binds `?` placeholders without SQL
+rewrites; every placeholder must correspond to an authored slot, and each bound
+value must match its slot's type. This guard also covers direct prepared calls.
+
+A positive per-query `statement_timeout_ms` takes precedence over the connection
+option `statement_timeout_seconds`. With neither, the inherited timeout is preserved.
+`ALTER SESSION SET STATEMENT_TIMEOUT_IN_SECONDS` rounds a positive millisecond
+limit up to whole seconds; the shared cancellation watchdog uses the original
+millisecond limit through execution and fetching. Successful queries restore
+the previous timeout and timezone; failures discard the connection. Arrow
+conversion preserves Decimal precision and scale and converts aware timestamps
+to the query timezone, or the current session zone (falling back to aware UTC
+when Python cannot load it). The native driver normalizes TIMESTAMP_TZ instants;
+its original per-row offset cannot be recovered. The JSON typed-values contract
+emits decimal strings and timestamp strings with an explicit offset. Live
+timestamp fidelity, cancellation latency and native-buffer memory bounds remain
+qualification work.
+
+The adapter always sets the driver's `max_timestamp_precision` to
+`nanoseconds_error_on_overflow`, so timestamps outside Arrow's nanosecond range
+fail with `QUERY_EXECUTION_ERROR` instead of wrapping to a different date. Python
+temporal results support exact microseconds: nanosecond TIME and TIMESTAMP values
+are converted only when exactly representable, including nulls; nonzero
+sub-microsecond digits refuse with `RESULT_VALUE_UNSUPPORTED`. This boundary
+does not depend on pandas and never truncates temporal precision.
+
+On a credentialed runner, select `SR_SNOWFLAKE_CONNECTION_KIND=snowflake_adbc`
+for the existing conformance target. Run its Snowflake battery and the dedicated
+exact-type and two-tenant isolation tests:
+
+```sh
+SR_SNOWFLAKE_CONNECTION_KIND=snowflake_adbc uv run pytest tests/integration/test_conformance.py tests/integration/test_adbc_snowflake.py -k snowflake -q
+```
+
+The conformance target and dedicated tests use `SR_SNOWFLAKE_ACCOUNT`, `SR_SNOWFLAKE_USER`, `SR_SNOWFLAKE_PASSWORD`
+and optional `SR_SNOWFLAKE_DATABASE`, `SR_SNOWFLAKE_SCHEMA`,
+`SR_SNOWFLAKE_WAREHOUSE`. The isolation test creates only a session-local table,
+alternates tenants on identical SQL, checks an injection-shaped attribute and
+denies missing attributes. Dedicated tests explicitly skip unless
+`SR_SNOWFLAKE_CONNECTION_KIND=snowflake_adbc`, and skip when credentials are absent;
+once opted in with credentials, missing drivers and warehouse failures fail the
+setup's known-good timestamp query before any expected refusal. The dedicated tests also
+check timestamp overflow and sub-microsecond precision refusal. The operator's
+`SR_SNOWFLAKE_ADBC_DRIVER_PATH` can override driver discovery. Stub unit tests
+prove mapping and lifecycle behavior; they do not establish live qualification.
+
 ## 1. Dialect class — `semantic_rails/dialects.py`
 
 Subclass `SqlDialect` and override only what differs from the portable
@@ -83,7 +228,7 @@ Method-by-method checklist (compare against the warehouse docs):
 ## 2. Adapter — `semantic_rails/db_parts/redshift.py`
 
 Implement the `WarehouseAdapter` contract. If the driver is DB-API
-(PEP 249) — psycopg, redshift_connector, PyAthena, databricks-sql —
+(PEP 249) — redshift_connector, PyAthena, databricks-sql —
 subclass `DbApiAdapter` from `semantic_rails.db_parts.common` and you
 only write `_create_connection()` plus the timeout hooks:
 
@@ -194,9 +339,9 @@ coerced. Only an adapter that sets `supports_parameters = True` receives such a
 statement, as `query_prepared(prepared, limits=..., parameters=values)`, and it
 must send the values to its driver separately from the SQL. Every other adapter,
 including the base fallback, denies it before reaching its driver. Never render a
-value into SQL text as a fallback. `DuckDBAdapter` is the only adapter with
-support today; qualify a driver's parameter API with tests before enabling
-another.
+value into SQL text as a fallback. `DuckDBAdapter`, Postgres ADBC and Snowflake
+ADBC support binding today; qualify a driver's parameter API with tests before
+enabling another.
 
 Rules every adapter follows:
 

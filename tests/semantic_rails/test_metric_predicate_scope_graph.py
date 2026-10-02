@@ -572,6 +572,21 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
         },
     )
 
+    # An order reaches a plan through the customer history row valid when it was placed, or
+    # through every history row of its customer. The question means the first, so the package
+    # records it.
+    graph = yaml.safe_load((package_dir / "graph.yml").read_text(encoding="utf-8"))
+    graph["graph"]["path_preferences"] = [
+        {
+            "source_entity": "order",
+            "target_entity": "plan",
+            "relationship_path": [
+                "relationship.demo_order_customer_history",
+                "relationship.demo_customer_history_plan",
+            ],
+        }
+    ]
+    _write_yaml(package_dir / "graph.yml", graph)
     config, registry = _load_config(package_dir)
     compiled = compile_query(
         config,

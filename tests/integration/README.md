@@ -5,6 +5,12 @@ package's own test queries) against every registered warehouse and
 asserts the results match the DuckDB reference row-for-row, over an
 identical JaffleShop fixture.
 
+Comparisons preserve the public JSON types and `column_types` metadata. Decimal columns compare numerically using their metadata, including decimal
+strings against another warehouse's float results. Numeric-looking text remains
+text, and timestamp offsets/awareness are preserved. Column casing and row
+ordering are normalized; numeric comparisons retain a small tolerance for
+floating-point arithmetic across engines.
+
 ```bash
 make warehouses-up        # local Postgres + ClickHouse
 cp .env.example .env      # fill in cloud creds (optional)
@@ -28,3 +34,8 @@ answer as DuckDB does. Without Docker the Postgres checks skip. With `SR_POSTGRE
 set it uses that server, in a schema of its own that it drops afterwards; `make
 test-integration` also collects this suite. Known wrong answers are strict xfails that link
 their issue.
+
+CI calls the Postgres correctness workflow once per pull request, main/master push,
+merge group, or manual CI run. Its live DuckDB/Postgres job uses strict fixture mode
+and the locked Postgres extra, and must succeed for `All checks pass`; a skipped,
+cancelled, or failed correctness job blocks that aggregate.

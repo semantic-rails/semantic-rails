@@ -46,6 +46,7 @@ SQL_BINARY_OPERATORS = frozenset(
 )
 SQL_CAST_TYPE_NAMES = frozenset(
     {
+        "BIGNUMERIC",
         "BIGINT",
         "BOOLEAN",
         "CHAR",
@@ -54,6 +55,9 @@ SQL_CAST_TYPE_NAMES = frozenset(
         "DECIMAL",
         "DOUBLE",
         "FLOAT",
+        "FLOAT8",
+        "FLOAT64",
+        "INT64",
         "INTEGER",
         "NUMBER",
         "NUMERIC",
@@ -80,7 +84,7 @@ SQL_FUNCTION_NAMES = frozenset(
         "ARRAY_AGG",
         # Implicit-calendar day series (dialects.SqlDialect.day_series):
         # Snowflake, BigQuery, Trino/Athena and Databricks spellings. Engine-only:
-        # expressions.ENGINE_ONLY_FUNCTIONS keeps them out of `call` expressions.
+        # expressions.accepted_call_names keeps them out of `call` expressions.
         "ARRAY_GENERATE_RANGE",
         "AVG",
         "CEIL",
@@ -133,7 +137,7 @@ SQL_FUNCTION_NAMES = frozenset(
         "MIN_BY",
         # The current time and a value's physical type, for base time coverage on DuckDB
         # and Postgres (dialects.SqlDialect.now and utc_timestamp). Engine-only:
-        # expressions.ENGINE_ONLY_FUNCTIONS keeps them out of `call` expressions.
+        # expressions.accepted_call_names keeps them out of `call` expressions.
         "NOW",
         "NULLIF",
         # Spark SQL exact percentile aggregate.
@@ -259,6 +263,10 @@ def normalize_sql_date_part(part: str) -> str:
 
 
 def normalize_sql_cast_type_name(type_name: str) -> str:
+    # Nullable targets preserve NULL on ClickHouse regardless of session settings.
+    nullable = re.fullmatch(r"Nullable\((Float64|Int64|String|DECIMAL\(\d+,\d+\))\)", type_name)
+    if nullable:
+        return type_name
     normalized = _compact_token(type_name).upper()
     normalized = re.sub(r"\s*\(\s*", "(", normalized)
     normalized = re.sub(r"\s*,\s*", ",", normalized)

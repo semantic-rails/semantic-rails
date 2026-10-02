@@ -81,7 +81,7 @@ from .diagnostics import (
 from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError, query_execution_error
 from .expressions import collect_object_references, expr_to_dict
-from .fanout import build_hop_profile
+from .fanout import build_hop_profile, offered_rows, route_meaning, route_note
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import enforce_query_policies, query_policy_effects, row_filters_for_context
@@ -92,11 +92,13 @@ from .request_context import (
     request_context_payload,
     without_trusted_attributes,
 )
+from .result_values import result_rows
 from .runtime_parts.responses import (
     TIME_SHAPE_WINDOW_TOTAL,
     WINDOW_TOTAL_ASSUMPTION,
     apply_response_verbosity,
     compile_response_metadata,
+    output_columns,
     resolve_sql_profile,
     resolve_verbosity,
 )
@@ -309,67 +311,76 @@ def _metric_payload(config, object_id: str, kind: str) -> dict[str, Any]:
 
 
 _LOG = logging.getLogger(__name__)
-_DEFAULT_PATH_PREFERENCE = 100
 
 
-def _path_alternates_warnings(config, logical_plan) -> list[dict[str, Any]]:
-    """Warn when fewest-hops alone decided between semantically different
-    join routes and the author never expressed a preference.
+def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """One short note per entity pair the compiled query reads where the engine chose one of
+    two or more routes (``fanout.route_note``): by the start's own key (ROUTE_COLOCATED_KEY,
+    with the row that would make each other route the default in ``details.alternatives`` when
+    it would load, else the rows it disagrees with in ``details.conflicts_with``),
+    or by ``graph.path_preferences`` rows (ROUTE_RECORDED: the pair's own row, or, with
+    ``details.rows``, the rows of pairs its routes walk through). The note is the code plus
+    the chosen route, its relationship ids and its readable meaning; a single-route pair gets
+    none.
 
-    Fires only when (a) more than one candidate path reached the target,
-    (b) the runner-up has a different hop count (equal-score ties already
-    raise AMBIGUOUS_PATH), (c) no relationship on either route carries a
-    non-default ``path_preference``, and (d) no ``path_preferences`` pin
-    covers the pair. Adding a shortcut relationship to a package can
-    silently reroute existing queries; this warning is the tripwire.
+    The pairs come, each with the route the SQL read, from the plan's root and leaf paths and
+    from the paths lowering read (predicates, conversions, a rewrite anchor's own lookups,
+    nested compiles, direct key reads); a note names only a route its pair's resolution chose,
+    so a pair the SQL read another way gets none. The minimal response leaves the notes out:
+    the route is the package's own meaning for the pair, not a caveat on the numbers, and a
+    pair with no such meaning is refused instead.
     """
-    relationships = {row.id: row for row in config.relationships}
-    pinned = {(row.source_entity, row.target_entity) for row in config.path_preferences}
-    root_entity = str(getattr(logical_plan, "root_entity", "") or "")
-    selected = dict(getattr(logical_plan, "selected_paths", {}) or {})
-    warnings: list[dict[str, Any]] = []
-    for target, candidates in sorted(
-        dict(getattr(logical_plan, "candidate_paths", {}) or {}).items()
-    ):
-        if len(candidates) < 2:
+    if resolve_verbosity(payload) == "minimal":
+        return []
+    plan = compiled["logical_plan"]
+    choices = [
+        (plan.root_entity, target, tuple(path))
+        for target, path in sorted((plan.selected_paths or {}).items())
+    ]
+    for measure_plan in plan.measure_plans:
+        choices.extend(
+            (measure_plan.source_entity, selection.target_entity, tuple(selection.chosen_path))
+            for selection in measure_plan.path_selections
+        )
+    choices.extend(
+        (start, target, tuple(path)) for start, target, path in compiled.get("route_choices") or []
+    )
+    notes: list[dict[str, Any]] = []
+    for start, target, path in dict.fromkeys(choices):
+        resolution = route_note(config, start, target, path)
+        if resolution is None:
             continue
-        chosen = list(selected.get(target) or candidates[0])
-        runner_up = next((list(path) for path in candidates if list(path) != chosen), None)
-        if runner_up is None or len(runner_up) == len(chosen):
-            continue
-        if (root_entity, target) in pinned:
-            continue
-        involved = set(chosen) | set(runner_up)
-        if any(
-            relationships[rel_id].path_preference != _DEFAULT_PATH_PREFERENCE
-            for rel_id in involved
-            if rel_id in relationships
-        ):
-            continue
-        warnings.append(
+        route = list(resolution.routes[0])
+        details: dict[str, Any] = {"route": route}
+        if resolution.basis == "colocated_key":
+            code, how = "ROUTE_COLOCATED_KEY", "own key"
+            details["alternatives"], conflicts = offered_rows(
+                config, start, target, resolution.routes[1:]
+            )
+            if conflicts:
+                details["conflicts_with"] = conflicts
+        elif resolution.basis == "inherited":
+            code = "ROUTE_RECORDED"
+            how = "recorded for " + ", ".join(
+                f"{route_meaning(config, source, [])} → {route_meaning(config, end, [])}"
+                for source, end in resolution.rows
+            )
+            details["rows"] = [
+                {"source_entity": source, "target_entity": end} for source, end in resolution.rows
+            ]
+        else:
+            code, how = "ROUTE_RECORDED", "recorded route"
+        notes.append(
             semantic_issue(
-                code="PATH_ALTERNATES_UNPINNED",
-                message=(
-                    f"Join route from '{root_entity}' to '{target}' was chosen by hop count "
-                    "alone; an alternate route exists and no path preference is declared. "
-                    "The routes may have different semantics (e.g. role-playing foreign keys)."
-                ),
-                severity="warning",
+                code=code,
+                message=f"{route_meaning(config, start, route)} ({how})",
+                severity="info",
                 stage="planning",
-                details={
-                    "root_entity": root_entity,
-                    "target_entity": target,
-                    "chosen_path": chosen,
-                    "alternate_path": runner_up,
-                    "hint": (
-                        "Declare path_preferences for this entity pair, or set "
-                        "path_preference on the intended relationship, to pin the route."
-                    ),
-                },
-                object_ids=[target],
+                details=details,
+                object_ids=[start, target],
             )
         )
-    return warnings
+    return notes
 
 
 def _history_warnings(config, logical_plan) -> list[dict[str, Any]]:
@@ -754,7 +765,7 @@ def _compiled_warnings(
         *_history_warnings(config, compiled["logical_plan"]),
         *_measure_validity_warnings(config, compiled["logical_plan"]),
         *_stock_key_gap_warnings(compiled),
-        *_path_alternates_warnings(config, compiled["logical_plan"]),
+        *_route_notes(config, compiled, payload),
         *_time_zone_warnings(config, compiled),
     ]
     if payload is not None:
@@ -2303,7 +2314,11 @@ class Runtime:
             ) from exc
         out: dict[str, Any] = {
             "ok": True,
-            "rows": rows,
+            **result_rows(
+                rows,
+                output_columns=output_columns(self._config, compiled),
+                zone=_time_zone(self._config, compiled),
+            ),
             "row_count": len(rows),
             "truncated": bool(getattr(rows, "truncated", False)),
             "rendered_sql": compiled["sql"],
@@ -2668,7 +2683,11 @@ class Runtime:
             "normalized_segment": normalized.to_dict(),
             "member_key_dimensions": list(normalized.member_key_dimensions),
             "preview_dimensions": list(normalized.preview_dimensions),
-            "rows": visible_rows,
+            **result_rows(
+                visible_rows,
+                output_columns=output_columns(self._config, preview_compiled),
+                zone=_time_zone(self._config, preview_compiled),
+            ),
             "preview_row_count": len(visible_rows),
             "member_count": member_count,
             "policy_effects": [*segment_policy_effects, *query_policy_effects],

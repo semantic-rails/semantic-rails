@@ -39,6 +39,8 @@ def test_parallel_window_finalization_with_empty_input(threads):
 
 
 def _as_date(value) -> date:
+    if isinstance(value, str):
+        return datetime.fromisoformat(value).date()
     return value.date() if isinstance(value, datetime) else value
 
 

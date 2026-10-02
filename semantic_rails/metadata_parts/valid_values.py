@@ -12,6 +12,7 @@ from ..errors import SemanticLayerError
 from ..policies import hidden_object_ids
 from ..request_context import context_from_policy_context
 from ..runtime import Runtime, runtime_request_scope
+from ..temporal_support import validate_temporal_support
 from .path_coverage import (
     _declared_value_rows,
     _filter_value_rows,
@@ -57,7 +58,6 @@ def _query_state(query: dict[str, Any]) -> dict[str, Any]:
         "metric_filters",
         "time",
         "temporal_role_overrides",
-        "path_policy",
         "order_by",
         "limit",
         "debug",
@@ -118,6 +118,7 @@ def valid_values_payload(
     limit = max(1, min(int(limit), max_valid_values_limit()))
     offset = max(0, min(int(offset), max_valid_values_offset()))
     config = runtime._config
+    validate_temporal_support(config, query or {})
     policy_context = _policy_context(query)
     hidden_ids = hidden_object_ids(
         config,

@@ -184,7 +184,7 @@ QUERY_SCHEMA: dict[str, Any] = {
     "properties": {
         "time": {
             "type": ["object", "null"],
-            "description": "Time anchor: temporal_role + grain + start|end|range + fill + calendar_id. Omit entirely for an all-time scalar aggregate.",
+            "description": "Optional time: temporal_role, grain, start|end|range, fill, calendar_id. No declared time: INVALID_TEMPORAL_ROLE.",
             "additionalProperties": True,
             "properties": {
                 "temporal_role": {
@@ -1186,6 +1186,7 @@ _SEGMENT_MINIMAL_KEYS: dict[str, frozenset[str]] = {
             "member_key_dimensions",
             "preview_dimensions",
             "rows",
+            "column_types",
             "preview_row_count",
             "member_count",
             "derived_query",
@@ -1223,7 +1224,10 @@ def _segment_response(action: str, payload: Mapping[str, Any], verbosity: Any) -
         key: value
         for key, value in out.items()
         if key in keep
-        and (key in {"ok", "status", "errors", "warnings"} or value not in ("", [], {}))
+        and (
+            key in {"ok", "status", "errors", "warnings", "column_types"}
+            or value not in ("", [], {})
+        )
     }
 
 
@@ -1576,6 +1580,68 @@ def _status_label(payload: Mapping[str, Any]) -> str:
     return "ok" if bool(payload.get("ok", True)) else "error"
 
 
+_EMPTY: tuple[Any, ...] = (None, "", [], {})
+_DISCOVER_BUCKETS = (
+    "measures",
+    "metrics",
+    "segments",
+    "dimensions",
+    "entities",
+    "dimension_values",
+    "blocked",
+)
+
+
+def _lean_discover(payload: dict[str, Any]) -> dict[str, Any]:
+    """State each fact of a minimal discover response once.
+
+    A card in a kind's bucket leaves out its kind, ``available: true`` and empty fields; blocked
+    and dimension-value cards keep their explicit fields. The terms and verbosity echoes and an
+    empty query state or selection context go too. "compact" and "full" keep the whole cards.
+    """
+
+    if payload.get("verbosity") != "minimal":
+        return payload
+
+    def lean(row: Any, bucket: str) -> Any:
+        if not isinstance(row, dict) or bucket in ("blocked", "dimension_values"):
+            return row
+        repeats = {"kind": row.get("kind"), "available": True}
+        return {
+            key: value
+            for key, value in row.items()
+            if value not in _EMPTY and not (key in repeats and value == repeats[key])
+        }
+
+    for key in ("terms", "verbosity"):
+        payload.pop(key, None)
+    for key in ("query_state", "selection_context"):
+        if isinstance(payload.get(key), dict) and not any(payload[key].values()):
+            payload.pop(key)
+    for key in _DISCOVER_BUCKETS:
+        if isinstance(payload.get(key), list):
+            payload[key] = [lean(row, key) for row in payload[key]]
+    return payload
+
+
+def _lean_issue(issue: Any) -> Any:
+    """State an issue's facts once: drop empty optional fields and echoes of code or message."""
+
+    if not isinstance(issue, dict):
+        return issue
+    echoes = {"why_invalid": issue.get("message"), "unsupported_construct": issue.get("code")}
+    lean = {
+        key: value
+        for key, value in issue.items()
+        if key in ("code", "message")
+        or not (value in _EMPTY or (key in echoes and value == echoes[key]))
+    }
+    if isinstance(lean.get("recovery_hints"), list):
+        # Hints must be actionable on their own (for example, valid_kinds on a retry).
+        lean["recovery_hints"] = [_lean_issue(hint) for hint in lean["recovery_hints"]]
+    return lean
+
+
 def _internal_issue(message: str, *, exception_type: str = "") -> dict[str, Any]:
     return {
         "code": "INTERNAL_ERROR",
@@ -1766,7 +1832,7 @@ class SemanticLayerMCPAdapter:
                 if warning["details"]["received"] not in handler_warned_keys
             ]
             if deduped:
-                response["warnings"] = existing + deduped
+                response["warnings"] = existing + [_lean_issue(warning) for warning in deduped]
         return finish(response)
 
     def read_resource(
@@ -1832,13 +1898,7 @@ class SemanticLayerMCPAdapter:
                 stage="mcp",
             )
             payload = self._envelope(
-                {
-                    "ok": False,
-                    "status": "error",
-                    "error": issue,
-                    "errors": [issue],
-                    "recovery_hints": list(issue.get("recovery_hints", [])),
-                },
+                {"ok": False, "status": "error", "error": issue, "errors": [issue]},
                 request_id=request_id,
                 started_at=time.perf_counter(),
             )
@@ -1925,13 +1985,34 @@ class SemanticLayerMCPAdapter:
             )
             if first is not None:
                 out["error"] = first
-        if "recovery_hints" not in out:
-            hints: list[Any] = []
-            for error in list(out.get("errors", []) or []):
-                if isinstance(error, dict):
-                    hints.extend(list(error.get("recovery_hints", []) or []))
-            out["recovery_hints"] = hints
+        for key in ("errors", "warnings"):
+            out[key] = [_lean_issue(issue) for issue in out[key] or []]
+        if isinstance(out.get("error"), dict):
+            out["error"] = _lean_issue(out["error"])
+        # The errors' hints, repeated at the top level: agents' loop-repair signal.
+        hints = out.pop("recovery_hints", None)
+        if hints is None:
+            hints = [
+                hint
+                for issue in out["errors"]
+                if isinstance(issue, dict)
+                for hint in issue.get("recovery_hints") or []
+            ]
+        if hints:
+            out["recovery_hints"] = [_lean_issue(hint) for hint in hints]
         out.setdefault("timing_ms", round((time.perf_counter() - started_at) * 1000, 3))
+        return out
+
+    def _with_request_context(
+        self, out: dict[str, Any], arguments: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        # Echo the resolved request context only when there is one (hosted or policy_context).
+        if "request_context" not in out:
+            context = request_context_payload(
+                _resolved_tool_request_context(arguments, request_id=str(out.get("request_id", "")))
+            )
+            if context:
+                out["request_context"] = context
         return out
 
     def _success(
@@ -1942,13 +2023,7 @@ class SemanticLayerMCPAdapter:
             request_id=_clean_request_id(arguments.get("request_id")),
             started_at=started_at,
         )
-        out.setdefault(
-            "request_context",
-            request_context_payload(
-                _resolved_tool_request_context(arguments, request_id=str(out.get("request_id", "")))
-            ),
-        )
-        return out
+        return self._with_request_context(out, arguments)
 
     def _error_response(
         self,
@@ -1966,23 +2041,11 @@ class SemanticLayerMCPAdapter:
             exc = enrich_object_not_found(exc, self.runtime._config)
         issue = exception_issue(exc, stage="mcp")
         out = self._envelope(
-            {
-                "ok": False,
-                "status": "error",
-                "error": issue,
-                "errors": [issue],
-                "recovery_hints": list(issue.get("recovery_hints", [])),
-            },
+            {"ok": False, "status": "error", "error": issue, "errors": [issue]},
             request_id=_clean_request_id(arguments.get("request_id")),
             started_at=started_at or time.perf_counter(),
         )
-        out.setdefault(
-            "request_context",
-            request_context_payload(
-                _resolved_tool_request_context(arguments, request_id=str(out.get("request_id", "")))
-            ),
-        )
-        return out
+        return self._with_request_context(out, arguments)
 
     def _guarded(
         self, arguments: dict[str, Any], handler: Callable[[dict[str, Any]], dict[str, Any]]
@@ -2017,25 +2080,11 @@ class SemanticLayerMCPAdapter:
                 exception_type=type(exc).__name__,
             )
             out = self._envelope(
-                {
-                    "ok": False,
-                    "status": "error",
-                    "error": issue,
-                    "errors": [issue],
-                    "recovery_hints": list(issue.get("recovery_hints", [])),
-                },
+                {"ok": False, "status": "error", "error": issue, "errors": [issue]},
                 request_id=_clean_request_id(arguments.get("request_id")),
                 started_at=started,
             )
-            out.setdefault(
-                "request_context",
-                request_context_payload(
-                    _resolved_tool_request_context(
-                        arguments, request_id=str(out.get("request_id", ""))
-                    )
-                ),
-            )
-            return out
+            return self._with_request_context(out, arguments)
         finally:
             if token is not None:
                 _TOOL_REQUEST_CONTEXT.reset(token)
@@ -2196,7 +2245,7 @@ class SemanticLayerMCPAdapter:
                     {"kind": "browse_catalog_or_capabilities", "message": browse_message}
                 )
                 payload["recovery_hints"] = existing_hints
-            return payload
+            return _lean_discover(payload)
 
         return self._guarded(arguments, _build)
 

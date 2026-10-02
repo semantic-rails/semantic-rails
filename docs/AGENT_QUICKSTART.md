@@ -172,7 +172,10 @@ Statuses are:
   filters, or time scope. For `TIME_WINDOW_UNRESOLVED`, follow `why.recovery_hints`; when
   `why.details.conflicting_phrases` names two windows that differ, as in "Q2 2017 (April 1 to
   June 29, 2017)", keep the one you mean and plan again. (One window stated twice the same way
-  resolves.)
+  resolves.) On a package without time, every plan with a draft yields `low_confidence`,
+  including plain catalogue questions. The Query IR is retained, with the same
+  `INVALID_TEMPORAL_ROLE` warning: "This package has no time; check the question doesn't ask
+  for a time breakdown or window."
 - `unrealizable`: the intent parsed, but no pattern or fallback produced Query IR.
 - `out_of_scope`: the classifier or relevance gate rejected the request as outside the package.
 
@@ -316,7 +319,19 @@ orient -> discover -> draft -> execute
 Branch on structured status fields: a `plan` draft that isn't `ok`, or has warnings, goes to a
 repair node before `execute`. `INVALID_QUERY`, `PATH_JOIN_CONFLICT`,
 `MIXED_GRAIN_INVALID`, `POLICY_DENIED`, and low-relevance results should route to repair or refusal
-nodes instead of being retried as raw SQL.
+nodes instead of being retried as raw SQL. `AMBIGUOUS_PATH` (`details.reason:
+route_decision_required`) means two join routes can answer the question differently (an account's
+branch region or its owner's home region) and the package hasn't recorded which one it means. A
+query can't pick one: ask which meaning is wanted (`details.meanings` reads each route), or refuse;
+`details.pins` lists the `graph.path_preferences` row a package author adds to record each (a
+route whose row would disagree with the package's rows is in `details.conflicts_with` instead); one
+row also decides every route that walks its pair. An `info` note `ROUTE_COLOCATED_KEY` or
+`ROUTE_RECORDED` (compact and full responses) names the route the answer used, the start entity's
+own key or the package's recorded routes; it needs no follow-up, and `ROUTE_COLOCATED_KEY` lists
+the row that would make each other route the default (or, in `details.conflicts_with`, the rows
+that row would disagree with). `PATH_NOT_FOUND` with `details.reason:
+excluded_by_decision` means the package's rows rule out every route; it is a package fix, not a
+query fix.
 
 ## Local Warehouse Defaults
 

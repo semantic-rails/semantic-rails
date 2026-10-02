@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
 from .errors import SemanticLayerError
@@ -23,7 +23,7 @@ _SLOT_TYPES: dict[str, type] = {"string": str, "integer": int, "boolean": bool}
 
 @dataclass(frozen=True)
 class ParameterSlot:
-    """One positional ``?`` placeholder, bound per request from a trusted attribute.
+    """One positional placeholder, bound per request from a trusted attribute.
 
     The value must have exactly the declared type: ``string``, ``integer`` or
     ``boolean``. A compiled statement holds only slots, never their values.
@@ -43,7 +43,8 @@ class ParameterSlot:
 class PreparedQuery:
     """Executable SQL with physical-to-semantic result column names.
 
-    ``parameters`` lists the statement's ``?`` placeholders in order. Only an
+    ``parameters`` lists the statement's placeholders in order (``?`` before
+    driver finalization, ``$n`` for Postgres). Only an
     adapter that sends values to its driver separately may execute such a
     statement; values are never rendered into the SQL text.
     """
@@ -81,6 +82,78 @@ def checked_slot_value(slot: ParameterSlot, value: Any) -> ParameterValue:
     if type(value) is not _SLOT_TYPES[slot.type]:
         raise parameters_denied("attribute_type_mismatch", attribute=slot.attribute)
     return cast(ParameterValue, value)
+
+
+# Consume complete Postgres identifiers and E-strings before looking for binds.
+# Also skip ANSI quotes, comments and dollar quotes in compiler or direct SQL.
+_PARAMETER_TOKEN = re.compile(
+    r"[eE]'(?:[^'\\]|\\.|'')*'|'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|--[^\n]*|/\*|"
+    r"[A-Za-z_\u0080-\U0010ffff][A-Za-z_0-9$\u0080-\U0010ffff]*|"
+    r"(?P<dollar>\$(?:[A-Za-z_\u0080-\U0010ffff][A-Za-z_0-9\u0080-\U0010ffff]*)?\$)"
+    r".*?(?P=dollar)|\?|\$[0-9]+",
+    re.DOTALL,
+)
+
+
+# Snowflake also permits backslash escapes and dollar signs in identifiers.
+_SNOWFLAKE_PARAMETER_TOKEN = re.compile(
+    r"'(?:[^'\\]|\\.|'')*'|\"(?:[^\"]|\"\")*\"|--[^\n]*|/\*.*?\*/|"
+    r"\$\$.*?\$\$|[A-Za-z_\u0080-\U0010ffff][A-Za-z_0-9$\u0080-\U0010ffff]*|\?|\$[0-9]+",
+    re.DOTALL,
+)
+
+
+def postgres_parameter_tokens(sql: str) -> list[re.Match[str]]:
+    tokens: list[re.Match[str]] = []
+    position = 0
+    while match := _PARAMETER_TOKEN.search(sql, position):
+        position = match.end()
+        if match[0] == "/*":
+            depth = 1
+            for delimiter in re.compile(r"/\*|\*/").finditer(sql, position):
+                depth += 1 if delimiter[0] == "/*" else -1
+                if not depth:
+                    position = delimiter.end()
+                    break
+            else:
+                position = len(sql)
+        elif re.fullmatch(r"\?|\$[0-9]+", match[0]):
+            tokens.append(match)
+    return tokens
+
+
+def finalize_parameters(prepared: PreparedQuery, connection_kind: str) -> PreparedQuery:
+    """Finalize Postgres bind syntax before handing SQL to execution."""
+    if connection_kind != "postgres_native" or not prepared.parameters:
+        return prepared
+    tokens = postgres_parameter_tokens(prepared.sql)
+    if len(tokens) != len(prepared.parameters) or any(m[0] != "?" for m in tokens):
+        raise parameters_denied("parameter_placeholder_mismatch")
+    sql = prepared.sql
+    for index, token in reversed(list(enumerate(tokens, 1))):
+        sql = sql[: token.start()] + f"${index}" + sql[token.end() :]
+    return replace(prepared, sql=sql)
+
+
+def check_postgres_parameters(prepared: PreparedQuery) -> None:
+    """Every slot has exactly one numbered placeholder; refuse bypasses centrally."""
+    actual = [m[0] for m in postgres_parameter_tokens(prepared.sql)]
+    if not prepared.parameters:
+        actual = [token for token in actual if token != "?"]
+    expected = [f"${index}" for index in range(1, len(prepared.parameters) + 1)]
+    if actual != expected:
+        raise parameters_denied("parameter_placeholder_mismatch")
+
+
+def check_snowflake_parameters(prepared: PreparedQuery) -> None:
+    """Every authored slot has one qmark; refuse direct prepared bypasses."""
+    actual = [
+        match[0]
+        for match in _SNOWFLAKE_PARAMETER_TOKEN.finditer(prepared.sql)
+        if re.fullmatch(r"\?|\$[0-9]+", match[0])
+    ]
+    if actual != ["?"] * len(prepared.parameters):
+        raise parameters_denied("parameter_placeholder_mismatch")
 
 
 def prepare_query(sql: str, warehouse: str) -> PreparedQuery:

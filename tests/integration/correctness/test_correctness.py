@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from datetime import time as clock_time
 from decimal import Decimal
 from typing import Any
@@ -311,8 +311,8 @@ def _dense(
 def _empty_group_cases(revenue: dict[str, Any], orders: dict[str, Any]) -> Iterator[Case]:
     """A group with no rows reads 0 where its measure has data in scope, NULL where it has none.
 
-    Refunds are a second fact: only stores 2, 4 and 6 have any, and their amounts are pivoted by
-    type (each type leaves the other amount columns NULL; tax is never filled).
+    Refunds are a second fact: only orders 2, 4, 6 and 7 have any, and their amounts are pivoted
+    by type (each type leaves the other amount columns NULL; tax is never filled).
     """
     by_store = {"group_by": [STORE]}
     by_type = {"group_by": [REFUND_TYPE]}
@@ -465,6 +465,124 @@ def _null_comparison_cases() -> Iterator[Case]:
         )
 
 
+def _child_filter_cases() -> Iterator[Case]:
+    """Conditional aggregates of orders that have a refund of a type: each order counts once.
+
+    Goods refunds: order 2 (store b, 5.00, channel 'store') has two, then orders 6 (store a,
+    4.00, 'store') and 7 (store a, no amount, no channel). Shipping refunds: orders 4 (store a,
+    20.00, 'web') and 7. A join to the refunds would count order 2 twice.
+    """
+    order = "entity.shop_order"
+
+    def compare(column: str, op: str, value: Any) -> dict[str, Any]:
+        left = {"kind": "column", "column": column, "entity": order}
+        return {
+            "kind": "comparison",
+            "op": op,
+            "left": left,
+            "right": {"kind": "literal", "value": value},
+        }
+
+    def if_(aggregation: str, condition: dict[str, Any], value: str = "") -> dict[str, Any]:
+        expression = {"kind": "aggregate_if", "aggregation": aggregation, "condition": condition}
+        if value:
+            expression["value"] = {"kind": "column", "column": value, "entity": order}
+        return expression
+
+    def ratio(numerator: dict[str, Any], denominator: dict[str, Any]) -> dict[str, Any]:
+        return {"kind": "ratio", "numerator": numerator, "denominator": denominator}
+
+    def refunded(refund_type: str) -> list[dict[str, Any]]:
+        return [{"field": REFUND_TYPE, "op": "=", "value": refund_type}]
+
+    def has_refund(refund_type: str) -> str:
+        return (
+            "EXISTS (SELECT 1 FROM refunds AS r"
+            f" WHERE r.order_id = o.order_id AND r.refund_type = '{refund_type}')"
+        )
+
+    in_a, in_b = compare("store_id", "=", "a"), compare("store_id", "=", "b")
+    a_amount = "CASE WHEN o.store_id = 'a' THEN o.amount END"
+    by_channel = {"group_by": [CHANNEL]}
+    yield Case(
+        "child_filter-conditional_counts_and_sum_by_channel",
+        "utc_authored",
+        {
+            "select": [
+                _item(if_("count_distinct", in_a, "order_id"), "store_a_orders"),
+                _item(if_("count", compare("amount", ">=", 5)), "orders_of_5"),
+                _item(if_("sum", in_b, "amount"), "store_b_revenue"),
+            ],
+            "where": refunded("goods"),
+            **by_channel,
+        },
+        f"""
+        SELECT {ORDER_CHANNEL}, COUNT(DISTINCT CASE WHEN o.store_id = 'a' THEN o.order_id END),
+          COUNT(CASE WHEN o.amount >= 5 THEN 1 END),
+          COALESCE(SUM(CASE WHEN o.store_id = 'b' THEN o.amount END), 0)
+        FROM orders AS o WHERE {has_refund("goods")} GROUP BY 1
+        """,
+    )
+    # Each operand of a ratio filters its own rows; the NULL channel's revenue is NULL, so its
+    # share is NULL rather than a division by zero.
+    yield Case(
+        "child_filter-conditional_ratios_by_channel",
+        "utc_authored",
+        {
+            "select": [
+                _item(
+                    ratio(if_("count_distinct", compare("amount", ">=", 5), "order_id"), ORDERS),
+                    "share_of_5",
+                ),
+                _item(ratio(if_("sum", in_a, "amount"), REVENUE), "store_a_share"),
+            ],
+            "where": refunded("goods"),
+            **by_channel,
+        },
+        f"""
+        SELECT {ORDER_CHANNEL},
+          1.0 * COUNT(DISTINCT CASE WHEN o.amount >= 5 THEN o.order_id END) / COUNT(*),
+          COALESCE(SUM({a_amount}), 0) / NULLIF(COALESCE(SUM(o.amount), 0), 0)
+        FROM orders AS o WHERE {has_refund("goods")} GROUP BY 1
+        """,
+    )
+    # Order 7 alone has no channel and no amount: its sum reads 0 (the sum has amounts elsewhere)
+    # and its average stays NULL.
+    yield Case(
+        "child_filter-conditional_sum_and_average_of_a_null_amount",
+        "utc_authored",
+        {
+            "select": [
+                _item(if_("sum", in_a, "amount"), "revenue"),
+                _item(if_("avg", in_a, "amount"), "average"),
+            ],
+            "where": refunded("shipping"),
+            **by_channel,
+        },
+        f"""
+        SELECT {ORDER_CHANNEL}, COALESCE(SUM({a_amount}), 0), AVG({a_amount})
+        FROM orders AS o WHERE {has_refund("shipping")} GROUP BY 1
+        """,
+    )
+    # No store b order has a shipping refund: a sum and a count of nothing read NULL, not 0.
+    yield Case(
+        "child_filter-conditional_aggregates_of_nothing",
+        "utc_authored",
+        {
+            "select": [
+                _item(if_("sum", in_b, "amount"), "revenue"),
+                _item(if_("count", in_b), "orders"),
+            ],
+            "where": refunded("shipping"),
+        },
+        f"""
+        SELECT SUM(CASE WHEN o.store_id = 'b' THEN o.amount END),
+          NULLIF(COUNT(CASE WHEN o.store_id = 'b' THEN 1 END), 0)
+        FROM orders AS o WHERE {has_refund("shipping")}
+        """,
+    )
+
+
 def _cases() -> Iterator[Case]:
     revenue, average = _item(REVENUE, "revenue"), _item(AVERAGE, "average")
     orders = _item(ORDERS, "orders")
@@ -510,6 +628,7 @@ def _cases() -> Iterator[Case]:
     yield from _empty_group_cases(revenue, orders)
     yield from _absent_entity_cases()
     yield from _null_comparison_cases()
+    yield from _child_filter_cases()
     for name, variant, grain, start, end, routes in (
         ("utc-march_bounds_by_day", "utc_implicit", "day", "2024-03-01", "2024-04-01", None),
         ("ny-march_bounds_by_day", "ny_implicit", "day", "2024-03-01", "2024-04-01", None),
@@ -787,7 +906,22 @@ def _answer(backend: Backend, case: Case) -> list[tuple[Any, ...]]:
     if case.routes is not None:
         routed = "orders_monthly" in str(result.get("rendered_sql") or "")
         assert routed is case.routes, f"{case.name}: rollup routing is {routed} on {backend.name}"
-    return [tuple(row.values()) for row in result["rows"]]
+
+    def typed(value: Any, kind: str) -> Any:
+        if value is None:
+            return None
+        if kind == "decimal":
+            return Decimal(value)
+        if kind == "timestamp":
+            return datetime.fromisoformat(value)
+        if kind == "date":
+            return date.fromisoformat(value)
+        return value
+
+    return [
+        tuple(typed(value, result["column_types"][key]["type"]) for key, value in row.items())
+        for row in result["rows"]
+    ]
 
 
 def _backend(request: pytest.FixtureRequest, name: str) -> Backend:

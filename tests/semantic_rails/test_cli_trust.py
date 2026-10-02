@@ -701,19 +701,93 @@ def test_bundled_package_is_recognised_however_it_was_selected(nowhere: dict[str
     assert json.loads(proc.stdout)["package"]["bundled"] is True
 
 
-def test_day_or_coarser_time_buckets_print_as_dates_and_labels_keep_acronyms() -> None:
-    from datetime import datetime
+def test_day_or_coarser_time_buckets_print_as_dates_and_labels_keep_acronyms(
+    runtime_factory,
+    monkeypatch,
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    role = next(
+        role
+        for role in runtime._config.temporal_roles
+        if role.id == "temporal_role.jaffle_order_time"
+    )
+    role.supported_grains.append("hour")
+    try:
+        for grain in ("month", "hour"):
+            result = runtime.query(
+                {
+                    "version": 1,
+                    "select": [
+                        {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
+                    ],
+                    "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": grain},
+                    "limit": 2,
+                }
+            )
+            _header, _rule, *cells = cli_output._table_lines(
+                result["rows"], result["output_columns"], result["column_types"]
+            )
+            for row, cell in zip(result["rows"], cells, strict=True):
+                value = row[f"temporal_role.jaffle_order_time__{grain}"]
+                displayed = cell.split(" | ")[0].strip()
+                assert displayed == (value[:10] if grain == "month" else value.replace("T", " "))
+        for grain in ("month", "hour"):
+            field = f"temporal_role.jaffle_order_time__{grain}"
+            monkeypatch.setattr(
+                "semantic_rails.runtime._adapter_query",
+                lambda *args, field=field, **kwargs: [
+                    {field: "2016-09-01T00:00:00.000000001", "orders": 1}
+                ],
+            )
+            result = runtime.query(
+                {
+                    "version": 1,
+                    "select": [
+                        {"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}
+                    ],
+                    "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": grain},
+                }
+            )
+            cells = cli_output._table_lines(
+                result["rows"], result["output_columns"], result["column_types"]
+            )
+            assert cells[2].split(" | ")[0].strip() == "2016-09-01 00:00:00.000000001"
+        assert common._title("revenue_mom_growth") == "Revenue MoM Growth"
+        assert common._title("orders_ytd") == "Orders YTD"
+    finally:
+        runtime.close()
 
-    midnight, noon = datetime(2016, 9, 1), datetime(2016, 9, 1, 12)
-    rows = [{"t__month": midnight, "t__hour": midnight}, {"t__month": midnight, "t__hour": noon}]
-    columns = [{"field": field, "type": "time"} for field in ("t__month", "t__hour")]
 
-    _header, _rule, *cells = cli_output._table_lines(rows, columns)
-
-    assert [row.split(" | ")[0].strip() for row in cells] == ["2016-09-01"] * 2
-    assert cells[1].endswith("2016-09-01 12:00:00")
-    assert common._title("revenue_mom_growth") == "Revenue MoM Growth"
-    assert common._title("orders_ytd") == "Orders YTD"
+def test_decimal_result_strings_are_formatted_and_aligned(
+    runtime_factory, monkeypatch, capsys
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    monkeypatch.setattr(
+        "semantic_rails.runtime._adapter_query",
+        lambda *args, **kwargs: [
+            {"revenue": Decimal("1234.5000000000000001")},
+            {"revenue": Decimal("2")},
+        ],
+    )
+    try:
+        result = runtime.query(
+            {
+                "version": 1,
+                "select": [
+                    {"expression": {"measure": "measure.jaffle.revenue_usd"}, "as": "revenue"}
+                ],
+            }
+        )
+        assert all(isinstance(row["revenue"], str) for row in result["rows"])
+        header, rule, *cells = cli_output._table_lines(
+            result["rows"], result["output_columns"], result["column_types"]
+        )
+        assert cells == ["1,234.50", "    2.00"]
+        assert len(header) == len(rule) == len(cells[0])
+        cli_output._print_ask_report({"result": result})
+        assert "1,234.50\n    2.00\n" in capsys.readouterr().out
+    finally:
+        runtime.close()
 
 
 def test_a_failed_validation_probe_carries_the_recovery_hint_of_its_error() -> None:

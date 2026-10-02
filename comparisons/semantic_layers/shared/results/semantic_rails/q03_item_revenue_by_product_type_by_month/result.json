@@ -1,5 +1,17 @@
 {
   "assumptions": [],
+  "column_types": {
+    "dimension.jaffle_item_product_type": {
+      "type": "string"
+    },
+    "item_revenue_usd": {
+      "type": "float"
+    },
+    "temporal_role.jaffle_order_time__month": {
+      "timezone": "naive",
+      "type": "timestamp"
+    }
+  },
   "dialect": "duckdb",
   "errors": [],
   "explain": {
@@ -22,8 +34,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.751,
-      "compile_ms": 0.156,
+      "cache_lookup_ms": 0.716,
+      "compile_ms": 0.224,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -49,7 +61,6 @@
                   "join_semantics": "",
                   "label": "Item to Order",
                   "name": "jaffle.Item_TO_jaffle.Order",
-                  "path_preference": 100,
                   "rollup_safe_aggregations": [],
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -148,7 +159,6 @@
                     "join_semantics": "",
                     "label": "Item to Order",
                     "name": "jaffle.Item_TO_jaffle.Order",
-                    "path_preference": 100,
                     "rollup_safe_aggregations": [],
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -252,7 +262,6 @@
                     "join_semantics": "",
                     "label": "Item to Order",
                     "name": "jaffle.Item_TO_jaffle.Order",
-                    "path_preference": 100,
                     "rollup_safe_aggregations": [],
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -317,10 +326,6 @@
             "field": "item_revenue_usd"
           }
         ],
-        "path_policy": {
-          "ask_if_ambiguous": true,
-          "preference": "fewest_hops"
-        },
         "select": [
           {
             "as": "item_revenue_usd",
@@ -434,10 +439,6 @@
           "field": "item_revenue_usd"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "item_revenue_usd",
@@ -540,7 +541,6 @@
                     "join_semantics": "",
                     "label": "Item to Order",
                     "name": "jaffle.Item_TO_jaffle.Order",
-                    "path_preference": 100,
                     "rollup_safe_aggregations": [],
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
@@ -682,7 +682,6 @@
                       "join_semantics": "",
                       "label": "Item to Order",
                       "name": "jaffle.Item_TO_jaffle.Order",
-                      "path_preference": 100,
                       "rollup_safe_aggregations": [],
                       "rollup_safe_aggregations_reverse": [],
                       "safety": "safe",
@@ -793,7 +792,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_order_items.product_type AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_items.item_revenue_cents / 100.0) AS m1\nFROM comparison_order_items\nINNER JOIN comparison_orders ON comparison_order_items.order_id = comparison_orders.order_id\nGROUP BY\n  comparison_order_items.product_type,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_item_product_type\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS item_revenue_usd\nFROM leaf_1 AS base\nORDER BY\n  item_revenue_usd DESC",
+    "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_order_items.product_type AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_items.item_revenue_cents / 100.0) AS m1\nFROM comparison_order_items\nINNER JOIN comparison_orders ON comparison_order_items.order_id = comparison_orders.order_id\nGROUP BY\n  comparison_order_items.product_type,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_item_product_type\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS item_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  item_revenue_usd DESC",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -908,6 +907,7 @@
               }
             ],
             "limit": null,
+            "observation_scan": false,
             "order_by": [],
             "qualify": [],
             "select": [
@@ -965,17 +965,105 @@
             ],
             "where": []
           }
+        },
+        {
+          "name": "guarded_base",
+          "query": {
+            "ctes": [],
+            "distinct": false,
+            "from_table": {
+              "alias": "base",
+              "name": "leaf_1"
+            },
+            "group_by": [],
+            "having": [],
+            "joins": [],
+            "limit": null,
+            "observation_scan": false,
+            "order_by": [],
+            "qualify": [],
+            "select": [
+              {
+                "alias": "g1",
+                "expression": {
+                  "parts": [
+                    "base",
+                    "g1"
+                  ]
+                }
+              },
+              {
+                "alias": "t",
+                "expression": {
+                  "parts": [
+                    "base",
+                    "t"
+                  ]
+                }
+              },
+              {
+                "alias": "m1",
+                "expression": {
+                  "else_expr": null,
+                  "whens": [
+                    {
+                      "condition": {
+                        "left": {
+                          "frame": "",
+                          "function": {
+                            "args": [
+                              {
+                                "parts": [
+                                  "base",
+                                  "m1"
+                                ]
+                              }
+                            ],
+                            "distinct": false,
+                            "name": "COUNT"
+                          },
+                          "order_by": [],
+                          "partition_by": []
+                        },
+                        "op": ">",
+                        "right": {
+                          "value": 0
+                        }
+                      },
+                      "result": {
+                        "args": [
+                          {
+                            "parts": [
+                              "base",
+                              "m1"
+                            ]
+                          },
+                          {
+                            "value": 0
+                          }
+                        ],
+                        "distinct": false,
+                        "name": "COALESCE"
+                      }
+                    }
+                  ]
+                }
+              }
+            ],
+            "where": []
+          }
         }
       ],
       "distinct": false,
       "from_table": {
         "alias": "base",
-        "name": "leaf_1"
+        "name": "guarded_base"
       },
       "group_by": [],
       "having": [],
       "joins": [],
       "limit": null,
+      "observation_scan": false,
       "order_by": [
         {
           "direction": "DESC",
@@ -1064,7 +1152,6 @@
                   "join_semantics": "",
                   "label": "Item to Order",
                   "name": "jaffle.Item_TO_jaffle.Order",
-                  "path_preference": 100,
                   "rollup_safe_aggregations": [],
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -1168,7 +1255,6 @@
                   "join_semantics": "",
                   "label": "Item to Order",
                   "name": "jaffle.Item_TO_jaffle.Order",
-                  "path_preference": 100,
                   "rollup_safe_aggregations": [],
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
@@ -1233,10 +1319,6 @@
           "field": "item_revenue_usd"
         }
       ],
-      "path_policy": {
-        "ask_if_ambiguous": true,
-        "preference": "fewest_hops"
-      },
       "select": [
         {
           "as": "item_revenue_usd",
@@ -1351,10 +1433,6 @@
         "field": "item_revenue_usd"
       }
     ],
-    "path_policy": {
-      "ask_if_ambiguous": true,
-      "preference": "fewest_hops"
-    },
     "select": [
       {
         "as": "item_revenue_usd",
@@ -1440,133 +1518,133 @@
     "version": 1
   },
   "recovery_hints": [],
-  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_order_items.product_type AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_items.item_revenue_cents / 100.0) AS m1\nFROM comparison_order_items\nINNER JOIN comparison_orders ON comparison_order_items.order_id = comparison_orders.order_id\nGROUP BY\n  comparison_order_items.product_type,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_item_product_type\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS item_revenue_usd\nFROM leaf_1 AS base\nORDER BY\n  item_revenue_usd DESC",
+  "rendered_sql": "WITH leaf_1 AS (\nSELECT\n  comparison_order_items.product_type AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  SUM(comparison_order_items.item_revenue_cents / 100.0) AS m1\nFROM comparison_order_items\nINNER JOIN comparison_orders ON comparison_order_items.order_id = comparison_orders.order_id\nGROUP BY\n  comparison_order_items.product_type,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_item_product_type\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS item_revenue_usd\nFROM guarded_base AS base\nORDER BY\n  item_revenue_usd DESC",
   "request_context": {},
   "row_count": 24,
   "rows": [
     {
       "dimension.jaffle_item_product_type": "beverage",
       "item_revenue_usd": 56756.0,
-      "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "beverage",
       "item_revenue_usd": 50528.0,
-      "temporal_role.jaffle_order_time__month": "2017-06-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "beverage",
       "item_revenue_usd": 49309.0,
-      "temporal_role.jaffle_order_time__month": "2017-07-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "beverage",
       "item_revenue_usd": 49250.0,
-      "temporal_role.jaffle_order_time__month": "2017-05-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "jaffle",
       "item_revenue_usd": 45623.0,
-      "temporal_role.jaffle_order_time__month": "2017-08-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-08-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "jaffle",
       "item_revenue_usd": 43155.0,
-      "temporal_role.jaffle_order_time__month": "2017-06-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-06-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "beverage",
       "item_revenue_usd": 42250.0,
-      "temporal_role.jaffle_order_time__month": "2017-04-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "jaffle",
       "item_revenue_usd": 42138.0,
-      "temporal_role.jaffle_order_time__month": "2017-05-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-05-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "jaffle",
       "item_revenue_usd": 41087.0,
-      "temporal_role.jaffle_order_time__month": "2017-07-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-07-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "beverage",
       "item_revenue_usd": 38272.0,
-      "temporal_role.jaffle_order_time__month": "2017-03-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "jaffle",
       "item_revenue_usd": 36996.0,
-      "temporal_role.jaffle_order_time__month": "2017-04-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-04-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "jaffle",
       "item_revenue_usd": 31946.0,
-      "temporal_role.jaffle_order_time__month": "2017-03-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-03-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "beverage",
       "item_revenue_usd": 21814.0,
-      "temporal_role.jaffle_order_time__month": "2017-01-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-01-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "beverage",
       "item_revenue_usd": 21474.0,
-      "temporal_role.jaffle_order_time__month": "2017-02-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-02-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "jaffle",
       "item_revenue_usd": 20658.0,
-      "temporal_role.jaffle_order_time__month": "2017-01-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-01-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "jaffle",
       "item_revenue_usd": 19432.0,
-      "temporal_role.jaffle_order_time__month": "2017-02-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2017-02-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "beverage",
       "item_revenue_usd": 17850.0,
-      "temporal_role.jaffle_order_time__month": "2016-12-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2016-12-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "jaffle",
       "item_revenue_usd": 15810.0,
-      "temporal_role.jaffle_order_time__month": "2016-12-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2016-12-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "beverage",
       "item_revenue_usd": 14103.0,
-      "temporal_role.jaffle_order_time__month": "2016-11-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2016-11-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "jaffle",
       "item_revenue_usd": 12235.0,
-      "temporal_role.jaffle_order_time__month": "2016-11-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2016-11-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "beverage",
       "item_revenue_usd": 10720.0,
-      "temporal_role.jaffle_order_time__month": "2016-10-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2016-10-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "jaffle",
       "item_revenue_usd": 9964.0,
-      "temporal_role.jaffle_order_time__month": "2016-10-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2016-10-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "beverage",
       "item_revenue_usd": 9061.0,
-      "temporal_role.jaffle_order_time__month": "2016-09-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2016-09-01T00:00:00"
     },
     {
       "dimension.jaffle_item_product_type": "jaffle",
       "item_revenue_usd": 7971.0,
-      "temporal_role.jaffle_order_time__month": "2016-09-01 00:00:00"
+      "temporal_role.jaffle_order_time__month": "2016-09-01T00:00:00"
     }
   ],
-  "semantic_fingerprint": "sha256:0486911f94045efa979e23e23222aa0fb090db86bc43954643883a473bf7882b",
-  "source_fingerprint": "4df4037fac8fc9bed8005076674631fbc6b731c4d62cbe6cdd9b0b826d877935",
+  "semantic_fingerprint": "sha256:79e8f3f1f2233be41cfae49254c973c3ff64984ddb66ff349015cf6033769ee7",
+  "source_fingerprint": "3a04595d59e97537227dfd70f6e62ae026eef579da73543884aae311262f0e28",
   "sql_plan": {
     "ctes": [
       {
@@ -1630,6 +1708,7 @@
             }
           ],
           "limit": null,
+          "observation_scan": false,
           "order_by": [],
           "qualify": [],
           "select": [
@@ -1687,17 +1766,105 @@
           ],
           "where": []
         }
+      },
+      {
+        "name": "guarded_base",
+        "query": {
+          "ctes": [],
+          "distinct": false,
+          "from_table": {
+            "alias": "base",
+            "name": "leaf_1"
+          },
+          "group_by": [],
+          "having": [],
+          "joins": [],
+          "limit": null,
+          "observation_scan": false,
+          "order_by": [],
+          "qualify": [],
+          "select": [
+            {
+              "alias": "g1",
+              "expression": {
+                "parts": [
+                  "base",
+                  "g1"
+                ]
+              }
+            },
+            {
+              "alias": "t",
+              "expression": {
+                "parts": [
+                  "base",
+                  "t"
+                ]
+              }
+            },
+            {
+              "alias": "m1",
+              "expression": {
+                "else_expr": null,
+                "whens": [
+                  {
+                    "condition": {
+                      "left": {
+                        "frame": "",
+                        "function": {
+                          "args": [
+                            {
+                              "parts": [
+                                "base",
+                                "m1"
+                              ]
+                            }
+                          ],
+                          "distinct": false,
+                          "name": "COUNT"
+                        },
+                        "order_by": [],
+                        "partition_by": []
+                      },
+                      "op": ">",
+                      "right": {
+                        "value": 0
+                      }
+                    },
+                    "result": {
+                      "args": [
+                        {
+                          "parts": [
+                            "base",
+                            "m1"
+                          ]
+                        },
+                        {
+                          "value": 0
+                        }
+                      ],
+                      "distinct": false,
+                      "name": "COALESCE"
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "where": []
+        }
       }
     ],
     "distinct": false,
     "from_table": {
       "alias": "base",
-      "name": "leaf_1"
+      "name": "guarded_base"
     },
     "group_by": [],
     "having": [],
     "joins": [],
     "limit": null,
+    "observation_scan": false,
     "order_by": [
       {
         "direction": "DESC",

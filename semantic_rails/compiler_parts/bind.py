@@ -40,6 +40,7 @@ from ..expressions import (
     parse_semantic_expression,
     resolve_filter_dimension,
     resolve_measure_temporal_role,
+    validate_boolean_argument_count,
 )
 from ..ir import BoundMeasure
 from ..schema import MeasureConfig, PackageConfig
@@ -301,6 +302,7 @@ def _config_expr_to_sql_inner(
             negated=expr.negated,
         )
     if isinstance(expr, BooleanExpr):
+        validate_boolean_argument_count(expr.op, len(expr.args))
         rendered = [_config_expr_to_sql(arg, measure, config) for arg in expr.args]
         if not rendered:
             raise SemanticLayerError("INVALID_EXPRESSION_AST", "Boolean expressions require args")
@@ -317,7 +319,7 @@ def _config_expr_to_sql_inner(
             current = SqlBinary(current, op.upper(), item)
         return current
     if isinstance(expr, CallExpr):
-        return SqlCall(
+        return dialect_for_warehouse(config.package.warehouse).scalar_call(
             expr.name,
             [_config_expr_to_sql(arg, measure, config) for arg in expr.args],
             distinct=expr.distinct,
@@ -1194,6 +1196,18 @@ def _synthetic_conditional_measure(
     _require_null_rejecting_condition(expr, entity_id, config)
     entities = _entity_index(config)
     entity = entities[entity_id]
+    # It aggregates the rows of its entity's table, whose grain the measures of that table
+    # declare. A grain other than the entity's key wins, so a rewrite that relies on one row
+    # per key refuses this measure as it refuses theirs. With no such measure it is unknown.
+    key = sorted(entity.key or [entity.primary_key])
+    grains = sorted(
+        list(row.row_grain)
+        for row in config.measures
+        if row.entity == entity_id and row.source_relation in {"", entity.table} and row.row_grain
+    )
+    row_grain = next(
+        (grain for grain in grains if sorted(grain) != key), grains[0] if grains else []
+    )
 
     # Build the column-level expression: CASE WHEN cond THEN value END.
     # For COUNT_IF (value omitted) the body is literal 1 so COUNT()
@@ -1223,7 +1237,7 @@ def _synthetic_conditional_measure(
         entity=entity_id,
         subject_entity=entity_id,
         aggregation_entity=entity_id,
-        row_grain=[],
+        row_grain=row_grain,
         expr=expr_for_measure,
         default_aggregation=aggregation,
         allowed_aggregations=[aggregation],

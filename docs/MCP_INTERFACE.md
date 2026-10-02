@@ -55,8 +55,12 @@ API:
 - `package_id`
 - `warnings`
 - `errors`
-- `recovery_hints`
+- `recovery_hints` (the errors' hints, and other next steps; left out when there are none)
 - `timing_ms`
+
+MCP issues leave out empty optional fields and a
+`why_invalid` or `unsupported_construct` that only repeats its `message` or `code`, and
+`request_context` appears only when a transport or `policy_context` set one.
 
 Every `tools/list` definition publishes an `outputSchema` for this envelope and
 MCP-standard annotations (`readOnlyHint`, `destructiveHint`,
@@ -121,12 +125,14 @@ ids, `kinds` limits the kinds listed, and a `DISCOVER_IDS_TRUNCATED` warning giv
 and `catalog/full` resources return the whole index, descriptive rows, or every card with the
 alias index (see [Resources And Prompts](#resources-and-prompts)).
 
-`discover` returns slim cards by default: `id`, `kind`, `label`, `score`, a `description`
-trimmed to 120 characters, `default_temporal_role` and `available`, plus `blocked_reason` for a
-candidate that isn't available. `verbosity="compact"` returns full cards with match reasons,
-starter patches and comparison metadata. When the question uses an object's whole name ("revenue by
-store"), that object ranks above near-duplicates that add a qualifier the question doesn't use
-("Delivered revenue").
+`discover` returns slim cards by default: `id`, `label`, `score`, a `description` trimmed to 120
+characters (left out when it only repeats the label) and `default_temporal_role`, plus
+`available: false` and `blocked_reason` for a candidate that isn't available. A card in a kind's
+bucket leaves out its `kind`; the response leaves out the `terms` and `verbosity` it was called
+with. `verbosity="compact"` returns full cards with match reasons, starter patches and comparison
+metadata. When the question uses an object's whole name ("revenue by store"), that object ranks
+above near-duplicates that add a qualifier the question doesn't use ("Delivered revenue").
+`kinds` takes an array or a comma-separated string, and also a JSON array sent as a string.
 Dimension-value cards keep the raw filter `value`, its business-facing `label`, and explicit
 `available` flag, including when a value is blocked.
 
@@ -395,6 +401,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `QUERY_SHORTHAND_NORMALIZED` | `execute` | A select item was accepted as shorthand and rewritten; `details.canonical` is the form to send next time (`plan` accepts the same shorthand but returns the canonical form in `best.query_ir` instead of a warning) |
 | `SEMANTIC_CAVEAT_APPLIED` | `execute` | Package-authored advisory context matched the query; interpret affected results with that context |
 | `SEMANTIC_CAVEATS_TRUNCATED` | `execute` | More caveats matched than this verbosity returned; increase verbosity to inspect the rest |
+| `ROUTE_COLOCATED_KEY`, `ROUTE_RECORDED` | `execute` (`compact`, `full`) | Info: an entity pair the query reads has two or more routes, and the engine used the start's own key or the package's recorded routes; `details.route` is the route, `details.alternatives` (own key) the row for each other route that would load beside the package's rows, `details.conflicts_with` any other route with the rows its row would disagree with, `details.rows` (inherited) the rows it follows |
 
 Every `*_UNKNOWN_ARG` warning carries `details.received` (the offending key). Most also carry `details.closest_matches` (up to two ranked suggestions via `difflib.get_close_matches`); the special-cased singular/plural typos (e.g. `term` → `terms` on `discover`) carry `details.expected` with the canonical spelling instead.
 
@@ -709,14 +716,14 @@ Every error surfaced through the MCP or HTTP transport is wrapped in a structure
 }
 ```
 
-Every envelope carries `code` and `message`, plus at least one of `details`, `recovery_hints`, or `closest_matches`. Bare `KeyError` / `AttributeError` leaks are wrapped as `INTERNAL_ERROR` envelopes with a bug-tracker hint so the surface is always actionable.
+Every envelope carries `code` and `message`, plus at least one of `details`, `recovery_hints`, or `closest_matches`. Over MCP, empty optional fields are left out; recovery hints keep their own details so each hint is actionable on its own. Bare `KeyError` / `AttributeError` leaks are wrapped as `INTERNAL_ERROR` envelopes with a bug-tracker hint so the surface is always actionable.
 
 ### Error Code Catalog
 
 | Code | One-line description |
 |------|----------------------|
 | `AMBIGUOUS_ALIAS` | Alias resolves to multiple semantic objects; pick one from `details.candidates`. |
-| `AMBIGUOUS_PATH` | Path between root entity and target is ambiguous; `details.candidates` lists the tied routes and `details.hint` says how to pin one. |
+| `AMBIGUOUS_PATH` | Several routes between root entity and target can answer differently and the package records none (`details.reason: route_decision_required`); `details.candidates` lists them, `details.meanings` reads each, `details.pins` holds the `graph.path_preferences` row that records each route whose row would load beside the package's rows, `details.conflicts_with` lists any other route with the rows its row would disagree with, and `details.hint` says how. |
 | `DUPLICATE_OUTPUT_ALIAS` | Two projected columns share an alias; rename one. |
 | `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. |
 | `INVALID_TEMPORAL_ROLE` | Unknown temporal role; pick one from `details.compatible_temporal_roles`. |
@@ -740,7 +747,7 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 | `INVALID_SEGMENT` | Segment definition is invalid. |
 | `MISSING_DEPENDENCY` | Required upstream object is missing. |
 | `QUERY_EXECUTION_ERROR` | Warehouse refused or aborted execution. |
-| `PATH_NOT_FOUND` | No valid join path between the requested objects. |
+| `PATH_NOT_FOUND` | No valid join path between the requested objects; `details.reason: excluded_by_decision` means every route walks a pair the package's `graph.path_preferences` rows (`details.rows`) record differently. |
 | `POLICY_DENIED` | Policy context blocks a referenced object or query cut. |
 | `INVALID_METRIC_PREDICATE` | `metric_predicates[]` entry is malformed. |
 | `PREDICATE_SCOPE_UNSAFE` | Predicate scope is incompatible with query grain. |

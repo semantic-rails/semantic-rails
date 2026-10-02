@@ -42,6 +42,7 @@ from .sql_ast import (
     SqlTableRef,
     SqlWindow,
     SqlWithinGroup,
+    is_null_literal,
     normalize_sql_binary_operator,
     normalize_sql_cast_type_name,
     normalize_sql_date_part,
@@ -56,12 +57,12 @@ if TYPE_CHECKING:
     from .dialects import SqlDialect
 
 # Which dialect's literal-quoting rules apply to the tree currently being
-# rendered. String literals are the one place where quoting is not portable:
+# rendered. String-literal quoting is not portable:
 # Snowflake, BigQuery, ClickHouse and Databricks honour backslash escapes
 # inside single-quoted literals and the rest do not, so the same value has to
 # be escaped differently per warehouse. Every other dialect choice is already
-# baked into the AST by the lowering pass, which is why this is the only
-# dialect-aware hook in the renderer.
+# baked into the AST by the lowering pass, except typed boolean NULL casts:
+# ClickHouse requires a nullable destination type.
 #
 # It is a ContextVar rather than a parameter because `render_expr` recurses
 # through ~35 internal call sites; threading an argument through all of them
@@ -74,7 +75,7 @@ _ACTIVE_DIALECT: ContextVar[SqlDialect | None] = ContextVar(
 
 @contextmanager
 def use_dialect(dialect: SqlDialect | None) -> Iterator[None]:
-    """Bind ``dialect``'s literal-quoting rules for the duration of a render."""
+    """Bind ``dialect``'s literal and cast rules for the duration of a render."""
     token = _ACTIVE_DIALECT.set(dialect)
     try:
         yield
@@ -250,7 +251,16 @@ def render_expr(expr: SqlExpr, *, parent_precedence: int = 0) -> str:
         parts.append("END")
         return " ".join(parts)
     if isinstance(expr, SqlCast):
-        return f"CAST({render_expr(expr.expr)} AS {normalize_sql_cast_type_name(expr.type_name)})"
+        type_name = normalize_sql_cast_type_name(expr.type_name)
+        dialect = _ACTIVE_DIALECT.get()
+        if (
+            type_name == "BOOLEAN"
+            and is_null_literal(expr.expr)
+            and dialect is not None
+            and dialect.name == "clickhouse"
+        ):
+            type_name = "Nullable(Bool)"
+        return f"CAST({render_expr(expr.expr)} AS {type_name})"
     if isinstance(expr, SqlWindow):
         over_parts: list[str] = []
         if expr.partition_by:
@@ -441,7 +451,7 @@ def render_select_for_profile(
 ) -> str:
     """Render ``query`` at the requested SQL profile.
 
-    ``dialect`` binds the warehouse's literal-quoting rules for the whole
+    ``dialect`` binds the warehouse's literal and cast rules for the whole
     render; callers compiling for a real warehouse must pass it. The compiler
     then calls ``dialect.prepare_query`` to finalize executable SQL and aliases.
     """

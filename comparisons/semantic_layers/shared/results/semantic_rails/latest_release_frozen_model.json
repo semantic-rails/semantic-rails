@@ -1,0 +1,103 @@
+{
+  "dataset_fingerprint": "4f24ad8276dab30eb897fef24c136c863bf6def1bb1e24d1c0244aa4796b549f",
+  "distribution": "PyPI semantic-rails==0.3.1",
+  "engine_release": "v0.3.1",
+  "generated_at": "2026-10-01T04:40:40+00:00",
+  "model_sha256": "581afc679948aa81e223b4397f70cc82c1b2b479d6e00e5cec1f81c2b8c7b95f",
+  "queries_sha256": "608e0c912f0000b70f88cceaef9c2ea3ed075c1374f5c4b665cf02dd1521335e",
+  "questions": [
+    {
+      "answer_key_matches": true,
+      "question_id": "q17_session_to_order_conversion_14d",
+      "row_count": 1,
+      "status": "executed"
+    },
+    {
+      "answer_key_matches": true,
+      "question_id": "q18_same_store_session_to_order_conversion_50m",
+      "row_count": 1,
+      "status": "executed"
+    },
+    {
+      "errors": [
+        {
+          "closest_valid_query": {},
+          "code": "REWRITE_NOT_SUPPORTED",
+          "details": {},
+          "message": "time.fill requires a calendar entity in the package",
+          "missing_metadata_or_capability": "",
+          "object_ids": [],
+          "path": "",
+          "recovery_hints": [
+            {
+              "details": {},
+              "kind": "legal_alternative",
+              "message": "Try a simpler query shape or remove the unsupported rewrite requirement."
+            }
+          ],
+          "severity": "error",
+          "stage": "validate",
+          "suggested_query_ir_change": "",
+          "suggested_yaml_change": "",
+          "unsupported_construct": "REWRITE_NOT_SUPPORTED",
+          "why_invalid": "time.fill requires a calendar entity in the package"
+        }
+      ],
+      "question_id": "q19_trailing_3_month_revenue_by_month",
+      "status": "unsupported"
+    },
+    {
+      "errors": [
+        {
+          "closest_valid_query": {},
+          "code": "REWRITE_NOT_SUPPORTED",
+          "details": {},
+          "message": "time.fill requires a calendar entity in the package",
+          "missing_metadata_or_capability": "",
+          "object_ids": [],
+          "path": "",
+          "recovery_hints": [
+            {
+              "details": {},
+              "kind": "legal_alternative",
+              "message": "Try a simpler query shape or remove the unsupported rewrite requirement."
+            }
+          ],
+          "severity": "error",
+          "stage": "validate",
+          "suggested_query_ir_change": "",
+          "suggested_yaml_change": "",
+          "unsupported_construct": "REWRITE_NOT_SUPPORTED",
+          "why_invalid": "time.fill requires a calendar entity in the package"
+        }
+      ],
+      "question_id": "q20_revenue_and_prior_month_revenue_by_month",
+      "status": "unsupported"
+    },
+    {
+      "answer_key_matches": true,
+      "question_id": "q21_revenue_and_large_order_revenue_by_month",
+      "row_count": 12,
+      "status": "executed"
+    },
+    {
+      "answer_key_matches": true,
+      "question_id": "q22_average_and_max_item_revenue_by_product_type_by_month",
+      "row_count": 24,
+      "status": "executed"
+    },
+    {
+      "answer_key_matches": true,
+      "question_id": "q23_orders_from_customers_with_5plus_orders_in_month",
+      "row_count": 12,
+      "status": "executed"
+    },
+    {
+      "answer_key_matches": true,
+      "question_id": "q24_orders_by_month_with_lifetime_spend_1000_filter",
+      "row_count": 12,
+      "status": "executed"
+    }
+  ],
+  "semantic_rails_version": "0.3.1"
+}

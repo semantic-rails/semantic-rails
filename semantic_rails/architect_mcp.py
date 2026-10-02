@@ -44,6 +44,7 @@ from .config_validation import PackageReference, parse_config_report, validate_c
 from .dialects import (
     connection_option_errors,
     normalize_connection_option_name,
+    snowflake_adbc_connect_errors,
     snowflake_native_direct_connect_errors,
     warehouse_connector,
 )
@@ -99,7 +100,9 @@ class ProjectSetupAnswers(BaseModel):
         default="raw_events", description="Table or view backing it, schema-qualified if needed."
     )
     primary_key: str = Field(default="event_id")
-    time_column: str = Field(default="occurred_at")
+    time_column: str = Field(
+        default="occurred_at", description="Date/timestamp column; blank for no time."
+    )
     amount_column: str = Field(
         default="", description="Numeric column to sum; blank for none (starter data: amount)."
     )
@@ -511,7 +514,11 @@ def _missing_setup_answers(draft: dict[str, Any]) -> list[str]:
     for keys in _REQUIRED_CONNECTION_OPTION_GROUPS.get(warehouse, ()):
         if not any(isinstance(options.get(key), str) and options[key].strip() for key in keys):
             missing.append(" or ".join(keys))
-    if warehouse == "snowflake" and not draft["connection_name"]:
+    if warehouse == "snowflake" and kind == "snowflake_adbc":
+        missing.extend(snowflake_adbc_connect_errors(options))
+        if draft["connection_name"]:
+            missing.append("remove unsupported connection_name")
+    elif warehouse == "snowflake" and not draft["connection_name"]:
         if kind == "snowflake_cli":
             missing.append("connection_name")
         elif kind == "snowflake_native" and snowflake_native_direct_connect_errors(options):
@@ -535,7 +542,7 @@ def _project_spec(arguments: dict[str, Any]) -> ProjectSpec:
             entity=str(arguments.get("first_entity") or "event"),
             relation=str(arguments.get("relation") or "raw_events"),
             primary_key=str(arguments.get("primary_key") or "event_id"),
-            time_column=str(arguments.get("time_column") or "occurred_at"),
+            time_column=str(arguments.get("time_column", "occurred_at")).strip(),
             amount_column=str(arguments.get("amount_column") or ""),
             dimension_column=str(arguments.get("dimension_column") or ""),
         ),

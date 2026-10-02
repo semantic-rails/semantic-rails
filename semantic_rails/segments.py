@@ -50,7 +50,6 @@ class NormalizedSegment:
     metric_filters: list[dict[str, Any]] = field(default_factory=list)
     time: dict[str, Any] = field(default_factory=dict)
     temporal_role_overrides: dict[str, str] = field(default_factory=dict)
-    path_policy: dict[str, Any] = field(default_factory=dict)
     topics: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -220,7 +219,6 @@ def normalize_segment(config: PackageConfig, segment_id: str) -> NormalizedSegme
         metric_filters=list(segment.metric_filters),
         time=dict(segment.time),
         temporal_role_overrides=dict(segment.temporal_role_overrides),
-        path_policy=dict(segment.path_policy),
         topics=list(segment.topics),
     )
 
@@ -255,8 +253,6 @@ def build_segment_query(
         query["time"] = dict(normalized.time)
     if normalized.temporal_role_overrides:
         query["temporal_role_overrides"] = dict(normalized.temporal_role_overrides)
-    if normalized.path_policy:
-        query["path_policy"] = dict(normalized.path_policy)
     if limit is not None:
         query["limit"] = int(limit)
     return query

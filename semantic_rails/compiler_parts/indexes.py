@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import weakref
+from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
+from ..config_parts.route_rows import RowPaths, require_rows_agree, row_paths
+from ..errors import SemanticLayerError
 from ..expressions import resolve_table_entity
 from ..schema import (
+    AggregateRelationConfig,
     DimensionConfig,
     EntityConfig,
     MeasureConfig,
@@ -19,6 +23,28 @@ from .dependencies import binding_index
 GraphIndex = dict[str, list[tuple[str, str]]]
 
 
+class RouteResolution(NamedTuple):
+    """A resolved route: every route considered, the chosen first, and the rung of the route
+    ladder that chose it (``fanout.resolve_path``)."""
+
+    routes: tuple[tuple[str, ...], ...]
+    basis: str
+    # The rows that excluded a considered route (``inherited`` only).
+    rows: tuple[tuple[str, str], ...] = ()
+
+
+class RouteRefusal(NamedTuple):
+    """A cached route refusal: plain data, so the cache never holds an exception, its
+    traceback, or the frames (and package configuration) that traceback keeps alive."""
+
+    code: str
+    message: str
+    details: dict[str, Any]
+
+    def error(self) -> SemanticLayerError:
+        return SemanticLayerError(self.code, self.message, details=deepcopy(self.details))
+
+
 @dataclass
 class PackageAnalysis:
     entities: dict[str, EntityConfig]
@@ -30,10 +56,14 @@ class PackageAnalysis:
     table_to_entities: dict[str, tuple[str, ...]]
     graph: GraphIndex
     path_preferences: dict[tuple[str, str], list[str]]
+    # Each row's path and its reverse walk, which every route through the row's pair inherits.
+    route_rows: dict[tuple[str, str], RowPaths]
     temporal_relationship_ids: set[str]
-    path_cache: dict[
-        tuple[str, str, int, str], tuple[tuple[str, ...], tuple[tuple[str, ...], ...]]
-    ] = field(default_factory=dict)
+    # (start, target) -> the resolution or the refusal of a pair with no row of its own.
+    # Keyed only by package inputs.
+    path_cache: dict[tuple[str, str], RouteResolution | RouteRefusal] = field(default_factory=dict)
+    # Pinned-pair notes need only whether two routes fit the hop ceiling.
+    route_note_cache: dict[tuple[str, str], bool] = field(default_factory=dict)
 
     @classmethod
     def from_config(cls, config: PackageConfig) -> PackageAnalysis:
@@ -51,6 +81,9 @@ class PackageAnalysis:
                 graph.setdefault(rel.source_entity, []).append((rel.target_entity, rel.id))
             if "reverse" in directions:
                 graph.setdefault(rel.target_entity, []).append((rel.source_entity, rel.id))
+        # The loader's check again, for a configuration built in code: rows that disagree would
+        # let the route ladder contradict a decided pair.
+        require_rows_agree(relationships, config.path_preferences)
         return cls(
             entities={row.id: row for row in config.entities},
             dimensions={row.id: row for row in config.dimensions},
@@ -62,6 +95,12 @@ class PackageAnalysis:
             graph=graph,
             path_preferences={
                 (row.source_entity, row.target_entity): list(row.relationship_path)
+                for row in config.path_preferences
+            },
+            route_rows={
+                (row.source_entity, row.target_entity): row_paths(
+                    relationships, row.source_entity, row.relationship_path
+                )
                 for row in config.path_preferences
             },
             temporal_relationship_ids={
@@ -124,3 +163,22 @@ def _resolve_table_entity(config: PackageConfig, table: str, *, owner: str = "")
 
 def _default_temporal_role(measure: MeasureConfig) -> str:
     return measure.compatible_temporal_roles[0] if measure.compatible_temporal_roles else ""
+
+
+def _aggregate_dimension_coverage(row: AggregateRelationConfig) -> set[str]:
+    return {str(item) for item in [*row.dimensions, *row.dimension_columns]}
+
+
+def rollup_dimension_entities(config: PackageConfig, source_entity: str) -> set[str]:
+    """The models whose dimensions a rollup of ``source_entity`` holds, pre-joined or not.
+
+    Read from the config, not the binding index: this is a routing fact, not an object read.
+    """
+    entity_of = {dim.id: dim.entity for dim in config.dimensions}
+    return {
+        entity_of[dim_id]
+        for row in config.aggregate_relations
+        if row.source_entity == source_entity
+        for dim_id in _aggregate_dimension_coverage(row)
+        if dim_id in entity_of
+    }

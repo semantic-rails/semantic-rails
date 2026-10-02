@@ -27,9 +27,8 @@ from collections.abc import Iterable
 from dataclasses import asdict
 from typing import Any
 
-from ..compiler_parts.indexes import get_package_analysis
 from ..errors import SemanticLayerError
-from ..fanout import analyze_fanout, choose_path, package_hop_limit
+from ..fanout import analyze_fanout, resolve_path
 from ..schema import PackageConfig
 from .relevance import _norm
 
@@ -43,21 +42,13 @@ def _dimensions_by_id(config: PackageConfig) -> dict[str, Any]:
 
 
 def _path_availability(
-    config: PackageConfig, root_entity: str, target_entity: str, *, query_time: bool = False
+    config: PackageConfig, root_entity: str, target_entity: str
 ) -> dict[str, Any]:
-    """``query_time``: whether the query gives a time, which a time-valid hop needs. Callers
-    with a partial query pass whether it has one; the history notes below describe
-    reachability given one."""
     if not root_entity or target_entity == root_entity:
         return {"available": True, "reason": "", "path": [], "candidates": []}
     try:
-        path, candidates = choose_path(
-            config, start=root_entity, target=target_entity, hop_limit=package_hop_limit(config)
-        )
-        time_bound = get_package_analysis(config).temporal_relationship_ids if query_time else ()
-        analysis = analyze_fanout(
-            config, root_entity, path, time_bound_relationships=set(time_bound)
-        )
+        path, candidates = resolve_path(config, start=root_entity, target=target_entity)
+        analysis = analyze_fanout(config, root_entity, path)
         status = analysis["status"]
         if status == "ok":
             return {
@@ -77,7 +68,8 @@ def _path_availability(
     except SemanticLayerError as exc:
         return {
             "available": False,
-            "reason": str(exc),
+            # The catalog repeats this per object; the routes and their rows are in details.
+            "reason": "route decision required" if exc.code == "AMBIGUOUS_PATH" else str(exc),
             "path": [],
             "candidates": [],
             "error_code": exc.code,
@@ -106,7 +98,7 @@ def _dimension_history_coverage(
 ) -> tuple[list[str], str]:
     dim = _dimensions_by_id(config)[dimension_id]
     if root_entity:
-        availability = _path_availability(config, root_entity, dim.entity, query_time=True)
+        availability = _path_availability(config, root_entity, dim.entity)
         if _path_has_temporal_validity(config, availability.get("path", [])):
             note = _history_coverage_note(dimension=True)
             return [note], note
@@ -125,7 +117,7 @@ def _metric_history_coverage_notes(config: PackageConfig, root_entity: str) -> l
     for entity in config.entities:
         if entity.id == root_entity:
             continue
-        availability = _path_availability(config, root_entity, entity.id, query_time=True)
+        availability = _path_availability(config, root_entity, entity.id)
         if _path_has_temporal_validity(config, availability.get("path", [])):
             notes.append(_history_coverage_note())
             break
