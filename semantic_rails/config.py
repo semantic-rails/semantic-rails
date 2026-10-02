@@ -22,6 +22,7 @@ from .config_parts.package_loader import normalize_package
 from .config_parts.route_rows import require_rows_agree
 from .dialects import (
     connection_option_errors,
+    snowflake_adbc_connect_errors,
     snowflake_native_direct_connect_errors,
     supported_warehouses,
     warehouse_connector,
@@ -1212,11 +1213,19 @@ def _parse_package_meta(package_raw: dict[str, Any], *, path: str) -> PackageMet
                     "INVALID_CONFIG",
                     f"{path}: {warehouse} package.connection has invalid options: {'; '.join(direct_errors)}",
                 )
-        elif (
-            connector.requires_connection_name
-            and connection.kind != "snowflake_adbc"
-            and not connection.name
-        ):
+        elif warehouse == "snowflake" and connection.kind == "snowflake_adbc":
+            if connection.name:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{path}: snowflake_adbc does not support package.connection.name",
+                )
+            adbc_errors = snowflake_adbc_connect_errors(connection.options)
+            if adbc_errors:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{path}: {warehouse} package.connection has invalid options: {'; '.join(adbc_errors)}",
+                )
+        elif connector.requires_connection_name and not connection.name:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 f"{path}: {warehouse} packages must declare package.connection.name",
