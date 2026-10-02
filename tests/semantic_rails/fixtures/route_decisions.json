@@ -7,23 +7,7 @@
       ],
       [
         "entity.jaffle_customer",
-        "entity.jaffle_item"
-      ],
-      [
-        "entity.jaffle_customer",
         "entity.jaffle_order"
-      ],
-      [
-        "entity.jaffle_customer",
-        "entity.jaffle_store_inventory_snapshot"
-      ],
-      [
-        "entity.jaffle_customer",
-        "entity.jaffle_time"
-      ],
-      [
-        "entity.jaffle_customer_history",
-        "entity.jaffle_item"
       ],
       [
         "entity.jaffle_customer_history",
@@ -32,14 +16,6 @@
       [
         "entity.jaffle_customer_history",
         "entity.jaffle_store_inventory_snapshot"
-      ],
-      [
-        "entity.jaffle_item",
-        "entity.jaffle_store_inventory_snapshot"
-      ],
-      [
-        "entity.jaffle_item",
-        "entity.jaffle_storefront_session"
       ],
       [
         "entity.jaffle_order",
@@ -76,14 +52,6 @@
       [
         "entity.jaffle_order_lifecycle",
         "entity.jaffle_time"
-      ],
-      [
-        "entity.jaffle_product",
-        "entity.jaffle_customer"
-      ],
-      [
-        "entity.jaffle_product",
-        "entity.jaffle_store"
       ],
       [
         "entity.jaffle_storefront_session",
@@ -106,6 +74,7 @@
         "entity.jaffle_time"
       ]
     ],
+    "excluded_by_decision": [],
     "direct_key": [
       [
         "entity.jaffle_customer_history",
@@ -143,11 +112,47 @@
         "entity.jaffle_storefront_session",
         "entity.jaffle_store"
       ]
+    ],
+    "inherited": [
+      [
+        "entity.jaffle_customer",
+        "entity.jaffle_item"
+      ],
+      [
+        "entity.jaffle_customer",
+        "entity.jaffle_store_inventory_snapshot"
+      ],
+      [
+        "entity.jaffle_customer",
+        "entity.jaffle_time"
+      ],
+      [
+        "entity.jaffle_customer_history",
+        "entity.jaffle_item"
+      ],
+      [
+        "entity.jaffle_item",
+        "entity.jaffle_store_inventory_snapshot"
+      ],
+      [
+        "entity.jaffle_item",
+        "entity.jaffle_storefront_session"
+      ],
+      [
+        "entity.jaffle_product",
+        "entity.jaffle_customer"
+      ],
+      [
+        "entity.jaffle_product",
+        "entity.jaffle_store"
+      ]
     ]
   },
   "configs/semantic_rails/tpch_sf1_showcase": {
     "refused": [],
-    "direct_key": []
+    "excluded_by_decision": [],
+    "direct_key": [],
+    "inherited": []
   },
   "comparisons/semantic_layers/semantic_rails/package": {
     "refused": [
@@ -157,10 +162,6 @@
       ],
       [
         "entity.jaffle_customer",
-        "entity.jaffle_item"
-      ],
-      [
-        "entity.jaffle_customer",
         "entity.jaffle_order"
       ],
       [
@@ -233,10 +234,6 @@
       ],
       [
         "entity.jaffle_store",
-        "entity.jaffle_item"
-      ],
-      [
-        "entity.jaffle_store",
         "entity.jaffle_order"
       ],
       [
@@ -260,6 +257,7 @@
         "entity.jaffle_order_lifecycle"
       ]
     ],
+    "excluded_by_decision": [],
     "direct_key": [
       [
         "entity.jaffle_customer_history",
@@ -305,14 +303,28 @@
         "entity.jaffle_storefront_session",
         "entity.jaffle_store"
       ]
+    ],
+    "inherited": [
+      [
+        "entity.jaffle_customer",
+        "entity.jaffle_item"
+      ],
+      [
+        "entity.jaffle_store",
+        "entity.jaffle_item"
+      ]
     ]
   },
   "tests/integration/correctness/shop": {
     "refused": [],
-    "direct_key": []
+    "excluded_by_decision": [],
+    "direct_key": [],
+    "inherited": []
   },
   "configs/examples/semantic_rails_package_starter.yml": {
     "refused": [],
-    "direct_key": []
+    "excluded_by_decision": [],
+    "direct_key": [],
+    "inherited": []
   }
 }

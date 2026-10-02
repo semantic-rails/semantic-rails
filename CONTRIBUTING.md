@@ -102,7 +102,26 @@ uv run python scripts/changelog_fragments.py check
 If `test_embedding_consumer_contract.py` fails, the change breaks a known embedder's use of
 `semantic_rails.embedding`: follow "Changing the facade" in [docs/EMBEDDING.md](docs/EMBEDDING.md).
 
+### ADBC tests
+
+The Python 3.12 backend CI job installs the `snowflake-adbc` and `postgres`
+extras and requires both ADBC unit test modules to run without skips. These
+tests use local Arrow batches and stub connections; warehouse credentials are
+not needed. To run them locally with the same extras:
+
+```bash
+uv sync --group dev --extra snowflake-adbc --extra postgres --locked
+uv run --no-sync pytest -q tests/semantic_rails/test_adbc_adapter.py tests/semantic_rails/test_adbc_snowflake.py -n 4
+```
+
 ### Intermittent tests
+
+Each test has a five-minute timeout using `pytest-timeout`'s thread method,
+which dumps all thread stacks before terminating the process. Under xdist,
+the controller reports the crashed worker and test node ID; worker stack
+output may not be relayed. Tests that legitimately need longer must declare
+an explicit `@pytest.mark.timeout(...)` override. The backend CI job's
+20-minute timeout remains the backstop.
 
 Merge-group CI on Python 3.12 repeats affected unit test files three times with
 random test ordering and `-n auto`. `scripts/flake_guard.py` selects changed tests

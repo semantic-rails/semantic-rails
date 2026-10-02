@@ -29,7 +29,7 @@ from semantic_rails.compiler_parts.paths import (
 from semantic_rails.config import load_package_config, normalize_package
 from semantic_rails.config_validation import _compiled_package_warnings
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.fanout import resolve_path
+from semantic_rails.fanout import resolve_path, resolve_route
 from semantic_rails.runtime import Runtime
 
 SEED_SQL = """
@@ -508,13 +508,13 @@ def test_load_warns_once_for_three_roles_of_one_pair(tmp_path):
 
 
 def test_load_warning_for_a_pair_pin_says_what_the_pin_covers(tmp_path):
-    """A pair pin covers queries from the source to the target only, so the warning stays
-    and does not call the pair pinned."""
+    """A pair pin covers the pair and every route that walks it, except where a query's start
+    holds its own key; the warning stays and does not call the pair pinned."""
     warnings = _role_warnings(tmp_path, **_pin("origin", "explicit_origin_first"))
     assert len(warnings) == 1
     message = warnings[0]["message"]
     assert warnings[0]["details"]["pair_pinned"] is True
-    assert "only queries that start at entity.air_leg and end at entity.air_airport" in message
+    assert "entity.air_leg -> entity.air_airport, and every route that walks the pair" in message
     assert "graph.path_preferences row" in message
     assert "are pinned" not in message
 
@@ -632,7 +632,9 @@ def test_the_key_shortcut_stands_when_the_pin_names_only_the_direct_relationship
     assert expr.parts[-1] == "destination_code"
 
 
-def test_the_key_shortcut_declines_for_a_pin_written_from_the_target_side(tmp_path):
+def test_the_legs_own_key_beats_a_row_written_from_the_target_side(tmp_path):
+    """A row for airport -> leg is not a row for leg -> airport: the leg's one own key still
+    answers, and the key read takes it, as path selection does."""
     pin = (
         "  path_preferences:\n"
         "    - source_entity: airport\n"
@@ -642,12 +644,13 @@ def test_the_key_shortcut_declines_for_a_pin_written_from_the_target_side(tmp_pa
     config = load_package_config(
         str(_write_package(tmp_path, explicit=("origin",), gate_hop=True, path_preferences=pin))
     )
-    assert (
-        _direct_entity_key_source_expr(
-            "entity.air_leg", "entity.air_airport", "airport_code", config
-        )
-        is None
+    resolution = resolve_route(config, start="entity.air_leg", target="entity.air_airport")
+    assert resolution.basis == "colocated_key"
+    expr = _direct_entity_key_source_expr(
+        "entity.air_leg", "entity.air_airport", "airport_code", config
     )
+    assert expr is not None
+    assert expr.parts[-1] == "origin_code"
 
 
 def _normalized_joins(relationships: dict, inferred: list[str] | None = None) -> dict[str, dict]:

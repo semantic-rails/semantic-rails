@@ -81,7 +81,7 @@ from .diagnostics import (
 from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError, query_execution_error
 from .expressions import collect_object_references, expr_to_dict
-from .fanout import build_hop_profile, route_basis, route_meaning
+from .fanout import build_hop_profile, offered_rows, route_meaning, route_note
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import enforce_query_policies, query_policy_effects, row_filters_for_context
@@ -313,54 +313,70 @@ def _metric_payload(config, object_id: str, kind: str) -> dict[str, Any]:
 _LOG = logging.getLogger(__name__)
 
 
-_ROUTE_NOTES = {
-    "colocated_key": ("ROUTE_COLOCATED_KEY", "own key"),
-    "recorded": ("ROUTE_RECORDED", "recorded route"),
-}
-
-
 def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[str, Any]]:
     """One short note per entity pair the compiled query reads where the engine chose one of
-    two or more routes (``fanout.route_basis``): by the start's own key (ROUTE_COLOCATED_KEY)
-    or by a ``graph.path_preferences`` row (ROUTE_RECORDED). The note is the code plus the
-    chosen route, its relationship ids and its readable meaning; a single-route pair gets none.
+    two or more routes (``fanout.route_note``): by the start's own key (ROUTE_COLOCATED_KEY,
+    with the row that would make each other route the default in ``details.alternatives`` when
+    it would load, else the rows it disagrees with in ``details.conflicts_with``),
+    or by ``graph.path_preferences`` rows (ROUTE_RECORDED: the pair's own row, or, with
+    ``details.rows``, the rows of pairs its routes walk through). The note is the code plus
+    the chosen route, its relationship ids and its readable meaning; a single-route pair gets
+    none.
 
-    The pairs come from the plan's root and leaf paths and from the paths lowering read
-    (predicates, conversions, rewrite anchors, nested compiles, direct key reads). The minimal
-    response leaves the notes out: the route is the package's own meaning for the pair, not a
-    caveat on the numbers, and a pair with no such meaning is refused instead.
+    The pairs come, each with the route the SQL read, from the plan's root and leaf paths and
+    from the paths lowering read (predicates, conversions, a rewrite anchor's own lookups,
+    nested compiles, direct key reads); a note names only a route its pair's resolution chose,
+    so a pair the SQL read another way gets none. The minimal response leaves the notes out:
+    the route is the package's own meaning for the pair, not a caveat on the numbers, and a
+    pair with no such meaning is refused instead.
     """
     if resolve_verbosity(payload) == "minimal":
         return []
     plan = compiled["logical_plan"]
     choices = [
-        (plan.root_entity, target, routes)
-        for target, routes in sorted(dict(plan.candidate_paths or {}).items())
+        (plan.root_entity, target, tuple(path))
+        for target, path in sorted((plan.selected_paths or {}).items())
     ]
     for measure_plan in plan.measure_plans:
         choices.extend(
-            (measure_plan.source_entity, selection.target_entity, selection.candidate_paths)
+            (measure_plan.source_entity, selection.target_entity, tuple(selection.chosen_path))
             for selection in measure_plan.path_selections
         )
-    choices.extend(compiled.get("route_choices") or [])
-    seen: set[tuple[str, str]] = set()
+    choices.extend(
+        (start, target, tuple(path)) for start, target, path in compiled.get("route_choices") or []
+    )
     notes: list[dict[str, Any]] = []
-    for start, target, routes in choices:
-        if (start, target) in seen:
+    for start, target, path in dict.fromkeys(choices):
+        resolution = route_note(config, start, target, path)
+        if resolution is None:
             continue
-        seen.add((start, target))
-        basis = route_basis(config, start, target, routes)
-        if not basis:
-            continue
-        code, how = _ROUTE_NOTES[basis]
-        route = list(routes[0])
+        route = list(resolution.routes[0])
+        details: dict[str, Any] = {"route": route}
+        if resolution.basis == "colocated_key":
+            code, how = "ROUTE_COLOCATED_KEY", "own key"
+            details["alternatives"], conflicts = offered_rows(
+                config, start, target, resolution.routes[1:]
+            )
+            if conflicts:
+                details["conflicts_with"] = conflicts
+        elif resolution.basis == "inherited":
+            code = "ROUTE_RECORDED"
+            how = "recorded for " + ", ".join(
+                f"{route_meaning(config, source, [])} → {route_meaning(config, end, [])}"
+                for source, end in resolution.rows
+            )
+            details["rows"] = [
+                {"source_entity": source, "target_entity": end} for source, end in resolution.rows
+            ]
+        else:
+            code, how = "ROUTE_RECORDED", "recorded route"
         notes.append(
             semantic_issue(
                 code=code,
                 message=f"{route_meaning(config, start, route)} ({how})",
                 severity="info",
                 stage="planning",
-                details={"route": route},
+                details=details,
                 object_ids=[start, target],
             )
         )

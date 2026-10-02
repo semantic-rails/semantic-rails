@@ -1299,6 +1299,24 @@ SNOWFLAKE_NATIVE_DIRECT_AUTH_OPTIONS: tuple[str, ...] = (
     "private_key_env",
 )
 
+# Experimental ADBC path: password or PKCS #8 key-pair auth only.
+SNOWFLAKE_ADBC_CONNECTION_OPTIONS: tuple[str, ...] = (
+    "account_env",
+    "user_env",
+    "password_env",
+    "password_file",
+    "private_key_file",
+    "private_key_env",
+    "private_key_passphrase_env",
+    "database",
+    "schema",
+    "warehouse",
+    "role",
+    "query_tag",
+    "statement_timeout_seconds",
+    "use_high_precision",
+)
+
 # Per-warehouse connection-option schemas. Secrets follow the package
 # convention: never literals — env-var indirection (`*_env`) or file
 # paths (`*_file`) only. Non-secret locators (host, port, database,
@@ -1395,9 +1413,15 @@ _WAREHOUSE_CONNECTORS: dict[str, WarehouseConnectorSpec] = {
     "snowflake": WarehouseConnectorSpec(
         name="snowflake",
         dialect=SnowflakeDialect(),
-        connection_kinds=("snowflake_cli", "snowflake_native"),
+        connection_kinds=("snowflake_cli", "snowflake_native", "snowflake_adbc"),
         connection_options=tuple(
-            dict.fromkeys([*SNOWFLAKE_CLI_CONNECTION_OPTIONS, *SNOWFLAKE_NATIVE_CONNECTION_OPTIONS])
+            dict.fromkeys(
+                [
+                    *SNOWFLAKE_CLI_CONNECTION_OPTIONS,
+                    *SNOWFLAKE_NATIVE_CONNECTION_OPTIONS,
+                    *SNOWFLAKE_ADBC_CONNECTION_OPTIONS,
+                ]
+            )
         ),
         requires_connection_name=True,
         adapter="semantic_rails.db_parts.snowflake:create_adapter",
@@ -1474,6 +1498,8 @@ def connection_option_errors(warehouse: str, kind: str, options: dict[str, Any])
         option_keys = SNOWFLAKE_CLI_CONNECTION_OPTIONS
     elif warehouse_connector(warehouse) and kind == "snowflake_native":
         option_keys = SNOWFLAKE_NATIVE_CONNECTION_OPTIONS
+    elif warehouse_connector(warehouse) and kind == "snowflake_adbc":
+        option_keys = SNOWFLAKE_ADBC_CONNECTION_OPTIONS
     else:
         option_keys = tuple(
             connector.connection_options if kind in connector.connection_kinds else ()
@@ -1490,6 +1516,21 @@ def connection_option_errors(warehouse: str, kind: str, options: dict[str, Any])
             continue
         if not isinstance(value, str) or not value.strip():
             errors.append(f"package.connection option '{raw_key}' must be a non-empty string")
+    return tuple(errors)
+
+
+def snowflake_adbc_connect_errors(options: dict[str, Any]) -> tuple[str, ...]:
+    """Check authored credential sources without reading environment variables or files."""
+    keys = {normalize_connection_option_name(str(key)) for key in options}
+    errors = [
+        f"snowflake_adbc requires {key}" for key in ("account_env", "user_env") if key not in keys
+    ]
+    has_password = bool(keys & {"password_env", "password_file"})
+    has_key = bool(keys & {"private_key_env", "private_key_file"})
+    if has_password == has_key:
+        errors.append("snowflake_adbc requires exactly one password or PKCS #8 key source")
+    if "private_key_passphrase_env" in keys and not has_key:
+        errors.append("snowflake_adbc private_key_passphrase_env requires a key source")
     return tuple(errors)
 
 

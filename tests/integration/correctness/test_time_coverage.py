@@ -273,7 +273,9 @@ def test_fiscal_coverage_preserves_the_populated_final_quarter(
         "WHERE ordered_at >= TIMESTAMP '2024-05-01' GROUP BY 1"
     )
     rows = typed_rows(result)
-    # No ORDER BY was requested; exercise both result orders on each backend.
+    quarters = [r[f"{ROLE}__quarter"] for r in rows]
+    assert quarters == sorted(quarters)
+    # Exercise the value comparison in both result orders on each backend.
     if reverse_rows:
         rows.reverse()
     _assert_rows(gold, [(r[f"{ROLE}__quarter"], r["v"]) for r in rows], "fiscal coverage")

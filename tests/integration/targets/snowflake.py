@@ -1,7 +1,7 @@
 """Snowflake integration target.
 
-Uses the snowflake_native direct-connection path (account/user/password
-env indirection). Skips unless the SR_SNOWFLAKE_* variables are set —
+Uses snowflake_native by default; SR_SNOWFLAKE_CONNECTION_KIND can select
+the experimental snowflake_adbc path. Skips unless the SR_SNOWFLAKE_* variables are set —
 no Snowflake credentials ship with the local/cloud sweep by default.
 """
 
@@ -14,7 +14,7 @@ from ..loaders.snowflake import SnowflakeFixtureLoader
 
 TARGET = IntegrationTarget(
     warehouse="snowflake",
-    connection_kind="snowflake_native",
+    connection_kind=os.environ.get("SR_SNOWFLAKE_CONNECTION_KIND", "snowflake_native"),
     connection_options={
         "account_env": "SR_SNOWFLAKE_ACCOUNT",
         "user_env": "SR_SNOWFLAKE_USER",

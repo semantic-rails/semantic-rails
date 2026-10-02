@@ -142,12 +142,14 @@ collector, OpenTelemetry, etc.) by installing a custom `AuditSink`:
 ```python
 from semantic_rails.embedding import AuditSink, set_audit_sink
 
+
 class KafkaAuditSink:
     def __init__(self, producer):
         self._producer = producer
 
     def emit(self, payload):
         self._producer.send("semantic-rails-audit", value=payload)
+
 
 set_audit_sink(KafkaAuditSink(producer=my_kafka_producer))
 ```

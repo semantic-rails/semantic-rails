@@ -2627,7 +2627,7 @@ def _slim_discover_minimal(payload: dict[str, Any]) -> dict[str, Any]:
         # The raw value can differ from the business-facing label (for
         # example, "jaffle" is displayed as "Food"). Keep both, and the
         # explicit availability flag, for regular and blocked value cards.
-        slim = {
+        slim: dict[str, Any] = {
             k: row[k]
             for k in ("id", "kind", "dimension_id", "value", "label", "available", "score")
             if k in row
