@@ -141,10 +141,11 @@ def test_refusals_write_nothing(project, arguments, code):
 
 
 def _write_graph_relationships(project: ArchitectProject, relationships: dict) -> dict:
+    """graph.yml as written: a second role keeps the route queries answered by in a row."""
     graph = _file(project, "graph.yml")
     graph["graph"]["relationships"] = relationships
     project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph, sort_keys=False))
-    return graph
+    return _file(project, "graph.yml")
 
 
 ROLE_LAYOUTS = {

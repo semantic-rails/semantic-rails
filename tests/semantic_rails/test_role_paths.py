@@ -27,9 +27,10 @@ from semantic_rails.compiler_parts.paths import (
     _pair_key_routes,
 )
 from semantic_rails.config import load_package_config, normalize_package
-from semantic_rails.config_validation import _compiled_package_warnings
+from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.fanout import resolve_path
+from semantic_rails.route_census import route_census
 from semantic_rails.runtime import Runtime
 
 SEED_SQL = """
@@ -469,54 +470,53 @@ def test_the_two_roles_have_different_gold_values(query_name):
     assert _gold_rows(select, where, "origin_code") != _gold_rows(select, where, "destination_code")
 
 
-def test_load_warns_when_roles_share_an_entity_pair_unpinned(tmp_path):
-    pkg = _write_package(tmp_path)
-    config = load_package_config(str(pkg))
-    warnings = [
-        warning
-        for warning in _compiled_package_warnings(config, pkg)
-        if isinstance(warning, dict) and warning["code"] == "RELATIONSHIP_ROLES_UNPINNED"
-    ]
-    assert len(warnings) == 1
-    details = warnings[0]["details"]
-    assert details["source_entity"] == "entity.air_leg"
-    assert details["target_entity"] == "entity.air_airport"
-    assert sorted(details["relationships"]) == [DESTINATION, ORIGIN]
-    assert details["pair_pinned"] is False
-    assert "graph.path_preferences" in warnings[0]["message"]
+LEG, AIRPORT = "entity.air_leg", "entity.air_airport"
+ALTERNATE = "relationship.legs_alternate_airport"
 
 
-def _role_warnings(tmp_path, **kwargs) -> list[dict]:
-    pkg = _write_package(tmp_path, **kwargs)
-    config = load_package_config(str(pkg))
-    return [
-        warning
-        for warning in _compiled_package_warnings(config, pkg)
-        if isinstance(warning, dict) and warning["code"] == "RELATIONSHIP_ROLES_UNPINNED"
-    ]
+def _undecided(tmp_path, **kwargs) -> dict[tuple[str, str], list[list[str]]]:
+    """The route census's undecided pairs, each with the routes its refusal names."""
+    config = load_package_config(str(_write_package(tmp_path, **kwargs)))
+    return {
+        (row["source_entity"], row["target_entity"]): sorted(row["details"]["candidates"])
+        for row in route_census(config)["undecided"]
+    }
 
 
-def test_no_load_warning_for_a_single_role(tmp_path):
-    assert _role_warnings(tmp_path, explicit=("destination",)) == []
+def test_roles_that_share_an_entity_pair_are_undecided_census_pairs(tmp_path):
+    """Each case the former roles warning reported is a census entry, in both directions, and
+    the parse report warns once for every undecided pair."""
+    both = [[DESTINATION], [ORIGIN]]
+    assert _undecided(tmp_path) == {(LEG, AIRPORT): both, (AIRPORT, LEG): both}
+    report, _ = parse_config_report(PackageReference(source_path=str(tmp_path / "air")))
+    codes = [warning["code"] for warning in report["warnings"]]
+    assert "RELATIONSHIP_ROLES_UNPINNED" not in codes
+    (warning,) = [w for w in report["warnings"] if w["code"] == "ROUTES_UNDECIDED"]
+    assert warning["details"] == {
+        "count": 2,
+        "pairs": [
+            {"source_entity": AIRPORT, "target_entity": LEG},
+            {"source_entity": LEG, "target_entity": AIRPORT},
+        ],
+    }
+    assert "graph.path_preferences" in warning["message"]
 
 
-def test_load_warns_once_for_three_roles_of_one_pair(tmp_path):
+def test_a_single_role_is_no_census_entry(tmp_path):
+    assert _undecided(tmp_path, explicit=("destination",)) == {}
+
+
+def test_three_roles_of_one_pair_are_one_entry_naming_each(tmp_path):
     """Every query through the pair is refused until a row records its role."""
-    warnings = _role_warnings(tmp_path, explicit=("origin", "destination", "alternate"))
-    assert len(warnings) == 1
-    assert len(warnings[0]["details"]["relationships"]) == 3
+    undecided = _undecided(tmp_path, explicit=("origin", "destination", "alternate"))
+    assert undecided[(LEG, AIRPORT)] == [[ALTERNATE], [DESTINATION], [ORIGIN]]
 
 
-def test_load_warning_for_a_pair_pin_says_what_the_pin_covers(tmp_path):
-    """A pair pin covers queries from the source to the target only, so the warning stays
-    and does not call the pair pinned."""
-    warnings = _role_warnings(tmp_path, **_pin("origin", "explicit_origin_first"))
-    assert len(warnings) == 1
-    message = warnings[0]["message"]
-    assert warnings[0]["details"]["pair_pinned"] is True
-    assert "only queries that start at entity.air_leg and end at entity.air_airport" in message
-    assert "graph.path_preferences row" in message
-    assert "are pinned" not in message
+def test_a_pair_pin_settles_only_its_own_direction(tmp_path):
+    """A pair pin covers queries from the source to the target only, so the reverse pair
+    stays undecided."""
+    undecided = _undecided(tmp_path, **_pin("origin", "explicit_origin_first"))
+    assert undecided == {(AIRPORT, LEG): [[DESTINATION], [ORIGIN]]}
 
 
 def test_the_key_shortcut_declines_a_pair_with_several_routes(tmp_path):
@@ -745,18 +745,26 @@ def test_second_entry_without_source_columns_is_refused_by_name():
     assert "relationship.no_columns" in str(exc_info.value)
 
 
-def test_load_warns_for_roles_declared_from_opposite_sides(tmp_path):
+def test_roles_declared_from_opposite_sides_are_one_census_entry(tmp_path):
     """A role written as ``[airport, leg]`` is still a second route between the pair."""
-    warnings = _role_warnings(tmp_path, explicit=("destination",), reverse=("origin",))
-    assert len(warnings) == 1
-    assert sorted(warnings[0]["details"]["relationships"]) == [
-        DESTINATION,
-        "relationship.legs_origin_airport_reverse",
+    undecided = _undecided(tmp_path, explicit=("destination",), reverse=("origin",))
+    assert undecided[(LEG, AIRPORT)] == [
+        [DESTINATION],
+        ["relationship.legs_origin_airport_reverse"],
     ]
 
 
-def test_a_relationship_declared_from_the_other_side_on_the_same_columns_is_one_role(tmp_path):
-    assert _role_warnings(tmp_path, explicit=("destination",), reverse=("destination",)) == []
+def test_one_role_declared_from_both_sides_is_listed_because_its_queries_refuse(tmp_path):
+    """The former warning took two relationships on the same columns for one role, but the
+    resolver reads them as two routes and refuses the query; the census lists what it does."""
+    undecided = _undecided(tmp_path, explicit=("destination",), reverse=("destination",))
+    assert undecided[(LEG, AIRPORT)] == [
+        [DESTINATION],
+        ["relationship.legs_destination_airport_reverse"],
+    ]
+    with pytest.raises(SemanticLayerError) as exc_info:
+        Runtime.from_path(str(tmp_path / "air")).query(_by_city_query())
+    assert exc_info.value.code == "AMBIGUOUS_PATH"
 
 
 ORPHAN_LEG = "INSERT INTO legs VALUES (5, 'ORD', 'SFO', 7, 'LAX');\n"

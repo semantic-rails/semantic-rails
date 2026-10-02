@@ -316,6 +316,7 @@ class ArchitectMutation:
                     "operation": "undo",
                     "changed_files": changed_files,
                 },
+                routes="off",  # restores the files exactly as they were
             )
         except SemanticLayerError as exc:
             if exc.code != "CONFIG_CONFLICT":
@@ -454,6 +455,8 @@ def create_project(
             "next_actions": _create_next_actions(spec),
         },
         prepare_updates=prepare,
+        # A new package, or an untouched starter scaffold: no answers to keep.
+        routes="off",
     )
     return ArchitectMutation(
         report=outcome.report,
@@ -569,6 +572,16 @@ def _spec_intent(spec: ProjectSpec) -> dict[str, Any]:
     }
 
 
+DECIDE_ROUTES_ACTION = (
+    "Which route a question means is a business definition: record each as a "
+    "graph.path_preferences row (each pair's details hold the row for every route)."
+)
+NEW_PROJECT_ROUTES_ACTION = (
+    "After relating entities, decide the undecided join routes that project_status lists in "
+    f"route_census.undecided. {DECIDE_ROUTES_ACTION}"
+)
+
+
 def _create_next_actions(spec: ProjectSpec) -> list[str]:
     actions = []
     if spec.warehouse.kind == "duckdb" and spec.warehouse.data == "external":
@@ -581,6 +594,7 @@ def _create_next_actions(spec: ProjectSpec) -> list[str]:
             "Run validate_project with mode=runtime before trusting queries.",
             "Use upsert_model to add dimensions, measures, or entities, and upsert_relationship "
             "to relate them.",
+            NEW_PROJECT_ROUTES_ACTION,
             "When comparing changes, run impact_project with compare_path or base_ref before "
             "opening a release review.",
         ]
@@ -1666,6 +1680,7 @@ class ArchitectProject:
             success_status="removed",
             metadata=metadata,
             prepare_updates=prepare,
+            routes="report",  # a removed route can't be kept: list the answers it moves
         )
         return ArchitectMutation(
             report=outcome.report,

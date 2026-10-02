@@ -67,6 +67,7 @@ from .meta_contract import validate_meta_payload
 from .metadata_parts.valid_values import max_valid_values_limit, valid_values_payload
 from .package_snapshot import LoadedPackageSnapshot, capture_package_source, load_package_snapshot
 from .registry import Registry
+from .route_census import route_census
 from .runtime import Runtime, runtime_request_scope
 from .segments import build_segment_query, normalize_segment
 from .semantic_collisions import semantic_collision_warnings
@@ -1273,7 +1274,9 @@ def _expression_nodes(node: Any) -> Iterator[Any]:
             yield from _expression_nodes(item)
 
 
-def _compiled_package_warnings(config, source_path: Path) -> list[str | dict[str, Any]]:
+def _compiled_package_warnings(
+    config, source_path: Path, *, census: dict[str, list[dict[str, Any]]] | None = None
+) -> list[str | dict[str, Any]]:
     warnings: list[str | dict[str, Any]] = []
     if not list(config.package.environments or []):
         warnings.append(f"{source_path}: package does not declare package.environments")
@@ -1362,67 +1365,34 @@ def _compiled_package_warnings(config, source_path: Path) -> list[str | dict[str
                 )
             )
     warnings.extend(_semantic_collision_warnings(config, source_path))
-    warnings.extend(_unpinned_role_warnings(config, source_path))
+    census = route_census(config) if census is None else census
+    if undecided := _undecided_routes_warning(census, source_path):
+        warnings.append(undecided)
     return warnings
 
 
-def _unpinned_role_warnings(config, source_path: Path) -> list[dict[str, Any]]:
-    """One warning per entity pair joined on different columns by several
-    relationships (role-playing keys). A ``path_preferences`` row pins only
-    queries that start at the source entity and end at the target, so a pair
-    pinned that way is still reported, and the message says what the pin covers."""
-    # Either direction of a pair is one pair, and a route is its column pairing, so two
-    # relationships that differ only in target columns, or that are declared from opposite
-    # sides, still count as different roles. The first id (sorted) sets the orientation.
-    by_pair: dict[frozenset[str], list[Any]] = {}
-    for rel in sorted(config.relationships, key=lambda rel: rel.id):
-        by_pair.setdefault(frozenset((rel.source_entity, rel.target_entity)), []).append(rel)
-    pinned = {frozenset((row.source_entity, row.target_entity)) for row in config.path_preferences}
-    warnings: list[dict[str, Any]] = []
-    for pair, rels in by_pair.items():
-        source, target = rels[0].source_entity, rels[0].target_entity
-        routes = {
-            frozenset(
-                zip(
-                    rel.source_columns or [rel.source_column],
-                    rel.target_columns or [rel.target_column],
-                    strict=True,
-                )
-                if (rel.source_entity, rel.target_entity) == (source, target)
-                else zip(
-                    rel.target_columns or [rel.target_column],
-                    rel.source_columns or [rel.source_column],
-                    strict=True,
-                )
-            )
-            for rel in rels
-        }
-        if len(routes) < 2:
-            continue
-        ids = [rel.id for rel in rels]
-        covered = (
-            f"graph.path_preferences pins only queries that start at {source} and end at "
-            f"{target}; queries from another entity, or that continue past {target}, are still "
-            "refused as AMBIGUOUS_PATH"
-            if pair in pinned
-            else f"queries that need {target} from {source} are refused as AMBIGUOUS_PATH"
-        )
-        warnings.append(
-            _error_payload(
-                "RELATIONSHIP_ROLES_UNPINNED",
-                f"{source_path}: {source} reaches {target} through {len(ids)} relationships "
-                f"({', '.join(ids)}) on different columns: {covered}. Which one a question "
-                "means is a business definition: record it as a graph.path_preferences row "
-                "for each entity pair a query needs.",
-                details={
-                    "source_entity": source,
-                    "target_entity": target,
-                    "relationships": ids,
-                    "pair_pinned": pair in pinned,
-                },
-            )
-        )
-    return warnings
+def _undecided_routes_warning(
+    census: dict[str, list[dict[str, Any]]], source_path: Path
+) -> dict[str, Any] | None:
+    """One warning for the census pairs a query is refused on until a route is recorded."""
+    pairs = [
+        {"source_entity": row["source_entity"], "target_entity": row["target_entity"]}
+        for row in census["undecided"]
+    ]
+    if not pairs:
+        return None
+    named = [f"{pair['source_entity']} -> {pair['target_entity']}" for pair in pairs[:5]]
+    if len(pairs) > len(named):
+        named.append(f"{len(pairs) - len(named)} more")
+    return _error_payload(
+        "ROUTES_UNDECIDED",
+        f"{source_path}: {len(pairs)} entity pairs reach their target by two or more routes "
+        f"and no route is recorded ({', '.join(named)}); a query that needs one is refused "
+        "as AMBIGUOUS_PATH. Which route a question means is a business definition: record "
+        "it as a graph.path_preferences row (route_census.undecided lists each pair's routes "
+        "and the row for each).",
+        details={"count": len(pairs), "pairs": pairs},
+    )
 
 
 def _semantic_collision_warnings(config, source_path: Path) -> list[dict[str, Any]]:
@@ -1506,10 +1476,12 @@ def parse_snapshot_report(
     warnings: list[dict[str, Any]] = []
     errors = [_error_payload("INVALID_CONFIG", message) for message in messages]
     config = None
+    census: dict[str, list[dict[str, Any]]] | None = None
     if not errors:
         assert snapshot is not None
         config = snapshot.config
-        for warning in _compiled_package_warnings(config, Path(ref.source_path)):
+        census = route_census(config)
+        for warning in _compiled_package_warnings(config, Path(ref.source_path), census=census):
             if isinstance(warning, dict):
                 warnings.append(dict(warning))
             else:
@@ -1528,6 +1500,8 @@ def parse_snapshot_report(
         "warnings": warnings,
         "errors": errors,
     }
+    if census is not None:
+        report["route_census"] = census
     if snapshot is not None:
         report["package_hash"] = snapshot.source_fingerprint
         report["semantic_fingerprint"] = snapshot.semantic_fingerprint
