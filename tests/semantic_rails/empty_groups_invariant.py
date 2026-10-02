@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from semantic_rails.compiler import resolve_compile_config
 from semantic_rails.compiler_parts.empty_groups import (
     GUARDED_BASE,
     sql_nodes,
@@ -40,6 +41,7 @@ def _projection(select: SqlSelect) -> SqlSelect:
 def assert_settled_in_one_place(compiled: dict[str, Any], config: PackageConfig) -> None:
     """Assert the compiled query settles its empty groups in ``guarded_base`` and nowhere else."""
     select, plan = compiled["sql_ast"], compiled["logical_plan"]
+    config = resolve_compile_config(plan, config)  # with the query's aggregate_if measures
     nodes = list(sql_nodes(select))
     guards = [
         node

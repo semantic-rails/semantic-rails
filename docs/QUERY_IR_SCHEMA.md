@@ -355,6 +355,18 @@ joins. It refuses paths that look up a parent before reaching children and
 paths joined off the parent's declared key, including beside a lookup, with
 `MIXED_GRAIN_INVALID`.
 
+Every leaf of an expression is rewritten the same way. An `aggregate_if` keeps
+the rows of its own entity that have a matching child, so a sum of order amounts
+under a refund-type filter adds each order once, and each operand of a `ratio`
+or arithmetic gets its own `EXISTS`. The route, negation, single-crossing,
+row-policy and ClickHouse rules above apply to each leaf. Grouped by a child
+dimension, an `aggregate_if` follows the grouped rule: only `count_distinct`.
+Its rows have the grain the measures of its entity's model declare. When that
+grain is finer than the entity's key, the rewrite refuses it with
+`MIXED_GRAIN_INVALID`, as it refuses those measures. On ClickHouse, a model
+without measures leaves the grain unknown, so only `count_distinct`, `min` and
+`max` are answered there.
+
 At most one group or filter may cross a one-to-many hop. Negated child predicates
 and child `IS NULL` tests remain `MIXED_GRAIN_INVALID`: "has a child that is not X"
 and "has no child that is X" have different answers, and the IR has no explicit

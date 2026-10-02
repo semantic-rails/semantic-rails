@@ -857,7 +857,16 @@ def _fanout_dedup_refusal(
     Grouped, only a distinct count is answered. Summing (or averaging) an order amount by an
     item dimension reads as the item-level split ("revenue by product type") as often as the
     orders-that-included-it total, and the two differ, so that shape stays refused.
+
+    Every leaf is checked here: an authored measure, a query's ``aggregate_if`` (a synthetic
+    measure over its entity's table) and each operand of a ratio or arithmetic, so each one
+    gets the same rewrite and the same refusals.
     """
+    subject = (
+        f"an aggregate_if over '{measure.entity}'"
+        if is_conditional_aggregate(measure)
+        else f"measure '{measure.id}'"
+    )
     selections = [row for row in selections if row.analysis.get("status") != "ok"]
     for row in selections:
         if row.purpose not in _FANOUT_DEDUP_PURPOSES:
@@ -895,7 +904,7 @@ def _fanout_dedup_refusal(
     aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
     if grouped and aggregation not in _FANOUT_GROUPED_AGGREGATIONS:
         return (
-            f"'{aggregation}' of '{measure.id}' grouped by a dimension of "
+            f"'{aggregation}' of {subject} grouped by a dimension of "
             f"'{grouped[0].target_entity}' is ambiguous across a one-to-many hop: the amount "
             "split over the child rows and the full amount of every row that has one differ. "
             "Use a measure at the child's grain, group by a dimension of the measure's own "
@@ -906,16 +915,32 @@ def _fanout_dedup_refusal(
     if aggregation not in _FANOUT_DEDUP_AGGREGATIONS or not (
         measure.additive
         and measure.measure_class not in {"semi_additive", "snapshot"}
-        and not measure.source_relation
+        and measure.source_relation in {"", entity.table}
         and measure.aggregation_entity in {"", measure.entity}
         and (entity.key or entity.primary_key)
         and sorted(measure.row_grain or entity.key or [entity.primary_key])
         == sorted(entity.key or [entity.primary_key])
     ):
         return (
-            f"'{aggregation}' of measure '{measure.id}' is not defined over one row per "
+            f"'{aggregation}' of {subject} is not defined over one row per "
             f"'{measure.entity}' key (a non-additive value, a stock, an ordered aggregation, "
             "or a measure whose rows are finer than its entity's key).",
+            (grouped or selections)[0],
+        )
+    # ClickHouse keeps one row per key before it aggregates. An aggregate_if's rows are one per
+    # key only when a measure of its model says so; without one, rows sharing a key could
+    # merge, which only a distinct count, a minimum or a maximum ignores.
+    if (
+        is_conditional_aggregate(measure)
+        and not measure.row_grain
+        and config.package.warehouse == "clickhouse"
+        and aggregation not in {"count_distinct", "min", "max"}
+    ):
+        return (
+            f"ClickHouse keeps one row per '{measure.entity}' key here, and no measure of its "
+            f"model declares the grain of its rows, so '{aggregation}' of {subject} could merge "
+            "rows that share a key. Use count_distinct, min or max, or declare a measure on "
+            "that model.",
             (grouped or selections)[0],
         )
     roots: list[Any] = [item.expression for item in query.select if item.expression is not None]
