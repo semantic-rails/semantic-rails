@@ -647,7 +647,7 @@ def _session(*conditions: dict[str, Any]) -> dict[str, Any]:
         "flat_beside_none",
         "none_beside_flat",
         "flat_beside_two_groups",
-        "flat_beside_two_groups_one_empty",
+        "flat_beside_two_groups_under_5",
         "negated_beside_flat",
         "negated_beside_any",
         "flat_beside_negated",
