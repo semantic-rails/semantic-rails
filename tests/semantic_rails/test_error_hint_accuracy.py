@@ -208,14 +208,15 @@ def test_branching_path_hints_bound_work_and_leave_cache_unchanged(
 
 
 @pytest.mark.parametrize(
-    ("edges", "hop_limit", "expected"),
+    ("edges", "hop_limit", "pinned", "expected"),
     [
-        ([("A", "B", "1:N")], 2, ["B"]),
-        ([("A", "B", "N:1"), ("A", "B", "1:N")], 2, ["B"]),
-        ([("A", "B", "N:1"), ("A", "B", "N:1")], 2, []),
-        ([("A", "B", "1:N"), ("A", "B", "1:N")], 2, []),
-        ([("A", "B", "1:N"), ("B", "C", "N:1"), ("C", "A", "N:1")], 2, ["B", "C"]),
-        ([("A", "B", "1:N"), ("B", "C", "N:1")], 1, ["B"]),
+        ([("A", "B", "1:N")], 2, False, ["B"]),
+        ([("A", "B", "N:1"), ("A", "B", "1:N")], 2, False, ["B"]),
+        ([("A", "B", "N:1"), ("A", "B", "N:1")], 2, False, []),
+        ([("A", "B", "1:N"), ("A", "B", "1:N")], 2, False, []),
+        ([("A", "B", "1:N"), ("B", "C", "N:1"), ("C", "A", "N:1")], 2, False, ["B", "C"]),
+        ([("A", "B", "1:N"), ("B", "C", "N:1")], 1, False, ["B"]),
+        ([("A", "B", "1:N"), ("B", "C", "N:1")], 1, True, ["B", "C"]),
     ],
     ids=[
         "sole-nonfunctional",
@@ -224,10 +225,11 @@ def test_branching_path_hints_bound_work_and_leave_cache_unchanged(
         "parallel-nonfunctional",
         "cycle",
         "hop-limit",
+        "pin-beyond-hop-limit",
     ],
 )
 def test_lightweight_path_eligibility_agrees_with_full_resolution(
-    package_config_factory, edges, hop_limit, expected
+    package_config_factory, edges, hop_limit, pinned, expected
 ):
     config, _ = package_config_factory("jaffle_shop")
     config = replace(
@@ -247,7 +249,7 @@ def test_lightweight_path_eligibility_agrees_with_full_resolution(
             for index, (source, target, cardinality) in enumerate(edges)
         ],
         path_policy=PathPolicyConfig(max_hops=hop_limit),
-        path_preferences=[],
+        path_preferences=[PathPreferenceConfig("A", "C", ["edge_0", "edge_1"])] if pinned else [],
     )
     assert eligible_path_targets(config, start="A") == expected
     assert not get_package_analysis(config).path_cache

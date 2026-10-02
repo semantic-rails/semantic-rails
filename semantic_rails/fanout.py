@@ -439,7 +439,7 @@ def _has_unique_inherited_route(
 def eligible_path_targets(config: PackageConfig, *, start: str) -> list[str]:
     """Proven resolvable targets without building or caching route refusal envelopes.
 
-    One hop-bounded BFS excludes unreachable targets. Pins and unique functional
+    One hop-bounded BFS excludes unreachable unpinned targets. Pins and unique functional
     direct routes then need no further search. Without inherited rows, other targets
     need at most ``hop_limit + 1`` BFS scans. With rows, a prefix-pruned search stops
     at the second agreeing route. Neither search writes caches or builds refusals.
@@ -463,10 +463,12 @@ def eligible_path_targets(config: PackageConfig, *, start: str) -> list[str]:
                 direct.setdefault(target, []).append([rel_id])
     eligible: list[str] = []
     for target in sorted(analysis.entities):
-        if target == start or target not in reachable:
+        if target == start:
             continue
         if (start, target) in analysis.path_preferences:
             eligible.append(target)
+        elif target not in reachable:
+            continue
         elif len(direct.get(target, [])) == 1:
             # The start's unique own key wins before inherited decisions.
             eligible.append(target)
