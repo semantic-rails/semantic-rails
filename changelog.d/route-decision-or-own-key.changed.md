@@ -15,11 +15,11 @@
   load with `INVALID_CONFIG`, naming the rows in `details.rows`; a configuration built in code is
   refused the same way when first used.
 - `ROUTE_COLOCATED_KEY` notes list, in `details.alternatives`, the row that would make each
-  other route the default, and `AMBIGUOUS_PATH` lists in `details.pins` the row for each route,
-  only when that row would load; `details.conflicts_with` names any other route with the rows
-  its row would disagree with. A route inherited from rows is noted `ROUTE_RECORDED`, with the
-  rows it follows in `details.rows`. A note names only a route the SQL reads. `hop_profile` targets carry `route_basis`: `decided`,
-  `colocated_key`, `inherited` or `only_route`.
+  other route the default, only when that row would load; `details.conflicts_with` names any
+  other route with the rows its row would disagree with (an `AMBIGUOUS_PATH` option says the
+  same in its own `conflicts_with`). A route inherited from rows is noted `ROUTE_RECORDED`, with
+  the rows it follows in `details.rows`. A note names only a route the SQL reads. `hop_profile`
+  targets carry `route_basis`: `query`, `decided`, `colocated_key`, `inherited` or `only_route`.
 - A distinct count computed from a child's rows (customers counted from their orders) reads
   each grouping through the counted entity's own route. A customer's city read through its own
   key beside its region recorded through the orders' ship-to city is now refused with
