@@ -615,6 +615,69 @@ def test_a_route_decision_is_refused_under_a_row_policy_on_any_route(tmp_path, d
     assert exc_info.value.details["policy_ids"] == ["policy.bank.owner"]
 
 
+def _refused_at(entry: str, runtime: Runtime, query: dict[str, Any]) -> tuple[str, dict, str]:
+    """The refusal ``entry`` gives ``query``: its code, details and message."""
+    if entry == "mcp_execute":
+        adapter = SemanticLayerMCPAdapter(runtime)
+        try:
+            (error,) = adapter.call_tool("execute", {"query": query})["errors"]
+        finally:
+            adapter.close()
+        return error["code"], error["details"], error["message"]
+    calls = {
+        "query": lambda: runtime.query(query),
+        "build_options": lambda: build_options_payload(
+            runtime, partial_query=query, step="group_by"
+        ),
+        "live_valid_values": lambda: valid_values_payload(
+            runtime,
+            dimension_id="dimension.bank_district_name",
+            query=query,
+            allow_live_query=True,
+        ),
+    }
+    with pytest.raises(SemanticLayerError) as exc_info:
+        calls[entry]()
+    return exc_info.value.code, exc_info.value.details, str(exc_info.value)
+
+
+@pytest.mark.parametrize("entry", ["query", "build_options", "live_valid_values", "mcp_execute"])
+def test_every_entry_point_refuses_a_route_row_under_a_row_policy(tmp_path, monkeypatch, entry):
+    """Under a row filter a query row is POLICY_DENIED before any SQL runs, disclosing what
+    the other row-filter refusals do (reason, path, policy ids, hint) and no filtered entity."""
+    pkg = _write_package(tmp_path)
+    policy = {"dimension": "dimension.bank_owner_name", "attribute": "owner", "type": "string"}
+    config = replace(
+        load_package_config(str(pkg)),
+        semantic_policies=[SemanticPolicyConfig(id="policy.bank.owner", kind="row_filter", config=policy)],
+    )  # fmt: skip
+    runtime = Runtime.from_config(config, source_path=str(pkg))
+    sql: list[Any] = []
+    monkeypatch.setattr(runtime, "_get_adapter", lambda: sql.append("ran") or None)
+    query = {
+        **BALANCE_BY_DISTRICT,
+        "route_decisions": [{**DIAMOND_ROW, "relationship_path": BRANCH_ROUTE}],
+        "policy_context": RequestContext(attributes={"owner": "Ann"}).to_policy_context(),
+    }
+    code, details, message = _refused_at(entry, runtime, query)
+    assert (code, sql) == ("POLICY_DENIED", [])
+    assert {key: details[key] for key in ("reason", "path", "policy_ids")} == {
+        "reason": "route_override_under_row_policy",
+        "path": "route_decisions[0]",
+        "policy_ids": ["policy.bank.owner"],
+    }
+    assert "entities" not in details and details["hint"]
+    assert OWNER not in message and "owner" not in message.lower()
+
+
+def test_a_query_row_is_disclosed_at_minimal_verbosity(tmp_path):
+    runtime = Runtime.from_path(str(_write_package(tmp_path)))
+    out = runtime.query(
+        {**BALANCE_BY_DISTRICT, "route_decisions": [DIAMOND_ROW], "verbosity": "minimal"}
+    )
+    assert _chosen_by_query(out) == [{"row": DIAMOND_ROW, "replaced": "undecided"}]
+
+
 # --- record_route_decision ---------------------------------------------------------------
 
 
