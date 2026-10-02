@@ -343,8 +343,9 @@ def test_whitespace_in_graph_model_binding_preserves_relationship(tmp_path: Path
 
 @pytest.mark.parametrize("second_model", ["device", "sensors"])
 @pytest.mark.parametrize("with_entities", [False, True])
+@pytest.mark.parametrize("reverse_models", [False, True])
 def test_implicit_bindings_preserve_authored_entity_relations(
-    tmp_path: Path, second_model: str, with_entities: bool
+    tmp_path: Path, second_model: str, with_entities: bool, reverse_models: bool
 ) -> None:
     models = {
         "reading": {"entity": "device", "relation": "devices", "keys": {"primary": ["id"]}},
@@ -353,16 +354,34 @@ def test_implicit_bindings_preserve_authored_entity_relations(
     if with_entities:
         for model in models.values():
             model["entities"] = {"reading": {}, "device": {}}
+    for model in models.values():
+        model["dimensions"] = {"label": {"column": "label", "kind": "categorical"}}
+    if reverse_models:
+        models = dict(reversed(list(models.items())))
     pkg = _write_synthetic_package(
         tmp_path / "implicit_identity",
         graph_entities={"reading": {"key": "id"}, "device": {"key": "id"}},
-        models=models,
+        models={},
     )
+    _write_yaml(pkg / "models" / "all.yml", {"models": models})
     config = load_package_config(str(pkg))
     assert {entity.id: entity.table for entity in config.entities} == {
         "entity.synth_reading": "readings",
         "entity.synth_device": "devices",
     }
+    project = ArchitectProject(pkg, workspace_root=tmp_path)
+    assert {row["model_key"]: row["id"] for row in project.inventory()["dimensions"]} == {
+        "reading": "dimension.synth_device_label",
+        second_model: "dimension.synth_reading_label",
+    }
+    preview = project.upsert_model(
+        model_id="reading",
+        entity_key="device",
+        relation="devices",
+        primary_key=["id"],
+        dry_run=True,
+    ).report
+    assert preview["dry_run"] and preview["changes"]
 
 
 @pytest.mark.parametrize("primary_source", ["grain", "name"])
@@ -507,11 +526,14 @@ def test_shared_entity_keys_require_explicit_primary_identity(
 ) -> None:
     names = ["customer", "supplier"] if customer_first else ["supplier", "customer"]
     graph_entities = {name: {"key": ["id"]} for name in names}
+    graph_entities["supplier"]["model"] = "supplier"
     model: dict[str, Any] = {
+        "id": "parties",
         "relation": "parties",
         "grain": ["id"],
         "entities": {name: {} for name in names},
         "dimensions": {"label": {"column": "label", "kind": "categorical"}},
+        "measures": {"party_count": {"kind": "entity_count", "entity_key": ["id"]}},
     }
     if identity == "binding":
         graph_entities["customer"]["model"] = "parties"
@@ -522,7 +544,15 @@ def test_shared_entity_keys_require_explicit_primary_identity(
     pkg = _write_synthetic_package(
         tmp_path / "shared_keys",
         graph_entities=graph_entities,
-        models={"parties": model, "supplier": {"entity": "supplier", "relation": "suppliers"}},
+        models={
+            "parties": model,
+            "supplier": {
+                "id": "supplier",
+                "entity": "supplier",
+                "relation": "suppliers",
+                "grain": ["id"],
+            },
+        },
     )
     project = ArchitectProject(pkg, workspace_root=tmp_path)
     if identity is None:
@@ -530,12 +560,27 @@ def test_shared_entity_keys_require_explicit_primary_identity(
             "model 'parties' grain ['id'] matches multiple entity keys: customer, supplier; "
             "bind the model in the graph or set entity:"
         )
-        for action in (lambda: load_package_config(str(pkg)), project.inventory):
-            with pytest.raises(SemanticLayerError) as exc:
-                action()
-            assert exc.value.code == "INVALID_CONFIG"
-            assert str(exc.value) == message
+        with pytest.raises(SemanticLayerError) as exc:
+            load_package_config(str(pkg))
+        assert exc.value.code == "INVALID_CONFIG"
+        assert str(exc.value) == message
         assert any(message in error for error in validate_runtime_package(pkg))
+        raw = project._raw_inventory()
+        assert project._primary_entity_for_model(raw["models"][0], raw["entities"]) == ""
+        assert project.inventory()["dimensions"][0]["id"] == "dimension.synth_model_label"
+        mutation = project.upsert_model(
+            model_id="supplier", entity_key="supplier", relation="suppliers", primary_key=["id"]
+        )
+        assert mutation.report["status"] == "rolled_back_after_parse_error"
+        assert mutation.report["parse"]["ok"] is False
+        assert any(
+            error["code"] == "INVALID_CONFIG" and message in error["message"]
+            for error in mutation.report["parse"]["errors"]
+        )
+        assert project.upsert_model(
+            model_id="parties", entity_key="customer", relation="parties", primary_key=["id"]
+        ).report["ok"]
+        assert load_package_config(str(pkg)).entities
     else:
         config = load_package_config(str(pkg))
         customer = next(
