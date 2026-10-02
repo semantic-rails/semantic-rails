@@ -382,9 +382,8 @@ query states it. A child group is a `where` item of its own:
   groups on one child mean separate child rows; one group with both conditions means
   the same row. Groups on different children (items and sessions) combine the same way.
 - The child must sit across a one-to-many hop from each measure's entity. Its route
-  follows the usual rule: a tie between routes, or a route that looks up a parent before
-  reaching children (or joins off an alternate key) beside another candidate, is refused
-  with `AMBIGUOUS_PATH` until `graph.path_preferences` pins one.
+  follows [the route rule](PACKAGE_AUTHORING.md#the-route-rule): with several routes and
+  no `graph.path_preferences` row recording one, it is refused with `AMBIGUOUS_PATH`.
 - Refused with `INVALID_QUERY`: a child reached only through lookups, or the measure's
   own entity (use a plain filter); nested groups; a condition that is not on the child
   or a lookup from it; a condition whose lookup reads a table the route already reads;
@@ -426,12 +425,28 @@ Plain filters on a child:
   }
   ```
 
-  A negated filter's options are `any_not` (an `any` group with the condition as
-  written) and `none` (a `none` group with its opposite: `=` for `!=`, `IN` for `NOT IN`,
-  `IS NOT NULL` for `IS NULL`). Each option's `where` is the query's whole `where`, with
-  the other items unchanged; resend it as is. `recovery_hints` carry the same options.
-  ClickHouse offers only options supported by its child-group rules above. If no option
-  is supported, the query retains `MIXED_GRAIN_INVALID` without a clarification.
+  Beside `any` groups on that child, `same_row` adds the plain filters to the group; with
+  several groups there is one `same_row_where_<i>` per group (`<i>` is the group's `where`
+  index), and the other groups stay as they are. A lone negated filter's options are
+  `any_not` (an `any` group with the condition as written) and `none` (a `none` group with
+  its opposite: `=` for `!=`, `IN` for `NOT IN`, `IS NOT NULL` for `IS NULL`). Beside other
+  conditions on that child, each negated filter also adds a `none` option (`none_where_<i>`
+  when there are several) that rewrites only that filter; the other items stay as written,
+  and resending it asks about them if they are still ambiguous. Each option's `where` is
+  the query's whole `where`, with the other items unchanged; resend it as is.
+  `recovery_hints` carry the same options.
+- Every option is checked before it is offered: the engine binds the rewritten query
+  (every measure, the warehouse's child-group rules, row policies) and leaves out an option
+  that would be refused. An option that asks a further child-scope question counts when
+  that question still has an answer. If no option is left (a measure whose own rows are the
+  child, or ClickHouse refusing every reading), or the readings are too many to check in
+  one request (four or more negated filters on one child), the query retains
+  `MIXED_GRAIN_INVALID` without a clarification.
+- A group on the child must take the plain filters' own route: the route from the
+  measure's entity to the child, and from the child to a filter's lookup. When it would
+  take another route, or none the package records, the query is refused with
+  `MIXED_GRAIN_INVALID`, naming the `graph.path_preferences` row that records the filters'
+  route.
 - One positive plain filter beside a `none` group on the same child is unambiguous:
   it requires a matching child row and independently excludes rows matching the group.
 - Plain filters on different children (an item and a payment of a customer's orders)

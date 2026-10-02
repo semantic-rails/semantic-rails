@@ -10,6 +10,7 @@ reference SQL written independently of the engine.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -23,6 +24,7 @@ from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.fanout import route_pin
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.planner.plan import plan_payload
 from semantic_rails.policies import row_filters_for_context
@@ -176,27 +178,62 @@ SEPARATE_ROWS_SQL = (
     HAS_ITEM.format("i.product_type = 'beverage'") + " AND " + HAS_ITEM.format("i.price > 5")
 )
 NO_SAME_ROW_SQL = "NOT " + SAME_ROW_SQL
+NOT_BEVERAGE = {"field": TYPE, "op": "!=", "value": "beverage"}
+NOT_17 = {"field": PRICE, "op": "!=", "value": 17}
+UNDER_5 = {"field": PRICE, "op": "<", "value": 5}
+UNDER_10 = {"field": PRICE, "op": "<", "value": 10}
 
 
-@pytest.fixture(scope="module")
-def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    root = tmp_path_factory.mktemp("scope") / "scope"
+def _any(*conditions: dict[str, Any]) -> dict[str, Any]:
+    return {"child": ITEM, "match": "any", "where": list(conditions)}
+
+
+def _none(*conditions: dict[str, Any]) -> dict[str, Any]:
+    return {"child": ITEM, "match": "none", "where": list(conditions)}
+
+
+def _has(*conditions: str) -> str:
+    return " AND ".join(HAS_ITEM.format(condition) for condition in conditions)
+
+
+def _write_package(root: Path, seed: str, models: dict[str, str]) -> Path:
     entities = {
         name: {"label": label, "key": [key], "model": model}
         for name, (key, model, label) in ENTITIES.items()
     }
     files = {
         "package.yml": PACKAGE,
-        "data/seed.sql": SEED,
+        "data/seed.sql": seed,
         "graph.yml": yaml.safe_dump({"graph": {"entities": entities}}),
         "metrics/core.yml": METRICS,
-        **{f"models/{name}.yml": text for name, text in MODELS.items()},
+        **{f"models/{name}.yml": text for name, text in models.items()},
     }
     for name, text in files.items():
         (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_text(text, encoding="utf-8")
     _run(root, {"select": [_measure("customer_count")]})  # seeds the warehouse
     return root
+
+
+@pytest.fixture(scope="module")
+def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return _write_package(tmp_path_factory.mktemp("scope") / "scope", SEED, MODELS)
+
+
+@pytest.fixture(scope="module")
+def item_customer_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Items also carry a customer key, and every item names customer 3 (who has no orders):
+    a customer reaches items through its orders or directly, and the two disagree."""
+    items = "CREATE TABLE items AS SELECT * FROM"
+    seed = SEED.replace(items, "CREATE TABLE items AS SELECT *, 3 AS customer_id FROM")
+    models = {
+        **MODELS,
+        "items": MODELS["items"].replace(
+            "product: {expr: sku}}", "product: {expr: sku}, customer: {}}"
+        ),
+    }
+    assert seed != SEED and models["items"] != MODELS["items"]
+    return _write_package(tmp_path_factory.mktemp("scope") / "scope", seed, models)
 
 
 def _measure(name: str, alias: str = "") -> dict[str, Any]:
@@ -252,6 +289,18 @@ def _who(package: Path, where: list[Any]) -> list[int]:
     """The customers a where list keeps, by id."""
     rows = _rows(package, {**_query(where), "group_by": [CUSTOMER_ID]})
     return sorted(row[0] for row in rows if row[1])
+
+
+def _ids(package: Path, condition: str) -> list[int]:
+    """The customers reference SQL keeps, by id."""
+    rows = _reference(package, f"SELECT c.customer_id FROM customers c WHERE {condition}")
+    return sorted(row[0] for row in rows)
+
+
+def _options(error: dict[str, Any]) -> dict[str, list[Any]]:
+    return {
+        option["id"]: option["where"] for option in error["details"]["clarification"]["options"]
+    }
 
 
 @pytest.mark.parametrize(
@@ -568,6 +617,257 @@ def test_not_a_beverage_versus_no_beverage(package: Path) -> None:
     }
     assert _who(package, options["any_not"]) == [1, 6]
     assert _who(package, options["none"]) == [3, 5]
+
+
+@pytest.mark.parametrize(
+    ("where", "readings"),
+    [
+        (
+            [NOT_BEVERAGE, OVER_5],
+            {
+                "same_row": (
+                    [_any(NOT_BEVERAGE, OVER_5)],
+                    _has("i.product_type != 'beverage' AND i.price > 5"),
+                ),
+                "separate_rows": (
+                    [_any(NOT_BEVERAGE), _any(OVER_5)],
+                    _has("i.product_type != 'beverage'", "i.price > 5"),
+                ),
+                "none": (
+                    [_none(BEVERAGE), OVER_5],
+                    "NOT " + _has("i.product_type = 'beverage'") + " AND " + _has("i.price > 5"),
+                ),
+            },
+        ),
+        (
+            [_any(OVER_5), NOT_BEVERAGE],
+            {
+                "same_row": (
+                    [_any(OVER_5, NOT_BEVERAGE)],
+                    _has("i.price > 5 AND i.product_type != 'beverage'"),
+                ),
+                "separate_rows": (
+                    [_any(OVER_5), _any(NOT_BEVERAGE)],
+                    _has("i.price > 5", "i.product_type != 'beverage'"),
+                ),
+                "none": (
+                    [_any(OVER_5), _none(BEVERAGE)],
+                    _has("i.price > 5") + " AND NOT " + _has("i.product_type = 'beverage'"),
+                ),
+            },
+        ),
+        (
+            [BEVERAGE, NOT_17],
+            {
+                "same_row": (
+                    [_any(BEVERAGE, NOT_17)],
+                    _has("i.product_type = 'beverage' AND i.price != 17"),
+                ),
+                "separate_rows": (
+                    [_any(BEVERAGE), _any(NOT_17)],
+                    _has("i.product_type = 'beverage'", "i.price != 17"),
+                ),
+                "none": (
+                    [BEVERAGE, _none({**NOT_17, "op": "="})],
+                    _has("i.product_type = 'beverage'") + " AND NOT " + _has("i.price = 17"),
+                ),
+            },
+        ),
+    ],
+    ids=["beside_a_flat_condition", "beside_an_any_group", "none_keeps_a_null_price"],
+)
+def test_a_negated_condition_beside_another_keeps_its_none_reading(
+    package: Path, where: list[Any], readings: dict[str, tuple[list[Any], str]]
+) -> None:
+    """'No beverage item, and some item over 5' is a reading too. Its option settles only the
+    negated condition; the other items stay as written. Customer 4's only item has a NULL
+    price: it is not an item at 17, so 'no item at 17' keeps it."""
+    error = _refusal(package, _query(where))
+    assert error["code"] == "AMBIGUOUS_CHILD_SCOPE"
+    assert _options(error) == {option: rewritten for option, (rewritten, _) in readings.items()}
+    for option, (rewritten, sql) in readings.items():
+        assert _who(package, rewritten) == _ids(package, sql), option
+    if where[0] == BEVERAGE:
+        assert _who(package, readings["none"][0]) == [2, 4, 7]
+
+
+@pytest.mark.parametrize(
+    ("where", "readings"),
+    [
+        (
+            [_any(BEVERAGE), _any(UNDER_10), OVER_5],
+            {
+                "same_row_where_0": (
+                    [_any(BEVERAGE, OVER_5), _any(UNDER_10)],
+                    _has("i.product_type = 'beverage' AND i.price > 5", "i.price < 10"),
+                    [2, 7],
+                ),
+                "same_row_where_1": (
+                    [_any(BEVERAGE), _any(UNDER_10, OVER_5)],
+                    _has("i.product_type = 'beverage'", "i.price < 10 AND i.price > 5"),
+                    [2, 7],
+                ),
+                "separate_rows": (
+                    [_any(BEVERAGE), _any(UNDER_10), _any(OVER_5)],
+                    _has("i.product_type = 'beverage'", "i.price < 10", "i.price > 5"),
+                    [1, 2, 6, 7],
+                ),
+            },
+        ),
+        (
+            [_any(BEVERAGE), _any(OVER_5), UNDER_5],
+            {
+                "same_row_where_0": (
+                    [_any(BEVERAGE, UNDER_5), _any(OVER_5)],
+                    _has("i.product_type = 'beverage' AND i.price < 5", "i.price > 5"),
+                    [1, 6],
+                ),
+                "same_row_where_1": (
+                    [_any(BEVERAGE), _any(OVER_5, UNDER_5)],
+                    _has("i.product_type = 'beverage'", "i.price > 5 AND i.price < 5"),
+                    [],
+                ),
+                "separate_rows": (
+                    [_any(BEVERAGE), _any(OVER_5), _any(UNDER_5)],
+                    _has("i.product_type = 'beverage'", "i.price > 5", "i.price < 5"),
+                    [1, 6],
+                ),
+            },
+        ),
+    ],
+    ids=["join_either_group", "joining_one_empties_the_scope"],
+)
+def test_a_flat_condition_beside_several_groups_may_join_each(
+    package: Path, where: list[Any], readings: dict[str, tuple[list[Any], str, list[int]]]
+) -> None:
+    """Each group beside the condition is a row it may belong to; the other groups stay put."""
+    error = _refusal(package, _query(where))
+    assert error["code"] == "AMBIGUOUS_CHILD_SCOPE"
+    assert error["details"]["paths"] == ["where[0]", "where[1]", "where[2]"]
+    assert _options(error) == {option: rewritten for option, (rewritten, *_) in readings.items()}
+    meanings = {row["id"]: row["meaning"] for row in error["details"]["clarification"]["options"]}
+    assert 'Product type = "beverage"' in meanings["same_row_where_0"]
+    assert 'Product type = "beverage"' not in meanings["same_row_where_1"]
+    for option, (rewritten, sql, kept) in readings.items():
+        assert _who(package, rewritten) == _ids(package, sql) == kept, option
+
+
+def test_two_negated_conditions_each_offer_none(package: Path) -> None:
+    """Each negated condition has its own 'none' reading; resending one asks about the other."""
+    query = _query([NOT_BEVERAGE, NOT_17])
+    options = _options(_refusal(package, query))
+    assert options == {
+        "same_row": [_any(NOT_BEVERAGE, NOT_17)],
+        "separate_rows": [_any(NOT_BEVERAGE), _any(NOT_17)],
+        "none_where_0": [_none(BEVERAGE), NOT_17],
+        "none_where_1": [NOT_BEVERAGE, _none({**NOT_17, "op": "="})],
+    }
+    follow_up = _options(_refusal(package, {**query, "where": options["none_where_0"]}))
+    assert follow_up == {
+        "any_not": [_none(BEVERAGE), _any(NOT_17)],
+        "none": [_none(BEVERAGE), _none({**NOT_17, "op": "="})],
+    }
+
+
+def _readings(engine: Runtime, query: dict[str, Any]) -> int:
+    """How many readings answer: each offered where resent, and each of any question it asks."""
+    report = engine.validate(query)
+    if report["ok"]:
+        return 1
+    error = report["errors"][0]
+    assert error["code"] == "AMBIGUOUS_CHILD_SCOPE", error
+    options = error["details"]["clarification"]["options"]
+    return sum(_readings(engine, {**query, "where": option["where"]}) for option in options)
+
+
+@pytest.mark.parametrize(
+    ("query", "readings"),
+    [
+        (_query([BEVERAGE, OVER_5]), 2),
+        (_query([BEVERAGE, OVER_5], "customer_count", "order_count"), 2),
+        (_query([NOT_BEVERAGE, OVER_5]), 3),
+        (_query([NOT_BEVERAGE, NOT_17]), 6),
+        (_query([_any(BEVERAGE), _any(OVER_5), UNDER_5]), 3),
+    ],
+    ids=["two_flat", "two_measure_entities", "negated_beside", "two_negated", "two_groups"],
+)
+def test_every_offered_reading_answers_when_resent(
+    package: Path, query: dict[str, Any], readings: int
+) -> None:
+    engine = Runtime.from_path(str(package))
+    try:
+        assert _readings(engine, query) == readings
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("where", [[BEVERAGE, OVER_5], [NOT_BEVERAGE]], ids=["two_flat", "negated"])
+def test_a_child_grain_measure_beside_ambiguous_filters_keeps_its_refusal(
+    package: Path, where: list[Any]
+) -> None:
+    """Item revenue's own rows are items: no group on items can filter it, so no reading can be
+    offered, and the query keeps the refusal it had before groups existed."""
+    error = _refusal(package, _query(where, "customer_count", "item_revenue"))
+    assert error["code"] == "MIXED_GRAIN_INVALID"
+    assert "clarification" not in error["details"]
+    assert "child group" in error["why_invalid"]
+
+
+def test_a_reading_that_cannot_answer_is_never_offered(
+    package: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Force the bypass: a builder offers a reading no query can answer (a group on the
+    measure's own entity). The guard binds every option first and drops it; with nothing left
+    it refuses as before groups existed."""
+    import semantic_rails.compiler as compiler
+
+    built = compiler._child_scope_clarification
+    broken = {
+        "id": "broken",
+        "meaning": "",
+        "where": [{**_any(BEVERAGE), "child": "entity.scope_customer"}],
+    }
+
+    def offering(keep: bool) -> Any:
+        def clarification(*args: Any) -> SemanticLayerError:
+            error = built(*args)
+            options = error.details["clarification"]["options"]
+            error.details["clarification"]["options"] = [*(options if keep else []), broken]
+            error.details["recovery_hints"].append({"option": "broken"})
+            return error
+
+        return clarification
+
+    config = load_package_config(str(package))
+    monkeypatch.setattr(compiler, "_child_scope_clarification", offering(keep=True))
+    with pytest.raises(SemanticLayerError) as caught:
+        compile_query(config, Registry(config), _query([BEVERAGE, OVER_5]))
+    assert caught.value.code == "AMBIGUOUS_CHILD_SCOPE"
+    offered = caught.value.details["clarification"]["options"]
+    assert [option["id"] for option in offered] == ["same_row", "separate_rows"]
+    hints = caught.value.details["recovery_hints"]
+    assert [hint["option"] for hint in hints] == ["same_row", "separate_rows"]
+    monkeypatch.setattr(compiler, "_child_scope_clarification", offering(keep=False))
+    with pytest.raises(SemanticLayerError) as caught:
+        compile_query(config, Registry(config), _query([BEVERAGE, OVER_5]))
+    assert caught.value.code == "MIXED_GRAIN_INVALID"
+
+
+def test_more_readings_than_one_request_checks_are_refused(package: Path) -> None:
+    """Three negated conditions on one child are checked and offered; a fourth takes more binds
+    than one request makes, so the query is refused rather than offered unchecked readings."""
+    negated = [
+        NOT_BEVERAGE,
+        NOT_17,
+        {"field": TYPE, "op": "!=", "value": "jaffle"},
+        {"field": PRICE, "op": "!=", "value": 6},
+    ]
+    three = _refusal(package, _query(negated[:3]))
+    assert three["code"] == "AMBIGUOUS_CHILD_SCOPE"
+    assert len(three["details"]["clarification"]["options"]) == 5
+    four = _refusal(package, _query(negated))
+    assert four["code"] == "MIXED_GRAIN_INVALID"
+    assert "clarification" not in four["details"]
 
 
 def test_a_measure_filter_keeps_its_refusal(package: Path) -> None:
@@ -911,6 +1211,31 @@ def test_groups_are_denied_under_a_row_policy(
     assert caught.value.details["reason"] == "row_filter_unsupported_query"
 
 
+@pytest.mark.parametrize("where", [[BEVERAGE, OVER_5], [NOT_BEVERAGE]], ids=["two", "negated"])
+def test_no_reading_is_offered_under_a_row_policy_that_denies_groups(
+    package: Path, where: list[Any]
+) -> None:
+    """Every reading is a group, and the row policy denies groups: the query keeps the
+    refusal it had before groups existed instead of asking a question with no answer."""
+    config = load_package_config(str(package))
+    policy = {"dimension": CUSTOMER_ID, "attribute": "customer", "type": "integer"}
+    config = replace(
+        config,
+        semantic_policies=[
+            SemanticPolicyConfig(id="policy.scope.rows", kind="row_filter", config=policy)
+        ],
+    )
+    context = RequestContext(attributes={"customer": 1}).to_policy_context()
+    for row_filters, code in [
+        ((), "AMBIGUOUS_CHILD_SCOPE"),
+        (row_filters_for_context(config, context), "MIXED_GRAIN_INVALID"),
+    ]:
+        with pytest.raises(SemanticLayerError) as caught:
+            compile_query(config, Registry(config), _query(where), row_filters=row_filters)
+        assert caught.value.code == code
+        assert ("clarification" in caught.value.details) is (code == "AMBIGUOUS_CHILD_SCOPE")
+
+
 CLICKHOUSE_SQL = """WITH leaf_1__leaf_1_entity_rows AS (
 SELECT DISTINCT
   customers.customer_id AS __entity_key_1,
@@ -1087,6 +1412,66 @@ def test_a_lookup_first_route_beside_another_candidate_is_ambiguous(package: Pat
     )
     with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
         assert _normal(conn.execute(compiled["sql"]).fetchall()) == _reference(package, reference)
+
+
+def test_each_reading_keeps_the_route_its_filters_take(item_customer_package: Path) -> None:
+    """The package records a customer's products through its orders. Filters on a product's
+    category follow that route to items; a group on items must too. While a customer's items
+    are unrecorded, or recorded as the items that name the customer (all customer 3's), no
+    reading is offered: the refusal names the row that would record the filters' route."""
+    package = item_customer_package
+    config = load_package_config(str(package))
+    customer, product = "entity.scope_customer", "entity.scope_product"
+    through_orders = ["relationship.orders_customer", "relationship.items_order"]
+    [direct] = [
+        rel.id
+        for rel in config.relationships
+        if {rel.source_entity, rel.target_entity} == {ITEM, customer}
+    ]
+    product_pin = PathPreferenceConfig(
+        source_entity=customer,
+        target_entity=product,
+        relationship_path=[*through_orders, "relationship.items_product"],
+    )
+    hot = {"field": CATEGORY, "op": "=", "value": "hot"}
+    not_food = {"field": CATEGORY, "op": "!=", "value": "food"}
+    has = (
+        "EXISTS (SELECT 1 FROM orders o JOIN items i ON i.order_id = o.order_id "
+        "LEFT JOIN products p ON p.sku = i.sku WHERE o.customer_id = c.customer_id AND {})"
+    )
+
+    def answer(pins: list[PathPreferenceConfig], where: list[Any]) -> list[tuple[Any, ...]]:
+        pinned = replace(config, path_preferences=pins)
+        return _reference(package, compile_query(pinned, Registry(pinned), _query(where))["sql"])
+
+    # One filter follows the recorded route: customers 4 and 7 ordered tea.
+    assert answer([product_pin], [hot]) == _customers(package, has.format("p.category = 'hot'"))
+    assert answer([product_pin], [hot]) == [(2,)]
+    pin_row = json.dumps(route_pin(customer, ITEM, through_orders))
+    for item_route in ([], [PathPreferenceConfig(customer, ITEM, [direct])]):
+        with pytest.raises(SemanticLayerError) as caught:
+            answer([product_pin, *item_route], [hot, not_food])
+        assert caught.value.code == "MIXED_GRAIN_INVALID"
+        assert "clarification" not in caught.value.details
+        assert pin_row in caught.value.details["why_invalid"]
+    pins = [product_pin, PathPreferenceConfig(customer, ITEM, through_orders)]
+    with pytest.raises(SemanticLayerError) as caught:
+        answer(pins, [hot, not_food])
+    assert caught.value.code == "AMBIGUOUS_CHILD_SCOPE"
+    options = {row["id"]: row["where"] for row in caught.value.details["clarification"]["options"]}
+    references = {
+        "same_row": has.format("p.category = 'hot' AND p.category != 'food'"),
+        "separate_rows": has.format("p.category = 'hot'")
+        + " AND "
+        + has.format("p.category != 'food'"),
+        "none": has.format("p.category = 'hot'") + " AND NOT " + has.format("p.category = 'food'"),
+    }
+    assert set(options) == set(references)
+    for option, where in options.items():
+        assert answer(pins, where) == _customers(package, references[option]) == [(2,)], option
+    # A group that states the other route reads the items that name customer 3.
+    direct_pin = PathPreferenceConfig(customer, ITEM, [direct])
+    assert answer([product_pin, direct_pin], [_any(hot)]) == [(1,)]
 
 
 # ---- Agreement ------------------------------------------------------------------------
