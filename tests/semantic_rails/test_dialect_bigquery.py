@@ -263,7 +263,8 @@ def _install_fake_bigquery(
         def __init__(self, payload: list[dict[str, Any]]) -> None:
             self._payload = payload
 
-        def result(self):
+        def result(self, *, timeout: int):
+            captured["result_timeout"] = timeout
             return [FakeRow(row) for row in self._payload]
 
     class FakeClient:
@@ -271,9 +272,10 @@ def _install_fake_bigquery(
             captured["client_kwargs"] = kwargs
             self.project = kwargs.get("project", "adc-default-project")
 
-        def query(self, sql: str, job_config: Any = None) -> FakeJob:
+        def query(self, sql: str, job_config: Any = None, *, timeout: int) -> FakeJob:
             captured["sql"] = sql
             captured["job_config"] = job_config
+            captured["query_timeout"] = timeout
             if fail is not None:
                 raise fail
             return FakeJob(rows or [])
@@ -351,7 +353,13 @@ def test_adapter_reports_missing_env_without_values(monkeypatch: pytest.MonkeyPa
     assert "sql" not in exc.value.details
 
 
-def test_adapter_query_defaults_dataset_and_maps_rows(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize(
+    ("timeouts", "connect_timeout", "read_timeout"),
+    [({}, 10, 65), ({"connect_timeout_seconds": "7", "read_timeout_seconds": "45"}, 7, 45)],
+)
+def test_adapter_query_defaults_dataset_and_maps_rows(
+    monkeypatch: pytest.MonkeyPatch, timeouts, connect_timeout, read_timeout
+):
     captured: dict[str, Any] = {}
     _install_fake_bigquery(
         monkeypatch,
@@ -365,6 +373,7 @@ def test_adapter_query_defaults_dataset_and_maps_rows(monkeypatch: pytest.Monkey
             "project_env": "SR_BQ_TEST_PROJECT",
             "credentials_file_env": "SR_BQ_TEST_CREDS",
             "dataset": "jaffle",
+            **timeouts,
         }
     )
 
@@ -379,6 +388,8 @@ def test_adapter_query_defaults_dataset_and_maps_rows(monkeypatch: pytest.Monkey
     assert job_config.default_dataset == "demo-project.jaffle"
     assert job_config.job_timeout_ms == 2000  # 1500ms rounds up to 2s
     assert captured["closed"] is True
+    assert captured["query_timeout"] == connect_timeout
+    assert captured["result_timeout"] == read_timeout
 
 
 def test_adapter_query_maps_safe_aliases_back_to_contract_names(monkeypatch: pytest.MonkeyPatch):
@@ -549,3 +560,51 @@ def test_jaffle_battery_compiles_for_bigquery():
     # Exact percentile lowering (ARRAY_AGG interpolation) is exercised
     # by the percentile battery cases.
     assert "ORDER BY" in combined and "[OFFSET(CAST(FLOOR(" in combined
+
+
+@pytest.mark.parametrize(
+    "prepared, timeout_ms, expected_wait, expected_server",
+    [
+        (False, None, 65, 65000),
+        (True, None, 65, 65000),
+        (False, 120000, 125, 120000),
+        (True, 120000, 125, 120000),
+    ],
+)
+def test_bigquery_server_deadline_and_long_request_wait(
+    monkeypatch, prepared, timeout_ms, expected_wait, expected_server
+):
+    from semantic_rails.sql_preparation import prepare_query
+
+    log = {}
+    _install_fake_bigquery(monkeypatch, log)
+    adapter = BigQueryNativeAdapter()
+    limits = {} if timeout_ms is None else {"statement_timeout_ms": timeout_ms}
+    if prepared:
+        adapter.query_prepared(prepare_query("select 1", "bigquery"), limits=limits)
+    else:
+        adapter.query("select 1", limits=limits)
+    assert log["result_timeout"] == expected_wait
+    assert log["job_config"].job_timeout_ms == expected_server
+
+
+def test_bigquery_cancels_timed_out_work_even_when_cancellation_fails(monkeypatch):
+    log = {}
+    _install_fake_bigquery(monkeypatch, log)
+    adapter = BigQueryNativeAdapter()
+    job = types.SimpleNamespace()
+
+    def result(*, timeout):
+        raise TimeoutError("warehouse diagnostic must stay private")
+
+    def cancel(*, timeout):
+        log["cancel_timeout"] = timeout
+        raise RuntimeError("cancel failed")
+
+    job.result, job.cancel = result, cancel
+    adapter.client().query = lambda *args, **kwargs: job
+    with pytest.raises(SemanticLayerError) as exc:
+        adapter.query("select 1")
+    assert log["cancel_timeout"] == 10
+    assert isinstance(exc.value.__cause__, TimeoutError)
+    assert "warehouse diagnostic" not in str(exc.value)

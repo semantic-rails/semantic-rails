@@ -11,9 +11,9 @@ Idempotence: loaders record the fixture fingerprint in a one-row marker
 table (``sr_fixture_meta``). A matching fingerprint skips the load, so
 repeated test runs against cloud warehouses cost one round-trip.
 
-All statements go through the production adapter (``adapter.query``),
-so the loader exercises the same connection path the runtime uses and
-never duplicates driver/connection logic.
+Statements go through the production adapter (``adapter.query``); bulk
+loaders use its connection or client for ingestion. Both exercise the
+runtime's connection path without duplicating driver/connection logic.
 """
 
 from __future__ import annotations

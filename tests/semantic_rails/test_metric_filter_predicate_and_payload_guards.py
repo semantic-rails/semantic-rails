@@ -5,10 +5,10 @@
    (op ``=``, value ``null``) and compiled to ``(expr) IS NULL`` —
    silently dropping every row. It must be treated as the predicate
    itself.
-5. Malformed payload shapes (non-dict ``metric_filters[]`` items,
-   non-dict / unknown-key ``path_policy``) raised bare AttributeError /
-   TypeError that surfaced as INTERNAL_ERROR instead of a structured
-   INVALID_QUERY.
+5. Malformed payload shapes (non-dict ``metric_filters[]`` items) raised
+   bare AttributeError / TypeError that surfaced as INTERNAL_ERROR instead
+   of a structured INVALID_QUERY. ``path_policy`` is no longer a query key,
+   so a payload that sends it is refused like any unknown key.
 6. The schema advertised ``time.range.last.unit`` values ``minute`` /
    ``hour`` that the runtime rejects; the schema enum now matches the
    runtime's supported units exactly.
@@ -154,40 +154,17 @@ def test_non_dict_metric_filters_item_is_invalid_query_in_partial_normalize():
     assert exc.value.details["path"] == "metric_filters[0]"
 
 
-@pytest.mark.parametrize("bad_policy", ["fewest_hops", 7, ["fewest_hops"]])
-def test_non_dict_path_policy_is_invalid_query(bad_policy):
+@pytest.mark.parametrize("normalize", [normalize_query, normalize_partial_query])
+@pytest.mark.parametrize(
+    "policy", [{"preference": "fewest_hops", "ask_if_ambiguous": True}, "fewest_hops"]
+)
+def test_path_policy_is_refused_as_an_unknown_key(normalize, policy):
     with pytest.raises(SemanticLayerError) as exc:
-        normalize_query({"version": 1, "select": _select_revenue(), "path_policy": bad_policy})
+        normalize({"version": 1, "select": _select_revenue(), "path_policy": policy})
     assert exc.value.code == "INVALID_QUERY"
-    assert exc.value.details["path"] == "path_policy"
-    assert exc.value.details["supported_keys"] == ["preference", "ask_if_ambiguous"]
-
-
-def test_path_policy_with_unknown_keys_is_invalid_query():
-    with pytest.raises(SemanticLayerError) as exc:
-        normalize_query(
-            {
-                "version": 1,
-                "select": _select_revenue(),
-                "path_policy": {"prefer": "fewest_hops"},
-            }
-        )
-    assert exc.value.code == "INVALID_QUERY"
-    assert exc.value.details["unsupported_keys"] == ["prefer"]
-    hints = exc.value.details.get("recovery_hints", [])
-    assert hints and hints[0]["code"] == "REMOVE_UNKNOWN_KEY"
-
-
-def test_valid_path_policy_still_normalizes():
-    normalized = normalize_query(
-        {
-            "version": 1,
-            "select": _select_revenue(),
-            "path_policy": {"preference": "newest_first", "ask_if_ambiguous": False},
-        }
-    )
-    assert normalized.path_policy.preference == "newest_first"
-    assert normalized.path_policy.ask_if_ambiguous is False
+    assert exc.value.details["unsupported_keys"] == ["path_policy"]
+    assert "path_policy" not in exc.value.details["supported_keys"]
+    assert exc.value.details["recovery_hints"][0]["code"] == "REMOVE_UNKNOWN_KEY"
 
 
 # ---------------------------------------------------------------------

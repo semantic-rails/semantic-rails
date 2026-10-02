@@ -52,14 +52,6 @@
       "description": "Per-measure overrides keyed by measure id, value is the temporal_role id to bind.",
       "additionalProperties": { "type": "string" }
     },
-    "path_policy": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "preference": { "type": "string", "enum": ["fewest_hops", "newest_first", "shortest_paths"] },
-        "ask_if_ambiguous": { "type": "boolean" }
-      }
-    },
     "policy_context": { "$ref": "#/$defs/PolicyContext" },
     "limits": { "$ref": "#/$defs/Limits" },
     "verbosity": {

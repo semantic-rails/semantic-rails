@@ -76,23 +76,6 @@
         "type": "string"
       }
     },
-    "path_policy": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "preference": {
-          "type": "string",
-          "enum": [
-            "fewest_hops",
-            "newest_first",
-            "shortest_paths"
-          ]
-        },
-        "ask_if_ambiguous": {
-          "type": "boolean"
-        }
-      }
-    },
     "policy_context": {
       "$ref": "#/$defs/PolicyContext"
     },

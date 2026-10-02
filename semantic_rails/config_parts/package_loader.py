@@ -519,6 +519,7 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
                 "target",
                 "source_key_role",
                 "target_key_role",
+                # Removed; passed on so the parser refuses it, naming the relationship.
                 "path_preference",
             ):
                 if passthrough in spec:

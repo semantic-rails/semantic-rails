@@ -325,7 +325,14 @@ Branch on structured status fields: a `plan` draft that isn't `ok`, or has warni
 repair node before `execute`. `INVALID_QUERY`, `PATH_JOIN_CONFLICT`,
 `MIXED_GRAIN_INVALID`, `POLICY_DENIED`, and low-relevance results should route to repair or refusal
 nodes instead of being retried as raw SQL. `AMBIGUOUS_CHILD_SCOPE` routes to a clarification
-node: each of its `details.clarification.options` is a complete `where` to resend.
+node: each of its `details.clarification.options` is a complete `where` to resend. `AMBIGUOUS_PATH` (`details.reason:
+route_decision_required`) means two join routes can answer the question differently (an account's
+branch region or its owner's home region) and the package hasn't recorded which one it means. A
+query can't pick one: ask which meaning is wanted (`details.meanings` reads each route), or refuse;
+`details.pins` lists the `graph.path_preferences` row a package author adds to record each. An
+`info` note `ROUTE_COLOCATED_KEY` or `ROUTE_RECORDED` (compact and full responses) names the route
+the answer used, the start entity's own key or the package's recorded route; it needs no
+follow-up.
 
 ## Local Warehouse Defaults
 

@@ -42,7 +42,7 @@ from typing import Any
 from ..ast import NormalizedQuery, every_filter
 from ..errors import SemanticLayerError
 from ..expressions import MetricPredicateExpr
-from ..fanout import analyze_fanout, choose_path, package_hop_limit
+from ..fanout import analyze_fanout, resolve_path
 from ..schema import DimensionConfig, MeasureConfig, PackageConfig
 from .bind import _collect_measure_refs
 from .indexes import (
@@ -50,7 +50,6 @@ from .indexes import (
     _entity_index,
     _measure_index,
     _temporal_role_index,
-    get_package_analysis,
 )
 from .paths import _direct_dimension_source_expr
 from .temporal import _time_bound_relationship_ids
@@ -92,27 +91,14 @@ def _similarity(left: str, right: str) -> float:
     return SequenceMatcher(None, _object_tail(left), _object_tail(right)).ratio()
 
 
-def _chosen_path(
-    config: PackageConfig, *, start: str, target: str, preference: str
-) -> list[str] | None:
-    """Cheapest registry path between two entities, or None.
+def _chosen_path(config: PackageConfig, *, start: str, target: str) -> list[str] | None:
+    """The compiler's route between two entities (``resolve_path``), or None.
 
-    Mirrors the compiler's path selection (explicit path preferences
-    first, then the cached BFS chooser) but swallows PATH_NOT_FOUND /
-    AMBIGUOUS_PATH — for enrichment an unreachable pairing is simply
-    incompatible, not an error.
+    Swallows PATH_NOT_FOUND / AMBIGUOUS_PATH — for enrichment an
+    unreachable or ambiguous pairing is simply incompatible, not an error.
     """
-    explicit = get_package_analysis(config).path_preferences.get((start, target))
-    if explicit is not None:
-        return list(explicit)
     try:
-        chosen, _candidates = choose_path(
-            config,
-            start=start,
-            target=target,
-            hop_limit=package_hop_limit(config),
-            preference=preference,
-        )
+        chosen, _candidates = resolve_path(config, start=start, target=target)
     except SemanticLayerError:
         return None
     return list(chosen)
@@ -123,7 +109,6 @@ def _pairing_is_clean(
     measure: MeasureConfig,
     dim: DimensionConfig,
     *,
-    preference: str,
     time_bound_relationships: set[str],
 ) -> bool:
     """True when `measure` can group by `dim` without a grain rewrite."""
@@ -136,7 +121,7 @@ def _pairing_is_clean(
             return True
     except SemanticLayerError:
         return False
-    path = _chosen_path(config, start=measure.entity, target=dim.entity, preference=preference)
+    path = _chosen_path(config, start=measure.entity, target=dim.entity)
     if not path:
         return False
     analysis = analyze_fanout(
@@ -253,7 +238,6 @@ def _compatible_measures(
     offending_dims: list[DimensionConfig],
     requested_measure_ids: set[str],
     anchor_measure_id: str,
-    preference: str,
     time_bound_relationships: set[str],
 ) -> list[str]:
     candidates = sorted(
@@ -268,7 +252,6 @@ def _compatible_measures(
                 config,
                 measure,
                 dim,
-                preference=preference,
                 time_bound_relationships=time_bound_relationships,
             )
             for dim in offending_dims
@@ -285,7 +268,6 @@ def _compatible_dimensions(
     anchor_measure: MeasureConfig,
     offending_dim_ids: set[str],
     anchor_dim_id: str,
-    preference: str,
     time_bound_relationships: set[str],
 ) -> list[str]:
     candidates = sorted(
@@ -299,7 +281,6 @@ def _compatible_dimensions(
             config,
             anchor_measure,
             dim,
-            preference=preference,
             time_bound_relationships=time_bound_relationships,
         ):
             compatible.append(dim.id)
@@ -344,7 +325,6 @@ def _enrichment_unsafe(
 
     offending_dim_ids = _offending_dimension_ids(config, query, target_entity)
     offending_dims = [dimensions[dim_id] for dim_id in offending_dim_ids]
-    preference = query.path_policy.preference
     time_bound = _time_bound_relationship_ids(query, config)
 
     enrichment: dict[str, Any] = {"measures": requested}
@@ -357,7 +337,6 @@ def _enrichment_unsafe(
             offending_dims=offending_dims,
             requested_measure_ids=set(requested),
             anchor_measure_id=anchor_measure.id,
-            preference=preference,
             time_bound_relationships=time_bound,
         )
         if compatible_measures:
@@ -369,7 +348,6 @@ def _enrichment_unsafe(
         anchor_measure=anchor_measure,
         offending_dim_ids=set(offending_dim_ids),
         anchor_dim_id=offending_dim_ids[0] if offending_dim_ids else anchor_measure.id,
-        preference=preference,
         time_bound_relationships=time_bound,
     )
     if compatible_dimensions:

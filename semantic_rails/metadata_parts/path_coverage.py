@@ -28,7 +28,7 @@ from dataclasses import asdict
 from typing import Any
 
 from ..errors import SemanticLayerError
-from ..fanout import analyze_fanout, choose_path, package_hop_limit
+from ..fanout import analyze_fanout, resolve_path
 from ..schema import PackageConfig
 from .relevance import _norm
 
@@ -47,9 +47,7 @@ def _path_availability(
     if not root_entity or target_entity == root_entity:
         return {"available": True, "reason": "", "path": [], "candidates": []}
     try:
-        path, candidates = choose_path(
-            config, start=root_entity, target=target_entity, hop_limit=package_hop_limit(config)
-        )
+        path, candidates = resolve_path(config, start=root_entity, target=target_entity)
         analysis = analyze_fanout(config, root_entity, path)
         status = analysis["status"]
         if status == "ok":
@@ -70,7 +68,8 @@ def _path_availability(
     except SemanticLayerError as exc:
         return {
             "available": False,
-            "reason": str(exc),
+            # The catalog repeats this per object; the routes and their rows are in details.
+            "reason": "route decision required" if exc.code == "AMBIGUOUS_PATH" else str(exc),
             "path": [],
             "candidates": [],
             "error_code": exc.code,
