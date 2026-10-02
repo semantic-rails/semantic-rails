@@ -856,7 +856,16 @@ def _fanout_dedup_refusal(
     Grouped, only a distinct count is answered. Summing (or averaging) an order amount by an
     item dimension reads as the item-level split ("revenue by product type") as often as the
     orders-that-included-it total, and the two differ, so that shape stays refused.
+
+    Every leaf is checked here: an authored measure, a query's ``aggregate_if`` (a synthetic
+    measure over its entity's table) and each operand of a ratio or arithmetic, so each one
+    gets the same rewrite and the same refusals.
     """
+    subject = (
+        f"an aggregate_if over '{measure.entity}'"
+        if is_conditional_aggregate(measure)
+        else f"measure '{measure.id}'"
+    )
     selections = [row for row in selections if row.analysis.get("status") != "ok"]
     for row in selections:
         if row.purpose not in _FANOUT_DEDUP_PURPOSES:
@@ -894,7 +903,7 @@ def _fanout_dedup_refusal(
     aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
     if grouped and aggregation not in _FANOUT_GROUPED_AGGREGATIONS:
         return (
-            f"'{aggregation}' of '{measure.id}' grouped by a dimension of "
+            f"'{aggregation}' of {subject} grouped by a dimension of "
             f"'{grouped[0].target_entity}' is ambiguous across a one-to-many hop: the amount "
             "split over the child rows and the full amount of every row that has one differ. "
             "Use a measure at the child's grain, group by a dimension of the measure's own "
@@ -905,14 +914,14 @@ def _fanout_dedup_refusal(
     if aggregation not in _FANOUT_DEDUP_AGGREGATIONS or not (
         measure.additive
         and measure.measure_class not in {"semi_additive", "snapshot"}
-        and not measure.source_relation
+        and measure.source_relation in {"", entity.table}
         and measure.aggregation_entity in {"", measure.entity}
         and (entity.key or entity.primary_key)
         and sorted(measure.row_grain or entity.key or [entity.primary_key])
         == sorted(entity.key or [entity.primary_key])
     ):
         return (
-            f"'{aggregation}' of measure '{measure.id}' is not defined over one row per "
+            f"'{aggregation}' of {subject} is not defined over one row per "
             f"'{measure.entity}' key (a non-additive value, a stock, an ordered aggregation, "
             "or a measure whose rows are finer than its entity's key).",
             (grouped or selections)[0],

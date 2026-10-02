@@ -1196,6 +1196,18 @@ def _synthetic_conditional_measure(
     _require_null_rejecting_condition(expr, entity_id, config)
     entities = _entity_index(config)
     entity = entities[entity_id]
+    # It aggregates the rows of its entity's table. When a measure of that table declares
+    # rows finer than the entity's key, these rows are too, so a rewrite that relies on one
+    # row per key refuses this measure as it refuses that one.
+    key = sorted(entity.key or [entity.primary_key])
+    finer = sorted(
+        list(row.row_grain)
+        for row in config.measures
+        if row.entity == entity_id
+        and row.source_relation in {"", entity.table}
+        and row.row_grain
+        and sorted(row.row_grain) != key
+    )
 
     # Build the column-level expression: CASE WHEN cond THEN value END.
     # For COUNT_IF (value omitted) the body is literal 1 so COUNT()
@@ -1225,7 +1237,7 @@ def _synthetic_conditional_measure(
         entity=entity_id,
         subject_entity=entity_id,
         aggregation_entity=entity_id,
-        row_grain=[],
+        row_grain=finer[0] if finer else [],
         expr=expr_for_measure,
         default_aggregation=aggregation,
         allowed_aggregations=[aggregation],
