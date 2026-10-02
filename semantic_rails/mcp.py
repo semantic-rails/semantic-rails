@@ -245,25 +245,8 @@ QUERY_SCHEMA: dict[str, Any] = {
         },
         "route_decisions": {
             "type": "array",
-            "description": (
-                "This query's route between two entities, one row per pair: the decision of "
-                "the AMBIGUOUS_PATH clarification option the person chose. Not a default."
-            ),
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["source_entity", "target_entity", "relationship_path"],
-                "properties": {
-                    "source_entity": {"type": "string"},
-                    "target_entity": {"type": "string"},
-                    "relationship_path": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                    },
-                    "label": {"type": "string", "description": "Ignored."},
-                },
-            },
+            "description": "The chosen AMBIGUOUS_PATH option's decision; this query only.",
+            "items": {"type": "object"},
         },
     },
 }
@@ -615,18 +598,16 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="execute",
         description=(
-            "Validate, compile and run Query IR against the warehouse: the best.query_ir that "
-            "'plan' drafted (call plan first), or Query IR you fixed from it. time.end is "
-            "exclusive. Returns at most "
-            "max_rows rows; a capped result reports truncated and total_row_count. "
-            "mode='validate' only checks the query; mode='sql' also returns rendered_sql; "
-            "neither runs it. Gotcha: 'query' must be a JSON object, and mode 'run' costs "
+            "Validate, compile and run Query IR: plan's best.query_ir (call plan first) or your "
+            "fix of it. time.end is exclusive. Returns at most "
+            "max_rows rows; a capped one reports truncated and total_row_count. "
+            "mode='validate' only checks; mode='sql' adds rendered_sql; "
+            "neither runs. Gotcha: 'query' must be a JSON object, and mode 'run' costs "
             "warehouse time. IR: select[]={expression:{...},as}, group_by[]=[<dim>,...] (not in "
             "select), where[]={field,op,value}, order_by[]={field,direction}. select.expression: "
             "{aggregation, measure} | {metric} | "
             "{kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}. "
-            "On AMBIGUOUS_PATH, ask the person which details.clarification option they mean, "
-            "then resend with that option's decision in route_decisions."
+            "AMBIGUOUS_PATH: ask which option is meant; resend its decision in route_decisions."
         ),
         input_schema=_schema(
             {

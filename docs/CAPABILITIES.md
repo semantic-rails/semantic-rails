@@ -48,9 +48,12 @@ surface.
 - route rule: a `graph.path_preferences` row, else the only route, else the
   start entity's one direct key (noted with `ROUTE_COLOCATED_KEY`);
   anything else is refused as `AMBIGUOUS_PATH` (`reason: route_decision_required`,
-  with each route's meaning and the row that records it), whatever the routes'
-  lengths. Hop count never decides, and adding a route never changes an answer
-  silently.
+  with `details.clarification`: the question in business words and, per route,
+  its meaning and the row that decides it), whatever the routes' lengths. Hop
+  count never decides, and adding a route never changes an answer silently.
+- route choice per query (`route_decisions`, the chosen option's row; disclosed
+  as `ROUTE_CHOSEN_BY_QUERY`, refused under a row filter) or as the package
+  default (Architect `record_route_decision`)
 - route recording via `graph.path_preferences` (load-time validated)
 - conflicting-route refusal (`PATH_JOIN_CONFLICT`)
 - per-query `hop_profile` reporting (chosen chains, per-hop safety,

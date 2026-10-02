@@ -595,7 +595,7 @@
         "readOnlyHint": true,
         "title": "Execute"
       },
-      "description": "Validate, compile and run Query IR against the warehouse: the best.query_ir that 'plan' drafted (call plan first), or Query IR you fixed from it. time.end is exclusive. Returns at most max_rows rows; a capped result reports truncated and total_row_count. mode='validate' only checks the query; mode='sql' also returns rendered_sql; neither runs it. Gotcha: 'query' must be a JSON object, and mode 'run' costs warehouse time. IR: select[]={expression:{...},as}, group_by[]=[<dim>,...] (not in select), where[]={field,op,value}, order_by[]={field,direction}. select.expression: {aggregation, measure} | {metric} | {kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}. On AMBIGUOUS_PATH, ask the person which details.clarification option they mean, then resend with that option's decision in route_decisions.",
+      "description": "Validate, compile and run Query IR: plan's best.query_ir (call plan first) or your fix of it. time.end is exclusive. Returns at most max_rows rows; a capped one reports truncated and total_row_count. mode='validate' only checks; mode='sql' adds rendered_sql; neither runs. Gotcha: 'query' must be a JSON object, and mode 'run' costs warehouse time. IR: select[]={expression:{...},as}, group_by[]=[<dim>,...] (not in select), where[]={field,op,value}, order_by[]={field,direction}. select.expression: {aggregation, measure} | {metric} | {kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}. AMBIGUOUS_PATH: ask which option is meant; resend its decision in route_decisions.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -634,33 +634,8 @@
             "description": "Semantic Layer Query IR. Full spec at schemas/query_ir.v1.json; narrative at docs/QUERY_IR_SCHEMA.md. Unknown keys rejected as INVALID_QUERY (offenders under details.unsupported_keys).",
             "properties": {
               "route_decisions": {
-                "description": "This query's route between two entities, one row per pair: the decision of the AMBIGUOUS_PATH clarification option the person chose. Not a default.",
+                "description": "The chosen AMBIGUOUS_PATH option's decision; this query only.",
                 "items": {
-                  "additionalProperties": false,
-                  "properties": {
-                    "label": {
-                      "description": "Ignored.",
-                      "type": "string"
-                    },
-                    "relationship_path": {
-                      "items": {
-                        "type": "string"
-                      },
-                      "minItems": 1,
-                      "type": "array"
-                    },
-                    "source_entity": {
-                      "type": "string"
-                    },
-                    "target_entity": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "source_entity",
-                    "target_entity",
-                    "relationship_path"
-                  ],
                   "type": "object"
                 },
                 "type": "array"

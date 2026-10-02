@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .config_parts.package_loader import normalize_package
+from .config_parts.route_rows import RouteRowError, check_route_row
 from .dialects import (
     connection_option_errors,
     snowflake_native_direct_connect_errors,
@@ -32,7 +33,6 @@ from .expressions import (
     parse_semantic_expression,
     validate_expression_calls,
 )
-from .fanout import RouteRowError, check_route_row
 from .meta_contract import load_meta_contract
 from .operational import (
     load_operational_contract,

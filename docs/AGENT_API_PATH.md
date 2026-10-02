@@ -6,7 +6,10 @@ context. The headings below keep old links working.
 
 ## Recommended Loop
 
-Moved to [Agent quickstart: Recommended Loop](AGENT_QUICKSTART.md#recommended-loop).
+Moved to [Agent quickstart: Recommended Loop](AGENT_QUICKSTART.md#recommended-loop). An
+`AMBIGUOUS_PATH` refusal asks which route a question means; the loop that answers it per query
+(`route_decisions`) or records it in the package (`record_route_decision`) is under
+[Agent quickstart: Graph-Style Agents](AGENT_QUICKSTART.md#graph-style-agents).
 
 ## Plan Status And Detail
 

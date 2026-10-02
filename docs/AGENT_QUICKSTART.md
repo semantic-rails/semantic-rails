@@ -321,11 +321,22 @@ repair node before `execute`. `INVALID_QUERY`, `PATH_JOIN_CONFLICT`,
 `MIXED_GRAIN_INVALID`, `POLICY_DENIED`, and low-relevance results should route to repair or refusal
 nodes instead of being retried as raw SQL. `AMBIGUOUS_PATH` (`details.reason:
 route_decision_required`) means two join routes can answer the question differently (an account's
-branch region or its owner's home region) and the package hasn't recorded which one it means. A
-query can't pick one: ask which meaning is wanted (`details.meanings` reads each route), or refuse;
-`details.pins` lists the `graph.path_preferences` row a package author adds to record each. An
-`info` note `ROUTE_COLOCATED_KEY` or `ROUTE_RECORDED` (compact and full responses) names the route
-the answer used, the start entity's own key or the package's recorded route; it needs no
+branch district or its owner's home district) and the package hasn't recorded which one it means.
+The agent never picks one; it asks:
+
+1. Refusal: `details.clarification.question` ("Which District does the question mean for an
+   Account?") and one option per route, each with a `meaning` in business words.
+2. Ask the person, reading each option's `meaning`.
+3. Resend the same query with the chosen option's `decision` in
+   [`route_decisions`](QUERY_IR_SCHEMA.md#route-decisions). The answer is for this person and this
+   query only, and carries an `info` note `ROUTE_CHOSEN_BY_QUERY` with the row and `replaced` (what
+   applied without it: `undecided`, or `decided` when the package records another route).
+4. To make it the default for everyone, a maintainer calls Architect
+   [`record_route_decision`](ARCHITECT_MCP.md) with the same `decision`. That is a reviewed package
+   change; from then on the question answers without asking.
+
+An `info` note `ROUTE_COLOCATED_KEY` or `ROUTE_RECORDED` (compact and full responses) names the
+route the answer used, the start entity's own key or the package's recorded route; it needs no
 follow-up.
 
 ## Local Warehouse Defaults

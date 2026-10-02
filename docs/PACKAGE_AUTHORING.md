@@ -1448,10 +1448,37 @@ calendar dimension reached only through other facts' rows is refused the same
 way, and its recovery hint points at `time.grain` instead.
 
 The refusal is a clarification: `details.reason` is `route_decision_required`,
-`details.candidates` lists every route, `details.meanings` reads each one as a
-chain of entity and relationship labels (`Account → Owner → Home region`), and
-`details.pins` holds the `graph.path_preferences` row that records each. Copy
-the row for the meaning the package intends into `graph.yml`.
+and `details.clarification` asks which route the question means, in business
+words built only from package labels:
+
+```json
+{"kind": "route", "apply": ["query", "package"],
+ "question": "Which District does the question mean for an Account?",
+ "options": [
+   {"id": "branch_district", "meaning": "the District of the Account's Branch",
+    "relationship_path": ["relationship.accounts_branch", "relationship.branches_district"],
+    "decision": {"source_entity": "entity.bank_account", "target_entity": "entity.bank_district",
+                 "relationship_path": ["relationship.accounts_branch", "relationship.branches_district"],
+                 "label": "the District of the Account's Branch"}},
+   {"id": "owner_district", "meaning": "the District of the Account's Owner", "...": "..."}]}
+```
+
+- `meaning` names every entity on the route by its label. A hop between two
+  entities related more than once is named by the relationship's own label, or
+  else by its foreign-key columns (`the Flight's Airport (origin_airport_id)`),
+  and a one-to-many hop reads "any of the …" (`any of the Account's Memberships`).
+- `id` is unique within the refusal and never an entity key: the waypoint and
+  target entity keys (`branch_district`), or a direct hop's foreign-key column
+  without its `_id`/`_key`/`_code` suffix (`origin_airport`); `_2` on a clash.
+- `decision` is the `graph.path_preferences` row that makes the option the
+  package default, loadable as written, with `label` set to the meaning.
+
+Every option can be applied two ways. For the person who asked, the agent
+resends the query with the option's `decision` in
+[`route_decisions`](QUERY_IR_SCHEMA.md#route-decisions): that query only, not a
+default. For everyone, a maintainer records the same row in the package (Architect
+`record_route_decision` writes it for review); then the question answers
+without asking.
 
 A relationship's `path_preference` weight no longer exists: a package that
 still sets one fails to load with `INVALID_CONFIG`, naming the relationship.
@@ -1473,15 +1500,18 @@ graph:
         - relationship.orders_customer
         - relationship.customers_city
         - relationship.cities_region
+      label: the Region of the City of the Line item's Customer
 ```
 
-`source_entity` and `target_entity` take an entity's key, name or id (the rows in
-`details.pins` use ids). Rows are validated at load time (unknown entities and
-relationships, broken chains, and disallowed traversal directions are
-`INVALID_CONFIG`), and the fanout safety analysis still applies to the recorded
-route. A row covers only queries that start at its `source_entity` and end at its
-`target_entity`. A comment stating the meaning in the question's own words keeps
-the decision reviewable.
+`source_entity` and `target_entity` take an entity's key, name or id (a
+clarification option's `decision` uses ids). Rows are validated at load time
+(unknown entities and relationships, broken chains, and disallowed traversal
+directions are `INVALID_CONFIG`), and the fanout safety analysis still applies
+to the recorded route. A row covers only queries that start at its
+`source_entity` and end at its `target_entity`. The optional `label` states the
+meaning in business words; it keeps the decision reviewable, the package writer
+keeps it, and a compile's `hop_profile` target and discovery's path availability
+show it as `route_label` for the pair's recorded route.
 
 Four guard rails back this up:
 

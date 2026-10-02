@@ -1155,6 +1155,11 @@ The response `warnings` array can carry these non-error signals:
   `graph.path_preferences` row. `details.route` is the chosen route; the
   message reads it (`Order → Store (own key)`). See
   [the route rule](PACKAGE_AUTHORING.md#the-route-rule).
+- `ROUTE_CHOSEN_BY_QUERY` — severity `info`, at every verbosity: one per
+  `route_decisions` row the query applied. `details.row` is the row and
+  `details.replaced` what would have applied without it (`decided`,
+  `colocated_key`, `only_route`, `undecided` or `unreachable`). See
+  [`route_decisions`](QUERY_IR_SCHEMA.md#route-decisions).
 
 HTTP failures return:
 
@@ -1168,6 +1173,44 @@ HTTP failures return:
   }
 }
 ```
+
+`details` is returned whole on every surface (HTTP, MCP and CLI). An
+`AMBIGUOUS_PATH` refusal's `details` carry `reason: route_decision_required`,
+`start`, `target`, `hint` and `clarification`:
+
+```json
+{
+  "code": "AMBIGUOUS_PATH",
+  "details": {
+    "reason": "route_decision_required",
+    "start": "entity.bank_account",
+    "target": "entity.bank_district",
+    "clarification": {
+      "kind": "route",
+      "apply": ["query", "package"],
+      "question": "Which District does the question mean for an Account?",
+      "options": [
+        {
+          "id": "branch_district",
+          "meaning": "the District of the Account's Branch",
+          "relationship_path": ["relationship.accounts_branch", "relationship.branches_district"],
+          "decision": {
+            "source_entity": "entity.bank_account",
+            "target_entity": "entity.bank_district",
+            "relationship_path": ["relationship.accounts_branch", "relationship.branches_district"],
+            "label": "the District of the Account's Branch"
+          }
+        }
+      ]
+    },
+    "hint": "Which route is meant is a business definition. ..."
+  }
+}
+```
+
+Send an option's `decision` in the query's `route_decisions` to answer that
+query with it, or record it in the package with Architect
+`record_route_decision`.
 
 ## Real Example
 

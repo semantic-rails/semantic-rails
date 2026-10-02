@@ -117,6 +117,7 @@ from .compiler_parts.temporal import (
     _validate_query_temporal_bindings,
     _validate_restrictive_time_semantics,
 )
+from .config_parts.route_rows import RouteRowError, check_route_row
 from .diagnostics import relationship_contract_payload
 from .dialects import SqlDialect, dialect_for_warehouse
 from .errors import SemanticLayerError
@@ -151,9 +152,7 @@ from .expressions import (
 )
 from .fanout import (
     RouteChoice,
-    RouteRowError,
     analyze_fanout,
-    check_route_row,
     filter_only_semijoin,
     one_to_many_descent,
     pair_routes,

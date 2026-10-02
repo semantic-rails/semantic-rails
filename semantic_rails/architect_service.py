@@ -43,11 +43,12 @@ from .architect_transactions import (
     ProjectTransaction,
     project_revision,
 )
+from .config_parts.route_rows import RouteRowError, check_route_row
 from .config_validation import PackageReference, parse_config_report
 from .dialects import connection_option_errors, warehouse_connector
 from .errors import SemanticLayerError
 from .expressions import expr_to_dict
-from .fanout import RouteRowError, check_route_row, pair_routes, route_reading
+from .fanout import pair_routes, route_reading
 from .package_snapshot import load_package_snapshot
 from .package_tools import impact_report
 from .schema import PackageConfig, PathPreferenceConfig
