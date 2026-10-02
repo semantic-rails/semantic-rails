@@ -1003,8 +1003,9 @@ def _second_child_scope(
         return None
     return (
         f"A child group on '{routes[0].target_entity}' and {other} both cross a one-to-many hop, "
-        "so they may have to match rows under one parent row or under any. Ask one child scope "
-        "per query: state every condition on that child in its groups.",
+        "and nothing says which rows they must hold on together: one row, rows under one "
+        "parent row, or any. Ask one child scope per query: state every condition on that "
+        "child in its groups.",
         hop,
     )
 
@@ -4751,7 +4752,7 @@ def bind_query(
             code = exc.code if isinstance(exc, SemanticLayerError) else type(exc).__name__
             raise SemanticLayerError(
                 "MIXED_GRAIN_INVALID",
-                f"{ambiguity} Its '{option['id']}' reading, a child group, is refused here "
+                f"{ambiguity} The '{option['id']}' reading, a child group, is refused here "
                 f"({code}), so no reading is offered.",
             ) from None
     raise ambiguity
