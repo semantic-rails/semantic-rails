@@ -1015,6 +1015,13 @@ fields such as `select`, `where`, `metric_filters`, `order_by`, and
 `group_by` keep the caller entries first, then append generated entries
 when needed.
 
+Inferred inclusion filters on the same dimension are combined into one filter.
+A single inferred value uses `=`, and several values use `in`. For several values, the planner
+also groups by that dimension so each value has its own labelled row within
+the requested groups. This normalization runs after the caller merge, so an
+existing caller equality does not narrow the combined list. Exclusions remain
+separate; excluding a value the question requests yields `low_confidence`.
+
 Qualified metric asks return `interpreted_intent.pattern: "qualified_metric_rollup"` and a validated runtime-composed `scoped_aggregate`. Contextual predicates omit `time_alignment`; `time_grain` appears only when the qualification grain differs from the output grain, such as daily output qualified by monthly customer activity.
 
 ### `POST /api/v1/validate`

@@ -35,7 +35,7 @@ from .faithfulness import (
     unconsumed_terms,
     unmatched_intent_terms,
 )
-from .generators import blocked_object_not_found, fallback_drafts
+from .generators import _normalize_value_filters, blocked_object_not_found, fallback_drafts
 from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
 
@@ -685,7 +685,8 @@ def _merge_partial_query(
     additive list fields we append generated entries after existing
     caller entries. For scalar/dict fields the caller wins, with ``time``
     merged shallowly so generated temporal roles can still fill missing
-    fields.
+    fields. Repeated inclusion filters are then combined into one predicate
+    with a grouping for several values; caller exclusions stay separate.
     """
 
     partial = dict(partial_query or {})
@@ -712,7 +713,7 @@ def _merge_partial_query(
             merged[key] = {**generated, **value}
         else:
             merged[key] = value
-    return merged
+    return _normalize_value_filters(merged)
 
 
 def _checked_partial_query(partial_query: dict[str, Any] | None) -> dict[str, Any] | None:

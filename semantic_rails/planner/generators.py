@@ -139,14 +139,7 @@ def _draft_for_choice(
     if "time" not in query:
         query = _apply_time_from_text(runtime, query, intent, [str(choice["id"])])
 
-    existing_where = list(query.get("where", []) or [])
-    inferred_where = [
-        {"field": row["dimension_id"], "op": "=", "value": row["value"]}
-        for row in _matched_value_rows(runtime, query, intent)
-    ]
-    where = _append_unique_dicts(existing_where, inferred_where)
-    if where:
-        query["where"] = where
+    query = _normalize_value_filters(query, _matched_value_rows(runtime, query, intent))
 
     resolved = [
         {
@@ -168,6 +161,83 @@ def _draft_for_choice(
         },
         score=0.25,
     )
+
+
+def _normalize_value_filters(
+    query: dict[str, Any], matched_values: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """Combine repeated inclusion filters, splitting inferred values into rows.
+
+    Run again after merging caller fields: an existing equality must not narrow
+    a synthesized IN. Exclusions stay separate so faithfulness can refuse a
+    draft that excludes a requested value. Invalid literals are never repaired.
+    """
+
+    from ..errors import SemanticLayerError  # noqa: WPS433
+
+    where = [
+        *list(query.get("where", []) or []),
+        *[
+            {"field": row["dimension_id"], "op": "=", "value": row["value"]}
+            for row in matched_values or []
+        ],
+    ]
+    inclusions: dict[str, list[dict[str, Any]]] = {}
+    for row in where:
+        if isinstance(row, dict) and str(row.get("op", "=")).strip().upper() in {"=", "==", "IN"}:
+            field = row.get("field")
+            if isinstance(field, str) and field.strip():
+                inclusions.setdefault(field.strip(), []).append(row)
+
+    normalized: dict[str, dict[str, Any]] = {}
+    group_by = list(query.get("group_by", []) or [])
+    for field, rows in inclusions.items():
+        if len(rows) == 1:
+            continue
+        values: list[Any] = []
+        invalid = False
+        for row in rows:
+            value = row.get("value")
+            literals = (
+                value
+                if str(row.get("op", "=")).strip().upper() == "IN" and isinstance(value, list)
+                else [value]
+            )
+            if not literals or any(
+                item is None or isinstance(item, (dict, list, tuple)) for item in literals
+            ):
+                invalid = True
+            for literal in literals:
+                if not any(type(literal) is type(kept) and literal == kept for kept in values):
+                    values.append(literal)
+        if invalid:
+            raise SemanticLayerError(
+                "INVALID_QUERY",
+                "Cannot combine inclusion filters with non-scalar or missing values.",
+                details={"path": "where", "field": field},
+            )
+        normalized[field] = rows[0]
+        if len(values) > 1:
+            normalized[field] = {**rows[0], "field": field, "op": "in", "value": values}
+            if field not in group_by:
+                group_by.append(field)
+
+    out: list[Any] = []
+    for row in where:
+        field = row.get("field") if isinstance(row, dict) else None
+        if isinstance(field, str):
+            field = field.strip()
+        if isinstance(field, str) and field in normalized and row in inclusions[field]:
+            if normalized[field] not in out:
+                out.append(normalized[field])
+        else:
+            out.append(row)
+    result = dict(query)
+    if out:
+        result["where"] = out
+    if group_by:
+        result["group_by"] = group_by
+    return result
 
 
 def _choose_object_for_terms(
