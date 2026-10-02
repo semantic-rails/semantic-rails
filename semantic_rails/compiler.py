@@ -16,7 +16,8 @@ from __future__ import annotations
 import json
 import operator
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from datetime import datetime
 from typing import Any
@@ -164,6 +165,7 @@ from .fanout import (
     one_to_many_descent,
     recording_route_choices,
     resolve_path,
+    route_pin,
 )
 from .ir import (
     BoundMeasure,
@@ -958,9 +960,14 @@ def _fanout_dedup_refusal(
         )
     conditions = _hop_conditions(bound, selections, config, query)
     if all(hop.purpose == "where" for _, _, hop in conditions):
-        ambiguous = _ambiguous_child_scope(measure, selections, config, query)
-        if ambiguous is not None:
-            raise ambiguous
+        found = _ambiguous_child_scope(measure, selections, config, query)
+        if found is not None:
+            ambiguity, hop = found
+            if isinstance(ambiguity, str):
+                return ambiguity, hop
+            if _ASK_CHILD_SCOPE.get():
+                raise ambiguity
+            return f"{ambiguity} No reading of them can be answered with a child group here.", hop
     if len(conditions) > 1:
         return _two_hop_conditions(conditions)
     for dim, item, hop in conditions:
@@ -998,7 +1005,7 @@ def _clickhouse_child_group_reason(
 ) -> str:
     """ClickHouse answers one ``any`` group on the child's own columns, beside no other child
     condition, with its de-duplicated parent leaf. A ``none`` group would need an anti-join
-    whose NULL handling is unproven there. Clarification choices use this same rule."""
+    whose NULL handling is unproven there."""
     groups = child_groups(query.where)
     if any(group.match == "none" for group in groups):
         return "a 'none' child group needs a NULL-safe anti-join, which is unproven there"
@@ -1046,24 +1053,37 @@ def _child_scope(start_entity: str, selection: PathSelection) -> tuple[str, tupl
     return child, tuple(selection.chosen_path[:route])
 
 
+# A flat filter reaching a child: its where index, the filter, its dimension, its child scope
+# (the child, and the route there) and its path.
+_FlatFilter = tuple[int, Filter, Any, tuple[str, tuple[str, ...]], PathSelection]
+# False while a query is bound for the refusal it gets when no reading of an ambiguous child
+# scope can be answered (``_answerable_child_scope``).
+_ASK_CHILD_SCOPE: ContextVar[bool] = ContextVar("ask_child_scope", default=True)
+# Option binds left in one request ([count]); past the limit, the request is refused.
+_OPTION_CHECKS: ContextVar[list[int] | None] = ContextVar("child_scope_checks", default=None)
+_OPTION_CHECK_LIMIT = 32
+
+
 def _ambiguous_child_scope(
     measure: MeasureConfig,
     selections: list[PathSelection],
     config: PackageConfig,
     query: NormalizedQuery,
-) -> SemanticLayerError | None:
-    """AMBIGUOUS_CHILD_SCOPE when the query's flat filters leave a child row's scope unsaid.
+) -> tuple[SemanticLayerError | str, PathSelection] | None:
+    """AMBIGUOUS_CHILD_SCOPE when the query's flat filters leave a child row's scope unsaid,
+    with the path of the filter that found it.
 
     Two flat filters reaching one child entity by one route ("an item that is a beverage and
     costs over 5") may mean the same child row or separate ones, and a flat filter beside a
     child group on that child may or may not belong in it. A negated flat filter on a child
     may mean "has a row that is not X" or "has no row that is X". The clarification offers
     each reading as the query's whole rewritten ``where``. One positive flat filter reads as
-    an ``any`` group, as it always has.
+    an ``any`` group, as it always has. When a group would not follow a filter's own route,
+    no reading can be offered, and the reason (``_route_change``) comes back instead.
     """
     dimensions = _dimension_index(config)
     crossing = {(row.target_entity, row.purpose): row for row in selections}
-    flat: list[tuple[int, Filter, Any, tuple[str, tuple[str, ...]]]] = []
+    flat: list[_FlatFilter] = []
     scoped_groups: dict[int, tuple[str, tuple[str, ...]]] = {}
     for index, item in enumerate(query.where):
         if isinstance(item, ChildGroup):
@@ -1074,37 +1094,60 @@ def _ambiguous_child_scope(
         dim = dimensions[item.field]
         hop = crossing.get((dim.entity, "where"))
         if hop is not None:
-            flat.append((index, item, dim, _child_scope(measure.entity, hop)))
-    ambiguity = None
-    for index, item, dim, scope in flat:
+            flat.append((index, item, dim, _child_scope(measure.entity, hop), hop))
+    for _, item, dim, scope, hop in flat:
         same = [row for row in flat if row[3] == scope]
         beside = [position for position, key in scoped_groups.items() if key == scope]
-        if len(same) > 1 or beside:
-            ambiguity = _child_scope_clarification(scope[0], same, beside, config, query)
-            break
-        if _negated_filter(asdict(item), dim):
-            ambiguity = _negation_clarification(scope[0], index, item, dim, config, query)
-            break
-    if ambiguity is None or config.package.warehouse != "clickhouse":
-        return ambiguity
-    # Do not ask callers to choose a reading that this dialect then refuses.
-    crossing_fields = {item.field for _, item, *_ in flat}
-    options = []
-    for option in ambiguity.details["clarification"]["options"]:
-        proposed = normalize_query({**query.to_dict(), "where": option["where"]})
-        has_other_conditions = any(
-            item.field in crossing_fields for item in plain_filters(proposed.where)
-        )
-        if not _clickhouse_child_group_reason(measure, config, proposed, has_other_conditions):
-            options.append(option)
-    if not options:
-        return None  # Retain the existing MIXED_GRAIN_INVALID refusal.
-    ambiguity.details["clarification"]["options"] = options
-    option_ids = {option["id"] for option in options}
-    ambiguity.details["recovery_hints"] = [
-        hint for hint in ambiguity.details["recovery_hints"] if hint["option"] in option_ids
-    ]
-    return ambiguity
+        if len(same) > 1 or beside or _negated_filter(asdict(item), dim):
+            moved = _route_change(measure, config, query, scope, same)
+            if moved:
+                return moved, hop
+            return _child_scope_clarification(scope[0], same, beside, config, query), hop
+    return None
+
+
+def _route_change(
+    measure: MeasureConfig,
+    config: PackageConfig,
+    query: NormalizedQuery,
+    scope: tuple[str, tuple[str, ...]],
+    flat: list[_FlatFilter],
+) -> str:
+    """Why no child group can restate these flat filters: a group reaches its child, and a
+    condition's lookup from it, by the routes ``child_group_route`` resolves, and one of the
+    filters' own paths takes another. Empty when every route matches; a group's other
+    refusals are left to the check of each option (``_answerable_child_scope``)."""
+    child, prefix = scope
+    for _, item, _, _, hop in flat:
+        wanted = {(measure.entity, child): list(prefix)}
+        if len(hop.chosen_path) > len(prefix):
+            wanted[(child, hop.target_entity)] = list(hop.chosen_path[len(prefix) :])
+        try:
+            route, [lookup] = child_group_route(
+                config, query, measure, ChildGroup(child=child, match="any", where=[item])
+            )
+        except SemanticLayerError as exc:
+            if exc.code != "AMBIGUOUS_PATH":
+                continue
+            found: dict[tuple[str, str], list[str]] = {
+                (str(exc.details.get("start")), str(exc.details.get("target"))): []
+            }
+        else:
+            found = {(measure.entity, child): list(route.chosen_path)}
+            if lookup is not None:
+                found[(child, lookup.target_entity)] = list(lookup.chosen_path)
+        for (start, target), path in found.items():
+            own = wanted.get((start, target))
+            if own is not None and path != own:
+                taken = f"by {' -> '.join(path)}" if path else "by no recorded route"
+                return (
+                    f"Each reading of these filters on '{child}' is a child group, and a group "
+                    f"would reach '{target}' from '{start}' {taken}, not by {' -> '.join(own)} "
+                    f"as '{item.field}' does. Record that route as a graph.path_preferences "
+                    f"row to be asked which reading is meant: "
+                    f"{json.dumps(route_pin(start, target, own))}"
+                )
+    return ""
 
 
 def _rewritten_where(
@@ -1160,108 +1203,171 @@ def _scope_error(
 
 def _child_scope_clarification(
     child: str,
-    flat: list[tuple[int, Filter, Any, Any]],
+    flat: list[_FlatFilter],
     beside: list[int],
     config: PackageConfig,
     query: NormalizedQuery,
 ) -> SemanticLayerError:
-    """Same child row or separate ones, for the flat filters on one child scope."""
+    """Each reading of the flat filters on one child scope, as the query's whole rewritten
+    where: added to each ``any`` group beside them, together in a new group, each in a group of
+    its own, and, for each negated filter, a ``none`` group of its opposite with the other
+    items as written (a later question settles those)."""
     label = _entity_index(config)[child].label or child
+    dimensions = _dimension_index(config)
     positions = [index for index, *_ in flat]
     conditions = [item for _, item, *_ in flat]
-    texts = [_condition_text(item, dim) for _, item, dim, _ in flat]
-    separate = _rewritten_where(
-        query, {index: _group_payload(child, "any", [item]) for index, item, *_ in flat}, set()
-    )
-    anys = [
-        (index, group)
-        for index in beside
-        if isinstance(group := query.where[index], ChildGroup) and group.match == "any"
+    texts = [_condition_text(item, dim) for _, item, dim, *_ in flat]
+    groups = [
+        (index, group) for index in beside if isinstance(group := query.where[index], ChildGroup)
     ]
-    if len(anys) == 1:
-        index, group = anys[0]
-        same = _rewritten_where(
-            query,
-            {index: _group_payload(child, "any", [*group.where, *conditions])},
-            set(positions),
+    options: list[dict[str, Any]] = []
+    for index, group in groups:
+        both = [*texts, *(_condition_text(row, dimensions[row.field]) for row in group.where)]
+        options.append(
+            {
+                "id": "same_row" if len(groups) == 1 else f"same_row_where_{index}",
+                "meaning": f"One {label} meets {' and '.join(both)}.",
+                "where": _rewritten_where(
+                    query,
+                    {index: _group_payload(child, "any", [*group.where, *conditions])},
+                    set(positions),
+                ),
+            }
         )
-    else:
-        same = _rewritten_where(
-            query, {positions[0]: _group_payload(child, "any", conditions)}, set(positions[1:])
-        )
-    options = []
-    if same != separate:
+    if not groups and len(flat) > 1:
         options.append(
             {
                 "id": "same_row",
-                "meaning": f"One {label} meets {' and '.join(texts)}"
-                + (", and the conditions of its child group." if len(anys) == 1 else "."),
-                "where": same,
+                "meaning": f"One {label} meets {' and '.join(texts)}.",
+                "where": _rewritten_where(
+                    query,
+                    {positions[0]: _group_payload(child, "any", conditions)},
+                    set(positions[1:]),
+                ),
             }
         )
-    options.append(
-        {
-            "id": "separate_rows",
-            "meaning": (
-                f"Each of {', '.join(texts)} may hold on a different {label}."
-                if len(texts) > 1
-                else f"Some {label} meets {texts[0]}, not necessarily the child group's {label}."
-            ),
-            "where": separate,
-        }
+    separate = _rewritten_where(
+        query, {index: _group_payload(child, "any", [item]) for index, item, *_ in flat}, set()
     )
-    question = (
-        f"Does {' and '.join(texts)} apply to the {label} of the child group beside it?"
-        if beside
-        else f"Do {' and '.join(texts)} apply to the same {label} or to separate ones?"
-    )
-    return _scope_error(
-        f"Filters on '{child}' cross a one-to-many hop without saying whether one {label} must "
-        "meet them together.",
-        child,
-        [*positions, *beside],
-        question,
-        options,
-    )
-
-
-def _negation_clarification(
-    child: str, index: int, item: Filter, dim: Any, config: PackageConfig, query: NormalizedQuery
-) -> SemanticLayerError:
-    """'Has a child row that is not X' or 'has no child row that is X', for a negated filter."""
-    label = _entity_index(config)[child].label or child
-    op = _compact_token(str(item.op or "=")).upper()
-    text = _condition_text(item, dim)
-    options = [
-        {
-            "id": "any_not",
-            "meaning": f"Has a {label} where {text}.",
-            "where": _rewritten_where(query, {index: _group_payload(child, "any", [item])}, set()),
-        }
+    if groups or len(flat) > 1:
+        options.append(
+            {
+                "id": "separate_rows",
+                "meaning": (
+                    f"Each of {', '.join(texts)} may hold on a different {label}."
+                    if len(texts) > 1
+                    else f"Some {label} meets {texts[0]}, not necessarily a child group's {label}."
+                ),
+                "where": separate,
+            }
+        )
+    else:
+        options.append(
+            {"id": "any_not", "meaning": f"Has a {label} where {texts[0]}.", "where": separate}
+        )
+    questions = []
+    if groups:
+        which = "the child group" if len(groups) == 1 else "one of the child groups"
+        questions.append(f"Does {' and '.join(texts)} apply to the {label} of {which} beside it?")
+    elif len(flat) > 1:
+        questions.append(f"Do {' and '.join(texts)} apply to the same {label} or to separate ones?")
+    negated = [
+        (index, item, dim, _COMPLEMENT_OPS.get(_compact_token(str(item.op or "=")).upper()))
+        for index, item, dim, *_ in flat
+        if _negated_filter(asdict(item), dim)
     ]
-    complement = _COMPLEMENT_OPS.get(op)
-    if complement is not None:
+    opposites = [row for row in negated if row[3] is not None]
+    for index, item, dim, complement in negated:
+        questions.append(
+            f"Does '{_condition_text(item, dim)}' mean some {label} fails the condition, or no "
+            f"{label} meets its opposite?"
+        )
+        if complement is None:
+            continue
         positive = Filter(field=item.field, op=complement, value=item.value)
         options.append(
             {
-                "id": "none",
-                "meaning": f"Has no {label} where {_condition_text(positive, dim)}.",
+                "id": "none" if len(opposites) == 1 else f"none_where_{index}",
+                "meaning": f"Has no {label} where {_condition_text(positive, dim)}"
+                + (", and the other items as written." if len(flat) > 1 or groups else "."),
                 "where": _rewritten_where(
                     query, {index: _group_payload(child, "none", [positive])}, set()
                 ),
             }
         )
-    question = (
-        f"Does '{text}' mean some {label} fails the condition, or no {label} meets its opposite?"
-    )
-    return _scope_error(
-        f"A negated or null test on '{dim.id}' across a one-to-many hop may mean a {label} "
-        f"that fails it or no {label} that meets its opposite.",
-        child,
-        [index],
-        question,
-        options,
-    )
+    if len(flat) == 1 and not groups:
+        message = (
+            f"A negated or null test on '{flat[0][2].id}' across a one-to-many hop may mean a "
+            f"{label} that fails it or no {label} that meets its opposite."
+        )
+    else:
+        message = (
+            f"Filters on '{child}' cross a one-to-many hop without saying whether one {label} "
+            "must meet them together."
+        )
+    return _scope_error(message, child, [*positions, *beside], " ".join(questions), options)
+
+
+def _answerable_child_scope(
+    ambiguity: SemanticLayerError,
+    bind_option: Callable[[list[dict[str, Any]]], object],
+    bind_unasked: Callable[[], object],
+) -> SemanticLayerError:
+    """The clarification with only the readings the query can answer, or, with none, the
+    refusal the query gets without the question.
+
+    The one guard every clarification passes: each option's ``where`` is bound (planned,
+    lowered and row-filtered, across every measure leaf and dialect rule) before it is
+    offered. An option that asks a further child-scope question counts when that question,
+    checked the same way, keeps an answer. One request binds at most ``_OPTION_CHECK_LIMIT``
+    options; past that it is refused rather than offered unchecked readings.
+    """
+    checks = _OPTION_CHECKS.get()
+    outermost = checks is None
+    if checks is None:
+        checks = [_OPTION_CHECK_LIMIT]
+    token = _OPTION_CHECKS.set(checks)
+    try:
+        options = [
+            option
+            for option in ambiguity.details["clarification"]["options"]
+            if _answers(option["where"], bind_option, checks)
+        ]
+    finally:
+        _OPTION_CHECKS.reset(token)
+    if outermost and checks[0] < 0:
+        options = []
+    if options:
+        kept = {option["id"] for option in options}
+        ambiguity.details["clarification"]["options"] = options
+        ambiguity.details["recovery_hints"] = [
+            hint for hint in ambiguity.details["recovery_hints"] if hint["option"] in kept
+        ]
+        return ambiguity
+    unasked = _ASK_CHILD_SCOPE.set(False)
+    try:
+        bind_unasked()
+    except SemanticLayerError as exc:
+        return exc
+    finally:
+        _ASK_CHILD_SCOPE.reset(unasked)
+    return SemanticLayerError("MIXED_GRAIN_INVALID", str(ambiguity))
+
+
+def _answers(
+    where: list[dict[str, Any]],
+    bind_option: Callable[[list[dict[str, Any]]], object],
+    checks: list[int],
+) -> bool:
+    if checks[0] <= 0:
+        checks[0] = -1  # out of binds: the outermost question is refused
+        return True
+    checks[0] -= 1
+    try:
+        bind_option(where)
+    except SemanticLayerError as exc:
+        return exc.code == "AMBIGUOUS_CHILD_SCOPE"
+    return True
 
 
 def _hop_conditions(
@@ -4720,7 +4826,29 @@ def bind_query(
 
     ``row_filters`` are the filters the request's context applies; with any, the
     statement must read one filtered relation, and rollups are not routed to.
+    An ambiguous child scope is asked only with readings that bind the same way.
     """
+    try:
+        return _bind_with_row_filters(config, registry, payload, row_filters)
+    except SemanticLayerError as exc:
+        if exc.code != "AMBIGUOUS_CHILD_SCOPE" or not _ASK_CHILD_SCOPE.get():
+            raise
+        ambiguity = exc
+    raise _answerable_child_scope(
+        ambiguity,
+        lambda where: bind_query(
+            config, registry, {**payload, "where": where}, row_filters=row_filters
+        ),
+        lambda: _bind_with_row_filters(config, registry, payload, row_filters),
+    )
+
+
+def _bind_with_row_filters(
+    config: PackageConfig,
+    registry: Registry | None,
+    payload: dict[str, Any],
+    row_filters: Sequence[RowFilter],
+) -> BoundQuery:
     try:
         # A rollup may not hold the filter column, so a row-filtered query reads its base relation.
         with aggregate_routing(not row_filters):
