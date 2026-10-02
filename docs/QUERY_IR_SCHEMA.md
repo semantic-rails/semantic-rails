@@ -911,11 +911,17 @@ Booleans remain booleans, and nested decimal/float values retain their normaliza
 
 The Postgres ADBC adapter accepts only Arrow scalar types with exact mappings:
 integers, decimals (including PostgreSQL NUMERIC stored as text and converted
-to `Decimal`), float32/float64, text, booleans, date32, microsecond timestamps
-with or without a time zone, month-day-nanosecond intervals, and NULL.
-Other Arrow types, including lists, structs, maps, nested NUMERIC, JSON/JSONB
-and unknown extensions, refuse with `RESULT_TYPE_UNSUPPORTED` before rows
-are read, even for empty or all-null results. The error names the column and
+to `Decimal`), float32/float64, text, booleans, date32, microsecond times,
+variable-size binary, microsecond timestamps with or without a time zone,
+month-day-nanosecond intervals, and NULL. Variable-size binary remains binary,
+including 16-byte BYTEA values; UUID-looking text remains text.
+Before converting each bounded batch to Python values, microsecond times outside
+`00:00:00` through `23:59:59.999999` refuse with `RESULT_TYPE_UNSUPPORTED`.
+This includes PostgreSQL `TIME '24:00:00'`, which cannot be represented as an
+exact Python `time` and must never wrap to midnight. Errors expose no raw values.
+Other Arrow types, including lists, structs, maps, nested NUMERIC, JSON/JSONB,
+UUID, fixed-size binary and unknown extensions, refuse with
+`RESULT_TYPE_UNSUPPORTED` before rows are read, even for empty or all-null results. The error names the column and
 Arrow type in `details.column` and `details.type`, without exposing values.
 Intervals still refuse with `RESULT_VALUE_UNSUPPORTED` when their duration
 cannot be represented as an exact Python `timedelta`.

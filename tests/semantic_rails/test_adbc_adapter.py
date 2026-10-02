@@ -66,8 +66,15 @@ def _arrow_rows(cursor, positional):
         "json",
         "unknown_extension",
         "invalid_numeric_storage",
-        "binary",
-        "time",
+        "large_binary",
+        "fixed_binary_15",
+        "fixed_binary_16",
+        "uuid_extension",
+        "fixed_binary_17",
+        "opaque_uuid",
+        "opaque_uuid_binary",
+        "time32",
+        "time_ns",
         "duration",
         "date64",
         "timestamp_ns",
@@ -87,8 +94,15 @@ def test_unsupported_postgres_result_types_refuse_before_reading_values(kind, co
         "json": (pa.json_(), '{"n":1,"secret":"row-canary"}'),
         "unknown_extension": (pa.opaque(pa.string(), "unknown", "PostgreSQL"), "row-canary"),
         "invalid_numeric_storage": (pa.opaque(pa.int64(), "numeric", "PostgreSQL"), 1),
-        "binary": (pa.binary(), b"row-canary"),
-        "time": (pa.time64("us"), 1),
+        "large_binary": (pa.large_binary(), b"row-canary"),
+        "fixed_binary_15": (pa.binary(15), b"x" * 15),
+        "fixed_binary_16": (pa.binary(16), b"x" * 16),
+        "uuid_extension": (pa.uuid(), b"x" * 16),
+        "fixed_binary_17": (pa.binary(17), b"x" * 17),
+        "opaque_uuid": (pa.opaque(pa.binary(16), "uuid", "PostgreSQL"), b"x" * 16),
+        "opaque_uuid_binary": (pa.opaque(pa.binary(), "uuid", "PostgreSQL"), b"x" * 16),
+        "time32": (pa.time32("s"), 1),
+        "time_ns": (pa.time64("ns"), 1),
         "duration": (pa.duration("us"), 1),
         "date64": (pa.date64(), 0),
         "timestamp_ns": (pa.timestamp("ns"), 1),
@@ -103,6 +117,7 @@ def test_unsupported_postgres_result_types_refuse_before_reading_values(kind, co
         "fixed_list": pa.list_(pa.string(), 1),
         "struct": pa.struct([("n", pa.string())]),
         "map": pa.map_(pa.string(), pa.string()),
+        "uuid_extension": pa.binary(16),
     }.get(kind, data_type)
     array = pa.array(values, type=storage_type).view(data_type)
     batch = pa.record_batch([array], names=["payload"])
@@ -132,6 +147,15 @@ def test_unsupported_postgres_result_types_refuse_before_reading_values(kind, co
         ("decimal128", "123456789.4500", "123456789.4500::DECIMAL(20,4)"),
         ("decimal256", "123456789.4500", "123456789.4500::DECIMAL(20,4)"),
         ("date32", "2026-09-30", "DATE '2026-09-30'"),
+        ("time", "12:34:56.123456", "TIME '12:34:56.123456'"),
+        ("binary", b"\x00\xffrow-canary", r"'\x00\xFFrow-canary'::BLOB"),
+        ("binary", b"", "''::BLOB"),
+        ("binary", b"x" * 16, "'xxxxxxxxxxxxxxxx'::BLOB"),
+        (
+            "string",
+            "12345678-1234-5678-9abc-def012345678",
+            "'12345678-1234-5678-9abc-def012345678'::VARCHAR",
+        ),
         ("timestamp", "2026-09-30T12:34:56.123456", "TIMESTAMP '2026-09-30 12:34:56.123456'"),
         (
             "timestamptz",
@@ -145,7 +169,7 @@ def test_supported_postgres_scalars_encode_identically_to_duckdb(
     type_name, value, literal, positional
 ):
     import json
-    from datetime import date, datetime
+    from datetime import date, datetime, time
     from decimal import Decimal
 
     pa = pytest.importorskip("pyarrow")
@@ -156,6 +180,8 @@ def test_supported_postgres_scalars_encode_identically_to_duckdb(
         value = Decimal(value)
     elif type_name == "date32":
         data_type, value = pa.date32(), date.fromisoformat(value)
+    elif type_name == "time":
+        data_type, value = pa.time64("us"), time.fromisoformat(value)
     elif type_name in ("timestamp", "timestamptz"):
         data_type = pa.timestamp("us", tz="UTC" if type_name == "timestamptz" else None)
         value = datetime.fromisoformat(value)
@@ -169,6 +195,10 @@ def test_supported_postgres_scalars_encode_identically_to_duckdb(
     if type_name in ("numeric", "decimal128", "decimal256"):
         assert type(rows[0]["payload"]) is Decimal
         assert rows[0]["payload"].as_tuple().exponent == -4
+    elif type_name == "time":
+        assert type(rows[0]["payload"]) is time
+    elif type_name == "binary":
+        assert type(rows[0]["payload"]) is bytes
     db = Database.connect_in_memory()
     try:
         if type_name == "timestamptz":
@@ -186,6 +216,60 @@ def test_supported_postgres_scalars_encode_identically_to_duckdb(
     )
     if positional:
         assert rows[1] == {"payload": None}
+
+
+@pytest.mark.parametrize("positional", [False, True])
+@pytest.mark.parametrize("contents", ["null", "empty"])
+@pytest.mark.parametrize("kind", ["time", "binary"])
+def test_supported_postgres_scalar_schemas_allow_null_and_empty_results(kind, contents, positional):
+    pa = pytest.importorskip("pyarrow")
+    data_type = {
+        "time": pa.time64("us"),
+        "binary": pa.binary(),
+    }[kind]
+    values = [None] if contents == "null" else []
+    batch = pa.record_batch([pa.array(values, type=data_type)], names=["payload"])
+    assert _arrow_rows(_arrow_cursor(batch), positional) == (
+        [{"payload": None}] if contents == "null" else []
+    )
+
+
+@pytest.mark.parametrize("positional", [False, True])
+@pytest.mark.parametrize(
+    "microseconds, literal",
+    [(0, "00:00:00"), (86_399_999_999, "23:59:59.999999")],
+)
+def test_postgres_arrow_time_endpoints_encode_identically_to_duckdb(
+    microseconds, literal, positional
+):
+    pa = pytest.importorskip("pyarrow")
+    # Integer-backed arrays exercise the driver's raw representation.
+    batch = pa.record_batch(
+        [pa.array([microseconds, None], type=pa.time64("us"))], names=["payload"]
+    )
+    rows = _arrow_rows(_arrow_cursor(batch), positional)
+    db = Database.connect_in_memory()
+    try:
+        reference = result_rows(db.query(f"SELECT TIME '{literal}' AS payload"))
+    finally:
+        db.close()
+    assert result_rows(rows[:1]) == reference
+    if positional:
+        assert rows[1] == {"payload": None}
+
+
+@pytest.mark.parametrize("positional", [False, True])
+@pytest.mark.parametrize("microseconds", [-1, 86_400_000_000, 86_400_000_001])
+def test_postgres_arrow_time_out_of_range_refuses_before_conversion(microseconds, positional):
+    pa = pytest.importorskip("pyarrow")
+    batch = pa.record_batch([pa.array([0, microseconds], type=pa.time64("us"))], names=["payload"])
+    # 24:00:00 must not collapse into the preceding midnight, even when the
+    # invalid value is the dictionary reader's truncation sentinel.
+    with pytest.raises(SemanticLayerError) as caught:
+        _arrow_rows(_arrow_cursor(batch), positional)
+    assert caught.value.code == "RESULT_TYPE_UNSUPPORTED"
+    assert caught.value.details == {"column": "payload", "type": "time64[us]"}
+    assert str(microseconds) not in str(caught.value)
 
 
 def _interval_cursor(values):
