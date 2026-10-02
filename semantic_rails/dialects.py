@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .errors import SemanticLayerError
-from .expressions import call_cast_type, validate_call_name
+from .expressions import call_cast_type, call_date_diff_unit, validate_call_name
 from .sql_ast import (
     SqlBinary,
     SqlCall,
@@ -101,6 +101,12 @@ class SqlDialect:
             raise SemanticLayerError(
                 "INVALID_EXPRESSION_AST", "Scalar calls do not support distinct"
             )
+        if name == "DATE_DIFF":
+            unit = call_date_diff_unit(
+                args[0].value if args and isinstance(args[0], SqlLiteral) else None,
+                arg_count=len(args),
+            )
+            return self.date_diff(unit, args[1], args[2])
         if name != "CAST":
             return SqlCall(name, args)
         value = args[1].value if len(args) == 2 and isinstance(args[1], SqlLiteral) else None

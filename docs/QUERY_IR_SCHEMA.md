@@ -204,7 +204,7 @@ functions must use their semantic expression forms instead of `call`.
 `INVALID_EXPRESSION_AST` with `details.allowed` equal to the warehouse's
 accepted set, including `CAST`.
 
-Common names: `ABS`, `CAST`, `CEIL`, `CEILING`, `COALESCE`, `CONCAT`, `EXP`,
+Common names: `ABS`, `CAST`, `CEIL`, `CEILING`, `COALESCE`, `CONCAT`, `DATE_DIFF`, `EXP`,
 `FLOOR`, `LENGTH`, `LN`, `LOG`, `LOWER`, `NULLIF`, `POWER`, `REPLACE`, `ROUND`,
 `SQRT`, `SUBSTR`, `SUBSTRING`, `TRIM`, `UPPER`.
 
@@ -221,6 +221,26 @@ Common names: `ABS`, `CAST`, `CEIL`, `CEILING`, `COALESCE`, `CONCAT`, `EXP`,
 Use each warehouse's scalar argument signatures. For example, Athena `LOG`
 takes a base and a value. Engine-generated SQL has a separate function list;
 it does not advertise functions that a client can call.
+
+Portable date differences use exactly three args:
+
+```json
+{"kind":"call","name":"DATE_DIFF","args":[
+  {"kind":"literal","value":"day"},
+  {"kind":"column","column":"opened_at","entity":"entity.order"},
+  {"kind":"column","column":"closed_at","entity":"entity.order"}
+]}
+```
+
+The first arg must be a string literal unit: `minute`, `hour`, `day`, `week`,
+`month`, `quarter` or `year` (case-insensitive). The result is end minus start,
+using the warehouse's existing date-difference lowering, which counts unit
+boundaries rather than elapsed durations for units such as `day`. If either
+endpoint is NULL, the result is NULL and is excluded from averages, never
+replaced with zero. The same shape works in query selects, package measure
+expressions and `aggregate_if` values. Wrong arity, non-literal units and unknown
+units return `INVALID_EXPRESSION_AST`, including in `validate` mode, with the
+required shape and supported units.
 
 Numeric conversion uses exactly two args:
 
@@ -257,7 +277,7 @@ conditional aggregates and post-aggregation expressions.
 
 Scalar-call argument types and overload resolution are checked by the warehouse
 at execution, for query, package and relation-pipeline expressions alike.
-Compilation checks the allowed function name and CAST shape without inferring
+Compilation checks the allowed function name and CAST/DATE_DIFF shapes without inferring
 argument categories from literals, dimensions or nested calls. Use CAST when an
 explicit conversion is required. Warehouse execution failures use the stable
 `QUERY_EXECUTION_ERROR` code and remain redacted.
