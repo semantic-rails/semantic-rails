@@ -492,13 +492,22 @@ package:
       query_tag: semantic-rails
 ```
 
-Two connection kinds are supported:
+Three connection kinds are supported:
 
+- `snowflake_adbc` — opt-in Arrow connector with password or PKCS #8 key-pair
+  authentication, bound row-filter parameters and exact decimal results. See
+  [installation and connection options](ADDING_A_DIALECT.md#experimental-snowflake-profile).
 - `snowflake_cli` — uses a configured Snow CLI profile by name.
 - `snowflake_native` — direct connector via env-var indirection (account, user,
   password, etc. read from environment variables).
 
 Literal credentials in YAML are rejected.
+
+For `snowflake_adbc`, driver names, shared-library paths and manifests belong to
+the runtime operator's environment; package options selecting them are rejected
+with `INVALID_CONFIG`. Temporal values with nonzero sub-microsecond precision
+refuse with `RESULT_VALUE_UNSUPPORTED`; out-of-range nanosecond timestamps refuse
+with `QUERY_EXECUTION_ERROR`.
 
 ### Native adapter timeouts
 
