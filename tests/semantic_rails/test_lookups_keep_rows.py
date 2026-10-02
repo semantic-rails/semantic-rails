@@ -762,9 +762,7 @@ def test_a_child_lookup_grouping_counts_only_existing_parents(
         assert "_entity_rows" in sql
 
 
-def _write_parent_roles_package(
-    root: Path, *, extra_seed: str, other_preference: int, pin_other: bool = False
-) -> Path:
+def _write_parent_roles_package(root: Path, *, extra_seed: str, pin_other: bool = False) -> Path:
     package = _write_package(
         root,
         rollup_safe=True,
@@ -779,7 +777,6 @@ def _write_parent_roles_package(
         "entities": ["item", "order"],
         "via": "other_order_id",
         "cardinality": "many_to_one",
-        "path_preference": other_preference,
     }
     graph["path_preferences"] = [
         {
@@ -800,11 +797,7 @@ def _write_parent_roles_package(
     return package
 
 
-@pytest.mark.parametrize(
-    ("other_preference", "pin_other"),
-    [(0, False), (100, False), (100, True)],
-    ids=["preferred_other", "tied_parents", "pinned_other"],
-)
+@pytest.mark.parametrize("pin_other", [False, True], ids=["unpinned_other", "pinned_other"])
 @pytest.mark.parametrize(
     ("extra_seed", "expected"),
     [
@@ -826,12 +819,10 @@ def _write_parent_roles_package(
     ],
 )
 def test_a_parent_count_with_two_relationships_uses_the_counted_path(
-    tmp_path, extra_seed, expected, other_preference, pin_other
+    tmp_path, extra_seed, expected, pin_other
 ):
-    """A preferred or ambiguous alternative parent never changes the pinned order count."""
-    package = _write_parent_roles_package(
-        tmp_path, extra_seed=extra_seed, other_preference=other_preference, pin_other=pin_other
-    )
+    """A pinned or ambiguous alternative parent never changes the pinned order count."""
+    package = _write_parent_roles_package(tmp_path, extra_seed=extra_seed, pin_other=pin_other)
     runtime = Runtime.from_path(str(package))
     connection = duckdb.connect()
     try:
@@ -927,9 +918,7 @@ def test_a_child_anchor_guard_refuses_two_parent_relationships(tmp_path, relatio
     """Bypassing the anchor's decline cannot pass the guard just by joining orders INNER."""
     from semantic_rails.compiler_parts import paths
 
-    config = load_package_config(
-        str(_write_parent_roles_package(tmp_path, extra_seed="", other_preference=0))
-    )
+    config = load_package_config(str(_write_parent_roles_package(tmp_path, extra_seed="")))
     root = PathSelection(
         target_entity="entity.geo_order",
         purpose="entity_in_terms_of_root",
