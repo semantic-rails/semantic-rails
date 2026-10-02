@@ -21,6 +21,7 @@ loan its own district key, which also disagrees with both account routes.
 
 from __future__ import annotations
 
+import contextlib
 import textwrap
 from pathlib import Path
 from typing import Any
@@ -484,11 +485,12 @@ def test_equal_length_routes_refuse_whatever_their_weights_and_a_row_decides(tmp
         assert _rows(out, [DISTRICT_NAME, "v"]) == _gold(_by_account_route("account", route))
 
 
+# The two returned orders belong to two customers, but both were made in sessions of a third.
 SHOP_SEED = """
 CREATE TABLE customers (customer_id INTEGER, customer_name VARCHAR);
 INSERT INTO customers VALUES (1, 'Ann'), (2, 'Bob'), (3, 'Cy');
 CREATE TABLE sessions (session_id INTEGER, customer_id INTEGER);
-INSERT INTO sessions VALUES (10, 2), (11, 3), (12, 1);
+INSERT INTO sessions VALUES (10, 3), (11, 3), (12, 1);
 CREATE TABLE orders (order_id INTEGER, customer_id INTEGER, session_id INTEGER, status VARCHAR);
 INSERT INTO orders VALUES (100, 1, 10, 'returned'), (101, 2, 11, 'returned'), (102, 3, 12, 'kept');
 """
@@ -570,19 +572,164 @@ def test_fan_out_only_alternatives_refuse_and_a_row_decides(tmp_path):
             "JOIN orders o USING (session_id) WHERE o.status = 'returned'"
         ),
     }
-    answers = set()
     for index, (path, sql) in enumerate(golds.items()):
         pkg = _write_shop(tmp_path / f"row{index}", rows=[_row(customer, order, list(path))])
         out = Runtime.from_path(str(pkg)).query(query)
         assert _rows(out, ["v"]) == _gold(sql, SHOP_SEED)
-        answers.add(tuple(_gold(sql, SHOP_SEED)))
-    # The same customers counted two ways: the data tells the routes apart.
-    assert _gold("SELECT customer_id FROM orders WHERE status = 'returned'", SHOP_SEED) != _gold(
-        "SELECT s.customer_id FROM sessions s JOIN orders o USING (session_id) "
-        "WHERE o.status = 'returned'",
-        SHOP_SEED,
+    # The data tells the routes apart: two customers placed them, one held the sessions.
+    assert [_gold(sql, SHOP_SEED) for sql in golds.values()] == [[(2,)], [(1,)]]
+
+
+# A chain's orders: each belongs to a customer, is sold at a store, and holds its own district,
+# which on this data is never its store's district.
+CHAIN_SEED = """
+CREATE TABLE customers (customer_id INTEGER);
+INSERT INTO customers VALUES (1), (2), (3);
+CREATE TABLE districts (district_id INTEGER, district_name VARCHAR);
+INSERT INTO districts VALUES (100, 'North'), (101, 'South'), (102, 'East');
+CREATE TABLE stores (store_id INTEGER, district_id INTEGER);
+INSERT INTO stores VALUES (10, 100), (11, 101);
+CREATE TABLE orders (order_id INTEGER, customer_id INTEGER, store_id INTEGER, district_id INTEGER);
+INSERT INTO orders VALUES (1000, 1, 10, 102), (1001, 2, 11, 100), (1002, 3, 10, 101), (1003, 1, 11, 101);
+"""
+CHAIN_CUSTOMER, CHAIN_ORDER, CHAIN_DISTRICT = (
+    f"entity.chain_{key}" for key in ("customer", "order", "district")
+)
+CHAIN_RELATIONSHIPS = {
+    "orders_customer": ("order", "customer"),
+    "orders_store": ("order", "store"),
+    "stores_district": ("store", "district"),
+    "orders_district": ("order", "district"),
+}
+BY_STORE = [_rel("orders_customer"), _rel("orders_store"), _rel("stores_district")]
+ORDER_OWN_DISTRICT = [_rel("orders_district")]
+
+
+def _write_chain(root: Path) -> Path:
+    """Customers' districts recorded as the districts of the stores they ordered at."""
+    pkg = root / "chain"
+    (pkg / "data").mkdir(parents=True)
+    (pkg / "models").mkdir()
+    (pkg / "data" / "seed.sql").write_text(CHAIN_SEED)
+    package = yaml.safe_load((_write_package(root / "base") / "package.yml").read_text())
+    package["package"].update(
+        id="chain", namespace="chain", name="chain", default_db=(root / "chain.duckdb").as_posix()
     )
-    assert answers
+    (pkg / "package.yml").write_text(yaml.safe_dump(package))
+    edges = {
+        name: {
+            "id": _rel(name),
+            "entities": [source, target],
+            "cardinality": "many_to_one",
+            "via": [f"{target}_id"],
+            "target": [f"{target}_id"],
+        }
+        for name, (source, target) in CHAIN_RELATIONSHIPS.items()
+    }
+    # A count of customers grouped across their orders is read from the orders' rows.
+    edges["orders_customer"]["rollup_safe"] = {"reverse": ["count_distinct"]}
+    graph = {
+        "entities": {
+            key: {"label": key.title(), "key": [f"{key}_id"], "model": f"{key}s"}
+            for key in ("customer", "order", "store", "district")
+        },
+        "relationships": edges,
+        "path_preferences": [_row(CHAIN_CUSTOMER, CHAIN_DISTRICT, BY_STORE)],
+    }
+    (pkg / "graph.yml").write_text(yaml.safe_dump({"graph": graph}, sort_keys=False))
+    customers = {
+        "kind": "entity_count",
+        "accumulation": {"kind": "population"},
+        "value_type": "count",
+        "label": "Customers",
+        "entity_key": "customer_id",
+    }
+    specs = {
+        "customer": {"measures": {"customer_count": customers}},
+        "order": {},
+        "store": {},
+        "district": {"dimensions": {"name": {"column": "district_name", "kind": "categorical"}}},
+    }
+    for key, body in specs.items():
+        spec = {"id": f"{key}s", "relation": f"{key}s", "entities": {key: {}}, **body}
+        (pkg / "models" / f"{key}s.yml").write_text(yaml.safe_dump({"model": spec}))
+    return pkg
+
+
+def _chain_query(column: str) -> dict[str, Any]:
+    return _query("measure.chain.customer_count", group_by=[f"dimension.chain_district_{column}"])
+
+
+def _chain_gold(column: str, route: str) -> list[tuple]:
+    join = {
+        "store": "JOIN stores s USING (store_id) JOIN districts d ON d.district_id = s.district_id",
+        "own": "JOIN districts d ON d.district_id = o.district_id",
+    }[route]
+    return _gold(
+        f"SELECT d.district_{column}, COUNT(DISTINCT o.customer_id) FROM orders o {join} GROUP BY 1",
+        CHAIN_SEED,
+    )
+
+
+def _sql_joins(sql: str, route: list[str]) -> bool:
+    """Whether ``sql`` joins every relationship of ``route`` on that relationship's columns."""
+    for rel_id in route:
+        source, target = CHAIN_RELATIONSHIPS[rel_id.removeprefix("relationship.")]
+        sides = (f"{source}s.{target}_id", f"{target}s.{target}_id")
+        if f"{sides[0]} = {sides[1]}" not in sql and f"{sides[1]} = {sides[0]}" not in sql:
+            return False
+    return True
+
+
+def test_a_rewrite_notes_only_the_route_its_sql_reads(tmp_path):
+    """Customers by district are counted from their orders' rows, along the recorded store
+    route. The order holds its own district too, and its own pair (order, district) resolves
+    to it; resolved first in the same process, that route still never shows up as the query's:
+    every note names joins the SQL makes, and the answer is the store route's gold."""
+    runtime = Runtime.from_path(str(_write_chain(tmp_path)))
+    resolution = resolve_route(runtime.config, start=CHAIN_ORDER, target=CHAIN_DISTRICT)
+    assert (resolution.basis, list(resolution.routes[0])) == ("colocated_key", ORDER_OWN_DISTRICT)
+    query = _chain_query("name")
+    out = runtime.query(query)
+    sql = runtime.compile(query)["explain"]["rendered_sql"]
+    assert "FROM orders" in sql and "orders.district_id" not in sql
+    assert _rows(out, ["dimension.chain_district_name", "v"]) == _chain_gold("name", "store")
+    assert _chain_gold("name", "store") != _chain_gold("name", "own")
+    notes = _notes(out)
+    assert list(notes) == [(CHAIN_CUSTOMER, CHAIN_DISTRICT)]
+    assert notes[(CHAIN_CUSTOMER, CHAIN_DISTRICT)]["details"] == {"route": BY_STORE}
+    assert all(_sql_joins(sql, note["details"]["route"]) for note in notes.values())
+
+
+def test_a_querys_route_notes_do_not_depend_on_what_ran_before(tmp_path):
+    """The same query's notes on a fresh runtime, and on one where every pair has been resolved
+    and other queries have run."""
+    pkg = _write_chain(tmp_path)
+    fresh = _notes(Runtime.from_path(str(pkg)).query(_chain_query("name")))
+    runtime = Runtime.from_path(str(pkg))
+    entities = [entity.id for entity in runtime.config.entities]
+    for start in entities:
+        for target in entities:
+            if start != target:
+                with contextlib.suppress(SemanticLayerError):
+                    resolve_route(runtime.config, start=start, target=target)
+    runtime.query(_chain_query("id"))
+    assert _notes(runtime.query(_chain_query("name"))) == fresh
+
+
+def test_the_anchors_own_key_never_answers_for_the_roots_route(tmp_path):
+    """Customers by district key: the orders' rows hold a district key of their own, but the
+    customers' recorded route reaches the district through the store. The rewrite does not read
+    the order's column: the query answers with the store route's gold, and no note names the
+    order's own key."""
+    runtime = Runtime.from_path(str(_write_chain(tmp_path)))
+    query = _chain_query("id")
+    out = runtime.query(query)
+    sql = runtime.compile(query)["explain"]["rendered_sql"]
+    assert "orders.district_id" not in sql
+    assert _rows(out, ["dimension.chain_district_id", "v"]) == _chain_gold("id", "store")
+    assert _chain_gold("id", "store") != _chain_gold("id", "own")
+    assert [note["details"]["route"] for note in _notes(out).values()] == [BY_STORE]
 
 
 OWN_KEY_GOLD = (

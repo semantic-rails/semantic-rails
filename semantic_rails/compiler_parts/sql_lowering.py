@@ -39,7 +39,7 @@ from ..expressions import (
     expr_to_dict,
     expression_field,
 )
-from ..fanout import analyze_fanout, resolve_path
+from ..fanout import analyze_fanout, recording_route_choices, resolve_path
 from ..ir import (
     LogicalPlan,
     MeasurePlan,
@@ -1834,8 +1834,10 @@ def _entity_in_terms_of_anchor_plan(
             continue
         # A key read from the anchor's own column, or a lookup the anchor resolves itself, must
         # be the measure entity's route (``resolve_path``) seen from the anchor, else the
-        # anchor's rows would read another row than the question means.
-        direct = _direct_dimension_source_expr(anchor_entity, dim_id, config) is not None
+        # anchor's rows would read another row than the question means. Only a check: a read
+        # is noted when the leaf lowers it, never when the rewrite declines.
+        with recording_route_choices():
+            direct = _direct_dimension_source_expr(anchor_entity, dim_id, config) is not None
         if (direct or dim.entity not in transformed_by_target) and not _anchor_route_agrees(
             config,
             root_entity=measure.entity,
