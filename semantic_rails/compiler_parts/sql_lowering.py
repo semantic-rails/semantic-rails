@@ -39,7 +39,7 @@ from ..expressions import (
     expr_to_dict,
     expression_field,
 )
-from ..fanout import analyze_fanout, resolve_path
+from ..fanout import analyze_fanout, recording_route_choices, resolve_path
 from ..ir import (
     LogicalPlan,
     MeasurePlan,
@@ -1683,6 +1683,31 @@ def _anchor_path_selection(
     )
 
 
+def _anchor_route_agrees(
+    config: PackageConfig,
+    *,
+    root_entity: str,
+    anchor_entity: str,
+    anchor_to_root: list[str],
+    target_entity: str,
+) -> bool:
+    """True when the anchor's own route to ``target_entity`` is the root's route to it seen
+    from the anchor: the hops back to the root, then the root's route, where a root route
+    that starts back through the anchor continues from the anchor's own row."""
+    try:
+        root_route, _ = resolve_path(config, start=root_entity, target=target_entity)
+        anchor_route, _ = resolve_path(config, start=anchor_entity, target=target_entity)
+    except SemanticLayerError:
+        return False
+    shared = 0
+    while (
+        shared < min(len(anchor_to_root), len(root_route))
+        and anchor_to_root[-1 - shared] == root_route[shared]
+    ):
+        shared += 1
+    return anchor_route == [*anchor_to_root[: len(anchor_to_root) - shared], *root_route[shared:]]
+
+
 def _entity_in_terms_of_anchor_plan(
     plan: LogicalPlan, measure_plan: MeasurePlan, config: PackageConfig
 ) -> dict[str, Any] | None:
@@ -1805,12 +1830,23 @@ def _entity_in_terms_of_anchor_plan(
         dim = dimensions.get(dim_id)
         if dim is None:
             return None
-        if (
-            dim.entity == anchor_entity
-            or _direct_dimension_source_expr(anchor_entity, dim_id, config) is not None
-        ):
+        if dim.entity == anchor_entity:
             continue
-        if (dim.entity, purpose) in covered_targets:
+        # A key read from the anchor's own column, or a lookup the anchor resolves itself, must
+        # be the measure entity's route (``resolve_path``) seen from the anchor, else the
+        # anchor's rows would read another row than the question means. Only a check: a read
+        # is noted when the leaf lowers it, never when the rewrite declines.
+        with recording_route_choices():
+            direct = _direct_dimension_source_expr(anchor_entity, dim_id, config) is not None
+        if (direct or dim.entity not in transformed_by_target) and not _anchor_route_agrees(
+            config,
+            root_entity=measure.entity,
+            anchor_entity=anchor_entity,
+            anchor_to_root=[anchor_relationship_id],
+            target_entity=dim.entity,
+        ):
+            return None
+        if direct or (dim.entity, purpose) in covered_targets:
             continue
         new_selection = (
             # The time role, read on a grouping's own path.

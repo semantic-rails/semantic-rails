@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .config_parts.package_loader import normalize_package
+from .config_parts.route_rows import require_rows_agree
 from .dialects import (
     connection_option_errors,
     snowflake_native_direct_connect_errors,
@@ -1712,6 +1713,7 @@ def _parse_path_preferences(
                 relationship_path=resolved,
             )
         )
+    require_rows_agree({rel.id: rel for rel in relationships}, out, path=path)
     return out
 
 

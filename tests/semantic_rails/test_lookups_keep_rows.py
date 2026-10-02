@@ -762,7 +762,7 @@ def test_a_child_lookup_grouping_counts_only_existing_parents(
         assert "_entity_rows" in sql
 
 
-def _write_parent_roles_package(root: Path, *, extra_seed: str, pin_other: bool = False) -> Path:
+def _write_parent_roles_package(root: Path, *, extra_seed: str, pin_parent: bool = False) -> Path:
     package = _write_package(
         root,
         rollup_safe=True,
@@ -785,19 +785,21 @@ def _write_parent_roles_package(root: Path, *, extra_seed: str, pin_other: bool 
             "relationship_path": ["relationship.items_order", "relationship.items_product"],
         }
     ]
-    if pin_other:
+    if pin_parent:
+        # A row holds wherever a route walks its pair, so a row for item -> order must name the
+        # relationship the order -> product row walks; naming the other one fails to load.
         graph["path_preferences"].append(
             {
                 "source_entity": "item",
                 "target_entity": "order",
-                "relationship_path": ["relationship.items_other_order"],
+                "relationship_path": ["relationship.items_order"],
             }
         )
     (package / "graph.yml").write_text(yaml.safe_dump({"graph": graph}))
     return package
 
 
-@pytest.mark.parametrize("pin_other", [False, True], ids=["unpinned_other", "pinned_other"])
+@pytest.mark.parametrize("pin_parent", [False, True], ids=["unpinned_parent", "pinned_parent"])
 @pytest.mark.parametrize(
     ("extra_seed", "expected"),
     [
@@ -819,10 +821,11 @@ def _write_parent_roles_package(root: Path, *, extra_seed: str, pin_other: bool 
     ],
 )
 def test_a_parent_count_with_two_relationships_uses_the_counted_path(
-    tmp_path, extra_seed, expected, pin_other
+    tmp_path, extra_seed, expected, pin_parent
 ):
-    """A pinned or ambiguous alternative parent never changes the pinned order count."""
-    package = _write_parent_roles_package(tmp_path, extra_seed=extra_seed, pin_other=pin_other)
+    """An alternative parent relationship never changes the pinned order count, with or without
+    a row for the counted one."""
+    package = _write_parent_roles_package(tmp_path, extra_seed=extra_seed, pin_parent=pin_parent)
     runtime = Runtime.from_path(str(package))
     connection = duckdb.connect()
     try:
