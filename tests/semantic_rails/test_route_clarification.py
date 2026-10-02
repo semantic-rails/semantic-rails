@@ -423,9 +423,11 @@ def test_a_query_row_overrides_the_package_default_for_that_query_only(tmp_path)
     assert _rows(out, columns) == _gold(BY_OWNER)
     package_profile = runtime.compile(BALANCE_BY_DISTRICT)["hop_profile"]["targets"][DISTRICT]
     assert (package_profile["path"], package_profile["route_label"]) == (BRANCH_ROUTE, branch[0])
+    assert package_profile["route_basis"] == "decided"
     query_profile = runtime.compile({**BALANCE_BY_DISTRICT, "route_decisions": [owner_row]})
-    assert query_profile["hop_profile"]["targets"][DISTRICT]["path"] == OWNER_ROUTE
-    assert "route_label" not in query_profile["hop_profile"]["targets"][DISTRICT]
+    target = query_profile["hop_profile"]["targets"][DISTRICT]
+    assert (target["path"], target["route_basis"]) == (OWNER_ROUTE, "query")
+    assert "route_label" not in target
 
 
 def test_the_package_path_cache_never_holds_a_query_row(tmp_path):
@@ -452,6 +454,58 @@ DIAMOND_ROW = {
     "relationship_path": OWNER_ROUTE,
 }
 
+# Per basis the package resolves a pair by: its rows, the query, the query's row, the answer
+# (independent SQL) and its columns.
+REPLACED: dict[str, tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], str, list[str]]] = {
+    "decided": (
+        [DIAMOND_ROW],
+        BALANCE_BY_DISTRICT,
+        {**DIAMOND_ROW, "relationship_path": BRANCH_ROUTE},
+        BY_BRANCH,
+        ["dimension.bank_district_name", "v"],
+    ),
+    "colocated_key": (
+        [],
+        _query("measure.bank.balance", group_by=["dimension.bank_owner_name"]),
+        {"source_entity": ACCOUNT, "target_entity": OWNER,
+         "relationship_path": ["relationship.accounts_owner"]},
+        "SELECT o.owner_name, SUM(a.balance) FROM accounts a JOIN owners o USING (owner_id) "
+        "GROUP BY 1",
+        ["dimension.bank_owner_name", "v"],
+    ),
+    # The (account, district) row, walked back, decides the district's accounts by owner.
+    "inherited": (
+        [DIAMOND_ROW],
+        BUDGET_WITH_SAVINGS,
+        {"source_entity": DISTRICT, "target_entity": ACCOUNT,
+         "relationship_path": SHAPES["child_filter_diamond"][3]["branch_account"][1]},
+        SHAPES["child_filter_diamond"][3]["branch_account"][2],
+        ["v"],
+    ),
+    "only_route": (
+        [],
+        _query("measure.bank.budget",
+               where=[{"field": "dimension.bank_owner_name", "value": "Ann"}]),
+        {"source_entity": DISTRICT, "target_entity": OWNER,
+         "relationship_path": ["relationship.owners_home_district"]},
+        "SELECT SUM(d.budget) FROM districts d WHERE EXISTS (SELECT 1 FROM owners o "
+        "WHERE o.home_district_id = d.district_id AND o.owner_name = 'Ann')",
+        ["v"],
+    ),
+    "undecided": (
+        [], BALANCE_BY_DISTRICT, DIAMOND_ROW, BY_OWNER, ["dimension.bank_district_name", "v"]
+    ),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("basis", REPLACED)
+def test_replaced_names_how_the_package_resolves_the_pair(tmp_path, basis):
+    rows, query, row, gold, columns = REPLACED[basis]
+    runtime = Runtime.from_path(str(_write_package(tmp_path, decisions=rows or None)))
+    out = runtime.query({**query, "route_decisions": [row]})
+    assert _rows(out, columns) == _gold(gold)
+    assert _chosen_by_query(out) == [{"row": row, "replaced": basis}]
+
 
 @pytest.mark.parametrize(
     ("rows", "reason"),
@@ -470,6 +524,24 @@ DIAMOND_ROW = {
             [{**DIAMOND_ROW, "relationship_path": ["relationship.nope"]}],
             "invalid_route_decision",
             id="unknown-relationship",
+        ),
+        # account -> branch -> account -> owner -> district: every hop connects, but a route
+        # never visits an entity twice.
+        pytest.param(
+            [{**DIAMOND_ROW, "relationship_path": [
+                "relationship.accounts_branch", "relationship.accounts_branch", *OWNER_ROUTE
+            ]}],
+            "route_not_offered",
+            id="cycle",
+        ),
+        # account <- membership <- owner -> district: a route, but three hops past max_hops: 2.
+        pytest.param(
+            [{**DIAMOND_ROW, "relationship_path": [
+                "relationship.memberships_account", "relationship.owners_primary_membership",
+                "relationship.owners_home_district",
+            ]}],
+            "route_not_offered",
+            id="over-the-hop-limit",
         ),
         pytest.param(
             [{**DIAMOND_ROW, "source_entity": "entity.bank_nope"}],
