@@ -20,6 +20,7 @@ from ..dialects import (
     POSTGRES_CONNECTION_OPTIONS,
     SNOWFLAKE_ADBC_CONNECTION_OPTIONS,
     backslash_escaped_string_literal,
+    snowflake_adbc_connect_errors,
 )
 from ..errors import SemanticLayerError, query_execution_error
 from ..sql_preparation import (
@@ -226,6 +227,9 @@ class AdbcAdapter(WarehouseAdapter):
         )
 
     def _snowflake_connect_options(self) -> dict[str, str]:
+        errors = snowflake_adbc_connect_errors(self.options)
+        if errors:
+            raise SemanticLayerError("INVALID_CONFIG", "; ".join(errors))
         missing: list[str] = []
         options = {
             "adbc.snowflake.sql.account": option_or_env(self.options, "account", missing),
