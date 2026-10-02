@@ -86,6 +86,7 @@ from .compiler_parts.paths import (
     _leaf_time_role,
     _resolve_dimension_expr,
     _split_column_ref,
+    inner_lookups,
 )
 from .compiler_parts.post_aggregation import (
     _compile_post_expr,
@@ -856,7 +857,16 @@ def _fanout_dedup_refusal(
     Grouped, only a distinct count is answered. Summing (or averaging) an order amount by an
     item dimension reads as the item-level split ("revenue by product type") as often as the
     orders-that-included-it total, and the two differ, so that shape stays refused.
+
+    Every leaf is checked here: an authored measure, a query's ``aggregate_if`` (a synthetic
+    measure over its entity's table) and each operand of a ratio or arithmetic, so each one
+    gets the same rewrite and the same refusals.
     """
+    subject = (
+        f"an aggregate_if over '{measure.entity}'"
+        if is_conditional_aggregate(measure)
+        else f"measure '{measure.id}'"
+    )
     selections = [row for row in selections if row.analysis.get("status") != "ok"]
     for row in selections:
         if row.purpose not in _FANOUT_DEDUP_PURPOSES:
@@ -869,15 +879,15 @@ def _fanout_dedup_refusal(
     keys = {entity.id: list(entity.key or [entity.primary_key]) for entity in config.entities}
     for row in selections:
         # Preserve existing descent shapes, including ClickHouse's DISTINCT-parent
-        # leaf beside lookups. Broader EXISTS paths must have exactly one route
-        # after authored pins; hop count cannot decide which children are meant.
+        # leaf beside lookups. A broader EXISTS path is the route the resolver chose for
+        # the pair (a recorded decision, the only route, or one narrowed by the rows),
+        # never one picked by hop count, so it can say which children are meant.
         if one_to_many_descent(row.analysis, keys):
             continue
         if (
             not grouped
             and config.package.warehouse != "clickhouse"
             and filter_only_semijoin(row.analysis)
-            and len(row.candidate_paths) == 1
         ):
             continue
         return (
@@ -894,7 +904,7 @@ def _fanout_dedup_refusal(
     aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
     if grouped and aggregation not in _FANOUT_GROUPED_AGGREGATIONS:
         return (
-            f"'{aggregation}' of '{measure.id}' grouped by a dimension of "
+            f"'{aggregation}' of {subject} grouped by a dimension of "
             f"'{grouped[0].target_entity}' is ambiguous across a one-to-many hop: the amount "
             "split over the child rows and the full amount of every row that has one differ. "
             "Use a measure at the child's grain, group by a dimension of the measure's own "
@@ -905,16 +915,32 @@ def _fanout_dedup_refusal(
     if aggregation not in _FANOUT_DEDUP_AGGREGATIONS or not (
         measure.additive
         and measure.measure_class not in {"semi_additive", "snapshot"}
-        and not measure.source_relation
+        and measure.source_relation in {"", entity.table}
         and measure.aggregation_entity in {"", measure.entity}
         and (entity.key or entity.primary_key)
         and sorted(measure.row_grain or entity.key or [entity.primary_key])
         == sorted(entity.key or [entity.primary_key])
     ):
         return (
-            f"'{aggregation}' of measure '{measure.id}' is not defined over one row per "
+            f"'{aggregation}' of {subject} is not defined over one row per "
             f"'{measure.entity}' key (a non-additive value, a stock, an ordered aggregation, "
             "or a measure whose rows are finer than its entity's key).",
+            (grouped or selections)[0],
+        )
+    # ClickHouse keeps one row per key before it aggregates. An aggregate_if's rows are one per
+    # key only when a measure of its model says so; without one, rows sharing a key could
+    # merge, which only a distinct count, a minimum or a maximum ignores.
+    if (
+        is_conditional_aggregate(measure)
+        and not measure.row_grain
+        and config.package.warehouse == "clickhouse"
+        and aggregation not in {"count_distinct", "min", "max"}
+    ):
+        return (
+            f"ClickHouse keeps one row per '{measure.entity}' key here, and no measure of its "
+            f"model declares the grain of its rows, so '{aggregation}' of {subject} could merge "
+            "rows that share a key. Use count_distinct, min or max, or declare a measure on "
+            "that model.",
             (grouped or selections)[0],
         )
     roots: list[Any] = [item.expression for item in query.select if item.expression is not None]
@@ -1719,10 +1745,8 @@ def _entity_determines(
     if source_entity == target_entity:
         return True
     try:
-        chosen, candidates = resolve_path(config, start=source_entity, target=target_entity)
+        chosen, _candidates = resolve_path(config, start=source_entity, target=target_entity)
     except SemanticLayerError:
-        return False
-    if len(candidates) != 1:
         return False
     try:
         analysis = analyze_fanout(
@@ -3092,6 +3116,7 @@ def _conversion_event_cte(
             ]
         ),
         config,
+        measure_entity=None,
         time_spec=(
             query.time.to_dict()
             if query.time is not None and hasattr(query.time, "to_dict")
@@ -4163,11 +4188,15 @@ def _calendar_fill_binding(
 
 
 def lower_to_sql(
-    plan: LogicalPlan, config: PackageConfig, *, guard_empty: bool = True
+    plan: LogicalPlan,
+    config: PackageConfig,
+    *,
+    guard_empty: bool = True,
+    default_order: bool = True,
 ) -> SqlSelect:
     from .compiler_parts.sql_lowering import lower_to_sql as _lower_to_sql
 
-    return _lower_to_sql(plan, config, guard_empty=guard_empty)
+    return _lower_to_sql(plan, config, guard_empty=guard_empty, default_order=default_order)
 
 
 def _compile_query_sql_ast(
@@ -4184,7 +4213,9 @@ def _compile_query_sql_ast(
     config = resolve_compile_config(plan, config)
     with plan_bindings(plan, project_cut=project_cut) as leaves:
         _record_bound_plan(plan, config, leaves.leaves)
-        return attach_relation_ctes(config, lower_to_sql(plan, config, guard_empty=guard_empty))
+        return attach_relation_ctes(
+            config, lower_to_sql(plan, config, guard_empty=guard_empty, default_order=False)
+        )
 
 
 def _compile_predicate_source_ast(config: PackageConfig, payload: dict[str, Any]) -> SqlSelect:
@@ -4194,9 +4225,9 @@ def _compile_predicate_source_ast(config: PackageConfig, payload: dict[str, Any]
     data in the predicate's scope), so a predicate and a projection of the same expression
     agree. An entity with no rows at all is absent from the source, and the anti-join reads it
     like the entities the source lists (``absent_entities_gate``). The value is internal, so it
-    never becomes a ``NO_DATA_IN_SCOPE`` output.
+    never becomes a ``NO_DATA_IN_SCOPE`` output. Its lookups join INNER (``inner_lookups``).
     """
-    with recording_zero_outputs():
+    with recording_zero_outputs(), inner_lookups():
         return _compile_query_sql_ast(config, payload, project_cut=True)
 
 

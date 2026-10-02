@@ -40,7 +40,8 @@ INSERT INTO signups VALUES
 
 -- Refunds pivoted by type: a goods refund fills goods_amount and a shipping refund fills
 -- shipping_amount, each leaving the other columns NULL, and tax_amount is never filled. Order 8
--- (no store) and every order but 2, 4 and 6 have no refund.
+-- (no store) and every order but 2, 4, 6 and 7 have no refund. Order 2 has two goods refunds,
+-- and order 7 (no amount, and a customer with no channel) one of each type.
 CREATE TABLE refunds (
   refund_id INTEGER, order_id INTEGER, refund_type VARCHAR(16),
   goods_amount DECIMAL(10, 2), shipping_amount DECIMAL(10, 2), tax_amount DECIMAL(10, 2)
@@ -48,7 +49,10 @@ CREATE TABLE refunds (
 INSERT INTO refunds VALUES
   (1, 2, 'goods', 5.00, NULL, NULL),
   (2, 4, 'shipping', NULL, 3.00, NULL),
-  (3, 6, 'goods', 4.00, NULL, NULL);
+  (3, 6, 'goods', 4.00, NULL, NULL),
+  (4, 2, 'goods', 1.00, NULL, NULL),
+  (5, 7, 'goods', 2.00, NULL, NULL),
+  (6, 7, 'shipping', NULL, 1.00, NULL);
 
 -- A monthly rollup of orders by store, keyed by a DATE (the base table's key is a TIMESTAMP).
 CREATE TABLE orders_monthly AS

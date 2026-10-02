@@ -95,6 +95,14 @@ _PARAMETER_TOKEN = re.compile(
 )
 
 
+# Snowflake also permits backslash escapes and dollar signs in identifiers.
+_SNOWFLAKE_PARAMETER_TOKEN = re.compile(
+    r"'(?:[^'\\]|\\.|'')*'|\"(?:[^\"]|\"\")*\"|--[^\n]*|/\*.*?\*/|"
+    r"\$\$.*?\$\$|[A-Za-z_\u0080-\U0010ffff][A-Za-z_0-9$\u0080-\U0010ffff]*|\?|\$[0-9]+",
+    re.DOTALL,
+)
+
+
 def postgres_parameter_tokens(sql: str) -> list[re.Match[str]]:
     tokens: list[re.Match[str]] = []
     position = 0
@@ -134,6 +142,17 @@ def check_postgres_parameters(prepared: PreparedQuery) -> None:
         actual = [token for token in actual if token != "?"]
     expected = [f"${index}" for index in range(1, len(prepared.parameters) + 1)]
     if actual != expected:
+        raise parameters_denied("parameter_placeholder_mismatch")
+
+
+def check_snowflake_parameters(prepared: PreparedQuery) -> None:
+    """Every authored slot has one qmark; refuse direct prepared bypasses."""
+    actual = [
+        match[0]
+        for match in _SNOWFLAKE_PARAMETER_TOKEN.finditer(prepared.sql)
+        if re.fullmatch(r"\?|\$[0-9]+", match[0])
+    ]
+    if actual != ["?"] * len(prepared.parameters):
         raise parameters_denied("parameter_placeholder_mismatch")
 
 

@@ -49,6 +49,7 @@ from .config_parts.shape_checks import (
 from .diagnostics import object_id_suggestions, recovery_hints_for_error
 from .dialects import (
     connection_option_errors,
+    snowflake_adbc_connect_errors,
     snowflake_native_direct_connect_errors,
     supported_warehouses,
     warehouse_connector,
@@ -370,6 +371,17 @@ def _validate_split_package(
                     add_error(
                         errors,
                         f"{path / 'package.yml'}: {warehouse} package.connection has invalid options: {direct_error}",
+                    )
+            elif warehouse == "snowflake" and connection_kind == "snowflake_adbc":
+                if connection_name:
+                    add_error(
+                        errors,
+                        f"{path / 'package.yml'}: snowflake_adbc does not support package.connection.name",
+                    )
+                for adbc_error in snowflake_adbc_connect_errors(connection_options):
+                    add_error(
+                        errors,
+                        f"{path / 'package.yml'}: {warehouse} package.connection has invalid options: {adbc_error}",
                     )
             elif connector.requires_connection_name and not connection_name:
                 add_error(
@@ -1368,9 +1380,9 @@ def _compiled_package_warnings(config, source_path: Path) -> list[str | dict[str
 
 def _unpinned_role_warnings(config, source_path: Path) -> list[dict[str, Any]]:
     """One warning per entity pair joined on different columns by several
-    relationships (role-playing keys). A ``path_preferences`` row pins only
-    queries that start at the source entity and end at the target, so a pair
-    pinned that way is still reported, and the message says what the pin covers."""
+    relationships (role-playing keys). A pair with a ``path_preferences`` row is still
+    reported, and the message says what the row covers: the pair, and every route that
+    walks it."""
     # Either direction of a pair is one pair, and a route is its column pairing, so two
     # relationships that differ only in target columns, or that are declared from opposite
     # sides, still count as different roles. The first id (sorted) sets the orientation.
@@ -1401,9 +1413,9 @@ def _unpinned_role_warnings(config, source_path: Path) -> list[dict[str, Any]]:
             continue
         ids = [rel.id for rel in rels]
         covered = (
-            f"graph.path_preferences pins only queries that start at {source} and end at "
-            f"{target}; queries from another entity, or that continue past {target}, are still "
-            "refused as AMBIGUOUS_PATH"
+            f"a graph.path_preferences row records the role for {source} -> {target}, and "
+            "every route that walks the pair follows it, unless a query's start holds its "
+            "own key to the entity it needs"
             if pair in pinned
             else f"queries that need {target} from {source} are refused as AMBIGUOUS_PATH"
         )
