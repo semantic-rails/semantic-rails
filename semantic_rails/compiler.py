@@ -869,15 +869,15 @@ def _fanout_dedup_refusal(
     keys = {entity.id: list(entity.key or [entity.primary_key]) for entity in config.entities}
     for row in selections:
         # Preserve existing descent shapes, including ClickHouse's DISTINCT-parent
-        # leaf beside lookups. Broader EXISTS paths must have exactly one route
-        # after authored pins; hop count cannot decide which children are meant.
+        # leaf beside lookups. A broader EXISTS path is the route the resolver chose for
+        # the pair (a recorded decision, the only route, or one narrowed by the rows),
+        # never one picked by hop count, so it can say which children are meant.
         if one_to_many_descent(row.analysis, keys):
             continue
         if (
             not grouped
             and config.package.warehouse != "clickhouse"
             and filter_only_semijoin(row.analysis)
-            and len(row.candidate_paths) == 1
         ):
             continue
         return (
@@ -1719,10 +1719,8 @@ def _entity_determines(
     if source_entity == target_entity:
         return True
     try:
-        chosen, candidates = resolve_path(config, start=source_entity, target=target_entity)
+        chosen, _candidates = resolve_path(config, start=source_entity, target=target_entity)
     except SemanticLayerError:
-        return False
-    if len(candidates) != 1:
         return False
     try:
         analysis = analyze_fanout(

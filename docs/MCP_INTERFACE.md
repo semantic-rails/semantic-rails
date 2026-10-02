@@ -401,7 +401,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `QUERY_SHORTHAND_NORMALIZED` | `execute` | A select item was accepted as shorthand and rewritten; `details.canonical` is the form to send next time (`plan` accepts the same shorthand but returns the canonical form in `best.query_ir` instead of a warning) |
 | `SEMANTIC_CAVEAT_APPLIED` | `execute` | Package-authored advisory context matched the query; interpret affected results with that context |
 | `SEMANTIC_CAVEATS_TRUNCATED` | `execute` | More caveats matched than this verbosity returned; increase verbosity to inspect the rest |
-| `ROUTE_COLOCATED_KEY`, `ROUTE_RECORDED` | `execute` (`compact`, `full`) | Info: an entity pair the query reads has two or more routes, and the engine used the start's own key or the package's recorded route; `details.route` is the route |
+| `ROUTE_COLOCATED_KEY`, `ROUTE_RECORDED` | `execute` (`compact`, `full`) | Info: an entity pair the query reads has two or more routes, and the engine used the start's own key or the package's recorded routes; `details.route` is the route, `details.alternatives` (own key) the row for each other route, `details.rows` (inherited) the rows it follows |
 
 Every `*_UNKNOWN_ARG` warning carries `details.received` (the offending key). Most also carry `details.closest_matches` (up to two ranked suggestions via `difflib.get_close_matches`); the special-cased singular/plural typos (e.g. `term` → `terms` on `discover`) carry `details.expected` with the canonical spelling instead.
 
@@ -747,7 +747,7 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 | `INVALID_SEGMENT` | Segment definition is invalid. |
 | `MISSING_DEPENDENCY` | Required upstream object is missing. |
 | `QUERY_EXECUTION_ERROR` | Warehouse refused or aborted execution. |
-| `PATH_NOT_FOUND` | No valid join path between the requested objects. |
+| `PATH_NOT_FOUND` | No valid join path between the requested objects; `details.reason: excluded_by_decision` means every route walks a pair the package's `graph.path_preferences` rows (`details.rows`) record differently. |
 | `POLICY_DENIED` | Policy context blocks a referenced object or query cut. |
 | `INVALID_METRIC_PREDICATE` | `metric_predicates[]` entry is malformed. |
 | `PREDICATE_SCOPE_UNSAFE` | Predicate scope is incompatible with query grain. |

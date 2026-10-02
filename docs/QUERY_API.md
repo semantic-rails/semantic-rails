@@ -1152,8 +1152,11 @@ The response `warnings` array can carry these non-error signals:
 - `ROUTE_COLOCATED_KEY`, `ROUTE_RECORDED` — severity `info`, at `compact`
   and `full` verbosity: the query reads an entity pair with two or more
   routes, and the engine used the start entity's own key or the package's
-  `graph.path_preferences` row. `details.route` is the chosen route; the
-  message reads it (`Order → Store (own key)`). See
+  `graph.path_preferences` rows. `details.route` is the chosen route; the
+  message reads it (`Order → Store (own key)`). On `ROUTE_COLOCATED_KEY`,
+  `details.alternatives` holds the row that would make each other route the
+  default; on `ROUTE_RECORDED` for a route inherited from rows for the pairs
+  it walks through, `details.rows` names them. See
   [the route rule](PACKAGE_AUTHORING.md#the-route-rule).
 
 HTTP failures return:

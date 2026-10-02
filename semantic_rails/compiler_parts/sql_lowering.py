@@ -1677,6 +1677,31 @@ def _anchor_path_selection(
     )
 
 
+def _anchor_route_agrees(
+    config: PackageConfig,
+    *,
+    root_entity: str,
+    anchor_entity: str,
+    anchor_to_root: list[str],
+    target_entity: str,
+) -> bool:
+    """True when the anchor's own route to ``target_entity`` is the root's route to it seen
+    from the anchor: the hops back to the root, then the root's route, where a root route
+    that starts back through the anchor continues from the anchor's own row."""
+    try:
+        root_route, _ = resolve_path(config, start=root_entity, target=target_entity)
+        anchor_route, _ = resolve_path(config, start=anchor_entity, target=target_entity)
+    except SemanticLayerError:
+        return False
+    shared = 0
+    while (
+        shared < min(len(anchor_to_root), len(root_route))
+        and anchor_to_root[-1 - shared] == root_route[shared]
+    ):
+        shared += 1
+    return anchor_route == [*anchor_to_root[: len(anchor_to_root) - shared], *root_route[shared:]]
+
+
 def _entity_in_terms_of_anchor_plan(
     plan: LogicalPlan, measure_plan: MeasurePlan, config: PackageConfig
 ) -> dict[str, Any] | None:
@@ -1704,6 +1729,7 @@ def _entity_in_terms_of_anchor_plan(
 
     anchor_entity = ""
     anchor_key_columns: list[str] = []
+    anchor_to_root: list[str] = []
     transformed_selections: list[PathSelection] = []
     for selection in measure_plan.path_selections:
         if selection.analysis.get("status") == "ok":
@@ -1742,13 +1768,15 @@ def _entity_in_terms_of_anchor_plan(
                 selected_anchor = rel.source_entity
                 selected_key_columns = [target_to_source[column] for column in measure_key_columns]
                 remaining_path = list(selection.chosen_path[index + 1 :])
+                selected_to_root = list(reversed(selection.chosen_path[: index + 1]))
             current_entity = rel.source_entity
         if not selected_anchor:
             return None
-        if anchor_entity and selected_anchor != anchor_entity:
+        if anchor_entity and (selected_anchor, selected_to_root) != (anchor_entity, anchor_to_root):
             return None
         anchor_entity = selected_anchor
         anchor_key_columns = selected_key_columns
+        anchor_to_root = selected_to_root
         transformed_selections.append(
             PathSelection(
                 target_entity=selection.target_entity,
@@ -1787,12 +1815,21 @@ def _entity_in_terms_of_anchor_plan(
         dim = dimensions.get(dim_id)
         if dim is None:
             return None
-        if (
-            dim.entity == anchor_entity
-            or _direct_dimension_source_expr(anchor_entity, dim_id, config) is not None
-        ):
+        if dim.entity == anchor_entity:
             continue
-        if dim.entity in covered_targets:
+        # A key read from the anchor's own column, or a lookup the anchor resolves itself, must
+        # be the measure entity's route (``resolve_path``) seen from the anchor, else the
+        # anchor's rows would read another row than the question means.
+        direct = _direct_dimension_source_expr(anchor_entity, dim_id, config) is not None
+        if (direct or dim.entity not in covered_targets) and not _anchor_route_agrees(
+            config,
+            root_entity=measure.entity,
+            anchor_entity=anchor_entity,
+            anchor_to_root=anchor_to_root,
+            target_entity=dim.entity,
+        ):
+            return None
+        if direct or dim.entity in covered_targets:
             continue
         new_selection = _anchor_path_selection(
             config=config,

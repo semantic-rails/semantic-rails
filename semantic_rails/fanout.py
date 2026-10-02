@@ -11,14 +11,15 @@ under a hop limit.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import asdict
 from typing import Any
 
-from .compiler_parts.indexes import RouteRefusal, get_package_analysis
+from .compiler_parts.indexes import RouteRefusal, RouteResolution, get_package_analysis
+from .config_parts.route_rows import disagreeing_row, walk_entities
 from .errors import SemanticLayerError
 from .schema import DEFAULT_PATH_HOP_LIMIT, PackageConfig, RelationshipConfig
 
@@ -150,15 +151,15 @@ def _route_decision_required(
     )
 
 
-RouteChoice = tuple[str, str, tuple[tuple[str, ...], ...]]
+RouteChoice = tuple[str, str]
 _route_choices: ContextVar[list[RouteChoice] | None] = ContextVar("route_choices", default=None)
 
 
 @contextmanager
 def recording_route_choices() -> Iterator[list[RouteChoice]]:
-    """Collect, as (start, target, routes), each route ``resolve_path`` returned that the SQL
-    lowered in this block reads, nested compiles included, so the response can say how each
-    was chosen (``route_basis``)."""
+    """Collect, as (start, target), each pair whose resolved route the SQL lowered in this
+    block reads, nested compiles included, so the response can say how each route was chosen
+    (``route_note``)."""
     choices: list[RouteChoice] = []
     token = _route_choices.set(choices)
     try:
@@ -167,28 +168,63 @@ def recording_route_choices() -> Iterator[list[RouteChoice]]:
         _route_choices.reset(token)
 
 
-def record_route_choice(start: str, target: str, routes: Sequence[Sequence[str]]) -> None:
-    """Note a route the SQL reads, with every route ``resolve_path`` returned for the pair."""
+def record_route_choice(start: str, target: str) -> None:
+    """Note a pair whose resolved route the SQL reads."""
     choices = _route_choices.get()
     if choices is not None:
-        choices.append((start, target, tuple(tuple(path) for path in routes)))
+        choices.append((start, target))
 
 
-def route_basis(
-    config: PackageConfig, start: str, target: str, routes: Sequence[Sequence[str]]
-) -> str:
-    """How ``resolve_path`` chose the route it returned (``routes``) for a pair with two or
-    more routes: ``"recorded"`` (a ``graph.path_preferences`` row) or ``"colocated_key"``
-    (rule 3, the start's own key). ``""`` when the pair has one route, so nothing was chosen."""
+def route_basis(config: PackageConfig, start: str, target: str) -> str:
+    """The rung of the route ladder that chose the pair's route (``resolve_path``):
+    ``"decided"`` (the pair's own row), ``"colocated_key"`` (the start's own key),
+    ``"inherited"`` (rows for pairs its routes walk through) or ``"only_route"``.
+    ``""`` when the pair is refused."""
+    try:
+        return resolve_route(config, start=start, target=target).basis
+    except SemanticLayerError:
+        return ""
+
+
+def route_note(config: PackageConfig, start: str, target: str) -> RouteResolution | None:
+    """The pair's resolution when the engine chose its route among two or more, so the response
+    says how; None when the pair has one route (nothing was chosen) or is refused.
+
+    Notes never enumerate routes: a decided pair only checks whether a second route fits the
+    hop ceiling, with bounded reachability scans, and any other pair reads the resolution
+    ``resolve_path`` cached when the query was compiled (a pair it never resolved, such as
+    the rest of a resolved route seen from a rewrite's anchor, chose nothing)."""
     analysis = get_package_analysis(config)
     pair = (start, target)
-    if pair in analysis.path_preferences:
+    pinned = analysis.path_preferences.get(pair)
+    if pinned is not None:
         if pair not in analysis.route_note_cache:
             analysis.route_note_cache[pair] = _has_multiple_routes(
                 analysis.graph, start, target, package_hop_limit(config)
             )
-        return "recorded" if analysis.route_note_cache[pair] else ""
-    return "colocated_key" if len(routes) > 1 else ""
+        if not analysis.route_note_cache[pair]:
+            return None
+        return RouteResolution((tuple(pinned),), "decided")
+    cached = analysis.path_cache.get(pair)
+    if isinstance(cached, RouteResolution) and len(cached.routes) > 1:
+        return cached
+    return None
+
+
+def route_alternatives(
+    config: PackageConfig, start: str, target: str, resolution: RouteResolution
+) -> list[dict[str, Any]]:
+    """The row that would make each other considered route the pair's default, for every
+    route that agrees with the package's rows (a row for one that disagrees would not load)."""
+    analysis = get_package_analysis(config)
+    return [
+        route_pin(start, target, list(path))
+        for path in resolution.routes[1:]
+        if disagreeing_row(
+            walk_entities(analysis.relationships, start, path), path, analysis.route_rows
+        )
+        is None
+    ]
 
 
 def _has_multiple_routes(
@@ -226,46 +262,51 @@ def resolve_path(
     """The route from ``start`` to ``target``, and every route considered (the chosen first).
 
     The one route chooser: compilation, grain recovery, discovery and the direct key read
-    all ask it. Which of two routes a question means is a business definition, so it never
-    guesses one, by hop count or otherwise:
+    all ask it (``resolve_route`` also says which rung chose). Which of two routes a question
+    means is a business definition, so it never guesses one, by hop count, weight or
+    otherwise. The ladder, over every route within the hop ceiling:
 
-    1. A ``graph.path_preferences`` row for the pair wins.
-    2. Exactly one route: it is used.
-    3. Otherwise, when exactly one route is a direct relationship from ``start`` that reaches
-       at most one row (the start row holds the target's key), it is used, and every route is
-       returned with it.
-    4. Otherwise ``AMBIGUOUS_PATH`` (``reason: route_decision_required``), whatever the
-       routes' lengths, naming each route, its meaning and the row that would record it.
+    1. **Decided.** A ``graph.path_preferences`` row for exactly the pair wins.
+    2. **The start's own key.** When exactly one route is a direct relationship from
+       ``start`` that reaches at most one row (the start row holds the target's key), it is
+       used, even where a row for another pair would point elsewhere. Two such keys (an
+       origin and a destination) are not one: go on.
+    3. **Inherited.** Every row holds wherever a route walks its pair: a route that passes
+       through a row's pair by another part than the row's path (or, walked the other way,
+       than that path reversed, when every hop allows it) is dropped.
+    4. **Only route.** One route remains: it is used.
+    5. Two or more remain: ``AMBIGUOUS_PATH`` (``reason: route_decision_required``), whatever
+       their lengths, naming each, its meaning and the row that would record it.
+    6. The rows dropped every route: ``PATH_NOT_FOUND`` (``reason: excluded_by_decision``),
+       naming the rows.
 
-    So more than one route comes back exactly when rule 3 chose. Routes and refusals are
-    cached per pair; ``route_basis`` says how a returned route was chosen.
+    Resolutions and refusals are cached per pair, keyed by package inputs only.
     """
-    pinned = get_package_analysis(config).path_preferences.get((start, target))
+    resolution = resolve_route(config, start=start, target=target)
+    return list(resolution.routes[0]), [list(path) for path in resolution.routes]
+
+
+def resolve_route(config: PackageConfig, *, start: str, target: str) -> RouteResolution:
+    """``resolve_path``'s resolution of the pair: every route considered, the chosen first,
+    and the rung that chose it. Raises the pair's refusal."""
+    analysis = get_package_analysis(config)
+    pinned = analysis.path_preferences.get((start, target))
     if pinned is not None:
-        return list(pinned), [list(pinned)]
-    resolved = _unpinned_resolution(config, start, target)
-    if isinstance(resolved, RouteRefusal):
-        raise resolved.error()
-    return list(resolved[0]), [list(path) for path in resolved]
-
-
-def _unpinned_resolution(
-    config: PackageConfig, start: str, target: str
-) -> tuple[tuple[str, ...], ...] | RouteRefusal:
-    """Rules 2-4 of ``resolve_path`` for the pair, cached: its routes or its refusal."""
-    cache = get_package_analysis(config).path_cache
-    cached = cache.get((start, target))
+        return RouteResolution((tuple(pinned),), "decided")
+    cached = analysis.path_cache.get((start, target))
     if cached is None:
         try:
-            cached = tuple(tuple(path) for path in _resolve_uncached(config, start, target))
+            cached = _resolve_uncached(config, start, target)
         except SemanticLayerError as exc:
             cached = RouteRefusal(exc.code, str(exc), deepcopy(exc.details))
-        cache[(start, target)] = cached
+        analysis.path_cache[(start, target)] = cached
+    if isinstance(cached, RouteRefusal):
+        raise cached.error()
     return cached
 
 
-def _resolve_uncached(config: PackageConfig, start: str, target: str) -> list[list[str]]:
-    """Every route for an unpinned pair, the chosen first (rules 2-4 of ``resolve_path``)."""
+def _resolve_uncached(config: PackageConfig, start: str, target: str) -> RouteResolution:
+    """Rungs 2-6 of ``resolve_path``, for a pair with no row of its own."""
     analysis = get_package_analysis(config)
     hop_limit = package_hop_limit(config)
     candidates = enumerate_paths(analysis.graph, start, target, hop_limit)
@@ -299,17 +340,52 @@ def _resolve_uncached(config: PackageConfig, start: str, target: str) -> list[li
                 "reason": "no_relationship_chain",
             },
         )
-    routes = sorted(candidates, key=lambda path: (len(path), path))
-    if len(routes) == 1:
-        return routes
-    direct = [
+    routes = [tuple(path) for path in sorted(candidates, key=lambda path: (len(path), path))]
+    own_keys = [
         path
         for path in routes
         if len(path) == 1 and hop_is_functional(analysis.relationships[path[0]], start)
     ]
-    if len(direct) == 1:
-        return [direct[0], *(path for path in routes if path != direct[0])]
-    raise _route_decision_required(config, start, target, routes)
+    if len(own_keys) == 1:
+        others = (path for path in routes if path != own_keys[0])
+        return RouteResolution((own_keys[0], *others), "colocated_key")
+    kept: list[tuple[str, ...]] = []
+    excluded_by: set[tuple[str, str]] = set()
+    for path in routes:
+        pair = disagreeing_row(
+            walk_entities(analysis.relationships, start, path), path, analysis.route_rows
+        )
+        if pair is None:
+            kept.append(path)
+        else:
+            excluded_by.add(pair)
+    if len(kept) == 1:
+        others = (path for path in routes if path != kept[0])
+        if not excluded_by:
+            return RouteResolution((kept[0],), "only_route")
+        return RouteResolution((kept[0], *others), "inherited", tuple(sorted(excluded_by)))
+    if kept:
+        raise _route_decision_required(config, start, target, [list(path) for path in kept])
+    rows = [route_pin(*pair, analysis.path_preferences[pair]) for pair in sorted(excluded_by)]
+    raise SemanticLayerError(
+        "PATH_NOT_FOUND",
+        f"Every route from '{start}' to '{target}' within {hop_limit} hops walks an entity pair "
+        "by another route than the package records for it: "
+        + "; ".join(f"{row['source_entity']} -> {row['target_entity']}" for row in rows),
+        details={
+            "start": start,
+            "target": target,
+            "hop_limit": hop_limit,
+            "reason": "excluded_by_decision",
+            "rows": rows,
+            "candidates": [list(path) for path in routes],
+            "hint": (
+                "A graph.path_preferences row holds wherever a route walks its pair, and no "
+                "route here follows details.rows. Raise graph.path_policy.max_hops if a longer "
+                "route follows them, or change the rows."
+            ),
+        },
+    )
 
 
 def build_hop_profile(
@@ -322,8 +398,9 @@ def build_hop_profile(
     """First-class summary of the entity hops a compiled query performs.
 
     One entry per non-root target entity: the chosen relationship chain,
-    per-hop direction / cardinality / safety, and how many alternates the
-    chooser considered. The aggregate fields (``max_hop_count``,
+    per-hop direction / cardinality / safety, how many alternates the
+    chooser considered, and which rung of the route ladder chose it
+    (``route_basis``). The aggregate fields (``max_hop_count``,
     ``long_hop_targets``) are the acceleration-layer signal: queries that
     repeatedly cross 3+ relationships to reach the same target are the
     candidates for shortcut relationships, entity colocation, or authored
@@ -359,6 +436,7 @@ def build_hop_profile(
             "path": list(path),
             "hops": hops,
             "alternates_considered": max(0, len(candidates.get(target, [])) - 1),
+            "route_basis": route_basis(config, root_entity, target),
         }
         max_hop_count = max(max_hop_count, len(path))
     return {

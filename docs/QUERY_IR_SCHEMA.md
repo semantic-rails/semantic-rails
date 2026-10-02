@@ -54,9 +54,10 @@ refused with `INVALID_QUERY` and `details.unsupported_keys: ["path_policy"]`;
 delete it.
 
 A query can't choose a join route. The package records one with a
-`graph.path_preferences` row. Without a row, a query whose routes can answer
-differently uses the start entity's one direct key or is refused with
-`AMBIGUOUS_PATH` (see [the route rule](PACKAGE_AUTHORING.md#the-route-rule)).
+`graph.path_preferences` row, which also decides every route that walks its
+pair. Without a row, a query whose routes can answer differently uses the
+start entity's one direct key or is refused with `AMBIGUOUS_PATH` (see
+[the route rule](PACKAGE_AUTHORING.md#the-route-rule)).
 Where the engine chose one of two or more routes, compact and full responses
 carry an info note, `ROUTE_COLOCATED_KEY` or `ROUTE_RECORDED`, with the chosen
 route in `details.route`.
@@ -338,10 +339,9 @@ children never multiply a parent count or sum. This also applies to an aggregate
 own `filter`, and to non-temporal paths that look up a parent before reaching its
 children or join on an alternate key. Each hop must declare `N:1`, `1:N` or `1:1`;
 unknown, unsafe and temporal paths retain their refusals. A lookup-before-child
-or alternate-key path requires exactly one candidate route after authored
-`graph.path_preferences` pins. When several routes remain, the query retains
-its `MIXED_GRAIN_INVALID` refusal; a shorter route does not establish which
-children the filter means. This also applies beside a lookup and to an
+or alternate-key path is the route the route rule chose; when the rule can't
+choose, the query is refused with `AMBIGUOUS_PATH`; a shorter route does not
+establish which children the filter means. This also applies beside a lookup and to an
 aggregate's own filter.
 ClickHouse retains a deduplicated-parent leaf for servers without correlated
 subqueries. Key-based descents retain their existing SQL shape, including

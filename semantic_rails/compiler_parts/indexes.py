@@ -5,6 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
+from ..config_parts.route_rows import RowPaths, row_paths
 from ..errors import SemanticLayerError
 from ..expressions import resolve_table_entity
 from ..schema import (
@@ -19,6 +20,16 @@ from ..schema import (
 from .dependencies import binding_index
 
 GraphIndex = dict[str, list[tuple[str, str]]]
+
+
+class RouteResolution(NamedTuple):
+    """A resolved route: every route considered, the chosen first, and the rung of the route
+    ladder that chose it (``fanout.resolve_path``)."""
+
+    routes: tuple[tuple[str, ...], ...]
+    basis: str
+    # The rows that excluded a considered route (``inherited`` only).
+    rows: tuple[tuple[str, str], ...] = ()
 
 
 class RouteRefusal(NamedTuple):
@@ -44,12 +55,12 @@ class PackageAnalysis:
     table_to_entities: dict[str, tuple[str, ...]]
     graph: GraphIndex
     path_preferences: dict[tuple[str, str], list[str]]
+    # Each row's path and its reverse walk, which every route through the row's pair inherits.
+    route_rows: dict[tuple[str, str], RowPaths]
     temporal_relationship_ids: set[str]
-    # (start, target) -> every route, the chosen first, or the refusal, before any
-    # path_preferences row is applied. Keyed only by package inputs.
-    path_cache: dict[tuple[str, str], tuple[tuple[str, ...], ...] | RouteRefusal] = field(
-        default_factory=dict
-    )
+    # (start, target) -> the resolution or the refusal of a pair with no row of its own.
+    # Keyed only by package inputs.
+    path_cache: dict[tuple[str, str], RouteResolution | RouteRefusal] = field(default_factory=dict)
     # Pinned-pair notes need only whether two routes fit the hop ceiling.
     route_note_cache: dict[tuple[str, str], bool] = field(default_factory=dict)
 
@@ -80,6 +91,12 @@ class PackageAnalysis:
             graph=graph,
             path_preferences={
                 (row.source_entity, row.target_entity): list(row.relationship_path)
+                for row in config.path_preferences
+            },
+            route_rows={
+                (row.source_entity, row.target_entity): row_paths(
+                    relationships, row.source_entity, row.relationship_path
+                )
                 for row in config.path_preferences
             },
             temporal_relationship_ids={

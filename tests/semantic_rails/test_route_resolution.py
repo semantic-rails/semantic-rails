@@ -2,11 +2,12 @@
 never guesses one.
 
 For each (start, target) the one route resolver (``fanout.resolve_path``) takes, in order: a
-``graph.path_preferences`` row for the pair; the only route; the one direct relationship from
-the start that reaches at most one row (its own key). Anything else is refused as
-AMBIGUOUS_PATH, whatever the routes' lengths, naming each route, its meaning and the row that
-would record it. So adding a route never changes an answer silently. Where the engine chose one
-of two or more routes, the response carries a short note (ROUTE_RECORDED or
+``graph.path_preferences`` row for the pair; the one direct relationship from the start that
+reaches at most one row (its own key); the rows of pairs its routes walk through; the only
+route. Anything else is refused as AMBIGUOUS_PATH, whatever the routes' lengths, naming each
+route, its meaning and the row that would record it (test_route_precedence.py covers the rows
+a route inherits). So adding a route never changes an answer silently. Where the engine chose
+one of two or more routes, the response carries a short note (ROUTE_RECORDED or
 ROUTE_COLOCATED_KEY) with the chosen route, except at minimal verbosity.
 
 Fixture: accounts, their owners, regions, memberships and invoices, on DuckDB. The routes
@@ -357,12 +358,19 @@ def test_the_direct_key_and_a_recorded_route_each_answer_with_a_short_note(tmp_p
     key answers; with the owner route recorded, the owner's answer comes back. Either way the
     response names the chosen route in one short note, and nothing more."""
     query = _query(BALANCE, group_by=[REGION_NAME])
-    out = Runtime.from_path(str(_write_package(tmp_path / "direct"))).query(query)
+    direct = _write_package(tmp_path / "direct")
+    out = Runtime.from_path(str(direct)).query(query)
     assert _rows(out, [REGION_NAME, "v"]) == _gold(BY_BRANCH)
     assert _route_notes(out) == {(ACCOUNT, REGION): ("ROUTE_COLOCATED_KEY", BRANCH)}
     (note,) = [w for w in out["warnings"] if w["code"] == "ROUTE_COLOCATED_KEY"]
     assert (note["severity"], note["message"]) == ("info", "Account → Region (own key)")
-    assert note["details"] == {"route": BRANCH}
+    # Each other route comes with the row that would make it the default.
+    _, routes = resolve_path(load_package_config(str(direct)), start=ACCOUNT, target=REGION)
+    assert note["details"] == {
+        "route": BRANCH,
+        "alternatives": [_pin(ACCOUNT, REGION, path) for path in routes[1:]],
+    }
+    assert _pin(ACCOUNT, REGION, HOME) in note["details"]["alternatives"]
 
     pinned = _write_package(tmp_path / "home", pins=[_pin("account", "region", HOME)])
     out = Runtime.from_path(str(pinned)).query(query)
@@ -489,8 +497,10 @@ def test_recorded_route_notes_obey_the_hop_ceiling(tmp_path, monkeypatch, hop_li
         pytest.fail("notes must not enumerate paths even when alternatives exceed the ceiling")
 
     monkeypatch.setattr(fanout_module, "enumerate_paths", fail_enumeration)
-    expected = "recorded" if hop_limit >= 2 else ""
-    assert fanout_module.route_basis(config, ACCOUNT, REGION, candidates) == expected
+    assert candidates == [pinned_path]
+    assert fanout_module.route_basis(config, ACCOUNT, REGION) == "decided"
+    noted = fanout_module.route_note(config, ACCOUNT, REGION)
+    assert (noted is not None) == (hop_limit >= 2)
     assert get_package_analysis(config).path_cache == {}
 
 
@@ -862,30 +872,42 @@ ROUTE_DECISIONS = Path(__file__).parent / "fixtures" / "route_decisions.json"
 
 
 def _route_decisions(package: str) -> dict[str, list[list[str]]]:
-    """Every entity pair that is refused, and every pair answered by its direct key."""
+    """Every entity pair that is refused (no row, or every route excluded by rows), every pair
+    answered by its direct key over another route, and every pair answered by rows recorded
+    for pairs its routes walk through."""
     config = load_package_config(str(ROOT / package))
-    refused: list[list[str]] = []
-    direct_key: list[list[str]] = []
+    found: dict[str, list[list[str]]] = {
+        "refused": [],
+        "excluded_by_decision": [],
+        "direct_key": [],
+        "inherited": [],
+    }
     for start in config.entities:
         for target in config.entities:
             if start.id == target.id:
                 continue
+            pair = [start.id, target.id]
             try:
-                _, routes = resolve_path(config, start=start.id, target=target.id)
+                resolution = fanout_module.resolve_route(config, start=start.id, target=target.id)
             except SemanticLayerError as exc:
                 if exc.code == "AMBIGUOUS_PATH":
-                    refused.append([start.id, target.id])
+                    found["refused"].append(pair)
+                elif exc.details.get("reason") == "excluded_by_decision":
+                    found["excluded_by_decision"].append(pair)
                 continue
-            if len(routes) > 1:
-                direct_key.append([start.id, target.id])
-    return {"refused": sorted(refused), "direct_key": sorted(direct_key)}
+            if resolution.basis == "colocated_key" and len(resolution.routes) > 1:
+                found["direct_key"].append(pair)
+            elif resolution.basis == "inherited":
+                found["inherited"].append(pair)
+    return {key: sorted(pairs) for key, pairs in found.items()}
 
 
 @pytest.mark.parametrize("package", SHIPPED_PACKAGES)
 def test_shipped_route_decisions_match_the_reviewed_snapshot(package):
-    """A relationship or pin edit that changes which pairs are refused or answered by a direct
-    key fails here, so a new route can't change an answer unreviewed. Review the pairs, record
-    each pair a question needs in graph.path_preferences, then update the snapshot."""
+    """A relationship or row edit that changes which pairs are refused, answered by a direct
+    key, or answered by an inherited row fails here, so a new route can't change an answer
+    unreviewed. Review the pairs, record each pair a question needs in graph.path_preferences,
+    then update the snapshot."""
     snapshot = json.loads(ROUTE_DECISIONS.read_text(encoding="utf-8"))
     current = _route_decisions(package)
     assert current == snapshot[package], json.dumps({package: current}, indent=2)
