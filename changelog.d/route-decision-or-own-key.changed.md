@@ -12,10 +12,13 @@
   `details.rows`.
 - `graph.path_preferences` rows must agree: when one row's path walks through another row's
   pair by a different route (or the reverse pair records another route), the package fails to
-  load with `INVALID_CONFIG`, naming both rows in `details.rows`.
+  load with `INVALID_CONFIG`, naming the rows in `details.rows`; a configuration built in code is
+  refused the same way when first used.
 - `ROUTE_COLOCATED_KEY` notes list, in `details.alternatives`, the row that would make each
-  other route the default. A route inherited from rows is noted `ROUTE_RECORDED`, with the rows
-  it follows in `details.rows`. `hop_profile` targets carry `route_basis`: `decided`,
+  other route the default, and `AMBIGUOUS_PATH` lists in `details.pins` the row for each route,
+  only when that row would load; `details.conflicts_with` names any other route with the rows
+  its row would disagree with. A route inherited from rows is noted `ROUTE_RECORDED`, with the
+  rows it follows in `details.rows`. A note names only a route the SQL reads. `hop_profile` targets carry `route_basis`: `decided`,
   `colocated_key`, `inherited` or `only_route`.
 - A distinct count computed from a child's rows (customers counted from their orders) reads
   each grouping through the counted entity's own route. A customer's city read through its own

@@ -1155,7 +1155,9 @@ The response `warnings` array can carry these non-error signals:
   `graph.path_preferences` rows. `details.route` is the chosen route; the
   message reads it (`Order → Store (own key)`). On `ROUTE_COLOCATED_KEY`,
   `details.alternatives` holds the row that would make each other route the
-  default; on `ROUTE_RECORDED` for a route inherited from rows for the pairs
+  default when that row would load beside the package's rows, and
+  `details.conflicts_with` lists any other route with the rows its row would
+  disagree with; on `ROUTE_RECORDED` for a route inherited from rows for the pairs
   it walks through, `details.rows` names them. See
   [the route rule](PACKAGE_AUTHORING.md#the-route-rule).
 

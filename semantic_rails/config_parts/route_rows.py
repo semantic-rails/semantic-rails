@@ -109,9 +109,7 @@ def require_rows_agree(
     it and each of those rows."""
 
     def described(item: PathPreferenceConfig) -> str:
-        return (
-            f"{item.source_entity} -> {item.target_entity} ({', '.join(item.relationship_path)})"
-        )
+        return f"{item.source_entity} -> {item.target_entity} ({', '.join(item.relationship_path)})"
 
     for index, row in enumerate(rows):
         conflicts = conflicting_rows(relationships, row, rows[:index])

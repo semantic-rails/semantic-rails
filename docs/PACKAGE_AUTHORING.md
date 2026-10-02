@@ -1493,7 +1493,10 @@ facts' rows is refused the same way, and its recovery hint points at
 The refusal is a clarification: `details.reason` is `route_decision_required`,
 `details.candidates` lists every route, `details.meanings` reads each one as a
 chain of entity and relationship labels (`Account → Owner → Home region`), and
-`details.pins` holds the `graph.path_preferences` row that records each. Copy
+`details.pins` holds the `graph.path_preferences` row that records each route
+whose row would load beside the package's rows. A route whose row would
+disagree with existing rows (see "Rows must agree" below) is listed instead in
+`details.conflicts_with`, as `{relationship_path, rows}` with those rows. Copy
 the row for the meaning the package intends into `graph.yml`.
 
 A relationship's `path_preference` weight no longer exists: a package that
@@ -1530,7 +1533,9 @@ questions: record the shortest pair that carries the meaning.
 Rows must agree. When one row's path walks through another row's pair, the
 part between them must be that row's path (or, walked the other way, its path
 reversed); otherwise the package fails to load with `INVALID_CONFIG`, naming
-both rows in `details.rows`. A row for a pair with one route is allowed: it
+the rows in `details.rows`. A configuration built in code (for example with
+`Runtime.from_config`) is held to the same check when it is first used. A row
+for a pair with one route is allowed: it
 records a definition. A comment stating the meaning in the question's own
 words keeps the decision reviewable.
 
@@ -1542,9 +1547,10 @@ Four guard rails back this up:
   the chosen route's relationship ids in `details.route` and its readable
   meaning in the message:
   - `ROUTE_COLOCATED_KEY` (rule 2, `Order → Store (own key)`):
-    `details.alternatives` holds, for each other route that agrees with the
-    package's rows, the `graph.path_preferences` row that would make it the
-    default;
+    `details.alternatives` holds, for each other route whose row would load
+    beside the package's rows, the `graph.path_preferences` row that would make
+    it the default, and `details.conflicts_with` lists any other route with the
+    rows its row would disagree with;
   - `ROUTE_RECORDED` (rule 1, `(recorded route)`, or rule 3,
     `(recorded for Account → District)`, with the rows it follows in
     `details.rows`).
@@ -1552,10 +1558,13 @@ Four guard rails back this up:
   A pair with one route gets none, and the minimal response (the MCP default)
   leaves the notes out. So adding a route never changes an answer silently: a
   pair whose one route is its own key keeps its answer and now notes it, and
-  any other pair is refused until a row records it. Notes read the resolution
-  the resolver cached for the query. For a recorded route, they check whether
-  multiple routes fit `max_hops` using bounded reachability scans, without
-  enumerating alternatives or caching a route refusal just to produce a note.
+  any other pair is refused until a row records it. A note names only a route
+  the SQL reads, and only when the pair's resolution chose that route, so the
+  same query gets the same notes whatever ran before it; a count read from a
+  child's rows along the counted entity's route is noted once, for that route.
+  For a recorded route, notes check whether multiple routes fit `max_hops`
+  using bounded reachability scans, without enumerating alternatives or caching
+  a route refusal just to produce a note.
 - **`AMBIGUOUS_PATH` error** — rule 5 above. A `graph.relationships:` entry
   never replaces a foreign key on other columns: the model keeps both, so an
   origin and a destination key into one `airport` entity are two routes. Any

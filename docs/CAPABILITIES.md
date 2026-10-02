@@ -52,8 +52,9 @@ surface.
   each route's meaning and the row that records it), whatever the routes'
   lengths. Hop count and weights never decide, and adding a route never changes
   an answer silently.
-- route recording via `graph.path_preferences` (load-time validated; rows that
-  disagree about a pair are `INVALID_CONFIG`)
+- route recording via `graph.path_preferences` (load-time validated, and again
+  for a configuration built in code; rows that disagree about a pair are
+  `INVALID_CONFIG`)
 - conflicting-route refusal (`PATH_JOIN_CONFLICT`)
 - per-query `hop_profile` reporting (chosen chains, per-hop safety,
   long-hop targets)
