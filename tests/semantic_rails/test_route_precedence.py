@@ -689,7 +689,8 @@ def test_a_rewrite_notes_only_the_route_its_sql_reads(tmp_path):
     to it; resolved first in the same process, that route still never shows up as the query's:
     every note names joins the SQL makes, and the answer is the store route's gold."""
     runtime = Runtime.from_path(str(_write_chain(tmp_path)))
-    resolution = resolve_route(runtime.config, start=CHAIN_ORDER, target=CHAIN_DISTRICT)
+    # The runtime's own configuration (``runtime.config`` is a copy), so its queries see this.
+    resolution = resolve_route(runtime._config, start=CHAIN_ORDER, target=CHAIN_DISTRICT)
     assert (resolution.basis, list(resolution.routes[0])) == ("colocated_key", ORDER_OWN_DISTRICT)
     query = _chain_query("name")
     out = runtime.query(query)
@@ -709,12 +710,12 @@ def test_a_querys_route_notes_do_not_depend_on_what_ran_before(tmp_path):
     pkg = _write_chain(tmp_path)
     fresh = _notes(Runtime.from_path(str(pkg)).query(_chain_query("name")))
     runtime = Runtime.from_path(str(pkg))
-    entities = [entity.id for entity in runtime.config.entities]
+    entities = [entity.id for entity in runtime._config.entities]
     for start in entities:
         for target in entities:
             if start != target:
                 with contextlib.suppress(SemanticLayerError):
-                    resolve_route(runtime.config, start=start, target=target)
+                    resolve_route(runtime._config, start=start, target=target)
     runtime.query(_chain_query("id"))
     assert _notes(runtime.query(_chain_query("name"))) == fresh
 
