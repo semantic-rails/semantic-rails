@@ -211,24 +211,27 @@ def _slug(text: str) -> str:
 def _option_ids(config: PackageConfig, start: str, routes: list[list[str]]) -> list[str]:
     """A slug per route, unique within the refusal and never an entity key: the waypoint
     entity keys plus the target key, or a direct hop's foreign-key column without its
-    ``_id``/``_key``/``_code`` suffix; ``_2`` and up on a clash."""
+    ``_id``/``_key``/``_code`` suffix (followed by the target key when that column names an
+    entity, as a one-to-many hop's does); ``_2`` and up on a clash."""
     analysis = get_package_analysis(config)
     keys = _entity_keys(config)
     taken = set(keys.values())
     ids: list[str] = []
     for path in routes:
+        entities = route_entities(config, start, path)
         if len(path) == 1:
             rel = analysis.relationships[path[0]]
             columns = rel.source_columns or [rel.source_column]
             base = _slug("_".join(re.sub(r"_(id|key|code)$", "", col) for col in columns))
             if not base or base in taken:
-                base = _slug("_".join(columns))
+                base = "_".join(part for part in (base, keys[entities[-1]]) if part)
         else:
-            base = "_".join(keys[entity] for entity in route_entities(config, start, path)[1:])
-        slug, suffix = base or "route", 1
+            base = "_".join(keys[entity] for entity in entities[1:])
+        base = base or "route"
+        slug, suffix = base, 1
         while slug in taken:
             suffix += 1
-            slug = f"{base or 'route'}_{suffix}"
+            slug = f"{base}_{suffix}"
         taken.add(slug)
         ids.append(slug)
     return ids

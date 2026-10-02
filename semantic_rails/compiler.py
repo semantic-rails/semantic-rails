@@ -882,9 +882,9 @@ def _fanout_dedup_refusal(
     keys = {entity.id: list(entity.key or [entity.primary_key]) for entity in config.entities}
     for row in selections:
         # Preserve existing descent shapes, including ClickHouse's DISTINCT-parent
-        # leaf beside lookups. Broader EXISTS paths must have exactly one route
-        # after the query's and the package's rows; hop count cannot decide which children
-        # are meant, so another route asks which one the question means.
+        # leaf beside lookups. Broader EXISTS paths have exactly one route after the
+        # query's and the package's rows (``_leaf_path_selections`` asks otherwise); hop
+        # count cannot decide which children are meant.
         if one_to_many_descent(row.analysis, keys):
             continue
         if (
@@ -892,11 +892,7 @@ def _fanout_dedup_refusal(
             and config.package.warehouse != "clickhouse"
             and filter_only_semijoin(row.analysis)
         ):
-            if len(row.candidate_paths) == 1:
-                continue
-            raise route_decision_required(
-                config, measure.entity, row.target_entity, row.candidate_paths
-            )
+            continue
         return (
             (
                 "ClickHouse requires a key-based descent before any lookup. "
@@ -2420,6 +2416,13 @@ def _leaf_path_selections(
     selections = list(dedup.values())
 
     unsupported = [row for row in selections if row.analysis.get("status") != "ok"]
+    for row in unsupported:
+        # Only the start's own key is ever chosen among several routes, and it reaches one
+        # row; a one-to-many path that came with others asks which one the question means.
+        if len(row.candidate_paths) > 1:
+            raise route_decision_required(
+                config, measure.entity, row.target_entity, row.candidate_paths
+            )
     if unsupported:
         if all(
             _entity_in_terms_of_rewrite_supported(

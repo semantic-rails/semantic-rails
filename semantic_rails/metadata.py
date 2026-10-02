@@ -2876,9 +2876,34 @@ def build_options_payload(
     include_blocked: bool = True,
     limit: int = 10,
 ) -> dict[str, Any]:
-    # The query's own route_decisions show here the way they will answer.
+    """The builder's next options; the query's own route_decisions show the way they answer."""
     with query_route_decisions(_partial_query_routes(runtime._config, partial_query)):
-        base = _valid_next_base(runtime, partial_query)
+        return _build_options_payload(
+            runtime,
+            partial_query=partial_query,
+            focus_terms=focus_terms,
+            focus_object_id=focus_object_id,
+            step=step,
+            stage=stage,
+            verbosity=verbosity,
+            include_blocked=include_blocked,
+            limit=limit,
+        )
+
+
+def _build_options_payload(
+    runtime: Runtime,
+    *,
+    partial_query: dict[str, Any],
+    focus_terms: str = "",
+    focus_object_id: str = "",
+    step: str = "",
+    stage: str = "",
+    verbosity: str = "compact",
+    include_blocked: bool = True,
+    limit: int = 10,
+) -> dict[str, Any]:
+    base = _valid_next_base(runtime, partial_query)
     config = runtime._config
     require_temporal_support(config, requested=step == "time" or stage == "time")
     maps = _config_maps(config)
