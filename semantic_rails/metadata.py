@@ -3307,11 +3307,11 @@ def _build_options_payload(
     if raw_query.get("route_decisions"):
         # A patch that would leave one of the caller's route rows unused is refused as it
         # stands: offer it blocked with that refusal, never with the row stripped.
-        for bucket in (recommended, available):
-            for row in list(bucket):
+        for offered in (recommended, available):
+            for row in list(offered):
                 refusal = _unused_route_decision(runtime, row.get("query_patch"))
                 if refusal:
-                    bucket.remove(row)
+                    offered.remove(row)
                     row.pop("query_patch")
                     row.update(available=False, blocked_reason=refusal, rationale=[refusal])
                     if include_blocked:

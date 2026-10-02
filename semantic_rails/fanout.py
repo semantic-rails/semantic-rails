@@ -110,19 +110,21 @@ def route_meaning(config: PackageConfig, start: str, path: list[str]) -> str:
     entity, then per hop the relationship's own label when the author gave one and the hop
     looks it up (walked forward), else the label of the entity it reaches."""
     analysis = get_package_analysis(config)
-
-    def label(entity_id: str) -> str:
-        entity = analysis.entities.get(entity_id)
-        return (entity.label or entity.name) if entity is not None else entity_id
-
-    chain = [label(start)]
+    chain = [_entity_label(config, start)]
     current = start
     for rel_id in path:
         rel = analysis.relationships[rel_id]
         forward = current == rel.source_entity
         current = rel.target_entity if forward else rel.source_entity
-        default = f"{label(rel.source_entity)} to {label(rel.target_entity)}"
-        chain.append(rel.label if forward and rel.label not in ("", default) else label(current))
+        default = (
+            f"{_entity_label(config, rel.source_entity)} to "
+            f"{_entity_label(config, rel.target_entity)}"
+        )
+        chain.append(
+            rel.label
+            if forward and rel.label not in ("", default)
+            else _entity_label(config, current)
+        )
     return " → ".join(chain)
 
 
@@ -302,8 +304,9 @@ def route_label(config: PackageConfig, start: str, target: str, path: Sequence[s
 
 
 def pair_routes(config: PackageConfig, start: str, target: str) -> list[list[str]]:
-    """Every route between the pair within the hop ceiling, whatever any row decides: the
-    resolver's own enumeration, in its order. A query's row must take one of them."""
+    """Every route between the pair within the hop ceiling, whatever any row decides, sorted by
+    length then ids: the routes the resolver chooses among, and the ones a query's row may
+    take."""
     hop_limit = package_hop_limit(config)
     paths = enumerate_paths(get_package_analysis(config).graph, start, target, hop_limit)
     return sorted(paths, key=lambda path: (len(path), path))
@@ -532,8 +535,8 @@ def _resolve_uncached(config: PackageConfig, start: str, target: str) -> RouteRe
     """Rungs 2-6 of ``resolve_path``, for a pair with no row of its own."""
     analysis = get_package_analysis(config)
     hop_limit = package_hop_limit(config)
-    candidates = enumerate_paths(analysis.graph, start, target, hop_limit)
-    if not candidates:
+    routes = [tuple(path) for path in pair_routes(config, start, target)]
+    if not routes:
         reachable_at = _min_hops_unbounded(analysis.graph, start, target)
         if reachable_at is not None:
             raise SemanticLayerError(
@@ -563,7 +566,6 @@ def _resolve_uncached(config: PackageConfig, start: str, target: str) -> RouteRe
                 "reason": "no_relationship_chain",
             },
         )
-    routes = [tuple(path) for path in sorted(candidates, key=lambda path: (len(path), path))]
     own_keys = [
         path
         for path in routes

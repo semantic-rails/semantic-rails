@@ -2023,11 +2023,9 @@ class ArchitectProject:
         except Exception:  # the parse gate reports a package that doesn't load
             return
         before, after = configs
-        entity_ids = {
-            **{row.name: row.id for row in before.entities},
-            **{row.key: row.object_id for row in raw["entities"]},
-            **{row.id: row.id for row in before.entities},
-        }
+        entity_ids = entity_references(
+            before.entities, {row.key: row.object_id for row in raw["entities"]}
+        )
         relationship_ids: dict[str, str] = {}
         for rel in before.relationships:
             relationship_ids[rel.id] = rel.id
