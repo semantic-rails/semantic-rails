@@ -322,13 +322,18 @@ Supported `op` values (all compile end-to-end):
 - A dimension looked up through a many-to-one or one-to-one relationship is
   NULL on a row whose lookup found no match, and a filter treats the row as
   any other NULL: `IS NULL` keeps it (an anti-join, such as boardings with no
-  crew-roster row), while `=`, `!=`, `IN` and `NOT IN` exclude it. This holds for
-  a `group_by` or `where` dimension of the measure. Other reads of a lookup
-  (a time role, a metric filter and its context, a conversion, a qualified
-  set) leave such a row out, as before, and so does a dimension any rollup of the
-  measure's model holds, even at a grain that rollup can never answer. ClickHouse is the exception: its
-  lookups stay inner joins, so it drops such a row from every query that reads
-  the looked-up dimension.
+  crew-roster row), while `=`, `!=`, `IN` and `NOT IN` exclude it. This holds
+  wherever the dimension is read: a `group_by`, a `where`, a measure's own filter,
+  a segment, an `aggregate_if` or a measure expression, with or without metric
+  filters. A time role read through a lookup leaves such a row out, as before;
+  so do a metric filter's own query and the entities its set is matched on, a
+  distribution's per-entity values, a conversion, and a dimension any rollup of
+  the measure's model holds, even at a grain that rollup can never answer (a
+  rollup of another model, or any rollup in a query of dimensions alone, keeps
+  the row).
+  ClickHouse is the exception: its lookups
+  stay inner joins, so it drops such a row from every query that reads the
+  looked-up dimension.
 - Objects are rejected — inline expression thresholds belong in
   `metric_filters` (`metric_predicate`).
 
