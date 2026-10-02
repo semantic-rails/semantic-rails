@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
-from ..config_parts.route_rows import RowPaths, row_paths
+from ..config_parts.route_rows import RowPaths, require_rows_agree, row_paths
 from ..errors import SemanticLayerError
 from ..expressions import resolve_table_entity
 from ..schema import (
@@ -81,6 +81,9 @@ class PackageAnalysis:
                 graph.setdefault(rel.source_entity, []).append((rel.target_entity, rel.id))
             if "reverse" in directions:
                 graph.setdefault(rel.target_entity, []).append((rel.source_entity, rel.id))
+        # The loader's check again, for a configuration built in code: rows that disagree would
+        # let the route ladder contradict a decided pair.
+        require_rows_agree(relationships, config.path_preferences)
         return cls(
             entities={row.id: row for row in config.entities},
             dimensions={row.id: row for row in config.dimensions},

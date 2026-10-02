@@ -3,15 +3,19 @@
 A row records the route for its own pair, and every route that walks through that pair
 inherits it: walked from the row's source to its target, the part between them must be the
 row's path; walked the other way, it must be that path reversed, when every hop of the path
-allows the reverse walk. The loader checks that the rows agree with each other, and the route
+allows the reverse walk. A package's rows must agree with each other (``require_rows_agree``,
+run by the loader and again by the package analysis, so a configuration built in code is held
+to it too), a suggested row is offered only when it would agree with them, and the route
 resolver drops each candidate route that disagrees with a row.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict
 
-from ..schema import RelationshipConfig
+from ..errors import SemanticLayerError
+from ..schema import PathPreferenceConfig, RelationshipConfig
 
 # A row's path, and the same path walked back (None when a hop does not allow that walk).
 RowPaths = tuple[tuple[str, ...], tuple[str, ...] | None]
@@ -62,3 +66,63 @@ def disagreeing_row(
         if expected is not None and tuple(part) != expected:
             return pair
     return None
+
+
+def conflicting_rows(
+    relationships: Mapping[str, RelationshipConfig],
+    row: PathPreferenceConfig,
+    rows: Iterable[PathPreferenceConfig],
+) -> list[PathPreferenceConfig]:
+    """The rows in ``rows`` that ``row`` disagrees with, the agreement check run both ways:
+    ``row``'s path walks a row's pair by another part than that row records, or a row's path
+    walks ``row``'s pair by another part than ``row`` records."""
+    own = {
+        (row.source_entity, row.target_entity): row_paths(
+            relationships, row.source_entity, row.relationship_path
+        )
+    }
+    entities = walk_entities(relationships, row.source_entity, row.relationship_path)
+    found: list[PathPreferenceConfig] = []
+    for other in rows:
+        recorded = {
+            (other.source_entity, other.target_entity): row_paths(
+                relationships, other.source_entity, other.relationship_path
+            )
+        }
+        other_entities = walk_entities(relationships, other.source_entity, other.relationship_path)
+        if disagreeing_row(entities, row.relationship_path, recorded) or disagreeing_row(
+            other_entities, other.relationship_path, own
+        ):
+            found.append(other)
+    return found
+
+
+def require_rows_agree(
+    relationships: Mapping[str, RelationshipConfig],
+    rows: Sequence[PathPreferenceConfig],
+    *,
+    path: str = "",
+) -> None:
+    """``INVALID_CONFIG`` unless the rows agree (``conflicting_rows``): a row holds wherever a
+    route walks its pair, so two rows that record different parts for one pair are two
+    definitions of it. Names, in package order, the first row that disagrees with rows before
+    it and each of those rows."""
+
+    def described(item: PathPreferenceConfig) -> str:
+        return (
+            f"{item.source_entity} -> {item.target_entity} ({', '.join(item.relationship_path)})"
+        )
+
+    for index, row in enumerate(rows):
+        conflicts = conflicting_rows(relationships, row, rows[:index])
+        if not conflicts:
+            continue
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            (f"{path}: " if path else "")
+            + f"graph.path_preferences rows disagree: the row for {described(row)} and the "
+            f"rows for {'; '.join(map(described, conflicts))}: of each two, one walks the other's "
+            "pair by another route than the other records. A row holds wherever a route walks "
+            "its pair, so keep one definition of each pair: change or remove a row.",
+            details={"rows": [asdict(item) for item in (*conflicts, row)]},
+        )

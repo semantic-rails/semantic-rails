@@ -11,7 +11,7 @@ under a hop limit.
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
@@ -19,9 +19,9 @@ from dataclasses import asdict
 from typing import Any
 
 from .compiler_parts.indexes import RouteRefusal, RouteResolution, get_package_analysis
-from .config_parts.route_rows import disagreeing_row, walk_entities
+from .config_parts.route_rows import conflicting_rows, disagreeing_row, walk_entities
 from .errors import SemanticLayerError
-from .schema import DEFAULT_PATH_HOP_LIMIT, PackageConfig, RelationshipConfig
+from .schema import DEFAULT_PATH_HOP_LIMIT, PackageConfig, PathPreferenceConfig, RelationshipConfig
 
 
 def build_graph(config: PackageConfig) -> dict[str, list[tuple[str, str]]]:
@@ -132,34 +132,38 @@ def _route_decision_required(
         meanings = [
             f"{meaning} ({', '.join(path)})" for meaning, path in zip(meanings, routes, strict=True)
         ]
+    pins, conflicts = offered_rows(config, start, target, routes)
+    details: dict[str, Any] = {
+        "reason": "route_decision_required",
+        "start": start,
+        "target": target,
+        "candidates": [list(path) for path in routes],
+        "meanings": meanings,
+        "pins": pins,
+        "hint": (
+            "Which route is meant is a business definition. Record it once as a "
+            "graph.path_preferences row in the package (details.pins has the row for each "
+            "route that loads beside the package's rows; details.conflicts_with names the rows "
+            "any other route disagrees with); then every query uses it."
+        ),
+    }
+    if conflicts:
+        details["conflicts_with"] = conflicts
     return SemanticLayerError(
         "AMBIGUOUS_PATH",
         f"Ambiguous path from '{start}' to '{target}': " + "; ".join(meanings),
-        details={
-            "reason": "route_decision_required",
-            "start": start,
-            "target": target,
-            "candidates": [list(path) for path in routes],
-            "meanings": meanings,
-            "pins": [route_pin(start, target, path) for path in routes],
-            "hint": (
-                "Which route is meant is a business definition. Record it once as a "
-                "graph.path_preferences row in the package (details.pins has the row for each "
-                "route); then every query uses it."
-            ),
-        },
+        details=details,
     )
 
 
-RouteChoice = tuple[str, str]
+RouteChoice = tuple[str, str, tuple[str, ...]]
 _route_choices: ContextVar[list[RouteChoice] | None] = ContextVar("route_choices", default=None)
 
 
 @contextmanager
 def recording_route_choices() -> Iterator[list[RouteChoice]]:
-    """Collect, as (start, target), each pair whose resolved route the SQL lowered in this
-    block reads, nested compiles included, so the response can say how each route was chosen
-    (``route_note``)."""
+    """Collect, as (start, target, route), each route the SQL lowered in this block reads,
+    nested compiles included, so the response can say how each was chosen (``route_note``)."""
     choices: list[RouteChoice] = []
     token = _route_choices.set(choices)
     try:
@@ -168,11 +172,11 @@ def recording_route_choices() -> Iterator[list[RouteChoice]]:
         _route_choices.reset(token)
 
 
-def record_route_choice(start: str, target: str) -> None:
-    """Note a pair whose resolved route the SQL reads."""
+def record_route_choice(start: str, target: str, route: Sequence[str]) -> None:
+    """Note the route from ``start`` to ``target`` the SQL reads."""
     choices = _route_choices.get()
     if choices is not None:
-        choices.append((start, target))
+        choices.append((start, target, tuple(route)))
 
 
 def route_basis(config: PackageConfig, start: str, target: str) -> str:
@@ -186,45 +190,57 @@ def route_basis(config: PackageConfig, start: str, target: str) -> str:
         return ""
 
 
-def route_note(config: PackageConfig, start: str, target: str) -> RouteResolution | None:
-    """The pair's resolution when the engine chose its route among two or more, so the response
-    says how; None when the pair has one route (nothing was chosen) or is refused.
+def route_note(
+    config: PackageConfig, start: str, target: str, route: Sequence[str]
+) -> RouteResolution | None:
+    """The pair's resolution when the engine chose ``route``, the route the SQL read, among two
+    or more, so the response says how. None when the pair has one route (nothing was chosen),
+    is refused, or resolves to another route than the SQL read: a note names only the SQL's
+    route, and says the same whatever the process resolved before.
 
-    Notes never enumerate routes: a decided pair only checks whether a second route fits the
-    hop ceiling, with bounded reachability scans, and any other pair reads the resolution
-    ``resolve_path`` cached when the query was compiled (a pair it never resolved, such as
-    the rest of a resolved route seen from a rewrite's anchor, chose nothing)."""
+    The pair's resolution is ``resolve_route``'s, which depends only on the package. Notes
+    never enumerate routes for a pair the query resolved (its resolution is cached), and a
+    decided pair only checks whether a second route fits the hop ceiling, with bounded
+    reachability scans."""
+    try:
+        resolution = resolve_route(config, start=start, target=target)
+    except SemanticLayerError:
+        return None
+    if resolution.routes[0] != tuple(route):
+        return None
+    if resolution.basis != "decided":
+        return resolution if len(resolution.routes) > 1 else None
     analysis = get_package_analysis(config)
     pair = (start, target)
-    pinned = analysis.path_preferences.get(pair)
-    if pinned is not None:
-        if pair not in analysis.route_note_cache:
-            analysis.route_note_cache[pair] = _has_multiple_routes(
-                analysis.graph, start, target, package_hop_limit(config)
-            )
-        if not analysis.route_note_cache[pair]:
-            return None
-        return RouteResolution((tuple(pinned),), "decided")
-    cached = analysis.path_cache.get(pair)
-    if isinstance(cached, RouteResolution) and len(cached.routes) > 1:
-        return cached
-    return None
-
-
-def route_alternatives(
-    config: PackageConfig, start: str, target: str, resolution: RouteResolution
-) -> list[dict[str, Any]]:
-    """The row that would make each other considered route the pair's default, for every
-    route that agrees with the package's rows (a row for one that disagrees would not load)."""
-    analysis = get_package_analysis(config)
-    return [
-        route_pin(start, target, list(path))
-        for path in resolution.routes[1:]
-        if disagreeing_row(
-            walk_entities(analysis.relationships, start, path), path, analysis.route_rows
+    if pair not in analysis.route_note_cache:
+        analysis.route_note_cache[pair] = _has_multiple_routes(
+            analysis.graph, start, target, package_hop_limit(config)
         )
-        is None
+    return resolution if analysis.route_note_cache[pair] else None
+
+
+def offered_rows(
+    config: PackageConfig, start: str, target: str, routes: Sequence[Sequence[str]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The row that would record each route for the pair, offered only when it would load
+    beside the package's rows (``route_rows.conflicting_rows``, the loader's check), and, for
+    each route whose row would not, the existing rows it disagrees with
+    (``{"relationship_path", "rows"}``)."""
+    analysis = get_package_analysis(config)
+    existing = [
+        PathPreferenceConfig(source, end, list(path))
+        for (source, end), path in analysis.path_preferences.items()
     ]
+    offered: list[dict[str, Any]] = []
+    conflicts: list[dict[str, Any]] = []
+    for path in routes:
+        row = PathPreferenceConfig(start, target, list(path))
+        rows = conflicting_rows(analysis.relationships, row, existing)
+        if rows:
+            conflicts.append({"relationship_path": list(path), "rows": [asdict(r) for r in rows]})
+        else:
+            offered.append(route_pin(start, target, list(path)))
+    return offered, conflicts
 
 
 def _has_multiple_routes(

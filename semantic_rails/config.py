@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .config_parts.package_loader import normalize_package
-from .config_parts.route_rows import disagreeing_row, row_paths, walk_entities
+from .config_parts.route_rows import require_rows_agree
 from .dialects import (
     connection_option_errors,
     snowflake_native_direct_connect_errors,
@@ -1709,39 +1709,8 @@ def _parse_path_preferences(
                 relationship_path=resolved,
             )
         )
-    _require_rows_agree(out, {rel.id: rel for rel in relationships}, path=path)
+    require_rows_agree({rel.id: rel for rel in relationships}, out, path=path)
     return out
-
-
-def _require_rows_agree(
-    rows: list[PathPreferenceConfig], relationships: dict[str, RelationshipConfig], *, path: str
-) -> None:
-    """A row's route holds wherever another row's path walks its pair, so two rows that record
-    different parts for one pair are two definitions of it: ``INVALID_CONFIG``, naming both."""
-    recorded = [row_paths(relationships, row.source_entity, row.relationship_path) for row in rows]
-    for row in rows:
-        entities = walk_entities(relationships, row.source_entity, row.relationship_path)
-        for other, paths in zip(rows, recorded, strict=True):
-            pair = (other.source_entity, other.target_entity)
-            if other is row or not disagreeing_row(entities, row.relationship_path, {pair: paths}):
-                continue
-            both = [
-                {
-                    "source_entity": item.source_entity,
-                    "target_entity": item.target_entity,
-                    "relationship_path": list(item.relationship_path),
-                }
-                for item in (row, other)
-            ]
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                f"{path}: graph.path_preferences rows disagree: the row for "
-                f"{row.source_entity} -> {row.target_entity} walks {pair[0]} -> {pair[1]}, but "
-                f"not by the route the row for {pair[0]} -> {pair[1]} records "
-                f"({', '.join(other.relationship_path)}). A row holds wherever a route walks "
-                "its pair, so keep one definition of the pair: change or remove one row.",
-                details={"rows": both},
-            )
 
 
 def _validate_caveat_refs(config: PackageConfig, *, path: str) -> None:

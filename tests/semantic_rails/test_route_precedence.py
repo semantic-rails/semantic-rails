@@ -598,21 +598,31 @@ def test_the_starts_own_key_answers_and_lists_each_other_route_with_its_row(tmp_
     with no district of its own, follows the account row."""
     query = _query(LOAN_AMOUNT, group_by=[DISTRICT_NAME])
     account_routes = [[*LOAN_ACCOUNT, *BRANCH], [*LOAN_ACCOUNT, *OWNER]]
-    for name, rows, alternatives in (
-        ("none", None, account_routes),
+    for name, rows, details in (
+        (
+            "none",
+            None,
+            {"alternatives": [_row(LOAN, DISTRICT, path) for path in account_routes]},
+        ),
         # A row for the branch route would disagree with the account row, so only the
-        # owner route is offered.
-        ("row", [ACCOUNT_OWNER_ROW], [account_routes[1]]),
+        # owner route is offered, and the branch route names the row it disagrees with.
+        (
+            "row",
+            [ACCOUNT_OWNER_ROW],
+            {
+                "alternatives": [_row(LOAN, DISTRICT, account_routes[1])],
+                "conflicts_with": [
+                    {"relationship_path": account_routes[0], "rows": [ACCOUNT_OWNER_ROW]}
+                ],
+            },
+        ),
     ):
         pkg = _write_package(tmp_path / name, relationships=OWN_DISTRICT, rows=rows)
         out = Runtime.from_path(str(pkg)).query(query)
         assert _rows(out, [DISTRICT_NAME, "v"]) == _gold(OWN_KEY_GOLD)
         note = _notes(out)[(LOAN, DISTRICT)]
         assert (note["code"], note["severity"]) == ("ROUTE_COLOCATED_KEY", "info")
-        assert note["details"] == {
-            "route": OWN_KEY,
-            "alternatives": [_row(LOAN, DISTRICT, path) for path in alternatives],
-        }
+        assert note["details"] == {"route": OWN_KEY, **details}
     assert _gold(OWN_KEY_GOLD) != _gold(_by_account_route("loan", "owner"))
     cards = Runtime.from_path(str(pkg)).query(_query(CARD_COUNT, group_by=[DISTRICT_NAME]))
     assert _rows(cards, [DISTRICT_NAME, "v"]) == _gold(_by_account_route("card", "owner"))

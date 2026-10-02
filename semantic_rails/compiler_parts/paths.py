@@ -185,7 +185,7 @@ def _direct_entity_key_source_expr(
     if resolved != [rel.id]:
         return None
     record_bound_object(rel, config)
-    record_route_choice(source_entity, target_entity)
+    record_route_choice(source_entity, target_entity, resolved)
     return _column_ref(source_table, source_col)
 
 
@@ -564,7 +564,13 @@ def _joins_for_paths(
     root_table = overrides.get(source_entity, entities[source_entity].table)
     joined_via: dict[str, tuple[str, str]] = {root_table: ("", "root")}
     for selection in path_selections:
-        record_route_choice(source_entity, selection.target_entity)
+        # A rewrite's anchor reads the root's route from the anchor's rows (the hop back to the
+        # root, then the rest of the route): the root's own note names that route.
+        if (
+            selection.analysis.get("status") != "entity_in_terms_of"
+            and selection.purpose != "entity_in_terms_of_root"
+        ):
+            record_route_choice(source_entity, selection.target_entity, selection.chosen_path)
         current_entity = source_entity
         nullable_path = False
         for rel_id in selection.chosen_path:

@@ -499,7 +499,7 @@ def test_recorded_route_notes_obey_the_hop_ceiling(tmp_path, monkeypatch, hop_li
     monkeypatch.setattr(fanout_module, "enumerate_paths", fail_enumeration)
     assert candidates == [pinned_path]
     assert fanout_module.route_basis(config, ACCOUNT, REGION) == "decided"
-    noted = fanout_module.route_note(config, ACCOUNT, REGION)
+    noted = fanout_module.route_note(config, ACCOUNT, REGION, pinned_path)
     assert (noted is not None) == (hop_limit >= 2)
     assert get_package_analysis(config).path_cache == {}
 
