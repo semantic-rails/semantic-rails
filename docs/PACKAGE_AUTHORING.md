@@ -492,13 +492,22 @@ package:
       query_tag: semantic-rails
 ```
 
-Two connection kinds are supported:
+Three connection kinds are supported:
 
+- `snowflake_adbc` — opt-in Arrow connector with password or PKCS #8 key-pair
+  authentication, bound row-filter parameters and exact decimal results. See
+  [installation and connection options](ADDING_A_DIALECT.md#experimental-snowflake-profile).
 - `snowflake_cli` — uses a configured Snow CLI profile by name.
 - `snowflake_native` — direct connector via env-var indirection (account, user,
   password, etc. read from environment variables).
 
 Literal credentials in YAML are rejected.
+
+For `snowflake_adbc`, driver names, shared-library paths and manifests belong to
+the runtime operator's environment; package options selecting them are rejected
+with `INVALID_CONFIG`. Temporal values with nonzero sub-microsecond precision
+refuse with `RESULT_VALUE_UNSUPPORTED`; out-of-range nanosecond timestamps refuse
+with `QUERY_EXECUTION_ERROR`.
 
 ### Native adapter timeouts
 
@@ -1355,21 +1364,46 @@ paths, because most pairs have one route (see [the route rule](#the-route-rule))
   key, so the query is refused until a `graph.path_preferences` row records which one
   the package means.
 
-A query that groups or filters by a dimension looked up through a many-to-one or
-one-to-one hop joins it with a left join, so the measure keeps a row whose foreign key
-is NULL or matches no row: it groups under NULL, and grouped rows add up to the
-ungrouped total, except for a dimension a rollup holds (below). A filter on such a
-dimension treats the row as it treats a NULL value in the row itself: `IS NULL` selects it, so "passengers excluding crew"
-through a crew-roster lookup is a `crew_role IS NULL` filter, while `=`, `!=`, `IN`
-and `NOT IN` never match it. Every other read of a lookup keeps its inner join, so a
-row with no match is left out, as before: a time role read through a lookup, a
-measure's own filter, a metric filter and the context entities it matches on,
-conversions (their match keys and properties), qualified sets and metric predicates,
-anchored entity-set ratios, and a dimension a rollup of the measure's model holds
-(below). That last rule covers every dimension any rollup of the model holds, even at a
-grain the rollup can never answer, so those rows are dropped for that dimension however
-the query is grouped. So do hops that fan out, and every hop on ClickHouse, where an
-unmatched outer-join column reads `''` or `0` unless it is `Nullable`, not NULL.
+A many-to-one or one-to-one hop never removes a measure's row. Whatever reads the
+dimension it looks up (a grouping, a filter, the measure's own filter, an `aggregate_if`
+condition or a measure expression), and whatever shape the query takes (pre-aggregated
+before its joins, de-duplicated across a one-to-many hop, filtered with `EXISTS`, an
+entity-set ratio, or dimensions alone), the hop is a left join. A row whose foreign key is
+NULL or matches no row stays, with NULL for everything the hop looks up: it groups under
+NULL, and grouped rows add up to the ungrouped total. A filter on such a dimension treats
+the row as it treats a NULL value in the row itself, wherever the filter is written: `IS
+NULL` selects it, so "passengers excluding crew" through a crew-roster lookup is a
+`crew_role IS NULL` filter, while `=`, `!=`, `IN` and `NOT IN` never match it.
+
+Only these reads join a lookup with an inner join, so a row with no match is left out:
+
+- a time role read through a lookup (a row with no time has no time bucket), and so any
+  other read of the same hop;
+- a metric predicate's own query, and its route to the entity it qualifies. Its set is
+  matched on that entity and on the query's grouped (context) entities, so a row with none
+  of them is not in the set;
+- a distribution's per-entity values (its `over`): a row whose lookup of the entity finds
+  no match belongs to no entity, never to a NULL entity of its own;
+- conversions (their match keys and properties);
+- a dimension a rollup of the measure's model holds (below). That rule covers every
+  dimension any rollup of the model holds, even at a grain the rollup can never answer,
+  so those rows are dropped for that dimension however the query is grouped. A rollup of
+  another model changes nothing: a rollup of the items holding the country keeps an order
+  count's rows, even when the orders are counted from the items, and a query of
+  dimensions alone reads no rollup;
+- every hop on ClickHouse, where an unmatched outer-join column reads `''` or `0` unless
+  it is `Nullable`, not NULL.
+
+Hops that fan out are inner joins too. A distinct count read from a child model (a
+`rollup_safe` reverse `count_distinct`) joins back to the counted entity with an inner join,
+even when grouping only by a child's looked-up dimension and reading no parent dimension
+or time axis. A child row whose parent has no record counts nothing; valid parents whose
+child lookup finds no match still count under NULL. This shortcut requires exactly one
+relationship between child and parent, on the counted path, and permits the forward lookup.
+With multiple parent relationships or a reverse-only relationship, the query uses the
+counted entity's own leaf instead. The lookups past that entity keep their rows.
+Because of those inner reads, an `aggregate_if` condition that a row with no
+match could satisfy (such as `IS NULL`) is refused.
 
 Long chains are first-class: a measure can be grouped or filtered by a
 dimension four relationships away (`line_item → order → customer → city →

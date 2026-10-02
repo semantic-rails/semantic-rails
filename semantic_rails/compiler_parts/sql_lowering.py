@@ -10,7 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..acceleration.routing import aggregate_routing_report, record_rollup_scan
-from ..acceleration.selection import recombine_aggregation, rollup_dimension_entities
+from ..acceleration.selection import recombine_aggregation
 from ..ast import (
     ChildGroup,
     child_groups,
@@ -134,12 +134,15 @@ from .paths import (
     _column_ref,
     _direct_dimension_source_expr,
     _direct_entity_key_source_expr,
+    _entity_in_terms_of_parent_relationship,
     _entity_key_dimension_ids,
     _expression_root_entity,
     _join_condition,
     _joins_for_paths,
     _leaf_time_role,
     _resolve_dimension_expr,
+    inner_lookups,
+    rollup_held_lookups,
 )
 from .post_aggregation import _compile_post_expr, _expr_requires_dense_series, _namespace_sql_select
 from .predicate import (
@@ -1196,12 +1199,15 @@ def _distribution_select(
         value_alias,
         extra_group_by=entity_key_dims,
     )
-    sql_ast = _compile_query_sql_ast(
-        config,
-        entity_value_query,
-        project_cut=project_is_cut() or bool(expr.over.where),
-        guard_empty=False,
-    )
+    # Like a metric predicate's set, the per-entity values join their lookups INNER: a row whose
+    # lookup of the entity finds no match is no entity, never one NULL entity of its own.
+    with inner_lookups():
+        sql_ast = _compile_query_sql_ast(
+            config,
+            entity_value_query,
+            project_cut=project_is_cut() or bool(expr.over.where),
+            guard_empty=False,
+        )
     source_name = f"{alias}__entity_values"
     key_aliases = _query_key_aliases(plan)
     value_ref = SqlIdentifier(parts=[source_name, value_alias])
@@ -1722,6 +1728,7 @@ def _entity_in_terms_of_anchor_plan(
 
     anchor_entity = ""
     anchor_key_columns: list[str] = []
+    anchor_relationship_id = ""
     transformed_selections: list[PathSelection] = []
     for selection in measure_plan.path_selections:
         if selection.analysis.get("status") == "ok":
@@ -1748,6 +1755,11 @@ def _entity_in_terms_of_anchor_plan(
             if "count_distinct" not in reverse_safe:
                 return None
             if not selected_anchor:
+                parent = _entity_in_terms_of_parent_relationship(
+                    rel.source_entity, measure.entity, config
+                )
+                if index != 0 or parent is None or parent.id != rel.id:
+                    return None
                 target_to_source = dict(
                     zip(
                         list(rel.target_columns or [rel.target_column]),
@@ -1759,11 +1771,14 @@ def _entity_in_terms_of_anchor_plan(
                     return None
                 selected_anchor = rel.source_entity
                 selected_key_columns = [target_to_source[column] for column in measure_key_columns]
+                anchor_relationship_id = rel.id
                 remaining_path = list(selection.chosen_path[index + 1 :])
             current_entity = rel.source_entity
         if not selected_anchor:
             return None
-        if anchor_entity and selected_anchor != anchor_entity:
+        if anchor_entity and (
+            selected_anchor != anchor_entity or selected_key_columns != anchor_key_columns
+        ):
             return None
         anchor_entity = selected_anchor
         anchor_key_columns = selected_key_columns
@@ -1783,14 +1798,15 @@ def _entity_in_terms_of_anchor_plan(
     if not anchor_entity:
         return None
     supplemental_selections: list[PathSelection] = []
-    required_dimension_ids = list(plan.group_by)
+    lookup = "entity_in_terms_of_lookup"
+    required_dimension_ids = [(dim_id, lookup) for dim_id in plan.group_by]
     required_dimension_ids.extend(
-        str(item.get("field"))
+        (str(item.get("field")), lookup)
         for item in refuse_child_groups(plan.query.get("where"), "in a child-grain count")
         if item.get("field")
     )
     required_dimension_ids.extend(
-        str(item.get("field"))
+        (str(item.get("field")), lookup)
         for item in _bound_filter_clauses(measure_plan.bound_measure, config)
         if item.get("field")
     )
@@ -1798,10 +1814,12 @@ def _entity_in_terms_of_anchor_plan(
         role = _temporal_role_index(config)[
             _leaf_time_role(measure_plan.bound_measure, normalize_query(plan.query), config)
         ]
-        required_dimension_ids.append(role.dimension)
+        # Read through a lookup, the time role joins INNER as in every other leaf.
+        required_dimension_ids.append((role.dimension, "time"))
 
-    covered_targets = {selection.target_entity for selection in transformed_selections}
-    for dim_id in dict.fromkeys(required_dimension_ids):
+    transformed_by_target = {row.target_entity: row for row in transformed_selections}
+    covered_targets = {(target, lookup) for target in transformed_by_target}
+    for dim_id, purpose in dict.fromkeys(required_dimension_ids):
         dim = dimensions.get(dim_id)
         if dim is None:
             return None
@@ -1810,19 +1828,58 @@ def _entity_in_terms_of_anchor_plan(
             or _direct_dimension_source_expr(anchor_entity, dim_id, config) is not None
         ):
             continue
-        if dim.entity in covered_targets:
+        if (dim.entity, purpose) in covered_targets:
             continue
-        new_selection = _anchor_path_selection(
-            config=config,
-            plan=plan,
-            start_entity=anchor_entity,
-            target_entity=dim.entity,
-            purpose="entity_in_terms_of_lookup",
+        new_selection = (
+            # The time role, read on a grouping's own path.
+            replace(transformed_by_target[dim.entity], purpose=purpose)
+            if dim.entity in transformed_by_target
+            else _anchor_path_selection(
+                config=config,
+                plan=plan,
+                start_entity=anchor_entity,
+                target_entity=dim.entity,
+                purpose=purpose,
+            )
         )
         if new_selection is None:
             return None
         supplemental_selections.append(new_selection)
-        covered_targets.add(dim.entity)
+        covered_targets.add((dim.entity, purpose))
+    # A dimension some rollup of the measure's model holds joins INNER on the measure's own
+    # path (``_joins_for_paths``); this leaf starts from another entity, so it leaves the query
+    # to the measure's own leaf.
+    if rollup_held_lookups(
+        config, measure.entity, [*supplemental_selections, *transformed_selections]
+    ):
+        return None
+    # An anchor row whose parent has no record is none of the measure's entities: the hops back
+    # to the measure's own entity join INNER, and the lookups past it keep rows.
+    root_paths: set[tuple[str, ...]] = set()
+    for row in supplemental_selections:
+        if row.purpose != lookup:
+            continue  # a time role's hops join INNER already
+        current_entity = anchor_entity
+        for index, rel_id in enumerate(row.chosen_path):
+            rel = relationships[rel_id]
+            current_entity = (
+                rel.target_entity if current_entity == rel.source_entity else rel.source_entity
+            )
+            if current_entity == measure.entity:
+                root_paths.add(tuple(row.chosen_path[: index + 1]))
+                break
+    # The counted entity must exist even when every grouping reads only the child's rows
+    # or its lookups, so no supplemental dimension path happens to reach the parent.
+    root = PathSelection(
+        target_entity=measure.entity,
+        purpose="entity_in_terms_of_root",
+        chosen_path=[anchor_relationship_id],
+        candidate_paths=[[anchor_relationship_id]],
+        analysis=analyze_fanout(config, anchor_entity, [anchor_relationship_id]),
+    )
+    if root_paths and root_paths != {tuple(root.chosen_path)}:
+        return None
+    supplemental_selections.append(root)
     return {
         "anchor_entity": anchor_entity,
         "anchor_key_columns": anchor_key_columns,
@@ -1902,7 +1959,13 @@ def _entity_in_terms_of_leaf_select(
     return SqlSelect(
         select=select_fields,
         from_table=SqlTableRef(name=anchor_table),
-        joins=_joins_for_paths(anchor_entity, path_selections, config, time_spec=plan.time),
+        joins=_joins_for_paths(
+            anchor_entity,
+            path_selections,
+            config,
+            measure_entity=str(anchor_plan["omitted_root_entity"]),
+            time_spec=plan.time,
+        ),
         where=where_clauses,
         group_by=group_fields,
     )
@@ -1961,6 +2024,21 @@ def _fanout_dedup_leaf_select(
     )
 
 
+def _join_table_name(join: SqlJoin) -> str:
+    return join.table.name if isinstance(join.table, SqlTableRef) else ""
+
+
+def _tables_read(condition: Any) -> set[str]:
+    """The tables a join condition reads; an expression it doesn't know reads an unknown one."""
+    if isinstance(condition, SqlIdentifier):
+        return {".".join(condition.parts[:-1])}
+    if isinstance(condition, SqlBinary):
+        return _tables_read(condition.left) | _tables_read(condition.right)
+    if isinstance(condition, SqlIsNull):
+        return _tables_read(condition.expr)
+    return set() if isinstance(condition, SqlLiteral) else {""}
+
+
 def _fanout_filter_leaf_select(
     plan: LogicalPlan,
     measure_plan: MeasurePlan,
@@ -1974,9 +2052,10 @@ def _fanout_filter_leaf_select(
 ) -> SqlSelect:
     """Filter the measure's rows with correlated EXISTS, never join copies into its sum.
 
-    Each hop is nested so its authored join condition correlates with the preceding row.
-    Lookups outside EXISTS keep rows they find no match for, as in the ordinary leaf. The
-    flat child filter takes one EXISTS; each child group takes its own (see
+    Each hop is nested so its authored join condition correlates with the preceding row. A
+    lookup on the rows an EXISTS reads joins LEFT inside it instead, so a child row it finds
+    no match for stays, with NULL for the lookup, as do the lookups outside EXISTS. The flat
+    child filter takes one EXISTS; each child group takes its own (see
     ``_child_group_condition``).
     """
     measure = _measure_index(config)[measure_plan.bound_measure.measure_id]
@@ -1985,9 +2064,10 @@ def _fanout_filter_leaf_select(
         for row in measure_plan.path_selections
         if row.analysis.get("status") != "ok" and row.purpose != "child_group"
     ]
-    conditions = _nested_exists(
-        _joins_for_paths(measure.entity, crossing, config, time_spec=plan.time), child_where
+    child_joins = _joins_for_paths(
+        measure.entity, crossing, config, measure_entity=measure.entity, time_spec=plan.time
     )
+    conditions = _nested_exists(child_joins, child_where)
     query = normalize_query(plan.query)
     conditions += [
         _child_group_condition(plan, query, config, measure, group)
@@ -1997,8 +2077,8 @@ def _fanout_filter_leaf_select(
         measure.entity,
         [row for row in measure_plan.path_selections if row.analysis.get("status") == "ok"],
         config,
+        measure_entity=measure.entity,
         time_spec=plan.time,
-        lookup_selections=_lookup_selections(plan, [measure_plan], config),
     )
     return SqlSelect(
         select=[
@@ -2020,23 +2100,36 @@ def _fanout_filter_leaf_select(
     )
 
 
-def _nested_exists(
-    hops: list[SqlJoin], conditions: list[Any], *, innermost_joins: Sequence[SqlJoin] = ()
-) -> list[Any]:
-    """``conditions`` inside one EXISTS per hop, each correlated on its authored join; the
-    innermost reads ``innermost_joins`` too. No hops leave ``conditions`` as they are."""
-    for index, join in reversed(list(enumerate(hops))):
+def _nested_exists(child_joins: list[SqlJoin], conditions: list[Any]) -> list[Any]:
+    """``conditions`` inside one EXISTS per hop of ``child_joins``, each correlated on its
+    authored join. A LEFT lookup on the rows an EXISTS reads joins inside it. No joins leave
+    ``conditions`` as they are."""
+    levels: list[tuple[SqlJoin, SqlExpr, list[SqlJoin]]] = []
+    for join in child_joins:
         if join.on is None:
             raise SemanticLayerError(
                 "MIXED_GRAIN_INVALID", "A child filter needs a correlated join."
             )
+        # A lookup from the measure's own row nests like any hop: the hop after it needs its
+        # match anyway.
+        holders = [
+            lookups
+            for level, _, lookups in reversed(levels)
+            if join.join_type == "LEFT"
+            and _tables_read(join.on) <= {_join_table_name(row) for row in (level, *lookups, join)}
+        ]
+        if holders:
+            holders[0].append(join)
+        else:
+            levels.append((join, join.on, []))
+    for join, on, lookups in reversed(levels):
         conditions = [
             SqlExists(
                 SqlSelect(
                     select=[SqlField(SqlLiteral(1), "match")],
                     from_table=join.table,
-                    joins=list(innermost_joins) if index == len(hops) - 1 else [],
-                    where=[join.on, *conditions],
+                    joins=lookups,
+                    where=[on, *conditions],
                 )
             )
         ]
@@ -2181,11 +2274,13 @@ def child_group_route(
             )
         lookups.append(lookup)
     route_tables = {_measure_owned_relation(measure, entities)} | {
-        join.table.name for join in _joins_for_paths(start, [route], config)
+        join.table.name for join in _joins_for_paths(start, [route], config, measure_entity=None)
     }
     lookup_tables = {
         join.table.name
-        for join in _joins_for_paths(group.child, [row for row in lookups if row], config)
+        for join in _joins_for_paths(
+            group.child, [row for row in lookups if row], config, measure_entity=None
+        )
     }
     clash = sorted(route_tables & lookup_tables)
     if clash:
@@ -2210,11 +2305,7 @@ def _child_group_condition(
     route, lookups = child_group_route(config, query, measure, group)
     found = [row for row in lookups if row is not None]
     inner_joins = _joins_for_paths(
-        group.child,
-        found,
-        config,
-        time_spec=plan.time,
-        lookup_selections=frozenset((row.target_entity, row.purpose) for row in found),
+        group.child, found, config, measure_entity=None, time_spec=plan.time
     )
     conditions = [
         build_filter_condition(
@@ -2227,8 +2318,10 @@ def _child_group_condition(
         )
         for condition in group.where
     ]
-    hops = _joins_for_paths(measure.entity, [route], config, time_spec=plan.time)
-    [exists] = _nested_exists(hops, conditions, innermost_joins=inner_joins)
+    hops = _joins_for_paths(
+        measure.entity, [route], config, measure_entity=measure.entity, time_spec=plan.time
+    )
+    [exists] = _nested_exists([*hops, *inner_joins], conditions)
     return replace(exists, negated=group.match == "none")
 
 
@@ -2350,35 +2443,11 @@ def _source_rollup_leaf_select(
             measure.entity,
             measure_plan.path_selections,
             config,
+            measure_entity=measure.entity,
             time_spec=plan.time,
             table_overrides={measure.entity: rollup_name},
         ),
         group_by=final_group_fields,
-    )
-
-
-def _lookup_selections(
-    plan: LogicalPlan, measure_plans: list[MeasurePlan], config: PackageConfig
-) -> frozenset[tuple[str, str]]:
-    """The path selections whose N:1 and 1:1 hops keep the rows they find no match for.
-
-    Only the request's own measure leaf, and only the dimensions the query groups or filters
-    by and the entities an aggregate_if's condition reads. Every other read of a lookup keeps
-    its INNER join: a time role, a measure or metric filter, a metric predicate and its
-    context, a nested query, a conversion, an entity-set ratio, and a dimension some rollup of
-    the measure's model holds pre-joined.
-    """
-    from ..compiler import _all_metric_predicates
-
-    if not plan_is_root() or any(_all_metric_predicates(plan, mp) for mp in measure_plans):
-        return frozenset()
-    first = measure_plans[0]
-    prejoined = rollup_dimension_entities(config, first.source_entity)
-    return frozenset(
-        (selection.target_entity, selection.purpose)
-        for selection in first.path_selections
-        if selection.purpose in {"group_by", "where", "aggregate_if"}
-        and selection.target_entity not in prejoined
     )
 
 
@@ -2548,7 +2617,11 @@ def _measure_leaf_select(
     if measure_plan.rewrite_strategy == "fanout_dedup":
         where_clauses += _distinct_parent_group_conditions(plan, measure_plan, config, measure)
         joins = _joins_for_paths(
-            measure.entity, measure_plan.path_selections, config, time_spec=plan.time
+            measure.entity,
+            measure_plan.path_selections,
+            config,
+            measure_entity=measure.entity,
+            time_spec=plan.time,
         )
         return _fanout_dedup_leaf_select(
             measure_plan,
@@ -2579,8 +2652,8 @@ def _measure_leaf_select(
             measure.entity,
             measure_plan.path_selections,
             config,
+            measure_entity=measure.entity,
             time_spec=plan.time,
-            lookup_selections=_lookup_selections(plan, [measure_plan], config),
         ),
         *predicate_joins,
     ]
@@ -2999,6 +3072,7 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
         measure.entity,
         measure_plan.path_selections,
         config,
+        measure_entity=measure.entity,
         time_spec=plan.time,
         table_overrides={measure.entity: "snapshot"},
     )
@@ -3127,11 +3201,21 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
     )
 
 
-def _distinct_value_path_selections(plan: LogicalPlan) -> list[PathSelection]:
+def _distinct_value_path_selections(
+    plan: LogicalPlan, config: PackageConfig
+) -> list[PathSelection]:
+    # The time role's path joins INNER, as in every leaf, even where a grouping shares it.
+    time_entity = (
+        _dimension_index(config)[
+            _temporal_role_index(config)[str(plan.time["temporal_role"])].dimension
+        ].entity
+        if plan.time
+        else None
+    )
     return [
         PathSelection(
             target_entity=target_entity,
-            purpose="distinct_values",
+            purpose="time" if target_entity == time_entity else "distinct_values",
             chosen_path=list(path),
             candidate_paths=[
                 list(candidate)
@@ -3200,7 +3284,11 @@ def _distinct_value_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelec
 
     joins = list(
         _joins_for_paths(
-            plan.root_entity, _distinct_value_path_selections(plan), config, time_spec=plan.time
+            plan.root_entity,
+            _distinct_value_path_selections(plan, config),
+            config,
+            measure_entity=None,
+            time_spec=plan.time,
         )
     )
     if leaf_calendar_join is not None:
@@ -4360,8 +4448,8 @@ def _measure_group_leaf_select(
             first_measure.entity,
             first_plan.path_selections,
             config,
+            measure_entity=first_measure.entity,
             time_spec=plan.time,
-            lookup_selections=_lookup_selections(plan, measure_plans, config),
         )
     )
     if leaf_calendar_join is not None:
