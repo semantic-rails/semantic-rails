@@ -315,6 +315,11 @@ Supported `op` values (all compile end-to-end):
   instead of erroring. `value: null` with `IN` / `NOT IN` is rejected
   with `INVALID_QUERY` + a `USE_LIST_VALUE_OR_NULL_TEST` recovery hint.
 - `IS NULL` / `IS NOT NULL` ignore `value` entirely — omit it.
+- `IS` / `IS NOT` accept only `null`, `true` or `false`. Other values are
+  rejected before execution with `INVALID_QUERY` and a
+  `USE_EQUALITY_FOR_SCALAR` recovery hint: use `=` / `!=` for scalar comparisons.
+  This applies to plain dimensions, parent dimensions and metric filters
+  on every backend.
 - `value: null` with `=` (or `IS`) lowers to `field IS NULL`; with
   `!=` / `<>` / `IS NOT` it lowers to `field IS NOT NULL`. Ordering
   (`<`, `<=`, `>`, `>=`) and LIKE ops against `null` are rejected with a

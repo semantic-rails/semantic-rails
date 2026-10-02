@@ -23,6 +23,7 @@ from typing import Any
 import pytest
 
 from semantic_rails.compiler import compile_query
+from semantic_rails.errors import SemanticLayerError
 from tests.semantic_rails.empty_groups_invariant import assert_settled_in_one_place
 
 from .conftest import Backend
@@ -628,6 +629,40 @@ def _cases() -> Iterator[Case]:
     yield from _empty_group_cases(revenue, orders)
     yield from _absent_entity_cases()
     yield from _null_comparison_cases()
+    # IS operands are null or boolean on both warehouses, including parent lookups.
+    for dimension, column, join in (
+        (STORE, "o.store_id", ""),
+        (CHANNEL, "c.channel", "LEFT JOIN signups c ON c.customer_id = o.customer_id"),
+    ):
+        for op in ("IS", "IS NOT"):
+            yield Case(
+                f"is_operand-{dimension}-{op}-null",
+                "utc_authored",
+                {"select": [orders], "where": [{"field": dimension, "op": op, "value": None}]},
+                f"SELECT COUNT(*) FROM orders o {join} WHERE {column} {op} NULL",
+            )
+    for op in ("IS", "IS NOT"):
+        for value in (True, False):
+            yield Case(
+                f"is_operand-{op}-{value}",
+                "utc_authored",
+                {
+                    "select": [orders],
+                    "metric_filters": [
+                        {
+                            "expression": {
+                                "kind": "comparison",
+                                "op": ">",
+                                "left": ORDERS,
+                                "right": {"kind": "literal", "value": 3},
+                            },
+                            "op": op,
+                            "value": value,
+                        }
+                    ],
+                },
+                f"SELECT COUNT(*) FROM orders HAVING (COUNT(*) > 3) {op} {str(value).upper()}",
+            )
     yield from _child_filter_cases()
     for name, variant, grain, start, end, routes in (
         ("utc-march_bounds_by_day", "utc_implicit", "day", "2024-03-01", "2024-04-01", None),
@@ -927,6 +962,24 @@ def _answer(backend: Backend, case: Case) -> list[tuple[Any, ...]]:
 def _backend(request: pytest.FixtureRequest, name: str) -> Backend:
     """Resolved per test, so a missing Postgres skips only the Postgres checks."""
     return request.getfixturevalue(f"{name}_backend")
+
+
+@pytest.mark.parametrize("backend_name", BACKENDS)
+@pytest.mark.parametrize("field", [STORE, CHANNEL])
+@pytest.mark.parametrize("op", ["IS", "IS NOT"])
+def test_is_operand_refused_before_execution(request, backend_name, field, op):
+    runtime = _backend(request, backend_name).runtimes["utc_authored"]
+    query = {
+        "select": [_item(ORDERS, "orders")],
+        "where": [{"field": field, "op": op, "value": "x"}],
+    }
+    report = runtime.validate(query)
+    assert report["ok"] is False
+    assert report["errors"][0]["code"] == "INVALID_QUERY"
+    assert report["recovery_hints"][0]["code"] == "USE_EQUALITY_FOR_SCALAR"
+    with pytest.raises(SemanticLayerError) as exc:
+        runtime.query(query)
+    assert exc.value.code == "INVALID_QUERY"
 
 
 @pytest.mark.parametrize(("backend_name", "case"), _params("reference", BACKENDS))
