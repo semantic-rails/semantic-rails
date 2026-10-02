@@ -102,7 +102,9 @@ or `password_file`. Optional locators are `database`, `schema`, `warehouse` and
 instead uses `private_key_env` or `private_key_file` containing PEM PKCS #8 text,
 with optional `private_key_passphrase_env`. Both encrypted and unencrypted keys
 are mapped to the driver's in-memory PKCS #8 options. Exactly one password or
-key is required. Literal credentials and other authentication modes are refused.
+key source is required. Package loading, config reports and guided setup validate
+these source options without reading credentials; `connection.name` is refused.
+Literal credentials and other authentication modes are refused.
 Key-pair mapping is covered with stubs; live key-pair authentication is unqualified.
 
 `use_high_precision` defaults to `"true"`: the driver returns NUMBER columns as
@@ -140,15 +142,17 @@ for the existing conformance target. Run its Snowflake battery and the dedicated
 exact-type and two-tenant isolation tests:
 
 ```sh
-uv run pytest tests/integration/test_conformance.py tests/integration/test_adbc_snowflake.py -k snowflake -q
+SR_SNOWFLAKE_CONNECTION_KIND=snowflake_adbc uv run pytest tests/integration/test_conformance.py tests/integration/test_adbc_snowflake.py -k snowflake -q
 ```
 
 The conformance target and dedicated tests use `SR_SNOWFLAKE_ACCOUNT`, `SR_SNOWFLAKE_USER`, `SR_SNOWFLAKE_PASSWORD`
 and optional `SR_SNOWFLAKE_DATABASE`, `SR_SNOWFLAKE_SCHEMA`,
 `SR_SNOWFLAKE_WAREHOUSE`. The isolation test creates only a session-local table,
 alternates tenants on identical SQL, checks an injection-shaped attribute and
-denies missing attributes. It explicitly skips when credentials are absent;
-configured driver or warehouse failures fail the test. The dedicated tests also
+denies missing attributes. Dedicated tests explicitly skip unless
+`SR_SNOWFLAKE_CONNECTION_KIND=snowflake_adbc`, and skip when credentials are absent;
+once opted in with credentials, missing drivers and warehouse failures fail the
+setup's known-good timestamp query before any expected refusal. The dedicated tests also
 check timestamp overflow and sub-microsecond precision refusal. The operator's
 `SR_SNOWFLAKE_ADBC_DRIVER_PATH` can override driver discovery. Stub unit tests
 prove mapping and lifecycle behavior; they do not establish live qualification.

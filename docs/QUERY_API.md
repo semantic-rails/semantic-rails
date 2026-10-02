@@ -472,6 +472,12 @@ per-tenant policies without forking; the OSS default has no limits.
 - a grouped dimension ID like `dimension.jaffle_store_name`
 - the stable reserved alias `time` whenever the query has a time axis
 
+When `order_by` is omitted or empty, a query with a time axis returns rows
+in ascending time-bucket order, followed by its `group_by` dimensions in their
+stated order (also ascending). This applies on every warehouse, including
+`time.fill` results. An explicit `order_by` replaces this default. A time window
+without a time axis (one total per group) has no default ordering.
+
 Output column names must be unique across:
 
 - `select[*].as`

@@ -1,5 +1,6 @@
 """Driver-free Snowflake profile checks; no warehouse credentials required."""
 
+import json
 import sys
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
@@ -80,12 +81,25 @@ def driver(monkeypatch):
     return calls
 
 
-def test_snowflake_dispatch_and_package_loading_without_named_profile(tmp_path):
+@pytest.mark.parametrize(
+    "auth",
+    [
+        {"password_env": "TEST_PASSWORD"},
+        {"password_file": "/not-read/password"},
+        {"private_key_env": "TEST_KEY"},
+        {"private_key_file": "/not-read/key", "private_key_passphrase_env": "TEST_PASSPHRASE"},
+    ],
+)
+def test_snowflake_dispatch_and_package_loading_without_named_profile(tmp_path, auth):
     root = _package(tmp_path / "filtered", [OWN_ORDERS])
     path = root / "package.yml"
     payload = yaml.safe_load(path.read_text())
     payload["package"].update(
-        warehouse="snowflake", connection={"kind": "snowflake_adbc", "options": OPTIONS}
+        warehouse="snowflake",
+        connection={
+            "kind": "snowflake_adbc",
+            "options": {"account_env": "TEST_ACCOUNT", "user_env": "TEST_USER", **auth},
+        },
     )
     payload["package"].pop("default_db", None)
     payload["package"].pop("seed", None)
@@ -99,7 +113,82 @@ def test_snowflake_dispatch_and_package_loading_without_named_profile(tmp_path):
     adapter.close()
 
 
-def test_config_report_accepts_unnamed_snowflake_adbc(tmp_path):
+@pytest.mark.parametrize(
+    ("options", "name", "error"),
+    [
+        ({key: value for key, value in OPTIONS.items() if key != "account_env"}, "", "account_env"),
+        ({key: value for key, value in OPTIONS.items() if key != "user_env"}, "", "user_env"),
+        (
+            {key: value for key, value in OPTIONS.items() if key != "password_env"},
+            "",
+            "exactly one",
+        ),
+        ({**OPTIONS, "private_key_env": "TEST_KEY"}, "", "exactly one"),
+        ({**OPTIONS, "private_key_passphrase_env": "TEST_PASSPHRASE"}, "", "passphrase"),
+        (OPTIONS, "ignored-profile", "name"),
+    ],
+    ids=[
+        "account-missing",
+        "user-missing",
+        "auth-missing",
+        "conflicting-auth",
+        "passphrase-without-key",
+        "named-profile",
+    ],
+)
+def test_auth_structure_refused_at_load_report_and_guided_setup(tmp_path, options, name, error):
+    from semantic_rails.architect_mcp import create_architect_mcp_server
+    from tests.semantic_rails.test_architect_create_project import _setup_dialog
+
+    root = _package(tmp_path / "filtered", [OWN_ORDERS])
+    path = root / "package.yml"
+    payload = yaml.safe_load(path.read_text())
+    payload["package"].update(
+        warehouse="snowflake",
+        connection={"kind": "snowflake_adbc", "name": name, "options": options},
+    )
+    path.write_text(yaml.safe_dump(payload))
+    with pytest.raises(SemanticLayerError) as caught:
+        load_package_config(str(root))
+    assert caught.value.code == "INVALID_CONFIG"
+    assert error in str(caught.value)
+    report, _ = parse_config_report(resolve_package_reference(path=str(root)))
+    assert report["ok"] is False
+    assert any(error in entry["message"] for entry in report["errors"])
+    dialog = _setup_dialog(
+        create_architect_mcp_server(workspace_root=tmp_path),
+        "snow_shop",
+        {
+            "package_id": "snow_shop",
+            "warehouse": "snowflake",
+            "connection_kind": "snowflake_adbc",
+            "connection_name": name,
+            "connection_options": json.dumps(options),
+        },
+    )
+    assert dialog["ok"] is False
+    assert dialog["recommended_next_tool"] == "setup_project_dialog"
+
+
+def test_direct_adapter_cannot_ignore_named_profile():
+    package = PackageMeta(
+        package_id="test",
+        name="test",
+        description="test",
+        warehouse="snowflake",
+        connection=ConnectionSpec(kind="snowflake_adbc", name="ignored-profile", options=OPTIONS),
+    )
+    with pytest.raises(SemanticLayerError, match="name") as caught:
+        create_warehouse_adapter(package)
+    assert caught.value.code == "INVALID_CONFIG"
+
+
+@pytest.mark.parametrize(
+    "auth", [{"password_env": "TEST_PASSWORD"}, {"private_key_env": "TEST_KEY"}]
+)
+def test_config_report_and_guided_setup_accept_unnamed_snowflake_adbc(tmp_path, auth):
+    from semantic_rails.architect_mcp import create_architect_mcp_server
+    from tests.semantic_rails.test_architect_create_project import _setup_dialog
     from tests.semantic_rails.test_config_validation import (
         _write_minimal_snowflake_package,
         _write_yaml,
@@ -108,10 +197,23 @@ def test_config_report_accepts_unnamed_snowflake_adbc(tmp_path):
     root = tmp_path / "snowflake_adbc_demo"
     _write_minimal_snowflake_package(root)
     payload = yaml.safe_load((root / "package.yml").read_text())
-    payload["package"]["connection"] = {"kind": "snowflake_adbc", "options": OPTIONS}
+    options = {"account_env": "TEST_ACCOUNT", "user_env": "TEST_USER", **auth}
+    payload["package"]["connection"] = {"kind": "snowflake_adbc", "options": options}
     _write_yaml(root / "package.yml", payload)
     report, _ = parse_config_report(resolve_package_reference(path=str(root)))
     assert report["ok"] is True, report["errors"]
+    dialog = _setup_dialog(
+        create_architect_mcp_server(workspace_root=tmp_path),
+        "snow_shop",
+        {
+            "package_id": "snow_shop",
+            "warehouse": "snowflake",
+            "connection_kind": "snowflake_adbc",
+            "connection_options": json.dumps(options),
+        },
+    )
+    assert dialog["ok"] is True, dialog
+    assert dialog["recommended_next_tool"] == "create_project"
 
 
 @pytest.mark.parametrize(
@@ -585,9 +687,61 @@ def test_direct_adapter_cannot_bypass_package_driver_refusal(kind):
 def test_live_fixture_skips_explicitly_before_connection_without_credentials(monkeypatch):
     from tests.integration.test_adbc_snowflake import TARGET, adbc
 
+    monkeypatch.setenv("SR_SNOWFLAKE_CONNECTION_KIND", "snowflake_adbc")
     monkeypatch.setattr(type(TARGET), "missing_env", lambda self: ("SR_SNOWFLAKE_PASSWORD",))
     monkeypatch.setattr(
         AdbcAdapter, "_connection", lambda self: pytest.fail("must skip before connection")
     )
     with pytest.raises(pytest.skip.Exception, match="requires SR_SNOWFLAKE_ACCOUNT"):
         next(adbc.__wrapped__())
+
+
+@pytest.mark.parametrize("kind", [None, "snowflake_native"])
+def test_live_fixture_requires_explicit_adbc_opt_in(monkeypatch, kind):
+    from tests.integration.test_adbc_snowflake import adbc
+
+    if kind is None:
+        monkeypatch.delenv("SR_SNOWFLAKE_CONNECTION_KIND", raising=False)
+    else:
+        monkeypatch.setenv("SR_SNOWFLAKE_CONNECTION_KIND", kind)
+    monkeypatch.setattr(AdbcAdapter, "_connection", lambda self: pytest.fail("must skip first"))
+    with pytest.raises(
+        pytest.skip.Exception, match="requires SR_SNOWFLAKE_CONNECTION_KIND=snowflake_adbc"
+    ):
+        next(adbc.__wrapped__())
+
+
+def test_live_setup_refuses_unavailable_driver(monkeypatch):
+    from tests.integration.test_adbc_snowflake import setup_adbc
+
+    monkeypatch.setenv("SR_SNOWFLAKE_CONNECTION_KIND", "snowflake_adbc")
+    for key in ("ACCOUNT", "USER", "PASSWORD"):
+        monkeypatch.setenv(f"SR_SNOWFLAKE_{key}", f"synthetic-{key.lower()}")
+    monkeypatch.setenv("SR_SNOWFLAKE_ADBC_DRIVER_PATH", "/does-not-exist/snowflake-driver.so")
+    with pytest.raises(SemanticLayerError) as caught:
+        setup_adbc()
+    assert caught.value.code in {"MISSING_DEPENDENCY", "QUERY_EXECUTION_ERROR"}
+
+
+@pytest.mark.parametrize("correct", [True, False])
+def test_live_setup_asserts_timestamp_and_closes_on_mismatch(monkeypatch, correct):
+    from tests.integration.test_adbc_snowflake import TARGET, setup_adbc
+
+    monkeypatch.setenv("SR_SNOWFLAKE_CONNECTION_KIND", "snowflake_adbc")
+    monkeypatch.setattr(type(TARGET), "missing_env", lambda self: ())
+    calls = []
+
+    def query(self, sql):
+        calls.append(sql)
+        return [{"INSTANT": datetime(2026, 1, 1, 12, 34, 56, 123456) if correct else None}]
+
+    monkeypatch.setattr(AdbcAdapter, "query", query)
+    monkeypatch.setattr(AdbcAdapter, "close", lambda self: calls.append("closed"))
+    if correct:
+        adapter = setup_adbc()
+        assert len(calls) == 1
+        adapter.close()
+    else:
+        with pytest.raises(AssertionError):
+            setup_adbc()
+    assert len(calls) == 2 and calls[-1] == "closed"

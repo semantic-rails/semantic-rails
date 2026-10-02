@@ -513,6 +513,10 @@ def create_adapter(package: Any, *, db_path: str = "") -> WarehouseAdapter:
     """Registry entry point for the snowflake warehouse (see dialects.py)."""
     kind = package.connection.kind
     if kind == "snowflake_adbc":
+        if package.connection.name:
+            raise SemanticLayerError(
+                "INVALID_CONFIG", "snowflake_adbc does not support package.connection.name"
+            )
         from .adbc import SNOWFLAKE_PROFILE, AdbcAdapter
 
         return AdbcAdapter(package.connection.options, profile=SNOWFLAKE_PROFILE)

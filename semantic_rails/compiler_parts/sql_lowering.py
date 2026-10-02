@@ -4838,7 +4838,11 @@ def _conversion_exprs_for_plan(plan: LogicalPlan, config: PackageConfig) -> list
 
 
 def lower_to_sql(
-    plan: LogicalPlan, config: PackageConfig, *, guard_empty: bool = True
+    plan: LogicalPlan,
+    config: PackageConfig,
+    *,
+    guard_empty: bool = True,
+    default_order: bool = True,
 ) -> SqlSelect:
     if _emits_time_coverage(plan, config) and any(
         row.aggregate_relation_id for row in plan.measure_plans
@@ -4847,11 +4851,25 @@ def lower_to_sql(
             "EMPTY_GROUPS_UNSETTLED", "A coverage-dependent plan must read the base relation."
         )
     select = _lower_query_to_sql(plan, config, guard_empty)
-    if not plan.time.get("window_total"):
-        return select
-    # One total over the window: the constant time key did the grouping, so it isn't a column.
-    time_alias = _time_alias_for_plan(plan)
-    return replace(select, select=[item for item in select.select if item.alias != time_alias])
+    if plan.time.get("window_total"):
+        # One total over the window: the constant time key isn't a column.
+        time_alias = _time_alias_for_plan(plan)
+        return replace(select, select=[item for item in select.select if item.alias != time_alias])
+    if default_order and plan.time and not plan.query.get("order_by"):
+        # Every request's final projection orders by time, then the authored groups.
+        # Nested query sources opt out at their shared compilation boundary.
+        # Use output aliases after internal aliasing so this also covers dense and combined SQL.
+        order_keys = [_time_alias_for_plan(plan), *plan.group_by]
+        output_aliases = {item.alias for item in select.select}
+        if any(key not in output_aliases for key in order_keys):
+            raise SemanticLayerError(
+                "INVALID_ORDER_BY", "Default time ordering requires projected time and group keys"
+            )
+        select = replace(
+            select,
+            order_by=[SqlOrder(SqlIdentifier(parts=[key]), "ASC") for key in order_keys],
+        )
+    return select
 
 
 def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: bool) -> SqlSelect:
