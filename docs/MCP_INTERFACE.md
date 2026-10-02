@@ -514,6 +514,12 @@ configuration is idempotent. If `status` reports a dead registration, stop it
 explicitly with `semantic-rails mcp stop --name default`; the interactive
 wizard can also remove a dead registration and retry.
 
+Use `mcp start --port 0` to let the operating system choose an available port.
+The manager holds the listening socket through server startup, so concurrent
+starts cannot claim the same port. The start response and `mcp status` report
+the assigned port. Repeating the same named start with `--port 0` reuses its
+healthy server; process identity and health nonce checks still apply.
+
 Windows users should install the generated stdio client config with
 `semantic-rails mcp setup --install --yes`, or run `mcp http` in a foreground
 terminal. `mcp doctor` reports the supported lifecycle and prints the matching

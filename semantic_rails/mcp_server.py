@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
 import time
 import uuid
@@ -622,9 +623,17 @@ def serve_http(
     adapter: SemanticLayerMCPAdapter, *, host: str = "127.0.0.1", port: int = 8091
 ) -> None:
     handler = make_mcp_http_handler(adapter)
-    httpd = HTTPServer((host, port), handler)
-    warn_if_default_policy_resolver_exposed(host, transport="semantic-rails MCP HTTP")
-    print(
-        f"semantic-rails MCP HTTP server running on http://{host}:{port}/mcp package={adapter.package_id}"
-    )
-    httpd.serve_forever()
+    socket_fd = os.environ.get("SEMANTIC_RAILS_MCP_SOCKET_FD") if port == 0 else None
+    with HTTPServer((host, port), handler, bind_and_activate=socket_fd is None) as httpd:
+        if socket_fd is not None:
+            httpd.socket.close()
+            httpd.socket = socket.socket(fileno=int(socket_fd))
+            httpd.server_address = httpd.socket.getsockname()
+            httpd.server_name = socket.getfqdn(host)
+            httpd.server_port = int(httpd.server_address[1])
+        port = int(httpd.server_address[1])
+        warn_if_default_policy_resolver_exposed(host, transport="semantic-rails MCP HTTP")
+        print(
+            f"semantic-rails MCP HTTP server running on http://{host}:{port}/mcp package={adapter.package_id}"
+        )
+        httpd.serve_forever()
