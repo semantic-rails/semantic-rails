@@ -112,6 +112,7 @@ def test_coverage_emitted_exactly_when_rollups_are_refused(
     refused = any(r["reason"] == "base_time_coverage_required" for r in report["candidates"])
     assert bool(report["selected"]) is routes
     assert ("coverage_" in compiled["sql"]) is refused is (not routes)
+    assert compiled["sql"].endswith(f'\nORDER BY\n  "{ROLE}__month" ASC')
     if not routes:
         assert "FROM orders_monthly" not in compiled["sql"]
 

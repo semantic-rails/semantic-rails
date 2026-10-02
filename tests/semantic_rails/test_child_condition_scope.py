@@ -1353,8 +1353,9 @@ def test_a_lookup_first_route_beside_another_candidate_is_ambiguous(package: Pat
 def test_each_reading_keeps_the_route_its_filters_take(item_customer_package: Path) -> None:
     """The package records a customer's products through its orders. Filters on a product's
     category follow that route to items; a group on items must too. While a customer's items
-    are unrecorded, or recorded as the items that name the customer (all customer 3's), no
-    reading is offered: the refusal names the row that would record the filters' route."""
+    are unrecorded, no reading is offered: the refusal names the row that would record the
+    filters' route. A row recording the items that name the customer (all customer 3's)
+    disagrees with the products row, so that package does not load."""
     package = item_customer_package
     config = load_package_config(str(package))
     customer, product = "entity.scope_customer", "entity.scope_product"
@@ -1389,12 +1390,15 @@ def test_each_reading_keeps_the_route_its_filters_take(item_customer_package: Pa
     assert answer([product_pin], [hot]) == _customers(package, has.format("p.category = 'hot'"))
     assert answer([product_pin], [hot]) == [(2,)]
     pin_row = json.dumps(route_pin(customer, ITEM, through_orders))
-    for item_route in ([], [PathPreferenceConfig(customer, ITEM, [direct])]):
-        with pytest.raises(SemanticLayerError) as caught:
-            answer([product_pin, *item_route], [hot, warm])
-        assert caught.value.code == "MIXED_GRAIN_INVALID"
-        assert "clarification" not in caught.value.details
-        assert pin_row in caught.value.details["why_invalid"]
+    with pytest.raises(SemanticLayerError) as caught:
+        answer([product_pin], [hot, warm])
+    assert caught.value.code == "MIXED_GRAIN_INVALID"
+    assert "clarification" not in caught.value.details
+    assert pin_row in caught.value.details["why_invalid"]
+    direct_pin = PathPreferenceConfig(customer, ITEM, [direct])
+    with pytest.raises(SemanticLayerError) as caught:
+        answer([product_pin, direct_pin], [hot, warm])
+    assert caught.value.code == "INVALID_CONFIG"
     pins = [product_pin, PathPreferenceConfig(customer, ITEM, through_orders)]
     with pytest.raises(SemanticLayerError) as caught:
         answer(pins, [hot, warm])
@@ -1409,9 +1413,8 @@ def test_each_reading_keeps_the_route_its_filters_take(item_customer_package: Pa
     assert set(options) == set(references)
     for option, where in options.items():
         assert answer(pins, where) == _customers(package, references[option]) == [(2,)], option
-    # A group that states the other route reads the items that name customer 3.
-    direct_pin = PathPreferenceConfig(customer, ITEM, [direct])
-    assert answer([product_pin, direct_pin], [_any(hot)]) == [(1,)]
+    # A group on the other recorded route reads the items that name customer 3.
+    assert answer([direct_pin], [_any(hot)]) == [(1,)]
 
 
 # ---- Agreement ------------------------------------------------------------------------

@@ -1,10 +1,12 @@
 """Live Snowflake ADBC row-filter isolation; run only on a credentialed runner.
 
-Skips explicitly without SR_SNOWFLAKE_ACCOUNT/USER/PASSWORD. A configured
+Requires SR_SNOWFLAKE_CONNECTION_KIND=snowflake_adbc and skips explicitly
+without SR_SNOWFLAKE_ACCOUNT/USER/PASSWORD. A configured
 warehouse/driver failure is a failure, never a skip. Uses a session-local table.
 """
 
 import json
+import os
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -23,13 +25,31 @@ from tests.semantic_rails.test_row_filters import BY_STORE, OWN_ORDERS, A, B, _p
 from .targets.snowflake import TARGET
 
 
-@pytest.fixture
-def adbc():
+def setup_adbc() -> AdbcAdapter:
+    """Prove the driver and connection work before testing expected query failures."""
+    if os.environ.get("SR_SNOWFLAKE_CONNECTION_KIND") != "snowflake_adbc":
+        pytest.skip("requires SR_SNOWFLAKE_CONNECTION_KIND=snowflake_adbc for dedicated ADBC tests")
     if TARGET.missing_env():
         pytest.skip(
             "requires SR_SNOWFLAKE_ACCOUNT, SR_SNOWFLAKE_USER and SR_SNOWFLAKE_PASSWORD on a credentialed runner"
         )
     adapter = AdbcAdapter(dict(TARGET.connection_options), profile=SNOWFLAKE_PROFILE)
+    try:
+        row = adapter.query(
+            "SELECT TO_TIMESTAMP_NTZ('2026-01-01 12:34:56.123456')::TIMESTAMP_NTZ(6) AS instant"
+        )[0]
+        assert {key.lower(): value for key, value in row.items()} == {
+            "instant": datetime(2026, 1, 1, 12, 34, 56, 123456)
+        }
+    except Exception:
+        adapter.close()
+        raise
+    return adapter
+
+
+@pytest.fixture
+def adbc():
+    adapter = setup_adbc()
     try:
         yield adapter
     finally:

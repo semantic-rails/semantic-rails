@@ -329,10 +329,15 @@ node: each of its `details.clarification.options` is a complete `where` to resen
 route_decision_required`) means two join routes can answer the question differently (an account's
 branch region or its owner's home region) and the package hasn't recorded which one it means. A
 query can't pick one: ask which meaning is wanted (`details.meanings` reads each route), or refuse;
-`details.pins` lists the `graph.path_preferences` row a package author adds to record each. An
-`info` note `ROUTE_COLOCATED_KEY` or `ROUTE_RECORDED` (compact and full responses) names the route
-the answer used, the start entity's own key or the package's recorded route; it needs no
-follow-up.
+`details.pins` lists the `graph.path_preferences` row a package author adds to record each (a
+route whose row would disagree with the package's rows is in `details.conflicts_with` instead); one
+row also decides every route that walks its pair. An `info` note `ROUTE_COLOCATED_KEY` or
+`ROUTE_RECORDED` (compact and full responses) names the route the answer used, the start entity's
+own key or the package's recorded routes; it needs no follow-up, and `ROUTE_COLOCATED_KEY` lists
+the row that would make each other route the default (or, in `details.conflicts_with`, the rows
+that row would disagree with). `PATH_NOT_FOUND` with `details.reason:
+excluded_by_decision` means the package's rows rule out every route; it is a package fix, not a
+query fix.
 
 ## Local Warehouse Defaults
 

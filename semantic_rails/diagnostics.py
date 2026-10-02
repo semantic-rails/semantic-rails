@@ -347,6 +347,14 @@ def recovery_hints_for_error(
                 "details": dict(details),
             }
         ]
+    if code == "PATH_NOT_FOUND" and details.get("reason") == "excluded_by_decision":
+        return [
+            {
+                "kind": "follow_recorded_routes",
+                "message": str(details.get("hint", "")),
+                "rows": list(details.get("rows", []) or []),
+            }
+        ]
     if code == "PATH_NOT_FOUND":
         start = str(details.get("start", "") or "")
         target = str(details.get("target", "") or "")
