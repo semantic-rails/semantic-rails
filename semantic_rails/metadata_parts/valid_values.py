@@ -7,7 +7,7 @@ import os
 from typing import Any
 
 from ..ast import normalize_query
-from ..compiler import compile_query
+from ..compiler import compile_query, read_routes
 from ..errors import SemanticLayerError
 from ..policies import hidden_object_ids
 from ..request_context import context_from_policy_context
@@ -58,6 +58,7 @@ def _query_state(query: dict[str, Any]) -> dict[str, Any]:
         "metric_filters",
         "time",
         "temporal_role_overrides",
+        "route_decisions",
         "order_by",
         "limit",
         "debug",
@@ -70,12 +71,30 @@ def _query_state(query: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
-def _anchor_measure_id(runtime: Runtime, dimension: str, query: dict[str, Any] | None) -> str:
+def _anchor_measure_id(
+    runtime: Runtime, dimension: str, query: dict[str, Any] | None
+) -> tuple[str, list[dict[str, Any]]]:
+    """The measure whose rows the values are read from, the query's own measures first, and
+    the query's ``route_decisions`` that anchor reads with. A decision is dropped only when
+    the anchor never walks its pair, so it cannot change the values; an anchor that would
+    then read a dropped pair by another route is not used."""
     probe = dict(query or {})
     probe_where = list(probe.get("where", []) or [])
     probe_time = dict(probe.get("time", {}) or {}) or None
+    own = [
+        item["expression"]["measure"]
+        for item in list(probe.get("select", []) or [])
+        if isinstance(item, dict)
+        and isinstance(item.get("expression"), dict)
+        and "measure" in item["expression"]
+    ]
+    measures = sorted(
+        runtime._config.measures, key=lambda row: own.index(row.id) if row.id in own else len(own)
+    )
     reasons: list[dict[str, Any]] = []
-    for measure in runtime._config.measures:
+    for measure in measures:
+        decisions = list(probe.get("route_decisions", []) or [])
+        dropped: set[tuple[str, str]] = set()
         candidate = {
             "select": [
                 {
@@ -91,11 +110,32 @@ def _anchor_measure_id(runtime: Runtime, dimension: str, query: dict[str, Any] |
         }
         if probe_time is not None:
             candidate["time"] = probe_time
-        try:
-            compile_query(runtime._config, runtime.registry, candidate)
-            return measure.id
-        except SemanticLayerError as exc:
-            reasons.append({"measure": measure.id, "code": exc.code, "message": str(exc)})
+        while True:
+            try:
+                compiled = compile_query(
+                    runtime._config,
+                    runtime.registry,
+                    {**candidate, **({"route_decisions": decisions} if decisions else {})},
+                )
+            except SemanticLayerError as exc:
+                if exc.details.get("reason") == "route_decision_unused":
+                    dropped.add((exc.details["source_entity"], exc.details["target_entity"]))
+                    index = exc.details["path"].removeprefix("route_decisions[").rstrip("]")
+                    del decisions[int(index)]
+                    continue
+                reasons.append({"measure": measure.id, "code": exc.code, "message": str(exc)})
+                break
+            read = read_routes(compiled["logical_plan"], compiled["route_choices"])
+            if dropped.isdisjoint((start, target) for start, target, _ in read):
+                return measure.id, decisions
+            reasons.append(
+                {
+                    "measure": measure.id,
+                    "code": "INVALID_QUERY",
+                    "message": "reads a pair the query's route_decisions decide by another route",
+                }
+            )
+            break
     raise SemanticLayerError(
         "NO_VALID_VALUES_SOURCE",
         f"No valid values source for '{dimension}'",
@@ -189,8 +229,11 @@ def valid_values_payload(
             ],
         }
 
-    anchor_measure_id = _anchor_measure_id(runtime, dimension_id, query)
+    anchor_measure_id, decisions = _anchor_measure_id(runtime, dimension_id, query)
     query_payload = dict(query or {})
+    query_payload.pop("route_decisions", None)
+    if decisions:
+        query_payload["route_decisions"] = decisions
     anchor_measure = next(measure for measure in config.measures if measure.id == anchor_measure_id)
     query_payload["select"] = [
         {

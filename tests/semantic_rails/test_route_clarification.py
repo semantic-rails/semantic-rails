@@ -41,7 +41,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.fanout import query_route_decisions
 from semantic_rails.interop.package_writer import package_documents, write_package
 from semantic_rails.mcp import SemanticLayerMCPAdapter
-from semantic_rails.metadata import build_options_payload
+from semantic_rails.metadata import build_options_payload, valid_values_payload
 from semantic_rails.metadata_parts.path_coverage import _path_availability
 from semantic_rails.policies import row_filters_for_context
 from semantic_rails.registry import Registry
@@ -940,3 +940,41 @@ def test_discovery_follows_a_query_row(tmp_path):
             assert row["query_patch"]["route_decisions"] == [DIAMOND_ROW]
         else:
             assert row["blocked_reason"] == "route decision required"
+
+
+# --- Live valid values read through the query's own route ---------------------------------
+
+DISTRICTS_BY_OWNER = (
+    "SELECT DISTINCT d.district_name FROM accounts a JOIN owners o USING (owner_id) "
+    "JOIN districts d ON d.district_id = o.home_district_id"
+)
+DISTRICTS_BY_BRANCH = (
+    "SELECT DISTINCT d.district_name FROM accounts a JOIN branches b USING (branch_id) "
+    "JOIN districts d USING (district_id)"
+)
+
+
+@pytest.mark.parametrize("package_rows", [[], [BRANCH_BY_KEY]], ids=["undecided", "decided"])
+def test_live_valid_values_read_through_the_query_rows_route(tmp_path, package_rows):
+    """The anchor probes and the values query carry the query's route_decisions, so the
+    districts are the owners' home districts, whatever the package records."""
+    runtime = Runtime.from_path(str(_write_package(tmp_path, decisions=package_rows or None)))
+    out = valid_values_payload(
+        runtime,
+        dimension_id="dimension.bank_district_name",
+        query={**BALANCE_BY_DISTRICT, "route_decisions": [DIAMOND_ROW]},
+        allow_live_query=True,
+    )
+    assert sorted((row["value"],) for row in out["values"]) == _gold(DISTRICTS_BY_OWNER)
+    assert _gold(DISTRICTS_BY_OWNER) != _gold(DISTRICTS_BY_BRANCH)
+    assert out["anchor_measure"] == "measure.bank.balance"
+    assert out["query_state"]["route_decisions"] == [DIAMOND_ROW]
+    # Account kinds never walk (account, district): the row can't change them and is dropped.
+    kinds = valid_values_payload(
+        runtime,
+        dimension_id="dimension.bank_account_kind",
+        query={**BALANCE_BY_DISTRICT, "route_decisions": [DIAMOND_ROW]},
+        allow_live_query=True,
+    )
+    assert [row["value"] for row in kinds["values"]] == ["checking", "savings"]
+    assert "route_decisions" not in kinds["query_state"]
