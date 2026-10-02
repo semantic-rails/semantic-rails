@@ -148,17 +148,19 @@ from semantic_rails.request_context import (
     set_policy_context_resolver,
 )
 
+
 class IdentityDerivedResolver:
     def resolve(self, headers, *, payload=None, request_id=""):
         identity = verify_jwt(headers.get("Authorization", ""))
         return RequestContext(
             request_id=request_id,
             actor=identity.subject,
-            tenant=identity.tenant_id,        # trust comes from the token, not headers
-            audience=identity.audience,        # ditto
+            tenant=identity.tenant_id,  # trust comes from the token, not headers
+            audience=identity.audience,  # ditto
             environment=identity.environment,
             roles=tuple(identity.roles),
         )
+
 
 set_policy_context_resolver(IdentityDerivedResolver())
 ```

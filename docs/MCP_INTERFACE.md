@@ -33,7 +33,7 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter
 
 adapter = SemanticLayerMCPAdapter.from_package("jaffle_shop")
 try:
-    tools = adapter.list_tools()       # Paid once at connect time.
+    tools = adapter.list_tools()  # Paid once at connect time.
     found = adapter.call_tool("discover", {"terms": "orders by store"})  # "" lists every id.
     draft = adapter.call_tool("plan", {"intent": "orders by store"})
     if draft["status"] == "ok" and not draft["warnings"]:
