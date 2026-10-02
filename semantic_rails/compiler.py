@@ -2615,10 +2615,14 @@ def _root_path_summary(
                 time_bound_relationships=_time_bound_relationship_ids(query, config),
             )
         except SemanticLayerError as exc:
+            if exc.details.get("reason") != UNANCHORED_TIME_VALID_HOP:
+                raise
+            if purpose != "measure":
+                # Left to each leaf, as a rewrite is: one that joins this path refuses it, and
+                # one that reads the dimension from its own rows (a shared key) joins nothing.
+                continue
             # No leaf joins the path to another measure's entity: each measure aggregates on
             # its own and is reconciled on the grain keys, whose own paths still refuse.
-            if exc.details.get("reason") != UNANCHORED_TIME_VALID_HOP or purpose != "measure":
-                raise
             measure = next(
                 row for row in bound_measures if measures[row.measure_id].entity == target_entity
             )

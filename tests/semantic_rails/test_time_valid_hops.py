@@ -167,6 +167,7 @@ OUT_HOP = "relationship.account_segment_account"
 ACCOUNT = "entity.hist_account"
 HISTORY = "entity.hist_account_segment"
 SEGMENT = "dimension.hist_account_segment_segment"
+HISTORY_KEY = "dimension.hist_account_segment_account_id"
 TIER = "dimension.hist_tier_tier_name"
 REGION = "dimension.hist_account_region"
 USAGE_ID = "dimension.hist_usage_id"
@@ -358,6 +359,38 @@ def test_a_relationship_without_temporal_validity_needs_no_time(runtime, gold):
         "SELECT (SELECT a.region FROM accounts AS a WHERE a.account_id = u.account_id),"
         " SUM(u.amount) FROM usage AS u GROUP BY 1"
     )
+
+
+@pytest.mark.parametrize(
+    ("clause", "expected", "sql"),
+    [
+        pytest.param(
+            {"group_by": [HISTORY_KEY]},
+            {("A1",): 33.0, ("A2",): 5.0, ("A3",): 7.0},
+            "SELECT u.account_id, SUM(u.amount) FROM usage AS u GROUP BY 1",
+            id="group-by",
+        ),
+        pytest.param(
+            {"where": [{"field": HISTORY_KEY, "op": "=", "value": "A1"}]},
+            {(): 33.0},
+            "SELECT SUM(u.amount) FROM usage AS u WHERE u.account_id = 'A1'",
+            id="where",
+        ),
+    ],
+)
+def test_the_history_key_read_from_the_usage_row_needs_no_time(
+    runtime, package, gold, clause, expected, sql
+):
+    """The segment table's account id is the usage row's own account id, so the query reads it
+    there and joins no version of the history."""
+    config = load_package_config(str(package))
+    query = _amount(**clause)
+
+    result = _rows(runtime, query, clause.get("group_by", []))
+
+    assert "account_segments" not in compile_query(config, Registry(config), query)["sql"]
+    assert result == expected
+    assert result == gold(sql)
 
 
 def test_a_hop_out_of_the_table_holding_the_window_needs_no_time(runtime, gold):
