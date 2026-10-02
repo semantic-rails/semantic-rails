@@ -1063,6 +1063,10 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
         ({"select": [_measure("revenue", "avg")], "group_by": [TYPE]}, "is ambiguous across"),
         # A measure's own filter has no child scope to state (query filters do: see below).
         (_bound_filter({"field": TYPE, "op": "!=", "value": "beverage"}), NEGATED),
+        # A negated test with no exact complement has no 'none' reading to offer.
+        (_where("IS DISTINCT FROM", "beverage"), NEGATED),
+        (_where("IS NOT", "beverage"), NEGATED),
+        (_where("NOT ILIKE", "bev%"), NEGATED),
         # At most one condition may cross a one-to-many hop: with two, one row may have to meet
         # both, or any rows each. On siblings under a shared hop, or both groups.
         ({**GROUPED_COUNT, "where": [{"field": HOT, "op": "=", "value": True}]}, TWO_CONDITIONS),
@@ -1121,6 +1125,9 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
         "sum",
         "avg",
         "measure_filter",
+        "is_distinct_from",
+        "is_not_value",
+        "not_ilike",
         "group_and_filter_one_child",
         "group_and_filter_through_a_lookup",
         "sibling_filters",
@@ -1142,28 +1149,54 @@ def test_ambiguous_shapes_stay_refused(package: Path, query: dict[str, Any], rea
     assert error["recovery_hints"]
 
 
+def _has_item(condition: str) -> str:
+    return f"EXISTS (SELECT 1 FROM order_items i WHERE i.order_id = o.order_id AND {condition})"
+
+
+def _negations(any_not: str, none: str) -> dict[str, str]:
+    return {"any_not": _has_item(any_not), "none": "NOT " + _has_item(none)}
+
+
 @pytest.mark.parametrize(
-    ("query", "options"),
+    ("query", "readings"),
     [
         # "Orders without a beverage" and "orders with a non-beverage item" differ.
-        (_where("!=", "beverage"), ["any_not", "none"]),
-        (_where("<>", "beverage"), ["any_not", "none"]),
-        (_where("NOT IN", ["beverage"]), ["any_not", "none"]),
-        (_where("NOT LIKE", "bev%"), ["any_not", "none"]),
-        (_where("IS DISTINCT FROM", "beverage"), ["any_not", "none"]),
-        (_where("IS NOT", "beverage"), ["any_not", "none"]),
-        (_where("IS NULL", None), ["any_not", "none"]),
-        (_where("=", None), ["any_not", "none"]),
+        (
+            _where("!=", "beverage"),
+            _negations("i.product_type != 'beverage'", "i.product_type = 'beverage'"),
+        ),
+        (
+            _where("<>", "beverage"),
+            _negations("i.product_type <> 'beverage'", "i.product_type = 'beverage'"),
+        ),
+        (
+            _where("NOT IN", ["beverage"]),
+            _negations("i.product_type NOT IN ('beverage')", "i.product_type IN ('beverage')"),
+        ),
+        (
+            _where("NOT LIKE", "bev%"),
+            _negations("i.product_type NOT LIKE 'bev%'", "i.product_type LIKE 'bev%'"),
+        ),
+        (
+            _where("IS NULL", None),
+            _negations("i.product_type IS NULL", "i.product_type IS NOT NULL"),
+        ),
+        (_where("=", None), _negations("i.product_type IS NULL", "i.product_type IS NOT NULL")),
         # On a boolean only "= true" reads one way.
-        (_where("=", False, HOT), ["any_not", "none"]),
-        (_where("=", "false", HOT), ["any_not", "none"]),
-        (_where("in", [False], HOT), ["any_not", "none"]),
-        (_where("<", True, HOT), ["any_not", "none"]),
-        (_where("<=", False, HOT), ["any_not", "none"]),
+        (_where("=", False, HOT), _negations("i.is_hot = false", "i.is_hot != false")),
+        (_where("=", "false", HOT), _negations("i.is_hot = false", "i.is_hot != false")),
+        (_where("in", [False], HOT), _negations("i.is_hot IN (false)", "i.is_hot NOT IN (false)")),
+        (_where("<", True, HOT), _negations("i.is_hot < true", "i.is_hot >= true")),
+        (_where("<=", False, HOT), _negations("i.is_hot <= false", "i.is_hot > false")),
         # One item that is both, or a beverage and some jaffle?
         (
             {"select": [_measure("revenue")], "where": [BEVERAGE, {**BEVERAGE, "value": "jaffle"}]},
-            ["same_row", "separate_rows"],
+            {
+                "same_row": _has_item("i.product_type = 'beverage' AND i.product_type = 'jaffle'"),
+                "separate_rows": _has_item("i.product_type = 'beverage'")
+                + " AND "
+                + _has_item("i.product_type = 'jaffle'"),
+            },
         ),
     ],
     ids=[
@@ -1171,8 +1204,6 @@ def test_ambiguous_shapes_stay_refused(package: Path, query: dict[str, Any], rea
         "angle_not_equal",
         "not_in",
         "not_like",
-        "is_distinct_from",
-        "is_not_value",
         "is_null",
         "equals_null",
         "boolean_false",
@@ -1184,15 +1215,17 @@ def test_ambiguous_shapes_stay_refused(package: Path, query: dict[str, Any], rea
     ],
 )
 def test_query_filters_that_leave_the_child_scope_unsaid_ask_for_it(
-    package: Path, query: dict[str, Any], options: list[str]
+    package: Path, query: dict[str, Any], readings: dict[str, str]
 ) -> None:
-    """Each reading is offered as a whole where list, which then plans as it says."""
+    """Each reading is offered as a whole where list, which then answers as its reference."""
     error = _refusal(package, query)
     assert error["code"] == "AMBIGUOUS_CHILD_SCOPE"
     offered = error["details"]["clarification"]["options"]
-    assert [option["id"] for option in offered] == options
+    assert [option["id"] for option in offered] == list(readings)
     for option in offered:
-        assert _run(package, {**query, "where": option["where"]}, validate=True)["ok"], option
+        reference = f"SELECT SUM(o.total) FROM orders o WHERE {readings[option['id']]}"
+        resent = {**query, "where": option["where"]}
+        assert _rows(package, resent) == _reference(package, reference), option["id"]
 
 
 def test_positive_null_and_boolean_tests_mean_exists(package: Path) -> None:
