@@ -326,9 +326,9 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
     The pairs come, each with the route the SQL read, from the plan's root and leaf paths and
     from the paths lowering read (predicates, conversions, a rewrite anchor's own lookups,
     nested compiles, direct key reads); a note names only a route its pair's resolution chose,
-    so a pair the SQL read another way gets none. The minimal
-    response leaves the notes out: the route is the package's own meaning for the pair, not a
-    caveat on the numbers, and a pair with no such meaning is refused instead.
+    so a pair the SQL read another way gets none. The minimal response leaves the notes out:
+    the route is the package's own meaning for the pair, not a caveat on the numbers, and a
+    pair with no such meaning is refused instead.
     """
     if resolve_verbosity(payload) == "minimal":
         return []
