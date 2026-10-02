@@ -127,7 +127,7 @@ def test_branching_path_hints_bound_work_and_leave_cache_unchanged(
 ):
     config, _ = package_config_factory("jaffle_shop")
     layers = [["S"], *[[f"layer_{depth}_{node}" for node in range(4)] for depth in range(8)]]
-    nodes = [node for layer in layers for node in layer] + ["disconnected"]
+    nodes = [node for layer in layers for node in layer] + ["disconnected", "Z"]
     config = replace(
         config,
         entities=[EntityConfig(id=node, table=node, primary_key="id") for node in nodes],
@@ -142,60 +142,69 @@ def test_branching_path_hints_bound_work_and_leave_cache_unchanged(
                 target_entity=target,
                 source_column="id",
                 target_column="id",
-                cardinality="N:1",
+                cardinality="1:N",
                 safety="safe",
                 allowed_directions=["forward"],
             )
-            for previous, following in zip(layers, layers[1:], strict=False)
+            for previous, following in [*zip(layers, layers[1:], strict=False), (["S"], ["Z"])]
             for source in previous
             for target in following
         ],
         path_policy=PathPolicyConfig(max_hops=8),
         path_preferences=[],
     )
-    assert len(config.entities) == 34
-    assert len(config.relationships) == 116
+    assert len(config.entities) == 35
+    assert len(config.relationships) == 117
     with pytest.raises(SemanticLayerError) as raised:
         resolve_path(config, start="S", target="disconnected")
+    expected = sorted(["Z", *layers[1]])
+    issue = exception_issue(enrich_path_not_found(raised.value, config), stage="plan")
+    assert issue["details"]["reachable_targets"] == expected
+    assert all(hint["kind"] != "isolated_source_entity" for hint in issue["recovery_hints"])
+    for target in expected:
+        resolve_path(config, start="S", target=target)
+
     analysis = get_package_analysis(config)
+    analysis.path_cache.clear()
     if warm:
-        # Existing refusals must not be copied or rendered just to discard them.
+        # Preserve both successful routes and existing refusals without rendering them.
+        resolve_path(config, start="S", target="Z")
         with pytest.raises(SemanticLayerError):
             resolve_path(config, start="S", target=layers[2][0])
         enrich_path_not_found(raised.value, config)
     cache_before = dict(analysis.path_cache)
-    edge_visits = 0
+    note_cache_before = dict(analysis.route_note_cache)
+    shortest_path = fanout_module._shortest_path
+    calls = 0
 
-    class CountedEdges(list):
-        def __iter__(self):
-            nonlocal edge_visits
-            for edge in super().__iter__():
-                edge_visits += 1
-                yield edge
-
-    analysis.graph = {node: CountedEdges(edges) for node, edges in analysis.graph.items()}
+    def counted_shortest_path(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return shortest_path(*args, **kwargs)
 
     def reject_full_resolution(*args, **kwargs):
         pytest.fail("hint eligibility must not enumerate or render full route envelopes")
 
+    monkeypatch.setattr(fanout_module, "_shortest_path", counted_shortest_path)
     monkeypatch.setattr(fanout_module, "resolve_path", reject_full_resolution)
     monkeypatch.setattr(fanout_module, "enumerate_paths", reject_full_resolution)
     monkeypatch.setattr(fanout_module, "_route_decision_required", reject_full_resolution)
     first = enrich_path_not_found(raised.value, config)
-    first_visits = edge_visits
+    first_calls = calls
     second = enrich_path_not_found(raised.value, config)
-    # One shared 4096-edge budget, plus scanning the four direct edges and
-    # at most one edge fetched when the budget is exhausted. No timing threshold.
-    assert first_visits <= 4101
-    assert edge_visits - first_visits <= 4101
+    reachable_targets = len(nodes) - 2  # Exclude the source and disconnected entity.
+    bound = reachable_targets * (config.path_policy.max_hops + 1) + 1
+    assert 0 < first_calls <= bound
+    assert 0 < calls - first_calls <= bound
     assert first.details == second.details
-    assert first.details["reachable_targets"] == sorted(layers[1])
+    assert first.details["reachable_targets"] == expected
     assert first.details["compatible_group_by_dimensions"] == [
         "dimension.S",
-        *[f"dimension.{node}" for node in sorted(layers[1])],
+        *[f"dimension.{node}" for node in expected],
     ]
     assert analysis.path_cache == cache_before
     assert all(analysis.path_cache[pair] is cached for pair, cached in cache_before.items())
+    assert analysis.route_note_cache == note_cache_before
 
 
 @pytest.mark.parametrize(
@@ -252,13 +261,22 @@ def test_lightweight_path_eligibility_agrees_with_full_resolution(
     assert resolved == expected
 
 
-def test_budget_exhaustion_refuses_partial_route_proof_but_preserves_pins_and_direct_routes(
-    package_config_factory, monkeypatch
-):
+def test_path_hints_list_every_single_route_target_in_a_large_tree(package_config_factory):
     config, _ = package_config_factory("jaffle_shop")
+    branches = [f"branch_{index}" for index in range(16)]
+    edges = [("S", branch) for branch in branches] + [
+        (branch, f"{branch}_leaf_{index}") for branch in branches for index in range(4)
+    ]
+    targets = sorted(target for _, target in edges)
+    # An exhaustive search scans 80 tree edges for each of 80 targets: beyond
+    # the former shared budget, even before the alphabetically first failed target.
+    assert len(edges) * len(targets) > 4096
     config = replace(
         config,
-        entities=[EntityConfig(id=node, table=node, primary_key="id") for node in "ABCDEF"],
+        entities=[
+            EntityConfig(id=node, table=node, primary_key="id")
+            for node in ["A_disconnected", "S", *targets]
+        ],
         relationships=[
             RelationshipConfig(
                 id=f"{source}_{target}",
@@ -266,33 +284,20 @@ def test_budget_exhaustion_refuses_partial_route_proof_but_preserves_pins_and_di
                 target_entity=target,
                 source_column="id",
                 target_column="id",
-                cardinality="N:1",
+                cardinality="1:N",
                 safety="safe",
                 allowed_directions=["forward"],
             )
-            for source, target in [
-                ("A", "B"),
-                ("B", "D"),
-                ("A", "C"),
-                ("C", "D"),
-                ("B", "E"),
-                ("A", "F"),
-            ]
+            for source, target in edges
         ],
-        path_policy=PathPolicyConfig(max_hops=3),
-        path_preferences=[
-            PathPreferenceConfig(
-                source_entity="A", target_entity="E", relationship_path=["A_B", "B_E"]
-            )
-        ],
+        path_policy=PathPolicyConfig(max_hops=2),
+        path_preferences=[],
     )
-    # D's first route consumes two visits, but the second cannot be ruled out
-    # within a three-visit budget. E and F sort after this exhausted search.
-    budget = fanout_module._PathSearchBudget(remaining=3)
-    monkeypatch.setattr(fanout_module, "_PathSearchBudget", lambda remaining: budget)
-    assert eligible_path_targets(config, start="A") == ["B", "C", "E", "F"]
-    assert budget.exhausted
-    with pytest.raises(SemanticLayerError, match="Ambiguous path"):
-        resolve_path(config, start="A", target="D")
-    for target in "BCEF":
-        resolve_path(config, start="A", target=target)
+    with pytest.raises(SemanticLayerError) as raised:
+        resolve_path(config, start="S", target="A_disconnected")
+    analysis = get_package_analysis(config)
+    cache_before = dict(analysis.path_cache)
+    assert enrich_path_not_found(raised.value, config).details["reachable_targets"] == targets
+    assert analysis.path_cache == cache_before
+    for target in targets:
+        resolve_path(config, start="S", target=target)

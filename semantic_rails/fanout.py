@@ -15,8 +15,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import asdict, dataclass
-from itertools import islice
+from dataclasses import asdict
 from typing import Any
 
 from .compiler_parts.indexes import RouteRefusal, get_package_analysis
@@ -67,49 +66,25 @@ def _min_hops_unbounded(
 def enumerate_paths(
     graph: dict[str, list[tuple[str, str]]], start: str, target: str, hop_limit: int
 ) -> list[list[str]]:
-    return list(_iter_paths(graph, start, target, hop_limit))
+    found: list[list[str]] = []
 
-
-@dataclass
-class _PathSearchBudget:
-    remaining: int
-    exhausted: bool = False
-
-
-def _iter_paths(
-    graph: dict[str, list[tuple[str, str]]],
-    start: str,
-    target: str,
-    hop_limit: int,
-    budget: _PathSearchBudget | None = None,
-) -> Iterator[list[str]]:
-    """The shared simple-path traversal; diagnostics may stop early or bound edge visits."""
-
-    def _dfs(node: str, path: list[str], visited: set[str]) -> Iterator[list[str]]:
+    def _dfs(node: str, path: list[str], visited: set[str]) -> None:
         if len(path) > hop_limit:
             return
         if node == target:
-            yield list(path)
-            return
-        if len(path) == hop_limit:
+            found.append(list(path))
             return
         for neighbor, rel_id in graph.get(node, []):
-            if budget is not None:
-                if budget.remaining == 0:
-                    budget.exhausted = True
-                    return
-                budget.remaining -= 1
             if neighbor in visited:
                 continue
             visited.add(neighbor)
             path.append(rel_id)
-            yield from _dfs(neighbor, path, visited)
+            _dfs(neighbor, path, visited)
             path.pop()
             visited.remove(neighbor)
-            if budget is not None and budget.exhausted:
-                return
 
-    yield from _dfs(start, [], {start})
+    _dfs(start, [], {start})
+    return found
 
 
 def hop_is_functional(rel: RelationshipConfig, current_entity: str) -> bool:
@@ -216,6 +191,29 @@ def route_basis(
     return "colocated_key" if len(routes) > 1 else ""
 
 
+def _shortest_path(
+    graph: dict[str, list[tuple[str, str]]],
+    start: str,
+    target: str,
+    hop_limit: int,
+    excluded: str | None = None,
+) -> tuple[str, ...] | None:
+    pending: deque[tuple[str, tuple[str, ...]]] = deque([(start, ())])
+    seen = {start}
+    while pending:
+        node, path = pending.popleft()
+        if node == target:
+            return path
+        if len(path) >= hop_limit:
+            continue
+        for neighbor, rel_id in graph.get(node, []):
+            if rel_id == excluded or neighbor in seen:
+                continue
+            seen.add(neighbor)
+            pending.append((neighbor, (*path, rel_id)))
+    return None
+
+
 def _has_multiple_routes(
     graph: dict[str, list[tuple[str, str]]], start: str, target: str, hop_limit: int
 ) -> bool:
@@ -224,25 +222,10 @@ def _has_multiple_routes(
     must omit at least one of those relationships. At most ``hop_limit + 1`` BFS scans,
     each visiting an entity once; cycles and parallel relationships need no special case.
     """
-
-    def shortest_path(excluded: str | None = None) -> tuple[str, ...] | None:
-        pending: deque[tuple[str, tuple[str, ...]]] = deque([(start, ())])
-        seen = {start}
-        while pending:
-            node, path = pending.popleft()
-            if node == target:
-                return path
-            if len(path) >= hop_limit:
-                continue
-            for neighbor, rel_id in graph.get(node, []):
-                if rel_id == excluded or neighbor in seen:
-                    continue
-                seen.add(neighbor)
-                pending.append((neighbor, (*path, rel_id)))
-        return None
-
-    path = shortest_path()
-    return path is not None and any(shortest_path(rel_id) is not None for rel_id in path)
+    path = _shortest_path(graph, start, target, hop_limit)
+    return path is not None and any(
+        _shortest_path(graph, start, target, hop_limit, rel_id) is not None for rel_id in path
+    )
 
 
 def resolve_path(
@@ -334,7 +317,7 @@ def _resolve_uncached(config: PackageConfig, start: str, target: str) -> list[li
 def _choose_unpinned_route(
     config: PackageConfig, start: str, routes: list[list[str]]
 ) -> list[str] | None:
-    """Rules 2-3, shared by full resolution and bounded diagnostic eligibility."""
+    """Rules 2-3, shared by full resolution and diagnostic eligibility."""
     if len(routes) == 1:
         return routes[0]
     analysis = get_package_analysis(config)
@@ -349,22 +332,30 @@ def _choose_unpinned_route(
 def eligible_path_targets(config: PackageConfig, *, start: str) -> list[str]:
     """Proven resolvable targets without building or caching route refusal envelopes.
 
-    Pins and unique functional direct routes need no search. For other targets,
-    two routes suffice to refuse ambiguity; a sole route needs a completed search.
-    One 4096-edge search budget applies across all targets. Exhaustion omits
-    uncertain targets rather than suggesting a route the resolver might refuse.
+    One hop-bounded BFS excludes unreachable targets. Pins and unique functional
+    direct routes then need no further search. Other reachable targets need at most
+    ``hop_limit + 1`` BFS scans each to check route multiplicity, without cache writes.
     """
     analysis = get_package_analysis(config)
     hop_limit = package_hop_limit(config)
+    pending = deque([(start, 0)])
+    reachable = {start}
+    while pending:
+        node, hops = pending.popleft()
+        if hops >= hop_limit:
+            continue
+        for neighbor, _rel_id in analysis.graph.get(node, []):
+            if neighbor not in reachable:
+                reachable.add(neighbor)
+                pending.append((neighbor, hops + 1))
     direct: dict[str, list[list[str]]] = {}
     if hop_limit >= 1:
         for target, rel_id in analysis.graph.get(start, []):
             if target != start and hop_is_functional(analysis.relationships[rel_id], start):
                 direct.setdefault(target, []).append([rel_id])
-    budget = _PathSearchBudget(remaining=4096)
     eligible: list[str] = []
     for target in sorted(analysis.entities):
-        if target == start:
+        if target == start or target not in reachable:
             continue
         if (start, target) in analysis.path_preferences:
             eligible.append(target)
@@ -373,10 +364,8 @@ def eligible_path_targets(config: PackageConfig, *, start: str) -> list[str]:
             # regardless of the number of longer alternatives.
             if _choose_unpinned_route(config, start, direct[target]) is not None:
                 eligible.append(target)
-        elif not budget.exhausted:
-            routes = list(islice(_iter_paths(analysis.graph, start, target, hop_limit, budget), 2))
-            if not budget.exhausted and _choose_unpinned_route(config, start, routes) is not None:
-                eligible.append(target)
+        elif not _has_multiple_routes(analysis.graph, start, target, hop_limit):
+            eligible.append(target)
     return eligible
 
 

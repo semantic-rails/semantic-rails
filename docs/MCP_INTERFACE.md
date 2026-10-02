@@ -747,7 +747,7 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 | `INVALID_SEGMENT` | Segment definition is invalid. |
 | `MISSING_DEPENDENCY` | Required upstream object is missing. |
 | `QUERY_EXECUTION_ERROR` | Warehouse refused or aborted execution. |
-| `PATH_NOT_FOUND` | No valid join path between the requested objects. `details.reachable_targets` and suggested group-by dimensions share compilation's path traversal and route-selection rules, respecting relationship directions, hop limits, route ambiguity, and recorded path preferences. Alternative-route search is limited to 4096 edge visits per error, without caching rejected routes; targets whose eligibility cannot be established within this budget are omitted. |
+| `PATH_NOT_FOUND` | No valid join path between the requested objects. `details.reachable_targets` and suggested group-by dimensions share compilation's path traversal and route-selection rules, respecting relationship directions, hop limits, route ambiguity, and recorded path preferences. The lists are exact under these path rules, without caching rejected routes, and are route-eligible: fan-out and policy checks still apply. |
 | `POLICY_DENIED` | Policy context blocks a referenced object or query cut. |
 | `INVALID_METRIC_PREDICATE` | `metric_predicates[]` entry is malformed. |
 | `PREDICATE_SCOPE_UNSAFE` | Predicate scope is incompatible with query grain. |
