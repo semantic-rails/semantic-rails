@@ -1159,7 +1159,7 @@ The response `warnings` array can carry these non-error signals:
   `route_decisions` row the query applied. `details.row` is the row and
   `details.replaced` what would have applied without it (`decided`,
   `colocated_key`, `only_route`, `undecided` or `unreachable`). See
-  [`route_decisions`](QUERY_IR_SCHEMA.md#route-decisions).
+  [`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions).
 
 HTTP failures return:
 

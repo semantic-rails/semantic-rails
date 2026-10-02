@@ -1475,7 +1475,7 @@ words built only from package labels:
 
 Every option can be applied two ways. For the person who asked, the agent
 resends the query with the option's `decision` in
-[`route_decisions`](QUERY_IR_SCHEMA.md#route-decisions): that query only, not a
+[`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions): that query only, not a
 default. For everyone, a maintainer records the same row in the package (Architect
 `record_route_decision` writes it for review); then the question answers
 without asking.

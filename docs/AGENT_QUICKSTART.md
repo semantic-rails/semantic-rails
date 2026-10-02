@@ -328,7 +328,7 @@ The agent never picks one; it asks:
    Account?") and one option per route, each with a `meaning` in business words.
 2. Ask the person, reading each option's `meaning`.
 3. Resend the same query with the chosen option's `decision` in
-   [`route_decisions`](QUERY_IR_SCHEMA.md#route-decisions). The answer is for this person and this
+   [`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions). The answer is for this person and this
    query only, and carries an `info` note `ROUTE_CHOSEN_BY_QUERY` with the row and `replaced` (what
    applied without it: `undecided`, or `decided` when the package records another route).
 4. To make it the default for everyone, a maintainer calls Architect
