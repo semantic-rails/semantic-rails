@@ -2103,20 +2103,24 @@ def _number_key(value: float) -> str | None:
         return None
 
 
-def _unmatched_words(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
-    """Question words the draft accounts for nowhere (the warning; readiness is
-    ``unconsumed_terms``)."""
+def _unmatched_words(
+    runtime: Any, question: str, query: dict[str, Any], *, every_word: bool = False
+) -> list[str]:
+    """Question words the draft accounts for nowhere, reading ``_MAX_SCANNED_WORDS`` distinct
+    words unless ``every_word`` (the warning; readiness is ``unconsumed_terms`` and
+    ``unconsumed_catalog_words``)."""
 
     from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
 
-    referenced = set(_referenced_ids(query))
+    referenced = _used_ids(runtime._config, query)
     calendar_id = str(_time_block(query).get("calendar_id") or "default")
     vocabulary: set[str] = set()
     for row in _catalog_rows(runtime._config):
         if str(getattr(row, "id", "")) in referenced or (
             calendar_id != "default" and getattr(row, "calendar_id", "") == calendar_id
         ):
-            vocabulary.update(_tokens(_object_text(row)))
+            # Names only: a description that says "not discounts" doesn't answer "discounts".
+            vocabulary.update(_tokens(_core_text(row)))
     labels = _value_phrases(runtime._config)
     for node in _dict_nodes(query):
         if "field" in node and "value" in node:
@@ -2132,7 +2136,7 @@ def _unmatched_words(runtime: Any, question: str, query: dict[str, Any]) -> list
     skipped = _INTENT_STOPWORDS | _FRAMING_WORDS | set(_NUMBER_WORDS) | set(_ORDINALS)
     text = str(question or "")
     lowered = text.lower()
-    time_spans = _time_window(text).spans
+    time_spans = [*_time_window(text).spans, *_honored_clause_spans(runtime, text, query)]
     tokens = [(match.group(0), *match.span()) for match in _TERM_RE.finditer(lowered)]
     consumed = _consumed_spans(runtime, lowered, tokens, query)
 
@@ -2144,7 +2148,7 @@ def _unmatched_words(runtime: Any, question: str, query: dict[str, Any]) -> list
     out: list[str] = []
     for word, start, end in tokens:
         scanned.add(word)
-        if len(scanned) > _MAX_SCANNED_WORDS:
+        if not every_word and len(scanned) > _MAX_SCANNED_WORDS:
             break
         if word in reported:
             continue
@@ -2176,17 +2180,96 @@ def _unmatched_words(runtime: Any, question: str, query: dict[str, Any]) -> list
     return out
 
 
+def _used_ids(config: Any, query: dict[str, Any]) -> set[str]:
+    """The objects a draft uses: those it names, and the entity and clock of each measure or
+    metric it names ("revenue from orders" uses the Order entity of Revenue)."""
+
+    used = set(_referenced_ids(query))
+    for row in [*config.measures, *config.metric_recipes]:
+        if str(row.id) in used:
+            for attr in ("entity", "default_temporal_role", "temporal_role"):
+                value = getattr(row, attr, None)
+                if isinstance(value, str) and value:
+                    used.add(value)
+    return used
+
+
+def _honored_clause_spans(runtime: Any, text: str, query: dict[str, Any]) -> list[tuple[int, int]]:
+    """The clauses another check owns, when the draft honors them: a fiscal calendar ("fiscal
+    revenue on April 3, 2017") and a prior-period comparison ("revenue vs prior year")."""
+
+    lowered = text.lower()
+    spans: list[tuple[int, int]] = []
+    if not _fiscal_calendar_gaps(runtime._config, text, query):
+        spans.extend(match.span() for match in _FISCAL_RE.finditer(lowered))
+    if _query_contains_prior_period(runtime, query):
+        spans.extend(match.span() for match in _PRIOR_PERIOD_RE.finditer(lowered))
+    return spans
+
+
 def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
     """Question words the draft accounts for nowhere, in question order.
 
     A word is accounted for when it frames the question, sits in a time phrase
     the planner read, counts or orders ("five", "3rd"), or appears (allowing a
-    plural or one typo) in the text of an object the draft uses or in one of
-    its filter values. Words come back as the question spells them, at most
-    eight.
+    plural or one typo) in the id, name, label or aliases of an object the
+    draft uses or in one of its filter values. A description never accounts
+    for a word. Words come back as the question spells them, at most eight.
     """
 
     return _unmatched_words(runtime, question, query)[:_MAX_UNMATCHED_TERMS]
+
+
+def unconsumed_catalog_words(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
+    """The question's words that name something in the catalog and that the draft doesn't use.
+
+    The readiness invariant for words, beside ``unconsumed_terms`` for numbers: every question
+    word that names a catalog object (a word of some measure's, metric's, dimension's, entity's,
+    segment's or temporal role's id, name, label or aliases) is consumed by the draft, as
+    ``unmatched_intent_terms`` accounts for words: by the names of an object it uses, a filter
+    value, a time phrase it read, or as a framing word. One left over is a grouping the draft
+    dropped ("by store, customer type and product type" grouped by store) or a subject it
+    swapped. A description names nothing here, so a word found only in descriptions stays a
+    warning. Every word is read, however long the question.
+    """
+
+    names = _catalog_names(runtime._config)
+    out: list[str] = []
+    for word in _unmatched_words(runtime, question, query, every_word=True):
+        token = _TERM_SYNONYMS.get(word, word)
+        if token in names or _singular(token) in names:
+            out.append(word)
+    return out
+
+
+def _catalog_names(config: Any) -> frozenset[str]:
+    """Every word that names a catalog object: in its label or aliases, or in the last dotted
+    part of its id or name outside a namespace.
+
+    A namespace names no object: "sales" in "metric.sales.aov_usd" or "jaffle" in
+    "jaffle.revenue_usd" is a part of an id or name before its last dot.
+    """
+
+    rows = _catalog_rows(config)
+    keys = [
+        (str(getattr(row, "id", "") or ""), str(getattr(row, "name", "") or "")) for row in rows
+    ]
+    spaces = {
+        token
+        for object_id, name in keys
+        for part in [*object_id.split(".")[1:-1], *name.split(".")[:-1]]
+        for token in _tokens(part)
+    }
+    names: set[str] = set()
+    for row, (object_id, name) in zip(rows, keys, strict=True):
+        labels = [
+            str(getattr(row, "label", "") or ""),
+            *map(str, getattr(row, "aliases", None) or []),
+        ]
+        names.update(_tokens(" ".join(labels)))
+        own = f"{object_id.rsplit('.', 1)[-1]} {name.rsplit('.', 1)[-1]}"
+        names.update(token for token in _tokens(own) if token not in spaces)
+    return frozenset(names)
 
 
 def unconsumed_terms(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
@@ -2643,4 +2726,10 @@ def _within_one_edit(left: str, right: str) -> bool:
     return shorter[index:] == longer[index + 1 :]
 
 
-__all__ = ["CoverageGap", "intent_faithfulness_why", "unconsumed_terms", "unmatched_intent_terms"]
+__all__ = [
+    "CoverageGap",
+    "intent_faithfulness_why",
+    "unconsumed_catalog_words",
+    "unconsumed_terms",
+    "unmatched_intent_terms",
+]

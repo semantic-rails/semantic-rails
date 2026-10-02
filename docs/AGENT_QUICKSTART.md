@@ -162,7 +162,8 @@ executing it.
 Statuses are:
 
 - `ok`: the best draft validated, no check found part of the question it leaves out, and every
-  number and clock or zone word in the question is used by the draft. `warnings` can still name
+  number, clock or zone word, and word that names a catalog object (in an id, name, label or
+  alias; never only a description) in the question is used by the draft. `warnings` can still name
   other question words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
 - `low_confidence`: a draft exists, but validation failed, the draft leaves out part of the
   question (`why` names it, for example `PLAN_INTENT_COVERAGE_GAP`, or `TIME_WINDOW_UNRESOLVED`,

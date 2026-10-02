@@ -212,7 +212,12 @@ draft includes it.
 framing words (including verbs and function words such as "dated", "placed", "only", "using"),
 time phrases the planner read, and numbers the draft carries (a limit, a threshold, the
 window's year), come back as a `PLAN_UNMATCHED_TERMS` warning with up to eight of them in
-`details.terms`. Other words stay warnings, as do measure nouns; check them before executing.
+`details.terms`. The draft uses a word in the id, name, label or aliases of an object it uses (a
+measure's entity and time role included) or in a filter value; a description never uses a word.
+A word that names a catalog object the draft doesn't use is not a warning: it makes the plan
+`low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`, since the draft dropped a grouping
+("by store, customer type and product type" grouped by store; `why.details.dropped_groupings`
+names it) or answers about another subject. Other words stay warnings; check them before executing.
 A number, or a clock or zone word, the draft doesn't carry is not a warning: it makes the plan
 `low_confidence` (below), since the draft dropped an hour, a range or a
 threshold. Two words or more that no catalog object has, the first straight after "for",
@@ -223,7 +228,7 @@ plan is `low_confidence` with a `multiple_subjects_unrealized` gap naming the on
 out. For a measure by a dimension, a measure the question names in full outranks a shorter one
 it shares a word with ("item revenue" is Item revenue, not Revenue), but only when the name
 holds every word of the measure the question otherwise asks for: "large order revenue" is
-still revenue. If a
+still revenue (and `low_confidence` until the draft filters on large orders). If a
 validating fallback would change the target, grouping, qualification/cohort,
 filters, or time scope, `plan` returns `low_confidence` with
 `why.code="PLAN_FALLBACK_SEMANTIC_DRIFT"` instead of silently promoting it.
@@ -393,7 +398,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `<TOOL>_UNKNOWN_ARG` | every tool but `segment` | Unknown argument (on `discover`, incl. `term`/`kind` typos); the value was ignored |
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain; flip `allow_live_query=true` to probe |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
-| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, or when two or more are names the catalog doesn't have |
+| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, when one names a catalog object, or when two or more are names the catalog doesn't have |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
 | `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain and no `start`/`end` window, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
