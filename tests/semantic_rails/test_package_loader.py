@@ -662,9 +662,13 @@ def test_loader_rejects_duplicate_entity_ids(tmp_path: Path):
         "name": "demo.Invoice",
         "label": "Invoice",
         "key": ["order_id"],
-        "model": "orders",
+        "model": "invoices",
     }
     _write_yaml(graph_path, graph)
+    _write_yaml(
+        package_dir / "models" / "invoices.yml",
+        {"models": {"invoices": {"entity": "invoice", "relation": "order_fact"}}},
+    )
 
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(package_dir))

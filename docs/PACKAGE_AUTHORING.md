@@ -777,6 +777,15 @@ The graph is the canonical source for entity identity. It declares the entities
 the package exposes, their key column names, and any non-default relationships
 between them.
 
+Each graph entity must have a key, declared on the entity or through its own
+model's `keys.primary:` or `grain:`. An explicit graph model binding makes that
+entity the model's primary entity, regardless of the order of its `entities:` block. A
+conflicting resolved `entity:` fails with `INVALID_CONFIG` naming both entities,
+including for implicit bindings and bindings by model name. A
+keyless entity cannot borrow a foreign entity's key: loading fails with
+`INVALID_CONFIG` naming the entity and model before graph relationships are
+translated. Each model can be the primary home of only one graph entity.
+
 ```yaml
 graph:
   entities:
@@ -829,6 +838,10 @@ declared relative to that pair (`many_to_one` = first is many, second is one).
 `rollup_safe` specifies which aggregations roll up safely in each direction.
 When several relationships join one pair (roles), an aggregation must be listed
 by every one that lists any.
+
+Every authored relationship must declare `entities: [source, target]` and attach
+to graph models for both endpoints. An invalid or unattached entry fails loading
+with `INVALID_CONFIG` naming the relationship; it is never silently omitted.
 
 Most relationships are **inferred** from FK references in `model.entities:`
 blocks. Author an explicit `graph.relationships:` entry only when you need a
@@ -906,13 +919,30 @@ model:
 
 The **primary entity** of a model is resolved without authoring `grain:`:
 `graph.entities.<x>.model:` names the model that is the primary home of each
-entity (the jaffle and tpch packages author it this way), and the row grain is
-derived from that entity's canonical key. Single-file packages may instead pin
+entity (the jaffle and tpch packages author it this way), and an omitted row grain
+is derived from that entity's canonical key. Single-file packages may instead pin
 the primary by authoring `grain:` — the entity whose key matches the grain is
-primary, and all entities whose keys are in a compound grain (`grain: [date_id,
-account_id]`) are co-primary. Under `schema_strict`, directory packages reject
+primary. Under `schema_strict`, directory packages reject
 `grain:` authored alongside an `entities:` block ("Drop 'grain:' — it's derived
 from the primary entity's key"); single-file packages accept both.
+
+Without an explicit graph model binding, the loader resolves the primary from
+an authored singular `entity:`, then a matching grain, then an entity listed in
+the model's `entities:` block whose name matches the model and which has no
+explicit graph binding. It back-fills implicit graph bindings from the resolved
+identity. Declaration order never selects the primary; loading fails with
+`INVALID_CONFIG` if it cannot be resolved or two graph entities bind to one model.
+Two models claiming the same unbound graph entity also fail with `INVALID_CONFIG`
+naming both models. An explicit graph `model:` binding fixes primary identity
+independently of an authored `grain:`. That grain describes measure rows and may
+differ from the entity key (for example, payment rows belonging to one receipt,
+or snapshot rows keyed by their clock). It never replaces the bound entity's key.
+Without an explicit graph binding, when `grain:` accompanies an `entities:` block,
+it must match the resolved primary entity's `expr:` override or canonical graph
+key, including when a singular `entity:` supplies the identity. When neither
+declares columns, the check uses the model's own `keys.primary:`. If no key is declared,
+its own model's grain can supply it. Empty `entities:` blocks retain the graph's
+model-name default and still validate the grain.
 
 ### `bridge: false` — junction tables
 

@@ -315,6 +315,11 @@ Supported `op` values (all compile end-to-end):
   instead of erroring. `value: null` with `IN` / `NOT IN` is rejected
   with `INVALID_QUERY` + a `USE_LIST_VALUE_OR_NULL_TEST` recovery hint.
 - `IS NULL` / `IS NOT NULL` ignore `value` entirely — omit it.
+- `IS` / `IS NOT` accept only `null`, `true` or `false`. Other values are
+  rejected before execution with `INVALID_QUERY` and a
+  `USE_EQUALITY_FOR_SCALAR` recovery hint: use `=` / `!=` for scalar comparisons.
+  This applies to plain dimensions, parent dimensions and metric filters
+  on every backend.
 - `value: null` with `=` (or `IS`) lowers to `field IS NULL`; with
   `!=` / `<>` / `IS NOT` it lowers to `field IS NOT NULL`. Ordering
   (`<`, `<=`, `>`, `>=`) and LIKE ops against `null` are rejected with a
@@ -439,8 +444,10 @@ Plain filters on a child:
     `IS NOT NULL` for `IS NULL`; "has no beverage item").
 - Every other shape keeps `MIXED_GRAIN_INVALID` with no clarification: a negated filter
   beside another filter on the child, two negated filters, filters on different children,
-  and `IS` / `IS NOT` with a value, `IS [NOT] DISTINCT FROM`, `<=>`, `ILIKE` or
+  and `IS` / `IS NOT` with a boolean value, `IS [NOT] DISTINCT FROM`, `<=>`, `ILIKE` or
   `NOT ILIKE` on a child.
+  Other non-null `IS` / `IS NOT` operands fail earlier with `INVALID_QUERY` and
+  `USE_EQUALITY_FOR_SCALAR`, before child-scope analysis.
 - The refusal carries `details.clarification`:
 
   ```jsonc
@@ -1003,11 +1010,17 @@ Booleans remain booleans, and nested decimal/float values retain their normaliza
 
 The Postgres ADBC adapter accepts only Arrow scalar types with exact mappings:
 integers, decimals (including PostgreSQL NUMERIC stored as text and converted
-to `Decimal`), float32/float64, text, booleans, date32, microsecond timestamps
-with or without a time zone, month-day-nanosecond intervals, and NULL.
-Other Arrow types, including lists, structs, maps, nested NUMERIC, JSON/JSONB
-and unknown extensions, refuse with `RESULT_TYPE_UNSUPPORTED` before rows
-are read, even for empty or all-null results. The error names the column and
+to `Decimal`), float32/float64, text, booleans, date32, microsecond times,
+variable-size binary, microsecond timestamps with or without a time zone,
+month-day-nanosecond intervals, and NULL. Variable-size binary remains binary,
+including 16-byte BYTEA values; UUID-looking text remains text.
+Before converting each bounded batch to Python values, microsecond times outside
+`00:00:00` through `23:59:59.999999` refuse with `RESULT_TYPE_UNSUPPORTED`.
+This includes PostgreSQL `TIME '24:00:00'`, which cannot be represented as an
+exact Python `time` and must never wrap to midnight. Errors expose no raw values.
+Other Arrow types, including lists, structs, maps, nested NUMERIC, JSON/JSONB,
+UUID, fixed-size binary and unknown extensions, refuse with
+`RESULT_TYPE_UNSUPPORTED` before rows are read, even for empty or all-null results. The error names the column and
 Arrow type in `details.column` and `details.type`, without exposing values.
 Intervals still refuse with `RESULT_VALUE_UNSUPPORTED` when their duration
 cannot be represented as an exact Python `timedelta`.

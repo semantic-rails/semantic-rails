@@ -631,8 +631,6 @@ def _session(*conditions: dict[str, Any]) -> dict[str, Any]:
         [BEVERAGE, NOT_17],
         [NOT_BEVERAGE, NOT_17],
         # A negated test with no exact complement to state as a 'none' group.
-        [{"field": TYPE, "op": "IS NOT", "value": "beverage"}],
-        [{"field": PRICE, "op": "IS NOT", "value": 17}],
         [{"field": TYPE, "op": "IS DISTINCT FROM", "value": "beverage"}],
         [{"field": TYPE, "op": "NOT ILIKE", "value": "bev%"}],
     ],
@@ -652,8 +650,6 @@ def _session(*conditions: dict[str, Any]) -> dict[str, Any]:
         "negated_beside_any",
         "flat_beside_negated",
         "two_negated",
-        "is_not_text",
-        "is_not_number",
         "is_distinct_from",
         "not_ilike",
     ],
@@ -664,6 +660,17 @@ def test_every_other_shape_keeps_its_refusal(payments_package: Path, where: list
     else may cross a one-to-many hop, and groups stay on one child."""
     error = _refusal(payments_package, _query(where))
     assert error["code"] == "MIXED_GRAIN_INVALID"
+    assert "clarification" not in error["details"]
+
+
+@pytest.mark.parametrize("op", ["IS", "IS NOT"])
+@pytest.mark.parametrize(("field", "value"), [(TYPE, "beverage"), (PRICE, 17)])
+def test_invalid_is_operand_is_refused_before_child_scope_analysis(
+    package: Path, op: str, field: str, value: Any
+) -> None:
+    error = _refusal(package, _query([{"field": field, "op": op, "value": value}]))
+    assert error["code"] == "INVALID_QUERY"
+    assert error["recovery_hints"][0]["code"] == "USE_EQUALITY_FOR_SCALAR"
     assert "clarification" not in error["details"]
 
 

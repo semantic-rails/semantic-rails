@@ -1306,7 +1306,6 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
         (_bound_filter({"field": TYPE, "op": "!=", "value": "beverage"}), NEGATED),
         # A negated test with no exact complement has no 'none' reading to offer.
         (_where("IS DISTINCT FROM", "beverage"), NEGATED),
-        (_where("IS NOT", "beverage"), NEGATED),
         (_where("NOT ILIKE", "bev%"), NEGATED),
         # At most one condition may cross a one-to-many hop: with two, one row may have to meet
         # both, or any rows each. On siblings under a shared hop, or both groups.
@@ -1382,7 +1381,6 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
         "avg",
         "measure_filter",
         "is_distinct_from",
-        "is_not_value",
         "not_ilike",
         "group_and_filter_one_child",
         "group_and_filter_through_a_lookup",
@@ -1519,6 +1517,13 @@ def test_a_conditional_aggregate_asks_about_a_negated_child_filter_too(
         resent = {**query, "where": option["where"]}
         expected = _reference(package, reference.format(readings[option["id"]]))
         assert _rows(package, resent) == expected, option["id"]
+
+
+@pytest.mark.parametrize("op", ["IS", "IS NOT"])
+def test_invalid_is_operand_is_refused_before_hop_analysis(package: Path, op: str) -> None:
+    error = _refusal(package, _where(op, "beverage"))
+    assert error["code"] == "INVALID_QUERY"
+    assert error["recovery_hints"][0]["code"] == "USE_EQUALITY_FOR_SCALAR"
 
 
 def test_positive_null_and_boolean_tests_mean_exists(package: Path) -> None:
