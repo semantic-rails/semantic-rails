@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from ..ast import NormalizedQuery
@@ -43,6 +45,7 @@ from .indexes import (
     _relationship_index,
     _temporal_role_index,
     get_package_analysis,
+    rollup_dimension_entities,
 )
 from .temporal import _allows_coarse_snapshot_alignment
 
@@ -109,6 +112,29 @@ def _pair_key_routes(
     return [(rel, column) for column, rel in sorted(by_column.items())]
 
 
+def _entity_in_terms_of_parent_relationship(
+    source_entity: str, measure_entity: str, config: PackageConfig
+) -> RelationshipConfig | None:
+    """A child anchor can check only its unique, available relationship to the parent."""
+    routes = _pair_orientations(source_entity, measure_entity, config)
+    if len(routes) != 1:
+        return None
+    rel = routes[0][0]
+    if (
+        rel.source_entity != source_entity
+        or rel.target_entity != measure_entity
+        or rel.cardinality != "N:1"
+        or rel.safety == "unsafe"
+        or rel.temporal_validity
+        or "forward" not in rel.allowed_directions
+    ):
+        return None
+    pinned = get_package_analysis(config).path_preferences.get((source_entity, measure_entity))
+    if pinned is not None and pinned != [rel.id]:
+        return None
+    return rel
+
+
 def _pair_has_several_pairings(
     source_entity: str, target_entity: str, config: PackageConfig
 ) -> bool:
@@ -149,18 +175,17 @@ def _direct_entity_key_source_expr(
         return None
     rel, source_col = routes[0]
     # The shortcut only stands when the route resolver picks exactly the one direct
-    # relationship found: a pin or another route to the target may mean a different row than
+    # relationship found: a row or another route to the target may mean a different row than
     # the source table's own column, and an ambiguous pair falls through to path selection,
-    # which refuses. A pin on the reverse pair must name the same relationship.
+    # which refuses.
     try:
-        resolved, candidates = resolve_path(config, start=source_entity, target=target_entity)
+        resolved, _candidates = resolve_path(config, start=source_entity, target=target_entity)
     except SemanticLayerError:
         return None
-    reverse_pin = get_package_analysis(config).path_preferences.get((target_entity, source_entity))
-    if resolved != [rel.id] or reverse_pin not in (None, [rel.id]):
+    if resolved != [rel.id]:
         return None
     record_bound_object(rel, config)
-    record_route_choice(source_entity, target_entity, candidates)
+    record_route_choice(source_entity, target_entity, resolved)
     return _column_ref(source_table, source_col)
 
 
@@ -422,35 +447,112 @@ def _is_lookup_hop(rel: RelationshipConfig, current_entity: str, config: Package
     return _reaches_at_most_one(rel, current_entity)
 
 
+# The reads that need the looked-up row, so they join every hop of their path INNER: a time
+# role (a row with no time has no bucket), a metric predicate's route to the entity its set is
+# matched on, a conversion's events, and the measure's own entity read back from the anchor of
+# an entity_in_terms_of leaf (a child row whose parent has no record counts no entity).
+_INNER_LOOKUP_PURPOSES = frozenset(
+    {
+        "time",
+        "metric_predicate",
+        "conversion_dimension",
+        "conversion_match_entity",
+        "entity_in_terms_of_root",
+    }
+)
+_inner_lookups: ContextVar[bool] = ContextVar("inner_lookups", default=False)
+
+
+@contextmanager
+def inner_lookups() -> Iterator[None]:
+    """Join every lookup INNER while a metric predicate's own query or a distribution's
+    per-entity values lower: each holds the entities that have rows, never a NULL key for rows
+    that have none."""
+    token = _inner_lookups.set(True)
+    try:
+        yield
+    finally:
+        _inner_lookups.reset(token)
+
+
+def rollup_held_lookups(
+    config: PackageConfig, measure_entity: str, path_selections: Iterable[PathSelection]
+) -> set[str]:
+    """The models ``path_selections`` look up whose dimensions a rollup of ``measure_entity``
+    holds: read from that model's own rows, their lookups join INNER, as the rollup was built."""
+    held = rollup_dimension_entities(config, measure_entity) - {measure_entity}
+    return {
+        row.target_entity
+        for row in path_selections
+        if row.chosen_path and row.target_entity in held
+    }
+
+
 def _joins_for_paths(
     source_entity: str,
     path_selections: Iterable[PathSelection],
     config: PackageConfig,
     *,
+    measure_entity: str | None,
     time_spec: dict[str, Any] | None = None,
     table_overrides: dict[str, str] | None = None,
-    lookup_selections: frozenset[tuple[str, str]] = frozenset(),
 ) -> list[SqlJoin]:
-    """The joins for ``path_selections``, all INNER unless the path is temporal.
+    """The joins for ``path_selections``. Every leaf joins its paths here, so this is the one
+    place that decides whether a hop can remove a row.
 
-    The one exception is the lookup left join: a selection named in ``lookup_selections``
-    (by ``(target_entity, purpose)``) joins its N:1 and 1:1 hops with LEFT, so a row whose
-    foreign key is NULL or unmatched stays, with NULL for what the hop looks up. A hop that
-    any other selection also walks stays INNER.
+    An N:1 or 1:1 hop never removes a row: it joins LEFT, so a row whose foreign key is NULL
+    or unmatched stays, with NULL for everything the hop looks up, whatever reads it (a
+    grouping, a filter, the measure's own filter, an aggregate_if's condition or its
+    expression). It joins INNER only when a read in ``_INNER_LOOKUP_PURPOSES`` walks the same
+    hop, inside a metric predicate's own query or a distribution's per-entity values
+    (``inner_lookups``), on the path to a dimension a rollup of the measure's model holds
+    pre-joined (so the base answers as the rollup does), or on a warehouse whose outer join
+    reads a type default instead of NULL (``_is_lookup_hop``). Hops that fan out join INNER,
+    and every hop after a temporal-validity hop joins LEFT.
+
+    ``measure_entity`` is the model of the measure the leaf aggregates, or None for dimensions
+    alone and conversions. A rollup belongs to the measures of the model it aggregates, so
+    only a rollup of ``measure_entity`` changes a join, and only when the leaf reads that
+    model's own rows (``source_entity``). Every other leaf joins as the base tables do: a
+    rollup of an entity_in_terms_of anchor's model never applies to the measure counted from
+    it. Such a leaf that looks up a dimension a rollup of the measure's model holds is refused:
+    only the measure's own leaf answers as that rollup does. It must also join the measure's
+    own rows INNER: a child whose parent has no record counts no parent. The internal guard
+    checks the unique relationship and emitted joins, so a missing, nullable or different
+    parent check cannot silently count it.
     """
     entities = _entity_index(config)
     relationships = _relationship_index(config)
     path_selections = list(path_selections)
+    prejoined: set[str] = set()
+    if measure_entity == source_entity:
+        prejoined = rollup_dimension_entities(config, source_entity)
+    elif measure_entity is not None and (
+        held := rollup_held_lookups(config, measure_entity, path_selections)
+    ):
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            f"A measure of '{measure_entity}' read from the rows of '{source_entity}' cannot "
+            "join a dimension a rollup of its own model holds as that rollup does.",
+            details={
+                "measure_entity": measure_entity,
+                "source_entity": source_entity,
+                "rollup_held_entities": sorted(held),
+            },
+        )
     inner_hops: set[tuple[str, str]] = set()
-    if lookup_selections:
-        for selection in path_selections:
-            if (selection.target_entity, selection.purpose) in lookup_selections:
-                continue
-            current = source_entity
-            for rel_id in selection.chosen_path:
-                rel = relationships[rel_id]
-                inner_hops.add((rel.id, current))
-                current = rel.target_entity if current == rel.source_entity else rel.source_entity
+    for selection in path_selections:
+        if (
+            selection.purpose not in _INNER_LOOKUP_PURPOSES
+            and selection.target_entity not in prejoined
+        ):
+            continue
+        current = source_entity
+        for rel_id in selection.chosen_path:
+            rel = relationships[rel_id]
+            inner_hops.add((rel.id, current))
+            current = rel.target_entity if current == rel.source_entity else rel.source_entity
+    keep_rows = not _inner_lookups.get()
     joins: list[SqlJoin] = []
     overrides = dict(table_overrides or {})
     # Each physical table may appear in the FROM clause once, so it can
@@ -462,7 +564,13 @@ def _joins_for_paths(
     root_table = overrides.get(source_entity, entities[source_entity].table)
     joined_via: dict[str, tuple[str, str]] = {root_table: ("", "root")}
     for selection in path_selections:
-        record_route_choice(source_entity, selection.target_entity, selection.candidate_paths)
+        # A rewrite's anchor reads the root's route from the anchor's rows (the hop back to the
+        # root, then the rest of the route): the root's own note names that route.
+        if (
+            selection.analysis.get("status") != "entity_in_terms_of"
+            and selection.purpose != "entity_in_terms_of_root"
+        ):
+            record_route_choice(source_entity, selection.target_entity, selection.chosen_path)
         current_entity = source_entity
         nullable_path = False
         for rel_id in selection.chosen_path:
@@ -477,15 +585,15 @@ def _joins_for_paths(
             join_key = (rel.id, current_entity)
             existing = joined_via.get(right_table)
             if existing is None:
-                keep_rows = (
-                    (selection.target_entity, selection.purpose) in lookup_selections
+                lookup = (
+                    keep_rows
                     and join_key not in inner_hops
                     and _is_lookup_hop(rel, current_entity, config)
                 )
                 joins.append(
                     SqlJoin(
                         join_type="LEFT"
-                        if nullable_path or rel.temporal_validity or keep_rows
+                        if nullable_path or rel.temporal_validity or lookup
                         else "INNER",
                         table=SqlTableRef(name=right_table),
                         on=join_on,
@@ -520,6 +628,22 @@ def _joins_for_paths(
             if rel.temporal_validity:
                 nullable_path = True
             current_entity = next_entity
+    if measure_entity is not None and measure_entity != source_entity:
+        measure_table = overrides.get(measure_entity, entities[measure_entity].table)
+        parent = _entity_in_terms_of_parent_relationship(source_entity, measure_entity, config)
+        if (
+            parent is None
+            or joined_via.get(measure_table) != (parent.id, source_entity)
+            or not any(
+                join.table.name == measure_table and join.join_type == "INNER" for join in joins
+            )
+        ):
+            raise SemanticLayerError(
+                "REWRITE_NOT_SUPPORTED",
+                f"A measure of '{measure_entity}' read from the rows of '{source_entity}' "
+                "must require a matching row through the counted parent relationship.",
+                details={"measure_entity": measure_entity, "source_entity": source_entity},
+            )
     return joins
 
 

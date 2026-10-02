@@ -1783,6 +1783,7 @@ def test_setup_questions_and_warehouse_options_come_from_the_registry() -> None:
     assert questions["connection_kind"]["choices_by_warehouse"]["snowflake"] == [
         "snowflake_cli",
         "snowflake_native",
+        "snowflake_adbc",
     ]
     assert "host_env" in questions["connection_options"]["options_by_warehouse"]["postgres"]
 

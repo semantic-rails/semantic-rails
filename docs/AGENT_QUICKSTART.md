@@ -329,15 +329,20 @@ The agent never picks one; it asks:
 2. Ask the person, reading each option's `meaning`.
 3. Resend the same query with the chosen option's `decision` in
    [`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions). The answer is for this person and this
-   query only, and carries an `info` note `ROUTE_CHOSEN_BY_QUERY` with the row and `replaced` (what
-   applied without it: `undecided`, or `decided` when the package records another route).
+   query only, and carries an `info` note `ROUTE_CHOSEN_BY_QUERY` with the row and `replaced` (how
+   the package resolves the pair without it: `undecided` when it refuses).
 4. To make it the default for everyone, a maintainer calls Architect
    [`record_route_decision`](ARCHITECT_MCP.md) with the same `decision`. That is a reviewed package
-   change; from then on the question answers without asking.
+   change; from then on the question answers without asking. An option with `conflicts_with`
+   names the package rows to change first; its `decision` still answers per query.
 
-An `info` note `ROUTE_COLOCATED_KEY` or `ROUTE_RECORDED` (compact and full responses) names the
-route the answer used, the start entity's own key or the package's recorded route; it needs no
-follow-up.
+One row also decides every route that walks its pair. An `info` note `ROUTE_COLOCATED_KEY` or
+`ROUTE_RECORDED` (compact and full responses) names the route the answer used, the start entity's
+own key or the package's recorded routes; it needs no follow-up, and `ROUTE_COLOCATED_KEY` lists
+the row that would make each other route the default (or, in `details.conflicts_with`, the rows
+that row would disagree with). `PATH_NOT_FOUND` with `details.reason:
+excluded_by_decision` means the package's rows rule out every route; it is a package fix, not a
+query fix.
 
 ## Local Warehouse Defaults
 

@@ -19,7 +19,12 @@ from pathlib import Path
 from typing import Any
 
 from .config_parts.package_loader import normalize_package
-from .config_parts.route_rows import RouteRowError, check_route_row
+from .config_parts.route_rows import (
+    RouteRowError,
+    check_route_row,
+    entity_references,
+    require_rows_agree,
+)
 from .dialects import (
     connection_option_errors,
     snowflake_native_direct_connect_errors,
@@ -1212,7 +1217,11 @@ def _parse_package_meta(package_raw: dict[str, Any], *, path: str) -> PackageMet
                     "INVALID_CONFIG",
                     f"{path}: {warehouse} package.connection has invalid options: {'; '.join(direct_errors)}",
                 )
-        elif connector.requires_connection_name and not connection.name:
+        elif (
+            connector.requires_connection_name
+            and connection.kind != "snowflake_adbc"
+            and not connection.name
+        ):
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 f"{path}: {warehouse} packages must declare package.connection.name",
@@ -1618,6 +1627,7 @@ def _parse_path_policy(raw: dict[str, Any], *, path: str) -> PathPolicyConfig:
 def _parse_path_preferences(
     raw: dict[str, Any],
     *,
+    entities: list[EntityConfig],
     entity_lookup: dict[str, str],
     relationships: list[RelationshipConfig],
     path: str,
@@ -1633,15 +1643,16 @@ def _parse_path_preferences(
     if not rows:
         return []
     # An entity by key, name or id: an AMBIGUOUS_PATH refusal's decisions name entity ids.
-    entities = {**{entity_id: entity_id for entity_id in entity_lookup.values()}, **entity_lookup}
+    references = entity_references(entities, entity_lookup)
     out: list[PathPreferenceConfig] = []
     for row in rows:
         try:
             out.append(
-                check_route_row(dict(row or {}), entities=entities, relationships=relationships)
+                check_route_row(dict(row or {}), entities=references, relationships=relationships)
             )
         except RouteRowError as exc:
             raise SemanticLayerError("INVALID_CONFIG", f"{path}: path_preferences {exc}") from None
+    require_rows_agree({rel.id: rel for rel in relationships}, out, path=path)
     return out
 
 
@@ -3049,7 +3060,11 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         metric_recipes=sorted(metric_recipes_by_id.values(), key=lambda row: row.id),
         segments=sorted(segments, key=lambda row: row.id),
         path_preferences=_parse_path_preferences(
-            raw, entity_lookup=entity_lookup, relationships=relationships, path=path
+            raw,
+            entities=entities,
+            entity_lookup=entity_lookup,
+            relationships=relationships,
+            path=path,
         ),
         path_policy=_parse_path_policy(raw, path=path),
         semantic_policies=policies,

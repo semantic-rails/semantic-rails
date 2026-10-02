@@ -208,6 +208,37 @@ GROUPED_COUNT = {
     "select": [{"expression": {"measure": "measure.hop.order_count"}, "as": "orders"}],
     "group_by": [TYPE],
 }
+ORDER = "entity.hop_order"
+
+
+def _compare(column: str, op: str, value: Any, entity: str = ORDER) -> dict[str, Any]:
+    left = {"kind": "column", "entity": entity, "column": column}
+    return {
+        "kind": "comparison",
+        "op": op,
+        "left": left,
+        "right": {"kind": "literal", "value": value},
+    }
+
+
+def _if(
+    aggregation: str, condition: dict[str, Any], value: str = "", entity: str = ORDER
+) -> dict[str, Any]:
+    """An aggregate_if over the rows of ``entity``; without ``value`` it counts them."""
+    expression = {"kind": "aggregate_if", "aggregation": aggregation, "condition": condition}
+    if value:
+        expression["value"] = {"kind": "column", "entity": entity, "column": value}
+    return expression
+
+
+def _ratio(numerator: dict[str, Any], denominator: dict[str, Any]) -> dict[str, Any]:
+    return {"kind": "ratio", "numerator": numerator, "denominator": denominator}
+
+
+# Customer 10's orders, and their revenue: the conditional forms of order_count and revenue.
+OWN_ORDERS_IF = _if("count_distinct", _compare("customer_id", "=", 10), "order_id")
+OWN_REVENUE_IF = _if("sum", _compare("customer_id", "=", 10), "total")
+OWN_SHARE = _ratio(OWN_ORDERS_IF, {"measure": "measure.hop.order_count"})
 
 
 @pytest.fixture(scope="module")
@@ -514,19 +545,21 @@ def test_child_filter_does_not_admit_many_to_many_or_unknown_hops(
 
 
 @pytest.mark.parametrize(
-    ("measure", "clause", "expected"),
+    ("expression", "clause", "expected"),
     [
-        ("order_count", BEVERAGE, 4),
-        ("revenue", BEVERAGE, 70),
+        ({"measure": "measure.hop.order_count"}, BEVERAGE, 4),
+        ({"measure": "measure.hop.revenue"}, BEVERAGE, 70),
+        (OWN_REVENUE_IF, BEVERAGE, 30),
+        (OWN_SHARE, BEVERAGE, 0.5),
     ],
-    ids=["parent_count", "parent_sum"],
+    ids=["parent_count", "parent_sum", "conditional_sum", "conditional_ratio"],
 )
 def test_clickhouse_uses_equivalent_parent_deduplication(
-    package: Path, measure: str, clause: dict[str, Any], expected: int
+    package: Path, expression: dict[str, Any], clause: dict[str, Any], expected: float
 ) -> None:
     config = load_package_config(str(package))
     config = replace(config, package=replace(config.package, warehouse="clickhouse"))
-    query = {"version": 1, "select": [_measure(measure)], "where": [clause]}
+    query = {"version": 1, "select": [{"expression": expression, "as": "v"}], "where": [clause]}
     compiled = compile_query(config, Registry(config), query)
     sql = compiled["prepared_query"].sql.removesuffix("\nSETTINGS join_use_nulls = 1")
     with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
@@ -537,23 +570,66 @@ def test_clickhouse_uses_equivalent_parent_deduplication(
 
 
 @pytest.mark.parametrize(
-    ("measure", "clause"),
-    [("face_value", BEVERAGE), ("order_count", WEB), ("revenue", WEB)],
-    ids=["alternate_key", "lookup_then_child_count", "lookup_then_child_sum"],
+    ("select", "clause"),
+    [
+        (_measure("face_value"), BEVERAGE),
+        (_measure("order_count"), WEB),
+        (_measure("revenue"), WEB),
+        ({"expression": OWN_REVENUE_IF, "as": "v"}, WEB),
+        ({"expression": OWN_SHARE, "as": "v"}, WEB),
+    ],
+    ids=[
+        "alternate_key",
+        "lookup_then_child_count",
+        "lookup_then_child_sum",
+        "lookup_then_child_conditional_sum",
+        "lookup_then_child_conditional_ratio",
+    ],
 )
 def test_clickhouse_refuses_child_filter_paths_requiring_exists(
-    package: Path, measure: str, clause: dict[str, Any]
+    package: Path, select: dict[str, Any], clause: dict[str, Any]
 ) -> None:
     config = load_package_config(str(package))
     config = replace(config, package=replace(config.package, warehouse="clickhouse"))
     with pytest.raises(SemanticLayerError) as caught:
         compile_query(
-            config,
-            Registry(config),
-            {"version": 1, "select": [_measure(measure)], "where": [clause]},
+            config, Registry(config), {"version": 1, "select": [select], "where": [clause]}
         )
     assert caught.value.code == "MIXED_GRAIN_INVALID"
     assert "ClickHouse" in caught.value.details["why_invalid"]
+
+
+def test_a_conditional_aggregate_of_rows_of_unknown_grain(package: Path) -> None:
+    """Without the paid measure nothing says receipts hold a row per payment. EXISTS reads each
+    payment once anyway; ClickHouse's one row per receipt would merge order 1's two payments of
+    5, so it refuses all but the aggregations that merging cannot change."""
+    config = load_package_config(str(package))
+    config = replace(config, measures=[m for m in config.measures if m.id != "measure.hop.paid"])
+    receipt = "entity.hop_receipt"
+    payments = _if("count_distinct", _compare("amount", ">", 0, receipt), "payment_id", receipt)
+    for expression, value in ((PAID_IF, 10), (payments, 2)):
+        query = {
+            "version": 1,
+            "select": [{"expression": expression, "as": "v"}],
+            "where": [BEVERAGE],
+        }
+        compiled = compile_query(config, Registry(config), query)
+        with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
+            assert conn.execute(compiled["prepared_query"].sql).fetchall() == [(value,)]
+    reference = """
+        SELECT SUM(p.amount), COUNT(DISTINCT p.payment_id) FROM payments p WHERE EXISTS (
+          SELECT 1 FROM order_items i WHERE i.order_id = p.order_id AND i.product_type = 'beverage')
+    """
+    assert _reference(package, reference) == [(10.0, 2)]
+    clickhouse = replace(config, package=replace(config.package, warehouse="clickhouse"))
+    query["select"] = [{"expression": payments, "as": "v"}]
+    sql = compile_query(clickhouse, Registry(clickhouse), query)["sql"]
+    assert "SELECT DISTINCT" in sql
+    query["select"] = [{"expression": PAID_IF, "as": "v"}]
+    with pytest.raises(SemanticLayerError) as caught:
+        compile_query(clickhouse, Registry(clickhouse), query)
+    assert caught.value.code == "MIXED_GRAIN_INVALID"
+    assert "could merge rows that share a key" in caught.value.details["why_invalid"]
 
 
 @pytest.mark.parametrize(
@@ -780,6 +856,51 @@ def test_new_child_filter_paths_require_one_candidate_or_a_pin(
         assert actual == ([(branch, expected)] if beside_lookup else [(expected,)])
 
 
+@pytest.mark.parametrize("form", ["conditional", "ratio"])
+def test_a_conditional_aggregate_takes_the_same_child_route_rule(
+    diamond_package: Path, form: str
+) -> None:
+    """An aggregate_if, alone or as a ratio operand, refuses two routes and takes a pin."""
+    account = "entity.diamond_account"
+    large = _if("sum", _compare("amount", ">", 60, account), "amount", account)
+    expression = (
+        large if form == "conditional" else _ratio(large, {"measure": "measure.diamond.amount"})
+    )
+    query = {
+        "version": 1,
+        "select": [{"expression": expression, "as": "value"}],
+        "where": [{"field": "dimension.diamond_district_category", "op": "=", "value": "premium"}],
+    }
+    config = load_package_config(str(diamond_package))
+    with pytest.raises(SemanticLayerError) as caught:
+        compile_query(config, Registry(config), query)
+    assert caught.value.code == "AMBIGUOUS_PATH"
+    assert caught.value.details["reason"] == "route_decision_required"
+    _run(diamond_package, {"select": [{"expression": {"measure": "measure.diamond.amount"}}]})
+    # The client route reaches account 1 (50, so no amount over 60), the branch route account 2
+    # (70). A sum of nothing reads NULL, and so does a ratio over it.
+    routes = [
+        (["relationship.account_client", "relationship.district_client"], None),
+        (
+            [
+                "relationship.account_branch",
+                "relationship.zone_branch",
+                "relationship.district_zone",
+            ],
+            70 if form == "conditional" else 1,
+        ),
+    ]
+    for path, expected in routes:
+        pinned = replace(
+            config,
+            path_preferences=[PathPreferenceConfig(account, "entity.diamond_district", path)],
+        )
+        compiled = compile_query(pinned, Registry(pinned), query)
+        assert "EXISTS (" in compiled["sql"] and "JOIN districts" not in compiled["sql"]
+        with duckdb.connect(str(diamond_package / "data/warehouse.duckdb"), read_only=True) as conn:
+            assert conn.execute(compiled["prepared_query"].sql).fetchall() == [(expected,)]
+
+
 HOT_ITEMS = {"dimension": HOT, "attribute": "hot", "type": "boolean"}
 OWN_ORDERS = {"dimension": "dimension.hop_order_customer_id", "attribute": "customer",
               "type": "integer"}  # fmt: skip
@@ -808,12 +929,21 @@ def _under_row_policy(
     [(HOT_ITEMS, {"hot": True}), (OWN_ORDERS, {"customer": 10})],
     ids=["child_policy", "parent_policy"],
 )
-@pytest.mark.parametrize("measure", ["order_count", "revenue"])
+@pytest.mark.parametrize(
+    "expression",
+    [
+        {"measure": "measure.hop.order_count"},
+        {"measure": "measure.hop.revenue"},
+        OWN_REVENUE_IF,
+        OWN_SHARE,
+    ],
+    ids=["order_count", "revenue", "conditional_sum", "conditional_ratio"],
+)
 def test_child_filters_stay_denied_under_a_row_policy(
-    package: Path, policy: dict[str, Any], attributes: dict[str, Any], measure: str
+    package: Path, policy: dict[str, Any], attributes: dict[str, Any], expression: dict[str, Any]
 ) -> None:
     """A row policy qualifies only a query that reads its one relation; EXISTS reads two."""
-    query = {"select": [_measure(measure)], "where": [BEVERAGE]}
+    query = {"select": [{"expression": expression, "as": "v"}], "where": [BEVERAGE]}
     with pytest.raises(SemanticLayerError) as caught:
         _under_row_policy(package, policy, attributes, query)
     assert caught.value.code == "POLICY_DENIED"
@@ -861,6 +991,27 @@ def test_a_lookup_beside_a_child_filter_keeps_parents_it_finds_no_match_for(
     assert ungrouped == _normal([(sum(row[-1] for row in rows),)])
 
 
+def test_a_lookup_beside_a_child_grouping_keeps_parents_it_finds_no_match_for(
+    package: Path,
+) -> None:
+    """Grouped by type and coupon, the de-duplicated leaf keeps orders 4 and 6 (a beverage
+    each, no coupon) under a NULL coupon, so its groups add up to the count by type alone."""
+    by_coupon = _rows(package, {"select": [_measure("order_count")], "group_by": [TYPE, COUPON]})
+    reference = """
+        SELECT i.product_type, c.coupon_id, COUNT(DISTINCT o.order_id) FROM orders o
+        JOIN order_items i ON i.order_id = o.order_id LEFT JOIN coupons c ON c.code = o.coupon_code
+        GROUP BY 1, 2
+    """
+    assert by_coupon == _reference(package, reference)
+    assert ("beverage", None, 2) in by_coupon
+    by_type: dict[str, int] = {}
+    for product_type, _coupon, orders in by_coupon:
+        by_type[product_type] = by_type.get(product_type, 0) + orders
+    assert _rows(package, {"select": [_measure("order_count")], "group_by": [TYPE]}) == sorted(
+        by_type.items()
+    )
+
+
 def test_a_lookup_joined_outside_exists_is_scanned_again_inside_it(package: Path) -> None:
     """Customers are joined for the group and read again on the path to sessions."""
     query = {
@@ -884,7 +1035,110 @@ def test_a_lookup_joined_outside_exists_is_scanned_again_inside_it(package: Path
     assert sql.count("LEFT JOIN customers ON") == sql.count("FROM customers\n") == 2
 
 
-@pytest.mark.parametrize("query", [FILTERED_SUM, GROUPED_COUNT], ids=["filtered", "grouped"])
+_OWN_ORDERS_SQL = "COUNT(DISTINCT CASE WHEN o.customer_id = 10 THEN o.order_id END)"
+_OWN_REVENUE_SQL = "SUM(CASE WHEN o.customer_id = 10 THEN o.total END)"
+
+
+# Orders with a beverage: 1 (customer 10, total 10, two beverages), 2 (10, 20), 4 (12, 40) and
+# 6 (11, NULL total). A join to the items would count order 1 twice: a count of 4, a sum of
+# 40, a retail sum of 80 and a difference of 50.
+@pytest.mark.parametrize(
+    ("expression", "value", "expected"),
+    [
+        (OWN_ORDERS_IF, _OWN_ORDERS_SQL, 2),
+        (_if("count", _compare("total", ">=", 10)), "COUNT(CASE WHEN o.total >= 10 THEN 1 END)", 3),
+        (OWN_REVENUE_IF, _OWN_REVENUE_SQL, 30),
+        (
+            _if("sum", _compare("segment", "=", "retail", "entity.hop_customer"), "total"),
+            "SUM(CASE WHEN c.segment = 'retail' THEN o.total END)",
+            70,
+        ),
+        (OWN_SHARE, f"1.0 * {_OWN_ORDERS_SQL} / COUNT(*)", 0.5),
+        (
+            {
+                "kind": "arithmetic",
+                "op": "subtract",
+                "left": {"measure": "measure.hop.revenue"},
+                "right": OWN_REVENUE_IF,
+            },
+            f"SUM(o.total) - {_OWN_REVENUE_SQL}",
+            40,
+        ),
+    ],
+    ids=["distinct_count", "count", "sum", "sum_by_lookup", "ratio", "arithmetic"],
+)
+def test_conditional_aggregates_filtered_by_a_child_count_each_parent_once(
+    package: Path, expression: dict[str, Any], value: str, expected: float
+) -> None:
+    """Each aggregate_if leaf, and each operand of a ratio or arithmetic, keeps its rows with
+    EXISTS as a measure's leaf does, so no child multiplies them."""
+    query = {"select": [{"expression": expression, "as": "v"}], "where": [BEVERAGE]}
+    result = _run(package, query)
+    reference = f"""
+        SELECT {value} FROM orders o LEFT JOIN customers c ON c.customer_id = o.customer_id
+        WHERE EXISTS ({_HAS_BEVERAGE})
+    """
+    rows = _normal(tuple(row.values()) for row in typed_rows(result))
+    assert rows == _reference(package, reference) == [(expected,)]
+    sql = result["rendered_sql"]
+    assert sql.count("EXISTS (") == (2 if expression["kind"] in {"ratio", "arithmetic"} else 1)
+    assert "JOIN order_items" not in sql and "SELECT DISTINCT" not in sql
+
+
+def test_conditional_aggregates_keep_null_groups_beside_a_child_filter(package: Path) -> None:
+    """Grouped by coupon: orders 1 and 2 (customer 10, coupon 1) and the NULL group of orders 4
+    (40) and 6 (NULL total). Coupon 1 has no other customer's order, so its sum reads 0 (the
+    sum has amounts elsewhere), its average stays NULL and its share is 0."""
+    others = _compare("customer_id", "!=", 10)
+    others_revenue = _if("sum", others, "total")
+    query = {
+        "select": [
+            {"expression": others_revenue, "as": "sum"},
+            {"expression": _if("avg", others, "total"), "as": "average"},
+            {
+                "expression": _ratio(others_revenue, {"measure": "measure.hop.revenue"}),
+                "as": "share",
+            },
+        ],
+        "group_by": [COUPON],
+        "where": [BEVERAGE],
+    }
+    others_sql = "CASE WHEN o.customer_id <> 10 THEN o.total END"
+    reference = f"""
+        SELECT c.coupon_id, COALESCE(SUM({others_sql}), 0), AVG({others_sql}),
+          COALESCE(SUM({others_sql}), 0) / NULLIF(SUM(o.total), 0)
+        FROM orders o LEFT JOIN coupons c ON c.code = o.coupon_code
+        WHERE EXISTS ({_HAS_BEVERAGE}) GROUP BY 1
+    """
+    assert (
+        _rows(package, query)
+        == _reference(package, reference)
+        == _normal([(1, 0.0, None, 0.0), (None, 40.0, 40.0, 1.0)])
+    )
+
+
+def test_a_conditional_distinct_count_grouped_by_a_child_dimension(package: Path) -> None:
+    """Grouped across the hop, a conditional distinct count counts each order once in every
+    product type it holds, as order_count does; order 2 holds both."""
+    query = {"select": [{"expression": OWN_ORDERS_IF, "as": "v"}], "group_by": [TYPE]}
+    reference = f"""
+        SELECT i.product_type, {_OWN_ORDERS_SQL}
+        FROM order_items i JOIN orders o ON o.order_id = i.order_id GROUP BY 1
+    """
+    assert (
+        _rows(package, query) == _reference(package, reference) == [("beverage", 2), ("jaffle", 1)]
+    )
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        FILTERED_SUM,
+        GROUPED_COUNT,
+        {"select": [{"expression": OWN_REVENUE_IF, "as": "v"}], "where": [BEVERAGE]},
+    ],
+    ids=["filtered", "grouped", "conditional"],
+)
 def test_the_rewrite_is_disclosed(package: Path, query: dict[str, Any]) -> None:
     result = _run(package, query)
     [warning] = _disclosed(result)
@@ -985,6 +1239,14 @@ def _bound_filter(clause: dict[str, Any]) -> dict[str, Any]:
     return {"select": [{"expression": expression, "as": "revenue"}]}
 
 
+def _conditional(expression: dict[str, Any], **query: Any) -> dict[str, Any]:
+    return {"select": [{"expression": expression, "as": "v"}], **query}
+
+
+# Receipts are keyed by their order, but each payment is a row, as for the paid measure.
+PAID_IF = _if(
+    "sum", _compare("amount", ">", 0, "entity.hop_receipt"), "amount", "entity.hop_receipt"
+)
 NEGATED = "'has a row that is not X' and 'has no row that is X' differ"
 TWO_CONDITIONS = "both cross a one-to-many hop"
 
@@ -1067,6 +1329,23 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
             },
             "not supported across a one-to-many hop",
         ),
+        # A conditional aggregate, alone or inside a ratio, refuses what its measure refuses.
+        (_conditional(OWN_REVENUE_IF, group_by=[TYPE]), "is ambiguous across"),
+        (_conditional(OWN_REVENUE_IF, where=[{**BEVERAGE, "op": "!="}]), NEGATED),
+        (_conditional(OWN_SHARE, where=[{**BEVERAGE, "op": "NOT IN", "value": ["x"]}]), NEGATED),
+        (_conditional(OWN_REVENUE_IF, where=[BEVERAGE, WEB]), TWO_CONDITIONS),
+        (
+            _conditional(
+                OWN_SHARE, group_by=[TYPE], where=[{"field": HOT, "op": "=", "value": True}]
+            ),
+            TWO_CONDITIONS,
+        ),
+        (_conditional(OWN_ORDERS_IF, group_by=[CHANNEL]), "many-to-many"),
+        (_conditional(PAID_IF, where=[BEVERAGE]), "rows are finer than its entity"),
+        (
+            _conditional(_ratio(PAID_IF, {"measure": "measure.hop.order_count"}), where=[BEVERAGE]),
+            "rows are finer than its entity",
+        ),
     ],
     ids=[
         "sum",
@@ -1098,6 +1377,14 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
         "finer_row_grain",
         "non_additive",
         "cumulative",
+        "conditional_grouped_sum",
+        "conditional_not_equal",
+        "conditional_ratio_not_in",
+        "conditional_two_filters",
+        "conditional_ratio_group_and_filter",
+        "conditional_many_to_many",
+        "conditional_finer_row_grain",
+        "conditional_ratio_finer_row_grain",
     ],
 )
 def test_ambiguous_shapes_stay_refused(package: Path, query: dict[str, Any], reason: str) -> None:

@@ -45,16 +45,20 @@ surface.
 - safe fact-to-dimension traversal
 - multi-hop entity traversal with per-hop cardinality checks (default ceiling
   4 relationships; raisable to 8 via `graph.path_policy.max_hops`)
-- route rule: a `graph.path_preferences` row, else the only route, else the
-  start entity's one direct key (noted with `ROUTE_COLOCATED_KEY`);
-  anything else is refused as `AMBIGUOUS_PATH` (`reason: route_decision_required`,
-  with `details.clarification`: the question in business words and, per route,
-  its meaning and the row that decides it), whatever the routes' lengths. Hop
-  count never decides, and adding a route never changes an answer silently.
+- route rule: a query's own `route_decisions` row for the pair, else a
+  `graph.path_preferences` row for the pair, else the start entity's one direct
+  key (noted with `ROUTE_COLOCATED_KEY`), else the routes that follow every row
+  whose pair they walk through, if one remains; anything else is refused as
+  `AMBIGUOUS_PATH` (`reason: route_decision_required`, with
+  `details.clarification`: the question in business words and, per route, its
+  meaning and the row that decides it), whatever the routes' lengths. Hop count
+  and weights never decide, and adding a route never changes an answer silently.
 - route choice per query (`route_decisions`, the chosen option's row; disclosed
   as `ROUTE_CHOSEN_BY_QUERY`, refused under a row filter) or as the package
   default (Architect `record_route_decision`)
-- route recording via `graph.path_preferences` (load-time validated)
+- route recording via `graph.path_preferences` (load-time validated, and again
+  for a configuration built in code; rows that disagree about a pair are
+  `INVALID_CONFIG`)
 - conflicting-route refusal (`PATH_JOIN_CONFLICT`)
 - per-query `hop_profile` reporting (chosen chains, per-hop safety,
   long-hop targets)

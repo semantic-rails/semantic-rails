@@ -31,7 +31,6 @@ import pytest
 import yaml
 from mcp.shared.memory import create_connected_server_and_client_session
 
-import semantic_rails.compiler as compiler_module
 from semantic_rails.architect_mcp import create_architect_mcp_server
 from semantic_rails.architect_service import ArchitectProject
 from semantic_rails.compiler import compile_query
@@ -528,29 +527,7 @@ def test_a_route_decision_is_refused_under_a_row_policy_on_any_route(tmp_path, d
         )
     assert exc_info.value.code == "POLICY_DENIED"
     assert exc_info.value.details["reason"] == "route_override_under_row_policy"
-    assert exc_info.value.details["entities"] == [OWNER]
     assert exc_info.value.details["policy_ids"] == ["policy.bank.owner"]
-
-
-def test_the_child_filter_guard_asks_instead_of_refusing_as_mixed_grain(tmp_path, monkeypatch):
-    """The bypass: a resolver that hands a child filter several routes (as the start's own
-    key would) still gets a route question, never an answer by one of them."""
-    config = load_package_config(str(_write_package(tmp_path)))
-    resolve = compiler_module.resolve_path
-    branch = SHAPES["child_filter_diamond"][3]["branch_account"][1]
-    owner = SHAPES["child_filter_diamond"][3]["owner_account"][1]
-
-    def several_routes(config, *, start, target):
-        if (start, target) == (DISTRICT, ACCOUNT):
-            return list(branch), [list(branch), list(owner)]
-        return resolve(config, start=start, target=target)
-
-    monkeypatch.setattr(compiler_module, "resolve_path", several_routes)
-    with pytest.raises(SemanticLayerError) as exc_info:
-        compile_query(config, Registry(config), BUDGET_WITH_SAVINGS)
-    assert exc_info.value.code == "AMBIGUOUS_PATH"
-    options = exc_info.value.details["clarification"]["options"]
-    assert [option["relationship_path"] for option in options] == [branch, owner]
 
 
 # --- record_route_decision ---------------------------------------------------------------

@@ -571,7 +571,7 @@ def test_warehouse_connector_registry_exposes_first_class_duckdb_and_snowflake()
 
     assert snowflake is not None
     assert isinstance(snowflake.dialect, SnowflakeDialect)
-    assert snowflake.connection_kinds == ("snowflake_cli", "snowflake_native")
+    assert snowflake.connection_kinds == ("snowflake_cli", "snowflake_native", "snowflake_adbc")
     assert "database" in snowflake.connection_options
     assert "account_env" in snowflake.connection_options
     assert "query_tag" in snowflake.connection_options

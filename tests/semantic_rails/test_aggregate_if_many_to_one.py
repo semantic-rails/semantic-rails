@@ -336,11 +336,13 @@ def _sql_age(role: str) -> str:
     return f"(SELECT u.age FROM users AS u WHERE u.user_id = p.{role}_user_id)"
 
 
-def _write_package(root: Path, *, pin: str = "relationship.post_owner", **files: Any) -> Path:
+def _write_package(
+    root: Path, *, pin: str = "relationship.post_owner", seed: str = SEED_SQL, **files: Any
+) -> Path:
     pkg = root / "shop"
     (pkg / "data").mkdir(parents=True)
     (pkg / "models").mkdir()
-    (pkg / "data" / "seed.sql").write_text(SEED_SQL)
+    (pkg / "data" / "seed.sql").write_text(seed)
     (pkg / "package.yml").write_text(PACKAGE)
     (pkg / "graph.yml").write_text(GRAPH + (_pin(pin) if pin else ""))
     for name, body in MODELS.items():
@@ -476,7 +478,8 @@ def test_a_condition_across_many_to_one_hops_matches_gold_and_the_filtered_leaf(
     assert value == pytest.approx(_ask(runtime, leaf, where=[where]))
 
 
-# A metric filter that every consumption row passes; it keeps the leaf's lookups inner.
+# A metric filter that every consumption row passes. Query-time filters are contextual: its set
+# is matched on the query's grouped entities too.
 EVERY_ROW = {
     "expression": {
         "kind": "metric_predicate",
@@ -488,17 +491,44 @@ EVERY_ROW = {
     "op": "=",
     "value": True,
 }
+EVERY_ROW_ALONE = {
+    **EVERY_ROW,
+    "expression": {**EVERY_ROW["expression"], "scope_mode": "entity_only"},
+}
+# A March row of a customer with no record (C9): it has no currency, so March reads 0.
+MARCH_ROW = "INSERT INTO consumption VALUES (10, 'C9', 8, '2026-03');\n"
 
 
+@pytest.fixture(scope="module")
+def march_runtime(tmp_path_factory: pytest.TempPathFactory):
+    package = _write_package(tmp_path_factory.mktemp("march"), seed=SEED_SQL + MARCH_ROW)
+    runtime = Runtime.from_path(str(package))
+    yield runtime
+    runtime.close()
+
+
+@pytest.mark.parametrize("group_by", ["", PERIOD, SEGMENT], ids=["total", "base", "one"])
 @pytest.mark.parametrize(
     "case", sorted(case for case, row in ONE_HOP.items() if "FROM consumption" in row[1])
 )
-def test_a_metric_filter_every_row_passes_changes_no_value(runtime, case):
+def test_a_metric_filter_every_row_passes_changes_no_value(march_runtime, case, group_by):
+    """The filter keeps the condition's lookup LEFT, so every row stays: March, whose one row
+    has no customer record, reads 0 (NULL for an average) with the filter as without it. Its
+    set is matched on the grouped customer, though, so grouped by the customer, the rows with
+    none (7, 8 and March's) have no set to be in; the filter on the rows alone keeps them."""
     expression = ONE_HOP[case][0]
 
-    assert _ask(runtime, expression, metric_filters=[EVERY_ROW]) == pytest.approx(
-        _ask(runtime, expression)
-    )
+    plain = _ask(march_runtime, expression, group_by=group_by)
+    alone = _ask(march_runtime, expression, group_by=group_by, metric_filters=[EVERY_ROW_ALONE])
+    contextual = _ask(march_runtime, expression, group_by=group_by, metric_filters=[EVERY_ROW])
+
+    assert alone == plain
+    if group_by == PERIOD:
+        assert plain["2026-03"] == (None if case == "avg" else 0.0)
+    if group_by == SEGMENT:
+        assert None in plain
+        del plain[None]
+    assert contextual == plain
 
 
 def _in(kind: str, values: list[Any]) -> dict[str, Any]:
@@ -766,9 +796,10 @@ def test_inside_a_metric_recipe_it_is_refused(runtime):
 def test_beside_an_authored_measure_on_the_same_hop_each_keeps_its_own_join(
     package, gold, aggif_first
 ):
-    # The authored measure reads the customer over an inner join, as before, so rows 7 and 8
-    # (no customer) drop out of it. Named with its own table as its source, as a fact model
-    # names it and as the aggregate_if's measure is, it still never shares one scan with it.
+    # The authored measure reads the customer through a lookup that keeps its rows, so rows 7
+    # and 8 (no customer) have no currency and count, as `where currency IS NULL` counts them.
+    # Named with its own table as its source, as a fact model names it and as the
+    # aggregate_if's measure is, it still never shares one scan with it.
     config = load_package_config(str(package))
     authored = "measure.shop.null_currency_amount"
     measures = [
@@ -791,8 +822,11 @@ def test_beside_an_authored_measure_on_the_same_hop_each_keeps_its_own_join(
     finally:
         runtime.close()
 
-    assert alone == {None: 50.0}
-    assert _number(row["authored"]) == 50.0
+    null_currency = gold(
+        f"SELECT SUM(CASE WHEN {SQL_CUR} IS NULL THEN t.amount END) FROM consumption AS t"
+    )
+    assert alone == null_currency == {None: 1053.0}  # rows 6, 7 and 8
+    assert _number(row["authored"]) == 1053.0
     assert {None: _number(row["value"])} == pytest.approx(gold(ONE_HOP["sum"][1]))
 
 

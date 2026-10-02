@@ -91,6 +91,7 @@ from .compiler_parts.paths import (
     _leaf_time_role,
     _resolve_dimension_expr,
     _split_column_ref,
+    inner_lookups,
 )
 from .compiler_parts.post_aggregation import (
     _compile_post_expr,
@@ -117,7 +118,12 @@ from .compiler_parts.temporal import (
     _validate_query_temporal_bindings,
     _validate_restrictive_time_semantics,
 )
-from .config_parts.route_rows import RouteRowError, check_route_row
+from .config_parts.route_rows import (
+    RouteRowError,
+    check_route_row,
+    entity_references,
+    walk_entities,
+)
 from .diagnostics import relationship_contract_payload
 from .dialects import SqlDialect, dialect_for_warehouse
 from .errors import SemanticLayerError
@@ -155,13 +161,12 @@ from .fanout import (
     analyze_fanout,
     filter_only_semijoin,
     one_to_many_descent,
+    package_hop_limit,
     pair_routes,
     query_route_decisions,
     recording_route_choices,
     resolve_path,
     route_decision_basis,
-    route_decision_required,
-    route_entities,
 )
 from .ir import (
     BoundMeasure,
@@ -868,7 +873,16 @@ def _fanout_dedup_refusal(
     Grouped, only a distinct count is answered. Summing (or averaging) an order amount by an
     item dimension reads as the item-level split ("revenue by product type") as often as the
     orders-that-included-it total, and the two differ, so that shape stays refused.
+
+    Every leaf is checked here: an authored measure, a query's ``aggregate_if`` (a synthetic
+    measure over its entity's table) and each operand of a ratio or arithmetic, so each one
+    gets the same rewrite and the same refusals.
     """
+    subject = (
+        f"an aggregate_if over '{measure.entity}'"
+        if is_conditional_aggregate(measure)
+        else f"measure '{measure.id}'"
+    )
     selections = [row for row in selections if row.analysis.get("status") != "ok"]
     for row in selections:
         if row.purpose not in _FANOUT_DEDUP_PURPOSES:
@@ -881,9 +895,9 @@ def _fanout_dedup_refusal(
     keys = {entity.id: list(entity.key or [entity.primary_key]) for entity in config.entities}
     for row in selections:
         # Preserve existing descent shapes, including ClickHouse's DISTINCT-parent
-        # leaf beside lookups. Broader EXISTS paths have exactly one route after the
-        # query's and the package's rows (``_leaf_path_selections`` asks otherwise); hop
-        # count cannot decide which children are meant.
+        # leaf beside lookups. A broader EXISTS path is the route the resolver chose for
+        # the pair (a recorded decision, the only route, or one narrowed by the rows),
+        # never one picked by hop count, so it can say which children are meant.
         if one_to_many_descent(row.analysis, keys):
             continue
         if (
@@ -906,7 +920,7 @@ def _fanout_dedup_refusal(
     aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
     if grouped and aggregation not in _FANOUT_GROUPED_AGGREGATIONS:
         return (
-            f"'{aggregation}' of '{measure.id}' grouped by a dimension of "
+            f"'{aggregation}' of {subject} grouped by a dimension of "
             f"'{grouped[0].target_entity}' is ambiguous across a one-to-many hop: the amount "
             "split over the child rows and the full amount of every row that has one differ. "
             "Use a measure at the child's grain, group by a dimension of the measure's own "
@@ -917,16 +931,32 @@ def _fanout_dedup_refusal(
     if aggregation not in _FANOUT_DEDUP_AGGREGATIONS or not (
         measure.additive
         and measure.measure_class not in {"semi_additive", "snapshot"}
-        and not measure.source_relation
+        and measure.source_relation in {"", entity.table}
         and measure.aggregation_entity in {"", measure.entity}
         and (entity.key or entity.primary_key)
         and sorted(measure.row_grain or entity.key or [entity.primary_key])
         == sorted(entity.key or [entity.primary_key])
     ):
         return (
-            f"'{aggregation}' of measure '{measure.id}' is not defined over one row per "
+            f"'{aggregation}' of {subject} is not defined over one row per "
             f"'{measure.entity}' key (a non-additive value, a stock, an ordered aggregation, "
             "or a measure whose rows are finer than its entity's key).",
+            (grouped or selections)[0],
+        )
+    # ClickHouse keeps one row per key before it aggregates. An aggregate_if's rows are one per
+    # key only when a measure of its model says so; without one, rows sharing a key could
+    # merge, which only a distinct count, a minimum or a maximum ignores.
+    if (
+        is_conditional_aggregate(measure)
+        and not measure.row_grain
+        and config.package.warehouse == "clickhouse"
+        and aggregation not in {"count_distinct", "min", "max"}
+    ):
+        return (
+            f"ClickHouse keeps one row per '{measure.entity}' key here, and no measure of its "
+            f"model declares the grain of its rows, so '{aggregation}' of {subject} could merge "
+            "rows that share a key. Use count_distinct, min or max, or declare a measure on "
+            "that model.",
             (grouped or selections)[0],
         )
     roots: list[Any] = [item.expression for item in query.select if item.expression is not None]
@@ -1731,10 +1761,8 @@ def _entity_determines(
     if source_entity == target_entity:
         return True
     try:
-        chosen, candidates = resolve_path(config, start=source_entity, target=target_entity)
+        chosen, _candidates = resolve_path(config, start=source_entity, target=target_entity)
     except SemanticLayerError:
-        return False
-    if len(candidates) != 1:
         return False
     try:
         analysis = analyze_fanout(
@@ -2415,13 +2443,6 @@ def _leaf_path_selections(
     selections = list(dedup.values())
 
     unsupported = [row for row in selections if row.analysis.get("status") != "ok"]
-    for row in unsupported:
-        # Only the start's own key is ever chosen among several routes, and it reaches one
-        # row; a one-to-many path that came with others asks which one the question means.
-        if len(row.candidate_paths) > 1:
-            raise route_decision_required(
-                config, measure.entity, row.target_entity, row.candidate_paths
-            )
     if unsupported:
         if all(
             _entity_in_terms_of_rewrite_supported(
@@ -3111,6 +3132,7 @@ def _conversion_event_cte(
             ]
         ),
         config,
+        measure_entity=None,
         time_spec=(
             query.time.to_dict()
             if query.time is not None and hasattr(query.time, "to_dict")
@@ -4213,9 +4235,9 @@ def _compile_predicate_source_ast(config: PackageConfig, payload: dict[str, Any]
     data in the predicate's scope), so a predicate and a projection of the same expression
     agree. An entity with no rows at all is absent from the source, and the anti-join reads it
     like the entities the source lists (``absent_entities_gate``). The value is internal, so it
-    never becomes a ``NO_DATA_IN_SCOPE`` output.
+    never becomes a ``NO_DATA_IN_SCOPE`` output. Its lookups join INNER (``inner_lookups``).
     """
-    with recording_zero_outputs():
+    with recording_zero_outputs(), inner_lookups():
         return _compile_query_sql_ast(config, payload, project_cut=True)
 
 
@@ -4400,19 +4422,20 @@ def query_route_rows(
     config: PackageConfig, payload: dict[str, Any], *, row_filters: Sequence[RowFilter] = ()
 ) -> dict[tuple[str, str], tuple[int, PathPreferenceConfig]]:
     """The query's ``route_decisions`` rows by exact pair, with each row's index, checked by
-    the loader's rules (``INVALID_QUERY``: a bad row, or two rows for one pair).
+    the loader's rules (``INVALID_QUERY``: a bad row, or two rows for one pair) and taking one
+    of the pair's routes within the hop ceiling (``fanout.pair_routes``, the resolver's own
+    enumeration; else ``route_not_offered``).
 
     A route choice must never step around a row filter, so a row is refused
-    (``POLICY_DENIED``) when a filter in ``row_filters`` reads any entity on any route between
-    its pair; a reviewed ``graph.path_preferences`` row changes routes there instead.
+    (``POLICY_DENIED``) when a filter in ``row_filters`` reads any entity on any of those
+    routes; a reviewed ``graph.path_preferences`` row changes routes there instead.
     """
     rows = route_decisions_from_payload(payload)
     if not rows:
         return {}
-    entities = {
-        **{row.name: row.id for row in config.entities if row.name},
-        **{row.id: row.id for row in config.entities},
-    }
+    entities = entity_references(config.entities)
+    analysis = get_package_analysis(config)
+    tables = {row_filter.table for row_filter in row_filters}
     decided: dict[tuple[str, str], tuple[int, PathPreferenceConfig]] = {}
     for index, raw in enumerate(rows):
         where = f"route_decisions[{index}]"
@@ -4434,57 +4457,63 @@ def query_route_rows(
                 f"(route_decisions[{decided[pair][0]}]); send one row per pair",
                 details={"path": where, "reason": "duplicate_route_decision"},
             )
-        decided[pair] = (index, row)
-    tables = {row_filter.table for row_filter in row_filters}
-    by_id = get_package_analysis(config).entities
-    for (start, target), (index, row) in decided.items():
+        routes = pair_routes(config, *pair)
+        if list(row.relationship_path) not in routes:
+            raise SemanticLayerError(
+                "INVALID_QUERY",
+                f"{where} is not one of the routes from '{pair[0]}' to '{pair[1]}' within "
+                f"{package_hop_limit(config)} hops",
+                details={
+                    "path": where,
+                    "reason": "route_not_offered",
+                    "hint": "Send the decision of an option the query's AMBIGUOUS_PATH "
+                    "refusal offered.",
+                },
+            )
         on_routes = {
             entity
-            for path in [row.relationship_path, *pair_routes(config, start, target)]
-            for entity in route_entities(config, start, path)
+            for path in routes
+            for entity in walk_entities(analysis.relationships, pair[0], path)
         }
-        filtered = sorted(entity for entity in on_routes if by_id[entity].table in tables)
-        if filtered:
+        if any(analysis.entities[entity].table in tables for entity in on_routes):
             raise SemanticLayerError(
                 "POLICY_DENIED",
-                f"route_decisions[{index}] chooses a route from '{start}' to '{target}', and a "
-                f"row filter applies to '{filtered[0]}' on a route between them; a query cannot "
-                "choose a route under a row filter",
+                f"{where} chooses a route from '{pair[0]}' to '{pair[1]}' under a row filter; "
+                "a query cannot choose a route under a row filter",
                 details={
                     "reason": "route_override_under_row_policy",
-                    "path": f"route_decisions[{index}]",
-                    "entities": filtered,
+                    "path": where,
                     "policy_ids": sorted(
                         {
                             row_filter.policy_id
                             for row_filter in row_filters
-                            if row_filter.table in {by_id[entity].table for entity in filtered}
+                            if row_filter.table
+                            in {analysis.entities[entity].table for entity in on_routes}
                         }
                     ),
                     "hint": "Under a row filter only a reviewed graph.path_preferences row "
                     "(record_route_decision) changes which route the package means.",
                 },
             )
+        decided[pair] = (index, row)
     return decided
 
 
-def read_routes(
-    plan: LogicalPlan, route_choices: Sequence[RouteChoice]
-) -> list[tuple[str, str, Sequence[Sequence[str]]]]:
-    """Each (start, target, routes) the compiled SQL reads: the plan's root and leaf paths and
-    the paths lowering read (predicates, conversions, rewrite anchors, nested compiles,
-    direct key reads), with every route ``resolve_path`` returned for the pair."""
-    choices: list[tuple[str, str, Sequence[Sequence[str]]]] = [
-        (plan.root_entity, target, routes)
-        for target, routes in sorted(dict(plan.candidate_paths or {}).items())
+def read_routes(plan: LogicalPlan, route_choices: Sequence[RouteChoice]) -> list[RouteChoice]:
+    """Each (start, target, route) the compiled SQL reads, once: the plan's root and leaf paths
+    and the paths lowering read (predicates, conversions, a rewrite anchor's own lookups,
+    nested compiles, direct key reads)."""
+    choices: list[RouteChoice] = [
+        (plan.root_entity, target, tuple(path))
+        for target, path in sorted((plan.selected_paths or {}).items())
     ]
     for measure_plan in plan.measure_plans:
         choices.extend(
-            (measure_plan.source_entity, selection.target_entity, selection.candidate_paths)
+            (measure_plan.source_entity, selection.target_entity, tuple(selection.chosen_path))
             for selection in measure_plan.path_selections
         )
-    choices.extend(route_choices)
-    return choices
+    choices.extend((start, target, tuple(path)) for start, target, path in route_choices)
+    return list(dict.fromkeys(choices))
 
 
 def _bind_query(
