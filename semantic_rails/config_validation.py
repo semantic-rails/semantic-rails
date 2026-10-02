@@ -371,7 +371,11 @@ def _validate_split_package(
                         errors,
                         f"{path / 'package.yml'}: {warehouse} package.connection has invalid options: {direct_error}",
                     )
-            elif connector.requires_connection_name and not connection_name:
+            elif (
+                connector.requires_connection_name
+                and connection_kind != "snowflake_adbc"
+                and not connection_name
+            ):
                 add_error(
                     errors,
                     f"{path / 'package.yml'}: {warehouse} packages must declare package.connection.name",

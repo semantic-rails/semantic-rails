@@ -17,7 +17,12 @@ from ..compiler_parts.bind import (
     _bound_metric_predicates,
     _measure_count_distinct_key_columns,
 )
-from ..compiler_parts.indexes import _dimension_index, _measure_index, _temporal_role_index
+from ..compiler_parts.indexes import (
+    _aggregate_dimension_coverage,
+    _dimension_index,
+    _measure_index,
+    _temporal_role_index,
+)
 from ..compiler_parts.paths import (
     _direct_dimension_source_expr,
     _entity_key_dimension_ids,
@@ -45,10 +50,6 @@ _ROUTABLE_GRAIN_ORDER = {
 
 def _grain_rank(grain: str) -> int:
     return _ROUTABLE_GRAIN_ORDER.get(str(grain or "").strip().lower(), -1)
-
-
-def _aggregate_dimension_coverage(row: AggregateRelationConfig) -> set[str]:
-    return {str(item) for item in [*row.dimensions, *row.dimension_columns]}
 
 
 def _aggregate_measure_coverage(row: AggregateRelationConfig) -> set[str]:
@@ -192,21 +193,6 @@ def _prejoined_dimensions(row: AggregateRelationConfig, config: PackageConfig) -
             return None
         prejoined.add(dim_id)
     return prejoined
-
-
-def rollup_dimension_entities(config: PackageConfig, source_entity: str) -> set[str]:
-    """The models whose dimensions a rollup of ``source_entity`` holds, pre-joined or not.
-
-    Read from the config, not the binding index: this is a routing fact, not an object read.
-    """
-    entity_of = {dim.id: dim.entity for dim in config.dimensions}
-    return {
-        entity_of[dim_id]
-        for row in config.aggregate_relations
-        if row.source_entity == source_entity
-        for dim_id in _aggregate_dimension_coverage(row)
-        if dim_id in entity_of
-    }
 
 
 def _aggregate_relation_rejection_reason(

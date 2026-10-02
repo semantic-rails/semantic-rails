@@ -8,6 +8,7 @@ from typing import Any, NamedTuple
 from ..errors import SemanticLayerError
 from ..expressions import resolve_table_entity
 from ..schema import (
+    AggregateRelationConfig,
     DimensionConfig,
     EntityConfig,
     MeasureConfig,
@@ -50,6 +51,8 @@ class PackageAnalysis:
     path_cache: dict[tuple[str, str], tuple[tuple[str, ...], ...] | RouteRefusal] = field(
         default_factory=dict
     )
+    # Pinned-pair notes need only whether two routes fit the hop ceiling.
+    route_note_cache: dict[tuple[str, str], bool] = field(default_factory=dict)
 
     @classmethod
     def from_config(cls, config: PackageConfig) -> PackageAnalysis:
@@ -140,3 +143,22 @@ def _resolve_table_entity(config: PackageConfig, table: str, *, owner: str = "")
 
 def _default_temporal_role(measure: MeasureConfig) -> str:
     return measure.compatible_temporal_roles[0] if measure.compatible_temporal_roles else ""
+
+
+def _aggregate_dimension_coverage(row: AggregateRelationConfig) -> set[str]:
+    return {str(item) for item in [*row.dimensions, *row.dimension_columns]}
+
+
+def rollup_dimension_entities(config: PackageConfig, source_entity: str) -> set[str]:
+    """The models whose dimensions a rollup of ``source_entity`` holds, pre-joined or not.
+
+    Read from the config, not the binding index: this is a routing fact, not an object read.
+    """
+    entity_of = {dim.id: dim.entity for dim in config.dimensions}
+    return {
+        entity_of[dim_id]
+        for row in config.aggregate_relations
+        if row.source_entity == source_entity
+        for dim_id in _aggregate_dimension_coverage(row)
+        if dim_id in entity_of
+    }
