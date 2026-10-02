@@ -47,8 +47,10 @@ from .config_validation import PackageReference, parse_config_report
 from .dialects import connection_option_errors, warehouse_connector
 from .errors import SemanticLayerError
 from .expressions import expr_to_dict
+from .fanout import RouteRowError, check_route_row, pair_routes, route_reading
 from .package_snapshot import load_package_snapshot
 from .package_tools import impact_report
+from .schema import PackageConfig, PathPreferenceConfig
 from .yaml_loader import safe_load as yaml_safe_load
 
 _INVENTORY_KINDS = {
@@ -1504,6 +1506,103 @@ class ArchitectProject:
             _active=bool(outcome.snapshots),
         )
 
+    def record_route_decision(
+        self,
+        *,
+        source_entity: str,
+        target_entity: str,
+        relationship_path: list[str],
+        label: str = "",
+        validate_after: bool = True,
+        expected_revision: str | None = None,
+        idempotency_key: str | None = None,
+        dry_run: bool = False,
+    ) -> ArchitectMutation:
+        """Record which route a question between two entities means, as the package default:
+        write or replace the pair's ``graph.path_preferences`` row in the file that holds
+        ``graph:``. An ``AMBIGUOUS_PATH`` option's ``decision`` is such a row.
+
+        The row is checked by the loader's rules against the current package, under the
+        transaction lock: an unknown entity or relationship, a broken chain, a disallowed
+        direction, or a path that doesn't end at the target is ``INVALID_CONFIG`` and nothing
+        is written. The report adds ``replaced`` (the pair's previous row, or None) and
+        ``summary``, one plain sentence for a review.
+        """
+        expected, key = self._mutation_identity(expected_revision, idempotency_key)
+        row: dict[str, Any] = {
+            "source_entity": str(source_entity or "").strip(),
+            "target_entity": str(target_entity or "").strip(),
+            "relationship_path": [hop.strip() for hop in _as_list(relationship_path)],
+            **({"label": str(label).strip()} if str(label or "").strip() else {}),
+        }
+        metadata: dict[str, Any] = {"route_decision": row}
+
+        def prepare(_: str) -> tuple[list[ProjectFileUpdate], None]:
+            raw = self._raw_inventory()
+            config = load_package_snapshot(str(self.project_path)).config
+            entities = {
+                **{entity.name: entity.id for entity in config.entities if entity.name},
+                **{item.key: item.object_id for item in raw["entities"]},
+                **{entity.id: entity.id for entity in config.entities},
+            }
+            try:
+                decision = check_route_row(
+                    row, entities=entities, relationships=config.relationships
+                )
+            except RouteRowError as exc:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"route decision {exc}",
+                    details={"reason": "invalid_route_decision", "route_decision": row},
+                ) from None
+            pair = (decision.source_entity, decision.target_entity)
+            graph_path = self._target_path("graph.yml")
+            if not graph_path.exists():
+                graph_path = self._target_path("package.yml")
+            documents = self._load_documents(graph_path)
+            graph = dict(documents[graph_path].get("graph", {}) or {})
+            rows = list(graph.get("path_preferences", []) or [])
+            index = next(
+                (
+                    position
+                    for position, existing in enumerate(rows)
+                    if isinstance(existing, dict)
+                    and tuple(entities.get(str(existing.get(end, "")).strip()) for end in _PIN_ENDS)
+                    == pair
+                ),
+                None,
+            )
+            metadata["replaced"] = deepcopy(rows[index]) if index is not None else None
+            if index is None:
+                rows.append(row)
+            else:
+                rows[index] = row
+            documents[graph_path]["graph"] = {**graph, "path_preferences": rows}
+            metadata["summary"] = _route_decision_summary(config, decision)
+            return self._file_updates(documents), None
+
+        outcome = ProjectTransaction(self.project_path, workspace_root=self.workspace_root).apply(
+            (),
+            expected_revision=expected,
+            idempotency_key=key,
+            intent={
+                "operation": "record_route_decision",
+                "expected_revision": expected,
+                **row,
+            },
+            dry_run=dry_run,
+            validate_after=validate_after,
+            success_status="recorded",
+            metadata=metadata,
+            prepare_updates=prepare,
+        )
+        return ArchitectMutation(
+            report=outcome.report,
+            project_path=self.project_path,
+            _snapshots=outcome.snapshots,
+            _active=bool(outcome.snapshots),
+        )
+
     def upsert_check(
         self,
         *,
@@ -2584,6 +2683,22 @@ def _merge_named_objects(
             dropped += [f"{block}.{name}.{field}" for field in old if field not in spec]
         merged[name] = deepcopy(spec)
     return merged
+
+
+def _route_decision_summary(config: PackageConfig, decision: PathPreferenceConfig) -> str:
+    """One plain sentence for a review: what the pair now means, and its other meanings."""
+    start, target = decision.source_entity, decision.target_entity
+    entities = {entity.id: entity.label or entity.name for entity in config.entities}
+    start_label, target_label = entities.get(start, start), entities.get(target, target)
+    meaning = decision.label or route_reading(config, start, decision.relationship_path)
+    others = [
+        route_reading(config, start, path)
+        for path in pair_routes(config, start, target)
+        if path != list(decision.relationship_path)
+    ]
+    article = "an" if start_label[:1].lower() in set("aeiou") else "a"
+    summary = f"For {article} {start_label}, '{target_label}' now means {meaning}."
+    return f"{summary} Other meanings: {'; '.join(others)}." if others else summary
 
 
 def _replaced(current: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:

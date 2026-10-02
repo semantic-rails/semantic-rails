@@ -716,10 +716,9 @@ def test_two_roles_with_no_preference_are_refused_never_picked(tmp_path):
     error = raised.value
     assert error.code == "UNSUPPORTED_CONDITIONAL_AGGREGATE"
     assert error.details["reason"] == "ambiguous_path"
-    assert sorted(error.details["candidates"]) == [
-        ["relationship.post_editor"],
-        ["relationship.post_owner"],
-    ]
+    assert sorted(
+        option["relationship_path"] for option in error.details["clarification"]["options"]
+    ) == [["relationship.post_editor"], ["relationship.post_owner"]]
     assert "path_preferences" in error.details["hint"]
 
 

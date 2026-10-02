@@ -243,6 +243,28 @@ QUERY_SCHEMA: dict[str, Any] = {
                 },
             },
         },
+        "route_decisions": {
+            "type": "array",
+            "description": (
+                "This query's route between two entities, one row per pair: the decision of "
+                "the AMBIGUOUS_PATH clarification option the person chose. Not a default."
+            ),
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["source_entity", "target_entity", "relationship_path"],
+                "properties": {
+                    "source_entity": {"type": "string"},
+                    "target_entity": {"type": "string"},
+                    "relationship_path": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                    },
+                    "label": {"type": "string", "description": "Ignored."},
+                },
+            },
+        },
     },
 }
 
@@ -602,7 +624,9 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "warehouse time. IR: select[]={expression:{...},as}, group_by[]=[<dim>,...] (not in "
             "select), where[]={field,op,value}, order_by[]={field,direction}. select.expression: "
             "{aggregation, measure} | {metric} | "
-            "{kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}."
+            "{kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}. "
+            "On AMBIGUOUS_PATH, ask the person which details.clarification option they mean, "
+            "then resend with that option's decision in route_decisions."
         ),
         input_schema=_schema(
             {

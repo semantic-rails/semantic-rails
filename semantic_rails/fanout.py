@@ -10,6 +10,7 @@ under a hop limit.
 
 from __future__ import annotations
 
+import os
 import re
 from collections import Counter, deque
 from collections.abc import Iterator, Mapping, Sequence
@@ -145,9 +146,13 @@ def _entity_label(config: PackageConfig, entity_id: str) -> str:
     return (entity.label or entity.name) if entity is not None else entity_id
 
 
-def _entity_key(config: PackageConfig, entity_id: str) -> str:
-    entity = get_package_analysis(config).entities.get(entity_id)
-    return (entity.name if entity is not None else "") or entity_id.rpartition(".")[2]
+def _entity_keys(config: PackageConfig) -> dict[str, str]:
+    """Each entity's authored key: its id's tail without the namespace prefix every entity id
+    shares (``entity.bank_account`` -> ``account``)."""
+    tails = {entity.id: entity.id.rpartition(".")[2] for entity in config.entities}
+    prefix = os.path.commonprefix(list(tails.values()))
+    prefix = prefix[: prefix.rfind("_") + 1]
+    return {entity_id: _slug(tail[len(prefix) :]) for entity_id, tail in tails.items()}
 
 
 def route_reading(config: PackageConfig, start: str, path: Sequence[str]) -> str:
@@ -208,7 +213,8 @@ def _option_ids(config: PackageConfig, start: str, routes: list[list[str]]) -> l
     entity keys plus the target key, or a direct hop's foreign-key column without its
     ``_id``/``_key``/``_code`` suffix; ``_2`` and up on a clash."""
     analysis = get_package_analysis(config)
-    taken = {_slug(_entity_key(config, entity)) for entity in analysis.entities}
+    keys = _entity_keys(config)
+    taken = set(keys.values())
     ids: list[str] = []
     for path in routes:
         if len(path) == 1:
@@ -218,10 +224,7 @@ def _option_ids(config: PackageConfig, start: str, routes: list[list[str]]) -> l
             if not base or base in taken:
                 base = _slug("_".join(columns))
         else:
-            base = "_".join(
-                _slug(_entity_key(config, entity))
-                for entity in route_entities(config, start, path)[1:]
-            )
+            base = "_".join(keys[entity] for entity in route_entities(config, start, path)[1:])
         slug, suffix = base or "route", 1
         while slug in taken:
             suffix += 1

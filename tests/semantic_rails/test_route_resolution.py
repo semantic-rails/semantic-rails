@@ -583,14 +583,14 @@ def test_routes_without_one_direct_key_are_refused_and_each_pin_answers_its_gold
     err = _refusal(pkg, query)
     assert err.details["reason"] == "route_decision_required"
     assert (err.details["start"], err.details["target"]) == (start, target)
-    assert set(golds) <= set(map(tuple, err.details["candidates"]))
-    assert len(err.details["meanings"]) == len(err.details["candidates"])
-    assert len(set(err.details["meanings"])) == len(err.details["meanings"])
+    options = err.details["clarification"]["options"]
+    assert set(golds) <= {tuple(option["relationship_path"]) for option in options}
+    assert len({option["meaning"] for option in options}) == len(options)
     assert "business definition" in err.details["hint"]
     # Each route's row loads as written, and the query then answers with that route.
-    for index, path in enumerate(err.details["candidates"]):
-        pin = err.details["pins"][index]
-        assert pin == _pin(start, target, path)
+    for index, option in enumerate(options):
+        path, pin = option["relationship_path"], option["decision"]
+        assert pin == {**_pin(start, target, path), "label": option["meaning"]}
         if tuple(path) not in golds:
             continue
         pinned = _write_package(tmp_path / f"pin{index}", relationships=relationships, pins=[pin])
@@ -606,18 +606,31 @@ def test_the_refusal_reads_the_routes_by_their_labels(tmp_path):
         labels={"owners_home_region": "Home region", "accounts_branch_region": "Branch region"},
     )
     err = _refusal(pkg, _query(AMOUNT, group_by=[REGION_NAME]))
-    assert err.details["meanings"][:2] == [
-        "Invoice → Account → Branch region",
-        "Invoice → Account → Owner → Home region",
+    clarification = err.details["clarification"]
+    assert clarification["question"] == "Which Region does the question mean for an Invoice?"
+    # One relationship per entity pair: each hop is named by the entity it reaches.
+    assert [(option["id"], option["meaning"]) for option in clarification["options"]] == [
+        ("account_region", "the Region of the Invoice's Account"),
+        ("account_owner_region", "the Region of the Owner of the Invoice's Account"),
+        (
+            "account_membership_owner_region",
+            "the Region of any of the Owners of any of the Memberships of the Invoice's Account",
+        ),
     ]
-    # Parallel roles with no label of their own are told apart by their relationships.
+    # Parallel roles are told apart by their own label, else by their foreign-key columns.
     err = _refusal(
-        _write_package(tmp_path / "roles", relationships=tuple(_RELATIONSHIPS)[:2]),
+        _write_package(
+            tmp_path / "roles",
+            relationships=tuple(_RELATIONSHIPS)[:2],
+            labels={"accounts_branch_region": "Branch region"},
+        ),
         _query(BALANCE, group_by=[REGION_NAME]),
     )
-    assert err.details["meanings"] == [
-        "Account → Region (relationship.accounts_billing_region)",
-        "Account → Region (relationship.accounts_branch_region)",
+    assert [
+        (option["id"], option["meaning"]) for option in err.details["clarification"]["options"]
+    ] == [
+        ("billing_region", "the Account's Region (billing_region_id)"),
+        ("branch_region", "the Account's Branch region"),
     ]
 
 
@@ -795,12 +808,12 @@ def test_a_refusal_is_cached_and_its_recovery_hint_carries_the_rows(tmp_path, mo
     with pytest.raises(SemanticLayerError) as second:
         resolve_path(config, start=INVOICE, target=REGION)
     assert (second.value.code, second.value.details) == (first.value.code, first.value.details)
-    second.value.details["pins"].clear()  # a caller's copy, not the cached refusal
+    second.value.details["clarification"]["options"].clear()  # a copy, not the cached refusal
     with pytest.raises(SemanticLayerError) as third:
         resolve_path(config, start=INVOICE, target=REGION)
     assert third.value.details == first.value.details
     (hint,) = exception_issue(first.value, stage="compile")["recovery_hints"]
-    assert hint["pins"] == first.value.details["pins"]
+    assert hint["clarification"] == first.value.details["clarification"]
 
 
 @pytest.mark.parametrize(

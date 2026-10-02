@@ -766,7 +766,8 @@ def create_architect_mcp_server(
             "Order: project_status (note its revision); explore a DuckDB warehouse (list_tables, "
             "describe_table, profile_columns, suggest_model) or a dbt target "
             "(suggest_models_from_dbt); write (upsert_model, upsert_relationship, upsert_metric, "
-            "upsert_segment, upsert_example, upsert_test, import_dbt_project, remove_object); "
+            "upsert_segment, upsert_example, upsert_test, import_dbt_project, remove_object, "
+            "record_route_decision); "
             "check (validate_project mode=parse after each change, mode=runtime before trusting "
             "answers; preview_query); review (diff_project, impact_project).\n"
             "Every write previews with dry_run: true and takes expected_revision (from "
@@ -1122,6 +1123,50 @@ def create_architect_mcp_server(
                     to_entity=to_entity,
                     columns=columns,
                     cardinality=cardinality,
+                    validate_after=True,
+                    expected_revision=expected_revision,
+                    idempotency_key=idempotency_key,
+                    dry_run=dry_run,
+                )
+                .report
+            )
+        except Exception as exc:
+            return _mutation_error_result(
+                exc,
+                project_path=project_path,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
+                dry_run=dry_run,
+            )
+
+    @mcp.tool(
+        annotations=_mutation_annotations("Record route decision"),
+        description=(
+            "Record which route a question between two entities means, as the package "
+            "default: write or replace the pair's graph.path_preferences row (pass the "
+            "decision of an AMBIGUOUS_PATH clarification option). An off-route path or an "
+            "unknown entity or relationship is INVALID_CONFIG with nothing written. Returns "
+            "replaced (the previous row) and summary, one sentence for the review."
+        ),
+    )
+    def record_route_decision(
+        project_path: str,
+        source_entity: str,
+        target_entity: str,
+        relationship_path: list[str],
+        expected_revision: str,
+        idempotency_key: str,
+        label: str = "",
+        dry_run: bool = False,
+    ) -> ArchitectMutationResult:
+        try:
+            return _mutation_result(
+                ArchitectProject(project_path, workspace_root=root)
+                .record_route_decision(
+                    source_entity=source_entity,
+                    target_entity=target_entity,
+                    relationship_path=relationship_path,
+                    label=label,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,

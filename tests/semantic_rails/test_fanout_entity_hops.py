@@ -744,7 +744,8 @@ def test_new_child_filter_paths_require_one_candidate_or_a_pin(
             "west",
         ),
     ]
-    assert caught.value.details["candidates"] == [path for path, _, _ in routes]
+    options = caught.value.details["clarification"]["options"]
+    assert [option["relationship_path"] for option in options] == [path for path, _, _ in routes]
     # Seed once; pinning must select the authored route even when it is longer.
     _run(diamond_package, {"select": [{"expression": {"measure": "measure.diamond.amount"}}]})
     for path, expected, branch in routes:

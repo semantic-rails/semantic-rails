@@ -389,12 +389,13 @@ def test_query_through_two_roles_is_refused_whatever_the_declaration_order(tmp_p
 
     err = exc_info.value
     assert err.code == "AMBIGUOUS_PATH"
-    candidates = sorted(path[0] for path in err.details["candidates"])
+    options = err.details["clarification"]["options"]
+    candidates = sorted(option["relationship_path"][0] for option in options)
     assert candidates == _relationship_ids(config, "entity.air_leg", "entity.air_airport")
-    assert all(len(path) == 1 for path in err.details["candidates"])
+    assert all(len(option["relationship_path"]) == 1 for option in options)
     hint = err.details["hint"]
     assert "path_preferences" in hint
-    assert all(rel_id in str(err) for rel_id in candidates)
+    assert all(option["meaning"] in str(err) for option in options)
 
 
 def test_a_single_authored_role_still_answers(tmp_path):
