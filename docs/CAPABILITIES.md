@@ -159,8 +159,9 @@ In practice:
   `REWRITE_APPLIED` warning (`fanout_dedup`)
 - a child group in `where` (`{child, match: any|none, where}`) says whether its
   conditions apply to the same child row; it lowers to correlated `EXISTS` or
-  `NOT EXISTS`. Two plain filters on one child, or a negated one, are refused with
-  `AMBIGUOUS_CHILD_SCOPE`, whose clarification offers each reading as a `where` list
+  `NOT EXISTS`. Two or more positive plain filters on one child, or one negated one,
+  are refused with `AMBIGUOUS_CHILD_SCOPE`, whose clarification offers each reading as a
+  `where` list
 - unsupported grain-expanding shapes still fail fast rather than silently miscomputing:
   other aggregations grouped across the hop (order revenue by item product type reads
   as either an item split or each containing order's total), negated, null or `false`

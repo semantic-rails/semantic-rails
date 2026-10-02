@@ -192,7 +192,7 @@
         "match",
         "where"
       ],
-      "description": "Conditions on one row of a child entity, reached across a one-to-many hop from the measure's entity. 'any' keeps a row with at least one child row meeting every condition (correlated EXISTS); 'none' keeps a row with no such child row (NOT EXISTS). Conditions are dimensions of the child, or of a many-to-one or one-to-one lookup from it; a lookup that finds no row reads NULL, and NULL fails a comparison. Groups do not nest. Several groups are separate conditions, ANDed with the other where items. Two or more plain filters on one child, a plain filter beside a group on its child, and a negated plain filter on a child are refused with AMBIGUOUS_CHILD_SCOPE, whose clarification offers each reading as a where list.",
+      "description": "Conditions on one row of a child entity, reached across a one-to-many hop from the measure's entity. 'any' keeps a row with at least one child row meeting every condition (correlated EXISTS); 'none' keeps a row with no such child row (NOT EXISTS). Conditions are dimensions of the child, or of a many-to-one or one-to-one lookup from it; a lookup that finds no row reads NULL, and NULL fails a comparison. Groups do not nest. Several groups are separate conditions, ANDed with the other where items; beside a group nothing else may cross a one-to-many hop, and groups on different children are refused. Two or more positive plain filters on one child, or one negated plain filter on a child, are refused with AMBIGUOUS_CHILD_SCOPE, whose clarification offers each reading as a where list.",
       "properties": {
         "child": {
           "type": "string",

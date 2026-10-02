@@ -1434,11 +1434,11 @@ one side, lets a distinct parent count be grouped by the far dimension; the enti
 the engine de-duplicates on.
 A query states which child rows its conditions mean with a child group in `where`
 (`{child, match: any|none, where}`, see
-[QUERY_IR_SCHEMA.md](QUERY_IR_SCHEMA.md#child-groups)); two plain filters on one child,
-or a negated one, are refused with `AMBIGUOUS_CHILD_SCOPE` and a clarification. Its
-readings are child groups, so it is offered only when a group on that child takes the
-plain filters' own route; otherwise the refusal is `MIXED_GRAIN_INVALID`, naming the
-`graph.path_preferences` row that records that route. A
+[QUERY_IR_SCHEMA.md](QUERY_IR_SCHEMA.md#child-groups)); two or more positive plain filters
+on one child, or one negated one, are refused with `AMBIGUOUS_CHILD_SCOPE` and a
+clarification. Its readings are child groups, so it is offered only when a group on that
+child takes the plain filters' own route; otherwise the refusal is `MIXED_GRAIN_INVALID`,
+naming the `graph.path_preferences` row that records that route. A
 measure's own `filter` may cross a one-to-many hop with one positive condition;
 negated ones stay refused because "has a non-matching child" and "has no matching
 child" differ. A parent sum grouped by child dimensions, or a child value authored

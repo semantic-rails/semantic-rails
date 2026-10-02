@@ -385,7 +385,12 @@ query states it. A child group is a `where` item of its own:
   under `none`, a child row with a NULL value never excludes its parent.
 - Several groups are separate subqueries, ANDed with the other `where` items. Two
   groups on one child mean separate child rows; one group with both conditions means
-  the same row. Groups on different children (items and sessions) combine the same way.
+  the same row.
+- One child scope per query. Beside a group, nothing else may cross a one-to-many hop: a
+  plain filter (on that child or another), a grouping by a child dimension, or a measure's
+  own `filter`. Groups on different children, or reaching one child by different routes,
+  are refused too: an item and a payment of a customer's orders may mean one order or
+  any, and neither group says which. Each is `MIXED_GRAIN_INVALID`.
 - The child must sit across a one-to-many hop from each measure's entity. Its route
   follows [the route rule](PACKAGE_AUTHORING.md#the-route-rule): with several routes and
   no `graph.path_preferences` row recording one, it is refused with `AMBIGUOUS_PATH`.
@@ -394,28 +399,36 @@ query states it. A child group is a `where` item of its own:
   or a lookup from it; a condition whose lookup reads a table the route already reads;
   and a group in a query without a measure or beside a conversion. A segment's
   membership refuses a group with `INVALID_SEGMENT`.
-- A group never reads a rollup. Grouping by a child dimension beside a group is
-  `MIXED_GRAIN_INVALID`, and the measure must meet the same rules as under a plain child
-  filter (one value per row of its entity; no window, distribution or metric predicate
-  across the hop).
+- A group never reads a rollup, and the measure must meet the same rules as under a plain
+  child filter (one value per row of its entity; no window, distribution or metric
+  predicate across the hop).
   Under a row policy the query is refused with `POLICY_DENIED`.
   Under [restricted metric grants](QUERY_API.md#restricted-metric-grants), explicit
   groups are refused with `RESOURCE_ACCESS_DENIED`: metric and dimension grants do not
   authorize a caller-selected child entity scope.
-- ClickHouse answers one `any` group on the child's own columns, as the only condition
-  across a one-to-many hop, with its de-duplicated parent leaf. A `none` group (a NULL-safe
-  anti-join is unproven there), several groups, a lookup from the child, or another child
-  condition beside the group are refused with `MIXED_GRAIN_INVALID`.
+- ClickHouse answers one `any` group on the child's own columns with its de-duplicated
+  parent leaf. A `none` group (a NULL-safe anti-join is unproven there), several groups,
+  or a lookup from the child are refused with `MIXED_GRAIN_INVALID`.
 
 Plain filters on a child:
 
 - One positive plain filter reaching a child keeps its meaning: an `any` group of one.
-- Two or more plain filters reaching one child entity by one route (a lookup from the
-  child counts as that child), or a plain filter beside an `any` group on that child, are
-  refused with `AMBIGUOUS_CHILD_SCOPE`. So is a negated plain filter on a child (`!=`,
-  `<>`, `NOT IN`, `NOT LIKE`, `IS DISTINCT FROM`, `IS NULL`, a null value, or on a boolean
-  anything but `= true`): "has an item that is not a beverage" and "has no beverage
-  item" differ.
+- `AMBIGUOUS_CHILD_SCOPE` is raised only for a query with no group whose only conditions
+  across a one-to-many hop are plain `where` filters, all reaching one child entity by one
+  route (a lookup from the child counts as that child), each with an operator a group can
+  restate exactly (`=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, `IN`, `NOT IN`, `LIKE`,
+  `NOT LIKE`, `IS NULL`, `IS NOT NULL`). Then it takes one of two shapes:
+  - two or more filters, none negated: `same_row` (one `any` group of all of them) or
+    `separate_rows` (an `any` group each);
+  - exactly one filter, negated (`!=`, `<>`, `NOT IN`, `NOT LIKE`, `IS NULL`, a null
+    value, or on a boolean anything but `= true`): `any_not` (an `any` group with the
+    condition as written, "has an item that is not a beverage") or `none` (a `none` group
+    with its complement: `=` for `!=`, `IN` for `NOT IN`, `LIKE` for `NOT LIKE`,
+    `IS NOT NULL` for `IS NULL`; "has no beverage item").
+- Every other shape keeps `MIXED_GRAIN_INVALID` with no clarification: a negated filter
+  beside another filter on the child, two negated filters, filters on different children,
+  and `IS` / `IS NOT` with a value, `IS [NOT] DISTINCT FROM`, `<=>`, `ILIKE` or
+  `NOT ILIKE` on a child.
 - The refusal carries `details.clarification`:
 
   ```jsonc
@@ -430,34 +443,22 @@ Plain filters on a child:
   }
   ```
 
-  Beside `any` groups on that child, `same_row` adds the plain filters to the group; with
-  several groups there is one `same_row_where_<i>` per group (`<i>` is the group's `where`
-  index), and the other groups stay as they are. A lone negated filter's options are
-  `any_not` (an `any` group with the condition as written) and `none` (a `none` group with
-  its opposite: `=` for `!=`, `IN` for `NOT IN`, `IS NOT NULL` for `IS NULL`). Beside other
-  conditions on that child, each negated filter also adds a `none` option (`none_where_<i>`
-  when there are several) that rewrites only that filter; the other items stay as written,
-  and resending it asks about them if they are still ambiguous. Each option's `where` is
-  the query's whole `where`, with the other items unchanged; resend it as is.
-  `recovery_hints` carry the same options.
-- Every option is checked before it is offered: the engine binds the rewritten query
-  (every measure, the warehouse's child-group rules, row policies) and leaves out an option
-  that would be refused. An option that asks a further child-scope question counts when
-  that question still has an answer. If no option is left (a measure whose own rows are the
-  child, or ClickHouse refusing every reading), or the readings are too many to check in
-  one request (four or more negated filters on one child), the query retains
-  `MIXED_GRAIN_INVALID` without a clarification.
+  Each option's `where` is the query's whole `where`, with the other items unchanged;
+  resend it as is. `recovery_hints` carry the same options.
+- A clarification is offered only when every reading answers for this caller. The engine
+  binds each option's `where` once (every measure, the warehouse's child-group rules, row
+  policies) and runs the caller's semantic policies on it (metric constraints such as
+  `required_where` and `allowed_where`, object access). If any option is refused (a
+  measure whose own rows are the child, ClickHouse refusing a reading, a required filter
+  that a group no longer meets as a plain filter), the query is `MIXED_GRAIN_INVALID`
+  without a clarification, and its message names that option and its error code.
 - A group on the child must take the plain filters' own route: the route from the
   measure's entity to the child, and from the child to a filter's lookup. When it would
   take another route, or none the package records, the query is refused with
   `MIXED_GRAIN_INVALID`, naming the `graph.path_preferences` row that records the filters'
   route.
-- One positive plain filter beside a `none` group on the same child is unambiguous:
-  it requires a matching child row and independently excludes rows matching the group.
-- Plain filters on different children (an item and a payment of a customer's orders)
-  remain `MIXED_GRAIN_INVALID`: they may mean the same order or any orders. State each
-  with its own group. A measure's own `filter` keeps its rules: one positive condition
-  across a hop means `EXISTS`, and a negated one is `MIXED_GRAIN_INVALID`.
+- A measure's own `filter` keeps its rules: one positive condition across a hop means
+  `EXISTS`, and a negated one is `MIXED_GRAIN_INVALID`.
 
 ## OrderBy
 
