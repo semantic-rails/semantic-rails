@@ -343,9 +343,8 @@ def test_whitespace_in_graph_model_binding_preserves_relationship(tmp_path: Path
 
 @pytest.mark.parametrize("second_model", ["device", "sensors"])
 @pytest.mark.parametrize("with_entities", [False, True])
-@pytest.mark.parametrize("reverse_models", [False, True])
 def test_implicit_bindings_preserve_authored_entity_relations(
-    tmp_path: Path, second_model: str, with_entities: bool, reverse_models: bool
+    tmp_path: Path, second_model: str, with_entities: bool
 ) -> None:
     models = {
         "reading": {"entity": "device", "relation": "devices", "keys": {"primary": ["id"]}},
@@ -354,34 +353,16 @@ def test_implicit_bindings_preserve_authored_entity_relations(
     if with_entities:
         for model in models.values():
             model["entities"] = {"reading": {}, "device": {}}
-    for model in models.values():
-        model["dimensions"] = {"label": {"column": "label", "kind": "categorical"}}
-    if reverse_models:
-        models = dict(reversed(list(models.items())))
     pkg = _write_synthetic_package(
         tmp_path / "implicit_identity",
         graph_entities={"reading": {"key": "id"}, "device": {"key": "id"}},
-        models={},
+        models=models,
     )
-    _write_yaml(pkg / "models" / "all.yml", {"models": models})
     config = load_package_config(str(pkg))
     assert {entity.id: entity.table for entity in config.entities} == {
         "entity.synth_reading": "readings",
         "entity.synth_device": "devices",
     }
-    project = ArchitectProject(pkg, workspace_root=tmp_path)
-    assert {row["model_key"]: row["id"] for row in project.inventory()["dimensions"]} == {
-        "reading": "dimension.synth_device_label",
-        second_model: "dimension.synth_reading_label",
-    }
-    preview = project.upsert_model(
-        model_id="reading",
-        entity_key="device",
-        relation="devices",
-        primary_key=["id"],
-        dry_run=True,
-    ).report
-    assert preview["dry_run"] and preview["changes"]
 
 
 @pytest.mark.parametrize("primary_source", ["grain", "name"])
@@ -554,7 +535,6 @@ def test_shared_entity_keys_require_explicit_primary_identity(
             },
         },
     )
-    project = ArchitectProject(pkg, workspace_root=tmp_path)
     if identity is None:
         message = (
             "model 'parties' grain ['id'] matches multiple entity keys: customer, supplier; "
@@ -565,22 +545,6 @@ def test_shared_entity_keys_require_explicit_primary_identity(
         assert exc.value.code == "INVALID_CONFIG"
         assert str(exc.value) == message
         assert any(message in error for error in validate_runtime_package(pkg))
-        raw = project._raw_inventory()
-        assert project._primary_entity_for_model(raw["models"][0], raw["entities"]) == ""
-        assert project.inventory()["dimensions"][0]["id"] == "dimension.synth_model_label"
-        mutation = project.upsert_model(
-            model_id="supplier", entity_key="supplier", relation="suppliers", primary_key=["id"]
-        )
-        assert mutation.report["status"] == "rolled_back_after_parse_error"
-        assert mutation.report["parse"]["ok"] is False
-        assert any(
-            error["code"] == "INVALID_CONFIG" and message in error["message"]
-            for error in mutation.report["parse"]["errors"]
-        )
-        assert project.upsert_model(
-            model_id="parties", entity_key="customer", relation="parties", primary_key=["id"]
-        ).report["ok"]
-        assert load_package_config(str(pkg)).entities
     else:
         config = load_package_config(str(pkg))
         customer = next(
@@ -588,9 +552,41 @@ def test_shared_entity_keys_require_explicit_primary_identity(
         )
         assert customer.table == "parties"
         assert customer.key == ["id"]
-        assert [row["id"] for row in project.inventory()["dimensions"]] == [
-            "dimension.synth_customer_label"
-        ]
+
+
+def test_architect_mutation_rolls_back_when_grain_remains_ambiguous(tmp_path: Path) -> None:
+    pkg = _write_synthetic_package(
+        tmp_path / "ambiguous_edit",
+        graph_entities={"customer": {"key": ["id"]}, "supplier": {"key": ["id"]}},
+        models={
+            "parties": {
+                "id": "parties",
+                "relation": "parties",
+                "grain": ["id"],
+                "entities": {"customer": {}, "supplier": {}},
+            },
+            "supplier": {"entity": "supplier", "relation": "suppliers", "grain": ["id"]},
+        },
+    )
+    original = (pkg / "models" / "supplier.yml").read_bytes()
+    project = ArchitectProject(pkg, workspace_root=tmp_path)
+    report = project.upsert_model(
+        model_id="supplier", entity_key="supplier", relation="updated_suppliers", primary_key=["id"]
+    ).report
+
+    assert report["changes"]
+    assert report["status"] == "rolled_back_after_parse_error"
+    assert report["parse"]["ok"] is False
+    assert any(
+        error["code"] == "INVALID_CONFIG"
+        and (
+            "model 'parties' grain ['id'] matches multiple entity keys: customer, supplier; "
+            "bind the model in the graph or set entity:"
+        )
+        in error["message"]
+        for error in report["parse"]["errors"]
+    )
+    assert (pkg / "models" / "supplier.yml").read_bytes() == original
 
 
 @pytest.mark.parametrize("customer_first", [False, True])

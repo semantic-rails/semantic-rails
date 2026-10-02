@@ -935,8 +935,6 @@ identity. Declaration order never selects the primary; loading fails with
 If multiple entity keys match the grain, bind the model in the graph or set
 `entity:`; otherwise loading fails with `INVALID_CONFIG` naming the model and
 matching entities.
-Architect inventory leaves ambiguous primary identity unknown so structured edits
-can repair it; the post-write parse check still refuses unresolved ambiguity.
 Two models claiming the same unbound graph entity also fail with `INVALID_CONFIG`
 naming both models. An explicit graph `model:` binding fixes primary identity
 independently of an authored `grain:`. That grain describes measure rows and may

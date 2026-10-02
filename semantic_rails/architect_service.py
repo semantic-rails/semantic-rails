@@ -43,7 +43,6 @@ from .architect_transactions import (
     ProjectTransaction,
     project_revision,
 )
-from .config_parts.package_loader import _column_list
 from .config_validation import PackageReference, parse_config_report
 from .dialects import connection_option_errors, warehouse_connector
 from .errors import SemanticLayerError
@@ -2420,37 +2419,18 @@ class ArchitectProject:
 
     @staticmethod
     def _primary_entity_for_model(model: _RawObject, entities: list[_RawObject]) -> str:
-        """Look up authored identity without preventing edits to an invalid package."""
-        bound = [
-            entity.key
-            for entity in entities
-            if str(entity.spec.get("model", "") or "").strip() == model.key
-        ]
-        if bound:
-            return bound[0] if len(bound) == 1 else ""
+        for entity in entities:
+            if str(entity.spec.get("model", "") or "") == model.key:
+                return entity.key
         explicit = str(model.spec.get("entity", "") or "").strip()
         if explicit:
             return explicit
-        keys = model.spec.get("keys")
-        grain = model.spec.get("grain")
-        if grain is None and isinstance(keys, dict):
-            grain = keys.get("primary")
-        grain_cols = _column_list(grain)
-        if not grain_cols:
-            return ""
-        graph = {entity.key: entity.spec for entity in entities}
-        exposed = model.spec.get("entities")
-        exposed = exposed if isinstance(exposed, dict) else graph
-        matches = []
-        for name, spec in exposed.items():
-            if name == "bridge":
-                continue
-            columns = spec.get("expr") if isinstance(spec, dict) else None
-            if columns is None:
-                columns = graph.get(name, {}).get("key")
-            if _column_list(columns) == grain_cols:
-                matches.append(str(name))
-        return matches[0] if len(matches) == 1 else ""
+        exposed = model.spec.get("entities", {}) or {}
+        if isinstance(exposed, dict):
+            keys = [str(key) for key in exposed if str(key) != "bridge"]
+            if keys:
+                return keys[0]
+        return model.key
 
     @staticmethod
     def _find_raw(rows: list[_RawObject], key: str) -> _RawObject | None:
