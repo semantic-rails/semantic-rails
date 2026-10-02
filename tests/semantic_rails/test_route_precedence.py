@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import textwrap
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.fanout import resolve_path, resolve_route
 from semantic_rails.metadata_parts.path_coverage import _path_availability
 from semantic_rails.runtime import Runtime
+from semantic_rails.schema import PathPreferenceConfig
 
 SEED_SQL = """
 CREATE TABLE regions (region_id INTEGER, region_name VARCHAR);
@@ -832,6 +834,96 @@ def test_rows_that_agree_load_and_a_single_route_pair_may_be_recorded(tmp_path):
     ]
     config = load_package_config(str(_write_package(tmp_path, rows=rows)))
     assert resolve_route(config, start=DISTRICT, target=REGION).basis == "decided"
+
+
+def test_rows_built_in_code_must_agree_too(tmp_path):
+    """A configuration built in code never meets the YAML loader, but the package analysis runs
+    the same check: two rows that disagree are refused when the query binds, before any SQL
+    runs, naming both."""
+    pkg = _write_package(tmp_path, rows=[ACCOUNT_OWNER_ROW])
+    config = load_package_config(str(pkg))
+    loan_branch = PathPreferenceConfig(LOAN, DISTRICT, [*LOAN_ACCOUNT, *BRANCH])
+    built = replace(config, path_preferences=[*config.path_preferences, loan_branch])
+    with pytest.raises(SemanticLayerError) as exc_info:
+        Runtime.from_config(built, source_path=str(pkg)).query(
+            _query(LOAN_AMOUNT, group_by=[DISTRICT_NAME])
+        )
+    assert exc_info.value.code == "INVALID_CONFIG"
+    assert exc_info.value.details["rows"] == [ACCOUNT_OWNER_ROW, asdict(loan_branch)]
+
+
+LOAN_BRANCH, LOAN_OWNER = [*LOAN_ACCOUNT, *BRANCH], [*LOAN_ACCOUNT, *OWNER]
+LOAN_REGION_BY_OWN_KEY = _row(LOAN, REGION, [*OWN_KEY, _rel("districts_region")])
+LOAN_REGION_BY_OWNER = _row(LOAN, REGION, [*LOAN_OWNER, _rel("districts_region")])
+# A package where the engine suggests rows for district by a measure: its relationships and
+# rows, the measure, the routes whose rows it offers, and each route whose row would not load
+# with the rows that row would disagree with. A loan amount is noted (the loan's own key) with
+# the other routes as alternatives; an account balance is refused with a pin for each route.
+SUGGESTIONS = {
+    "own_key": (OWN_DISTRICT, [], LOAN_AMOUNT, [LOAN_BRANCH, LOAN_OWNER], []),
+    "own_key_and_account_row": (
+        OWN_DISTRICT,
+        [ACCOUNT_OWNER_ROW],
+        LOAN_AMOUNT,
+        [LOAN_OWNER],
+        [(LOAN_BRANCH, [ACCOUNT_OWNER_ROW])],
+    ),
+    # The loan's region recorded through its own district walks (loan, district) that way.
+    "own_key_and_loan_region_row": (
+        OWN_DISTRICT,
+        [LOAN_REGION_BY_OWN_KEY],
+        LOAN_AMOUNT,
+        [],
+        [(LOAN_BRANCH, [LOAN_REGION_BY_OWN_KEY]), (LOAN_OWNER, [LOAN_REGION_BY_OWN_KEY])],
+    ),
+    # The loan's region recorded through the account's owner walks (account, district) that way.
+    "refusal_and_loan_region_row": (
+        LENDER,
+        [LOAN_REGION_BY_OWNER],
+        BALANCE,
+        [OWNER],
+        [(BRANCH, [LOAN_REGION_BY_OWNER])],
+    ),
+}
+
+
+@pytest.mark.parametrize("case", SUGGESTIONS)
+def test_every_suggested_row_loads_and_answers_by_its_route(tmp_path, case):
+    """Every row the engine suggests, an own-key note's alternative or a refusal's pin, loads
+    beside the package's rows and answers with its route's gold. A route whose row would not
+    load is not offered: it stays among the routes, in ``details.conflicts_with`` with the rows
+    it disagrees with, and adding its row fails to load naming exactly those rows."""
+    relationships, rows, measure, offered, conflicts = SUGGESTIONS[case]
+    start = LOAN if measure == LOAN_AMOUNT else ACCOUNT
+    query = _query(measure, group_by=[DISTRICT_NAME])
+    pkg = _write_package(tmp_path / "package", relationships=relationships, rows=rows)
+    if start == LOAN:
+        details = _notes(Runtime.from_path(str(pkg)).query(query))[(LOAN, DISTRICT)]["details"]
+        suggested, routes = details["alternatives"], [LOAN_BRANCH, LOAN_OWNER]
+    else:
+        details = _refusal(pkg, query).details
+        suggested, routes = details["pins"], details["candidates"]
+    assert suggested == [_row(start, DISTRICT, path) for path in offered]
+    expected = [{"relationship_path": path, "rows": named} for path, named in conflicts]
+    assert details.get("conflicts_with", []) == expected
+    assert sorted(routes) == sorted([*offered, *(path for path, _ in conflicts)])
+    for index, row in enumerate(suggested):
+        added = _write_package(
+            tmp_path / f"offered{index}", relationships=relationships, rows=[*rows, row]
+        )
+        out = Runtime.from_path(str(added)).query(query)
+        route = "branch" if row["relationship_path"][-2:] == BRANCH else "owner"
+        gold = _by_account_route("loan" if start == LOAN else "account", route)
+        assert _rows(out, [DISTRICT_NAME, "v"]) == _gold(gold)
+    for index, conflict in enumerate(expected):
+        row = _row(start, DISTRICT, conflict["relationship_path"])
+        added = _write_package(
+            tmp_path / f"conflict{index}", relationships=relationships, rows=[*rows, row]
+        )
+        with pytest.raises(SemanticLayerError) as exc_info:
+            load_package_config(str(added))
+        assert exc_info.value.code == "INVALID_CONFIG"
+        assert exc_info.value.details["rows"] == [*conflict["rows"], row]
 
 
 def test_every_route_excluded_by_rows_is_refused_naming_the_rows(tmp_path):
