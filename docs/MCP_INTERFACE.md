@@ -213,7 +213,9 @@ framing words (including verbs and function words such as "dated", "placed", "on
 time phrases the planner read, and numbers the draft carries (a limit, a threshold, the
 window's year), come back as a `PLAN_UNMATCHED_TERMS` warning with up to eight of them in
 `details.terms`. The draft uses a word in the id, name, label or aliases of an object it uses (a
-measure's entity and time role included) or in a filter value; a description never uses a word.
+measure's entity and time role included) or in a filter value; descriptions and topics never use a word.
+An exact catalog-name word takes precedence over typo matching. Only the last dotted part of
+an id or name counts as an object name; a namespace in another identifier cannot hide it.
 A word that names a catalog object the draft doesn't use is not a warning: it makes the plan
 `low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`, since the draft dropped a grouping
 ("by store, customer type and product type" grouped by store; `why.details.dropped_groupings`

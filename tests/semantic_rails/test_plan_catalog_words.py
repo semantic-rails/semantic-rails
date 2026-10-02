@@ -10,6 +10,7 @@ that leaves one over dropped a grouping or answers about another subject, so pla
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -114,6 +115,35 @@ def test_a_dropped_grouping_is_not_ready(jaffle: Runtime) -> None:
     assert payload["why"]["message"].startswith(
         "The draft drops the grouping by customer type, product type"
     )
+
+
+@pytest.mark.parametrize(
+    ("name", "label", "intent", "grouping", "terms"),
+    [
+        ("states", "States", "revenue by states, status", "dimension.states", ["status"]),
+        ("sales", "", "revenue by store, sales", STORE, ["sales"]),
+    ],
+)
+def test_exact_catalog_names_survive_typos_and_other_objects_namespaces(
+    jaffle: Runtime, name: str, label: str, intent: str, grouping: str, terms: list[str]
+) -> None:
+    config = jaffle.config
+    store = next(row for row in config.dimensions if row.id == STORE)
+    dimension = replace(
+        store, id=f"dimension.{name}", name=name, label=label, aliases=[], description=""
+    )
+    runtime = Runtime.from_config(
+        replace(config, dimensions=[*config.dimensions, dimension]), source_path=jaffle.source_path
+    )
+    try:
+        payload = plan_payload(runtime, intent=intent)
+
+        _not_ready(payload, terms)
+        assert payload["best"]["query_ir"]["group_by"] == [grouping]
+        assert payload["why"]["details"]["dropped_groupings"] == terms
+        assert unconsumed_catalog_words(runtime, intent, payload["best"]["query_ir"]) == terms
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize(

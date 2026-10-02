@@ -298,7 +298,7 @@ _EXCLUDING_OPS = frozenset({"!=", "<>", "NOT IN"})
 # Everyday words that are also values in some catalogs ("new", "all", "other",
 # "us", "open"). One names its value only next to a word of the value's
 # dimension ("new customers"); otherwise the PLAN_UNMATCHED_TERMS warning,
-# which never downgrades a plan, covers it.
+# which alone never downgrades a plan, covers it; catalog-name words do downgrade it.
 _EVERYDAY_WORDS = frozenset(
     {
         "active",
@@ -2113,6 +2113,7 @@ def _unmatched_words(
     from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
 
     referenced = _used_ids(runtime._config, query)
+    names = _catalog_names(runtime._config)
     calendar_id = str(_time_block(query).get("calendar_id") or "default")
     vocabulary: set[str] = set()
     for row in _catalog_rows(runtime._config):
@@ -2166,7 +2167,13 @@ def _unmatched_words(
             or token in vocabulary
             or _singular(token) in vocabulary
             or in_time(start, end)
-            or (not numeral and _one_typo_away(token, by_initial))
+            # An exact catalog name cannot be a typo of a different object's name.
+            or (
+                not numeral
+                and token not in names
+                and _singular(token) not in names
+                and _one_typo_away(token, by_initial)
+            )
         ):
             continue
         reported.add(word)
@@ -2250,25 +2257,17 @@ def _catalog_names(config: Any) -> frozenset[str]:
     "jaffle.revenue_usd" is a part of an id or name before its last dot.
     """
 
-    rows = _catalog_rows(config)
-    keys = [
-        (str(getattr(row, "id", "") or ""), str(getattr(row, "name", "") or "")) for row in rows
-    ]
-    spaces = {
-        token
-        for object_id, name in keys
-        for part in [*object_id.split(".")[1:-1], *name.split(".")[:-1]]
-        for token in _tokens(part)
-    }
     names: set[str] = set()
-    for row, (object_id, name) in zip(rows, keys, strict=True):
+    for row in _catalog_rows(config):
+        object_id = str(getattr(row, "id", "") or "")
+        name = str(getattr(row, "name", "") or "")
         labels = [
             str(getattr(row, "label", "") or ""),
             *map(str, getattr(row, "aliases", None) or []),
         ]
         names.update(_tokens(" ".join(labels)))
         own = f"{object_id.rsplit('.', 1)[-1]} {name.rsplit('.', 1)[-1]}"
-        names.update(token for token in _tokens(own) if token not in spaces)
+        names.update(_tokens(own))
     return frozenset(names)
 
 
