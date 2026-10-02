@@ -243,11 +243,6 @@ QUERY_SCHEMA: dict[str, Any] = {
                 },
             },
         },
-        "route_decisions": {
-            "type": "array",
-            "description": "The chosen AMBIGUOUS_PATH option's decision; this query only.",
-            "items": {"type": "object"},
-        },
     },
 }
 
@@ -602,12 +597,11 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "fix of it. time.end is exclusive. Returns at most "
             "max_rows rows; a capped one reports truncated and total_row_count. "
             "mode='validate' only checks; mode='sql' adds rendered_sql; "
-            "neither runs. Gotcha: 'query' must be a JSON object, and mode 'run' costs "
+            "neither runs. 'query' is a JSON object; mode 'run' costs "
             "warehouse time. IR: select[]={expression:{...},as}, group_by[]=[<dim>,...] (not in "
             "select), where[]={field,op,value}, order_by[]={field,direction}. select.expression: "
             "{aggregation, measure} | {metric} | "
-            "{kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}. "
-            "AMBIGUOUS_PATH: ask which option is meant; resend its decision in route_decisions."
+            "{kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}."
         ),
         input_schema=_schema(
             {

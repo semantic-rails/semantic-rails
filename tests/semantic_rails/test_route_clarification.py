@@ -876,6 +876,8 @@ def test_the_query_mcp_keeps_the_clarification_and_discloses_the_query_row(tmp_p
         (error,) = refused["errors"]
         assert error["code"] == "AMBIGUOUS_PATH"
         assert error["details"]["clarification"] == expected
+        # The refusal, not the tool description, says where the chosen decision goes.
+        assert "route_decisions" in error["details"]["hint"]
         decision = expected["options"][1]["decision"]
         answered = adapter.call_tool(
             "execute", {"query": {**BALANCE_BY_DISTRICT, "route_decisions": [decision]}}

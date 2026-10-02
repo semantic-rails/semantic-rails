@@ -11,5 +11,5 @@
   query. Every refusal of an ambiguous route, a conditional aggregate's included, carries the same
   clarification. `details.start`, `details.target` and `details.hint` stay. See
   [the route rule](docs/PACKAGE_AUTHORING.md#the-route-rule).
-- The MCP `execute` tool tells agents to ask, then resend the chosen option's `decision` in
-  `route_decisions`.
+- The refusal's `details.hint` tells agents to ask, then resend the chosen option's `decision` in
+  `route_decisions`; the query MCP's tool descriptions don't grow.
