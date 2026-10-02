@@ -306,35 +306,13 @@ def test_unrelated_caller_inclusions_are_preserved_and_refused(
     assert "execute" not in payload["next"].get("ready_for", [])
 
 
-@pytest.mark.parametrize("path", ["primary", "fallback"])
-@pytest.mark.parametrize(
-    "intent",
-    [
-        "top 3 product type by item revenue for Brooklyn from Philadelphia",
-        "top 3 product types by item revenue for Brooklyn and Philadelphia",
-    ],
-)
 def test_ranked_named_values_execute_one_combined_top_three(
-    runtime_factory, monkeypatch, path, intent
+    runtime_factory,
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
-    partial = None
-    if path == "fallback":
-        # The generic fallback preserves a caller's ranked draft rather than inventing ranking.
-        partial = {
-            "select": [
-                {
-                    "as": "item_revenue_usd",
-                    "expression": {"measure": CHOICE["id"], "aggregation": "sum"},
-                }
-            ],
-            "group_by": [PRODUCT_TYPE],
-            "order_by": [{"field": "item_revenue_usd", "direction": "DESC"}],
-            "limit": 3,
-        }
-    _force_fallback(runtime, monkeypatch, intent, path)
+    intent = "top 3 product type by item revenue for Brooklyn from Philadelphia"
     try:
-        payload = plan_payload(runtime, intent=intent, partial_query=partial)
+        payload = plan_payload(runtime, intent=intent)
         assert payload["status"] == "ok", payload.get("why")
         query = payload["best"]["query_ir"]
         assert query["group_by"] == [PRODUCT_TYPE]
@@ -357,6 +335,71 @@ def test_ranked_named_values_execute_one_combined_top_three(
         assert [value for _, value in actual] == pytest.approx([value for _, value in expected])
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("path", "intent", "expected_values"),
+    [
+        pytest.param(
+            "primary",
+            "top 3 product types by item revenue for Brooklyn and Philadelphia",
+            "Brooklyn",
+            id="unresolved-plural-grouping",
+        ),
+        pytest.param(
+            "fallback",
+            "top 3 product types by item revenue for Brooklyn and Philadelphia",
+            "Brooklyn",
+            id="unresolved-compound-values",
+        ),
+        pytest.param(
+            "fallback",
+            "top 3 product type by item revenue for Brooklyn from Philadelphia",
+            ["Brooklyn", "Philadelphia"],
+            id="duplicate-ranked-grouping",
+        ),
+    ],
+)
+def test_ranked_value_lists_refuse_unresolved_intent_without_widening_filters(
+    runtime_factory, monkeypatch, path, intent, expected_values
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    partial = None
+    if path == "fallback":
+        partial = {
+            "select": [
+                {
+                    "as": "item_revenue_usd",
+                    "expression": {"measure": CHOICE["id"], "aggregation": "sum"},
+                }
+            ],
+            "group_by": [PRODUCT_TYPE],
+            "order_by": [{"field": "item_revenue_usd", "direction": "DESC"}],
+            "limit": 3,
+        }
+    _force_fallback(runtime, monkeypatch, intent, path)
+    try:
+        payload = plan_payload(runtime, intent=intent, partial_query=partial)
+    finally:
+        runtime.close()
+    query = payload["best"]["query_ir"]
+    assert query["limit"] == 3
+    assert STORE not in query["group_by"]
+    assert len(query["where"]) == 1
+    row = query["where"][0]
+    assert row["field"] == STORE
+    if isinstance(expected_values, list):
+        assert row["op"] == "in"
+        assert len(row["value"]) == len(expected_values)
+        assert set(row["value"]) == set(expected_values)
+    else:
+        assert row == {"field": STORE, "op": "=", "value": expected_values}
+    assert payload["status"] == "low_confidence", {
+        "query": query,
+        "ready_for": payload["next"].get("ready_for", []),
+        "why": payload.get("why"),
+    }
+    assert "execute" not in payload["next"].get("ready_for", [])
 
 
 @pytest.mark.parametrize("caller_has_list", [False, True])
