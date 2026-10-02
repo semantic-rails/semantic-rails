@@ -1519,6 +1519,21 @@ def connection_option_errors(warehouse: str, kind: str, options: dict[str, Any])
     return tuple(errors)
 
 
+def snowflake_adbc_connect_errors(options: dict[str, Any]) -> tuple[str, ...]:
+    """Check authored credential sources without reading environment variables or files."""
+    keys = {normalize_connection_option_name(str(key)) for key in options}
+    errors = [
+        f"snowflake_adbc requires {key}" for key in ("account_env", "user_env") if key not in keys
+    ]
+    has_password = bool(keys & {"password_env", "password_file"})
+    has_key = bool(keys & {"private_key_env", "private_key_file"})
+    if has_password == has_key:
+        errors.append("snowflake_adbc requires exactly one password or PKCS #8 key source")
+    if "private_key_passphrase_env" in keys and not has_key:
+        errors.append("snowflake_adbc private_key_passphrase_env requires a key source")
+    return tuple(errors)
+
+
 def snowflake_native_direct_connect_errors(options: dict[str, Any]) -> tuple[str, ...]:
     normalized = {
         normalize_connection_option_name(str(key)): value

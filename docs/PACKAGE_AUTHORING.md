@@ -508,6 +508,12 @@ the runtime operator's environment; package options selecting them are rejected
 with `INVALID_CONFIG`. Temporal values with nonzero sub-microsecond precision
 refuse with `RESULT_VALUE_UNSUPPORTED`; out-of-range nanosecond timestamps refuse
 with `QUERY_EXECUTION_ERROR`.
+Out-of-range timestamps such as `9999-12-31` refuse; cast those columns to
+`TIMESTAMP_*(6)` or `DATE` in the model.
+With `use_high_precision=true`, scale-0 `NUMBER` columns come back typed `decimal`.
+Package loading checks `account_env`, `user_env`, exactly one password or key
+source, and a key source when `private_key_passphrase_env` is authored, without
+reading credentials; `connection.name` is refused for this kind.
 
 ### Native adapter timeouts
 

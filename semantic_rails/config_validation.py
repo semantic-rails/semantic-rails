@@ -49,6 +49,7 @@ from .config_parts.shape_checks import (
 from .diagnostics import object_id_suggestions, recovery_hints_for_error
 from .dialects import (
     connection_option_errors,
+    snowflake_adbc_connect_errors,
     snowflake_native_direct_connect_errors,
     supported_warehouses,
     warehouse_connector,
@@ -371,11 +372,18 @@ def _validate_split_package(
                         errors,
                         f"{path / 'package.yml'}: {warehouse} package.connection has invalid options: {direct_error}",
                     )
-            elif (
-                connector.requires_connection_name
-                and connection_kind != "snowflake_adbc"
-                and not connection_name
-            ):
+            elif warehouse == "snowflake" and connection_kind == "snowflake_adbc":
+                if connection_name:
+                    add_error(
+                        errors,
+                        f"{path / 'package.yml'}: snowflake_adbc does not support package.connection.name",
+                    )
+                for adbc_error in snowflake_adbc_connect_errors(connection_options):
+                    add_error(
+                        errors,
+                        f"{path / 'package.yml'}: {warehouse} package.connection has invalid options: {adbc_error}",
+                    )
+            elif connector.requires_connection_name and not connection_name:
                 add_error(
                     errors,
                     f"{path / 'package.yml'}: {warehouse} packages must declare package.connection.name",
