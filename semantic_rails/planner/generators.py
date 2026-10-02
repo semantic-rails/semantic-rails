@@ -166,70 +166,40 @@ def _draft_for_choice(
 def _normalize_value_filters(
     query: dict[str, Any], matched_values: list[dict[str, Any]] | None = None
 ) -> dict[str, Any]:
-    """Combine repeated inclusion filters, splitting inferred values into rows.
+    """Fold only named values and caller inclusions contained in those values."""
 
-    Run again after merging caller fields: an existing equality must not narrow
-    a synthesized IN. Exclusions stay separate so faithfulness can refuse a
-    draft that excludes a requested value. Invalid literals are never repaired.
-    """
+    # faithfulness imports generators.
+    from .faithfulness import _contains_literal, _membership_literals
 
-    from ..errors import SemanticLayerError  # noqa: WPS433
+    where = list(query.get("where", []) or [])
+    named: dict[str, list[Any]] = {}
+    for row in matched_values or []:
+        where.append({"field": row["dimension_id"], "op": "=", "value": row["value"]})
+        if _membership_literals("=", row["value"]):
+            values = named.setdefault(row["dimension_id"].strip(), [])
+            if not _contains_literal(values, row["value"]):
+                values.append(row["value"])
 
-    where = [
-        *list(query.get("where", []) or []),
-        *[
-            {"field": row["dimension_id"], "op": "=", "value": row["value"]}
-            for row in matched_values or []
-        ],
-    ]
-    inclusions: dict[str, list[dict[str, Any]]] = {}
-    for row in where:
-        if isinstance(row, dict) and str(row.get("op", "=")).strip().upper() in {"=", "==", "IN"}:
-            field = row.get("field")
-            if isinstance(field, str) and field.strip():
-                inclusions.setdefault(field.strip(), []).append(row)
-
-    normalized: dict[str, dict[str, Any]] = {}
     group_by = list(query.get("group_by", []) or [])
-    for field, rows in inclusions.items():
-        if len(rows) == 1:
-            continue
-        values: list[Any] = []
-        invalid = False
-        for row in rows:
-            value = row.get("value")
-            literals = (
-                value
-                if str(row.get("op", "=")).strip().upper() == "IN" and isinstance(value, list)
-                else [value]
-            )
-            if not literals or any(
-                item is None or isinstance(item, (dict, list, tuple)) for item in literals
-            ):
-                invalid = True
-            for literal in literals:
-                if not any(type(literal) is type(kept) and literal == kept for kept in values):
-                    values.append(literal)
-        if invalid:
-            raise SemanticLayerError(
-                "INVALID_QUERY",
-                "Cannot combine inclusion filters with non-scalar or missing values.",
-                details={"path": "where", "field": field},
-            )
-        normalized[field] = rows[0]
-        if len(values) > 1:
-            normalized[field] = {**rows[0], "field": field, "op": "in", "value": values}
-            if field not in group_by:
-                group_by.append(field)
-
     out: list[Any] = []
     for row in where:
         field = row.get("field") if isinstance(row, dict) else None
         if isinstance(field, str):
             field = field.strip()
-        if isinstance(field, str) and field in normalized and row in inclusions[field]:
-            if normalized[field] not in out:
-                out.append(normalized[field])
+            row = {**row, "field": field}
+        op = str(row.get("op", "=")).strip().upper() if isinstance(row, dict) else ""
+        literals = _membership_literals(op, row.get("value")) if op in {"=", "==", "IN"} else None
+        values = named.get(field, []) if isinstance(field, str) else []
+        if literals and values and all(_contains_literal(values, value) for value in literals):
+            normalized = {
+                "field": field,
+                "op": "in" if len(values) > 1 else "=",
+                "value": values if len(values) > 1 else values[0],
+            }
+            if normalized not in out:
+                out.append(normalized)
+            if len(values) > 1 and "limit" not in query and field not in group_by:
+                group_by.append(field)
         else:
             out.append(row)
     result = dict(query)

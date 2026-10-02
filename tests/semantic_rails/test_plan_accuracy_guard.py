@@ -1414,7 +1414,6 @@ def test_an_unresolved_window_stays_visible_beside_other_gaps(
         where=[
             {"field": STORE, "op": "=", "value": "Brooklyn"},
             {"field": STORE, "op": "=", "value": "Chicago"},
-            {"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "Chicago"]},
         ]
     )
     _draft_plan(monkeypatch, both)

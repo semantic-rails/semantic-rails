@@ -191,13 +191,13 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
 
     if group_by:
         query["group_by"] = group_by
-    query = _normalize_value_filters(query, _matched_value_rows(runtime, query, text))
-    group_by = list(query.get("group_by", []) or [])
-
     if is_top:
         query["order_by"] = [{"field": select_alias, "direction": "DESC"}]
         query["limit"] = top_n
-    else:
+
+    query = _normalize_value_filters(query, _matched_value_rows(runtime, query, text))
+    group_by = list(query.get("group_by", []) or [])
+    if not is_top:
         _add_order(query)
 
     resolved: list[dict[str, Any]] = [_resolved(target)]
