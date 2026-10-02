@@ -528,18 +528,31 @@ def test_replaced_names_how_the_package_resolves_the_pair(tmp_path, basis):
         # account -> branch -> account -> owner -> district: every hop connects, but a route
         # never visits an entity twice.
         pytest.param(
-            [{**DIAMOND_ROW, "relationship_path": [
-                "relationship.accounts_branch", "relationship.accounts_branch", *OWNER_ROUTE
-            ]}],
+            [
+                {
+                    **DIAMOND_ROW,
+                    "relationship_path": [
+                        "relationship.accounts_branch",
+                        "relationship.accounts_branch",
+                        *OWNER_ROUTE,
+                    ],
+                }
+            ],
             "route_not_offered",
             id="cycle",
         ),
         # account <- membership <- owner -> district: a route, but three hops past max_hops: 2.
         pytest.param(
-            [{**DIAMOND_ROW, "relationship_path": [
-                "relationship.memberships_account", "relationship.owners_primary_membership",
-                "relationship.owners_home_district",
-            ]}],
+            [
+                {
+                    **DIAMOND_ROW,
+                    "relationship_path": [
+                        "relationship.memberships_account",
+                        "relationship.owners_primary_membership",
+                        "relationship.owners_home_district",
+                    ],
+                }
+            ],
             "route_not_offered",
             id="over-the-hop-limit",
         ),
