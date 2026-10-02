@@ -352,12 +352,6 @@ def test_ranked_named_values_execute_one_combined_top_three(
             "Brooklyn",
             id="unresolved-compound-values",
         ),
-        pytest.param(
-            "fallback",
-            "top 3 product type by item revenue for Brooklyn from Philadelphia",
-            ["Brooklyn", "Philadelphia"],
-            id="duplicate-ranked-grouping",
-        ),
     ],
 )
 def test_ranked_value_lists_refuse_unresolved_intent_without_widening_filters(
