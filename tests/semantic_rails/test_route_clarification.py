@@ -38,6 +38,7 @@ from semantic_rails.compiler_parts.indexes import RouteRefusal, get_package_anal
 from semantic_rails.config import load_package_config
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.expressions import MeasureRefExpr
 from semantic_rails.fanout import query_route_decisions
 from semantic_rails.interop.package_writer import package_documents, write_package
 from semantic_rails.mcp import SemanticLayerMCPAdapter
@@ -46,7 +47,7 @@ from semantic_rails.metadata_parts.path_coverage import _path_availability
 from semantic_rails.policies import row_filters_for_context
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
-from semantic_rails.schema import SemanticPolicyConfig
+from semantic_rails.schema import MetricConfig, SemanticPolicyConfig
 from tests.semantic_rails import test_route_resolution as resolution
 
 SEED_SQL = """
@@ -511,84 +512,39 @@ def test_replaced_names_how_the_package_resolves_the_pair(tmp_path, basis):
     ("rows", "reason"),
     [
         pytest.param({"source_entity": ACCOUNT}, None, id="not-a-list"),
-        pytest.param(
-            [{**DIAMOND_ROW, "relationship_path": []}], "malformed_route_decision", id="empty-path"
-        ),
+        pytest.param({}, None, id="empty-object"),
+        pytest.param(False, None, id="boolean"),
+        pytest.param("", None, id="empty-string"),
+        pytest.param([{**DIAMOND_ROW, "relationship_path": []}], "malformed_route_decision", id="empty-path"),
         pytest.param([{**DIAMOND_ROW, "weight": 1}], "malformed_route_decision", id="unknown-key"),
-        pytest.param(
-            [{**DIAMOND_ROW, "relationship_path": ["relationship.accounts_branch"]}],
-            "invalid_route_decision",
-            id="off-route",
-        ),
-        pytest.param(
-            [{**DIAMOND_ROW, "relationship_path": ["relationship.nope"]}],
-            "invalid_route_decision",
-            id="unknown-relationship",
-        ),
-        # account -> branch -> account -> owner -> district: every hop connects, but a route
-        # never visits an entity twice.
-        pytest.param(
-            [
-                {
-                    **DIAMOND_ROW,
-                    "relationship_path": [
-                        "relationship.accounts_branch",
-                        "relationship.accounts_branch",
-                        *OWNER_ROUTE,
-                    ],
-                }
-            ],
-            "route_not_offered",
-            id="cycle",
-        ),
-        # account <- membership <- owner -> district: a route, but three hops past max_hops: 2.
-        pytest.param(
-            [
-                {
-                    **DIAMOND_ROW,
-                    "relationship_path": [
-                        "relationship.memberships_account",
-                        "relationship.owners_primary_membership",
-                        "relationship.owners_home_district",
-                    ],
-                }
-            ],
-            "route_not_offered",
-            id="over-the-hop-limit",
-        ),
-        pytest.param(
-            [{**DIAMOND_ROW, "source_entity": "entity.bank_nope"}],
-            "invalid_route_decision",
-            id="unknown-entity",
-        ),
-        pytest.param(
-            [DIAMOND_ROW, {**DIAMOND_ROW, "relationship_path": BRANCH_ROUTE}],
-            "duplicate_route_decision",
-            id="two-rows-one-pair",
-        ),
-        pytest.param(
-            [
-                DIAMOND_ROW,
-                {
-                    "source_entity": FLIGHT,
-                    "target_entity": AIRPORT,
-                    "relationship_path": ["relationship.flights_origin"],
-                },
-            ],
-            "route_decision_unused",
-            id="pair-never-walked",
-        ),  # fmt: skip
+        pytest.param([{**DIAMOND_ROW, "relationship_path": ["relationship.accounts_branch"]}], "invalid_route_decision", id="off-route"),
+        pytest.param([{**DIAMOND_ROW, "relationship_path": ["relationship.nope"]}], "invalid_route_decision", id="unknown-relationship"),
+        # Continuous four-hop cycle, and a three-hop route past max_hops: 2.
+        pytest.param([{**DIAMOND_ROW, "relationship_path": ["relationship.accounts_branch", "relationship.accounts_branch", *OWNER_ROUTE]}], "route_not_offered", id="cycle"),
+        pytest.param([{**DIAMOND_ROW, "relationship_path": ["relationship.memberships_account", "relationship.owners_primary_membership", "relationship.owners_home_district"]}], "route_not_offered", id="over-the-hop-limit"),
+        pytest.param([{**DIAMOND_ROW, "source_entity": "entity.bank_nope"}], "invalid_route_decision", id="unknown-entity"),
+        pytest.param([DIAMOND_ROW, {**DIAMOND_ROW, "relationship_path": BRANCH_ROUTE}], "duplicate_route_decision", id="two-rows-one-pair"),
+        pytest.param([DIAMOND_ROW, {"source_entity": FLIGHT, "target_entity": AIRPORT, "relationship_path": ["relationship.flights_origin"]}], "route_decision_unused", id="pair-never-walked"),
     ],
-)
-def test_a_bad_route_decision_is_invalid_query(tmp_path, rows, reason):
-    with pytest.raises(SemanticLayerError) as exc_info:
-        Runtime.from_path(str(_write_package(tmp_path))).query(
-            {**BALANCE_BY_DISTRICT, "route_decisions": rows}
-        )
-    assert exc_info.value.code == "INVALID_QUERY", exc_info.value
+)  # fmt: skip
+def test_a_bad_route_decision_is_invalid_query(tmp_path, monkeypatch, rows, reason):
+    runtime = Runtime.from_path(str(_write_package(tmp_path)))
+    sql = []
+    monkeypatch.setattr(runtime, "_get_adapter", lambda: sql.append("ran") or None)
+    query = {**BALANCE_BY_DISTRICT, "route_decisions": rows}
+    (expected,) = runtime.validate(query)["errors"]
+    assert expected["code"] == "INVALID_QUERY"
     if reason is not None:
-        assert exc_info.value.details["reason"] == reason
-        assert exc_info.value.details["path"].startswith("route_decisions[")
+        assert expected["details"]["reason"] == reason
+        assert expected["details"]["path"].startswith("route_decisions[")
+    entries = ["query"] if reason == "route_decision_unused" else ["query", "live_valid_values"]
+    for entry in entries:
+        code, details, _ = _refused_at(entry, runtime, query)
+        assert code == expected["code"]
+        assert {key: details.get(key) for key in ("reason", "path", "hint")} == {
+            key: expected["details"].get(key) for key in ("reason", "path", "hint")
+        }
+    assert sql == []
 
 
 @pytest.mark.parametrize("decided", [BRANCH_ROUTE, OWNER_ROUTE])
@@ -974,7 +930,7 @@ def test_every_entry_point_asks_and_every_option_answers_both_ways(tmp_path, ent
         assert resolution._rows(recorded.query(query), columns) == gold
 
 
-def test_discovery_follows_a_query_row(tmp_path):
+def test_build_options_follows_a_query_row(tmp_path):
     config = load_package_config(str(_write_package(tmp_path)))
     availability = _path_availability(config, ACCOUNT, DISTRICT)
     assert (availability["available"], availability["error_code"]) == (False, "AMBIGUOUS_PATH")
@@ -1034,37 +990,73 @@ def test_every_available_build_options_patch_validates(tmp_path):
 
 # --- Live valid values read through the query's own route ---------------------------------
 
-DISTRICTS_BY_OWNER = (
-    "SELECT DISTINCT d.district_name FROM accounts a JOIN owners o USING (owner_id) "
-    "JOIN districts d ON d.district_id = o.home_district_id"
-)
-DISTRICTS_BY_BRANCH = (
-    "SELECT DISTINCT d.district_name FROM accounts a JOIN branches b USING (branch_id) "
-    "JOIN districts d USING (district_id)"
-)
-
 
 @pytest.mark.parametrize("package_rows", [[], [BRANCH_BY_KEY]], ids=["undecided", "decided"])
-def test_live_valid_values_read_through_the_query_rows_route(tmp_path, package_rows):
-    """The anchor probes and the values query carry the query's route_decisions, so the
-    districts are the owners' home districts, whatever the package records."""
-    runtime = Runtime.from_path(str(_write_package(tmp_path, decisions=package_rows or None)))
-    out = valid_values_payload(
-        runtime,
-        dimension_id="dimension.bank_district_name",
-        query={**BALANCE_BY_DISTRICT, "route_decisions": [DIAMOND_ROW]},
-        allow_live_query=True,
-    )
-    assert sorted((row["value"],) for row in out["values"]) == _gold(DISTRICTS_BY_OWNER)
-    assert _gold(DISTRICTS_BY_OWNER) != _gold(DISTRICTS_BY_BRANCH)
-    assert out["anchor_measure"] == "measure.bank.balance"
-    assert out["query_state"]["route_decisions"] == [DIAMOND_ROW]
-    # Account kinds never walk (account, district): the row can't change them and is dropped.
+@pytest.mark.parametrize("reference", ["measure", "metric"])
+def test_live_valid_values_read_through_the_query_rows_route(
+    tmp_path, monkeypatch, package_rows, reference
+):
+    rows = [*package_rows, {"source_entity": FLIGHT, "target_entity": AIRPORT,
+                           "relationship_path": ["relationship.flights_origin"]}]  # fmt: skip
+    pkg = _write_package(tmp_path, decisions=rows)
+    config = load_package_config(str(pkg))
+    config = replace(
+        config, measures=sorted(config.measures, key=lambda m: m.id != "measure.bank.budget"),
+        metric_recipes=[MetricConfig("metric.bank.balance", "aggregate", MeasureRefExpr("measure.bank.balance"))],
+    )  # fmt: skip
+    assert config.measures[0].id == "measure.bank.budget"
+    runtime = Runtime.from_config(config, source_path=str(pkg))
+    query = {
+        **BALANCE_BY_DISTRICT,
+        "select": [{"expression": {reference: f"{reference}.bank.balance"}, "as": "v"}],
+    }
+    for route, gold in ((BRANCH_ROUTE, BY_BRANCH), (OWNER_ROUTE, BY_OWNER)):
+        row = {**DIAMOND_ROW, "relationship_path": route}
+        decided = {**query, "route_decisions": [row]}
+        assert _rows(runtime.query(decided), ["dimension.bank_district_name", "v"]) == _gold(gold)
+        out = valid_values_payload(
+            runtime,
+            dimension_id="dimension.bank_district_name",
+            query=decided,
+            allow_live_query=True,
+            include_counts=True,
+        )
+        assert sorted((v["value"], v["count"]) for v in out["values"]) == _gold(gold)
+        assert out["anchor_measure"] == "measure.bank.balance"
+        assert out["query_state"]["route_decisions"] == [row]
+    # An unused pair is dropped, while a disconnected dimension never borrows another measure.
     kinds = valid_values_payload(
         runtime,
         dimension_id="dimension.bank_account_kind",
-        query={**BALANCE_BY_DISTRICT, "route_decisions": [DIAMOND_ROW]},
+        query=decided,
         allow_live_query=True,
     )
-    assert [row["value"] for row in kinds["values"]] == ["checking", "savings"]
+    assert [v["value"] for v in kinds["values"]] == ["checking", "savings"]
     assert "route_decisions" not in kinds["query_state"]
+    dimension = "dimension.bank_airport_city"
+    with pytest.raises(SemanticLayerError) as expected:
+        compile_query(config, runtime.registry, {**decided, "group_by": [dimension]})
+    sql = []
+    with monkeypatch.context() as guard:
+        guard.setattr(runtime, "_get_adapter", lambda: sql.append("ran") or None)
+        with pytest.raises(SemanticLayerError) as actual:
+            valid_values_payload(
+                runtime, dimension_id=dimension, query=decided, allow_live_query=True
+            )
+        invalid = {**decided, "select": [{"expression": {"kind": "column", "column": "balance"}}]}
+        (error,) = runtime.validate(invalid)["errors"]
+        code, details, _ = _refused_at("live_valid_values", runtime, invalid)
+        assert (code, details) == (error["code"], error["details"])
+    assert sql == []
+    assert (actual.value.code, actual.value.details, str(actual.value)) == (
+        expected.value.code,
+        expected.value.details,
+        str(expected.value),
+    )
+    fallback = valid_values_payload(
+        runtime, dimension_id=dimension, query=query, allow_live_query=True
+    )
+    assert fallback["anchor_measure"] == "measure.bank.seats"
+    assert sorted((v["value"],) for v in fallback["values"]) == _gold(
+        "SELECT DISTINCT a.city FROM flights f JOIN airports a ON a.airport_id = f.origin_airport_id"
+    )

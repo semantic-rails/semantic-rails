@@ -111,7 +111,9 @@ ignored).
 - `build-options` with a partial query that carries rows shows the dimensions
   they make reachable, and its query patches keep the rows; a patch that would
   leave a row unused is unavailable with that refusal. Live `valid-values`
-  reads values through the routes the rows choose.
+  checks rows before probing and reads through their routes using only the query's
+  measures, including those read by metrics. If none anchors the dimension, the
+  first anchor's refusal is returned unchanged; unrelated measures never supply values.
 
 ## Common gotchas
 

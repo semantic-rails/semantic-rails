@@ -105,29 +105,6 @@ def route_pin(start: str, target: str, path: list[str]) -> dict[str, Any]:
     return {"source_entity": start, "target_entity": target, "relationship_path": list(path)}
 
 
-def route_meaning(config: PackageConfig, start: str, path: list[str]) -> str:
-    """``path`` as a readable chain of labels, e.g. "Account → Owner → Home region": the start
-    entity, then per hop the relationship's own label when the author gave one and the hop
-    looks it up (walked forward), else the label of the entity it reaches."""
-    analysis = get_package_analysis(config)
-    chain = [_entity_label(config, start)]
-    current = start
-    for rel_id in path:
-        rel = analysis.relationships[rel_id]
-        forward = current == rel.source_entity
-        current = rel.target_entity if forward else rel.source_entity
-        default = (
-            f"{_entity_label(config, rel.source_entity)} to "
-            f"{_entity_label(config, rel.target_entity)}"
-        )
-        chain.append(
-            rel.label
-            if forward and rel.label not in ("", default)
-            else _entity_label(config, current)
-        )
-    return " → ".join(chain)
-
-
 def _plural(noun: str) -> str:
     head, space, last = noun.rpartition(" ")
     if last[-1:] == "y" and last[-2:-1].lower() not in set("aeiou"):
@@ -139,7 +116,7 @@ def _plural(noun: str) -> str:
     return f"{head}{space}{last}"
 
 
-def _entity_label(config: PackageConfig, entity_id: str) -> str:
+def entity_label(config: PackageConfig, entity_id: str) -> str:
     entity = get_package_analysis(config).entities.get(entity_id)
     return (entity.label or entity.name) if entity is not None else entity_id
 
@@ -168,11 +145,11 @@ def route_reading(config: PackageConfig, start: str, path: Sequence[str]) -> str
         rel = analysis.relationships[rel_id]
         forward = current == rel.source_entity
         reached = rel.target_entity if forward else rel.source_entity
-        noun, qualifier = _entity_label(config, reached), ""
+        noun, qualifier = entity_label(config, reached), ""
         if pairs[frozenset((rel.source_entity, rel.target_entity))] > 1:
             default = (
-                f"{_entity_label(config, rel.source_entity)} to "
-                f"{_entity_label(config, rel.target_entity)}"
+                f"{entity_label(config, rel.source_entity)} to "
+                f"{entity_label(config, rel.target_entity)}"
             )
             if rel.label in ("", default):
                 qualifier = ", ".join(rel.source_columns or [rel.source_column])
@@ -183,7 +160,7 @@ def route_reading(config: PackageConfig, start: str, path: Sequence[str]) -> str
         many = not hop_is_functional(rel, current)
         word = (_plural(noun) if many else noun) + (f" ({qualifier})" if qualifier else "")
         phrase = (
-            f"the {word} of {phrase}" if phrase else f"the {_entity_label(config, start)}'s {word}"
+            f"the {word} of {phrase}" if phrase else f"the {entity_label(config, start)}'s {word}"
         )
         if many:
             phrase = f"any of {phrase}"
@@ -241,7 +218,7 @@ def route_clarification(
         meanings = [
             f"{meaning} ({', '.join(path)})" for meaning, path in zip(meanings, paths, strict=True)
         ]
-    target_label, start_label = _entity_label(config, target), _entity_label(config, start)
+    target_label, start_label = entity_label(config, target), entity_label(config, start)
     article = "an" if start_label[:1].lower() in set("aeiou") else "a"
     options: list[dict[str, Any]] = []
     for option_id, meaning, path in zip(

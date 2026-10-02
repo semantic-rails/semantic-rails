@@ -363,7 +363,7 @@ def test_the_direct_key_and_a_recorded_route_each_answer_with_a_short_note(tmp_p
     assert _rows(out, [REGION_NAME, "v"]) == _gold(BY_BRANCH)
     assert _route_notes(out) == {(ACCOUNT, REGION): ("ROUTE_COLOCATED_KEY", BRANCH)}
     (note,) = [w for w in out["warnings"] if w["code"] == "ROUTE_COLOCATED_KEY"]
-    assert (note["severity"], note["message"]) == ("info", "Account → Region (own key)")
+    assert (note["severity"], note["message"]) == ("info", "the Account's Region (own key)")
     # Each other route comes with the row that would make it the default.
     _, routes = resolve_path(load_package_config(str(direct)), start=ACCOUNT, target=REGION)
     assert note["details"] == {
@@ -376,6 +376,8 @@ def test_the_direct_key_and_a_recorded_route_each_answer_with_a_short_note(tmp_p
     out = Runtime.from_path(str(pinned)).query(query)
     assert _rows(out, [REGION_NAME, "v"]) == _gold(BY_HOME)
     assert _route_notes(out) == {(ACCOUNT, REGION): ("ROUTE_RECORDED", HOME)}
+    (note,) = [w for w in out["warnings"] if w["code"] == "ROUTE_RECORDED"]
+    assert note["message"] == "the Region of the Account's Owner (recorded route)"
     assert _gold(BY_BRANCH) != _gold(BY_HOME)
 
 

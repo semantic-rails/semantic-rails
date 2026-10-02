@@ -7,9 +7,10 @@ import os
 from typing import Any
 
 from ..ast import normalize_query
-from ..compiler import compile_query, read_routes
+from ..compiler import compile_query, query_route_rows, read_routes
+from ..compiler_parts.grain_recovery import _query_measure_ids
 from ..errors import SemanticLayerError
-from ..policies import hidden_object_ids
+from ..policies import hidden_object_ids, row_filters_for_context
 from ..request_context import context_from_policy_context
 from ..runtime import Runtime, runtime_request_scope
 from ..temporal_support import validate_temporal_support
@@ -74,24 +75,28 @@ def _query_state(query: dict[str, Any]) -> dict[str, Any]:
 def _anchor_measure_id(
     runtime: Runtime, dimension: str, query: dict[str, Any] | None
 ) -> tuple[str, list[dict[str, Any]]]:
-    """The measure whose rows the values are read from, the query's own measures first, and
-    the query's ``route_decisions`` that anchor reads with. A decision is dropped only when
-    the anchor never walks its pair, so it cannot change the values; an anchor that would
-    then read a dropped pair by another route is not used."""
+    """Use the query's measures under decisions; drop only pairs the anchor never reads."""
     probe = dict(query or {})
-    probe_where = list(probe.get("where", []) or [])
     probe_time = dict(probe.get("time", {}) or {}) or None
-    own = [
-        item["expression"]["measure"]
-        for item in list(probe.get("select", []) or [])
-        if isinstance(item, dict)
-        and isinstance(item.get("expression"), dict)
-        and "measure" in item["expression"]
-    ]
+    if "route_decisions" in probe:
+        query_route_rows(
+            runtime._config,
+            probe,
+            row_filters=row_filters_for_context(runtime._config, _policy_context(probe)),
+        )
+    try:
+        own = _query_measure_ids(runtime._config, normalize_query(probe))
+    except SemanticLayerError:
+        if probe.get("route_decisions"):
+            raise
+        own = []
     measures = sorted(
         runtime._config.measures, key=lambda row: own.index(row.id) if row.id in own else len(own)
     )
+    if probe.get("route_decisions"):
+        measures = [row for row in measures if row.id in own]
     reasons: list[dict[str, Any]] = []
+    first_refusal: SemanticLayerError | None = None
     for measure in measures:
         decisions = list(probe.get("route_decisions", []) or [])
         dropped: set[tuple[str, str]] = set()
@@ -106,7 +111,7 @@ def _anchor_measure_id(
                 }
             ],
             "group_by": [dimension],
-            "where": probe_where,
+            "where": list(probe.get("where", []) or []),
         }
         if probe_time is not None:
             candidate["time"] = probe_time
@@ -124,6 +129,7 @@ def _anchor_measure_id(
                     del decisions[int(index)]
                     continue
                 reasons.append({"measure": measure.id, "code": exc.code, "message": str(exc)})
+                first_refusal = first_refusal or exc
                 break
             read = read_routes(compiled["logical_plan"], compiled["route_choices"])
             if dropped.isdisjoint((start, target) for start, target, _ in read):
@@ -136,6 +142,8 @@ def _anchor_measure_id(
                 }
             )
             break
+    if probe.get("route_decisions") and first_refusal is not None:
+        raise first_refusal
     raise SemanticLayerError(
         "NO_VALID_VALUES_SOURCE",
         f"No valid values source for '{dimension}'",

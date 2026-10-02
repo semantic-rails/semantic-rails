@@ -83,9 +83,9 @@ from .errors import SemanticLayerError, query_execution_error
 from .expressions import collect_object_references, expr_to_dict
 from .fanout import (
     build_hop_profile,
+    entity_label,
     offered_rows,
     query_route_decisions,
-    route_meaning,
     route_note,
     route_reading,
 )
@@ -398,7 +398,7 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
         elif resolution.basis == "inherited":
             code = "ROUTE_RECORDED"
             how = "recorded for " + ", ".join(
-                f"{route_meaning(config, source, [])} → {route_meaning(config, end, [])}"
+                f"{entity_label(config, source)} → {entity_label(config, end)}"
                 for source, end in resolution.rows
             )
             details["rows"] = [
@@ -409,7 +409,7 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
         notes.append(
             semantic_issue(
                 code=code,
-                message=f"{route_meaning(config, start, route)} ({how})",
+                message=f"{route_reading(config, start, route)} ({how})",
                 severity="info",
                 stage="planning",
                 details=details,

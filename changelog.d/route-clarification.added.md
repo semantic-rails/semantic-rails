@@ -10,7 +10,8 @@
   pair without it (`decided`, `colocated_key`, `inherited`, `only_route` or `undecided`), and
   `hop_profile` reports `route_basis: query`. `build-options` follows the rows (a patch that would
   leave a row unused is offered blocked with that refusal), and live `valid-values` reads values
-  through them. See [`route_decisions`](docs/QUERY_IR_SCHEMA.md#route_decisions).
+  through them using only the query's measures, metrics included. Invalid rows and
+  anchor refusals propagate unchanged before SQL; unrelated measures never supply values. See [`route_decisions`](docs/QUERY_IR_SCHEMA.md#route_decisions).
 - A `graph.path_preferences` row takes an optional `label`, the route's meaning in business words.
   The loader and the package writer keep it, and a compile's `hop_profile` and discovery's path
   availability show it as `route_label` for the recorded route.
