@@ -43,6 +43,7 @@ from .architect_transactions import (
     ProjectTransaction,
     project_revision,
 )
+from .config_parts.package_loader import normalize_package
 from .config_validation import PackageReference, parse_config_report
 from .dialects import connection_option_errors, warehouse_connector
 from .errors import SemanticLayerError
@@ -2419,18 +2420,13 @@ class ArchitectProject:
 
     @staticmethod
     def _primary_entity_for_model(model: _RawObject, entities: list[_RawObject]) -> str:
-        for entity in entities:
-            if str(entity.spec.get("model", "") or "") == model.key:
-                return entity.key
-        explicit = str(model.spec.get("entity", "") or "").strip()
-        if explicit:
-            return explicit
-        exposed = model.spec.get("entities", {}) or {}
-        if isinstance(exposed, dict):
-            keys = [str(key) for key in exposed if str(key) != "bridge"]
-            if keys:
-                return keys[0]
-        return model.key
+        normalized = normalize_package(
+            {
+                "graph": {"entities": {entity.key: entity.spec for entity in entities}},
+                "models": {model.key: deepcopy(model.spec)},
+            }
+        )
+        return str(normalized["models"][model.key].get("entity") or model.key)
 
     @staticmethod
     def _find_raw(rows: list[_RawObject], key: str) -> _RawObject | None:
