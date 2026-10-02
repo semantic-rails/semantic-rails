@@ -1,6 +1,8 @@
 """Driver-free Snowflake profile checks; no warehouse credentials required."""
 
+import builtins
 import json
+import subprocess
 import sys
 from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
@@ -446,7 +448,16 @@ def test_nanosecond_temporals_require_exact_microseconds_without_pandas(
     monkeypatch, kind, value, prepared
 ):
     pa = pytest.importorskip("pyarrow")
-    monkeypatch.setitem(sys.modules, "pandas", None)
+    original_import = builtins.__import__
+
+    def without_pandas(name, *args, **kwargs):
+        if name == "pandas" or name.startswith("pandas."):
+            raise ModuleNotFoundError("No module named 'pandas'", name="pandas")
+        return original_import(name, *args, **kwargs)
+
+    # A None entry in sys.modules returns None to PyArrow's pandas shim;
+    # an absent installation raises ModuleNotFoundError instead.
+    monkeypatch.setattr(builtins, "__import__", without_pandas)
     arrow_type = {
         "timestamp": pa.timestamp("ns"),
         "timestamp_utc": pa.timestamp("ns", tz="UTC"),
@@ -487,6 +498,26 @@ def test_nanosecond_temporals_require_exact_microseconds_without_pandas(
             assert query() == [{"instant": expected}]
     finally:
         adapter.close()
+
+
+def test_without_pandas_utc_conversion_in_fresh_process():
+    pytest.importorskip("pyarrow")
+    # PyArrow caches pandas availability. Start fresh so earlier Arrow tests
+    # cannot hide a broken simulation of an absent pandas installation.
+    script = """
+from pytest import MonkeyPatch
+from tests.semantic_rails.test_adbc_snowflake import (
+    test_nanosecond_temporals_require_exact_microseconds_without_pandas as check,
+)
+for prepared in (False, True):
+    for value in (123456000, None):
+        with MonkeyPatch.context() as patch:
+            check(patch, "timestamp_utc", value, prepared)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_no_overrides_preserve_inherited_timeout_and_zone(monkeypatch):

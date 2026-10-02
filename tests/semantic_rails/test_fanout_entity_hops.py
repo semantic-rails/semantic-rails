@@ -1263,7 +1263,6 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
         (_where("NOT IN", ["beverage"]), NEGATED),
         (_where("NOT LIKE", "bev%"), NEGATED),
         (_where("IS DISTINCT FROM", "beverage"), NEGATED),
-        (_where("IS NOT", "beverage"), NEGATED),
         (_where("IS NULL", None), NEGATED),
         (_where("=", None), NEGATED),
         (_where("=", False, HOT), NEGATED),
@@ -1355,7 +1354,6 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
         "not_in",
         "not_like",
         "is_distinct_from",
-        "is_not_value",
         "is_null",
         "equals_null",
         "boolean_false",
@@ -1392,6 +1390,13 @@ def test_ambiguous_shapes_stay_refused(package: Path, query: dict[str, Any], rea
     assert error["code"] == "MIXED_GRAIN_INVALID"
     assert reason in error["why_invalid"]
     assert error["recovery_hints"]
+
+
+@pytest.mark.parametrize("op", ["IS", "IS NOT"])
+def test_invalid_is_operand_is_refused_before_hop_analysis(package: Path, op: str) -> None:
+    error = _refusal(package, _where(op, "beverage"))
+    assert error["code"] == "INVALID_QUERY"
+    assert error["recovery_hints"][0]["code"] == "USE_EQUALITY_FOR_SCALAR"
 
 
 def test_positive_null_and_boolean_tests_mean_exists(package: Path) -> None:

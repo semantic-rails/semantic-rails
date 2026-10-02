@@ -1424,7 +1424,7 @@ class ArchitectProject:
                     details={"model": model_row.key},
                 )
             entities = dict(model.get("entities", {}) or {})
-            # The loader reads the block's first entity as the model's own.
+            # Keep the source first for readability; the loader resolves its primary identity.
             model["entities"] = {
                 source: entities.get(source) or {},
                 **{name: spec for name, spec in entities.items() if name not in {source, target}},
