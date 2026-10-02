@@ -48,7 +48,7 @@ def _path_availability(
         return {"available": True, "reason": "", "path": [], "candidates": []}
     try:
         path, candidates = resolve_path(config, start=root_entity, target=target_entity)
-        analysis = analyze_fanout(config, root_entity, path)
+        analysis = analyze_fanout(config, root_entity, path, validity_windows=False)
         status = analysis["status"]
         if status == "ok":
             return {

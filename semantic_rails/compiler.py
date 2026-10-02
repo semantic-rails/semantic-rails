@@ -2326,6 +2326,9 @@ def _leaf_path_selections(
                 purpose="aggregate_if" if conditional else "measure_expr",
             )
         except SemanticLayerError as exc:
+            if conditional and exc.details.get("reason") == UNANCHORED_TIME_VALID_HOP:
+                # The aggregate_if's own rule refuses a hop valid over time, with or without one.
+                check_conditional_aggregate_path(measure, entity_id, exc.details["path"], config)
             if not conditional or exc.code not in {"AMBIGUOUS_PATH", "PATH_NOT_FOUND"}:
                 raise
             raise conditional_aggregate_route_refusal(measure, entity_id, exc) from exc

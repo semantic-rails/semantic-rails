@@ -532,7 +532,10 @@ def analyze_fanout(
     path: list[str],
     *,
     time_bound_relationships: set[str] | None = None,
+    validity_windows: bool = True,
 ) -> dict[str, Any]:
+    """``validity_windows=False`` rates a hop into a validity window by its cardinality alone,
+    for reachability metadata that has no query; compiling a query without a time refuses it."""
     analysis = get_package_analysis(config)
     rel_index = analysis.relationships
     temporal_overrides = time_bound_relationships or set()
@@ -546,11 +549,13 @@ def analyze_fanout(
         traversal = "forward" if current_entity == rel.source_entity else "reverse"
         next_entity = rel.target_entity if traversal == "forward" else rel.source_entity
         near_table = getattr(analysis.entities.get(current_entity), "table", "")
-        status = _directional_status(
-            rel,
-            current_entity=current_entity,
-            time_bound=rel_id in temporal_overrides,
-            near_table=near_table,
+        time_bound = rel_id in temporal_overrides
+        status = (
+            _directional_status(
+                rel, current_entity=current_entity, time_bound=time_bound, near_table=near_table
+            )
+            if validity_windows
+            else _cardinality_status(rel, current_entity=current_entity, time_bound=time_bound)
         )
         row = asdict(rel)
         row["traversal"] = traversal

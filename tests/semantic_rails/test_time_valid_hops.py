@@ -18,7 +18,7 @@ joins), run on the same database, and are also spelled out by hand.
 from __future__ import annotations
 
 import textwrap
-from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -32,15 +32,8 @@ from semantic_rails.compiler_parts.grain_recovery import mixed_grain_pairing_enr
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.fanout import analyze_fanout
-from semantic_rails.metadata import (
-    build_options_payload,
-    catalog_payload,
-    discover_payload,
-    inspect_payload,
-)
-from semantic_rails.metadata_parts.path_coverage import _path_availability
+from semantic_rails.metadata import discover_payload, inspect_payload
 from semantic_rails.metadata_parts.valid_values import valid_values_payload
-from semantic_rails.planner._base import _dimension, _score
 from semantic_rails.planner.plan import plan_payload
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
@@ -152,44 +145,21 @@ FILES = {
             amount: {label: Amount, kind: aggregate, expr: amount, default_agg: sum,
               accumulation: {kind: flow}}
         """,
-}
-
-# The bidirectional pair of the authoring guide: from an account, the reverse hop into the segment
-# table joins every version of the account, unless a time picks one.
-BIDIRECTIONAL = {
+    # Two named metrics adding the same two measures, in either order.
     **{
-        name: body
-        for name, body in FILES.items()
-        if name not in {"models/usage.yml", "models/tiers.yml"}
+        f"metrics/{left}_plus_{right}.yml": f"""
+        metric:
+          id: metric.hist.{left}_plus_{right}
+          label: {left.title()} plus {right}
+          kind: arithmetic
+          expression:
+            kind: arithmetic
+            op: add
+            left: {{measure: measure.hist.{left}}}
+            right: {{measure: measure.hist.{right}}}
+        """
+        for left, right in (("amount", "seats"), ("seats", "amount"))
     },
-    "graph.yml": """
-        graph:
-          entities:
-            account: {label: Account, key: [account_id], model: accounts}
-            account_segment: {label: Account segment, key: [account_id, valid_from],
-              model: account_segments, allowed_as_root: false}
-          relationships:
-            account_segment_account:
-              id: relationship.account_segment_account
-              entities: [account_segment, account]
-              cardinality: many_to_one
-              safety: requires_rewrite
-              temporal_validity:
-                valid_from: account_segments.valid_from
-                valid_to: account_segments.valid_to
-        """,
-    "models/accounts.yml": """
-        model:
-          id: accounts
-          relation: accounts
-          entities: {account: {}}
-          measures:
-            account_count: {label: Accounts, kind: entity_count, entity_key: account_id,
-              accumulation: {kind: event}, value_type: count}
-        """,
-    "models/account_segments.yml": FILES["models/account_segments.yml"].replace(
-        "{account_segment: {}, account: {}, tier: {}}", "{account_segment: {}, account: {}}"
-    ),
 }
 
 HOP = "relationship.usage_account_segment"
@@ -217,9 +187,9 @@ SQL_TIER = (
 def _write_package(root: Path, files: dict[str, str]) -> Path:
     pkg = root / "hist"
     (pkg / "data").mkdir(parents=True)
-    (pkg / "models").mkdir()
     (pkg / "data" / "seed.sql").write_text(SEED_SQL)
     for name, body in files.items():
+        (pkg / name).parent.mkdir(exist_ok=True)
         (pkg / name).write_text(textwrap.dedent(body))
     return pkg
 
@@ -265,9 +235,27 @@ def _amount_and_seats(*, seats_first: bool = False, **extra: Any) -> dict[str, A
     return {"version": 1, "select": select, **extra}
 
 
+def _compound(*, seats_first: bool = False, **extra: Any) -> dict[str, Any]:
+    left, right = [
+        row["expression"] for row in _amount_and_seats(seats_first=seats_first)["select"]
+    ]
+    expression = {"kind": "arithmetic", "op": "add", "left": left, "right": right}
+    return {"version": 1, "select": [{"as": "value", "expression": expression}], **extra}
+
+
+def _named_metric(*, seats_first: bool = False, **extra: Any) -> dict[str, Any]:
+    metric = "metric.hist.seats_plus_amount" if seats_first else "metric.hist.amount_plus_seats"
+    return {"version": 1, "select": [{"as": "value", "expression": {"metric": metric}}], **extra}
+
+
+STARTER = [{"field": SEGMENT, "op": "=", "value": "starter"}]
+
+
 def _rows(runtime: Runtime, query: dict[str, Any], keys: list[str]) -> dict[Any, float]:
     return {
-        tuple(row[key].month if key == MONTH else row[key] for key in keys): float(row["value"])
+        tuple(
+            datetime.fromisoformat(row[key]).month if key == MONTH else row[key] for key in keys
+        ): float(row["value"])
         for row in runtime.query(query)["rows"]
     }
 
@@ -276,9 +264,7 @@ def _rows(runtime: Runtime, query: dict[str, Any], keys: list[str]) -> dict[Any,
     "query",
     [
         pytest.param(_amount(group_by=[SEGMENT]), id="group-by"),
-        pytest.param(
-            _amount(where=[{"field": SEGMENT, "op": "=", "value": "starter"}]), id="where"
-        ),
+        pytest.param(_amount(where=STARTER), id="where"),
         pytest.param(_amount(group_by=[TIER]), id="two-hops"),
         pytest.param(
             {
@@ -289,7 +275,7 @@ def _rows(runtime: Runtime, query: dict[str, Any], keys: list[str]) -> dict[Any,
                         "expression": {
                             "kind": "aggregate",
                             "measure": "measure.hist.amount",
-                            "filter": {"all": [{"field": SEGMENT, "op": "=", "value": "starter"}]},
+                            "filter": {"all": STARTER},
                         },
                     }
                 ],
@@ -297,10 +283,20 @@ def _rows(runtime: Runtime, query: dict[str, Any], keys: list[str]) -> dict[Any,
             id="measure-filter",
         ),
         pytest.param({"version": 1, "group_by": [USAGE_ID, SEGMENT]}, id="dimension-only"),
-        pytest.param(_amount_and_seats(group_by=[SEGMENT]), id="two-measures"),
-        pytest.param(
-            _amount_and_seats(seats_first=True, group_by=[SEGMENT]), id="two-measures-seats-first"
-        ),
+        # Amount and seats, as two measures, one compound, or a named metric, in either order.
+        *[
+            pytest.param(
+                shape(seats_first=seats_first, **clause),
+                id=f"{name}{'-seats-first' if seats_first else ''}-{next(iter(clause))}",
+            )
+            for name, shape in (
+                ("two-measures", _amount_and_seats),
+                ("compound", _compound),
+                ("named-metric", _named_metric),
+            )
+            for seats_first in (False, True)
+            for clause in ({"group_by": [SEGMENT]}, {"where": STARTER})
+        ],
     ],
 )
 def test_a_time_valid_hop_without_a_query_time_is_refused(runtime, query):
@@ -310,6 +306,7 @@ def test_a_time_valid_hop_without_a_query_time_is_refused(runtime, query):
         runtime.query(query)
 
     assert exc.value.code == "FANOUT_UNSAFE"
+    assert exc.value.details["reason"] == "time_valid_hop_without_query_time"
     assert exc.value.details["relationships"] == [HOP]
     assert exc.value.details["entities"] == [HISTORY]
     assert HOP in str(exc.value) and HISTORY in str(exc.value)
@@ -577,194 +574,46 @@ def test_the_classification_names_the_hop_and_the_fix(package):
     assert exc.value.details["reason"] == "time_valid_hop_without_query_time"
     assert "time" in exc.value.details["hint"]
     assert anchored["status"] == "ok"
-    # Metadata offers the hop only when told the query gives a time; by default it has none.
-    assert _path_availability(config, usage, HISTORY, query_time=True)["available"] is True
-    assert _path_availability(config, usage, HISTORY)["error_code"] == "FANOUT_UNSAFE"
+    # Reachability metadata has no query, and rates the hop by its cardinality alone.
+    assert analyze_fanout(config, usage, [HOP], validity_windows=False)["status"] == "ok"
 
 
-@pytest.mark.parametrize(("time", "offered"), [(None, False), (MONTHLY, True)])
-def test_discover_and_build_options_offer_the_hop_only_with_a_time(runtime, time, offered):
-    partial = _amount(**({"time": time} if time else {}))
+UNKNOWN = {"as": "nope", "expression": {"measure": "measure.hist.nope"}}
 
+
+@pytest.mark.parametrize(
+    "partial",
+    [
+        pytest.param(_amount(), id="amount"),
+        pytest.param(
+            {**_amount(), "select": [*_amount()["select"], UNKNOWN]}, id="unknown-measure"
+        ),
+    ],
+)
+def test_discovery_offers_the_history_grouping_that_compilation_refuses_without_a_time(
+    runtime, partial
+):
+    """Discovery and inspection answer from reachability alone, also with an unknown measure in
+    the partial query. The grouping they offer without a time is refused when it is compiled,
+    naming the hop and asking for a time; it is never answered from every version."""
     found = discover_payload(runtime, terms="segment", partial_query=partial, kinds=["dimension"])
-    options = build_options_payload(
-        runtime, partial_query=partial, step="group_by", focus_terms="segment"
-    )
-
-    (row,) = [row for row in found["dimensions"] if row["id"] == SEGMENT]
-    assert row["available"] is offered
-    assert (HOP in row["blocked_reason"]) is not offered  # the reason names the hop
-    patches = [row["id"] for row in [*options["recommended"], *options["available"]]]
-    assert (SEGMENT in patches) is offered
-
-
-@pytest.mark.parametrize(("time", "offered"), [(None, False), (MONTHLY, True)])
-def test_inspect_offers_a_history_grouping_only_with_a_time(runtime, time, offered):
-    """Without a time, the card names the hop and asks for one instead of a patch the engine
-    would refuse."""
-    partial = _amount(**({"time": time} if time else {}))
-
     card = inspect_payload(runtime, object_id=SEGMENT, partial_query=partial)["card"]
 
-    group_by = [row for row in card["starter_query_patches"] if row["kind"] == "group_by"]
-    assert bool(group_by) is offered
-    for row in group_by:
-        assert runtime.validate(row["query_patch"])["ok"] is True
-    assert (HOP in card.get("blocked_reason", "")) is not offered
-    hints = [hint["message"] for hint in card.get("recovery_hints", [])]
-    assert any("Add `time`" in hint for hint in hints) is not offered
-
-
-@pytest.mark.parametrize("seats_first", [False, True], ids=["amount-first", "seats-first"])
-@pytest.mark.parametrize("compound", [False, True], ids=["separate", "compound"])
-@pytest.mark.parametrize("dimension", [SEGMENT, REGION], ids=["history", "safe-lookup"])
-def test_grouping_metadata_checks_every_selected_measure_leaf(
-    runtime, seats_first, compound, dimension
-):
-    partial = _amount_and_seats(seats_first=seats_first)
-    if compound:
-        left, right = [item["expression"] for item in partial["select"]]
-        partial["select"] = [
-            {
-                "as": "value",
-                "expression": {"kind": "arithmetic", "op": "add", "left": left, "right": right},
-            }
-        ]
-    assert runtime.validate(partial)["ok"] is True
-    offered = dimension == REGION
-    card = inspect_payload(runtime, object_id=dimension, partial_query=partial)["card"]
-    found = discover_payload(
-        runtime, terms="segment region", partial_query=partial, kinds=["dimension"]
-    )
-    options = build_options_payload(
-        runtime, partial_query=partial, step="group_by", include_blocked=True
-    )
-
+    (row,) = [row for row in found["dimensions"] if row["id"] == SEGMENT]
+    assert row["available"] is True
     patches = [
         row["query_patch"] for row in card["starter_query_patches"] if row["kind"] == "group_by"
     ]
-    assert bool(patches) is offered
-    assert (HOP in card.get("blocked_reason", "")) is not offered
-    assert (
-        any("Add `time`" in hint["message"] for hint in card.get("recovery_hints", []))
-        is not offered
-    )
-    (row,) = [row for row in found["dimensions"] if row["id"] == dimension]
-    assert row["available"] is offered
-    assert (HOP in row["blocked_reason"]) is not offered
-    option_rows = [
-        row for row in [*options["recommended"], *options["available"]] if row["id"] == dimension
-    ]
-    assert bool(option_rows) is offered
-    patches.extend(row["query_patch"] for row in option_rows)
-    for patch in patches:
-        assert runtime.validate(patch)["ok"] is True
-    if not offered:
-        (blocked,) = [row for row in options["blocked"] if row["id"] == dimension]
-        assert HOP in blocked["blocked_reason"]
-
-
-@pytest.mark.parametrize("seats_first", [False, True], ids=["amount-first", "seats-first"])
-def test_catalog_and_grouping_metadata_expand_measure_leaves_in_metric_recipes(
-    tmp_path, seats_first
-):
-    pkg = _write_package(tmp_path, FILES)
-    (pkg / "metrics").mkdir()
-    left, right = ("seats", "amount") if seats_first else ("amount", "seats")
-    (pkg / "metrics" / "mixed.yml").write_text(
-        textwrap.dedent(f"""
-        metric:
-          id: metric.hist.mixed
-          label: Mixed
-          kind: arithmetic
-          expression:
-            kind: arithmetic
-            op: add
-            left: {{measure: measure.hist.{left}}}
-            right: {{measure: measure.hist.{right}}}
-        """)
-    )
-    partial = {
-        "version": 1,
-        "select": [{"as": "mixed", "expression": {"metric": "metric.hist.mixed"}}],
-    }
-    runtime = Runtime.from_path(str(pkg))
-    try:
-        assert runtime.validate(partial)["ok"] is True
-        card = inspect_payload(runtime, object_id=SEGMENT, partial_query=partial)["card"]
-        assert not card["starter_query_patches"]
-        assert HOP in card["blocked_reason"]
-        found = discover_payload(
-            runtime, terms="segment", partial_query=partial, kinds=["dimension"]
-        )
-        (row,) = [row for row in found["dimensions"] if row["id"] == SEGMENT]
-        assert row["available"] is False
-        options = build_options_payload(runtime, partial_query=partial, step="group_by")
-        assert SEGMENT not in {
-            row["id"] for row in [*options["recommended"], *options["available"]]
-        }
-        catalog = catalog_payload(runtime, verbosity="full")
-        (metric,) = [row for row in catalog["metrics"] if row["id"] == "metric.hist.mixed"]
-        (history,) = [
-            row for row in metric["payload"]["disabled_grouping_entities"] if row["id"] == HISTORY
-        ]
-        assert HOP in history["reason"]
-        assert ACCOUNT in {row["id"] for row in metric["payload"]["valid_grouping_entities"]}
-        # The safe lookup stays executable after expanding the named compound metric.
-        region = inspect_payload(runtime, object_id=REGION, partial_query=partial)["card"]
-        for patch in region["starter_query_patches"]:
-            assert runtime.validate(patch["query_patch"])["ok"] is True
-    finally:
-        runtime.close()
-
-
-def test_a_reverse_hop_into_the_window_is_not_offered_without_a_time(tmp_path):
-    """From an account, the segment table holds every version of it: discover lists it only
-    as a rewrite, as before; a time is what would make it one version per account."""
-    pkg = _write_package(tmp_path, BIDIRECTIONAL)
-    partial = {
-        "version": 1,
-        "select": [{"as": "accounts", "expression": {"measure": "measure.hist.account_count"}}],
-    }
-    runtime = Runtime.from_path(str(pkg))
-    try:
-        found = discover_payload(
-            runtime, terms="segment", partial_query=partial, kinds=["entity", "dimension"]
-        )
-    finally:
-        runtime.close()
-
-    rows = {row["id"]: row for row in [*found["entities"], *found["dimensions"]]}
-    assert rows[HISTORY]["available"] is False
-    assert rows[SEGMENT]["available"] is False
-    config = load_package_config(str(pkg))
-    assert _path_availability(config, ACCOUNT, HISTORY, query_time=True)["available"] is True
-
-
-def test_the_planner_prefers_the_dimension_that_needs_no_time_on_an_equal_score(package):
-    """The segment table's account id, relabelled to sort first, still loses to the account's
-    own: the score ties, and the version only a query time picks comes after any label."""
-    config = load_package_config(str(package))
-    history_id = "dimension.hist_account_segment_account_id"
-    relabelled = replace(
-        config,
-        dimensions=[
-            replace(dim, label="Account") if dim.id == history_id else dim
-            for dim in config.dimensions
-        ],
-    )
-    history = next(dim for dim in relabelled.dimensions if dim.id == history_id)
-
-    chosen = _dimension(relabelled, ["account"])
-
-    assert chosen.id == "dimension.hist_account_id"
-    assert _score(chosen, ["account"]) == _score(history, ["account"])
-    assert chosen.label > history.label
+    assert [patch["group_by"] for patch in patches] == [[SEGMENT]]
+    with pytest.raises(SemanticLayerError) as exc:
+        runtime.compile({**patches[0], "select": _amount()["select"]})
+    assert exc.value.details["reason"] == "time_valid_hop_without_query_time"
+    assert "Add `time`" in exc.value.details["hint"]
 
 
 def test_the_planner_keeps_a_history_filter_when_the_question_gives_a_time(runtime_factory):
-    """The planner reads the filter before it adds the month from the text, so it asks whether
-    the history is reachable given a time; the plan carries both, and validates."""
+    """Planning answers as before: it keeps the history filter, adds the month the question
+    names, and the plan compiles, each order reading its customer's version at its time."""
     runtime = runtime_factory("jaffle_shop")
     try:
         plan = plan_payload(runtime, intent="revenue from high_value customers by month")

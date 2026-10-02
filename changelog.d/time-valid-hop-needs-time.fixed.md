@@ -7,10 +7,7 @@
   before, and a hop out of the table holding the window needs no time, nor do two measures
   selected together, which are aggregated on their own. This covers group-by and where
   dimensions, measure filters, dimension-only queries, conversions, metric predicates and live
-  valid-values lookups. `discover`, `build-options` and `inspect` offer such dimensions only to
-  a partial query with a `time` (`inspect` names the relationship instead of offering a
-  `group_by` patch), and `plan` prefers, of two equally scored dimensions, the one that needs
-  no time.
-- Schema-qualified validity windows preserve outgoing lookups without a query time. Grouping
-  metadata checks every selected measure, including compound expressions and named metrics,
-  so changing selection order cannot offer a history grouping that compilation refuses.
+  valid-values lookups. `discover`, `inspect`, `build-options` and `plan` answer as before, so
+  a dimension they list may still need `time` when the query is compiled.
+- A validity window qualified with a schema (`analytics.customer_history.valid_from`) now joins
+  on that column when the query has a `time`, and a hop out of its table still needs none.
