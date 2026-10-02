@@ -44,7 +44,7 @@ from .cache import (
 )
 from .catalog_search import CatalogSearchIndex
 from .caveats import caveat_warnings
-from .compiler import BoundQuery, bind_query, compile_query
+from .compiler import BoundQuery, bind_query, compile_query, read_routes
 from .compiler_parts.paths import _leaf_time_role
 from .config import (
     SEED_KIND_EXTERNAL,
@@ -81,7 +81,7 @@ from .diagnostics import (
 from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError, query_execution_error
 from .expressions import collect_object_references, expr_to_dict
-from .fanout import build_hop_profile, route_basis, route_meaning
+from .fanout import build_hop_profile, route_basis, route_meaning, route_reading
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import enforce_query_policies, query_policy_effects, row_filters_for_context
@@ -317,6 +317,7 @@ _ROUTE_NOTES = {
     "colocated_key": ("ROUTE_COLOCATED_KEY", "own key"),
     "recorded": ("ROUTE_RECORDED", "recorded route"),
 }
+_ROUTE_ROW_KEYS = ("source_entity", "target_entity", "relationship_path")
 
 
 def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -329,22 +330,33 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
     (predicates, conversions, rewrite anchors, nested compiles, direct key reads). The minimal
     response leaves the notes out: the route is the package's own meaning for the pair, not a
     caveat on the numbers, and a pair with no such meaning is refused instead.
+
+    A pair the query decided itself (``route_decisions``) gets ROUTE_CHOSEN_BY_QUERY instead,
+    at every verbosity: the row and the basis it replaced, since the answer may differ from
+    the package's.
     """
-    if resolve_verbosity(payload) == "minimal":
-        return []
-    plan = compiled["logical_plan"]
-    choices = [
-        (plan.root_entity, target, routes)
-        for target, routes in sorted(dict(plan.candidate_paths or {}).items())
-    ]
-    for measure_plan in plan.measure_plans:
-        choices.extend(
-            (measure_plan.source_entity, selection.target_entity, selection.candidate_paths)
-            for selection in measure_plan.path_selections
-        )
-    choices.extend(compiled.get("route_choices") or [])
-    seen: set[tuple[str, str]] = set()
     notes: list[dict[str, Any]] = []
+    decided: set[tuple[str, str]] = set()
+    for row in compiled.get("route_decisions") or []:
+        start, target, path = row["source_entity"], row["target_entity"], row["relationship_path"]
+        decided.add((start, target))
+        notes.append(
+            semantic_issue(
+                code="ROUTE_CHOSEN_BY_QUERY",
+                message=f"{route_reading(config, start, path)} (chosen by this query)",
+                severity="info",
+                stage="planning",
+                details={
+                    "row": {key: row[key] for key in _ROUTE_ROW_KEYS},
+                    "replaced": row["replaced"],
+                },
+                object_ids=[start, target],
+            )
+        )
+    if resolve_verbosity(payload) == "minimal":
+        return notes
+    choices = read_routes(compiled["logical_plan"], compiled.get("route_choices") or [])
+    seen: set[tuple[str, str]] = set(decided)
     for start, target, routes in choices:
         if (start, target) in seen:
             continue

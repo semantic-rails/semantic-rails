@@ -32,6 +32,7 @@ from .expressions import (
     parse_semantic_expression,
     validate_expression_calls,
 )
+from .fanout import RouteRowError, check_route_row
 from .meta_contract import load_meta_contract
 from .operational import (
     load_operational_contract,
@@ -1631,83 +1632,16 @@ def _parse_path_preferences(
     rows = list(raw.get("path_preferences", []) or [])
     if not rows:
         return []
-    rel_lookup: dict[str, RelationshipConfig] = {}
-    for known_rel in relationships:
-        rel_lookup[known_rel.id] = known_rel
-        _, _, suffix = known_rel.id.partition(".")
-        if suffix:
-            rel_lookup.setdefault(suffix, known_rel)
-    # An entity by key, name or id: an AMBIGUOUS_PATH refusal lists its pins by entity id.
+    # An entity by key, name or id: an AMBIGUOUS_PATH refusal's decisions name entity ids.
     entities = {**{entity_id: entity_id for entity_id in entity_lookup.values()}, **entity_lookup}
     out: list[PathPreferenceConfig] = []
     for row in rows:
-        row_dict = dict(row or {})
-        source_ref = str(row_dict.get("source_entity", "")).strip()
-        target_ref = str(row_dict.get("target_entity", "")).strip()
-        for label, ref in (("source_entity", source_ref), ("target_entity", target_ref)):
-            if ref not in entities:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: path_preferences row references unknown {label} '{ref}'",
-                )
-        source_entity = entities[source_ref]
-        target_entity = entities[target_ref]
-        preferred = row_dict.get("preferred_paths")
-        if preferred is not None:
-            paths_raw = list(preferred or [])
-            if len(paths_raw) != 1:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: path_preferences for {source_ref} -> {target_ref} must "
-                    f"declare exactly one preferred path (got {len(paths_raw)})",
-                )
-            rel_refs = [str(item) for item in list(paths_raw[0] or [])]
-        else:
-            rel_refs = [str(item) for item in list(row_dict.get("relationship_path", []) or [])]
-        if not rel_refs:
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                f"{path}: path_preferences for {source_ref} -> {target_ref} declares an empty path",
+        try:
+            out.append(
+                check_route_row(dict(row or {}), entities=entities, relationships=relationships)
             )
-        resolved: list[str] = []
-        current = source_entity
-        for rel_ref in rel_refs:
-            rel = rel_lookup.get(rel_ref)
-            if rel is None:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: path_preferences for {source_ref} -> {target_ref} references "
-                    f"unknown relationship '{rel_ref}'",
-                )
-            directions = {
-                str(item).strip().lower()
-                for item in list(rel.allowed_directions or ["forward", "reverse"])
-            }
-            if current == rel.source_entity and "forward" in directions:
-                current = rel.target_entity
-            elif current == rel.target_entity and "reverse" in directions:
-                current = rel.source_entity
-            else:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: path_preferences for {source_ref} -> {target_ref}: relationship "
-                    f"'{rel.id}' does not connect from '{current}' (or traversal in that "
-                    "direction is not allowed)",
-                )
-            resolved.append(rel.id)
-        if current != target_entity:
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                f"{path}: path_preferences path for {source_ref} -> {target_ref} ends at "
-                f"'{current}', not the declared target",
-            )
-        out.append(
-            PathPreferenceConfig(
-                source_entity=source_entity,
-                target_entity=target_entity,
-                relationship_path=resolved,
-            )
-        )
+        except RouteRowError as exc:
+            raise SemanticLayerError("INVALID_CONFIG", f"{path}: path_preferences {exc}") from None
     return out
 
 

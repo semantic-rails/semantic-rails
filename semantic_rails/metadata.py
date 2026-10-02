@@ -27,6 +27,7 @@ from .compiler import (
     _reduced_context_entities,
     _requires_query_time,
     _time_bound_relationship_ids,
+    query_route_rows,
 )
 from .diagnostics import relationship_contract_payload
 from .errors import SemanticLayerError
@@ -57,6 +58,7 @@ from .expressions import (
     expr_to_dict,
     parse_semantic_expression,
 )
+from .fanout import query_route_decisions
 from .metadata_parts.capabilities import (
     _capability_payload,
 )
@@ -93,7 +95,7 @@ from .metadata_parts.relevance import (
 )
 from .metadata_parts.scope_gate import scope_block_payload as _scope_block_payload
 from .metadata_parts.valid_values import valid_values_payload
-from .policies import hidden_object_ids, policy_effects_for_object
+from .policies import hidden_object_ids, policy_effects_for_object, row_filters_for_context
 from .request_context import context_from_policy_context
 from .request_payload import DISCOVER_RANKED_KINDS, checked_discover_kinds
 from .runtime import Runtime, runtime_request_scope
@@ -2745,6 +2747,18 @@ def _slim_inspect_card(card: dict[str, Any]) -> dict[str, Any]:
     return slim
 
 
+def _partial_query_routes(
+    config: PackageConfig, partial_query: dict[str, Any]
+) -> dict[tuple[str, str], list[str]]:
+    """The partial query's ``route_decisions`` by pair, checked as ``bind_query`` checks them
+    (a row filter in its context refuses them)."""
+    if not partial_query.get("route_decisions"):
+        return {}
+    filters = row_filters_for_context(config, _policy_context(partial_query))
+    decided = query_route_rows(config, partial_query, row_filters=filters)
+    return {pair: row.relationship_path for pair, (_, row) in decided.items()}
+
+
 def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[str, Any]:
     config = runtime._config
     validate_temporal_support(config, partial_query)
@@ -2862,7 +2876,9 @@ def build_options_payload(
     include_blocked: bool = True,
     limit: int = 10,
 ) -> dict[str, Any]:
-    base = _valid_next_base(runtime, partial_query)
+    # The query's own route_decisions show here the way they will answer.
+    with query_route_decisions(_partial_query_routes(runtime._config, partial_query)):
+        base = _valid_next_base(runtime, partial_query)
     config = runtime._config
     require_temporal_support(config, requested=step == "time" or stage == "time")
     maps = _config_maps(config)

@@ -28,7 +28,7 @@ from dataclasses import asdict
 from typing import Any
 
 from ..errors import SemanticLayerError
-from ..fanout import analyze_fanout, resolve_path
+from ..fanout import analyze_fanout, resolve_path, route_label
 from ..schema import PackageConfig
 from .relevance import _norm
 
@@ -50,20 +50,15 @@ def _path_availability(
         path, candidates = resolve_path(config, start=root_entity, target=target_entity)
         analysis = analyze_fanout(config, root_entity, path)
         status = analysis["status"]
-        if status == "ok":
-            return {
-                "available": True,
-                "reason": "",
-                "path": path,
-                "candidates": candidates,
-                "analysis": analysis,
-            }
+        # A labelled package decision for the pair says which meaning the path is.
+        label = route_label(config, root_entity, target_entity, path)
         return {
-            "available": False,
-            "reason": "requires leaf rewrite or grain-aware plan",
+            "available": status == "ok",
+            "reason": "" if status == "ok" else "requires leaf rewrite or grain-aware plan",
             "path": path,
             "candidates": candidates,
             "analysis": analysis,
+            **({"route_label": label} if label else {}),
         }
     except SemanticLayerError as exc:
         return {

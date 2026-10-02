@@ -10,8 +10,9 @@ under a hop limit.
 
 from __future__ import annotations
 
-from collections import deque
-from collections.abc import Iterator, Sequence
+import re
+from collections import Counter, deque
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
@@ -20,7 +21,12 @@ from typing import Any
 
 from .compiler_parts.indexes import RouteRefusal, get_package_analysis
 from .errors import SemanticLayerError
-from .schema import DEFAULT_PATH_HOP_LIMIT, PackageConfig, RelationshipConfig
+from .schema import (
+    DEFAULT_PATH_HOP_LIMIT,
+    PackageConfig,
+    PathPreferenceConfig,
+    RelationshipConfig,
+)
 
 
 def build_graph(config: PackageConfig) -> dict[str, list[tuple[str, str]]]:
@@ -123,31 +129,297 @@ def route_meaning(config: PackageConfig, start: str, path: list[str]) -> str:
     return " → ".join(chain)
 
 
-def _route_decision_required(
-    config: PackageConfig, start: str, target: str, routes: list[list[str]]
-) -> SemanticLayerError:
-    meanings = [route_meaning(config, start, path) for path in routes]
-    if len(set(meanings)) < len(meanings):  # parallel roles without their own labels
+def _plural(noun: str) -> str:
+    head, space, last = noun.rpartition(" ")
+    if last[-1:] == "y" and last[-2:-1].lower() not in set("aeiou"):
+        last = f"{last[:-1]}ies"
+    elif last[-1:] in {"s", "x", "z"} or last[-2:] in {"ch", "sh"}:
+        last = f"{last}es"
+    else:
+        last = f"{last}s"
+    return f"{head}{space}{last}"
+
+
+def _entity_label(config: PackageConfig, entity_id: str) -> str:
+    entity = get_package_analysis(config).entities.get(entity_id)
+    return (entity.label or entity.name) if entity is not None else entity_id
+
+
+def _entity_key(config: PackageConfig, entity_id: str) -> str:
+    entity = get_package_analysis(config).entities.get(entity_id)
+    return (entity.name if entity is not None else "") or entity_id.rpartition(".")[2]
+
+
+def route_reading(config: PackageConfig, start: str, path: Sequence[str]) -> str:
+    """``path`` in business words from package labels, e.g. "the District of the Account's
+    Branch": every entity on the route, each hop to an entity named by its label. A hop whose
+    entity pair has more than one relationship is named by its authored relationship label,
+    else by its foreign-key columns, and a one-to-many hop reads "any of the …"."""
+    analysis = get_package_analysis(config)
+    pairs = Counter(
+        frozenset((rel.source_entity, rel.target_entity)) for rel in analysis.relationships.values()
+    )
+    phrase = ""
+    current = start
+    for rel_id in path:
+        rel = analysis.relationships[rel_id]
+        forward = current == rel.source_entity
+        reached = rel.target_entity if forward else rel.source_entity
+        noun, qualifier = _entity_label(config, reached), ""
+        if pairs[frozenset((rel.source_entity, rel.target_entity))] > 1:
+            default = (
+                f"{_entity_label(config, rel.source_entity)} to "
+                f"{_entity_label(config, rel.target_entity)}"
+            )
+            if rel.label in ("", default):
+                qualifier = ", ".join(rel.source_columns or [rel.source_column])
+            elif forward:
+                noun = rel.label
+            else:
+                qualifier = rel.label
+        many = not hop_is_functional(rel, current)
+        word = (_plural(noun) if many else noun) + (f" ({qualifier})" if qualifier else "")
+        phrase = (
+            f"the {word} of {phrase}" if phrase else f"the {_entity_label(config, start)}'s {word}"
+        )
+        if many:
+            phrase = f"any of {phrase}"
+        current = reached
+    return phrase
+
+
+def route_entities(config: PackageConfig, start: str, path: Sequence[str]) -> list[str]:
+    """Every entity ``path`` visits from ``start``, in order, ``start`` first."""
+    relationships = get_package_analysis(config).relationships
+    entities = [start]
+    for rel_id in path:
+        rel = relationships[rel_id]
+        current = entities[-1]
+        entities.append(rel.target_entity if current == rel.source_entity else rel.source_entity)
+    return entities
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+
+
+def _option_ids(config: PackageConfig, start: str, routes: list[list[str]]) -> list[str]:
+    """A slug per route, unique within the refusal and never an entity key: the waypoint
+    entity keys plus the target key, or a direct hop's foreign-key column without its
+    ``_id``/``_key``/``_code`` suffix; ``_2`` and up on a clash."""
+    analysis = get_package_analysis(config)
+    taken = {_slug(_entity_key(config, entity)) for entity in analysis.entities}
+    ids: list[str] = []
+    for path in routes:
+        if len(path) == 1:
+            rel = analysis.relationships[path[0]]
+            columns = rel.source_columns or [rel.source_column]
+            base = _slug("_".join(re.sub(r"_(id|key|code)$", "", col) for col in columns))
+            if not base or base in taken:
+                base = _slug("_".join(columns))
+        else:
+            base = "_".join(
+                _slug(_entity_key(config, entity))
+                for entity in route_entities(config, start, path)[1:]
+            )
+        slug, suffix = base or "route", 1
+        while slug in taken:
+            suffix += 1
+            slug = f"{base or 'route'}_{suffix}"
+        taken.add(slug)
+        ids.append(slug)
+    return ids
+
+
+def route_clarification(
+    config: PackageConfig, start: str, target: str, routes: Sequence[Sequence[str]]
+) -> dict[str, Any]:
+    """The question an ambiguous route asks, in business words, and one option per route.
+
+    Each option can be applied two ways: its ``decision`` is the ``graph.path_preferences``
+    row that makes it the package default (loadable verbatim, ``label`` = ``meaning``), and
+    the same row in a query's ``route_decisions`` answers that one query with it.
+    """
+    paths = [list(path) for path in routes]
+    meanings = [route_reading(config, start, path) for path in paths]
+    if len(set(meanings)) < len(meanings):  # two relationships with one label or one column
         meanings = [
-            f"{meaning} ({', '.join(path)})" for meaning, path in zip(meanings, routes, strict=True)
+            f"{meaning} ({', '.join(path)})" for meaning, path in zip(meanings, paths, strict=True)
         ]
+    target_label, start_label = _entity_label(config, target), _entity_label(config, start)
+    article = "an" if start_label[:1].lower() in set("aeiou") else "a"
+    return {
+        "kind": "route",
+        "apply": ["query", "package"],
+        "question": f"Which {target_label} does the question mean for {article} {start_label}?",
+        "options": [
+            {
+                "id": option_id,
+                "meaning": meaning,
+                "relationship_path": path,
+                "decision": {**route_pin(start, target, path), "label": meaning},
+            }
+            for option_id, meaning, path in zip(
+                _option_ids(config, start, paths), meanings, paths, strict=True
+            )
+        ],
+    }
+
+
+def route_decision_required(
+    config: PackageConfig, start: str, target: str, routes: Sequence[Sequence[str]]
+) -> SemanticLayerError:
+    """The one ``AMBIGUOUS_PATH`` refusal: every raiser builds it here, from the routes the
+    resolver considered, so each carries the same ``details.clarification``."""
+    clarification = route_clarification(config, start, target, routes)
     return SemanticLayerError(
         "AMBIGUOUS_PATH",
-        f"Ambiguous path from '{start}' to '{target}': " + "; ".join(meanings),
+        f"Ambiguous path from '{start}' to '{target}'. {clarification['question']} "
+        + "; ".join(option["meaning"] for option in clarification["options"]),
         details={
             "reason": "route_decision_required",
             "start": start,
             "target": target,
-            "candidates": [list(path) for path in routes],
-            "meanings": meanings,
-            "pins": [route_pin(start, target, path) for path in routes],
+            "clarification": clarification,
             "hint": (
-                "Which route is meant is a business definition. Record it once as a "
-                "graph.path_preferences row in the package (details.pins has the row for each "
-                "route); then every query uses it."
+                "Which route is meant is a business definition. Ask which option the question "
+                "means, then resend the query with that option's decision in route_decisions "
+                "(this query only), or record it as the package default with "
+                "record_route_decision (a graph.path_preferences row)."
             ),
         },
     )
+
+
+class RouteRowError(ValueError):
+    """A route row (a ``graph.path_preferences`` or ``route_decisions`` row) that breaks the
+    loader's rules; the caller words the error code and where the row came from."""
+
+
+def check_route_row(
+    row: Mapping[str, Any],
+    *,
+    entities: Mapping[str, str],
+    relationships: Sequence[RelationshipConfig],
+) -> PathPreferenceConfig:
+    """The loader's rules for one route row: known entities (``entities`` maps each accepted
+    reference to an entity id) and relationships (by id, or its id without the
+    ``relationship.`` prefix), each hop connecting from where the last one ended in an
+    allowed direction, ending at the target. Package rows, query ``route_decisions`` rows and
+    ``record_route_decision`` all check rows here."""
+    rel_lookup: dict[str, RelationshipConfig] = {}
+    for known_rel in relationships:
+        rel_lookup[known_rel.id] = known_rel
+        _, _, suffix = known_rel.id.partition(".")
+        if suffix:
+            rel_lookup.setdefault(suffix, known_rel)
+    source_ref = str(row.get("source_entity", "")).strip()
+    target_ref = str(row.get("target_entity", "")).strip()
+    for label, ref in (("source_entity", source_ref), ("target_entity", target_ref)):
+        if ref not in entities:
+            raise RouteRowError(f"row references unknown {label} '{ref}'")
+    source_entity = entities[source_ref]
+    target_entity = entities[target_ref]
+    preferred = row.get("preferred_paths")
+    if preferred is not None:
+        paths_raw = list(preferred or [])
+        if len(paths_raw) != 1:
+            raise RouteRowError(
+                f"for {source_ref} -> {target_ref} must declare exactly one preferred path "
+                f"(got {len(paths_raw)})"
+            )
+        rel_refs = [str(item) for item in list(paths_raw[0] or [])]
+    else:
+        rel_refs = [str(item) for item in list(row.get("relationship_path", []) or [])]
+    if not rel_refs:
+        raise RouteRowError(f"for {source_ref} -> {target_ref} declares an empty path")
+    resolved: list[str] = []
+    current = source_entity
+    for rel_ref in rel_refs:
+        rel = rel_lookup.get(rel_ref)
+        if rel is None:
+            raise RouteRowError(
+                f"for {source_ref} -> {target_ref} references unknown relationship '{rel_ref}'"
+            )
+        directions = {
+            str(item).strip().lower()
+            for item in list(rel.allowed_directions or ["forward", "reverse"])
+        }
+        if current == rel.source_entity and "forward" in directions:
+            current = rel.target_entity
+        elif current == rel.target_entity and "reverse" in directions:
+            current = rel.source_entity
+        else:
+            raise RouteRowError(
+                f"for {source_ref} -> {target_ref}: relationship '{rel.id}' does not connect "
+                f"from '{current}' (or traversal in that direction is not allowed)"
+            )
+        resolved.append(rel.id)
+    if current != target_entity:
+        raise RouteRowError(
+            f"path for {source_ref} -> {target_ref} ends at '{current}', not the declared target"
+        )
+    return PathPreferenceConfig(
+        source_entity=source_entity,
+        target_entity=target_entity,
+        relationship_path=resolved,
+        label=str(row.get("label", "") or "").strip(),
+    )
+
+
+def route_label(config: PackageConfig, start: str, target: str, path: Sequence[str]) -> str:
+    """The ``label`` of the package row deciding the pair, when ``path`` is its route."""
+    return next(
+        (
+            row.label
+            for row in config.path_preferences
+            if (row.source_entity, row.target_entity) == (start, target)
+            and list(row.relationship_path) == list(path)
+        ),
+        "",
+    )
+
+
+def pair_routes(config: PackageConfig, start: str, target: str) -> list[list[str]]:
+    """Every route between the pair within the hop ceiling, whatever any row decides."""
+    resolved = _unpinned_resolution(config, start, target)
+    if isinstance(resolved, RouteRefusal):
+        clarification = resolved.details.get("clarification") or {}
+        return [list(option["relationship_path"]) for option in clarification.get("options", [])]
+    return [list(path) for path in resolved]
+
+
+def route_decision_basis(config: PackageConfig, start: str, target: str) -> str:
+    """What a query's own row for the pair replaces: ``decided`` (a package row),
+    ``colocated_key`` (the start's own key), ``only_route``, ``undecided`` (refused as
+    AMBIGUOUS_PATH) or ``unreachable``."""
+    if (start, target) in get_package_analysis(config).path_preferences:
+        return "decided"
+    resolved = _unpinned_resolution(config, start, target)
+    if isinstance(resolved, RouteRefusal):
+        return "undecided" if resolved.code == "AMBIGUOUS_PATH" else "unreachable"
+    return "colocated_key" if len(resolved) > 1 else "only_route"
+
+
+_query_routes: ContextVar[dict[tuple[str, str], tuple[str, ...]] | None] = ContextVar(
+    "query_routes", default=None
+)
+
+
+@contextmanager
+def query_route_decisions(rows: Mapping[tuple[str, str], Sequence[str]]) -> Iterator[None]:
+    """Answer each (start, target) in ``rows`` by its route in this block: a query's own
+    ``route_decisions``, checked by the caller. ``resolve_path`` consults them before the
+    package's rows and its cache, and never caches them. No rows leaves an enclosing
+    query's rows in force (a nested compile is part of that query)."""
+    if not rows:
+        yield
+        return
+    token = _query_routes.set({pair: tuple(path) for pair, path in rows.items()})
+    try:
+        yield
+    finally:
+        _query_routes.reset(token)
 
 
 RouteChoice = tuple[str, str, tuple[tuple[str, ...], ...]]
@@ -229,17 +501,24 @@ def resolve_path(
     all ask it. Which of two routes a question means is a business definition, so it never
     guesses one, by hop count or otherwise:
 
+    0. The query's own ``route_decisions`` row for the exact pair (``query_route_decisions``)
+       wins, for that query only; it is never cached.
     1. A ``graph.path_preferences`` row for the pair wins.
     2. Exactly one route: it is used.
     3. Otherwise, when exactly one route is a direct relationship from ``start`` that reaches
        at most one row (the start row holds the target's key), it is used, and every route is
        returned with it.
     4. Otherwise ``AMBIGUOUS_PATH`` (``reason: route_decision_required``), whatever the
-       routes' lengths, naming each route, its meaning and the row that would record it.
+       routes' lengths, with ``details.clarification``: the question in business words and,
+       per route, its meaning and the row that decides it (``route_decision_required``).
 
     So more than one route comes back exactly when rule 3 chose. Routes and refusals are
-    cached per pair; ``route_basis`` says how a returned route was chosen.
+    cached per pair from package inputs only; ``route_basis`` says how a returned route was
+    chosen.
     """
+    chosen = (_query_routes.get() or {}).get((start, target))
+    if chosen is not None:
+        return list(chosen), [list(chosen)]
     pinned = get_package_analysis(config).path_preferences.get((start, target))
     if pinned is not None:
         return list(pinned), [list(pinned)]
@@ -309,7 +588,7 @@ def _resolve_uncached(config: PackageConfig, start: str, target: str) -> list[li
     ]
     if len(direct) == 1:
         return [direct[0], *(path for path in routes if path != direct[0])]
-    raise _route_decision_required(config, start, target, routes)
+    raise route_decision_required(config, start, target, routes)
 
 
 def build_hop_profile(
@@ -360,6 +639,9 @@ def build_hop_profile(
             "hops": hops,
             "alternates_considered": max(0, len(candidates.get(target, [])) - 1),
         }
+        label = route_label(config, root_entity, target, path)
+        if label:
+            targets[target]["route_label"] = label
         max_hop_count = max(max_hop_count, len(path))
     return {
         "root_entity": root_entity,

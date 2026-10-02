@@ -1121,7 +1121,8 @@ def _conditional_path_refusal(
 def conditional_aggregate_route_refusal(
     measure: MeasureConfig, target: str, exc: SemanticLayerError
 ) -> SemanticLayerError:
-    """The aggregate_if refusal for an entity its base reaches by no route, or by two."""
+    """The aggregate_if refusal for an entity its base reaches by no route, or by two (with
+    the route refusal's ``clarification``)."""
     return _conditional_path_refusal(
         measure.entity,
         target,
@@ -1129,7 +1130,11 @@ def conditional_aggregate_route_refusal(
         exc.code.lower(),
         str(exc.details.get("hint", ""))
         or "Declare a many-to-one relationship from the value's entity to this entity.",
-        candidates=exc.details.get("candidates", []),
+        **(
+            {"clarification": exc.details["clarification"]}
+            if "clarification" in exc.details
+            else {}
+        ),
     )
 
 
