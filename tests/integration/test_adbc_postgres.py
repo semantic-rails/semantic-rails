@@ -10,7 +10,6 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from datetime import time as clock_time
 from decimal import Decimal
-from uuid import UUID
 
 import pytest
 
@@ -86,18 +85,13 @@ def test_postgres_exact_types(adbc):
             {"type": "binary", "encoding": "base64"},
         ),
         (
-            "'12345678-1234-5678-9abc-def012345678'::UUID",
-            UUID("12345678-1234-5678-9abc-def012345678"),
-            {"type": "uuid"},
-        ),
-        (
             "'12345678-1234-5678-9abc-def012345678'::TEXT",
             "12345678-1234-5678-9abc-def012345678",
             {"type": "string"},
         ),
     ],
 )
-def test_postgres_time_binary_uuid_results(adbc, expression, value, metadata, contents):
+def test_postgres_time_binary_results(adbc, expression, value, metadata, contents):
     if contents == "null":
         expression = f"CASE WHEN FALSE THEN {expression} ELSE NULL END"
     rows = adbc.query(
@@ -131,7 +125,7 @@ def test_postgres_end_of_day_time_refuses_without_wrapping(adbc, positional):
     assert adbc.query("SELECT TIME '00:00:00' AS payload") == [{"payload": clock_time(0, 0)}]
 
 
-def test_postgres_semantic_dimension_on_uuid_key(adbc, tmp_path):
+def test_postgres_semantic_dimension_on_uuid_key_refuses(adbc, tmp_path):
     root = _package(tmp_path / "uuid_keys", [])
     config = load_package_config(str(root))
     package = replace(
@@ -152,34 +146,25 @@ def test_postgres_semantic_dimension_on_uuid_key(adbc, tmp_path):
     )
     runtime.set_adapter(adbc)
     try:
-        result = runtime.query(
-            {
-                "version": 1,
-                "select": [
-                    {
-                        "expression": {
-                            "kind": "aggregate",
-                            "measure": "measure.rf.revenue",
-                            "aggregation": "sum",
-                        },
-                        "as": "revenue",
-                    }
-                ],
-                "group_by": ["dimension.rf_order_order_ref"],
-                "order_by": [{"field": "dimension.rf_order_order_ref", "direction": "ASC"}],
-            }
-        )
-        assert result["column_types"]["dimension.rf_order_order_ref"] == {"type": "uuid"}
-        assert result["rows"] == [
-            {
-                "dimension.rf_order_order_ref": "12345678-1234-5678-9abc-def012345678",
-                "revenue": "10",
-            },
-            {
-                "dimension.rf_order_order_ref": "fedcba98-7654-3210-9abc-def012345678",
-                "revenue": "20",
-            },
-        ]
+        with pytest.raises(SemanticLayerError) as caught:
+            runtime.query(
+                {
+                    "version": 1,
+                    "select": [
+                        {
+                            "expression": {
+                                "kind": "aggregate",
+                                "measure": "measure.rf.revenue",
+                                "aggregation": "sum",
+                            },
+                            "as": "revenue",
+                        }
+                    ],
+                    "group_by": ["dimension.rf_order_order_ref"],
+                    "order_by": [{"field": "dimension.rf_order_order_ref", "direction": "ASC"}],
+                }
+            )
+        assert caught.value.code == "RESULT_TYPE_UNSUPPORTED"
     finally:
         runtime.close()
 
@@ -188,6 +173,8 @@ def test_postgres_semantic_dimension_on_uuid_key(adbc, tmp_path):
 @pytest.mark.parametrize(
     "expression",
     [
+        "'12345678-1234-5678-9abc-def012345678'::UUID",
+        "NULL::UUID",
         "ARRAY[1.20, 2.30, NULL]::NUMERIC[]",
         "ARRAY[123456789012345678.123456789]::NUMERIC[]",
         "NULL::NUMERIC[]",
