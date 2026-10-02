@@ -28,7 +28,7 @@ from .fanout import resolve_path, route_basis, route_meaning, route_pin
 from .schema import PackageConfig, PathPreferenceConfig
 
 Pair = tuple[str, str]
-# route_basis values that mean nobody decided the route: one route, or none was chosen.
+# route_basis values that leave nothing to confirm: the only route, or a recorded row.
 _DECIDED_BASES = frozenset({"", "recorded"})
 
 
@@ -47,13 +47,11 @@ class RouteOutcome:
         return {"refused": self.refused} if self.refused else {"relationship_path": [*self.path]}
 
     def candidate_routes(self) -> list[tuple[str, ...]]:
-        """Every route the resolver weighed for the pair, as the outcome reports them."""
+        """Every route the resolver weighed for the pair: an answer's routes, or the routes
+        an ``AMBIGUOUS_PATH`` refusal names (none for another refusal)."""
         if not self.refused:
             return list(self.routes)
-        if "candidates" in self.details:
-            return [tuple(route) for route in self.details["candidates"]]
-        options = dict(self.details.get("clarification") or {}).get("options") or []
-        return [tuple(option["relationship_path"]) for option in options]
+        return [tuple(route) for route in self.details.get("candidates", [])]
 
 
 def census_pairs(config: PackageConfig) -> list[Pair]:
