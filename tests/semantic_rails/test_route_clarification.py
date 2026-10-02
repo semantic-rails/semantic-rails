@@ -669,6 +669,82 @@ def test_record_route_decision_replaces_the_pair_row_and_reports_it(tmp_path):
     assert config.path_preferences[0].label == "home district"
 
 
+BRANCH_BY_KEY = {
+    "source_entity": "account",
+    "target_entity": "district",
+    "relationship_path": ["accounts_branch", "branches_district"],
+}
+
+
+def test_record_route_decision_replaces_every_spelling_of_the_pair(tmp_path):
+    """Two rows for the pair, by key and by id, become the one recorded row, which answers."""
+    branch_by_id = {**DIAMOND_ROW, "relationship_path": BRANCH_ROUTE}
+    pkg = _write_package(tmp_path, decisions=[BRANCH_BY_KEY, branch_by_id])
+    project = ArchitectProject(pkg, workspace_root=tmp_path)
+    report = project.record_route_decision(**DIAMOND_ROW).report
+    assert report["replaced"] == branch_by_id
+    assert _graph_rows(project) == [DIAMOND_ROW]
+    out = Runtime.from_path(str(pkg)).query(BALANCE_BY_DISTRICT)
+    assert _rows(out, ["dimension.bank_district_name", "v"]) == _gold(BY_OWNER)
+
+
+def test_record_route_decision_writes_the_list_the_loader_reads(tmp_path):
+    """A top-level path_preferences list in package.yml wins over graph.path_preferences: the
+    recorded row goes there, and takes effect."""
+    pkg = _write_package(tmp_path)
+    package = yaml.safe_load((pkg / "package.yml").read_text())
+    (pkg / "package.yml").write_text(
+        yaml.safe_dump({**package, "path_preferences": [BRANCH_BY_KEY]})
+    )
+    graph_before = (pkg / "graph.yml").read_bytes()
+    report = (
+        ArchitectProject(pkg, workspace_root=tmp_path).record_route_decision(**DIAMOND_ROW).report
+    )
+    assert (report["changed_files"], report["replaced"]) == (["package.yml"], BRANCH_BY_KEY)
+    assert yaml.safe_load((pkg / "package.yml").read_text())["path_preferences"] == [DIAMOND_ROW]
+    assert (pkg / "graph.yml").read_bytes() == graph_before
+    out = Runtime.from_path(str(pkg)).query(BALANCE_BY_DISTRICT)
+    assert _rows(out, ["dimension.bank_district_name", "v"]) == _gold(BY_OWNER)
+
+
+def test_record_route_decision_refuses_a_row_another_row_disagrees_with(tmp_path):
+    """The reverse pair's row walks (account, district) by the branch: recording the owner route
+    would leave two definitions of the pair. Refused, naming that row; nothing is written."""
+    reverse = {"source_entity": DISTRICT, "target_entity": ACCOUNT,
+               "relationship_path": BRANCH_ROUTE[::-1]}  # fmt: skip
+    project = ArchitectProject(
+        _write_package(tmp_path, decisions=[reverse]), workspace_root=tmp_path
+    )
+    files = {
+        name: (project.project_path / name).read_bytes() for name in ("graph.yml", "package.yml")
+    }
+    with pytest.raises(SemanticLayerError) as exc_info:
+        project.record_route_decision(**DIAMOND_ROW)
+    assert exc_info.value.code == "INVALID_CONFIG"
+    assert exc_info.value.details["rows"] == [reverse, DIAMOND_ROW]
+    assert str(project.project_path) in str(exc_info.value)
+    assert {name: (project.project_path / name).read_bytes() for name in files} == files
+
+
+def test_record_route_decision_refuses_a_row_that_would_not_take_effect(tmp_path, monkeypatch):
+    """The bypass: a changed package that still resolves the pair another way is refused."""
+    import semantic_rails.architect_service as service
+
+    resolve = service.package_route
+
+    def elsewhere(config, *, start, target):
+        resolution = resolve(config, start=start, target=target)
+        return resolution._replace(routes=((*BRANCH_ROUTE,),))
+
+    monkeypatch.setattr(service, "package_route", elsewhere)
+    project = _project(tmp_path)
+    revision = project.revision()
+    with pytest.raises(SemanticLayerError) as exc_info:
+        project.record_route_decision(**DIAMOND_ROW)
+    assert exc_info.value.details["reason"] == "route_decision_not_in_effect"
+    assert (project.revision(), _graph_rows(project)) == (revision, [])
+
+
 @pytest.mark.parametrize(
     "row",
     [
