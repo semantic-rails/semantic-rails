@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from semantic_rails.planner import plan as plan_module
 from semantic_rails.planner import plan_payload
 from tests.semantic_rails.conftest import opened
 
@@ -88,15 +89,22 @@ def test_faithfulness_gate_preserves_realized_and_supported_shapes(
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(runtime, intent=intent)
+        query = payload["best"]["query_ir"]
+        unasked_why = plan_module._unasked_grouping_why(runtime, intent, query)
+        named, _ = plan_module._named_groupings_unmet(runtime._config, intent, query)
     finally:
         runtime.close()
 
     assert payload["best"]["pattern"] == pattern
     if unasked:
-        # The faithfulness gate keeps the shape; a grouping the question never asks for holds it.
+        # The faithfulness gate keeps the shape; a grouping the question never asks for holds it,
+        # reported after a name the draft leaves unmet ("order" in "an order rate").
         assert payload["status"] == "low_confidence"
-        assert payload["why"]["code"] == "PLAN_UNASKED_GROUPING"
-        assert payload["why"]["details"]["unasked_groupings"] == unasked
+        assert payload["why"]["code"] == (
+            "PLAN_UNMATCHED_TERMS" if named else "PLAN_UNASKED_GROUPING"
+        )
+        assert unasked_why is not None
+        assert unasked_why["details"]["unasked_groupings"] == unasked
         assert "ready_for" not in payload["next"]
         return
     assert payload["status"] == "ok", payload.get("why")

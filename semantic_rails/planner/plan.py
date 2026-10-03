@@ -823,7 +823,8 @@ def _declared_name_spans(
     A name is a label (also without its parenthetical: "item revenue" for Item revenue
     (USD)), the last part of the object's name or an alias, matched as whole words. A span
     inside a longer one is part of that name: "customer type" names Customer type, not the
-    entity Customer as well.
+    entity Customer as well. ``underscores`` also joins words with underscores, keeps declared
+    boundary underscores ("_new_type") and reads only caller-visible objects.
     """
 
     groups: tuple[tuple[str, list[Any]], ...] = (
@@ -862,9 +863,8 @@ def _declared_name_spans(
 
 
 def _clock_spans(config: Any, lowered: str, query: dict[str, Any]) -> list[tuple[int, int]]:
-    """Where the question names a clock, which is the time block's: "week", or "order date"
-    for the query's Order time. A clock phrase is words joined by spaces only, never with a
-    level word."""
+    """Where the question names a clock, the time block's: "week", or "order date" for Order
+    time. A clock phrase is words joined by spaces only, never with a level word."""
 
     clocks = _query_clocks(config, query)
     words = list(re.finditer(r"[^\W_]+", lowered))
@@ -882,23 +882,15 @@ def _clock_spans(config: Any, lowered: str, query: dict[str, Any]) -> list[tuple
 def _pinned_fields(query: dict[str, Any]) -> set[str]:
     """The fields the draft's ``where`` pins to one value (``=``, or ``IN`` with one value)."""
 
-    return {
-        str(row["field"])
-        for row in _where_filters(query)
-        if "field" in row
-        and (
-            (
-                row.get("op") == "="
-                and row.get("value") is not None
-                and not isinstance(row.get("value"), (list, tuple, dict))
-            )
-            or (
-                str(row.get("op")).lower() == "in"
-                and isinstance(row.get("value"), list)
-                and len(row["value"]) == 1
-            )
-        )
-    }
+    pinned: set[str] = set()
+    for row in _where_filters(query):
+        op, value = str(row.get("op")).lower(), row.get("value")
+        if "field" in row and (
+            (op == "=" and not isinstance(value, (list, tuple, dict, type(None))))
+            or (op == "in" and isinstance(value, list) and len(value) == 1)
+        ):
+            pinned.add(str(row["field"]))
+    return pinned
 
 
 def _level_groupings_unmet(config: Any, question: str, query: dict[str, Any]) -> list[str]:
@@ -914,8 +906,7 @@ def _level_groupings_unmet(config: Any, question: str, query: dict[str, Any]) ->
     ``where`` pins to one value (``_pinned_fields``), and a name inside a clock phrase
     (``_clock_spans``) need nothing. The word before each level word, past commas and
     connectors, must end the name of a dimension, an entity or a clock; any other word
-    ("region level" with no Region) is unmet as well. The check only holds a plan; every
-    caller-visible name, in any question, also has ``_named_groupings_unmet``'s obligation.
+    ("region level" with no Region) is unmet as well. The check only holds a plan.
     """
 
     lowered = str(question or "").lower()
@@ -1004,56 +995,42 @@ def _grouping_filter_value_spans(
 def _named_groupings_unmet(
     config: Any, question: str, query: dict[str, Any]
 ) -> tuple[list[str], list[dict[str, str]]]:
-    """In any question, the caller-visible dimension and entity names the draft leaves without
-    their grouping, and the filters read from inside those names as ``{"term", "field",
-    "value"}``.
+    """The caller-visible dimension and entity names in any question, read with spaces,
+    underscores and any case (``_declared_name_spans``), that the draft leaves unmet, and the
+    filters read from inside them as ``{"term", "field", "value"}``.
 
-    Names are read with spaces, underscores and any case (``_declared_name_spans``): with an
-    alias ``_new_type`` for Customer type, "_new_type", "new_type" and "new type" name it.
-    Whatever words surround a name outside a clock phrase (``_clock_spans``), the draft must
-    group by or pin to one value (``_pinned_fields``, in ``where`` or in the ``all`` filter of a
-    metric it selects) the dimension it names, or for an entity one of the entity's
-    dimensions. A value word inside the name, or a word the selected
-    measure's name shares, never discharges it, and a positive filter whose value is read from
-    inside the name (``_grouping_filter_value_spans``) holds the plan even when the draft
-    groups by the name: the question may name only the grouping. Hidden objects are never
-    read. The check only holds a plan; it never changes a draft.
+    Outside a clock phrase (``_clock_spans``), the draft must group by the dimension a name names
+    (for an entity, one of its dimensions) or pin it to one value (``_pinned_fields``) in ``where``
+    or a selected metric's ``all`` filter. No value word inside the name or word of the measure's
+    label discharges it, and a positive filter whose value is read from inside the name holds the
+    plan even when the draft groups by it. The check only holds a plan; it never changes a draft.
     """
 
     lowered = str(question or "").lower()
     clock_spans = _clock_spans(config, lowered, query)
     values = _grouping_filter_value_spans(config, lowered, query)
-    # A metric the draft selects pins a dimension with its own filter as a draft filter does.
-    subjects = [
-        _object_by_id(config.metric_recipes, str((item.get("expression") or {}).get("metric")))
-        for item in query.get("select") or []
-        if isinstance(item, dict)
-    ]
-    own = [
-        clause
-        for row in subjects
-        if row is not None and isinstance(spec := getattr(row.expression, "filter", None), dict)
-        for clause in spec.get("all") or []
-    ]
-    where = {"where": [*(query.get("where") or []), *own]}
-    settled = set(query.get("group_by") or []) | _pinned_fields(where)
+    where = list(query.get("where") or [])
+    for item in query.get("select") or []:
+        # A metric the draft selects pins a dimension with its own filter as `where` does.
+        expression = item.get("expression") or {}
+        metric = _object_by_id(config.metric_recipes, str(expression.get("metric")))
+        spec = getattr(getattr(metric, "expression", None), "filter", None) or {}
+        where += spec.get("all") or []
+    settled = set(query.get("group_by") or []) | _pinned_fields({"where": where})
+    dimensions = visible_dimensions(config)
+    spans = _declared_name_spans(config, lowered, underscores=True)
     unmet: list[str] = []
     inside: list[dict[str, str]] = []
-    spans = _declared_name_spans(config, lowered, underscores=True)
     for (low, high), named in sorted(spans.items()):
         ids = {row.id for kind, row in named if kind != "value"}
         if not ids or any(a <= low and high <= b for a, b in clock_spans):
             continue
         term = " ".join(lowered[low:high].split())
-        found = [
-            {"term": term, "field": field, "value": value}
-            for (start, end), field, value in values
-            if low <= start and end <= high
-        ]
-        for row in found:
-            if row not in inside:
+        found = {(f, v): None for (start, end), f, v in values if low <= start and end <= high}
+        for field, value in found:
+            if (row := {"term": term, "field": field, "value": value}) not in inside:
                 inside.append(row)
-        ids |= {row.id for row in visible_dimensions(config) if row.entity in ids}
+        ids |= {row.id for row in dimensions if row.entity in ids}
         if found or not ids & settled:
             unmet.append(term)
     return list(dict.fromkeys(unmet)), inside
@@ -1072,11 +1049,9 @@ def _dropped_grouping_why(
     Any other listed grouping needs a dimension whose own words name it; a clock term ("by
     month", "by order date") is the time block's and a declared value is a filter, so neither
     needs one. One dimension satisfies one listed grouping. A question asking for a level or
-    grain must also have every grouping it names (``_level_groupings_unmet``). In any question,
-    every caller-visible dimension or entity name must be grouped or pinned, and a filter read
-    from inside one never stands (``_named_groupings_unmet``);
-    ``details.filter_inside_grouping`` names each such filter for the caller to confirm or
-    remove.
+    grain must also have every grouping it names (``_level_groupings_unmet``), and any question
+    every caller-visible name it holds (``_named_groupings_unmet``), never a filter read from
+    inside one: ``details.filter_inside_grouping`` names each for the caller to confirm or remove.
 
     A grouping whose dimensions belong to two or more entities, none of them the measure's own
     ("name" for an order count: Customer name, Store name and more), is ambiguous: plan holds
