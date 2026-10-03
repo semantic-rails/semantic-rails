@@ -7,7 +7,7 @@ import sys
 from typing import Any
 
 from ...errors import SemanticLayerError
-from ...mcp import SemanticLayerMCPAdapter, list_tool_definitions
+from ...mcp import SemanticLayerMCPAdapter
 from ...mcp_manager import (
     managed_mcp_lifecycle_report,
     mcp_client_config_report,
@@ -32,9 +32,13 @@ from ..common import (
 )
 from ..output import _package_display
 
+MCP_REQUIRED_TOOLS = ("discover", "inspect", "valid-values", "plan", "execute")
+
 
 def _mcp_tool_check(runtime: Runtime) -> dict[str, Any]:
-    required_tools = [tool["name"] for tool in list_tool_definitions(config=runtime.config)]
+    required_tools = list(MCP_REQUIRED_TOOLS)
+    if runtime.config.segments:
+        required_tools.append("segment")
     adapter = SemanticLayerMCPAdapter(runtime)
     try:
         tools = adapter.list_tools()

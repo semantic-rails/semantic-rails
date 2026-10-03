@@ -240,7 +240,7 @@ def test_replace_tool_handler_swaps_one_adapter_body_behind_the_boundary(
     assert other.tool_handlers["inspect"] == other._handle_inspect  # noqa: SLF001
     with pytest.raises(ValueError, match="Unknown MCP tool 'no-such-tool'"):
         adapter.replace_tool_handler("no-such-tool", handler)
-    assert set(adapter.tool_handlers) == REQUIRED_TOOL_NAMES - {"segment"}
+    assert set(adapter.tool_handlers) == REQUIRED_TOOL_NAMES
 
 
 class _HostAdapter:

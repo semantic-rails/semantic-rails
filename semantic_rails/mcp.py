@@ -154,7 +154,8 @@ MCP_SERVER_INSTRUCTIONS = (
     " for several values), and time {temporal_role, grain, start, end}, where end is "
     "exclusive. A window without a grain returns one total, with no time column. The execute tool "
     "schema lists expression shapes.\n"
-    "No time block reads all history; nothing is filtered by default. Package policies still apply.\n"
+    "No time/where: the query adds no time window or filter; "
+    "metric definitions and package policies still apply.\n"
     "\n"
     "segment(segment_id, action) validates, explains or previews a package-authored "
     "segment.\n"
@@ -607,8 +608,9 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "needs no validate. select may be empty: group_by alone lists rows. "
             "IR: select[]={expression:{...},as}, group_by[]=[<dim>,...] (not in "
             "select), where[]={field,op,value}, order_by[]={field,direction}. select.expression:\n"
-            'Per-order average: {"kind":"ratio","numerator":{"measure":"measure.jaffle.revenue_usd"},'
-            '"denominator":{"measure":"measure.jaffle.order_count"}}\n'
+            "{aggregation, measure} | {metric} | "
+            "{kind: prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|arithmetic|...}\n"
+            "ratio: per-order sum / order count.\n"
             "arithmetic adds measures; aggregate_if: conditional count."
         ),
         input_schema=_schema(
@@ -1696,22 +1698,6 @@ class SemanticLayerMCPAdapter:
         self.interface = _INTERFACE
         self.runtime = runtime
         self.package_id = runtime.package_id
-        config = runtime.config
-        self._tools = list_tool_definitions(config=config)
-        self.instructions = MCP_SERVER_INSTRUCTIONS
-        if config.package.package_id != "jaffle_shop":
-            examples = [measure.id for measure in config.measures[:1]]
-            examples += [dimension.id for dimension in config.dimensions if dimension.groupable][:1]
-            self.instructions = self.instructions.replace(
-                " (measure.jaffle.revenue_usd, dimension.jaffle_store_name)",
-                f" ({', '.join(examples)})" if examples else "",
-            )
-        if not any(tool["name"] == "segment" for tool in self._tools):
-            self.instructions = self.instructions.replace(
-                "segment(segment_id, action) validates, explains or previews a package-authored "
-                "segment.\n\n",
-                "",
-            )
         self._tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             "discover": self._handle_discover,
             "inspect": self._handle_inspect,
@@ -1720,9 +1706,17 @@ class SemanticLayerMCPAdapter:
             "execute": self._handle_execute_mode,
             "segment": self._handle_segment_action,
         }
-        self._tool_handlers = {
-            tool["name"]: self._tool_handlers[tool["name"]] for tool in self._tools
-        }
+
+    @property
+    def instructions(self) -> str:
+        instructions = MCP_SERVER_INSTRUCTIONS
+        if not any(tool["name"] == "segment" for tool in self.list_tools()):
+            instructions = instructions.replace(
+                "segment(segment_id, action) validates, explains or previews a package-authored "
+                "segment.\n\n",
+                "",
+            )
+        return instructions
 
     @classmethod
     def from_package(
@@ -1741,7 +1735,7 @@ class SemanticLayerMCPAdapter:
     def replace_tool_handler(
         self, name: str, handler: Callable[[dict[str, Any]], dict[str, Any]]
     ) -> None:
-        """Serve the listed tool ``name`` with ``handler`` on this adapter only.
+        """Serve the tool ``name`` with ``handler`` when the current package lists it.
 
         ``call_tool`` still validates the arguments, merges the trusted request context and
         audits the call. Like the built-in tools, ``handler`` runs inside the adapter's
@@ -1755,13 +1749,18 @@ class SemanticLayerMCPAdapter:
         self.runtime.close()
 
     def list_tools(self) -> list[dict[str, Any]]:
-        return copy.deepcopy(self._tools)
+        return list_tool_definitions(config=self.runtime.config)
 
     def list_resources(self) -> list[dict[str, Any]]:
         return list_resource_definitions()
 
     def list_prompts(self) -> list[dict[str, Any]]:
-        return list_prompt_definitions()
+        has_segment = any(tool["name"] == "segment" for tool in self.list_tools())
+        return [
+            prompt
+            for prompt in list_prompt_definitions()
+            if prompt["name"] != "semantic-rails-segment-workflow" or has_segment
+        ]
 
     def call_tool(
         self,
@@ -1829,8 +1828,9 @@ class SemanticLayerMCPAdapter:
             arguments, request_context, inject_policy_context=policy_aware
         )
         handler = self._tool_handlers.get(name)
-        if handler is None:
-            details: dict[str, Any] = {"tool": name, "available_tools": sorted(self._tool_handlers)}
+        available_tools = {tool["name"] for tool in self.list_tools()}
+        if handler is None or name not in available_tools:
+            details: dict[str, Any] = {"tool": name, "available_tools": sorted(available_tools)}
             message = f"Unknown MCP tool '{name}'"
             replacement = _REMOVED_TOOLS.get(name)
             if replacement:
@@ -1960,7 +1960,7 @@ class SemanticLayerMCPAdapter:
 
     def get_prompt(self, name: str, arguments: Mapping[str, Any] | None = None) -> dict[str, Any]:
         args = dict(arguments or {})
-        if name in _PROMPT_TEXT:
+        if name in {prompt["name"] for prompt in self.list_prompts()}:
             text = _PROMPT_TEXT[name].format(
                 intent=str(args.get("intent", "") or ""),
                 package_id=str(args.get("package_id", self.package_id) or self.package_id),

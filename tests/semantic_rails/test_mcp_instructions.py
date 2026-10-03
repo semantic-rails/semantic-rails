@@ -15,6 +15,7 @@ import sys
 import types
 from collections.abc import Iterator
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -28,7 +29,10 @@ from semantic_rails.mcp import (
     list_tool_definitions,
 )
 from semantic_rails.mcp_server import handle_jsonrpc_message
+from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
+from semantic_rails.schema import SemanticPolicyConfig
+from tests.semantic_rails.conftest import copy_package_config
 
 MINIMAL_ARGUMENTS: dict[str, dict[str, Any]] = {
     "discover": {"terms": "revenue"},
@@ -72,8 +76,8 @@ def test_initialize_sends_the_workflow_once(adapter: SemanticLayerMCPAdapter) ->
     for tool in MINIMAL_ARGUMENTS:
         assert f"{tool}" in instructions, tool
     assert "policy_context" not in instructions
-    assert "No time block reads all history; nothing is filtered by default" in instructions
-    assert "Package policies still apply" in instructions
+    assert "the query adds no time window or filter" in instructions
+    assert "metric definitions and package policies still apply" in instructions
 
 
 def test_descriptions_carry_no_loop_ceremony() -> None:
@@ -94,7 +98,10 @@ def test_package_segments_control_the_tool_registry(
         tools = served.list_tools()
         names = {tool["name"] for tool in tools}
         assert ("segment" in names) is has_segments
-        assert set(served.tool_handlers) == names
+        assert set(served.tool_handlers) == {tool["name"] for tool in list_tool_definitions()}
+        assert (
+            "semantic-rails-segment-workflow" in {p["name"] for p in served.list_prompts()}
+        ) is has_segments
         assert ("segment(" in served.instructions) is has_segments
         if has_segments:
             assert tools == list_tool_definitions()
@@ -111,6 +118,100 @@ def test_package_segments_control_the_tool_registry(
             assert approx_tokens(served.instructions) < approx_tokens(MCP_SERVER_INSTRUCTIONS)
         tools[0]["inputSchema"]["properties"].clear()
         assert served.list_tools()[0]["inputSchema"]["properties"]
+    finally:
+        served.close()
+
+
+@pytest.mark.parametrize("grant", [False, True])
+def test_initialize_does_not_disclose_hidden_package_ids(adapter, grant) -> None:
+    config = adapter.runtime.config
+    measure = replace(config.measures[0], id="measure.jaffle.hidden_revenue")
+    dimension = replace(
+        next(d for d in config.dimensions if d.groupable), id="dimension.jaffle_hidden_store"
+    )
+    hidden = [measure.id, dimension.id]
+    config = replace(
+        config,
+        package=replace(config.package, package_id="restricted_catalogue"),
+        measures=[measure],
+        dimensions=[dimension],
+        metric_recipes=[],
+        segments=[],
+        semantic_policies=[
+            SemanticPolicyConfig(
+                id="policy.jaffle.hidden_examples",
+                kind="object_visibility",
+                object_ids=hidden,
+                audiences=["ops"],
+                action="hidden",
+            )
+        ],
+    )
+    runtime = Runtime.from_config(config, source_path=adapter.runtime.source_path)
+    served = SemanticLayerMCPAdapter(runtime)
+    context = RequestContext(
+        audience="ops",
+        metric_allowlist=() if grant else None,
+        dimension_allowlist=() if grant else None,
+    )
+    try:
+        discover = served.call_tool("discover", {}, request_context=context)
+        assert discover["ok"], discover
+        response = handle_jsonrpc_message(
+            served,
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+            request_context=context,
+        )
+        instructions = response["result"]["instructions"]
+        for object_id in hidden:
+            assert object_id not in str(discover)
+            assert object_id not in instructions
+        assert "(measure.jaffle.revenue_usd, dimension.jaffle_store_name)" in instructions
+    finally:
+        served.close()
+
+
+def test_segment_availability_tracks_runtime_reload(tmp_path: Path) -> None:
+    path = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    segment_path = path / "segments/core.yml"
+    authored = segment_path.read_bytes()
+    segment_path.unlink()
+    served = SemanticLayerMCPAdapter.from_path(str(path))
+    prompt = "semantic-rails-segment-workflow"
+
+    def assert_available(available: bool) -> None:
+        names = {tool["name"] for tool in served.list_tools()}
+        assert ("segment" in names) is available
+        assert (prompt in {p["name"] for p in served.list_prompts()}) is available
+        response = handle_jsonrpc_message(
+            served, {"jsonrpc": "2.0", "id": 1, "method": "initialize"}
+        )
+        assert ("segment(" in response["result"]["instructions"]) is available
+        result = served.call_tool(
+            "segment", {"segment_id": "segment.jaffle.high_value_customers", "action": "validate"}
+        )
+        if available:
+            assert result["ok"], result
+            assert served.get_prompt(prompt)["messages"]
+        else:
+            assert result["errors"][0]["code"] == "UNKNOWN_MCP_TOOL", result
+            assert result["errors"][0]["details"]["available_tools"] == sorted(names)
+            assert served.get_prompt(prompt)["errors"][0]["code"] == "UNKNOWN_MCP_PROMPT"
+
+    try:
+        assert_available(False)
+        segment_path.write_bytes(authored)
+        served.runtime.reload()
+        assert_available(True)
+        segment_path.unlink()
+        served.runtime.reload()
+        assert_available(False)
+        # Hosted replacements can be registered even while the tool is unavailable.
+        served.replace_tool_handler("segment", lambda _args: {"ok": True, "replacement": True})
+        assert_available(False)
+        segment_path.write_bytes(authored)
+        served.runtime.reload()
+        assert served.call_tool("segment", MINIMAL_ARGUMENTS["segment"])["replacement"] is True
     finally:
         served.close()
 

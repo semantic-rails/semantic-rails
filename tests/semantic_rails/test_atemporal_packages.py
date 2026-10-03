@@ -93,16 +93,6 @@ def runtime(package_path: Path):
         runtime.close()
 
 
-def test_mcp_instructions_use_the_served_package_ids(runtime) -> None:
-    adapter = SemanticLayerMCPAdapter(runtime)
-    config = runtime.config
-    first_dimension = next(d.id for d in config.dimensions if d.groupable)
-    assert f"({config.measures[0].id}, {first_dimension})" in adapter.instructions
-    assert "jaffle" not in adapter.instructions
-    assert "segment" not in adapter.instructions
-    assert "segment" not in {tool["name"] for tool in adapter.list_tools()}
-
-
 def test_mcp_doctor_accepts_a_package_without_segments(runtime) -> None:
     result = _mcp_tool_check(runtime)
     assert result["required_tools_present"], result

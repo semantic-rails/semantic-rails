@@ -102,15 +102,16 @@ tool/schema drift cannot be merged silently.
 - `execute` (`/api/v1/query`): validate, compile and run Query IR. `mode="validate"` or
   `mode="sql"` stops before running it.
 - `segment`: `action="validate"`, `"explain"` or `"preview"` for a package-authored segment.
-  Listed only when the served package defines segments; its instruction is omitted otherwise.
+  Listed only when the current package defines segments; its instruction and workflow prompt
+  are omitted otherwise. Tool availability follows `Runtime.reload()` on the same adapter.
 
 `initialize` returns the workflow as server `instructions` (under 2KB): find objects with
 `discover`, draft Query IR with `plan`, and run it with `execute`, which validates and compiles
 first, so its `validate` and `sql` modes are optional dry runs. The instructions also carry the
 conventions every tool shares: full ids, response detail controls, and recovery hints.
-Package examples use its first measure and first groupable dimension; the bundled
-`jaffle_shop` keeps its revenue and store examples. With no time block, queries read all
-history and add no default filters; authored package policies still apply.
+Instructions use static `jaffle_shop` examples for every package and never insert package
+object ids. Without `time` or `where`, the query adds no time window or filter; metric
+definitions and package policies still apply.
 Each tool description then says what the tool does, when to use it, and its
 one gotcha. Every tool returns its smallest response by default (`verbosity="minimal"`, `plan`
 `detail="query"`); ask for more only when you need it.
@@ -122,8 +123,8 @@ transports supply the trusted context and ignore the argument.
 
 `tools/list` is paid once at connect time, before the first call. To keep it bounded, the IR
 cheat-sheet and the full Query-IR time-block schema ship once, on `execute`; the other
-IR-accepting tools point at it. The description includes a runnable per-order ratio
-expression, arithmetic and conditional-count hints, and lists rows with an empty `select`
+IR-accepting tools point at it. The description includes the expression-shape list, per-order ratio, arithmetic and
+conditional-count hints, and lists rows with an empty `select`
 and `group_by` alone. `validate` checks a query before it runs; a query that already ran
 needs no validation.
 
@@ -530,7 +531,7 @@ Declarative prompts:
 
 - `semantic-rails-query-builder`
 - `semantic-rails-query-review`
-- `semantic-rails-segment-workflow`
+- `semantic-rails-segment-workflow` (only when the current package defines segments)
 
 Use `adapter.read_resource(uri)` and `adapter.get_prompt(name, arguments)` to access these
 surfaces in process.

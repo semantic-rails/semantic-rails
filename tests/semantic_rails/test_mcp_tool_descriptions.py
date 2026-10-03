@@ -82,15 +82,22 @@ def test_plan_description_mentions_out_of_scope_branch():
     )
 
 
-def test_execute_description_examples_validate(runtime_factory):
+def test_execute_description_shapes_and_empty_select_validate(runtime_factory):
     tools = list_tool_definitions()
     execute_desc = next(t["description"] for t in tools if t["name"] == "execute")
-    examples = [
-        json.loads(line[line.index("{") :])
-        for line in execute_desc.splitlines()
-        if '{"kind":' in line
-    ]
-    assert {example["kind"] for example in examples} == {"ratio"}
+    assert "{aggregation, measure} | {metric}" in execute_desc
+    for kind in (
+        "prior_period",
+        "rolling",
+        "cumulative",
+        "ratio",
+        "conversion",
+        "aggregate_if",
+        "between",
+        "arithmetic",
+    ):
+        assert kind in execute_desc
+    assert "ratio: per-order sum / order count" in execute_desc
     assert "arithmetic adds measures" in execute_desc
     assert "aggregate_if: conditional count" in execute_desc
     assert "select may be empty: group_by alone lists rows" in execute_desc
@@ -99,10 +106,6 @@ def test_execute_description_examples_validate(runtime_factory):
 
     adapter = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
     try:
-        for example in examples:
-            query = {"select": [{"as": "value", "expression": example}]}
-            result = adapter.call_tool("execute", {"mode": "validate", "query": query})
-            assert result["ok"], result
         result = adapter.call_tool(
             "execute",
             {"mode": "run", "query": {"select": [], "group_by": ["dimension.jaffle_store_name"]}},
@@ -339,7 +342,6 @@ def test_discover_minimal_verbosity_slims_records(runtime_factory):
     Also verify the wire size shrinks materially — minimal should be
     a fraction of compact, otherwise the verbosity level is doing no
     work."""
-    import json
 
     from semantic_rails.mcp import SemanticLayerMCPAdapter
 
