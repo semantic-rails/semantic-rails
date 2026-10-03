@@ -70,27 +70,22 @@ def _freeze_payload(value: Any) -> str:
     return json.dumps(value, sort_keys=True, default=str)
 
 
-def _conditional_parts(expr: Any) -> tuple[Any, Any] | None:
-    """``(condition, body)`` when an aggregate of ``expr`` reads only the rows where the
-    condition holds, else ``None``. Only no ELSE or ELSE NULL can exclude other rows:
-    even ELSE 0 contributes a known value when every matching body is NULL."""
-    if (
-        not isinstance(expr, SqlCase)
-        or len(expr.whens) != 1
-        or (
-            expr.else_expr is not None
-            and not (isinstance(expr.else_expr, SqlLiteral) and expr.else_expr.value is None)
-        )
-    ):
-        return None
-    return expr.whens[0].condition, expr.whens[0].result
+def is_conditional_case(expr: Any) -> bool:
+    """Whether an aggregate of ``expr``, a CASE in SQL or in a measure's config, reads only the
+    rows one of its conditions keeps. Only no ELSE or ELSE NULL can exclude other rows: even
+    ELSE 0 contributes a known value when every matching body is NULL."""
+    if not isinstance(expr, SqlCase | CaseExpr):
+        return False
+    other = expr.else_expr
+    return other is None or (isinstance(other, SqlLiteral | LiteralExpr) and other.value is None)
 
 
 def _row_marker(expr: Any) -> Any:
-    """1 on each row an aggregate of ``expr`` reads, NULL on the rest: a conditional aggregate
-    reads only the rows its condition keeps (``aggregate_if``), any other every row."""
-    parts = _conditional_parts(expr)
-    return SqlLiteral(1) if parts is None else SqlCase([SqlCaseWhen(parts[0], SqlLiteral(1))])
+    """1 on each row an aggregate of ``expr`` reads, NULL on the rest: a conditional CASE reads
+    only the rows one of its conditions keeps (``aggregate_if``), any other every row."""
+    if not is_conditional_case(expr):
+        return SqlLiteral(1)
+    return SqlCase([SqlCaseWhen(item.condition, SqlLiteral(1)) for item in expr.whens])
 
 
 def _maybe_conditional_aggregate(expr: Any, aggregation: str, dialect: SqlDialect) -> Any | None:
@@ -114,11 +109,10 @@ def _maybe_conditional_aggregate(expr: Any, aggregation: str, dialect: SqlDialec
       count rows where a flag is true, with body = key column and
       explicit ``else: literal null``).
     """
-    parts = _conditional_parts(expr)
-    if parts is None:
+    if not is_conditional_case(expr) or len(expr.whens) != 1:
         return None
     agg = aggregation.lower()
-    condition, body = parts
+    condition, body = expr.whens[0].condition, expr.whens[0].result
     if agg == "count":
         # ``aggregate_if(count, cond)`` lowers to body=Literal(1). Pass
         # value=None so dialect.conditional_aggregate emits the

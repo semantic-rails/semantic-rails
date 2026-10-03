@@ -74,6 +74,7 @@ from .compiler_parts.empty_groups import (
     expr_resolves_to_zero,
     recording_zero_outputs,
     require_settled_source,
+    unknown_sums_read_zero,
 )
 from .compiler_parts.grain_recovery import mixed_grain_pairing_enrichment
 from .compiler_parts.indexes import (
@@ -1928,6 +1929,16 @@ def _predicate_includes_entities_without_rows(
     ) and _predicate_input_zero_on_missing(predicate.input, config)
 
 
+def _predicate_reads_one_measure(expr: SemanticExpr, config: PackageConfig) -> bool:
+    """Whether the predicate input is one measure, so a NULL value means that measure's amounts
+    are unknown for the entity. An add or subtract is NULL where any operand is, though the
+    others have data, which the absent-entity gate can't tell from no data at all."""
+    if isinstance(expr, MetricRecipeRefExpr):
+        recipe = _recipe_index(config).get(expr.metric_recipe)
+        return recipe is not None and _predicate_reads_one_measure(recipe.expression, config)
+    return isinstance(expr, MeasureRefExpr | AggregateExpr)
+
+
 def _inline_threshold_cte_and_where(
     *,
     predicate: Any,
@@ -2481,7 +2492,12 @@ def _predicate_ctes_and_join(
         mini_query["time"] = _public_time_spec(scope["time_spec"])
     with binding_cut():
         _entity_index(config)[predicate.entity]
-    predicate_sql = _compile_predicate_source_ast(config, mini_query)
+    without_rows = _predicate_includes_entities_without_rows(predicate, config)
+    # Over several measures the source reads each operand's unknown amounts as 0 where its
+    # measure has data in scope, so the gate below sees a value for every entity with rows.
+    several = without_rows and not _predicate_reads_one_measure(predicate.input, config)
+    with unknown_sums_read_zero(several):
+        predicate_sql = _compile_predicate_source_ast(config, mini_query)
     source_name, set_name = _predicate_sql_names(predicate, index, scope)
     source_cte = SqlCte(
         name=source_name, query=_namespace_sql_select(predicate_sql, f"{source_name}__")
@@ -2510,23 +2526,21 @@ def _predicate_ctes_and_join(
         source_name=source_name,
         config=config,
     )
-    without_rows = _predicate_includes_entities_without_rows(predicate, config)
     if without_rows:
-        # The set holds the entities that fail the threshold, and those whose value is unknown
-        # (NULL: their rows have no values), which meets no threshold. Never coalesce the
-        # value: the source is settled like any query, so only an entity it doesn't list has
-        # no rows, and with no settled value at all the gate below drops every row.
+        # The set holds the entities that fail the threshold, and, for one measure, those whose
+        # value is unknown (NULL: their rows have no values), which meets no threshold. Never
+        # coalesce the value: the source is settled like any query, so only an entity it
+        # doesn't list has no rows, and with no settled value at all the gate below drops
+        # every row.
         value = SqlIdentifier(parts=["predicate_source", "__predicate_value"])
-        where_condition = SqlBinary(
-            build_filter_condition(
-                value,
-                _INVERSE_THRESHOLD_OPS[" ".join(str(predicate.op).upper().split())],
-                predicate.value,
-                path="metric_predicate",
-            ),
-            "OR",
-            SqlIsNull(value),
+        where_condition = build_filter_condition(
+            value,
+            _INVERSE_THRESHOLD_OPS[" ".join(str(predicate.op).upper().split())],
+            predicate.value,
+            path="metric_predicate",
         )
+        if not several:
+            where_condition = SqlBinary(where_condition, "OR", SqlIsNull(value))
     set_query = SqlSelect(
         select=select_fields,
         from_table=SqlTableRef(name=source_name, alias="predicate_source"),

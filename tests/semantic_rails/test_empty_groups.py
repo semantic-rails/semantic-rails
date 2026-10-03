@@ -422,12 +422,15 @@ SHOP_STORE = "dimension.shop_order_store_id"
 SHOP_MONTH = {"temporal_role": "temporal_role.shop_order_ordered_at", "grain": "month"}
 SHOP_REVENUE = {"measure": "measure.shop.revenue"}
 SHOP_ORDERS = {"measure": "measure.shop.order_count"}
+SHOP_GOODS = {"measure": "measure.shop.goods_refunded"}
+SHOP_SHIPPING = {"measure": "measure.shop.shipping_refunded"}
 IN_STORE_A = {
     "kind": "comparison",
     "op": "=",
     "left": {"kind": "column", "column": "store_id", "entity": "entity.shop_order"},
     "right": {"kind": "literal", "value": "a"},
 }
+IN_STORE_B = {**IN_STORE_A, "right": {"kind": "literal", "value": "b"}}
 
 
 @pytest.fixture(scope="module")
@@ -491,6 +494,25 @@ def test_branch_row_markers_never_shadow_projected_values(
         assert got[(None, "2023-11")] == (15, 7.5)
 
 
+def test_an_output_named_like_a_row_count_keeps_its_name_in_order_by(shop: Runtime) -> None:
+    """The leaf's hidden row count is renamed internally; a caller's alias of the same name is
+    the caller's, so ordering by it orders by the output, not by an internal column."""
+    alias = "leaf__measure_shop_revenue__sum__rows"
+    response = shop.query(
+        {
+            "version": 1,
+            "select": _select(**{alias: SHOP_REVENUE}),
+            "group_by": [SHOP_STORE],
+            "order_by": [{"field": alias, "direction": "desc"}],
+        }
+    )
+    got = [(row[SHOP_STORE], row[alias]) for row in typed_rows(response)]
+    gold = _gold(
+        shop, "SELECT store_id AS s, SUM(amount) AS revenue FROM orders GROUP BY 1 ORDER BY 2 DESC"
+    )
+    assert got == [(row["s"], row["revenue"]) for row in gold] == [("a", 43), ("b", 25), (None, 6)]
+
+
 @pytest.mark.parametrize("else_value", [None, 0, 2])
 @pytest.mark.parametrize("by_store", [False, True])
 def test_case_sum_preserves_explicit_else_contributions(
@@ -546,6 +568,59 @@ def test_case_sum_preserves_explicit_else_contributions(
             assert got[("a", "2024-05")] is None
         else:
             assert got[(None, "2024-05")] == else_value
+    finally:
+        rt.close()
+
+
+@pytest.mark.parametrize("else_null", [False, True])
+def test_a_case_with_two_branches_is_zero_only_where_no_row_meets_either(
+    shop_package: Path, else_null: bool
+) -> None:
+    """A second branch is still a condition: a group none of whose rows meets a branch reads 0,
+    as with one branch, and a group whose matching rows have no amount stays unknown."""
+    amount = {"kind": "column", "column": "amount"}
+    payload: dict[str, Any] = {
+        "kind": "case",
+        "whens": [{"when": IN_STORE_A, "then": amount}, {"when": IN_STORE_B, "then": amount}],
+    }
+    if else_null:
+        payload["else"] = {"kind": "literal", "value": None}
+    config = load_package_config(str(shop_package))
+    config = replace(
+        config,
+        aggregate_relations=[],
+        measures=[
+            replace(row, expr=parse_config_expression(payload))
+            if row.id == SHOP_REVENUE["measure"]
+            else row
+            for row in config.measures
+        ],
+    )
+    rt = Runtime.from_config(config, source_path=str(shop_package))
+    try:
+        response = rt.query(
+            {
+                "version": 1,
+                "select": _select(revenue=SHOP_REVENUE),
+                "group_by": [SHOP_STORE],
+                "time": SHOP_MONTH,
+            }
+        )
+        month = f"{SHOP_MONTH['temporal_role']}__month"
+        got = {
+            (row[SHOP_STORE], str(row[month])[:7]): row["revenue"] for row in typed_rows(response)
+        }
+        gold = _gold(
+            rt,
+            "SELECT store_id AS s, date_trunc('month', ordered_at) AS month, "
+            "CASE WHEN COUNT(CASE WHEN store_id = 'a' THEN 1 WHEN store_id = 'b' THEN 1 END) = 0 "
+            "THEN 0 ELSE SUM(CASE WHEN store_id = 'a' THEN amount "
+            "WHEN store_id = 'b' THEN amount END) END AS revenue FROM orders GROUP BY 1, 2",
+        )
+        assert got == {(row["s"], str(row["month"])[:7]): row["revenue"] for row in gold}
+        # Order 8 has no store, so it meets neither branch; order 7 meets one with no amount.
+        assert got[(None, "2024-05")] == 0
+        assert got[("a", "2024-05")] is None
     finally:
         rt.close()
 
@@ -625,26 +700,67 @@ def test_an_unknown_value_meets_no_threshold_not_even_one_zero_passes(shop: Runt
     assert got == {row["s"]: row["n"] for row in gold} == {"a": 2, "b": 1}
 
 
-def test_a_rollup_never_answers_a_conditional_sum(shop_package: Path) -> None:
-    """A rollup's sum can't tell rows that all fail a CASE condition (0) from rows that meet it
-    with no value (NULL), so routing leaves such a measure on the base table."""
-    config = load_package_config(str(shop_package))
-    conditional = parse_config_expression(
+def test_a_threshold_zero_passes_on_a_sum_of_measures_keeps_entities_without_rows(
+    shop: Runtime,
+) -> None:
+    """Without order 7, every order with refunds has goods or shipping amounts, never both. A
+    NULL sum of the two then doesn't say either measure lacks data in scope, so the orders with
+    no refunds still qualify (0 + 0 = 0); an operand's unknown amounts read 0 here."""
+    no_refund = {
+        "kind": "metric_predicate",
+        "entity": "entity.shop_order",
+        "scope_mode": "contextual",
+        "input": {"kind": "arithmetic", "op": "add", "left": SHOP_GOODS, "right": SHOP_SHIPPING},
+        "op": "=",
+        "value": 0,
+    }
+    response = shop.query(
         {
-            "kind": "case",
-            "whens": [{"when": IN_STORE_A, "then": {"kind": "column", "column": "amount"}}],
+            "version": 1,
+            "select": _select(orders=SHOP_ORDERS),
+            "group_by": [SHOP_ORDER],
+            "where": [{"field": SHOP_ORDER, "op": "!=", "value": 7}],
+            "metric_filters": [{"expression": no_refund, "op": "=", "value": True}],
         }
     )
+    got = sorted(row[SHOP_ORDER] for row in typed_rows(response))
+    gold = _gold(
+        shop,
+        "SELECT order_id AS id FROM orders WHERE order_id <> 7 "
+        "AND order_id NOT IN (SELECT order_id FROM refunds) ORDER BY 1",
+    )
+    assert got == [row["id"] for row in gold] == [1, 3, 5, 8, 9, 10, 11]
+
+
+@pytest.mark.parametrize("branches", [1, 2])
+@pytest.mark.parametrize("else_value", ["none", None, 0])
+def test_a_rollup_never_answers_a_conditional_sum(
+    shop_package: Path, branches: int, else_value: int | str | None
+) -> None:
+    """A rollup's sum can't tell rows that all fail a CASE condition (0) from rows that meet it
+    with no value (NULL), so routing leaves such a measure on the base table. A non-NULL ELSE
+    reads every row, as the base path's row count does, so the rollup may answer it."""
+    config = load_package_config(str(shop_package))
+    amount = {"kind": "column", "column": "amount"}
+    whens = [{"when": IN_STORE_A, "then": amount}, {"when": IN_STORE_B, "then": amount}]
+    payload: dict[str, Any] = {"kind": "case", "whens": whens[:branches]}
+    if else_value != "none":
+        payload["else"] = {"kind": "literal", "value": else_value}
     config = replace(
         config,
         measures=[
-            replace(row, expr=conditional) if row.id == SHOP_REVENUE["measure"] else row
+            replace(row, expr=parse_config_expression(payload))
+            if row.id == SHOP_REVENUE["measure"]
+            else row
             for row in config.measures
         ],
     )
     query = {"select": _select(revenue=SHOP_REVENUE), "group_by": [SHOP_STORE], "time": SHOP_MONTH}
     compiled = compile_query(config, Registry(config), {"version": 1, **query})
     (leaf,) = compiled["logical_plan"].measure_plans
+    if else_value == 0:
+        assert leaf.aggregate_relation_id != ""
+        return
     assert leaf.aggregate_relation_id == ""
     assert set(leaf.aggregate_relation_rejections.values()) == {"aggregation_not_reaggregable"}
 
