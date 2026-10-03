@@ -478,7 +478,9 @@ It denies other repeated reads, joins, other relations and rollups (routing is o
 a row filter). DuckDB binds `?` directly; Postgres preparation finalizes slots as
 `$1`, `$2`, … and ADBC validates them before connecting. Other adapters deny
 parameterized SQL. Empty-group settlement lives in `compiler_parts/empty_groups.py`: untimed
-observation determines whether zero is defined, and base time coverage bounds only zero
+observation determines whether zero is defined, each sum's leaf counts the rows it read so
+zero goes only to a group with none (never to rows whose amounts are all NULL; a leaf without
+the count is refused), and base time coverage bounds only zero
 substitution on filled, dense or combined leaves. One predicate decides both coverage and
 rollup refusal, on DuckDB and Postgres only. Populated values pass through; routed
 queries keep the window test and never scan a shadow raw leaf.

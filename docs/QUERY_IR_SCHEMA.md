@@ -729,16 +729,24 @@ non-NULL amount, or a count above zero. The scope is the measure's own filters, 
 `where` filters and policy row filters, before the `group_by`. Plain time leaves check
 for data outside the query's time bounds (DuckDB and Postgres; see time coverage below).
 Where a measure has data in scope,
-a group with no rows reads `0`: a store with orders but no refunds has 0 refunds, and a
-month whose orders all have a NULL amount has a revenue of 0. Where it has none, every group
-reads `NULL`: with no refunds anywhere in scope, no store has "0 refunds", because nothing
-says refunds were recorded. An average, minimum or maximum of nothing is undefined, and a
-stock has no value for a period nobody observed, so neither is ever made zero.
+a group with no rows reads `0`: a store with orders but no refunds has 0 refunds. Where it has
+none, every group reads `NULL`: with no refunds anywhere in scope, no store has "0 refunds",
+because nothing says refunds were recorded. An average, minimum or maximum of nothing is
+undefined, and a stock has no value for a period nobody observed, so neither is ever made zero.
 
-- **Arithmetic** settles each operand first, then combines them, so `goods + shipping` by
-  refund type returns numbers even where one column is NULL for a type. An operand with no
-  data in scope stays `NULL` and so does the result: `revenue - refunds` is `NULL` if refunds
-  were never recorded. Division by zero is `NULL`.
+A group whose rows exist but whose amounts are all NULL is not empty: its amounts are unknown,
+so its sum reads `NULL`, as SQL's `SUM` does, while its count still counts the rows. A month
+whose orders all have a NULL amount has a revenue of `NULL` and an order count above 0; a
+month that mixes NULL and known amounts sums the known ones. A conditional sum
+(`aggregate_if`, or an aggregate with a `filter`) reads only the rows that meet its condition: a group
+whose rows all fail it has none and reads `0`, and one whose matching rows all have a NULL
+amount reads `NULL`. Filled or not, a group reads the same.
+
+- **Arithmetic** settles each operand first, then combines them. An operand that is unknown
+  or has no data in scope is `NULL`, and so is the result: `goods + shipping` by refund type
+  is `NULL` for a type whose rows leave one of the columns NULL, and `revenue - refunds` is
+  `NULL` if refunds were never recorded. A ratio over an unknown numerator is `NULL`, which no
+  `metric_filters` threshold keeps. Division by zero is `NULL`.
 - **A `metric_predicate` applies the rule to every entity alike.** An operand reads `0` for an
   entity with no match where its measure has data somewhere in the predicate's scope, and
   `NULL` where it has none, whether that entity has rows or none at all. So
@@ -746,9 +754,10 @@ stock has no value for a period nobody observed, so neither is ever made zero.
   `metric_filter` on the same expression does, and `large_orders = 0` ("customers with no
   large orders") keeps every customer without one when some order in scope is large, and
   keeps nobody when none is: with no large order anywhere in scope there is no data, not a
-  count of zero. `NULL` fails every threshold, `= 0` and `< 1` included. Only a count or sum
-  threshold that 0 passes reaches an entity with no rows at all, and a distinct count of a
-  population is 0 for one whether or not the scope has data.
+  count of zero. `NULL` fails every threshold, `= 0` and `< 1` included, so an entity whose
+  rows all have a NULL amount meets none of them. Only a count or sum threshold that 0 passes
+  reaches an entity with no rows at all, and a distinct count of a population is 0 for one
+  whether or not the scope has data.
 - **Filters narrow the scope.** With `where: store = 'x'`, a measure that has no rows at
   store x reads `NULL`, even though the same store reads `0` in a `group_by: store` answer. A
   filter value that matches nothing (a misspelled `product`) reads `NULL`, not a confident 0.
@@ -817,7 +826,7 @@ is that measure's honest value for "no rows contributed":
 
 | Measure | Filled with | Why |
 |---|---|---|
-| `sum` / `count` / `count_distinct` over an additive, event-count or entity-count measure | `0`, while the measure has data in scope; else `NULL` | Zero is the additive identity — summing no rows really is 0 — but only where the measure has data (see "Empty groups"). |
+| `sum` / `count` / `count_distinct` over an additive, event-count or entity-count measure | `0`, while the measure has data in scope; else `NULL` | Zero is the additive identity — summing no rows really is 0 — but only where the measure has data (see "Empty groups"). A bucket whose rows all have a NULL amount is not empty: its sum reads `NULL`, filled or not. |
 | `avg`, `min`, `max`, `median`, `percentile` | `NULL` | Undefined over no rows. A filled `0` would be a fabricated measurement — a `min` below every value actually observed. |
 | semi-additive measures (snapshots, period-to-date, rolling balances) | `NULL` | A snapshot for a period that was never observed is unknown, not empty. |
 | ratios, conversion rates and other null-preserving expressions | `NULL` | A period with no denominator has no rate; `0` would read as a 0% rate. |

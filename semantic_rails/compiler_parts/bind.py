@@ -103,6 +103,25 @@ def _else_clause_collapses_to_no_else(else_expr: Any, aggregation: str) -> bool:
     return aggregation.lower() == "sum" and else_expr.value == 0
 
 
+def _conditional_parts(expr: Any, aggregation: str) -> tuple[Any, Any] | None:
+    """``(condition, body)`` when an aggregate of ``expr`` reads only the rows where the
+    condition holds (the shapes ``_maybe_conditional_aggregate`` lists), else ``None``."""
+    if (
+        not isinstance(expr, SqlCase)
+        or len(expr.whens) != 1
+        or not _else_clause_collapses_to_no_else(expr.else_expr, aggregation)
+    ):
+        return None
+    return expr.whens[0].condition, expr.whens[0].result
+
+
+def _row_marker(expr: Any, aggregation: str) -> Any:
+    """1 on each row an aggregate of ``expr`` reads, NULL on the rest: a conditional aggregate
+    reads only the rows its condition keeps (``aggregate_if``), any other every row."""
+    parts = _conditional_parts(expr, aggregation)
+    return SqlLiteral(1) if parts is None else SqlCase([SqlCaseWhen(parts[0], SqlLiteral(1))])
+
+
 def _maybe_conditional_aggregate(expr: Any, aggregation: str, dialect: SqlDialect) -> Any | None:
     """If ``expr`` is the canonical ``CASE WHEN cond THEN body END``
     shape that ``aggregate_if`` produces (one when, no else — or an
@@ -129,16 +148,11 @@ def _maybe_conditional_aggregate(expr: Any, aggregation: str, dialect: SqlDialec
       lines 498-512 and 562-582). COUNT with ``ELSE 0`` is *not*
       folded because it counts every row.
     """
-    if not isinstance(expr, SqlCase):
-        return None
-    if len(expr.whens) != 1:
-        return None
-    if not _else_clause_collapses_to_no_else(expr.else_expr, aggregation):
+    parts = _conditional_parts(expr, aggregation)
+    if parts is None:
         return None
     agg = aggregation.lower()
-    only_when = expr.whens[0]
-    condition = only_when.condition
-    body = only_when.result
+    condition, body = parts
     if agg == "count":
         # ``aggregate_if(count, cond)`` lowers to body=Literal(1). Pass
         # value=None so dialect.conditional_aggregate emits the

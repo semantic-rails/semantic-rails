@@ -81,9 +81,14 @@ def test_coverage_renders_only_where_ci_executes_it(
     assert ("TYPEOF" in compiled["sql"]) is covered
     guard = _cte(compiled, "guarded_base")
     measures = [f.expression for f in guard.select if f.alias.startswith("m")]
+    # The revenue sum keeps its value and fills only a group with no rows:
+    # COALESCE(value, CASE WHEN <seen> AND <no rows> THEN 0 END).
+    revenue, *counts = measures
+    assert isinstance(revenue, SqlCall) and revenue.name == "COALESCE"
+    assert isinstance(revenue.args[1], SqlCase)
     if not covered:
         # Main's in-window test: CASE WHEN <seen in the window> THEN COALESCE(value, 0) END.
-        assert all(isinstance(m, SqlCase) for m in measures)
+        assert all(isinstance(m, SqlCase) for m in counts)
         return
     coverage = _cte(compiled, "coverage_1")
     lowest, highest = (field.expression for field in coverage.select)

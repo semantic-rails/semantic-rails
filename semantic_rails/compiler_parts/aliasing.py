@@ -26,6 +26,11 @@ from ..sql_ast import (
 )
 
 
+def rows_alias(alias: str) -> str:
+    """The leaf column counting the rows a measure read in each group (see ``empty_groups``)."""
+    return f"{alias}__rows"
+
+
 @dataclass(frozen=True)
 class AliasRegistry:
     aliases: dict[str, str]
@@ -50,6 +55,7 @@ class AliasRegistry:
             aliases[time_alias] = "t"
         for index, alias in enumerate(list(dict.fromkeys(measure_aliases)), start=1):
             aliases[alias] = f"m{index}"
+            aliases[rows_alias(alias)] = f"m{index}_rows"
         for index, alias in enumerate(list(dict.fromkeys(metric_filter_aliases)), start=1):
             aliases[alias] = f"p{index}"
         return cls(aliases=aliases)

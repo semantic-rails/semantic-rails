@@ -1,7 +1,9 @@
 """Settle additive empty groups once, below projection: observed and loaded means 0.
 
-Probes and coverage respect row filters. Projection bypasses refuse with
-EMPTY_GROUPS_UNSETTLED. Stocks and non-additive values remain NULL.
+A sum reads 0 only in a group where it read no rows; rows whose values are all NULL are
+unknown and stay NULL. Probes and coverage respect row filters. Projection bypasses and
+sums without a row count refuse with EMPTY_GROUPS_UNSETTLED. Stocks and non-additive values
+remain NULL.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from ..errors import SemanticLayerError
 from ..expressions import (
     AggregateExpr,
     ArithmeticExpr,
+    CaseExpr,
     MeasureRefExpr,
     MetricRecipeRefExpr,
     SemanticExpr,
@@ -31,6 +34,7 @@ from ..sql_ast import (
     SqlExists,
     SqlField,
     SqlIdentifier,
+    SqlIsNull,
     SqlJoin,
     SqlLiteral,
     SqlSelect,
@@ -59,6 +63,23 @@ def resolves_to_zero(
         and measure.measure_class in classes
         and (aggregation or measure.default_aggregation or "").lower() in _ZERO_AGGREGATIONS
     )
+
+
+def counts_rows(aggregation: str, measure: MeasureConfig | None) -> bool:
+    """Whether the measure's leaf counts the rows it reads in each group, beside its value.
+
+    A sum settles to 0 only where that count is 0; a count is already 0 there.
+    """
+    if measure is None or not resolves_to_zero(aggregation, measure):
+        return False
+    return (aggregation or measure.default_aggregation).lower() not in _COUNTING
+
+
+def reads_every_row(measure: MeasureConfig) -> bool:
+    """Whether a sum of the measure reads every row it is given, so a count of the rows says
+    whether a group has data. A CASE expression may read only the rows its condition keeps,
+    which a rollup's pre-aggregated value can't tell apart."""
+    return not isinstance(measure.expr, CaseExpr)
 
 
 def zero_aliases(rows: Iterable[MeasurePlan], config: PackageConfig) -> dict[str, str]:
@@ -138,15 +159,20 @@ def guard_empty_groups(
     zero: Mapping[str, str],
     scopes: Mapping[str, LeafScope] | None = None,
     *,
+    rows: Mapping[str, str] | None = None,
     time_key: str = "",
     dialect: Any = None,
 ) -> list[SqlCte]:
     """Settle measures centrally, with untimed observation and loaded coverage guards.
 
-    Scopes and ``time_key`` need a dialect with time coverage; anything else is refused.
+    ``rows`` names, for each sum, the source column counting the rows it read in the group:
+    the sum reads 0 only where that count is NULL (the group has no row of the measure) or
+    0, never where its rows' values are all NULL. A sum without one is refused, as are
+    scopes and ``time_key`` without a dialect with time coverage.
     """
     if (scopes or time_key) and not (dialect is not None and dialect.has_time_coverage):
         raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})
+    rows = rows or {}
     fields_ = [SqlField(SqlIdentifier(parts=["base", key]), key) for key in keys]
     ctes: list[SqlCte] = []
     joins: list[SqlJoin] = []
@@ -182,10 +208,18 @@ def guard_empty_groups(
                         ctes.append(SqlCte(name=name, query=coverage_select(scope, dialect)))
                         joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
                     seen = SqlBinary(seen, "AND", _loaded_bucket(time_key, name))
-                # A zero count records no observation. A positive count or populated sum
-                # always survives; coverage gates only the empty-group substitution.
-                if aggregation in _COUNTING:
-                    value = SqlCall("NULLIF", [value, SqlLiteral(0)])
+            if aggregation not in _COUNTING:
+                if alias not in rows:
+                    raise _unsettled_error({"measures": [alias], "missing": "row_count"})
+                # A populated sum always survives; a NULL one is 0 only if it read no rows.
+                count = SqlIdentifier(parts=["base", rows[alias]])
+                empty = SqlBinary(SqlIsNull(count), "OR", SqlBinary(count, "=", SqlLiteral(0)))
+                filled = SqlCase([SqlCaseWhen(SqlBinary(seen, "AND", empty), SqlLiteral(0))])
+                value = SqlCall("COALESCE", [value, filled])
+            elif scope is not None:
+                # A zero count records no observation. A positive count always survives;
+                # coverage gates only the empty-group substitution.
+                value = SqlCall("NULLIF", [value, SqlLiteral(0)])
                 value = SqlCall("COALESCE", [value, SqlCase([SqlCaseWhen(seen, SqlLiteral(0))])])
             else:
                 value = SqlCase(
@@ -295,7 +329,8 @@ def _unsettled_error(details: Mapping[str, Any]) -> SemanticLayerError:
     return SemanticLayerError(
         "EMPTY_GROUPS_UNSETTLED",
         "The query reads a sum or count without settling its empty groups, so a group with "
-        "no rows would read NULL instead of 0. This is an engine defect, not a query error.",
+        "no rows could read NULL instead of 0, or a group whose values are all unknown read "
+        "0. This is an engine defect, not a query error.",
         details=dict(details),
     )
 

@@ -1,5 +1,7 @@
 """Empty groups: NULL when there is no data, 0 when there is data of nothing.
 
+A group whose rows exist but whose values are all NULL has no data for that sum: NULL.
+
 Gold values come from raw SQL on the seeded tables. The differential corpus in
 ``tests/integration/correctness`` holds the same rule to independent SQL on DuckDB and Postgres.
 """
@@ -8,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -19,11 +22,14 @@ from semantic_rails.compiler_parts import sql_lowering
 from semantic_rails.compiler_parts.empty_groups import resolves_to_zero
 from semantic_rails.config import load_package_config, resolve_repo_path
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.expressions import parse_config_expression
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime, _no_data_in_scope_warnings
+from tests.integration.correctness.conftest import _write_variant
 from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.empty_groups_invariant import assert_settled_in_one_place
+from tests.semantic_rails.result_helpers import typed_rows
 from tests.semantic_rails.test_rendered_sql_snapshots import SNAPSHOT_CASES
 
 ORDER_TIME = "temporal_role.jaffle_order_time"
@@ -368,6 +374,29 @@ def test_a_lowering_path_that_skips_the_guard_is_refused(
     assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
 
 
+@pytest.mark.parametrize(
+    "shape",
+    [
+        "single_measure",
+        "same_source_multi_measure",
+        "filled_series",
+        "window_total",
+        "sum_of_two_measures",
+        "beside_a_distribution",
+    ],
+)
+def test_a_leaf_that_skips_the_row_count_is_refused(
+    config: Any, monkeypatch: pytest.MonkeyPatch, shape: str
+) -> None:
+    """Force the bypass: no leaf counts its rows, so the guard can't tell a group with no rows
+    from one whose values are all unknown, and refuses rather than read 0."""
+    monkeypatch.setattr(sql_lowering, "_row_markers", lambda *args: [])
+    with pytest.raises(SemanticLayerError) as raised:
+        compile_query(config, Registry(config), {"version": 2, **SHAPES[shape]})
+    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
+    assert raised.value.details["missing"] == "row_count"
+
+
 @pytest.mark.parametrize("shape", ["predicate_case_count", "predicate_zero_passes"])
 def test_a_predicate_source_that_skips_the_guard_is_refused(
     config: Any, monkeypatch: pytest.MonkeyPatch, shape: str
@@ -382,6 +411,149 @@ def test_a_predicate_source_that_skips_the_guard_is_refused(
     with pytest.raises(SemanticLayerError) as raised:
         compile_query(config, Registry(config), {"version": 2, **SHAPES[shape]})
     assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
+
+
+# -- rows whose values are all unknown are not a group with no rows -------------------------
+# The differential corpus's shop: order 7 is store a's only order in May 2024 and has no
+# amount; order 8 (May) has no store; store b's only order of May and June is order 9 (June).
+
+SHOP_ORDER = "dimension.shop_order_id"
+SHOP_STORE = "dimension.shop_order_store_id"
+SHOP_MONTH = {"temporal_role": "temporal_role.shop_order_ordered_at", "grain": "month"}
+SHOP_REVENUE = {"measure": "measure.shop.revenue"}
+SHOP_ORDERS = {"measure": "measure.shop.order_count"}
+IN_STORE_A = {
+    "kind": "comparison",
+    "op": "=",
+    "left": {"kind": "column", "column": "store_id", "entity": "entity.shop_order"},
+    "right": {"kind": "literal", "value": "a"},
+}
+
+
+@pytest.fixture(scope="module")
+def shop_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return _write_variant(tmp_path_factory.mktemp("shop"), "utc_authored")
+
+
+@pytest.fixture(scope="module")
+def shop(shop_package: Path) -> Iterator[Runtime]:
+    rt = Runtime.from_path(str(shop_package))
+    try:
+        yield rt
+    finally:
+        rt.close()
+
+
+def test_a_conditional_sum_is_zero_only_where_no_row_meets_its_condition(shop: Runtime) -> None:
+    store_a = {
+        "kind": "aggregate_if",
+        "aggregation": "sum",
+        "condition": IN_STORE_A,
+        "value": {"kind": "column", "column": "amount", "entity": "entity.shop_order"},
+    }
+    response = shop.query({"version": 1, "select": _select(a=store_a), "group_by": [SHOP_ORDER]})
+    got = {row[SHOP_ORDER]: row["a"] for row in typed_rows(response)}
+    gold = _gold(
+        shop,
+        "SELECT order_id AS id, CASE WHEN COUNT(CASE WHEN store_id = 'a' THEN 1 END) = 0 "
+        "THEN 0 ELSE SUM(CASE WHEN store_id = 'a' THEN amount END) END AS a "
+        "FROM orders GROUP BY 1",
+    )
+    assert got == {row["id"]: row["a"] for row in gold}
+    # Order 7 meets the condition with no amount: unknown. Store b's and the storeless order
+    # meet it with no row: 0, as the sum has amounts elsewhere.
+    assert got[7] is None
+    assert got[2] == got[8] == 0
+    assert got[1] == 10
+
+
+@pytest.mark.parametrize("fill", [False, True])
+def test_a_sum_whose_rows_all_lack_a_value_is_unknown_and_its_count_is_not(
+    shop: Runtime, fill: bool
+) -> None:
+    window = {"start": "2024-05-01", "end": "2024-07-01", "fill": fill}
+    response = shop.query(
+        {
+            "version": 1,
+            "select": _select(revenue=SHOP_REVENUE, orders=SHOP_ORDERS),
+            "group_by": [SHOP_STORE],
+            "time": {**SHOP_MONTH, **window},
+        }
+    )
+    month = f"{SHOP_MONTH['temporal_role']}__month"
+    got = {
+        (row[SHOP_STORE], str(row[month])[:7]): (row["revenue"], row["orders"])
+        for row in typed_rows(response)
+    }
+    expected = {("a", "2024-05"): (None, 1), (None, "2024-05"): (6, 1), ("b", "2024-06"): (3, 1)}
+    if fill:  # the groups with no rows, where both measures have data in scope
+        expected |= {key: (0, 0) for key in [("a", "2024-06"), ("b", "2024-05"), (None, "2024-06")]}
+    assert got == expected
+    # Unfilled, whole months: the rollup answers, and its row for store a's May holds no amount.
+    assert ("FROM orders_monthly" in response["rendered_sql"]) is not fill
+
+
+def test_an_unknown_value_meets_no_threshold_not_even_one_zero_passes(shop: Runtime) -> None:
+    """A threshold 0 passes keeps every order that doesn't fail it, the ones with no rows too;
+    order 7's unknown revenue is not one of them."""
+    below_5 = {
+        "kind": "metric_predicate",
+        "entity": "entity.shop_order",
+        "scope_mode": "entity_only",
+        "input": SHOP_REVENUE,
+        "op": "<",
+        "value": 5,
+    }
+    response = shop.query(
+        {
+            "version": 1,
+            "select": _select(orders=SHOP_ORDERS),
+            "group_by": [SHOP_STORE],
+            "metric_filters": [{"expression": below_5, "op": "=", "value": True}],
+        }
+    )
+    got = {row[SHOP_STORE]: row["orders"] for row in typed_rows(response)}
+    gold = _gold(
+        shop, "SELECT store_id AS s, COUNT(*) AS n FROM orders WHERE amount < 5 GROUP BY 1"
+    )
+    assert got == {row["s"]: row["n"] for row in gold} == {"a": 2, "b": 1}
+
+
+def test_a_rollup_never_answers_a_conditional_sum(shop_package: Path) -> None:
+    """A rollup's sum can't tell rows that all fail a CASE condition (0) from rows that meet it
+    with no value (NULL), so routing leaves such a measure on the base table."""
+    config = load_package_config(str(shop_package))
+    conditional = parse_config_expression(
+        {
+            "kind": "case",
+            "whens": [{"when": IN_STORE_A, "then": {"kind": "column", "column": "amount"}}],
+        }
+    )
+    config = replace(
+        config,
+        measures=[
+            replace(row, expr=conditional) if row.id == SHOP_REVENUE["measure"] else row
+            for row in config.measures
+        ],
+    )
+    query = {"select": _select(revenue=SHOP_REVENUE), "group_by": [SHOP_STORE], "time": SHOP_MONTH}
+    compiled = compile_query(config, Registry(config), {"version": 1, **query})
+    (leaf,) = compiled["logical_plan"].measure_plans
+    assert leaf.aggregate_relation_id == ""
+    assert set(leaf.aggregate_relation_rejections.values()) == {"aggregation_not_reaggregable"}
+
+
+def test_a_rollup_leaf_without_a_row_count_is_refused(
+    shop_package: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Force the bypass on the routed path: its leaf counts no rows, and the guard refuses."""
+    monkeypatch.setattr(sql_lowering, "reads_every_row", lambda measure: False)
+    config = load_package_config(str(shop_package))
+    query = {"select": _select(revenue=SHOP_REVENUE), "group_by": [SHOP_STORE], "time": SHOP_MONTH}
+    with pytest.raises(SemanticLayerError) as raised:
+        compile_query(config, Registry(config), {"version": 1, **query})
+    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
+    assert raised.value.details["missing"] == "row_count"
 
 
 # -- ClickHouse reads an unmatched outer-join field as NULL only when told to ---------------

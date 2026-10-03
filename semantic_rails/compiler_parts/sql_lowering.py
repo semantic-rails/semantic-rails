@@ -84,7 +84,7 @@ from ..sql_ast import (
     SqlWindow,
     build_filter_condition,
 )
-from .aliasing import AliasRegistry, alias_select
+from .aliasing import AliasRegistry, alias_select, rows_alias
 from .bind import (
     _aggregation_expr,
     _bind_scoped_aggregate,
@@ -94,6 +94,7 @@ from .bind import (
     _expression_alias,
     _freeze_payload,
     _parse_public_expr,
+    _row_marker,
 )
 from .conversion import _conversion_leaf_cte
 from .dependencies import (
@@ -111,8 +112,10 @@ from .empty_groups import (
     GUARDED_BASE,
     LeafScope,
     base_reads,
+    counts_rows,
     expr_resolves_to_zero,
     guard_empty_groups,
+    reads_every_row,
     record_leaf_scope,
     record_zero_output,
     recording_leaf_scopes,
@@ -1132,10 +1135,11 @@ def _aggregate_relation_leaf_select(
                 _aggregate_relation_filter_expr(aggregate, dict(item), path="measure_filter")
             )
         aggregation = recombine_aggregation(aggregate, measure_id)
+        held = _column_ref(aggregate.relation, column)
         select_fields.append(
             SqlField(
                 _aggregation_expr(
-                    _column_ref(aggregate.relation, column),
+                    held,
                     aggregation,
                     parameters=measure_plan.bound_measure.aggregation_params,
                     dialect=_dialect(config),
@@ -1143,6 +1147,11 @@ def _aggregate_relation_leaf_select(
                 measure_plan.bound_measure.alias,
             )
         )
+        # Each rollup row stands for base rows of its group, but can't say which of them met
+        # a CASE measure's condition: that measure gets no row count (routing keeps it off).
+        measure = _measure_index(config)[measure_id]
+        if reads_every_row(measure):
+            select_fields.extend(_rows_fields(measure_plan, measure, held))
 
     return SqlSelect(
         select=select_fields,
@@ -1276,8 +1285,13 @@ def _lower_agent_dag_to_sql(
             "data are omitted).",
         )
     key_aliases = _query_key_aliases(plan)
+    zero = zero_outputs(plan, config) if guard_empty else {}
     branch_ctes: list[SqlCte] = []
     output_aliases: list[str] = []
+    branch_columns: list[list[str]] = []
+    # A branch settled its own groups, so its row is the count the combine's guard reads:
+    # NULL only where the branch has no row for the group.
+    rows: dict[str, str] = {}
     for index, (alias, expr_payload) in enumerate(plan.post_aggregation_exprs.items(), start=1):
         expr = _parse_public_expr(expr_payload)
         branch_name = f"agent_branch_{index}"
@@ -1286,10 +1300,18 @@ def _lower_agent_dag_to_sql(
             if isinstance(expr, DistributionExpr)
             else _single_expression_branch_select(expr, alias=alias, plan=plan, config=config)
         )
+        columns = [alias]
+        if alias in zero:
+            rows[alias] = f"{branch_name}__rows"
+            columns.append(rows[alias])
+            branch_query = replace(
+                branch_query, select=[*branch_query.select, SqlField(SqlLiteral(1), rows[alias])]
+            )
         branch_ctes.append(
             SqlCte(name=branch_name, query=_namespace_sql_select(branch_query, f"{branch_name}__"))
         )
         output_aliases.append(alias)
+        branch_columns.append(columns)
 
     if not branch_ctes:
         raise SemanticLayerError(
@@ -1309,7 +1331,7 @@ def _lower_agent_dag_to_sql(
 
     combined_name = branch_ctes[0].name
     combine_ctes: list[SqlCte] = []
-    available_aliases = [output_aliases[0]]
+    available_aliases = list(branch_columns[0])
     for index, branch in enumerate(branch_ctes[1:], start=2):
         left_alias = "left_side"
         right_alias = "right_side"
@@ -1321,11 +1343,9 @@ def _lower_agent_dag_to_sql(
         select_fields.extend(
             SqlField(SqlIdentifier(parts=[left_alias, item]), item) for item in available_aliases
         )
-        select_fields.append(
-            SqlField(
-                SqlIdentifier(parts=[right_alias, output_aliases[index - 1]]),
-                output_aliases[index - 1],
-            )
+        select_fields.extend(
+            SqlField(SqlIdentifier(parts=[right_alias, item]), item)
+            for item in branch_columns[index - 1]
         )
         combine_ctes.append(
             SqlCte(
@@ -1352,13 +1372,15 @@ def _lower_agent_dag_to_sql(
             )
         )
         combined_name = next_name
-        available_aliases.append(output_aliases[index - 1])
+        available_aliases.extend(branch_columns[index - 1])
 
     # A branch that has no row for a group leaves its output NULL in the combine: settle
     # those outputs again over the combined result, the same way each branch did.
     guard_ctes: list[SqlCte] = []
-    if guard_empty and (zero := zero_outputs(plan, config)):
-        guard_ctes.extend(guard_empty_groups(combined_name, key_aliases, output_aliases, zero))
+    if zero:
+        guard_ctes.extend(
+            guard_empty_groups(combined_name, key_aliases, output_aliases, zero, rows=rows)
+        )
         combined_name = GUARDED_BASE
 
     final_source = "agent_projected"
@@ -2029,6 +2051,8 @@ def _fanout_dedup_leaf_select(
     entity = entities[measure.entity]
     table = _measure_owned_relation(measure, entities)
     rows_name = f"{measure_plan.cte_name}_entity_rows"
+    # Each de-duplicated row carries its own row marker, which the group counts.
+    markers = _row_markers(measure_plan, measure, value_expr)
     rows = SqlSelect(
         select=[
             *(
@@ -2037,6 +2061,7 @@ def _fanout_dedup_leaf_select(
             ),
             *key_fields,
             SqlField(value_expr, "__entity_value"),
+            *(SqlField(marker, "__entity_rows") for marker, _ in markers),
         ],
         from_table=SqlTableRef(name=table),
         joins=joins,
@@ -2055,6 +2080,12 @@ def _fanout_dedup_leaf_select(
         select=[
             *(SqlField(expr, field.alias) for expr, field in zip(group, key_fields, strict=True)),
             SqlField(value, measure_plan.bound_measure.alias),
+            *(
+                SqlField(
+                    SqlCall("COUNT", [SqlIdentifier(parts=[rows_name, "__entity_rows"])]), alias
+                )
+                for _, alias in markers
+            ),
         ],
         from_table=SqlTableRef(name=rows_name),
         group_by=group,
@@ -2129,6 +2160,7 @@ def _fanout_filter_leaf_select(
                 ),
                 measure_plan.bound_measure.alias,
             ),
+            *_rows_fields(measure_plan, measure, value_expr),
         ],
         from_table=SqlTableRef(name=_measure_owned_relation(measure, _entity_index(config))),
         joins=[*joins, *([calendar_join] if calendar_join is not None else [])],
@@ -2441,6 +2473,10 @@ def _source_rollup_leaf_select(
             "__source_value",
         )
     )
+    markers = _row_markers(measure_plan, measure, leaf_value_expr)
+    preagg_select_fields.extend(
+        SqlField(SqlCall("COUNT", [marker]), "__source_rows") for marker, _ in markers
+    )
     preagg_group_fields = list(preagg_fields.values())
 
     final_select_fields: list[SqlField] = []
@@ -2460,6 +2496,10 @@ def _source_rollup_leaf_select(
         final_group_fields.append(expr)
     final_select_fields.append(
         SqlField(SqlCall("SUM", [SqlIdentifier(parts=[rollup_name, "__source_value"])]), leaf_alias)
+    )
+    final_select_fields.extend(
+        SqlField(SqlCall("SUM", [SqlIdentifier(parts=[rollup_name, "__source_rows"])]), alias)
+        for _, alias in markers
     )
 
     return SqlSelect(
@@ -2745,6 +2785,7 @@ def _measure_leaf_select(
             leaf_alias,
         )
     )
+    select_fields.extend(_rows_fields(measure_plan, measure, leaf_value_expr))
     leaf = SqlSelect(
         ctes=predicate_ctes,
         select=select_fields,
@@ -4377,6 +4418,25 @@ def build_performance_plan(
     )
 
 
+def _row_markers(measure_plan: MeasurePlan, measure: Any, value_expr: Any) -> list[tuple[Any, str]]:
+    """The per-row marker a zero-settled sum's leaf counts, and the column the count goes in.
+
+    The guard reads 0 only where that count is 0 (see ``empty_groups``); counts need none.
+    """
+    bound = measure_plan.bound_measure
+    if not counts_rows(bound.aggregation, measure):
+        return []
+    return [(_row_marker(value_expr, "sum"), rows_alias(bound.alias))]
+
+
+def _rows_fields(measure_plan: MeasurePlan, measure: Any, value_expr: Any) -> list[SqlField]:
+    """Beside a sum's value: how many of the group's rows it read."""
+    return [
+        SqlField(SqlCall("COUNT", [marker]), alias)
+        for marker, alias in _row_markers(measure_plan, measure, value_expr)
+    ]
+
+
 def _measure_group_leaf_select(
     plan: LogicalPlan, measure_plans: list[MeasurePlan], config: PackageConfig
 ) -> SqlSelect:
@@ -4467,10 +4527,11 @@ def _measure_group_leaf_select(
             order_expr = _column_ref(
                 _measure_dim_relation(measure, time_dim, entities), time_dim.column
             )
+        value_expr = _config_expr_to_sql(measure.expr, measure, config)
         select_fields.append(
             SqlField(
                 _aggregation_expr(
-                    _config_expr_to_sql(measure.expr, measure, config),
+                    value_expr,
                     measure_plan.bound_measure.aggregation,
                     order_expr=order_expr,
                     parameters=measure_plan.bound_measure.aggregation_params,
@@ -4479,6 +4540,7 @@ def _measure_group_leaf_select(
                 measure_plan.bound_measure.alias,
             )
         )
+        select_fields.extend(_rows_fields(measure_plan, measure, value_expr))
 
     joins = list(
         _joins_for_paths(
@@ -5121,6 +5183,9 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
 
     key_aliases = _query_key_aliases(plan)
     measure_aliases: list[str] = []
+    # Each sum's count of the rows it read, by measure alias: only those its leaf emitted, so
+    # the guard refuses a sum whose leaf can't tell no rows from rows of unknown values.
+    rows: dict[str, str] = {}
     conversion_exprs = _conversion_exprs_for_plan(plan, config)
     if plan.measure_plans or conversion_exprs:
         leaf_ctes: list[SqlCte] = []
@@ -5132,6 +5197,12 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 # A folded group shares one scan, so its filters cut every leaf in it.
                 with cut_owners(*(row.bound_measure.alias for row in measure_group)):
                     leaf_select = _measure_group_leaf_select(plan, measure_group, config)
+                emitted = {field.alias for field in leaf_select.select}
+                rows.update(
+                    (row.bound_measure.alias, rows_alias(row.bound_measure.alias))
+                    for row in measure_group
+                    if rows_alias(row.bound_measure.alias) in emitted
+                )
                 if (
                     guard_empty
                     and plan_is_root()
@@ -5170,7 +5241,15 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             f"conversion_leaf_{index + 1}" for index in range(len(conversion_aliases))
         ]
         source_alias_groups = [
-            [row.bound_measure.alias for row in group] for group in measure_groups
+            [
+                *(row.bound_measure.alias for row in group),
+                *(
+                    rows[row.bound_measure.alias]
+                    for row in group
+                    if row.bound_measure.alias in rows
+                ),
+            ]
+            for group in measure_groups
         ] + [[alias] for alias in conversion_aliases]
         combined_name = combine_sources[0]
         available_aliases = list(source_alias_groups[0])
@@ -5224,7 +5303,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             ctes=[*leaf_ctes, *combine_ctes],
             select=[
                 SqlField(SqlIdentifier(parts=["base", alias]), alias)
-                for alias in [*key_aliases, *measure_aliases]
+                for alias in [*key_aliases, *measure_aliases, *rows.values()]
             ],
             from_table=SqlTableRef(name=combined_name, alias="base"),
         )
@@ -5300,7 +5379,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         joins.append(
             SqlJoin(join_type="LEFT", table=SqlTableRef(name="leaf_base"), on=join_condition)
         )
-        for alias in measure_aliases:
+        for alias in [*measure_aliases, *rows.values()]:
             filled_fields.append(SqlField(SqlIdentifier(parts=["leaf_base", alias]), alias))
         ctes.append(
             SqlCte(
@@ -5327,6 +5406,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 measure_aliases,
                 zero,
                 scopes,
+                rows=rows,
                 time_key=time_alias if _emits_time_coverage(plan, config) else "",
                 dialect=_dialect(config),
             )

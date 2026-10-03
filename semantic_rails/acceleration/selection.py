@@ -17,6 +17,7 @@ from ..compiler_parts.bind import (
     _bound_metric_predicates,
     _measure_count_distinct_key_columns,
 )
+from ..compiler_parts.empty_groups import counts_rows, reads_every_row
 from ..compiler_parts.indexes import (
     _aggregate_dimension_coverage,
     _dimension_index,
@@ -102,8 +103,13 @@ def _leaf_rollup_blocker(
     target_tz = str(getattr(role, "timezone", "") or "").strip()
     if column_tz and target_tz and column_tz != target_tz:
         return "timezone_mismatch"  # the base path converts the zone; the rollup path can't
-    if _measure_index(config)[bound.measure_id].measure_class in {"semi_additive", "snapshot"}:
+    measure = _measure_index(config)[bound.measure_id]
+    if measure.measure_class in {"semi_additive", "snapshot"}:
         # The base path takes each key's snapshot per period, whatever the aggregation.
+        return "aggregation_not_reaggregable"
+    if counts_rows(bound.aggregation, measure) and not reads_every_row(measure):
+        # A group whose rows all fail a CASE condition sums to 0 on the base; the rollup's
+        # NULL can't tell it from rows that met it with no value.
         return "aggregation_not_reaggregable"
     return ""
 

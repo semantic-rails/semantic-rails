@@ -2512,14 +2512,20 @@ def _predicate_ctes_and_join(
     )
     without_rows = _predicate_includes_entities_without_rows(predicate, config)
     if without_rows:
-        # The set holds the entities that fail the threshold. Never coalesce the value: the
-        # source is settled like any query, so its values are non-NULL on every row or NULL on
-        # every row. In the second case no entity qualifies, and the gate below drops every row.
-        where_condition = build_filter_condition(
-            SqlIdentifier(parts=["predicate_source", "__predicate_value"]),
-            _INVERSE_THRESHOLD_OPS[" ".join(str(predicate.op).upper().split())],
-            predicate.value,
-            path="metric_predicate",
+        # The set holds the entities that fail the threshold, and those whose value is unknown
+        # (NULL: their rows have no values), which meets no threshold. Never coalesce the
+        # value: the source is settled like any query, so only an entity it doesn't list has
+        # no rows, and with no settled value at all the gate below drops every row.
+        value = SqlIdentifier(parts=["predicate_source", "__predicate_value"])
+        where_condition = SqlBinary(
+            build_filter_condition(
+                value,
+                _INVERSE_THRESHOLD_OPS[" ".join(str(predicate.op).upper().split())],
+                predicate.value,
+                path="metric_predicate",
+            ),
+            "OR",
+            SqlIsNull(value),
         )
     set_query = SqlSelect(
         select=select_fields,
