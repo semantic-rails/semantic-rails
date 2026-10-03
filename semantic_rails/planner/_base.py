@@ -1361,7 +1361,7 @@ def _requested_grouping_terms(text: str) -> list[str]:
         raw_terms = _strip_leading_rank_count(top_by_match.group(1).strip())
     else:
         by_match = re.search(
-            r"\bby ([a-z0-9 _-]+?)(?:\s+(?:where|for|from|in|with|during|over|having|who|that)\b|[.?!,;]|$)",
+            r"\b(?:by|per(?=\s+stores?\b)) ([a-z0-9 _-]+?)(?:\s+(?:where|for|from|in|with|during|over|having|who|that)\b|[.?!,;]|$)",
             lowered,
         )
         raw_terms = by_match.group(1).strip() if by_match else ""
@@ -1421,6 +1421,51 @@ def _term_matches_value_domain(config: Any, term: str) -> bool:
     return False
 
 
+def _requested_store_grouping_terms(text: str) -> list[str]:
+    """Store attributes in grouping clauses, excluding consumed reporting windows."""
+
+    lowered = str(text or "").lower()
+    if len(lowered) > _MAX_TIME_TEXT:
+        return []
+    for start, end in _time_window(lowered).spans:
+        lowered = lowered[:start] + " " * (end - start) + lowered[end:]
+    groups = [term for term in _requested_grouping_terms(lowered) if "store" in _tokens(term)]
+    if groups:
+        return groups
+    # Existing rank parsers expose where the ranked noun starts; a store mentioned
+    # elsewhere in a ranking question is not a request to group by store.
+    rank = _TOP_N_PATTERN.search(lowered) or _RANK_PATTERN.search(lowered)
+    if rank is not None:
+        end = rank.end(1) if rank.re is _RANK_PATTERN else rank.end()
+        noun = re.match(r"\s+(stores?)\b", lowered[end:])
+        if noun is not None:
+            return [noun.group(1)]
+    return []
+
+
+def _store_grouping_dimension(config: Any, terms: Iterable[str]) -> Any | None:
+    """Resolve a named store attribute uniquely; bare store keeps the name default."""
+
+    requested = set(terms)
+    lookup = {"store", "name"} if requested == {"store"} else requested
+    matches = []
+    bare_matches = []
+    for row in config.dimensions:
+        names = [
+            row.label,
+            _last_token(row.id),
+            _last_token(getattr(row, "name", "")),
+            *(getattr(row, "aliases", None) or []),
+        ]
+        if any(set(_tokens(name)) == lookup for name in names):
+            matches.append(row)
+        elif requested == {"store"} and any(set(_tokens(name)) == requested for name in names):
+            # A package may expose only a dimension labelled "Store".
+            bare_matches.append(row)
+    matches = matches or bare_matches
+    return matches[0] if len(matches) == 1 else None
+
+
 def _maybe_group_by(
     config: Any, text: str, *, target_terms: Iterable[str] = (), clock: str = ""
 ) -> list[str]:
@@ -1432,12 +1477,14 @@ def _maybe_group_by(
         dim = _object_by_id(config.dimensions, "dimension.jaffle_customer_history_segment")
         if dim is not None:
             group_by.append(dim.id)
-    if "store" in terms:
-        dim = _dimension(config, ["store", "name"])
-        if dim is not None:
-            group_by.append(dim.id)
     if any(term in lowered for term in ("geo", "geography", "region", "parent")):
         dim = _dimension(config, ["geo"], prefer_parent="parent" in lowered)
+        if dim is not None:
+            group_by.append(dim.id)
+    for term in _requested_store_grouping_terms(text):
+        if _names_time_axis(term, clock):
+            continue
+        dim = _store_grouping_dimension(config, _tokens(term))
         if dim is not None:
             group_by.append(dim.id)
     for term in _requested_grouping_terms(text):

@@ -38,7 +38,10 @@ from ._base import (
     _canonical_metric,
     _fiscal_calendar,
     _named_metric,
+    _names_time_axis,
     _object_text,
+    _requested_store_grouping_terms,
+    _store_grouping_dimension,
     _tied_top,
     _time_bounds_from_text,
     _time_window,
@@ -505,6 +508,27 @@ def intent_faithfulness_why(
         gaps.extend(_caller_window_gaps(runtime, text, query))
     else:
         gaps.extend(_time_window_gaps(runtime, text, query))
+    role_id = _time_block(query).get("temporal_role")
+    clock = next((row.label for row in runtime._config.temporal_roles if row.id == role_id), "")
+    for term in _requested_store_grouping_terms(text):
+        terms = set(_tokens(term))
+        if _names_time_axis(term, clock):
+            continue
+        dimension = _store_grouping_dimension(runtime._config, terms)
+        if dimension is None or dimension.id not in (query.get("group_by") or []):
+            gaps.append(
+                CoverageGap(
+                    kind="store_grouping_unrealized",
+                    clause=term,
+                    message="The draft must group by the uniquely named store attribute.",
+                    expected={"dimension": dimension.id if dimension is not None else None},
+                    actual={"group_by": list(query.get("group_by") or [])},
+                    recovery_hint={
+                        "kind": "choose_store_dimension",
+                        "message": "Choose a store dimension with discover, set group_by, then validate.",
+                    },
+                )
+            )
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
     gaps.extend(_subject_window_gaps(runtime._config, query))
     gaps.extend(_ranking_gaps(runtime, text, query))
