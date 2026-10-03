@@ -246,6 +246,7 @@ class _Writer:
                     "source_entity": self.keys[row.source_entity][0],
                     "target_entity": self.keys[row.target_entity][0],
                     "relationship_path": list(row.relationship_path),
+                    **({"label": row.label} if row.label else {}),
                 }
                 for row in config.path_preferences
             ]

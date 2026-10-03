@@ -109,6 +109,8 @@ def test_path_not_found_envelope_carries_reachable_targets_and_hint(runtime_fact
         # ``reachable_targets`` is always present (may be empty for
         # truly isolated entities). The recovery hints must be non-empty.
         assert "reachable_targets" in details
+        assert details["target"] not in details["reachable_targets"]
+        assert "dimension.jaffle_membership_status" not in details["compatible_group_by_dimensions"]
         hints = first.get("recovery_hints") or []
         assert hints, f"expected non-empty recovery_hints, got {first!r}"
         hint_kinds = {hint.get("kind") for hint in hints}

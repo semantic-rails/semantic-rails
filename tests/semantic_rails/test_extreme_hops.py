@@ -383,8 +383,14 @@ def test_shortcut_relationship_makes_the_route_ambiguous(tmp_path):
 
     err = exc_info.value
     assert err.code == "AMBIGUOUS_PATH"
-    assert err.details["candidates"] == [SHIP_ROUTE_TO_REGION, CUSTOMER_ROUTE_TO_REGION]
-    assert [pin["relationship_path"] for pin in err.details["pins"]] == err.details["candidates"]
+    options = err.details["clarification"]["options"]
+    assert [option["relationship_path"] for option in options] == [
+        SHIP_ROUTE_TO_REGION,
+        CUSTOMER_ROUTE_TO_REGION,
+    ]
+    assert all(
+        option["decision"]["relationship_path"] == option["relationship_path"] for option in options
+    )
     assert "path_preferences" in err.details["hint"]
 
 

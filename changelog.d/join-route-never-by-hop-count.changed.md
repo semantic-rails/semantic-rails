@@ -1,18 +1,20 @@
-- The engine never chooses a join route by hop count. Which of two routes to an entity a question
-  means is a business definition: the package records it once as a `graph.path_preferences` row,
-  and every query uses it. For each start and target entity, a row wins; otherwise the only route
-  is used; otherwise, when exactly one route is the start entity's own direct key (a many-to-one or
-  one-to-one relationship from it), that key is used. Anything else is refused with
+- The engine never chooses a join route by hop count or weight. Which of two routes to an entity a
+  question means is a business definition: the package records it once as a
+  `graph.path_preferences` row, and every query uses it. For each start and target entity, over
+  every route within the hop ceiling: a query's own `route_decisions` row for exactly the pair
+  wins, for that query only; then a package row for exactly the pair; then the start entity's one
+  direct key (a many-to-one or one-to-one relationship from it); then the routes that follow every
+  row whose pair they walk through, when one remains. Anything else is refused with
   `AMBIGUOUS_PATH`, whatever the routes' lengths: two direct keys, routes with no direct key, and
-  routes that all fan out, where the shortest used to win. The
-  refusal is a clarification: `details.reason` is `route_decision_required`, `details.meanings`
-  reads each route as a chain of labels ("Account → Owner → Home region"), and `details.pins` holds
-  the row that records each (rows accept entity ids as well as keys and names). One place resolves
-  every route (grouping, filters, a measure's own filter, metric predicates, time roles,
-  conversions, the direct read of a foreign key, grain recovery hints and discovery), and it
-  remembers a refusal as it remembers a route. So adding a route never changes an answer
-  silently: a pair answered by its own key keeps the answer, and any other pair is refused until a
-  row records it. See [the route rule](docs/PACKAGE_AUTHORING.md#the-route-rule).
+  routes that all fan out, where the shortest used to win. The refusal is a clarification:
+  `details.reason` is `route_decision_required`, and `details.clarification` asks which route the
+  question means, one option per route with its meaning in business words and the row that
+  decides it (rows accept entity ids as well as keys and names). One place resolves every route
+  (grouping, filters, a measure's own filter, metric predicates, time roles, conversions, the
+  direct read of a foreign key, grain recovery hints and discovery), and it remembers a refusal as
+  it remembers a route. So adding a route never changes an answer silently: a pair answered by its
+  own key keeps the answer, and any other pair is refused until a row records it. See
+  [the route rule](docs/PACKAGE_AUTHORING.md#the-route-rule).
 - `PATH_ALTERNATES_UNPINNED` is replaced by two short `info` notes, at `compact` and `full`
   verbosity: where the engine chose one of two or more routes for a pair the query reads,
   `ROUTE_COLOCATED_KEY` (the start entity's own key) or `ROUTE_RECORDED` (a
