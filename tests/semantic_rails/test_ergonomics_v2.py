@@ -10,6 +10,7 @@ import yaml
 
 from semantic_rails.api import AppState, Handler
 from semantic_rails.config import load_package_config
+from semantic_rails.planner import plan_payload
 from semantic_rails.runtime import Runtime
 from tests.plan_candidate_envelope import plan_candidate_envelope
 
@@ -396,11 +397,17 @@ def test_plan_v2_composes_runtime_arithmetic_from_package_metadata(tmp_path: Pat
     runtime = Runtime.from_path(str(package_dir))
     try:
         result = plan_candidate_envelope(
-            runtime, intent="sum email sms and push messages by region", limit=1
+            runtime, intent="sum email sms and push received by store", limit=1
         )
+        # The package has no region, and the draft drops that grouping: not ready.
+        held = plan_payload(runtime, intent="sum email sms and push messages by region")
     finally:
         runtime.close()
 
+    assert held["status"] == "low_confidence"
+    assert "ready_for" not in held["next"]
+    assert held["why"]["details"]["terms"] == ["messages", "region"]
+    assert not held["best"]["query_ir"].get("group_by")
     query = result["candidates"][0]["candidate_ir"]
     assert result["candidate_envelope_version"] == 1
     assert result["interpreted_intent"]["pattern"] == "runtime_metric_arithmetic"
