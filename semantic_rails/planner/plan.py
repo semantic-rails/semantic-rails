@@ -1197,29 +1197,30 @@ def _ranking_options(
     if not (select and plain) or query.get("metric_filters"):
         return None
     time = _time_of(query)
-    window = {key: time[key] for key in ("start", "end", "range") if key in time}
+    window: dict[str, Any] = {key: time[key] for key in ("start", "end", "range") if key in time}
     clock = {key: time[key] for key in ("temporal_role", "calendar_id") if key in time}
     totals = {
         key: value for key, value in query.items() if key not in {"time", "order_by", "limit"}
     }
     # Any window shows whether the select collapses; the draft's own when it has one.
-    probe = {
+    probe: dict[str, Any] = {
         **totals,
         "time": {**clock, **(window or {"range": {"last": {"unit": "year", "value": 1}}})},
     }
     policy = (partial_query or {}).get("policy_context")
+    if policy:
+        probe["policy_context"] = policy
     try:
-        report = runtime.validate({**probe, **({"policy_context": policy} if policy else {})})
+        report = runtime.validate(probe)
     except Exception:  # noqa: BLE001 - a probe that fails leaves the ranking unchecked
         return None
     if not report.get("ok") or report.get("time_shape") != TIME_SHAPE_WINDOW_TOTAL:
         return None
-    overall = {
-        **totals,
-        **({"time": {**clock, **window}} if window else {}),
-        "order_by": [ranked_by, *({"field": key, "direction": "ASC"} for key in keys)],
-        "limit": query["limit"],
-    }
+    overall: dict[str, Any] = dict(totals)
+    if window:
+        overall["time"] = {**clock, **window}
+    overall["order_by"] = [ranked_by, *({"field": key, "direction": "ASC"} for key in keys)]
+    overall["limit"] = query["limit"]
     every_row = {key: value for key, value in query.items() if key not in {"limit", "order_by"}}
     breakdown = {
         **every_row,

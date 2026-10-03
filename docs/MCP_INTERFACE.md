@@ -333,22 +333,36 @@ values the question names. The time block's grain traces to the question's words
 windows: its unit or "-ly" form ("by month", "monthly", "at month level", "daily"), a series
 ("over time", "trend", "trending", "time series"), or for days a grouping that names the
 query's clock ("by order date"). It also traces to the caller's `partial_query` time grain, or
-it can't split the rows: the window fits in one bucket of the grain ("in Q1 2017", "last
-month", "yesterday"), or it is whole calendar years at year grain ("in 2016 and 2017", one total
-per year). Packages declare no default grain, so the month plan picks for a comparison ("food
-revenue vs drink revenue by store"), a year-over-year shift ("revenue vs last year") or a
-qualified ranking, and the unit of a window of several periods ("revenue last 7 days" by day,
-"revenue by store in the last 3 months" by month), are held: name the grain ("monthly revenue
-for the last 3 months by store") or follow the `remove_unasked_grouping` hint. A ranking whose
-rows a traced grain splits ("top 3 stores by revenue at month level", "top 3 stores by monthly
-revenue") would keep the top 3 store-months, so it is held with
-`why.code="PLAN_RANKING_PERIOD_AMBIGUOUS"` and a `why.details.clarification` that asks which
-ranking the question means. Its option `top_overall` carries a `query_ir` for the top N on their
-total over the window, and a `breakdown.query_ir` to run with a `where` filter on
+it can't split the rows because the window fits in one bucket of the grain ("in Q1 2017", "last
+month", "yesterday"). Packages declare no default grain, so the month plan picks for a
+comparison ("food revenue vs drink revenue by store"), a year-over-year shift ("revenue vs last
+year") or a qualified ranking, and the unit of a window of several periods ("revenue last 7
+days" by day, "revenue by store in the last 3 months" by month, "revenue in 2016 and 2017" by
+year), are held: name the grain ("monthly revenue for the last 3 months by store", "revenue in
+2016 and 2017 by year") or follow the `remove_unasked_grouping` hint.
+
+A ranking (a draft with a `group_by`, a `limit` and a first `order_by` on a selected value) must
+also keep the top N of the entity the question ranks. It ranks the entity when the ranked noun
+("top 3 stores", "which 3 stores") is not a time unit and reads every `group_by` dimension, as
+above (an entity's key and its label). A ranking of the entity whose rows a traced grain splits
+("top 3 stores by revenue at month level", "top 3 stores by monthly revenue") would keep the top
+3 store-months, so it is held with `why.code="PLAN_RANKING_PERIOD_AMBIGUOUS"` and a
+`why.details.clarification` that asks which ranking the question means. Its option
+`top_overall` carries a `query_ir` for the top N on their total over the draft's window (its
+`calendar_id` kept), and a `breakdown.query_ir` to run with a `where` filter on
 `breakdown.filter_fields` keeping the values that query returns; `top_per_period` carries a
 `query_ir` for every row, each period's highest first, of which you keep each period's first
-`keep_first_per_period` rows, since Query IR can't rank within a period. Both checks only hold a
-plan; neither changes a draft or makes one ready.
+`keep_first_per_period` rows, since Query IR can't rank within a period. Plan offers these
+options only when each select item is a plain measure or metric reference that `validate` sums
+to one total over a window (`time_shape: "window_total"`: no running, rolling, to-date,
+prior-period or conversion value, and no metric predicate), the draft has no `metric_filters`,
+and every option's query validates. Any other ranking whose rows aren't the ranked entity's,
+split by a grain or not ("which 3 stores have the highest revenue by customer type" keeps the top
+3 store and customer type pairs, "top 3 stores by cumulative revenue by month", a ranked period
+such as "which 3 months had the highest revenue by store"), is held with the same code, no
+`clarification` and no Query IR: as its `ask_which_ranking` hint says, ask the user which
+ranking they mean and plan again with a question that names it. Both checks only hold a plan;
+neither changes a draft or makes one ready.
 
 Words that name no catalog object also make the plan `low_confidence` when the draft
 doesn't consume them, they aren't stopwords or number words, and `intent_ir.unresolved`
