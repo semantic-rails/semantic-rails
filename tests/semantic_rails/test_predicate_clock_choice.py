@@ -10,10 +10,62 @@ import yaml
 from semantic_rails.compiler import _compile_query_sql_ast, compile_query, lower_to_sql, plan_query
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
+from tests.semantic_rails.conftest import copy_package_config
 
 ORDERED = "temporal_role.clocks_order_ordered_at"
 SHIPPED = "temporal_role.clocks_order_shipped_at"
 SIGNED_UP = "temporal_role.clocks_customer_signed_up_at"
+
+
+def test_conversion_predicate_window_filters_only_base_events_matches_reference(tmp_path):
+    package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    config = load_package_config(str(package))
+    example = yaml.safe_load((package / "examples/advanced.yml").read_text())["examples"][
+        "signup_to_send_28d_for_high_order_rate_stores"
+    ]
+    with duckdb.connect(str(package / "jaffle_shop.duckdb"), read_only=True) as conn:
+        expected = conn.execute(
+            """
+            WITH sessions AS (
+                SELECT x.*, date_trunc('month', x.started_at) AS month, st.store_name
+                FROM jaffle_storefront_session x JOIN jaffle_store st USING (store_id)
+            ), predicate_rates AS (
+                SELECT store_name, month,
+                    COUNT(*) FILTER (WHERE EXISTS (
+                        SELECT 1 FROM jaffle_order o JOIN jaffle_store os USING (store_id)
+                        WHERE o.customer_id = s.customer_id
+                          AND o.ordered_at >= s.started_at
+                          AND o.ordered_at < s.started_at + INTERVAL 7 DAY
+                          AND os.store_name = s.store_name
+                    ))::DOUBLE / COUNT(*) AS rate
+                FROM sessions s GROUP BY 1, 2
+            ), output_rates AS (
+                SELECT store_name, month,
+                    COUNT(*) FILTER (WHERE EXISTS (
+                        SELECT 1 FROM jaffle_order o
+                        WHERE o.customer_id = s.customer_id
+                          AND o.ordered_at >= s.started_at
+                          AND o.ordered_at < s.started_at + INTERVAL 28 DAY
+                    ))::DOUBLE / COUNT(*) AS rate
+                FROM sessions s GROUP BY 1, 2
+            )
+            SELECT r.month, r.store_name, r.rate
+            FROM output_rates r JOIN predicate_rates p USING (store_name, month)
+            WHERE p.rate > 0.9 ORDER BY 1, 2
+            """
+        ).fetchall()
+        assert expected == [(datetime(2016, 9, 1), "Philadelphia", 1.0)]
+        result = conn.execute(compile_query(config, None, example["query"])["sql"])
+        columns = [column[0] for column in result.description]
+        rows = [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
+        assert [
+            (
+                row["temporal_role.jaffle_session_started_at__month"],
+                row["dimension.jaffle_store_name"],
+                row["signup_to_send_28d"],
+            )
+            for row in rows
+        ] == expected
 
 
 def _orders_on(role):
