@@ -39,6 +39,65 @@ def _keeping(query: dict[str, Any], field: str) -> list[dict[str, Any]]:
     ]
 
 
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("equality", ["is", "="])
+def test_separate_equality_clauses_keep_contradiction_and_refuse_execution(
+    runtime_factory, monkeypatch, path, equality
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    intent = f"item revenue where store {equality} Brooklyn and store {equality} Philadelphia"
+    _force_fallback(runtime, monkeypatch, intent, path)
+    try:
+        payload = plan_payload(runtime, intent=intent)
+    finally:
+        runtime.close()
+    assert _keeping(payload["best"]["query_ir"], STORE) == [
+        {"field": STORE, "op": "=", "value": "Brooklyn"},
+        {"field": STORE, "op": "=", "value": "Philadelphia"},
+    ]
+    assert payload["status"] == "low_confidence", payload.get("why")
+    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    assert "contradictory_filters" in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
+    assert "execute" not in payload["next"].get("ready_for", [])
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+def test_separate_equality_clauses_match_empty_duckdb_reference(
+    runtime_factory, monkeypatch, path
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    intent = "item revenue where store is Brooklyn and store is Philadelphia"
+    _force_fallback(runtime, monkeypatch, intent, path)
+    try:
+        payload = plan_payload(runtime, intent=intent, partial_query={"group_by": [PRODUCT_TYPE]})
+        # Execute the diagnostic IR directly to compare its conjunction with SQL;
+        # the public plan must refuse execute readiness for this contradiction.
+        assert "execute" not in payload["next"].get("ready_for", [])
+        actual = runtime.query(payload["best"]["query_ir"])["rows"]
+        runtime.close()
+        with duckdb.connect(runtime.db_path) as connection:
+            expected = connection.execute(
+                "SELECT i.product_type, SUM(i.item_revenue_cents / 100.0) "
+                "FROM jaffle_item i JOIN jaffle_order o ON i.order_id = o.order_id "
+                "JOIN jaffle_store s ON o.store_id = s.store_id "
+                "WHERE s.store_name = 'Brooklyn' AND s.store_name = 'Philadelphia' GROUP BY 1"
+            ).fetchall()
+        assert actual == expected == []
+    finally:
+        runtime.close()
+
+
+def test_values_without_phrase_provenance_keep_separate_equalities() -> None:
+    matched = [
+        {"dimension_id": STORE, "value": "Brooklyn"},
+        {"dimension_id": STORE, "value": "Philadelphia"},
+    ]
+    assert _normalize_value_filters({}, matched)["where"] == [
+        {"field": STORE, "op": "=", "value": "Brooklyn"},
+        {"field": STORE, "op": "=", "value": "Philadelphia"},
+    ]
+
+
 @pytest.mark.parametrize("path", ["primary", "fallback", "plan"])
 def test_named_values_share_one_filter_without_adding_grouping(runtime_factory, path: str) -> None:
     runtime = runtime_factory("jaffle_shop")
@@ -519,6 +578,8 @@ def test_unranked_lowercase_shared_phrase_stays_fail_safe(
         ("mixed-case-draft", "item revenue for Brooklyn and Philadelphia"),
         ("primary", "item revenue for Brooklyn from Philadelphia"),
         ("fallback", "item revenue for Brooklyn from Philadelphia"),
+        ("primary", "item revenue for Brooklyn, Philadelphia"),
+        ("fallback", "item revenue for Brooklyn, Philadelphia"),
     ],
 )
 @pytest.mark.parametrize("caller_filter", [False, True])

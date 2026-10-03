@@ -139,7 +139,9 @@ def _draft_for_choice(
     if "time" not in query:
         query = _apply_time_from_text(runtime, query, intent, [str(choice["id"])])
 
-    query = _normalize_value_filters(query, _matched_value_rows(runtime, query, intent))
+    query = _normalize_value_filters(
+        query, _matched_value_rows(runtime, query, intent), text=intent
+    )
 
     resolved = [
         {
@@ -164,9 +166,9 @@ def _draft_for_choice(
 
 
 def _normalize_value_filters(
-    query: dict[str, Any], matched_values: list[dict[str, Any]] | None = None
+    query: dict[str, Any], matched_values: list[dict[str, Any]] | None = None, *, text: str = ""
 ) -> dict[str, Any]:
-    """Combine question values without changing caller filters or grouping."""
+    """Fold one contiguous value phrase; preserve separate clauses and caller filters."""
 
     where = [
         {**row, "field": row["field"].strip()}
@@ -174,20 +176,35 @@ def _normalize_value_filters(
         else row
         for row in list(query.get("where", []) or [])
     ]
-    named: dict[str, list[Any]] = {}
+    named: dict[str, list[dict[str, Any]]] = {}
     for row in matched_values or []:
-        values = named.setdefault(row["dimension_id"].strip(), [])
+        rows = named.setdefault(row["dimension_id"].strip(), [])
         value = row["value"]
-        if not any(type(value) is type(existing) and value == existing for existing in values):
-            values.append(value)
-    for field, values in named.items():
-        normalized = {
-            "field": field,
-            "op": "in" if len(values) > 1 else "=",
-            "value": values if len(values) > 1 else values[0],
-        }
-        if normalized not in where:
-            where.append(normalized)
+        if not any(
+            type(value) is type(existing["value"]) and value == existing["value"]
+            for existing in rows
+        ):
+            rows.append(row)
+    for field, rows in named.items():
+        values = [row["value"] for row in rows]
+        spans = [row["matched_span"] for row in rows if row.get("matched_span") is not None]
+        fold = len(values) > 1 and len(spans) == len(values)
+        if fold:
+            ordered = sorted(spans)
+            # Every gap must be only a list separator. Clause text, overlapping
+            # matches or missing provenance cannot prove one value-list phrase.
+            fold = all(
+                before[1] <= after[0]
+                and re.fullmatch(
+                    r"\s*(?:,|and|,\s*and|from)\s*", text[before[1] : after[0]].lower()
+                )
+                is not None
+                for before, after in zip(ordered, ordered[1:], strict=False)
+            )
+        for value in [values] if fold else values:
+            normalized = {"field": field, "op": "in" if fold else "=", "value": value}
+            if normalized not in where:
+                where.append(normalized)
     result = dict(query)
     if where:
         result["where"] = where
@@ -749,6 +766,15 @@ def _matched_value_rows(runtime: Any, query: dict[str, Any], text: str) -> list[
     out = []
     for row in best_by_match.values():
         cleaned = {key: value for key, value in row.items() if not key.startswith("_")}
+        for source in (row["value"], row.get("label"), row["_match_key"]):
+            if source is None or not str(source).strip():
+                continue
+            phrase = re.escape(str(source).strip().lower())
+            matches = list(re.finditer(rf"(?<![a-z0-9]){phrase}s?(?![a-z0-9])", lowered_text))
+            if matches:
+                if len(matches) == 1:
+                    cleaned["matched_span"] = matches[0].span()
+                break
         out.append(cleaned)
     out.sort(
         key=lambda row: (-float(row.get("score", 0.0) or 0.0), str(row.get("dimension_id", "")))
