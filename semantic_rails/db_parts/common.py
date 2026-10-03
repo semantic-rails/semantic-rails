@@ -22,7 +22,7 @@ from __future__ import annotations
 import importlib
 import os
 from abc import abstractmethod
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
 from typing import Any
 
@@ -271,6 +271,33 @@ def import_driver(module_name: str, *, extra: str, engine: str, connection_kind:
         ) from exc
 
 
+def materialized_duckdb_result(
+    cursor: Any,
+    sql: str,
+    params: Iterable[Any] | None = None,
+    *,
+    max_rows: int | None = None,
+) -> tuple[Any, list[Any]]:
+    """Read a DuckDB relation without opening a streamed cursor result."""
+    values = list(params or [])
+    relation = cursor.sql(sql, params=values)
+    if relation is None:
+        return [], []
+    if max_rows is not None:
+        relation = relation.limit(max_rows + 1)
+    description = relation.description
+    fetched = relation.fetchall()
+    if values:
+        # Parameter-bound relations deduplicate names; DESCRIBE retains the
+        # original names (including duplicates), without executing the query.
+        described = cursor.sql("DESCRIBE " + sql, params=values).fetchall()
+        description = [
+            (column[0], *metadata[1:])
+            for column, metadata in zip(described, description, strict=True)
+        ]
+    return description, fetched
+
+
 def rows_from_cursor(cursor: Any, *, limits: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Map a DB-API cursor's fetched rows to a list of dicts."""
     columns = [str(col[0]) for col in list(cursor.description or [])]
@@ -381,8 +408,17 @@ class DbApiAdapter(WarehouseAdapter):
                         self._apply_statement_timeout(cursor, timeout_s)
                     zone = session_time_zone(limits)
                     with self._time_zone_scope(cursor, zone) if zone else nullcontext():
-                        cursor.execute(prepared.sql)
-                        rows = rows_from_cursor(cursor, limits=limits)
+                        if self.engine in {"ducklake", "motherduck"}:
+                            description, fetched = materialized_duckdb_result(
+                                cursor, prepared.sql, max_rows=_limit_max_rows(limits)
+                            )
+                            columns = [col[0] for col in description]
+                            rows: list[dict[str, Any]] = QueryRows(
+                                [dict(zip(columns, row, strict=False)) for row in fetched]
+                            )
+                        else:
+                            cursor.execute(prepared.sql)
+                            rows = rows_from_cursor(cursor, limits=limits)
                     return restore_column_names(_clip_rows(rows, limits), prepared)
                 finally:
                     if use_timeout:
