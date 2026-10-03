@@ -150,8 +150,9 @@ ids, `kinds` limits the kinds listed, and a `DISCOVER_IDS_TRUNCATED` warning giv
 and `catalog/full` resources return the whole index, descriptive rows, or every card with the
 alias index (see [Resources And Prompts](#resources-and-prompts)).
 
-`discover` returns slim cards by default: `id`, `label`, `score`, a `description` trimmed to 120
-characters (left out when it only repeats the label) and `default_temporal_role`, plus
+`discover` returns slim cards by default: `id`, `label`, a `description` retaining whole sentences
+up to 120 characters (sentences naming package dimensions, entities, measures or metrics survive
+past the cap; descriptions repeating the label are omitted) and `default_temporal_role`, plus
 `available: false` and `blocked_reason` for a candidate that isn't available. A card in a kind's
 bucket leaves out its `kind`; the response leaves out the `terms` and `verbosity` it was called
 with. `verbosity="compact"` returns full cards with match reasons, starter patches and comparison
@@ -159,11 +160,17 @@ metadata. When the question uses an object's whole name ("revenue by store"), th
 above near-duplicates that add a qualifier the question doesn't use ("Delivered revenue").
 `kinds` takes an array or a comma-separated string, and also a JSON array sent as a string.
 Dimension-value cards keep the raw filter `value`, its business-facing `label`, and explicit
-`available` flag, including when a value is blocked.
+`available` flag, including when a value is blocked. Minimal cards omit `score`; order gives rank.
+An aggregate metric at its measure's default aggregation, without filters, windows, parameters
+or temporal pins, replaces its measure card when both are available in the response and neither
+is named in a policy's `object_ids`. It carries `measure` with that measure's id. At most one
+metric replaces each measure; additional equivalent metrics keep their own cards. Other metrics
+and measure-only requests retain separate cards. Grant-scoped discovery retains its card fields,
+including `starter_query_patch`, at every verbosity.
 
 `inspect` (default `verbosity="minimal"`) states each fact once. It leaves out fields that
 repeat another one (`object_type`, `usage_summary`, `top_values`), a description that only repeats
-the label, empty structural fields, and every starter patch after the first. Declared sample values
+the label, generic `recommended_next_actions`, empty structural fields, and every starter patch after the first. Declared sample values
 and query literals remain exact, including blank and null values. `"compact"` or `"full"` return
 the whole card, which is also the HTTP default.
 
@@ -420,6 +427,14 @@ what would fit (a coarser or set `time.grain`, a filter, fewer `group_by` dimens
 `details` carries `row_count`, `total_row_count`, `result_chars` and `max_result_chars`. An operator
 changes the limit with the `SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS` environment variable, read on
 every call; a missing or non-positive value means the default.
+At effective `verbosity="compact"` (including normalized values and unknown values that fall
+back to compact), the same limit also bounds the execute result, including rows, `explain`
+and `sql_plan`, before the transport adds unknown-argument warnings and session annotations
+(`same_as`, `request_context`). Those additions can exceed the limit. If needed, execute omits
+`explain`, then `sql_plan`, adding one `EXECUTE_DETAILS_OMITTED` warning naming the omitted fields.
+Use `mode="sql"` or `verbosity="full"` for the complete plan; if already using `verbosity="full"`,
+use `mode="sql"`. If the remaining execute result still cannot fit, execute returns
+`RESULT_TOO_LARGE` without rows: its `details` contains only `max_result_chars`.
 The `query` that execute echoes back carries the caller's own `limits`; a transport-level
 `max_rows` does not become part of that query. The HTTP `/api/v1/query` endpoint leaves
 the response uncapped unless the query itself sets a limit.

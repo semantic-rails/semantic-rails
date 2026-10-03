@@ -2616,15 +2616,77 @@ _MINIMAL_DISCOVER_RECORD_KEYS = (
 _MINIMAL_DESCRIPTION_CHARS = 120
 
 
-def _slim_discover_minimal(payload: dict[str, Any]) -> dict[str, Any]:
-    """Trim each bucket to a slim card: {id, kind, label, score,
-    description (first 120 characters), default_temporal_role, available},
+def _slim_discover_minimal(
+    payload: dict[str, Any], config: PackageConfig | None = None
+) -> dict[str, Any]:
+    """Trim each bucket to a slim card: {id, kind, label,
+    description (whole sentences), default_temporal_role, available},
     plus blocked_reason when the candidate is unavailable.
 
     Drops ranking and debug detail (match_reasons, topics, comparison
     metadata, recommended_next_actions) and the starter_query_patch, which
     follows from id and kind. Callers that need the full card request
-    verbosity='compact'."""
+    verbosity='compact'. With no config, preserve the direct metadata API's
+    existing minimal projection; MCP supplies config for its richer shaping."""
+
+    objects: list[Any] = (
+        [*config.dimensions, *config.entities, *config.measures, *config.metric_recipes]
+        if config
+        else []
+    )
+    names = {
+        value.casefold() for obj in objects for value in (obj.id, obj.name, obj.label) if value
+    }
+    references = (
+        re.compile(r"(?<!\w)(?:" + "|".join(map(re.escape, sorted(names))) + r")(?!\w)")
+        if names
+        else None
+    )
+    merged: set[str] = set()
+    if config is not None:
+        measures = {m.id: m for m in config.measures}
+        metrics = {m.id: m for m in config.metric_recipes}
+        present = {row["id"]: row for row in payload.get("measures", [])}
+        policy_targets = {
+            object_id for policy in config.semantic_policies for object_id in policy.object_ids
+        }
+        kept = []
+        for row in payload.get("metrics", []):
+            metric = metrics.get(row["id"])
+            expr = metric.expression if metric else None
+            measure = measures.get(expr.measure) if isinstance(expr, AggregateExpr) else None
+            if (
+                metric
+                and metric.kind == "aggregate"
+                and isinstance(expr, AggregateExpr)
+                and measure
+                and measure.id in present
+                and row.get("available") is not False
+                and present[measure.id].get("available") is not False
+                and metric.id not in policy_targets
+                and measure.id not in policy_targets
+                and measure.id not in merged
+                and (expr.aggregation or measure.default_aggregation) == measure.default_aggregation
+                and not any(
+                    (
+                        metric.temporal_role,
+                        metric.compatible_temporal_roles,
+                        metric.filter_spec,
+                        metric.window_spec,
+                        expr.temporal_role,
+                        expr.filter,
+                        expr.window,
+                        expr.parameters,
+                    )
+                )
+            ):
+                row = {**row, "measure": measure.id}
+                merged.add(measure.id)
+            kept.append(row)
+        payload["metrics"] = kept
+        payload["measures"] = [
+            row for row in payload.get("measures", []) if row["id"] not in merged
+        ]
 
     def _slim_value(row: dict[str, Any]) -> dict[str, Any]:
         # The raw value can differ from the business-facing label (for
@@ -2633,7 +2695,7 @@ def _slim_discover_minimal(payload: dict[str, Any]) -> dict[str, Any]:
         slim: dict[str, Any] = {
             k: row[k]
             for k in ("id", "kind", "dimension_id", "value", "label", "available", "score")
-            if k in row
+            if k in row and (config is None or k != "score")
         }
         if isinstance(slim.get("score"), float):
             slim["score"] = round(slim["score"], 1)
@@ -2644,14 +2706,35 @@ def _slim_discover_minimal(payload: dict[str, Any]) -> dict[str, Any]:
         if row.get("kind") == "dimension_value":
             slim = _slim_value(row)
         else:
-            slim = {k: row[k] for k in _MINIMAL_DISCOVER_RECORD_KEYS if k in row}
+            slim = {
+                k: row[k]
+                for k in _MINIMAL_DISCOVER_RECORD_KEYS
+                if k in row and (config is None or k != "score")
+            }
             if isinstance(slim.get("score"), float):
                 slim["score"] = round(slim["score"], 1)
+            if row.get("measure"):
+                slim["measure"] = row["measure"]
             description = " ".join(str(row.get("description") or "").split())
             if description and description != str(row.get("label") or ""):
-                if len(description) > _MINIMAL_DESCRIPTION_CHARS:
-                    description = description[: _MINIMAL_DESCRIPTION_CHARS - 1].rstrip() + "…"
-                slim["description"] = description
+                if config is None:
+                    description = (
+                        description[: _MINIMAL_DESCRIPTION_CHARS - 1].rstrip() + "…"
+                        if len(description) > _MINIMAL_DESCRIPTION_CHARS
+                        else description
+                    )
+                else:
+                    sentences: list[str] = []
+                    for sentence in re.split(r"(?<=[.!?])\s+", description):
+                        if (
+                            len(" ".join([*sentences, sentence])) <= _MINIMAL_DESCRIPTION_CHARS
+                            or references
+                            and references.search(sentence.casefold())
+                        ):
+                            sentences.append(sentence)
+                    description = " ".join(sentences)
+                if description:
+                    slim["description"] = description
         # Without the reason, an agent can't tell "unavailable" from a bug.
         if row.get("blocked_reason"):
             slim["blocked_reason"] = row["blocked_reason"]
@@ -2697,8 +2780,10 @@ def inspect_payload(
 
 # Card fields that repeat another field: object_type repeats kind,
 # usage_summary repeats the aggregation guidance beside it, and top_values
-# repeats sample_values.
-_INSPECT_DUPLICATE_FIELDS = frozenset({"object_type", "usage_summary", "top_values"})
+# repeats sample_values. Generic next actions are omitted too.
+_INSPECT_DUPLICATE_FIELDS = frozenset(
+    {"object_type", "usage_summary", "top_values", "recommended_next_actions"}
+)
 
 
 def _slim_inspect_card(card: dict[str, Any]) -> dict[str, Any]:

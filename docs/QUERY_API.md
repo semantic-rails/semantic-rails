@@ -458,8 +458,9 @@ resource hints:
 ```
 
 - `statement_timeout_ms` — DuckDB enforces the requested millisecond deadline
-  with a per-query watchdog that calls `Connection.interrupt()` and drains the
-  watchdog before the shared connection is reused. Warehouse-native adapters
+  with a per-query watchdog that interrupts the cursor running that query (never
+  the shared connection or another query) and drains the watchdog before the
+  query returns. Warehouse-native adapters
   with second-granularity controls round up to the next second.
 - `max_rows` — DB-API, DuckDB, and native Snowflake cursors fetch at most
   `max_rows + 1`, return at most `max_rows`, and set `truncated=true` when an
@@ -1029,6 +1030,20 @@ not as a separate workflow or server-side trace store.
 fields such as `select`, `where`, `metric_filters`, `order_by`, and
 `group_by` keep the caller entries first, then append generated entries
 when needed.
+
+The question's values from one value-list phrase on the same dimension become one
+filter: `=` for one value and `in` for several. This yields one total or one
+combined ranking; no grouping is added for those values. A per-value breakdown
+needs an explicit grouping in the question (for example, "by store") or the
+caller's `group_by`.
+Caller filter rows stay as written, in their original order, with only string
+field IDs stripped of surrounding whitespace. Their operators and values are
+preserved, and generated rows are appended unless identical rows already exist.
+Conflicting filters or exclusions of requested values yield `low_confidence`.
+Separate equality clauses remain separate predicates: "where store is Brooklyn
+and store is Philadelphia" retains both equalities, reports `contradictory_filters`,
+and has no `execute` readiness. Values without a proven shared list phrase also
+remain separate predicates.
 
 Qualified metric asks return `interpreted_intent.pattern: "qualified_metric_rollup"` and a validated runtime-composed `scoped_aggregate`. Contextual predicates omit `time_alignment`; `time_grain` appears only when the qualification grain differs from the output grain, such as daily output qualified by monthly customer activity.
 

@@ -660,6 +660,19 @@ def test_business_wording_consumer_flow_retains_columns_and_starters(runtime_fac
 
 
 @pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+def test_grant_scoped_discover_keeps_starter_patch(granted_runtime, verbosity):
+    result = SemanticLayerMCPAdapter(granted_runtime).call_tool(
+        "discover",
+        {"terms": "customer", "verbosity": verbosity},
+        request_context=context(),
+    )
+    assert result["ok"]
+    assert result["metrics"][0]["starter_query_patch"]["select"][0]["expression"] == {
+        "metric": CUSTOMERS
+    }
+
+
+@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
 def test_restricted_empty_columnar_result_retains_schema(granted_runtime, monkeypatch, verbosity):
     monkeypatch.setattr(granted_runtime.adapter, "query", lambda sql, **kwargs: [])
     portable = {"select": [{"expression": {"metric": CUSTOMERS}, "as": "customers"}]}

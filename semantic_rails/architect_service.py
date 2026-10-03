@@ -42,6 +42,7 @@ from .architect_transactions import (
     ProjectFileUpdate,
     ProjectTransaction,
     project_revision,
+    route_rows_update,
 )
 from .config_parts.route_rows import RouteRowError, check_route_row, entity_references
 from .config_validation import PackageReference, parse_config_report
@@ -319,6 +320,7 @@ class ArchitectMutation:
                     "operation": "undo",
                     "changed_files": changed_files,
                 },
+                routes="off",  # restores the files exactly as they were
             )
         except SemanticLayerError as exc:
             if exc.code != "CONFIG_CONFLICT":
@@ -457,6 +459,8 @@ def create_project(
             "next_actions": _create_next_actions(spec),
         },
         prepare_updates=prepare,
+        # A new package, or an untouched starter scaffold: no answers to keep.
+        routes="off",
     )
     return ArchitectMutation(
         report=outcome.report,
@@ -572,6 +576,16 @@ def _spec_intent(spec: ProjectSpec) -> dict[str, Any]:
     }
 
 
+DECIDE_ROUTES_ACTION = (
+    "Choose each pair's route from details.clarification.options; pass the option's "
+    "decision to record_route_decision to record the package default."
+)
+NEW_PROJECT_ROUTES_ACTION = (
+    "After relating entities, decide the undecided join routes that project_status lists in "
+    f"route_census.undecided. {DECIDE_ROUTES_ACTION}"
+)
+
+
 def _create_next_actions(spec: ProjectSpec) -> list[str]:
     actions = []
     if spec.warehouse.kind == "duckdb" and spec.warehouse.data == "external":
@@ -584,6 +598,7 @@ def _create_next_actions(spec: ProjectSpec) -> list[str]:
             "Run validate_project with mode=runtime before trusting queries.",
             "Use upsert_model to add dimensions, measures, or entities, and upsert_relationship "
             "to relate them.",
+            NEW_PROJECT_ROUTES_ACTION,
             "When comparing changes, run impact_project with compare_path or base_ref before "
             "opening a release review.",
         ]
@@ -1529,7 +1544,8 @@ class ArchitectProject:
         package is loaded and must resolve the pair to exactly the recorded route. Otherwise it
         is ``INVALID_CONFIG`` (the loader's error, naming any row it disagrees with) and nothing
         is written. The report adds ``replaced`` (the row in effect before, or None) and
-        ``summary``, one plain sentence for a review.
+        ``summary``, one plain sentence for a review, and every ``route_changes`` pair it moves,
+        including inherited pairs. No keep rows are added.
         """
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         row: dict[str, Any] = {
@@ -1555,32 +1571,11 @@ class ArchitectProject:
                     details={"reason": "invalid_route_decision", "route_decision": row},
                 ) from None
             pair = (decision.source_entity, decision.target_entity)
-            # The loader reads a top-level list over graph.path_preferences, and graph.yml's
-            # graph block over package.yml's.
-            path = self._target_path("package.yml")
-            if (
-                "path_preferences" not in _yaml_load(path)
-                and self._target_path("graph.yml").exists()
-            ):
-                path = self._target_path("graph.yml")
-            documents = self._load_documents(path)
-            document = holder = documents[path]
-            if "path_preferences" not in document:
-                holder = document["graph"] = dict(document.get("graph", {}) or {})
-            rows = list(holder.get("path_preferences", []) or [])
-            matches = [
-                position
-                for position, existing in enumerate(rows)
-                if isinstance(existing, dict)
-                and tuple(entities.get(str(existing.get(end, "")).strip()) for end in _PIN_ENDS)
-                == pair
-            ]
-            metadata["replaced"] = deepcopy(rows[matches[-1]]) if matches else None
-            rows = [existing for position, existing in enumerate(rows) if position not in matches]
-            rows.insert(matches[0] if matches else len(rows), row)
-            holder["path_preferences"] = rows
-            updates = self._file_updates(documents)
             transaction = ProjectTransaction(self.project_path, workspace_root=self.workspace_root)
+            update, metadata["replaced"] = route_rows_update(
+                transaction.proposed_files(()), [row], replace_pair=pair, entities=entities
+            )
+            updates = [update]
             with transaction.virtual_project(updates) as proposed:
                 try:
                     changed = load_package_snapshot(str(proposed)).config
@@ -1615,6 +1610,7 @@ class ArchitectProject:
             success_status="recorded",
             metadata=metadata,
             prepare_updates=prepare,
+            routes="report",
         )
         return ArchitectMutation(
             report=outcome.report,
