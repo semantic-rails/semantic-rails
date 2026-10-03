@@ -464,16 +464,22 @@ def _aggregation_from_text(text: str, terms: set[str], measure: Any) -> str:
     return str(getattr(measure, "default_aggregation", "") or "sum")
 
 
-def _dimension_terms(config: Any, terms: Iterable[str]) -> tuple[str, ...]:
-    """Fold regular plurals only when their singular is authored by a dimension."""
+def _dimension_words(row: Any) -> tuple[str, ...]:
+    """The words a dimension authors: its id, name, label and aliases."""
 
-    vocabulary = {
-        token
-        for row in config.dimensions
-        for token in _tokens(
-            " ".join([row.id, row.name, row.label, *list(getattr(row, "aliases", []) or [])])
-        )
-    }
+    return _tokens(
+        " ".join([row.id, row.name, row.label, *list(getattr(row, "aliases", []) or [])])
+    )
+
+
+def _dimension_terms(config: Any, terms: Iterable[str]) -> tuple[str, ...]:
+    """Fold regular plurals only when their singular is authored by a dimension.
+
+    A folded grouping is execute-ready only when it resolves to one dimension
+    (``faithfulness._folded_grouping_gaps``).
+    """
+
+    vocabulary = {token for row in config.dimensions for token in _dimension_words(row)}
     normalized = []
     for term in terms:
         forms = set()
