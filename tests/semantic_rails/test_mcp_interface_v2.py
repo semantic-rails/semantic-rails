@@ -183,9 +183,18 @@ def test_a_stdio_client_pinned_to_v1_gets_the_refusal(
     """Not a closed connection: the refusal answers initialize and goes to stderr."""
 
     from semantic_rails.cli.commands import mcp as mcp_commands
+    from semantic_rails.config_validation import PackageReference
 
     monkeypatch.setenv("SEMANTIC_RAILS_MCP_INTERFACE", "v1")
-    monkeypatch.setattr(mcp_commands, "_runtime_from_package_or_path", lambda _args: runtime)
+    monkeypatch.setattr(
+        mcp_commands, "_package_ref_from_args", lambda _args: PackageReference(runtime.source_path)
+    )
+
+    def load_runtime(_ref: PackageReference) -> Any:
+        print("Loading package")
+        return runtime
+
+    monkeypatch.setattr(mcp_commands, "_runtime_from_ref", load_runtime)
     initialize = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
     initialized = {"jsonrpc": "2.0", "method": "notifications/initialized"}
     monkeypatch.setattr(
@@ -196,9 +205,17 @@ def test_a_stdio_client_pinned_to_v1_gets_the_refusal(
     out, err = capsys.readouterr()
     [reply] = [json.loads(line) for line in out.splitlines()]
     assert reply["id"] == 1
-    assert reply["error"]["data"] == {"code": "INVALID_CONFIG"}
+    assert reply["error"]["data"] == {
+        "code": "INVALID_CONFIG",
+        "details": {
+            "config_path": runtime.source_path,
+            "interface": "v1",
+            "valid_values": ["v2"],
+        },
+    }
     assert "v1 MCP interface was removed" in reply["error"]["message"]
     assert "v1 MCP interface was removed" in err
+    assert "Loading package" in err
 
 
 def test_the_adapter_serves_the_frozen_contract(v2: SemanticLayerMCPAdapter) -> None:
