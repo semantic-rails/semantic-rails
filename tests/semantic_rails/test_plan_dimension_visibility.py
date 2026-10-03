@@ -208,6 +208,44 @@ def test_explicit_hidden_name_behaves_like_an_absent_dimension(
         runtime.close()
 
 
+@pytest.mark.parametrize("detail", ["query", "best", "full", "debug"])
+def test_hidden_name_cannot_ground_an_intent_or_enter_catalog_hints(
+    runtime_factory, monkeypatch, detail
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    _with_districts(runtime, monkeypatch)
+    _hide_customer_district(runtime, monkeypatch)
+    dimensions = [
+        replace(dim, name="aardvarksecret", label="Aardvarksecret", aliases=[])
+        if dim.id == CUSTOMER_DISTRICT
+        else dim
+        for dim in runtime._config.dimensions
+    ]
+    monkeypatch.setattr(runtime, "_config", replace(runtime._config, dimensions=dimensions))
+    try:
+        payloads = []
+        for intent in ("item revenueasdf by aardvarksecret", "total moon dust by unknown"):
+            hidden = plan_payload(runtime, intent=intent, detail=detail)
+            monkeypatch.setattr(
+                runtime,
+                "_config",
+                replace(
+                    runtime._config,
+                    dimensions=[dim for dim in dimensions if dim.id != CUSTOMER_DISTRICT],
+                ),
+            )
+            runtime._catalog_search_index = None
+            absent = plan_payload(runtime, intent=intent, detail=detail)
+            assert hidden == absent
+            payloads.append(hidden)
+            monkeypatch.setattr(runtime, "_config", replace(runtime._config, dimensions=dimensions))
+            runtime._catalog_search_index = None
+        # The unrelated question's catalog hints cannot introduce the hidden name.
+        assert "aardvarksecret" not in json.dumps(payloads[1]).lower()
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize("path", ["primary", "fallback"])
 def test_uncertain_visibility_does_not_disclose_dimensions(
     runtime_factory, monkeypatch, path
@@ -220,11 +258,16 @@ def test_uncertain_visibility_does_not_disclose_dimensions(
     intent = "item revenue by district"
     _force_fallback(runtime, monkeypatch, intent, path)
     try:
-        payload = plan_payload(runtime, intent=intent, detail="debug")
+        with pytest.raises(SemanticLayerError) as error:
+            plan_payload(runtime, intent=intent, detail="debug")
+        assert error.value.code == "OBJECT_NOT_FOUND"
+        payload = {
+            "code": error.value.code,
+            "message": str(error.value),
+            "details": error.value.details,
+        }
         _assert_no_hidden_dimension(payload)
         assert STORE_DISTRICT not in json.dumps(payload)
-        assert payload["status"] != "ok"
-        assert "execute" not in payload["next"].get("ready_for", [])
     finally:
         runtime.close()
 

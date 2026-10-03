@@ -30,6 +30,7 @@ from semantic_rails.planner.faithfulness import (
 )
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.runtime import Runtime
+from semantic_rails.schema import ValueDomainConfig, ValueDomainValue
 from tests.semantic_rails.conftest import copy_package_config
 
 ORDER_TIME = "temporal_role.jaffle_order_time"
@@ -604,7 +605,7 @@ def test_named_value_guard_agrees_with_executable_predicate_results(
 def test_question_alias_maps_to_canonical_but_draft_alias_is_not_literal() -> None:
     runtime = _stand_in_runtime(["New York"])
     value = runtime._config.value_domains[0].values[0]
-    value.aliases = ["Big Apple"]
+    value.aliases.append("Big Apple")
     query = _query({"as": "revenue", "expression": {"measure": "measure.shop.revenue"}})
     for text, op in (("revenue in Big Apple", "="), ("revenue excluding Big Apple", "!=")):
         canonical = {
@@ -1027,11 +1028,13 @@ def _stand_in_runtime(values: list[Any]) -> Any:
             entities=[],
             segments=[],
             temporal_roles=[],
+            semantic_policies=[],
             value_domains=[
-                SimpleNamespace(
+                ValueDomainConfig(
+                    id="value_domain.region",
                     dimensions=["dimension.region"],
                     values=[
-                        SimpleNamespace(value=value, label=str(value), aliases=[])
+                        ValueDomainValue(value=value, label=str(value), aliases=[])
                         for value in values
                     ],
                 )

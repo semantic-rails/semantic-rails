@@ -45,7 +45,12 @@ from .faithfulness import (
 from .generators import blocked_object_not_found, fallback_drafts
 from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
-from .visibility import require_visible_dimensions, with_dimension_visibility
+from .visibility import (
+    require_visible_dimensions,
+    visible_dimensions,
+    visible_value_domains,
+    with_dimension_visibility,
+)
 
 _VERSION = 1
 
@@ -125,10 +130,18 @@ def plan_payload(
                 out_of_scope=scope_block_payload(intent_str, classification),
             )
             return _query_detail_payload(payload) if detail_level == "query" else payload
-        catalog_tokens = _catalog_token_index(
-            runtime._config,
-            search_index=runtime._get_catalog_search_index(),
-        )
+        dimensions = visible_dimensions(runtime._config)
+        catalog_config = runtime._config
+        search_index = None
+        if len(dimensions) == len(catalog_config.dimensions):
+            search_index = runtime._get_catalog_search_index()
+        else:
+            catalog_config = replace(
+                catalog_config,
+                dimensions=dimensions,
+                value_domains=visible_value_domains(catalog_config),
+            )
+        catalog_tokens = _catalog_token_index(catalog_config, search_index=search_index)
         passes, overlap = _intent_passes_relevance_floor(intent_str, catalog_tokens)
         if not passes:
             sample = sorted(catalog_tokens)[:30]

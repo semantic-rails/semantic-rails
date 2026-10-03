@@ -33,7 +33,7 @@ def with_dimension_visibility(operation: Callable[_P, _R]) -> Callable[_P, _R]:
 
     @wraps(operation)
     def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        runtime: Any = args[0]
+        runtime: Any = args[0] if args else kwargs["runtime"]
         partial = kwargs.get("partial_query")
         partial = partial if isinstance(partial, Mapping) else {}
         current = _visibility.get()
@@ -109,6 +109,6 @@ def require_visible_dimensions(
         # Invalid drafts still go through normal validation. Direct authored
         # references must not become a diagnostic bypass when binding fails.
         references = set(collect_object_references(query, config))
-    references.update(row.get("id") for row in resolved if row.get("id"))
+    references.update(str(row["id"]) for row in resolved if row.get("id"))
     if forbidden & references:
         raise SemanticLayerError("OBJECT_NOT_FOUND", "The requested dimension was not found.")
