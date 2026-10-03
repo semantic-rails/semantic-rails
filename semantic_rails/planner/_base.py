@@ -1361,9 +1361,15 @@ def _grouping_matches(term: str, row: Any, *, entity: bool = False) -> bool:
     )
     words = set(re.findall(r"[^\W_]+", " ".join(names).lower()))
     # Regular plurals name the same object; other synonym mappings do not.
-    words |= {word + "s" for word in words} | {
-        word[:-1] + "ies" for word in words if word.endswith("y")
-    }
+    words |= (
+        {word + "s" for word in words}
+        | {word[:-1] + "ies" for word in words if word.endswith("y")}
+        | {
+            word + "es"
+            for word in words
+            if len(word) > 2 and word.endswith(("s", "x", "z", "ch", "sh"))
+        }
+    )
     content = set(re.findall(r"[^\W_]+", term.lower())) - _NAME_CONNECTORS
     return bool(content and content <= words)
 
@@ -1378,7 +1384,7 @@ def _requested_grouping_spans(text: str, *, config: Any = None) -> list[tuple[in
 
     lowered = str(text or "").lower()
     top_by_match = re.search(
-        r"^\s*top\s+([a-z0-9 _,-]+?)\s+by\s+([a-z0-9 _-]+?)(?:[.?!,;]|$)",
+        r"^\s*(?:the\s+)?top\s+([a-z0-9 _,-]+?)\s+by\s+([a-z0-9 _-]+?)(?:[.?!,;]|$)",
         lowered,
     )
     match: re.Match[str] | None
@@ -1394,6 +1400,18 @@ def _requested_grouping_spans(text: str, *, config: Any = None) -> list[tuple[in
     if not match or not raw_terms:
         return []
     offset = match.start(1) + match.group(1).find(raw_terms)
+    if config is not None:
+        # A recorded window is a clause boundary, not part of the grouping's name.
+        # Reuse consumed spans rather than inventing a list of window cue words.
+        end = min(
+            (
+                start
+                for start, _end in _time_window(text).spans
+                if offset <= start < offset + len(raw_terms)
+            ),
+            default=offset + len(raw_terms),
+        )
+        raw_terms = raw_terms[: end - offset].rstrip()
     spans: list[tuple[int, int]] = []
     start = 0
     after_comma = False
