@@ -142,6 +142,7 @@ def test_disjoint_catalog_discovery_inspect_plan_query(granted_runtime, metric, 
         assert SECRET_DIMENSION not in serialized
     plan = plan_payload(runtime, intent=metric, partial_query=partial, detail="debug")
     assert plan["best"]["validation_ok"]
+    assert "validate" not in plan["next"]
     portable = plan["best"]["query_ir"]
     assert "policy_context" not in portable
     assert portable["select"][0]["expression"] == {"metric": metric}

@@ -177,6 +177,37 @@ SNAPSHOT_CASES = {
         },
         'WITH leaf_1 AS (\nSELECT\n  jaffle_store.store_name AS g1,\n  DATE_TRUNC(\'month\', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  SUM(jaffle_order.order_total_cents / 100.0) AS m1,\n  COUNT(1) AS m1_rows\nFROM jaffle_order\nLEFT JOIN jaffle_store ON jaffle_order.store_id = jaffle_store.store_id\nGROUP BY\n  jaffle_store.store_name,\n  DATE_TRUNC(\'month\', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.g1 AS "dimension.jaffle_store_name",\n  base.t AS "temporal_role.jaffle_order_time__month",\n  base.m1 AS revenue\nFROM guarded_base AS base\nORDER BY\n  "temporal_role.jaffle_order_time__month" ASC,\n  "dimension.jaffle_store_name" ASC\nLIMIT 5',
     ),
+    "rolling_average_order": (
+        {
+            "select": [
+                {
+                    "as": "aov",
+                    "expression": {
+                        "kind": "rolling",
+                        "input": {"metric": "metric.sales.aov_usd"},
+                        "window": {"unit": "month", "value": 3},
+                    },
+                }
+            ],
+            "time": {"grain": "month", "temporal_role": "temporal_role.jaffle_order_time"},
+        },
+        "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  SUM(jaffle_order.order_total_cents / 100.0) AS m1,\n  COUNT(DISTINCT jaffle_order.order_id) AS m2\nFROM jaffle_order\nGROUP BY\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n),\nleaf_base AS (\nSELECT\n  base.t AS t,\n  base.m1 AS m1,\n  base.m2 AS m2\nFROM leaf_1 AS base\n),\ndense_bounds AS (\nSELECT\n  MIN(leaf_base.t) AS range_start,\n  MAX(leaf_base.t) AS range_end\nFROM leaf_base\n),\ndense_time AS (\nSELECT\n  jaffle_calendar.month_start AS t\nFROM jaffle_calendar\nCROSS JOIN dense_bounds\nWHERE\n  jaffle_calendar.month_start >= dense_bounds.range_start\n  AND jaffle_calendar.month_start <= dense_bounds.range_end\nGROUP BY\n  jaffle_calendar.month_start\n),\nseries_base AS (\nSELECT\n  dense_time.t AS t,\n  leaf_base.m1 AS m1,\n  leaf_base.m2 AS m2\nFROM dense_time\nLEFT JOIN leaf_base ON dense_time.t = leaf_base.t\n),\ncoverage_1 AS (\nSELECT\n  MIN(DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))) AS loaded_from,\n  MAX(CASE WHEN CASE WHEN CAST(PG_TYPEOF(jaffle_order.ordered_at) AS VARCHAR) = 'timestamp with time zone' THEN TIMEZONE('UTC', CAST(jaffle_order.ordered_at AS TIMESTAMPTZ)) ELSE TIMEZONE('UTC', TIMEZONE('UTC', CAST(jaffle_order.ordered_at AS TIMESTAMP))) END <= TIMEZONE('UTC', NOW()) THEN DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) END) AS loaded_to\nFROM jaffle_order\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) THEN 0 END) AS m1,\n  COALESCE(NULLIF(base.m2, 0), CASE WHEN MAX(base.m2) OVER () > 0 AND (base.t >= coverage_1.loaded_from AND base.t <= coverage_1.loaded_to) THEN 0 END) AS m2\nFROM series_base AS base\nCROSS JOIN coverage_1\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  SUM(base.m1) OVER (ORDER BY base.t ASC ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) / NULLIF(SUM(base.m2) OVER (ORDER BY base.t ASC ROWS BETWEEN 2 PRECEDING AND CURRENT ROW), 0) AS aov\nFROM guarded_base AS base\nORDER BY\n  \"temporal_role.jaffle_order_time__month\" ASC",
+    ),
+    "cumulative_average_order": (
+        {
+            "select": [
+                {
+                    "as": "aov",
+                    "expression": {
+                        "kind": "cumulative",
+                        "input": {"metric": "metric.sales.aov_usd"},
+                    },
+                }
+            ],
+            "time": {"grain": "month", "temporal_role": "temporal_role.jaffle_order_time"},
+        },
+        "WITH leaf_1 AS (\nSELECT\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP)) AS t,\n  SUM(jaffle_order.order_total_cents / 100.0) AS m1,\n  COUNT(DISTINCT jaffle_order.order_id) AS m2\nFROM jaffle_order\nGROUP BY\n  DATE_TRUNC('month', CAST(jaffle_order.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.t AS t,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1,\n  CASE WHEN MAX(base.m2) OVER () > 0 THEN COALESCE(base.m2, 0) END AS m2\nFROM leaf_1 AS base\n)\nSELECT\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  SUM(base.m1) OVER (ORDER BY base.t ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) / NULLIF(SUM(base.m2) OVER (ORDER BY base.t ASC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW), 0) AS aov\nFROM guarded_base AS base\nORDER BY\n  \"temporal_role.jaffle_order_time__month\" ASC",
+    ),
 }
 
 

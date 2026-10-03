@@ -124,6 +124,10 @@ satisfies the `MCPAdapter` protocol (`package_id`, `list_tools`, `call_tool`,
 own tools through the engine's JSON-RPC envelope, errors, and audit events. Optional
 `interface` and `instructions` attributes fill the `initialize` result.
 
+For query MCP repeat hints, pass a separate `MCPQuerySession` from
+`semantic_rails.mcp_session` as `session=` to `handle_jsonrpc_message` for each
+client session. See [MCP_INTERFACE.md](MCP_INTERFACE.md) for the hint fields.
+
 To swap the body of one tool, for a test or a host's own implementation, call
 `replace_tool_handler(name, handler)` on a `SemanticLayerMCPAdapter`. It accepts only a
 tool the adapter lists and changes that adapter instance only. `call_tool` still validates
@@ -143,7 +147,8 @@ host is responsible for applying it. To keep the engine's checks, read the built
 `ArchitectProject(project_path, workspace_root=None)` is the transactional authoring
 session behind the Architect MCP and the REPL. It edits a package directory on disk:
 `revision()`, `inventory()`, `upsert_model`, `upsert_relationship`, `upsert_metric`,
-`upsert_segment`, `remove_object`, `write_file`, and `archive_file`. Each change returns an
+`upsert_segment`, `record_route_decision`, `remove_object`, `write_file`, and
+`archive_file`. Each change returns an
 `ArchitectMutation`: `report` is the result the Architect MCP returns, `changed_files`
 lists the files written, and `undo()` restores them unless a later edit changed them.
 Hosts receive `ArchitectMutation` objects and never construct them.
@@ -235,6 +240,7 @@ PolicyContextResolver{resolve(self, headers, *, payload=, request_id=)}
 PreparedQuery(sql, column_mapping=, parameters=)
 RequestContext(request_id=, actor=, tenant=, project=, roles=, environment=, audience=, metric_allowlist=, dimension_allowlist=, attributes=)
 Runtime(package_id)
+SNOWFLAKE_ADBC_CONNECTION_OPTIONS
 SNOWFLAKE_CLI_CONNECTION_OPTIONS
 SNOWFLAKE_NATIVE_CONNECTION_OPTIONS
 SemanticHTTPService(runtime, package_id=)
@@ -255,7 +261,7 @@ dialect_for_warehouse(warehouse)
 emit_audit_event(event, **payload)
 get_audit_sink()
 get_policy_context_resolver()
-handle_jsonrpc_message(adapter, message, *, request_context=)
+handle_jsonrpc_message(adapter, message, *, request_context=, session=)
 handle_streamable_http_request(adapter, *, method, headers, body=, request_context=)
 impact_report(ref, *, compare_path=, base_ref=, snapshot=)
 load_package_snapshot(path)

@@ -27,6 +27,7 @@ and the comparison fixtures: see
 | `limit` | `integer` (or `null`) | Optional row cap. |
 | `time` | `TimeBlock` (or `null`) | Query-level time anchor: temporal_role + grain + bounds. `start` is inclusive, `end` is exclusive. |
 | `temporal_role_overrides` | `object<measure_id, temporal_role_id>` | Per-measure clock bindings. |
+| `route_decisions` | `array` of `RouteDecision` | This query's own route for an entity pair: the `decision` of an `AMBIGUOUS_PATH` option. See [`route_decisions`](#route_decisions). |
 | `policy_context` | `object` | Caller-supplied access context (`environment`, `audience`, `roles`, `now`, ...). |
 | `limits` | `object` | Per-request `statement_timeout_ms`, `max_rows`. |
 | `verbosity` | `"summary"\|"minimal"\|"compact"\|"full"` | Response detail level (default `compact`). On `catalog`, `summary` returns counts + flat ID lists per kind (under 10KB) — recommended for cold-start orientation. |
@@ -53,14 +54,70 @@ public API. The key never changed an answer. A query that still sends it is
 refused with `INVALID_QUERY` and `details.unsupported_keys: ["path_policy"]`;
 delete it.
 
-A query can't choose a join route. The package records one with a
-`graph.path_preferences` row, which also decides every route that walks its
-pair. Without a row, a query whose routes can answer differently uses the
-start entity's one direct key or is refused with `AMBIGUOUS_PATH` (see
-[the route rule](PACKAGE_AUTHORING.md#the-route-rule)).
-Where the engine chose one of two or more routes, compact and full responses
-carry an info note, `ROUTE_COLOCATED_KEY` or `ROUTE_RECORDED`, with the chosen
-route in `details.route`.
+The package records a join route with a `graph.path_preferences` row, which
+also decides every route that walks its pair. Without a row, a query whose
+routes can answer differently uses the start entity's one direct key or is
+refused with `AMBIGUOUS_PATH` (see
+[the route rule](PACKAGE_AUTHORING.md#the-route-rule)), which asks which route
+the question means. Where the engine chose one of two or more routes, compact
+and full responses carry an info note, `ROUTE_COLOCATED_KEY` or
+`ROUTE_RECORDED`, with the chosen route in `details.route`.
+
+### `route_decisions`
+
+After an `AMBIGUOUS_PATH` refusal, the person's answer goes back in the query:
+one row per entity pair, the chosen option's `details.clarification`
+`decision`, shaped like a `graph.path_preferences` row (`label` is accepted and
+ignored).
+
+```jsonc
+{
+  "version": 1,
+  "select": [{"expression": {"measure": "measure.bank.balance"}, "as": "balance"}],
+  "group_by": ["dimension.bank_district_name"],
+  "route_decisions": [{
+    "source_entity": "entity.bank_account",
+    "target_entity": "entity.bank_district",
+    "relationship_path": ["relationship.accounts_owner", "relationship.owners_home_district"]
+  }]
+}
+```
+
+- **This query only.** A row is an exact-pair decision: it applies before the
+  package's row for the same pair (so it overrides a package default for this
+  query), never to other pairs, and is never cached as the package's route. It
+  is not a default: to make one, record the row in the package
+  (`record_route_decision`).
+- **One of the pair's routes.** The path must be one of the routes between the
+  pair within `graph.path_policy.max_hops`, the routes the engine itself
+  considers (no cycles, no longer chains); anything else is `INVALID_QUERY`
+  (`details.reason: route_not_offered`). An unknown entity (by id or name) or
+  relationship, a broken chain, a disallowed direction, or a path that doesn't
+  end at the target is `invalid_route_decision`; so are a malformed row
+  (`malformed_route_decision`), two rows for one pair
+  (`duplicate_route_decision`), and a row for a pair the query never walks
+  (`route_decision_unused`).
+- **Never under a row filter.** When a row filter in the caller's context reads
+  any entity on any of the pair's routes, the query is refused with
+  `POLICY_DENIED` (`details.reason: route_override_under_row_policy`, with
+  `path`, `policy_ids` and `hint`). A reviewed package row is the way to change
+  routes there.
+- **Disclosed.** Every response carries one `info` warning
+  `ROUTE_CHOSEN_BY_QUERY` per row, at every verbosity: `details.row` and
+  `details.replaced`, how the package resolves the pair without it (`decided`:
+  its own row; `colocated_key`: the start's own key; `inherited`: rows for pairs
+  its routes walk through; `only_route`; `undecided`: the package refuses it).
+  `hop_profile.targets[*].route_basis` is `query` for the pair.
+- `build-options` with a partial query that carries rows shows the dimensions
+  they make reachable, and its query patches keep the rows; a patch that would
+  leave a row unused is unavailable with that refusal. Live `valid-values`
+  checks rows before probing and reads through their routes using only the query's
+  configured measures, including those read by metrics; mixed selections containing
+  `aggregate_if` are accepted, but synthetic measures never become anchors. Probing
+  keeps the executed query's filters and temporal role overrides, so a row read only
+  by a metric filter stays in use. If none anchors the dimension, the first anchor's
+  refusal is returned unchanged; unrelated measures never supply values. Without a
+  configured query measure, `NO_VALID_VALUES_SOURCE` asks for a measure or metric anchor.
 
 ## Common gotchas
 
@@ -163,7 +220,7 @@ shorthands for the most common cases:
 | Arithmetic | `{ "kind": "arithmetic", "op": "divide", "left": {...}, "right": {...} }` |
 | Ratio | `{ "kind": "ratio", "numerator": {...}, "denominator": {...} }` |
 | Case | `{ "kind": "case", "whens": [{"when": {...}, "then": {...}}], "else": {...} }` |
-| Aggregate-if | `{ "kind": "aggregate_if", "aggregation": "count", "condition": {...} }` or with `"value": {...}` for sum/avg/min/max. Compiles to `COUNT_IF` / `SUM_IF` on Snowflake, portable `<AGG>(CASE WHEN cond THEN value END)` elsewhere. Column refs inside `condition` / `value` must specify `entity` or `table` (no surrounding measure to inherit from). It aggregates the rows of the value's entity (all `value` columns share it; without a value column, the condition's columns must share one entity). `condition` may also read any entity that entity reaches over declared many-to-one or one-to-one relationships, on the route a `where` filter on that entity takes. A value row with no match on that route never satisfies the condition: for each such entity, a top-level `and` term must compare one of its columns with `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in` or `IS NOT` null, and a condition such a row could satisfy (`IS NULL`, an `or` with the value's own column) is refused with `UNSUPPORTED_CONDITIONAL_AGGREGATE`. So is a condition across a one-to-many, many-to-many, bridge or time-valid hop, or over two routes with no path preference. Policies on the dimensions over the columns such a condition reads apply as they do to a `where` filter on them. |
+| Aggregate-if | `{ "kind": "aggregate_if", "aggregation": "count", "condition": {...} }` or with `"value": {...}` for sum/avg/min/max. Compiles to `COUNT_IF` / `SUM_IF` on Snowflake, portable `<AGG>(CASE WHEN cond THEN value END)` elsewhere. Column refs inside `condition` / `value` must specify `entity` or `table` (no surrounding measure to inherit from). It aggregates the rows of the value's entity (all `value` columns share it; without a value column, the condition's columns must share one entity). `condition` may also read any entity that entity reaches over declared many-to-one or one-to-one relationships, on the route a `where` filter on that entity takes. A value row with no match on that route never satisfies the condition: for each such entity, a top-level `and` term must compare one of its columns with `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in` or `IS NOT` null, and a condition such a row could satisfy (`IS NULL`, an `or` with the value's own column) is refused with `UNSUPPORTED_CONDITIONAL_AGGREGATE`. So is a condition across a one-to-many, many-to-many, bridge or time-valid hop, or over two routes with no path preference. Every dimension declared over a column read by `condition` or `value`, including on the measure's own entity, is governed as in a `where` filter or `group_by`: a matching `deny`, `redact` or `hidden` object policy refuses the query with `POLICY_DENIED` before SQL is rendered. Own-entity columns with no declared dimension remain allowed. |
 | Between | `{ "kind": "between", "expr": {...}, "low": {...}, "high": {...} }` — sugar for `expr >= low AND expr <= high`. Use `kind: "not_between"` or `negated: true` for the inverted form (`expr < low OR expr > high`). Desugared at parse time; the kind does not appear in the lowered IR. |
 | Literal | `{ "kind": "literal", "value": 0 }` |
 | Prior period | `{ "kind": "prior_period", "input": {...}, "offset": {"unit": "month", "value": 1} }` |
@@ -171,6 +228,35 @@ shorthands for the most common cases:
 | Cumulative | `{ "kind": "cumulative", "input": {...} }` |
 | Period-to-date | `{ "kind": "period_to_date", "input": {...}, "period": "month" }` |
 | Conversion | `{ "kind": "conversion", "base": {...}, "converted": {...}, "entity": "...", "window": {"unit": "day", "value": 7}, "matching_mode": "first_converted_after_base" }` — a converted event counts when `base <= converted < base + window` (7 × 24 hours here, not calendar days). |
+
+**Summing windows require values that add up across periods.** `rolling`, `cumulative`,
+and `period_to_date` accept additive flows using `sum` or `count`, event counts using
+`count_distinct` of a complete single-column source-row key (the measure's row grain
+or its model entity's full key). The entity key qualifies only when the measure reads
+the entity's table and its row grain is absent or matches that key.
+Sums, differences, or multiplication/division by numeric literals of those inputs
+are also accepted.
+A ratio (including arithmetic `divide` with a nonliteral denominator and metric recipes
+that resolve to a ratio) computes the ratio of its windowed
+parts: `SUM(numerator) OVER w / NULLIF(SUM(denominator) OVER w, 0)`. Each part uses the
+same partition and frame, after the ordinary empty-group settlement; a zero denominator
+returns `NULL`. It does not sum each period's ratio.
+
+Inputs using `avg`, `min`, `max`, `median`, or `percentile`, stocks (semi-additive
+measures), distinct populations, distinct counts of non-key columns or individual
+components of composite keys, distributions,
+products of measures, nested windows, and ratios inside other arithmetic or inside
+another ratio refuse with `ROLLUP_UNSAFE`
+before SQL executes. Ask for a ratio of windowed additive parts, or query the measure's
+own aggregation without a summing window. This rule also applies through derived
+metrics, metric filters, and every execution transport. `prior_period` reads one
+period with `LAG` and keeps its existing input semantics.
+
+`period_to_date` currently supports only the default calendar. A non-default
+`time.calendar_id`, or a time role bound to a non-default calendar, refuses with
+`REWRITE_NOT_SUPPORTED`; it cannot silently reset on Gregorian periods. Query the
+authored calendar's period as exact start/end dates without `period_to_date` instead.
+Default-calendar resets are unchanged.
 
 Comparisons (`kind: "comparison"`) with a literal `null` on either side lower
 `=` / `IS` to `IS NULL` and `!=` / `<>` / `IS NOT` to `IS NOT NULL`. This applies
@@ -204,7 +290,7 @@ functions must use their semantic expression forms instead of `call`.
 `INVALID_EXPRESSION_AST` with `details.allowed` equal to the warehouse's
 accepted set, including `CAST`.
 
-Common names: `ABS`, `CAST`, `CEIL`, `CEILING`, `COALESCE`, `CONCAT`, `EXP`,
+Common names: `ABS`, `CAST`, `CEIL`, `CEILING`, `COALESCE`, `CONCAT`, `DATE_DIFF`, `EXP`,
 `FLOOR`, `LENGTH`, `LN`, `LOG`, `LOWER`, `NULLIF`, `POWER`, `REPLACE`, `ROUND`,
 `SQRT`, `SUBSTR`, `SUBSTRING`, `TRIM`, `UPPER`.
 
@@ -221,6 +307,46 @@ Common names: `ABS`, `CAST`, `CEIL`, `CEILING`, `COALESCE`, `CONCAT`, `EXP`,
 Use each warehouse's scalar argument signatures. For example, Athena `LOG`
 takes a base and a value. Engine-generated SQL has a separate function list;
 it does not advertise functions that a client can call.
+
+Portable date differences use exactly three args:
+
+```json
+{"kind":"call","name":"DATE_DIFF","args":[
+  {"kind":"literal","value":"day"},
+  {"kind":"column","column":"opened_at","entity":"entity.order"},
+  {"kind":"column","column":"closed_at","entity":"entity.order"}
+]}
+```
+
+The first arg must be a string literal unit: `minute`, `hour`, `day`, `week`,
+`month`, `quarter` or `year` (case-insensitive). The result is end minus start,
+counting calendar unit boundaries rather than elapsed durations. The `week`
+exception is the calendar day difference divided by seven, truncated toward
+zero; it does not count Sunday or Monday week boundaries.
+
+BigQuery converts both endpoints to `DATETIME` before taking the difference.
+For `TIMESTAMP` endpoints, calendar boundaries are counted in UTC, so
+23:00 on January 1 to 01:00 on January 3 returns two days, preserving NULLs.
+
+| Warehouse | Supported units | Refused units |
+| --- | --- | --- |
+| DuckDB, MotherDuck, DuckLake, Postgres, Databricks | `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year` | None |
+| Snowflake, BigQuery, ClickHouse | `minute`, `hour`, `day`, `month`, `quarter`, `year` | `week` |
+| Athena | None | `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year` |
+
+Athena's native function counts complete elapsed units; Snowflake, BigQuery and
+ClickHouse count calendar week boundaries. Those calls return
+`INVALID_EXPRESSION_AST` with an unsupported-function message naming the
+warehouse and unit, including in `validate` mode and package loading.
+
+For supported calls, if either endpoint is NULL, the result is NULL and is
+excluded from averages, never replaced with zero. ClickHouse casts both endpoints
+to `Nullable(DateTime64(6))` so this holds even with `cast_keep_nullable=0`, while
+preserving pre-1970 dates: `1950-01-01` to `2024-01-01` is 74 years. The same
+shape works in query selects, package measure expressions and `aggregate_if`
+values. Wrong arity, non-literal units and unknown units return
+`INVALID_EXPRESSION_AST`, including in `validate` mode, with the required shape
+and recognized units.
 
 Numeric conversion uses exactly two args:
 
@@ -257,7 +383,7 @@ conditional aggregates and post-aggregation expressions.
 
 Scalar-call argument types and overload resolution are checked by the warehouse
 at execution, for query, package and relation-pipeline expressions alike.
-Compilation checks the allowed function name and CAST shape without inferring
+Compilation checks the allowed function name and CAST/DATE_DIFF shapes without inferring
 argument categories from literals, dimensions or nested calls. Use CAST when an
 explicit conversion is required. Warehouse execution failures use the stable
 `QUERY_EXECUTION_ERROR` code and remain redacted.
@@ -289,6 +415,25 @@ Different shape from `select`. The most common pattern is `kind: metric_predicat
 `scope_mode` is either `contextual` (default for query-time) or
 `entity_only`. `time_alignment` is one of `same_query_period`,
 `query_window`, or `rolling_window_in_period`.
+
+Ordinary `metric_filters` evaluate aggregated expressions at the grain the query
+returns, after grouping. A `metric_predicate` instead evaluates its input at its
+declared entity within that scope. A contextual predicate inherits the query's
+time and grouped context. When a grouped dimension belongs to the input's own
+row entity, the predicate groups by that dimension's values, including NULL,
+rather than by each row's entity key. A `where` filter is inherited before this
+aggregation; `entity_only` omits grouped context and compatible `where` filters.
+
+Comparison and other post-aggregation `metric_filters` beside a `distribution`
+refuse with `REWRITE_NOT_SUPPORTED`: branch lowering cannot apply them once at
+the returned group's grain. This includes distributions reached through derived
+metrics. Run the group-level filter without the distribution first. A contextual
+`metric_predicate` on an entity different from the distribution's per-entity
+grain refuses with `PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE`; use `entity_only` or
+a `where` filter. This refusal also covers predicates inside the distribution's
+input, including scoped aggregates and inputs reached through metric recipes.
+A distribution nested inside another expression also refuses
+with `REWRITE_NOT_SUPPORTED`; select the distribution separately.
 
 ## WhereFilter
 
@@ -829,6 +974,27 @@ no extra query, and a clipped result (`truncated`) never gets it.
 ClickHouse fills an unmatched outer-join field with a type default (0 or an empty string)
 unless the join yields NULLs, so every ClickHouse statement ends with
 `SETTINGS join_use_nulls = 1`.
+
+## What an answer covers
+
+Some answers are right but easy to misread, so the response says what they cover. This never
+changes the SQL or the rows.
+
+**Facts on different clocks.** With no `time` block, selects that read measures of different
+entities or governed metrics with differing sets of real time roles, mixing at least two
+distinct roles, carry one `MIXED_TIME_ROLES` warning that names each measure's role: orders by
+order time and storefront
+sessions by session start, grouped by customer, each read a period on their own role's clock.
+Measure-level filters can bound those periods, even without a `time` block; the warning makes
+no claim about how much history is covered. Undated measures are ignored. A `time` block,
+including a role without bounds or a grain, suppresses this warning. `details.clocks` lists each
+dated measure's `subject` and `temporal_roles`.
+A dated measure inside an expression (`ratio`, arithmetic, `case`, `aggregate_if`) counts like
+a bare one; one inside a conversion or a metric predicate keeps that expression's own time rules. A
+metric counts as one clock, with every role it combines: alone it never warns, since the
+package defined it, and beside a dated measure or metric with a different role set it does.
+Measures that share a role, and bare measures of one entity, never warn. A governed metric
+is a distinct source even when its measures belong to that same entity.
 
 ## Dense fill (`time.fill`)
 

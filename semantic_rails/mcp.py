@@ -27,6 +27,7 @@ from .audit import emit_audit_event
 from .catalog_service import resolve_catalog
 from .diagnostics import enrich_object_not_found, exception_issue, semantic_issue
 from .errors import SemanticLayerError
+from .mcp_session import MCPQuerySession
 from .metadata import (
     build_options_payload,
     catalog_payload,
@@ -602,12 +603,11 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="execute",
         description=(
-            "Validate, compile and run Query IR against the warehouse: the best.query_ir that "
-            "'plan' drafted (call plan first), or Query IR you fixed from it. time.end is "
-            "exclusive. Returns at most "
-            "max_rows rows; a capped result reports truncated and total_row_count. "
-            "mode='validate' only checks the query; mode='sql' also returns rendered_sql; "
-            "neither runs it. Gotcha: 'query' must be a JSON object, and mode 'run' costs "
+            "Validate, compile and run Query IR: plan's best.query_ir (call plan first) or your "
+            "fix of it. time.end is exclusive. Returns at most "
+            "max_rows rows; a capped one reports truncated and total_row_count. "
+            "mode='validate' only checks; mode='sql' adds rendered_sql; "
+            "neither runs. 'query' is a JSON object; mode 'run' costs "
             "warehouse time. IR: select[]={expression:{...},as}, group_by[]=[<dim>,...] (not in "
             "select), where[]={field,op,value}, order_by[]={field,direction}. select.expression: "
             "{aggregation, measure} | {metric} | "
@@ -1744,12 +1744,14 @@ class SemanticLayerMCPAdapter:
         arguments: Mapping[str, Any] | None = None,
         *,
         request_context: RequestContext | None = None,
+        session: MCPQuerySession | None = None,
     ) -> dict[str, Any]:
         """Call one MCP tool.
 
         ``request_context`` is supplied only by remote transports after their
         authentication boundary. Omitting it preserves the stdio/in-process
         contract where the caller is trusted to provide policy context.
+        ``session`` enables advisory repeat hints for calls in that session.
         """
 
         def finish(response: dict[str, Any]) -> dict[str, Any]:
@@ -1757,6 +1759,16 @@ class SemanticLayerMCPAdapter:
                 response["request_context"] = request_context_payload(request_context)
                 if request_context.request_id:
                     response["request_id"] = request_context.request_id
+            if session is not None and (arguments is None or isinstance(arguments, Mapping)):
+                query = None
+                if name == "execute" and response.get("ok") is True:
+                    with contextlib.suppress(SemanticLayerError):
+                        query = _query_payload(
+                            _strip_execute_transport_args(
+                                {key: value for key, value in args_dict.items() if key != "mode"}
+                            )
+                        )
+                session.annotate(self, name, args_dict, response, query=query)
             emit_audit_event(
                 "mcp_tool",
                 tool=name,
@@ -2471,6 +2483,7 @@ def create_optional_fastmcp_server(
     """
 
     server = _mcp_server_class()(server_name, instructions=adapter.instructions)
+    session = MCPQuerySession()
     for definition in adapter.list_tools():
         name = str(definition["name"])
         description = str(definition["description"])
@@ -2479,7 +2492,7 @@ def create_optional_fastmcp_server(
             tool_name: str, tool_description: str
         ) -> Callable[[dict[str, Any] | None], str]:
             def _tool(arguments: dict[str, Any] | None = None) -> str:
-                return json_text(adapter.call_tool(tool_name, arguments or {}))
+                return json_text(adapter.call_tool(tool_name, arguments or {}, session=session))
 
             _tool.__name__ = f"semantic_rails_{tool_name.replace('-', '_')}"
             _tool.__doc__ = tool_description

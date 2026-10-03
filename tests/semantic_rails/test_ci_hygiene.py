@@ -110,7 +110,11 @@ def plugin_run(tmp_path, source, *, parallel=False, **overrides):
     return subprocess.run(
         command,
         cwd=tmp_path,
-        env={**os.environ, "PYTHONPATH": str(ROOT), "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(filter(None, [str(ROOT), os.getenv("PYTHONPATH")])),
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        },
         capture_output=True,
         text=True,
         timeout=30,

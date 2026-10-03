@@ -15,6 +15,7 @@ import secrets
 import shlex
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -185,7 +186,7 @@ def start_mcp_http_server(
                     str(existing.get("package_path", "") or "")
                 ),
                 "host": str(existing.get("host", "") or ""),
-                "port": int(existing.get("port", 0) or 0),
+                "port": int(existing.get("requested_port", existing.get("port", 0)) or 0),
             }
             mismatches = [
                 key
@@ -215,6 +216,7 @@ def start_mcp_http_server(
                     "name": server_name,
                     "requested": requested_config,
                     "registered": registered_config,
+                    "assigned_port": int(existing.get("port", 0) or 0),
                     "mismatches": sorted(set(mismatches)),
                     "server": row,
                     "restart_performed": False,
@@ -243,7 +245,23 @@ def start_mcp_http_server(
         env = dict(os.environ)
         env.setdefault("SEMANTIC_RAILS_HOME", str(semantic_rails_home()))
         env["SEMANTIC_RAILS_MCP_INSTANCE_NONCE"] = instance_nonce
-        with log_path.open("ab") as log:
+        env.pop("SEMANTIC_RAILS_MCP_SOCKET_FD", None)
+        with contextlib.ExitStack() as stack:
+            pass_fds: tuple[int, ...] = ()
+            if port == 0:
+                # Hold the kernel-selected port until the child inherits its listener.
+                try:
+                    listener = stack.enter_context(socket.create_server((host, 0)))
+                except OSError as exc:
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        f"Cannot bind a managed MCP listener on host {host!r}: {exc}",
+                        details={"host": host, "spawned": False},
+                    ) from exc
+                port = int(listener.getsockname()[1])
+                pass_fds = (listener.fileno(),)
+                env["SEMANTIC_RAILS_MCP_SOCKET_FD"] = str(listener.fileno())
+            log = stack.enter_context(log_path.open("ab"))
             proc = subprocess.Popen(  # noqa: S603 - fixed interpreter/module command.
                 cmd,
                 stdout=log,
@@ -251,6 +269,7 @@ def start_mcp_http_server(
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
                 env=env,
+                pass_fds=pass_fds,
             )
         process_identity = _process_identity(proc.pid)
         record = {
@@ -259,6 +278,7 @@ def start_mcp_http_server(
             "transport": "http",
             "host": host,
             "port": port,
+            "requested_port": requested_config["port"],
             "package_id": expected_package_id,
             "package_path": requested_config["package_path"],
             "command": cmd,

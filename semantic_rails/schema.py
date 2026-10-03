@@ -290,6 +290,8 @@ class PathPreferenceConfig:
     source_entity: str
     target_entity: str
     relationship_path: list[str]
+    # What the route means in business words (``graph.path_preferences[].label``).
+    label: str = ""
 
 
 # Hop ceiling applied when a package does not declare one. Four

@@ -62,6 +62,31 @@ MCP issues leave out empty optional fields and a
 `why_invalid` or `unsupported_construct` that only repeats its `message` or `code`, and
 `request_context` appears only when a transport or `policy_context` set one.
 
+Within a stdio query MCP session, repeated calls still run normally and add
+`same_as`, the first matching response's `request_id`. Matching uses the tool name
+and arguments with JSON object keys sorted, ignoring `verbosity` and
+`request_id` at the argument and query envelopes. Array order, filters, query
+limits, `max_rows` and policy context still distinguish requests. If the first
+matching run was capped, `same_as` is instead an object with `request_id`,
+`row_count`, `truncated: true` and `max_rows` describing that historical response.
+The current response retains its own truncation status. The session retains the
+64 most recently used request fingerprints; evicted calls are forgotten.
+
+After a successful `execute` in run mode, `execute` in `validate` or `sql` mode
+for the same query and policy context also adds
+`already_ran: {"request_id": "...", "row_count": 12}`. This refers to the latest
+retained successful run and its returned row count. A capped run also carries
+`truncated: true` and the effective `max_rows` cap in `already_ran`; a later
+successful run replaces this history even when its cap or row format differs. It is a
+historical hint, not a cached answer or a guarantee that warehouse data is unchanged.
+The first call has no added fields. Stateless HTTP and calls without a session
+retain their existing responses; REST, SDK and CLI query responses are unchanged.
+
+In-process MCP hosts can create `MCPQuerySession` from
+`semantic_rails.mcp_session` and pass it as `session=` to `adapter.call_tool` or
+`handle_jsonrpc_message`. Use a separate instance for each client session. The
+optional MCP SDK stdio facade also owns a session for its connection.
+
 Every `tools/list` definition publishes an `outputSchema` for this envelope and
 MCP-standard annotations (`readOnlyHint`, `destructiveHint`,
 `idempotentHint`, and `openWorldHint`). The complete generated contract is packaged as
@@ -161,6 +186,14 @@ honor; `detail="best"` adds `intent_ir`, `best.trace` and `next`. Forward `best.
 already paid validation cost, so run `execute` with `mode="validate"` only when you are editing
 the IR or need full diagnostics.
 
+Validate or execute `best.query_ir`; `next` carries only `ready_for` and optional
+`valid_values` calls, without another copy of the query. In `detail="best"`, fallback
+drift reasons point to slot paths in `best.trace.intent_slots` and
+`why.details.fallback_slots`. Full/debug detail keeps the expanded slot diagnostics;
+query detail keeps them self-contained because it omits the trace.
+Other exact repeats use `{"$ref": "best.resolved.0"}` or a `best.query_ir` field path;
+follow the dot-separated path from the response root (numbers index arrays).
+
 A draft that validates can still leave out part of the question. `plan` returns
 `low_confidence` with `why.code="PLAN_INTENT_COVERAGE_GAP"` when the draft:
 
@@ -194,8 +227,8 @@ A draft that validates can still leave out part of the question. `plan` returns
   (`fiscal_calendar_unrealized`). When the package has one calendar whose name says fiscal,
   `plan` buckets the draft on it itself (`time.calendar_id` with `time.fill: true`) only when
   the question's fiscal words ask for buckets of the draft's grain ("by fiscal quarter",
-  "fiscal quarterly") and no to-date or rolling value (period-to-date resets on Gregorian
-  periods). Any other fiscal period ("the first fiscal quarter", "vs prior fiscal year") is
+  "fiscal quarterly") and no to-date or rolling value (`period_to_date` refuses non-default
+  calendars). Any other fiscal period ("the first fiscal quarter", "vs prior fiscal year") is
   reported, and its recovery hint asks for the period as exact dates; without such a calendar
   the hint names the package's calendars;
 - picked its subject from several that match the question equally well, when neither the
@@ -212,7 +245,23 @@ draft includes it.
 framing words (including verbs and function words such as "dated", "placed", "only", "using"),
 time phrases the planner read, and numbers the draft carries (a limit, a threshold, the
 window's year), come back as a `PLAN_UNMATCHED_TERMS` warning with up to eight of them in
-`details.terms`. Other words stay warnings, as do measure nouns; check them before executing.
+`details.terms`. For the warning, the draft uses a word in the id, name, label or aliases of an
+object it uses (a measure's entity and time role included), allowing a plural or one typo, or in
+a filter value; descriptions and topics never use a word. A word that names a catalog object is
+held to a stricter rule, and one the draft doesn't consume is not a warning: it makes the plan
+`low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`, since the draft dropped a grouping
+("by store, customer type and product type" grouped by store; `why.details.dropped_groupings`
+names it) or answers about another subject. A word names an object when it is a word of the
+object's label or aliases, or of the last dotted part of its id or name outside the object's own
+namespaces ("sales" in `metric.sales.aov_usd` names nothing); a plural counts as its singular.
+Only the draft consumes one: by the label, aliases, id or name of an object it selects (an id the
+question spells out whole consumes its namespaces too), a value it filters on or that value's
+declared names, a time grain it carries (its unit, "time", "date" and "period"), a count it
+carries ("number of"), or a time phrase it read; only function words ("of", "at") are exempt. A
+synonym, a typo, a namespace, a description, a framing word or an object the draft doesn't select
+(a measure's entity included) never does. So `plan` may hold back a right draft ("revenue from
+orders": Orders is a measure), but never calls one ready that drops a grouping the question
+names. Other words stay warnings; check them before executing.
 A number, or a clock or zone word, the draft doesn't carry is not a warning: it makes the plan
 `low_confidence` (below), since the draft dropped an hour, a range or a
 threshold. Two words or more that no catalog object has, the first straight after "for",
@@ -223,7 +272,7 @@ plan is `low_confidence` with a `multiple_subjects_unrealized` gap naming the on
 out. For a measure by a dimension, a measure the question names in full outranks a shorter one
 it shares a word with ("item revenue" is Item revenue, not Revenue), but only when the name
 holds every word of the measure the question otherwise asks for: "large order revenue" is
-still revenue. If a
+still revenue (and `low_confidence` until the draft filters on large orders). If a
 validating fallback would change the target, grouping, qualification/cohort,
 filters, or time scope, `plan` returns `low_confidence` with
 `why.code="PLAN_FALLBACK_SEMANTIC_DRIFT"` instead of silently promoting it.
@@ -393,11 +442,12 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `<TOOL>_UNKNOWN_ARG` | every tool but `segment` | Unknown argument (on `discover`, incl. `term`/`kind` typos); the value was ignored |
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain; flip `allow_live_query=true` to probe |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
-| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, or when two or more are names the catalog doesn't have |
+| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, when one names a catalog object, or when two or more are names the catalog doesn't have |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
 | `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain and no `start`/`end` window, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
 | `NO_DATA_IN_SCOPE` | `execute` | A sum, count or distinct count (or a sum or difference of them) read `NULL` on every returned row (or nothing came back and neither a `start`/`end` window nor a metric filter explains it): its measure has no data in this query's scope, so it is `NULL`, not `0`. `details.outputs` names them; check the filter values. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
+| `MIXED_TIME_ROLES` | `execute` | With no `time` block, the selects read measures of different entities or governed metrics with differing sets of real time roles, mixing at least two distinct roles. Undated measures are ignored; a governed metric counts as one clock. Each period is read on its own role's clock, and measure-level filters can bound those periods. The message names the roles, and `details.clocks` lists them. See [What an answer covers](QUERY_IR_SCHEMA.md#what-an-answer-covers) |
 | `QUERY_SHORTHAND_NORMALIZED` | `execute` | A select item was accepted as shorthand and rewritten; `details.canonical` is the form to send next time (`plan` accepts the same shorthand but returns the canonical form in `best.query_ir` instead of a warning) |
 | `SEMANTIC_CAVEAT_APPLIED` | `execute` | Package-authored advisory context matched the query; interpret affected results with that context |
 | `SEMANTIC_CAVEATS_TRUNCATED` | `execute` | More caveats matched than this verbosity returned; increase verbosity to inspect the rest |
@@ -513,6 +563,17 @@ The setup wizard uses this same default server name. Starting the same healthy
 configuration is idempotent. If `status` reports a dead registration, stop it
 explicitly with `semantic-rails mcp stop --name default`; the interactive
 wizard can also remove a dead registration and retry.
+
+Use `mcp start --port 0` to let the operating system choose an available port.
+The manager holds the listening socket through server startup, so concurrent
+starts cannot claim the same port. The start response and `mcp status` report
+the assigned port. Repeating the same named start with `--port 0` reuses its
+healthy server; process identity and health nonce checks still apply.
+For port zero, if the host cannot resolve or bind, startup returns `INVALID_CONFIG` without
+spawning a process or writing a server record. Configuration conflicts report
+the server's `assigned_port` while comparing the originally requested port.
+The server consumes the inherited socket-fd environment variable at startup,
+including when an explicit port is used, so child processes do not inherit it.
 
 Windows users should install the generated stdio client config with
 `semantic-rails mcp setup --install --yes`, or run `mcp http` in a foreground
@@ -724,14 +785,14 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 |------|----------------------|
 | `AMBIGUOUS_ALIAS` | Alias resolves to multiple semantic objects; pick one from `details.candidates`. |
 | `AMBIGUOUS_CHILD_SCOPE` | Plain filters on one child entity across a one-to-many hop don't say which child rows they mean: two or more positive ones (the same row or separate ones), or one negated one ("has a row that is not X" or "has no row that is X"). `details.clarification.options` holds both readings, each as the query's whole rewritten `where`; resend one. Offered only when both answer for this caller. |
-| `AMBIGUOUS_PATH` | Several routes between root entity and target can answer differently and the package records none (`details.reason: route_decision_required`); `details.candidates` lists them, `details.meanings` reads each, `details.pins` holds the `graph.path_preferences` row that records each route whose row would load beside the package's rows, `details.conflicts_with` lists any other route with the rows its row would disagree with, and `details.hint` says how. |
+| `AMBIGUOUS_PATH` | Several routes between root entity and target can answer differently and the package records none (`details.reason: route_decision_required`). `details.clarification` asks which one the question means (`question`) and lists one option per route: its `meaning` in business words, its `relationship_path`, and its `decision` row. Ask the person, then resend with that `decision` in `route_decisions` (this query only), or record it with Architect `record_route_decision` (the package default; an option's `conflicts_with` names the package rows to change first). |
 | `DUPLICATE_OUTPUT_ALIAS` | Two projected columns share an alias; rename one. |
-| `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. |
+| `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. For a measure restriction, `details.aggregation` records the rejected value and the hint's `aggregation_received` and `allowed` mirror `details.aggregation` and `details.allowed`; the hint lists only those allowed values. Parameter errors disclose the required parameter schema. |
 | `INVALID_TEMPORAL_ROLE` | Unknown temporal role; pick one from `details.compatible_temporal_roles`. |
 | `INCOMPATIBLE_TEMPORAL_ROLE` | Selected role is not compatible with the chosen measure/metric, or the measure has no time role at all (`details.compatible` is empty; declare one on the model or the measure). |
 | `INVALID_TEMPORAL_BINDING` | Time block targets a clock incompatible with a conversion's anchor; filter on `details.anchor_temporal_role` or push the constraint into a conversion metric. |
 | `INCOMPATIBLE_CALENDAR` | Selected calendar grain is not supported by the underlying measure. |
-| `FANOUT_UNSAFE` | Breakdown crosses a 1-to-many relationship without a pre-aggregation boundary. |
+| `FANOUT_UNSAFE` | Breakdown crosses a 1-to-many relationship without a pre-aggregation boundary, or joins into a `temporal_validity` window without a query `time`. |
 | `ROLLUP_UNSAFE` | Roll-up combines non-additive primitives; declare the aggregation entity or supply sketch metadata. |
 | `MEASURE_VALIDITY_BOUNDARY` | Query crosses a declared measure-validity window; split by sub-window. |
 | `OUT_OF_SCOPE` | Request isn't a governed-data query; hand off to the recommended tool — the semantic layer compiles governed data queries only. |
@@ -748,7 +809,7 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 | `INVALID_SEGMENT` | Segment definition is invalid. |
 | `MISSING_DEPENDENCY` | Required upstream object is missing. |
 | `QUERY_EXECUTION_ERROR` | Warehouse refused or aborted execution. |
-| `PATH_NOT_FOUND` | No valid join path between the requested objects; `details.reason: excluded_by_decision` means every route walks a pair the package's `graph.path_preferences` rows (`details.rows`) record differently. |
+| `PATH_NOT_FOUND` | No valid join path between the requested objects; `details.reason: excluded_by_decision` means every route walks a pair the package's `graph.path_preferences` rows (`details.rows`) record differently. `details.reachable_targets` and suggested group-by dimensions share compilation's path traversal and route-selection rules, respecting relationship directions, hop limits, route ambiguity, and recorded path preferences, including inherited decisions. The lists are exact under these path rules, without caching rejected routes, and are route-eligible: fan-out and policy checks still apply. Unrelated route rows retain bounded reachability scans; inherited-route searches skip branches that cannot reach the target within the remaining hops. |
 | `POLICY_DENIED` | Policy context blocks a referenced object or query cut. |
 | `INVALID_METRIC_PREDICATE` | `metric_predicates[]` entry is malformed. |
 | `PREDICATE_SCOPE_UNSAFE` | Predicate scope is incompatible with query grain. |

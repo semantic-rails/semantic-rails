@@ -806,6 +806,10 @@ History-backed cards can also expose:
 - `coverage_notes`
 - `null_bucket_meaning`
 
+A dimension that `discover`, `inspect` or `build-options` lists through a time-valid
+relationship may still need `time` at compile time: without one, the query is refused with
+`FANOUT_UNSAFE`, naming the relationship and asking for `time`.
+
 Packages that opt into `defaults.operational` can also expose a nested `operational` block on measure and metric cards.
 
 Useful card fields for measures:
@@ -1010,6 +1014,13 @@ compile cost and warms the runtime compile cache. Agents can forward
 `best.query_ir` to `compile` or `query`; call `validate` again only when
 they need the full diagnostics envelope or are editing the IR by hand.
 
+Validate or execute `best.query_ir` directly. `next` carries `ready_for` and optional
+`valid_values` calls, without duplicating the query. For `detail="best"`, fallback drift
+reasons use slot paths in `best.trace.intent_slots` and `why.details.fallback_slots`
+instead of repeating their values. Full/debug and query detail retain expanded diagnostics.
+Identical catalog rows in `intent_ir` and query fields in gap diagnostics use `$ref`
+objects pointing to their canonical value by a dot-separated response path.
+
 Every `best` entry may include a compact `trace` showing extracted intent slots, selected
 subjects/groupings/filters/paths, and whether a fallback was used. Treat it as diagnostic context,
 not as a separate workflow or server-side trace store.
@@ -1138,6 +1149,13 @@ The response `warnings` array can carry these non-error signals:
   measure reads `0` in an empty group only where it has data in scope; here it has none, so it
   is `NULL`. `details.outputs` names the outputs. It never fires on a clipped (`truncated`)
   result. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
+- `MIXED_TIME_ROLES` — fires on `validate`, `compile` and `execute` when a query with no
+  `time` block selects measures of different entities or governed metrics with differing
+  sets of real time roles, mixing at least two distinct roles. Undated measures are ignored;
+  a governed metric counts as one clock. The message names the roles and says each period is
+  read on its own role's clock; measure-level filters can bound those periods.
+  `details.clocks` lists each `subject` with its `temporal_roles`. See
+  [What an answer covers](QUERY_IR_SCHEMA.md#what-an-answer-covers).
 - `EXPRESSION_NORMALIZED_AWAY` — fires when an input expression `kind`
   was recognized by the parser but did not survive normalization (or
   the user's `as:` alias is missing from compiled output). Carries
@@ -1163,13 +1181,18 @@ The response `warnings` array can carry these non-error signals:
   and `full` verbosity: the query reads an entity pair with two or more
   routes, and the engine used the start entity's own key or the package's
   `graph.path_preferences` rows. `details.route` is the chosen route; the
-  message reads it (`Order → Store (own key)`). On `ROUTE_COLOCATED_KEY`,
+  message reads it ("the Order's Store (own key)"). On `ROUTE_COLOCATED_KEY`,
   `details.alternatives` holds the row that would make each other route the
   default when that row would load beside the package's rows, and
   `details.conflicts_with` lists any other route with the rows its row would
   disagree with; on `ROUTE_RECORDED` for a route inherited from rows for the pairs
   it walks through, `details.rows` names them. See
   [the route rule](PACKAGE_AUTHORING.md#the-route-rule).
+- `ROUTE_CHOSEN_BY_QUERY` — severity `info`, at every verbosity: one per
+  `route_decisions` row the query applied. `details.row` is the row and
+  `details.replaced` what would have applied without it (`decided`,
+  `colocated_key`, `inherited`, `only_route` or `undecided`). See
+  [`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions).
 
 HTTP failures return:
 
@@ -1183,6 +1206,44 @@ HTTP failures return:
   }
 }
 ```
+
+`details` is returned whole on every surface (HTTP, MCP and CLI). An
+`AMBIGUOUS_PATH` refusal's `details` carry `reason: route_decision_required`,
+`start`, `target`, `hint` and `clarification`:
+
+```json
+{
+  "code": "AMBIGUOUS_PATH",
+  "details": {
+    "reason": "route_decision_required",
+    "start": "entity.bank_account",
+    "target": "entity.bank_district",
+    "clarification": {
+      "kind": "route",
+      "apply": ["query", "package"],
+      "question": "Which District does the question mean for an Account?",
+      "options": [
+        {
+          "id": "branch_district",
+          "meaning": "the District of the Account's Branch",
+          "relationship_path": ["relationship.accounts_branch", "relationship.branches_district"],
+          "decision": {
+            "source_entity": "entity.bank_account",
+            "target_entity": "entity.bank_district",
+            "relationship_path": ["relationship.accounts_branch", "relationship.branches_district"],
+            "label": "the District of the Account's Branch"
+          }
+        }
+      ]
+    },
+    "hint": "Which route is meant is a business definition. ..."
+  }
+}
+```
+
+Send an option's `decision` in the query's `route_decisions` to answer that
+query with it, or record it in the package with Architect
+`record_route_decision`.
 
 ## Real Example
 

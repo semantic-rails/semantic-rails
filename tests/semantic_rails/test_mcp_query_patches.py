@@ -21,6 +21,7 @@ from semantic_rails.request_context import RequestContext
 QUERY_IR_KEYS = set(_QUERY_IR_KEYS)
 REVENUE = [{"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}]
 STORE = "dimension.jaffle_store_name"
+ORDER_MONTH = {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"}
 # build-options arguments that reach each of its seven builder steps.
 BUILDER_STEPS = {
     "measure": {},
@@ -142,4 +143,9 @@ def test_build_options_patches_are_pure_ir_and_run_at_every_step(
         assert set(patch) <= QUERY_IR_KEYS, (step, sorted(set(patch) - QUERY_IR_KEYS))
         if patch.get("select"):
             validated = adapter.call_tool("execute", {"query": patch, "mode": "validate"})
+            reasons = [error["details"].get("reason") for error in validated["errors"]]
+            if reasons == ["time_valid_hop_without_query_time"]:
+                # A grouping read through a time-valid relationship runs once it has a time.
+                timed = {**patch, "time": ORDER_MONTH}
+                validated = adapter.call_tool("execute", {"query": timed, "mode": "validate"})
             assert validated["ok"], (step, patch, validated["errors"])

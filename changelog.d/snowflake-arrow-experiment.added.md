@@ -6,3 +6,5 @@
   sub-microsecond precision instead of returning incorrect dates or losing precision.
 - Validate Snowflake ADBC authentication sources when loading packages and during
   guided setup; refuse named profiles that this connector does not use.
+- Accept literal account and user locators and file-based key passphrases for
+  Snowflake ADBC; expose its allowed options through `semantic_rails.embedding`.

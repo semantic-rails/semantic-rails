@@ -154,6 +154,9 @@ there are no `warnings`, agents can forward `best.query_ir` directly to `execute
 (`/api/v1/query`). Call `validate` only when you want diagnostics without running the query, for
 example after editing Query IR or after `low_confidence`.
 
+Catalog fallback ranking breaks equal intent-match scores by discovery score, then object id,
+so candidate order and refusal diagnostics stay the same across Python hash seeds.
+
 The checks cover time windows, rankings, named filter values, and exclusions, not every phrasing:
 a draft can still misread a question and report `ok`, sometimes with only a `PLAN_UNMATCHED_TERMS`
 warning (see the README's known limitations). Compare `best.query_ir` with the question before
@@ -162,8 +165,11 @@ executing it.
 Statuses are:
 
 - `ok`: the best draft validated, no check found part of the question it leaves out, and every
-  number and clock or zone word in the question is used by the draft. `warnings` can still name
-  other question words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
+  number, clock or zone word, and word that names a catalog object (in a label or alias, or the
+  last dotted part of an id or name outside its namespaces; never only a description) in the
+  question is used by the draft: by an object it selects, a filter value, a time grain or a time
+  phrase, never a synonym, a typo or a framing word. `warnings` can still name other question
+  words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
 - `low_confidence`: a draft exists, but validation failed, the draft leaves out part of the
   question (`why` names it, for example `PLAN_INTENT_COVERAGE_GAP`, or `TIME_WINDOW_UNRESOLVED`,
   which returns no `query_ir`: pass the window, temporal role and grain in `query.time` and
@@ -327,11 +333,22 @@ repair node before `execute`. `INVALID_QUERY`, `PATH_JOIN_CONFLICT`,
 nodes instead of being retried as raw SQL. `AMBIGUOUS_CHILD_SCOPE` routes to a clarification
 node: each of its `details.clarification.options` is a complete `where` to resend. `AMBIGUOUS_PATH` (`details.reason:
 route_decision_required`) means two join routes can answer the question differently (an account's
-branch region or its owner's home region) and the package hasn't recorded which one it means. A
-query can't pick one: ask which meaning is wanted (`details.meanings` reads each route), or refuse;
-`details.pins` lists the `graph.path_preferences` row a package author adds to record each (a
-route whose row would disagree with the package's rows is in `details.conflicts_with` instead); one
-row also decides every route that walks its pair. An `info` note `ROUTE_COLOCATED_KEY` or
+branch district or its owner's home district) and the package hasn't recorded which one it means.
+The agent never picks one; it asks:
+
+1. Refusal: `details.clarification.question` ("Which District does the question mean for an
+   Account?") and one option per route, each with a `meaning` in business words.
+2. Ask the person, reading each option's `meaning`.
+3. Resend the same query with the chosen option's `decision` in
+   [`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions). The answer is for this person and this
+   query only, and carries an `info` note `ROUTE_CHOSEN_BY_QUERY` with the row and `replaced` (how
+   the package resolves the pair without it: `undecided` when it refuses).
+4. To make it the default for everyone, a maintainer calls Architect
+   [`record_route_decision`](ARCHITECT_MCP.md) with the same `decision`. That is a reviewed package
+   change; from then on the question answers without asking. An option with `conflicts_with`
+   names the package rows to change first; its `decision` still answers per query.
+
+One row also decides every route that walks its pair. An `info` note `ROUTE_COLOCATED_KEY` or
 `ROUTE_RECORDED` (compact and full responses) names the route the answer used, the start entity's
 own key or the package's recorded routes; it needs no follow-up, and `ROUTE_COLOCATED_KEY` lists
 the row that would make each other route the default (or, in `details.conflicts_with`, the rows

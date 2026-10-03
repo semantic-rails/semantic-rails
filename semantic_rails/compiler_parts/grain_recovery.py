@@ -124,9 +124,13 @@ def _pairing_is_clean(
     path = _chosen_path(config, start=measure.entity, target=dim.entity)
     if not path:
         return False
-    analysis = analyze_fanout(
-        config, measure.entity, path, time_bound_relationships=time_bound_relationships
-    )
+    try:
+        analysis = analyze_fanout(
+            config, measure.entity, path, time_bound_relationships=time_bound_relationships
+        )
+    except SemanticLayerError:
+        # A refused path (a fan-out, or a time-valid hop with no query time) is incompatible.
+        return False
     return analysis.get("status") == "ok"
 
 

@@ -33,6 +33,7 @@ from .ast import (
     normalize_query,
     plain_filters,
     refuse_child_groups,
+    route_decisions_from_payload,
 )
 from .compiler_parts.bind import (
     _aggregation_expr,
@@ -82,6 +83,7 @@ from .compiler_parts.indexes import (
     _default_temporal_role,
     _dimension_index,
     _entity_index,
+    _measure_has_source_row_key,
     _measure_index,
     _recipe_index,
     _relationship_index,
@@ -102,9 +104,11 @@ from .compiler_parts.paths import (
     inner_lookups,
 )
 from .compiler_parts.post_aggregation import (
+    _as_offset_window_expr,
     _compile_post_expr,
     _expr_requires_dense_series,
     _namespace_sql_select,
+    _summing_window_parts,
 )
 from .compiler_parts.sql_lowering import (
     _count_key_expr,
@@ -128,6 +132,12 @@ from .compiler_parts.temporal import (
     _time_bound_relationship_ids,
     _validate_query_temporal_bindings,
     _validate_restrictive_time_semantics,
+)
+from .config_parts.route_rows import (
+    RouteRowError,
+    check_route_row,
+    entity_references,
+    walk_entities,
 )
 from .diagnostics import relationship_contract_payload
 from .dialects import SqlDialect, dialect_for_warehouse
@@ -162,12 +172,17 @@ from .expressions import (
     validate_expression_shapes,
 )
 from .fanout import (
+    UNANCHORED_TIME_VALID_HOP,
     RouteChoice,
     analyze_fanout,
     filter_only_semijoin,
     one_to_many_descent,
+    package_hop_limit,
+    pair_routes,
+    query_route_decisions,
     recording_route_choices,
     resolve_path,
+    route_decision_basis,
     route_pin,
 )
 from .ir import (
@@ -189,6 +204,7 @@ from .schema import (
     MeasureConfig,
     MetricConfig,
     PackageConfig,
+    PathPreferenceConfig,
     RelationshipConfig,
     TemporalRoleConfig,
 )
@@ -645,12 +661,13 @@ def _single_valued_columns(
 def _validate_non_additive_sums(
     bound_measures: Iterable[BoundMeasure], config: PackageConfig, query: NormalizedQuery
 ) -> None:
-    """Refuse a query that would add up two values of an ``additive: false`` measure.
+    """Refuse unsafe sums of stored values or of post-aggregation window inputs.
 
     A flow sums its rows, and a stock sums its series' last (or first) snapshots, so each
     output row must hold one row (for a stock, one series) of the measure's model. Other
     aggregations (avg, min, max, median, percentile) are statistics of the values and
-    stay allowed. Windows and per-entity rollups over such a measure always refuse.
+    stay allowed without a summing window. Windows and per-entity rollups over such
+    a measure always refuse; summing windows also require additive aggregations.
     """
     measures = _measure_index(config)
     bound_measures = list(bound_measures)
@@ -667,6 +684,44 @@ def _validate_non_additive_sums(
         measure = measures.get(measure_id)
         if measure is not None and not measure.additive:
             _raise_non_additive_sum(measure, construct, [], config)
+
+    def validate_window(expr: Any) -> None:
+        if isinstance(expr, MetricRecipeRefExpr):
+            recipe = _recipe_index(config).get(expr.metric_recipe)
+            if recipe is not None:
+                validate_window(recipe.expression)
+            return
+        window = _as_offset_window_expr(expr)
+        if window is not None and window.aggregate == "sum":
+            _summing_window_parts(window.input, config, construct=window.kind)
+            if window.kind == "period_to_date" and query.time is not None:
+                calendar = (query.time.calendar_id or "default").strip().lower()
+                role = _temporal_role_index(config).get(query.time.temporal_role)
+                dim = _dimension_index(config).get(role.dimension) if role else None
+                entity = _entity_index(config).get(dim.entity) if dim else None
+                role_calendar = (
+                    (entity.calendar_id or "default").strip().lower() if entity else "default"
+                )
+                if calendar != "default" or role_calendar != "default":
+                    raise SemanticLayerError(
+                        "REWRITE_NOT_SUPPORTED",
+                        "period_to_date requires the default calendar; authored non-default "
+                        "calendar period anchors are not supported. Query the fiscal period "
+                        "as exact start/end dates without a period_to_date window.",
+                        details={
+                            "unsupported_construct": "non_default_calendar_period_to_date",
+                            "calendar_id": calendar if calendar != "default" else role_calendar,
+                        },
+                    )
+        if is_dataclass(expr):
+            for item in fields(expr):
+                value = getattr(expr, item.name)
+                for child in value if isinstance(value, list) else [value]:
+                    if is_dataclass(child):
+                        validate_window(child)
+
+    for root in roots:
+        validate_window(root)
     for bound in bound_measures:
         measure = measures[bound.measure_id]
         if measure.additive:
@@ -941,11 +996,9 @@ def _fanout_dedup_refusal(
     if aggregation not in _FANOUT_DEDUP_AGGREGATIONS or not (
         measure.additive
         and measure.measure_class not in {"semi_additive", "snapshot"}
-        and measure.source_relation in {"", entity.table}
+        and _measure_has_source_row_key(measure, entity)
         and measure.aggregation_entity in {"", measure.entity}
         and (entity.key or entity.primary_key)
-        and sorted(measure.row_grain or entity.key or [entity.primary_key])
-        == sorted(entity.key or [entity.primary_key])
     ):
         return (
             f"'{aggregation}' of {subject} is not defined over one row per "
@@ -2068,10 +2121,11 @@ def _predicate_context_entity_candidates(
     predicate: MetricPredicateExpr, query: NormalizedQuery, config: PackageConfig
 ) -> list[str]:
     dimensions = _dimension_index(config)
+    input_root = _predicate_input_root_entity(predicate, config)
     candidates: list[str] = []
     for dim_id in list(query.group_by or []):
         dim = dimensions[dim_id]
-        if dim.entity == predicate.entity or dim.entity in candidates:
+        if dim.entity in {predicate.entity, input_root} or dim.entity in candidates:
             continue
         candidates.append(dim.entity)
     return candidates
@@ -2339,7 +2393,15 @@ def _predicate_scope(
                 },
             )
     context_entities = []
+    context_dimensions = []
     if predicate.scope_mode == "contextual":
+        # A fact attribute describes the returned group, not one fact row per entity key.
+        context_dimensions = [
+            dim_id
+            for dim_id in query.group_by
+            if _dimension_index(config)[dim_id].entity == input_root
+            and input_root != predicate.entity
+        ]
         candidate_entities = _predicate_context_entity_candidates(predicate, query, config)
         context_entities = _reduced_context_entities(
             config=config,
@@ -2417,6 +2479,7 @@ def _predicate_scope(
     group_by_dims = [*_entity_key_dimension_ids(predicate.entity, config)]
     for entity_id in context_entities:
         group_by_dims.extend(_entity_key_dimension_ids(entity_id, config))
+    group_by_dims.extend(context_dimensions)
     group_by_dims = list(dict.fromkeys(group_by_dims))
     time_alias = (
         ""
@@ -2437,6 +2500,7 @@ def _predicate_scope(
         "input_root": input_root,
         "group_by_dims": group_by_dims,
         "context_entities": context_entities,
+        "context_dimensions": context_dimensions,
         "time_spec": time_spec,
         "time_alias": time_alias,
         "source_time_alias": source_time_alias,
@@ -2613,6 +2677,16 @@ def _predicate_ctes_and_join(
                 "AND",
                 SqlBinary(context_key_expr, "=", SqlIdentifier(parts=[set_name, dim_id])),
             )
+    for dim_id in scope["context_dimensions"]:
+        dim = _dimension_index(config)[dim_id]
+        join_condition = SqlBinary(
+            join_condition,
+            "AND",
+            dialect_for_warehouse(config.package.warehouse).null_safe_eq(
+                _column_ref(_entity_index(config)[dim.entity].table, dim.column),
+                SqlIdentifier(parts=[set_name, dim_id]),
+            ),
+        )
     if scope["time_spec"] is not None and scope["time_alias"]:
         query = normalize_query(plan.query)
         outer_temporal_role = _leaf_time_role(measure_plan.bound_measure, query, config)
@@ -2679,6 +2753,9 @@ def _leaf_path_selections(
                 purpose="aggregate_if" if conditional else "measure_expr",
             )
         except SemanticLayerError as exc:
+            if conditional and exc.details.get("reason") == UNANCHORED_TIME_VALID_HOP:
+                # The aggregate_if's own rule refuses a hop valid over time, with or without one.
+                check_conditional_aggregate_path(measure, entity_id, exc.details["path"], config)
             if not conditional or exc.code not in {"AMBIGUOUS_PATH", "PATH_NOT_FOUND"}:
                 raise
             raise conditional_aggregate_route_refusal(measure, entity_id, exc) from exc
@@ -2982,12 +3059,39 @@ def _root_path_summary(
             raise
         selected_paths[target_entity] = list(chosen)
         candidate_paths[target_entity] = [list(path) for path in candidates]
-        analysis = analyze_fanout(
-            config,
-            root_entity,
-            chosen,
-            time_bound_relationships=_time_bound_relationship_ids(query, config),
-        )
+        try:
+            analysis = analyze_fanout(
+                config,
+                root_entity,
+                chosen,
+                time_bound_relationships=_time_bound_relationship_ids(query, config),
+            )
+        except SemanticLayerError as exc:
+            if exc.details.get("reason") != UNANCHORED_TIME_VALID_HOP:
+                raise
+            if purpose != "measure":
+                # Left to each leaf, as a rewrite is: one that joins this path refuses it, and
+                # one that reads the dimension from its own rows (a shared key) joins nothing.
+                continue
+            # No leaf joins the path to another measure's entity: each measure aggregates on
+            # its own and is reconciled on the grain keys, whose own paths still refuse.
+            measure = next(
+                row for row in bound_measures if measures[row.measure_id].entity == target_entity
+            )
+            analyses[target_entity] = {
+                "status": "rewrite_required",
+                "reason": exc.details["reason"],
+            }
+            rewrite_steps.append(
+                RewriteStep(
+                    kind="leaf_preaggregate_join",
+                    status="applied",
+                    measure_id=measure.measure_id,
+                    reason="Independent fact families compiled as separate leaf aggregates and reconciled on final grain keys",
+                    details={"target_entity": target_entity, "path": list(chosen)},
+                )
+            )
+            continue
         analyses[target_entity] = analysis
         if analysis.get("status") == "rewrite_required" and purpose == "measure":
             measure = next(
@@ -3116,7 +3220,11 @@ def _infer_root_entity_for_distinct_query(
 
     if not candidates:
         if failures:
-            raise failures[0]
+            # Prefer the refusal a query time would lift, so it names the hop and the fix.
+            raise next(
+                (exc for exc in failures if exc.details.get("reason") == UNANCHORED_TIME_VALID_HOP),
+                failures[0],
+            )
         raise SemanticLayerError(
             "PATH_NOT_FOUND",
             "No valid root entity found for distinct-values query",
@@ -4559,14 +4667,17 @@ def _plan_query(
         semantic_dag=_semantic_dag_for_query(query, config),
         synthetic_measures=dict(synthetic_measures),
     )
-    _require_child_group_leaves(plan, query, conversion_exprs)
+    _require_child_group_leaves(plan, query, conversion_exprs, config)
     from .compiler_parts.sql_lowering import coverage_base_plan
 
     return coverage_base_plan(plan, config, leaf_strategies)
 
 
 def _require_child_group_leaves(
-    plan: LogicalPlan, query: NormalizedQuery, conversion_exprs: list[ConversionExpr]
+    plan: LogicalPlan,
+    query: NormalizedQuery,
+    conversion_exprs: list[ConversionExpr],
+    config: PackageConfig,
 ) -> None:
     """Refuse a plan whose child groups some lowering would not apply.
 
@@ -4580,7 +4691,7 @@ def _require_child_group_leaves(
         return
     if conversion_exprs:
         refuse_child_groups(query.where, "in a conversion metric")
-    if _plan_requires_agent_dag_lowering(plan):
+    if _plan_requires_agent_dag_lowering(plan, config):
         refuse_child_groups(query.where, "beside a distribution")
     children = {group.child for group in groups}
     for measure_plan in plan.measure_plans:
@@ -4719,6 +4830,8 @@ class BoundQuery:
     # Every route the SQL reads, nested compiles included (the plan's own root and leaf paths
     # are in the plan).
     route_choices: tuple[RouteChoice, ...] = ()
+    # Each query route_decisions row the SQL reads, with the basis it replaced.
+    route_decisions: tuple[dict[str, Any], ...] = ()
 
     def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:
         """Whole-query cuts plus the cuts of leaves computing ``object_id``.
@@ -4789,6 +4902,7 @@ def bind_query(
 
     ``row_filters`` are the filters the request's context applies; with any, the
     statement must read one filtered relation, and rollups are not routed to.
+    The query's ``route_decisions`` answer their exact pairs for this query only.
 
     The one guard every child-scope clarification passes: it is offered only when every
     reading answers for this caller. Each option's where is bound once, with the same row
@@ -4824,16 +4938,149 @@ def _bind_with_row_filters(
     payload: dict[str, Any],
     row_filters: Sequence[RowFilter],
 ) -> BoundQuery:
+    decided = query_route_rows(config, payload, row_filters=row_filters)
     try:
         # A rollup may not hold the filter column, so a row-filtered query reads its base relation.
-        with aggregate_routing(not row_filters):
+        with (
+            aggregate_routing(not row_filters),
+            query_route_decisions(
+                {pair: row.relationship_path for pair, (_, row) in decided.items()}
+            ),
+        ):
             bound = _bind_query(config, registry, payload)
     except RecursionError as exc:
         raise SemanticLayerError(
             "INVALID_CONFIG", "Expression dependencies are cyclic or too deep."
         ) from exc
+    read = {(start, target) for start, target, _ in read_routes(bound.plan, bound.route_choices)}
+    for (start, target), (index, _) in decided.items():
+        if (start, target) not in read:
+            raise SemanticLayerError(
+                "INVALID_QUERY",
+                f"route_decisions[{index}] decides the route from '{start}' to '{target}', "
+                "which this query never walks",
+                details={
+                    "path": f"route_decisions[{index}]",
+                    "reason": "route_decision_unused",
+                    "source_entity": start,
+                    "target_entity": target,
+                    "hint": "Send only the decision of an option the query's AMBIGUOUS_PATH "
+                    "refusal offered, with the same source_entity and target_entity.",
+                },
+            )
     sql_ast, parameters = apply_row_filters(bound.sql_ast, row_filters)
-    return replace(bound, sql_ast=sql_ast, parameters=parameters)
+    return replace(
+        bound,
+        sql_ast=sql_ast,
+        parameters=parameters,
+        route_decisions=tuple(
+            {
+                "source_entity": row.source_entity,
+                "target_entity": row.target_entity,
+                "relationship_path": list(row.relationship_path),
+                "replaced": route_decision_basis(config, *pair),
+            }
+            for pair, (_, row) in decided.items()
+        ),
+    )
+
+
+def query_route_rows(
+    config: PackageConfig, payload: dict[str, Any], *, row_filters: Sequence[RowFilter] = ()
+) -> dict[tuple[str, str], tuple[int, PathPreferenceConfig]]:
+    """The query's ``route_decisions`` rows by exact pair, with each row's index, checked by
+    the loader's rules (``INVALID_QUERY``: a bad row, or two rows for one pair) and taking one
+    of the pair's routes within the hop ceiling (``fanout.pair_routes``, the resolver's own
+    enumeration; else ``route_not_offered``).
+
+    A route choice must never step around a row filter, so a row is refused
+    (``POLICY_DENIED``) when a filter in ``row_filters`` reads any entity on any of those
+    routes; a reviewed ``graph.path_preferences`` row changes routes there instead.
+    """
+    rows = route_decisions_from_payload(payload)
+    if not rows:
+        return {}
+    entities = entity_references(config.entities)
+    analysis = get_package_analysis(config)
+    tables = {row_filter.table for row_filter in row_filters}
+    decided: dict[tuple[str, str], tuple[int, PathPreferenceConfig]] = {}
+    for index, raw in enumerate(rows):
+        where = f"route_decisions[{index}]"
+        try:
+            row = check_route_row(
+                asdict(raw), entities=entities, relationships=config.relationships
+            )
+        except RouteRowError as exc:
+            raise SemanticLayerError(
+                "INVALID_QUERY",
+                f"{where} {exc}",
+                details={"path": where, "reason": "invalid_route_decision"},
+            ) from None
+        pair = (row.source_entity, row.target_entity)
+        if pair in decided:
+            raise SemanticLayerError(
+                "INVALID_QUERY",
+                f"{where} decides the route from '{pair[0]}' to '{pair[1]}' again "
+                f"(route_decisions[{decided[pair][0]}]); send one row per pair",
+                details={"path": where, "reason": "duplicate_route_decision"},
+            )
+        routes = pair_routes(config, *pair)
+        if list(row.relationship_path) not in routes:
+            raise SemanticLayerError(
+                "INVALID_QUERY",
+                f"{where} is not one of the routes from '{pair[0]}' to '{pair[1]}' within "
+                f"{package_hop_limit(config)} hops",
+                details={
+                    "path": where,
+                    "reason": "route_not_offered",
+                    "hint": "Send the decision of an option the query's AMBIGUOUS_PATH "
+                    "refusal offered.",
+                },
+            )
+        on_routes = {
+            entity
+            for path in routes
+            for entity in walk_entities(analysis.relationships, pair[0], path)
+        }
+        if any(analysis.entities[entity].table in tables for entity in on_routes):
+            raise SemanticLayerError(
+                "POLICY_DENIED",
+                f"{where} chooses a route from '{pair[0]}' to '{pair[1]}' under a row filter; "
+                "a query cannot choose a route under a row filter",
+                details={
+                    "reason": "route_override_under_row_policy",
+                    "path": where,
+                    "policy_ids": sorted(
+                        {
+                            row_filter.policy_id
+                            for row_filter in row_filters
+                            if row_filter.table
+                            in {analysis.entities[entity].table for entity in on_routes}
+                        }
+                    ),
+                    "hint": "Under a row filter only a reviewed graph.path_preferences row "
+                    "(record_route_decision) changes which route the package means.",
+                },
+            )
+        decided[pair] = (index, row)
+    return decided
+
+
+def read_routes(plan: LogicalPlan, route_choices: Sequence[RouteChoice]) -> list[RouteChoice]:
+    """Each (start, target, route) the compiled SQL reads, once: the plan's root and leaf paths
+    and the paths lowering read (predicates, conversions, a rewrite anchor's own lookups,
+    nested compiles, direct key reads)."""
+    choices: list[RouteChoice] = [
+        (plan.root_entity, target, tuple(path))
+        for target, path in sorted((plan.selected_paths or {}).items())
+    ]
+    for measure_plan in plan.measure_plans:
+        choices.extend(
+            (measure_plan.source_entity, selection.target_entity, tuple(selection.chosen_path))
+            for selection in measure_plan.path_selections
+        )
+    choices.extend((start, target, tuple(path)) for start, target, path in route_choices)
+    return list(dict.fromkeys(choices))
 
 
 def _bind_query(
@@ -4962,4 +5209,5 @@ def compile_query(
         "stock_key_gaps": list(bound.stock_key_gaps),
         "zero_outputs": list(bound.zero_outputs),
         "route_choices": list(bound.route_choices),
+        "route_decisions": list(bound.route_decisions),
     }

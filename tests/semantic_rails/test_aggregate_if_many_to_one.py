@@ -317,6 +317,8 @@ NO_CURRENCY = _cmp(_col("customer", "currency"), "IS", None)
 OVER_65 = _cmp(_col("user", "age"), ">", 65)
 AMOUNT = _col("consumption", "amount")
 SUM_EUR = _aggif("sum", EUR, AMOUNT)
+OWN_PERIOD = _cmp(_col("consumption", "period"), "=", "2026-01")
+SUM_PERIOD = _aggif("sum", OWN_PERIOD, AMOUNT)
 CURRENCY = "dimension.shop_customer_currency"
 SEGMENT = "dimension.shop_customer_segment"
 PERIOD = "dimension.shop_consumption_period"
@@ -355,8 +357,19 @@ def _write_package(
 @pytest.fixture(scope="module")
 def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
     recipe = {"as": "metric.shop.euro_share", "kind": "derived", "expression": SUM_EUR}
+    filtered = {
+        "as": "metric.shop.filtered_amount",
+        "kind": "aggregate",
+        "expression": {
+            "kind": "aggregate",
+            "measure": "measure.shop.amount",
+            "aggregation": "sum",
+            "filter": {"all": [{"field": PERIOD, "op": "=", "value": "2026-01"}]},
+        },
+    }
     return _write_package(
-        tmp_path_factory.mktemp("aggif"), metrics={"metrics": {"shop.euro_share": recipe}}
+        tmp_path_factory.mktemp("aggif"),
+        metrics={"metrics": {"shop.euro_share": recipe, "shop.filtered_amount": filtered}},
     )
 
 
@@ -746,10 +759,9 @@ def test_two_roles_with_no_preference_are_refused_never_picked(tmp_path):
     error = raised.value
     assert error.code == "UNSUPPORTED_CONDITIONAL_AGGREGATE"
     assert error.details["reason"] == "ambiguous_path"
-    assert sorted(error.details["candidates"]) == [
-        ["relationship.post_editor"],
-        ["relationship.post_owner"],
-    ]
+    assert sorted(
+        option["relationship_path"] for option in error.details["clarification"]["options"]
+    ) == [["relationship.post_editor"], ["relationship.post_owner"]]
     assert "path_preferences" in error.details["hint"]
 
 
@@ -948,7 +960,9 @@ def _governed(package: Path, *policies: SemanticPolicyConfig, without: str = "")
     )
 
 
-def _refusals(runtime: Runtime, monkeypatch, query: dict[str, Any]) -> list[SemanticLayerError]:
+def _refusals(
+    runtime: Runtime, monkeypatch, query: dict[str, Any], *, code: str = "POLICY_DENIED"
+) -> list[SemanticLayerError]:
     """validate, compile and query each refuse, before the renderer or the adapter runs."""
 
     def no_output(*args: Any, **kwargs: Any) -> None:
@@ -957,11 +971,12 @@ def _refusals(runtime: Runtime, monkeypatch, query: dict[str, Any]) -> list[Sema
     monkeypatch.setattr("semantic_rails.compiler.render_select_for_profile", no_output)
     monkeypatch.setattr(runtime, "_compile", no_output)
     monkeypatch.setattr(runtime, "_get_adapter", no_output)
-    assert runtime.validate(query)["errors"][0]["code"] == "POLICY_DENIED"
+    assert runtime.validate(query)["errors"][0]["code"] == code
     refusals = []
     for operation in (runtime.compile, runtime.query):
         with pytest.raises(SemanticLayerError) as raised:
             operation(query)
+        assert raised.value.code == code
         refusals.append(raised.value)
     return refusals
 
@@ -1009,21 +1024,186 @@ def test_a_column_no_dimension_declares_is_refused_under_an_object_policy(packag
         )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="a single-entity aggregate_if does not bind the dimensions it reads yet",
-)
-def test_a_policy_on_a_dimension_a_single_entity_condition_reads_refuses_it(package):
-    expression = _aggif("sum", _cmp(_col("consumption", "period"), "=", "2026-01"), AMOUNT)
-    query = {"version": 1, "select": [{"as": "value", "expression": expression}]}
-    runtime = _governed(package, _policy("deny", PERIOD))
+# Each query reads the period, including through wrappers that could hide its dependency.
+READS_OWN_PERIOD = {
+    "select": ({"select": [{"as": "value", "expression": SUM_PERIOD}]}, 165),
+    "arithmetic": (
+        {
+            "select": [
+                {
+                    "as": "value",
+                    "expression": {
+                        "kind": "arithmetic",
+                        "op": "add",
+                        "left": SUM_PERIOD,
+                        "right": _lit(1),
+                    },
+                }
+            ]
+        },
+        166,
+    ),
+    "count": (
+        {"select": [{"as": "value", "expression": _aggif("count", OWN_PERIOD)}]},
+        4,
+    ),
+    "metric_filters": (
+        {
+            "select": [{"as": "value", "expression": _measure("amount")}],
+            "metric_filters": [{"expression": SUM_PERIOD, "op": ">", "value": 0}],
+        },
+        1195,
+    ),
+    "metric_predicate": (
+        {
+            "select": [{"as": "value", "expression": _measure("amount")}],
+            "metric_filters": [_predicate(SUM_PERIOD)],
+        },
+        150,
+    ),
+    "authored_filter": (
+        {"select": [{"as": "value", "expression": {"metric": "metric.shop.filtered_amount"}}]},
+        165,
+    ),
+}
+
+
+@pytest.mark.parametrize("placement", sorted(READS_OWN_PERIOD))
+@pytest.mark.parametrize("action", sorted(POLICY_KINDS))
+def test_a_policy_on_a_dimension_a_single_entity_condition_reads_refuses_it(
+    package, monkeypatch, action, placement
+):
+    body, expected = READS_OWN_PERIOD[placement]
+    query = {"version": 1, **body}
+    runtime = _governed(package, _policy(action, PERIOD))
     try:
-        result = runtime.validate({**query, "policy_context": RESTRICTED})
+        allowed = {**query, "policy_context": {"audience": "internal"}}
+        assert runtime.validate(allowed)["ok"]
+        assert runtime.compile(allowed)["rendered_sql"]
+        [row] = runtime.query(allowed)["rows"]
+        assert float(row["value"]) == expected
+        refusals = _refusals(runtime, monkeypatch, {**query, "policy_context": RESTRICTED})
     finally:
         runtime.close()
 
-    assert [error["code"] for error in result["errors"]] == ["POLICY_DENIED"]
+    for error in refusals:
+        assert error.details["blocked_objects"] == [PERIOD]
+        assert [row["action"] for row in error.details["policy_effects"]] == [action]
+
+
+@pytest.mark.parametrize("read", ["condition", "value"])
+@pytest.mark.parametrize("wrapper", ["column", "call", "cast", "table"])
+@pytest.mark.parametrize("action", sorted(POLICY_KINDS))
+def test_every_dimension_on_an_own_column_is_bound(package, monkeypatch, action, wrapper, read):
+    config = load_package_config(str(package))
+    period = next(row for row in config.dimensions if row.id == PERIOD)
+    # Two dimensions declare the same column; a policy on either must govern the read.
+    dimension = dataclasses.replace(
+        period,
+        id="dimension.shop_consumption_guarded",
+        column="period" if read == "condition" else "amount",
+    )
+    column = _col("consumption", dimension.column)
+    if wrapper == "call":
+        column = {"kind": "call", "name": "COALESCE", "args": [column, _lit(None)]}
+    elif wrapper == "cast":
+        column = {
+            "kind": "call",
+            "name": "CAST",
+            "args": [column, _lit("VARCHAR" if read == "condition" else "DOUBLE")],
+        }
+    elif wrapper == "table":
+        column = {"kind": "column", "table": "consumption", "column": dimension.column.upper()}
+    expression = _aggif(
+        "sum",
+        _cmp(column, "=", "2026-01") if read == "condition" else _cmp(AMOUNT, ">", 0),
+        AMOUNT if read == "condition" else column,
+    )
+    query = {"select": [{"as": "value", "expression": expression}]}
+    runtime = Runtime.from_config(
+        dataclasses.replace(
+            config,
+            dimensions=[*config.dimensions, dimension],
+            semantic_policies=[_policy(action, dimension.id)],
+        ),
+        source_path=str(package),
+    )
+    try:
+        allowed = {**query, "policy_context": {"audience": "internal"}}
+        assert dimension.id in bind_query(runtime.config, None, allowed).object_ids
+        if read == "condition":
+            assert PERIOD in bind_query(runtime.config, None, allowed).object_ids
+        [row] = runtime.query(allowed)["rows"]
+        assert float(row["value"]) == (165 if read == "condition" else 1195)
+        refusals = _refusals(runtime, monkeypatch, {**query, "policy_context": RESTRICTED})
+    finally:
+        runtime.close()
+    assert all(error.details["blocked_objects"] == [dimension.id] for error in refusals)
+
+
+@pytest.mark.parametrize("without", ["", PERIOD])
+def test_an_own_column_with_no_governed_dimension_remains_allowed(package, without):
+    runtime = _governed(package, _policy("deny", CURRENCY), without=without)
+    try:
+        assert _ask(runtime, SUM_PERIOD, policy_context=RESTRICTED) == {None: 165}
+        assert _ask(
+            runtime, _aggif("sum", _cmp(AMOUNT, ">", 0), AMOUNT), policy_context=RESTRICTED
+        ) == {None: 1195}
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("placement", ["derived", "distribution", "authored_measure"])
+@pytest.mark.parametrize("action", sorted(POLICY_KINDS))
+def test_unsupported_authored_and_distribution_conditions_cannot_read_columns(
+    tmp_path, monkeypatch, action, placement
+):
+    # These placements have no aggregate_if lowering; keep their existing refusal.
+    package = _write_package(
+        tmp_path,
+        metrics={
+            "metrics": {
+                "shop.conditional": {
+                    "as": "metric.shop.conditional",
+                    "kind": "derived",
+                    "expression": SUM_PERIOD,
+                }
+            }
+        },
+    )
+    model_path = package / "models" / "consumption.yml"
+    model = yaml.safe_load(model_path.read_text())
+    model["model"]["measures"]["conditional_measure"] = {
+        "kind": "aggregate",
+        "expr": SUM_PERIOD,
+        "default_agg": "sum",
+        "accumulation": {"kind": "flow"},
+    }
+    model_path.write_text(yaml.safe_dump(model))
+    expression = {
+        "derived": {"metric": "metric.shop.conditional"},
+        "distribution": {
+            "kind": "distribution",
+            "function": "avg",
+            "over": {
+                "kind": "entity_value",
+                "entity": "entity.shop_consumption",
+                "input": SUM_PERIOD,
+            },
+        },
+        "authored_measure": _measure("conditional_measure"),
+    }[placement]
+    query = {"select": [{"as": "value", "expression": expression}]}
+    code = "INVALID_EXPRESSION_AST" if placement == "authored_measure" else "INVALID_QUERY"
+    runtime = _governed(package, _policy(action, PERIOD))
+    try:
+        for audience in ("internal", "restricted"):
+            refusals = _refusals(
+                runtime, monkeypatch, {**query, "policy_context": {"audience": audience}}, code=code
+            )
+            assert all("aggregate_if" in str(error) for error in refusals)
+    finally:
+        runtime.close()
 
 
 # The lookup join type (ClickHouse keeps lookups inner, as for a where filter) and the

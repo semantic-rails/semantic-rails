@@ -1,4 +1,13 @@
 metrics:
+  shop.order_revenue_median:
+    as: metric.shop.order_revenue_median
+    label: Median order revenue
+    value_type: currency
+    kind: derived
+    expression:
+      kind: distribution
+      function: median
+      over: {kind: entity_value, entity: entity.shop_order, input: {measure: measure.shop.revenue}}
   shop.average_order_value:
     as: metric.shop.average_order_value
     label: Average order value

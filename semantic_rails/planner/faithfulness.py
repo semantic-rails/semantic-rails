@@ -29,6 +29,7 @@ from ._base import (
     _MONTH_NUMBERS,
     _NUMBER_WORDS,
     _ORDINALS,
+    _PERIOD_SHIFT_TRIGGERS,
     _QUANTITY_AFTER_RE,
     _TERM_SYNONYMS,
     _TIME_UNITS,
@@ -298,7 +299,7 @@ _EXCLUDING_OPS = frozenset({"!=", "<>", "NOT IN"})
 # Everyday words that are also values in some catalogs ("new", "all", "other",
 # "us", "open"). One names its value only next to a word of the value's
 # dimension ("new customers"); otherwise the PLAN_UNMATCHED_TERMS warning,
-# which never downgrades a plan, covers it.
+# which alone never downgrades a plan, covers it; catalog-name words do downgrade it.
 _EVERYDAY_WORDS = frozenset(
     {
         "active",
@@ -2037,6 +2038,8 @@ _ORDINAL_RE = re.compile(r"\d+(?:st|nd|rd|th)")
 # question words read to find them.
 _MAX_UNMATCHED_TERMS = 8
 _MAX_SCANNED_WORDS = 256
+# Words any time grain of a draft reads besides its own unit: "by date", "over time".
+_TIME_WORDS = frozenset({"time", "date", "period"})
 
 
 # Words that state a clock time or a zone. Like a numeral, one no part of the draft consumes
@@ -2113,18 +2116,19 @@ def _number_key(value: float) -> str | None:
 
 def _unmatched_words(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
     """Question words the draft accounts for nowhere (the warning; readiness is
-    ``unconsumed_terms``)."""
+    ``unconsumed_terms`` and ``unconsumed_catalog_words``)."""
 
     from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
 
-    referenced = set(_referenced_ids(query))
+    referenced = _used_ids(runtime._config, query)
     calendar_id = str(_time_block(query).get("calendar_id") or "default")
     vocabulary: set[str] = set()
     for row in _catalog_rows(runtime._config):
         if str(getattr(row, "id", "")) in referenced or (
             calendar_id != "default" and getattr(row, "calendar_id", "") == calendar_id
         ):
-            vocabulary.update(_tokens(_object_text(row)))
+            # Names only: a description that says "not discounts" doesn't answer "discounts".
+            vocabulary.update(_tokens(_core_text(row)))
     labels = _value_phrases(runtime._config)
     for node in _dict_nodes(query):
         if "field" in node and "value" in node:
@@ -2140,7 +2144,7 @@ def _unmatched_words(runtime: Any, question: str, query: dict[str, Any]) -> list
     skipped = _INTENT_STOPWORDS | _FRAMING_WORDS | set(_NUMBER_WORDS) | set(_ORDINALS)
     text = str(question or "")
     lowered = text.lower()
-    time_spans = _time_window(text).spans
+    time_spans = [*_time_window(text).spans, *_honored_clause_spans(runtime, text, query)]
     tokens = [(match.group(0), *match.span()) for match in _TERM_RE.finditer(lowered)]
     consumed = _consumed_spans(runtime, lowered, tokens, query)
 
@@ -2184,17 +2188,134 @@ def _unmatched_words(runtime: Any, question: str, query: dict[str, Any]) -> list
     return out
 
 
+def _used_ids(config: Any, query: dict[str, Any]) -> set[str]:
+    """The objects a draft uses: those it names, and the entity and clock of each measure or
+    metric it names ("revenue from orders" uses the Order entity of Revenue)."""
+
+    used = set(_referenced_ids(query))
+    for row in [*config.measures, *config.metric_recipes]:
+        if str(row.id) in used:
+            for attr in ("entity", "default_temporal_role", "temporal_role"):
+                value = getattr(row, attr, None)
+                if isinstance(value, str) and value:
+                    used.add(value)
+    return used
+
+
+def _honored_clause_spans(runtime: Any, text: str, query: dict[str, Any]) -> list[tuple[int, int]]:
+    """The clauses another check owns, when the draft honors them: a fiscal calendar ("fiscal
+    revenue on April 3, 2017") and a prior-period comparison ("revenue vs prior year")."""
+
+    lowered = text.lower()
+    spans: list[tuple[int, int]] = []
+    if not _fiscal_calendar_gaps(runtime._config, text, query):
+        spans.extend(match.span() for match in _FISCAL_RE.finditer(lowered))
+    if _query_contains_prior_period(runtime, query):
+        spans.extend(match.span() for match in _PRIOR_PERIOD_RE.finditer(lowered))
+    return spans
+
+
 def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
     """Question words the draft accounts for nowhere, in question order.
 
     A word is accounted for when it frames the question, sits in a time phrase
     the planner read, counts or orders ("five", "3rd"), or appears (allowing a
-    plural or one typo) in the text of an object the draft uses or in one of
-    its filter values. Words come back as the question spells them, at most
-    eight.
+    plural or one typo) in the id, name, label or aliases of an object the
+    draft uses or in one of its filter values. A description never accounts
+    for a word. Words come back as the question spells them, at most eight.
     """
 
     return _unmatched_words(runtime, question, query)[:_MAX_UNMATCHED_TERMS]
+
+
+def unconsumed_catalog_words(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
+    """The question's words that name a catalog object (``_own_words``; a plural counts as its
+    singular) and that the draft doesn't consume: the readiness invariant for words, beside
+    ``unconsumed_terms`` for numbers.
+
+    Only the draft consumes one: by the own words of an object it selects, a value it filters on,
+    a time grain or count it carries, or a time phrase or clause it honors; only function words
+    are exempt. A synonym, a typo, a namespace, a description, a framing word or an object it
+    doesn't select never does, so one catalog name can't stand in for another. One left over is a
+    dropped grouping or a swapped subject. Every word is read.
+    """
+
+    from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
+
+    text = str(question or "")
+    lowered = text.lower()
+    spans = [*_time_window(text).spans, *_honored_clause_spans(runtime, text, query)]
+    referenced = set(_referenced_ids(query))
+    calendar_id = str(_time_block(query).get("calendar_id") or "default")
+    names: set[str] = set()
+    used: set[str] = set()
+    for row in _catalog_rows(runtime._config):
+        own = _own_words(row)
+        names |= own
+        if str(getattr(row, "id", "")) in referenced or (
+            calendar_id != "default" and getattr(row, "calendar_id", "") == calendar_id
+        ):
+            used |= own
+            # The question spelling its whole id or name ("metric.sales.aov_usd") uses that span.
+            for attr in ("id", "name"):
+                path = re.escape(str(getattr(row, attr, "") or "").lower())
+                found = re.finditer(rf"(?<![\w.]){path}(?!\w|\.\w)", lowered) if path else ()
+                spans.extend(match.span() for match in found)
+    labels = _value_phrases(runtime._config)
+    reads: Counter[str] = Counter()
+    for node in _dict_nodes(query):
+        if "field" in node and "value" in node:
+            value = node["value"]
+            for item in value if isinstance(value, list) else [value]:
+                used.update(_plain(item).split())
+                for domain, row in labels.get(_plain(item), []):
+                    if str(node["field"]) in domain.dimensions:
+                        used.update(_plain(" ".join(_value_names(row))).split())
+        for grain in (node.get("grain"), node.get("time_grain")):
+            # Each grain the draft carries reads its own unit once ("by month", "monthly"), and
+            # a prior period the phrase the planner reads it from ("year over year").
+            if grain in _TIME_UNITS:
+                reads.update({grain, "daily" if grain == "day" else f"{grain}ly", *_TIME_WORDS})
+            if grain in _TIME_UNITS and node.get("kind") == "prior_period":
+                for pattern, unit in _PERIOD_SHIFT_TRIGGERS:
+                    found = re.finditer(pattern, lowered) if unit == grain else ()
+                    spans.extend(match.span() for match in found)
+        if node.get("aggregation") in ("count", "count_distinct"):
+            # A count reads the "number of" that asks for it, as "how many" asks for it.
+            spans.extend(match.span() for match in re.finditer(r"\bnumber\s+of\b", lowered))
+    named = names | {_singular(word) for word in names}
+    consumed = {_singular(word) for word in used}
+    skipped = _INTENT_STOPWORDS | set(_NUMBER_WORDS)
+    out: list[str] = []
+    for match in _TERM_RE.finditer(lowered):
+        word, (start, end), key = match.group(0), match.span(), _singular(match.group(0))
+        if (
+            # A name in any form ("statuses" for Status), consumed only as a plain plural.
+            not {word, key, word.removesuffix("es")} & named
+            or key in consumed
+            or word in skipped
+            # A number is unconsumed_terms' to check, by where the draft reads it.
+            or any(char.isdigit() for char in word)
+            or any(low < end and start < high for low, high in spans)
+        ):
+            continue
+        if reads[key] > 0:
+            reads[key] -= 1
+        elif word not in out:
+            out.append(word)
+    return out
+
+
+def _own_words(row: Any) -> set[str]:
+    """The words that name an object, as written: those of its label and aliases, and those of
+    the last dotted part of its id and name that aren't one of its own namespaces ("sales" in
+    "metric.sales.aov_usd", which is named "jaffle.sales_aov_usd")."""
+
+    paths = [str(getattr(row, attr, "") or "") for attr in ("id", "name")]
+    spaces = set(_plain(" ".join(path.rpartition(".")[0] for path in paths)).split())
+    leaves = set(_plain(" ".join(path.rpartition(".")[2] for path in paths)).split())
+    declared = [getattr(row, "label", "") or "", *(getattr(row, "aliases", None) or [])]
+    return (leaves - spaces) | set(_plain(" ".join(map(str, declared))).split())
 
 
 def unconsumed_terms(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
@@ -2651,4 +2772,10 @@ def _within_one_edit(left: str, right: str) -> bool:
     return shorter[index:] == longer[index + 1 :]
 
 
-__all__ = ["CoverageGap", "intent_faithfulness_why", "unconsumed_terms", "unmatched_intent_terms"]
+__all__ = [
+    "CoverageGap",
+    "intent_faithfulness_why",
+    "unconsumed_catalog_words",
+    "unconsumed_terms",
+    "unmatched_intent_terms",
+]

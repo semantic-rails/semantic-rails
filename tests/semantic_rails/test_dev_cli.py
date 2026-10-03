@@ -48,7 +48,9 @@ def _run_cli_in(
     run_env = dict(os.environ)
     if env:
         run_env.update(env)
-    run_env["PYTHONPATH"] = str(REPO_ROOT)
+    run_env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [str(REPO_ROOT), run_env.get("PYTHONPATH")])
+    )
     return subprocess.run(
         [sys.executable, "-m", "semantic_rails", *args],
         cwd=str(cwd),
@@ -284,6 +286,12 @@ def test_setup_without_registered_package_points_to_init(
         "summary"
     ] == "no package selected"
     assert "semantic-rails init my_package --yes" in report["next_actions"]
+
+
+def test_mcp_start_help_explains_os_assigned_ports() -> None:
+    proc = _run_cli("mcp", "start", "--help")
+    assert proc.returncode == 0
+    assert "Port to bind (0 = OS-assigned; see `mcp status`)." in " ".join(proc.stdout.split())
 
 
 def test_mcp_doctor_loads_path_package_and_lists_tools(tmp_path: Path) -> None:

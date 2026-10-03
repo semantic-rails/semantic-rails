@@ -28,10 +28,11 @@ from ..ast import every_filter, is_child_group, rewrite_select_shorthand
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
-from ._base import _time_window, _with_fiscal_calendar
+from ._base import _requested_grouping_terms, _time_window, _with_fiscal_calendar
 from .faithfulness import (
     intent_faithfulness_why,
     intent_subject_why,
+    unconsumed_catalog_words,
     unconsumed_terms,
     unmatched_intent_terms,
 )
@@ -65,7 +66,7 @@ def plan_payload(
           "status":      "ok|low_confidence|unrealizable|out_of_scope",
           "best":        {...} | None,
           "why":         {...} | None,              # set when status != ok
-          "next":        {"validate":{...}, "valid_values":[...], "ready_for":["execute"]},
+          "next":        {"valid_values":[...], "ready_for":["execute"]},
         }
     """
 
@@ -292,11 +293,15 @@ def plan_payload(
         else None
     )
     unmatched = unmatched_intent_terms(runtime, intent_str, best_draft.query) if best_ok else []
-    # The readiness invariant: every numeral and clock word in the question is consumed by
-    # something the draft carries. Otherwise an hour, a range or a threshold was dropped.
+    # The readiness invariants: every numeral and clock word in the question, and every word
+    # that names a catalog object, is consumed by something the draft carries. Otherwise an
+    # hour, a range, a threshold, a grouping or the asked-for subject was dropped.
     value_why = (
         (
             _unconsumed_terms_why(unconsumed_terms(runtime, intent_str, best_draft.query))
+            or _unconsumed_catalog_why(
+                intent_str, unconsumed_catalog_words(runtime, intent_str, best_draft.query)
+            )
             or _dropped_value_why(intent_str, unmatched, catalog_tokens, set(intent_ir.unresolved))
         )
         if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
@@ -321,6 +326,15 @@ def plan_payload(
     }
     if fallback_drift_why is not None:
         payload["why"] = fallback_drift_why
+        if detail_level == "best":
+            details = dict(fallback_drift_why["details"])
+            details.pop("primary_slots")
+            details["reasons"] = [dict(reason) for reason in details["reasons"]]
+            for reason in details["reasons"]:
+                slot = reason["kind"].rsplit("_", 1)[0].removesuffix("_scope")
+                reason["expected"] = f"best.trace.intent_slots.{slot}"
+                reason["actual"] = f"why.details.fallback_slots.{slot}"
+            payload["why"] = {**fallback_drift_why, "details": details}
     elif faithfulness_why is not None:
         # One why, but an unresolved or shortened window stays visible.
         payload["why"] = _with_time_gap(faithfulness_why, time_why)
@@ -374,9 +388,27 @@ def plan_payload(
         # the question's window it answers a different question.
         for row in [payload["best"], *payload.get("alternatives", []), *blocked]:
             row.pop("query_ir")
-        payload["next"].pop("validate")
     if detail_level == "debug":
         payload["compose_hints"] = compose_hints(intent_ir)
+    if detail_level == "best":
+        resolved = payload["best"]["resolved"]
+
+        def catalog_refs(value: Any) -> Any:
+            if isinstance(value, dict):
+                if value in resolved:
+                    return {"id": value["id"], "$ref": f"best.resolved.{resolved.index(value)}"}
+                return {key: catalog_refs(child) for key, child in value.items()}
+            return [catalog_refs(child) for child in value] if isinstance(value, list) else value
+
+        payload["intent_ir"] = catalog_refs(payload["intent_ir"])
+        for gap in payload.get("why", {}).get("details", {}).get("gaps", []):
+            if isinstance(gap.get("actual"), dict):
+                gap["actual"] = {
+                    key: {"$ref": f"best.query_ir.{key}"}
+                    if value and value == payload["best"].get("query_ir", {}).get(key)
+                    else value
+                    for key, value in gap["actual"].items()
+                }
     return _query_detail_payload(payload) if detail_level == "query" else payload
 
 
@@ -594,6 +626,44 @@ def _unconsumed_terms_why(terms: list[str]) -> dict[str, Any] | None:
                     "Add the filter or limit to best.query_ir, or (plan resolves days and "
                     "coarser windows only) state an hour range as query.time start and end "
                     "ISO timestamps, or ask again without those words, then validate."
+                ),
+            }
+        ],
+    }
+
+
+def _unconsumed_catalog_why(question: str, words: list[str]) -> dict[str, Any] | None:
+    """Explain a draft that leaves out a question word naming a catalog object.
+
+    A word inside a grouping the question asks for ("by store, customer type and product type")
+    means the draft dropped that grouping, and the message says so. A comma in the list reads as
+    "and" here: the grouping parse stops at a comma, which is how the draft lost the rest.
+    """
+
+    if not words:
+        return None
+    listed = _requested_grouping_terms(re.sub(r"\s*,\s*(?:and\s+)?", " and ", question))
+    dropped = [term for term in listed if set(words) & set(re.findall(r"[^\W_]+", term))]
+    terms = words[:8]  # as many as the warning names
+    message = (
+        f"The draft drops the grouping by {', '.join(dropped)} that the question asks for: "
+        if dropped
+        else "The draft may answer a different question: "
+    ) + (
+        f"it doesn't use these words, which name catalog objects: {', '.join(terms)}. "
+        "So plan doesn't call it ready."
+    )
+    return {
+        "code": "PLAN_UNMATCHED_TERMS",
+        "message": message,
+        "details": {"terms": terms, **({"dropped_groupings": dropped} if dropped else {})},
+        "recovery_hints": [
+            {
+                "kind": "use_named_objects",
+                "message": (
+                    "Find what these words name with discover, add it to best.query_ir (a "
+                    "group_by for a grouping, the select for a measure), then validate; or ask "
+                    "again without those words."
                 ),
             }
         ],
@@ -848,18 +918,12 @@ def _slim_best(
     intent_ir: IntentIR | None = None,
     fallback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Trim the realized draft to just what an agent needs to call
-    ``validate`` next.
-
-    Omits older ``query_patch`` and ``closest_legal_alternatives`` fields
-    from the default response. ``detail="full"`` surfaces alternatives
-    and blocked drafts when asked.
-    """
+    """Project one draft with canonical Query IR and unique resolved rows."""
 
     out: dict[str, Any] = {
         "pattern": pattern,
         "query_ir": draft.query,
-        "resolved": draft.resolved,
+        "resolved": _append_unique_dicts([], draft.resolved),
         "rationale": list(dict.fromkeys(draft.rationale)),
         "interpreted_intent": draft.interpreted_intent,
         # Audit trail: catalog ids the pattern actually wove into the
@@ -1687,37 +1751,16 @@ def _slim_recovery_hints(hints: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _next_block(query: dict[str, Any], *, ready: bool) -> dict[str, Any]:
-    """Assemble the ``next`` block with pre-baked arguments for the
-    immediately useful next workflow steps.
+    """Offer next steps for the canonical ``best.query_ir``."""
 
-    Carries ``validate`` with the query inline so the agent can
-    forward without restructuring (over MCP, validation is ``execute``
-    with ``mode: "validate"``). When the IR has ``where`` filters,
-    ``valid_values`` lists one entry per filtered dimension so the
-    agent can confirm the literal values exist before executing.
-
-    ``ready_for`` flags the downstream call that takes the same ``{query}``
-    shape — once validate passes, the agent reuses
-    ``next.validate.query`` (or equivalently ``best.query_ir``) for
-    ``execute`` instead of paying to duplicate the IR in every response.
-    """
-
-    out: dict[str, Any] = {"validate": {"query": query}}
-    if ready:
-        # Cheap signal that the same query is ready to run, without
-        # repeating the IR under another key.
-        out["ready_for"] = ["execute"]
-    valid_values_calls = _valid_values_next_steps(query)
-    if valid_values_calls:
+    out: dict[str, Any] = {"ready_for": ["execute"]} if ready else {}
+    if valid_values_calls := _valid_values_next_steps(query):
         out["valid_values"] = valid_values_calls
     return out
 
 
 def _valid_values_next_steps(query: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build pre-baked ``valid_values`` calls for every filtered
-    dimension in the realized IR so the agent doesn't have to scan
-    ``query["where"]`` itself.
-    """
+    """Offer ``valid_values`` arguments for each filtered dimension."""
 
     out: list[dict[str, Any]] = []
     for filter_spec in every_filter(query.get("where")):  # a child group's conditions too

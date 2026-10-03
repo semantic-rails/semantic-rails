@@ -6,7 +6,10 @@ import os
 import shutil
 import socket
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier, local
+from types import SimpleNamespace
 
 import pytest
 
@@ -207,8 +210,9 @@ def test_claude_code_install_reports_a_missing_or_failing_cli(
 
 
 @pytest.mark.parametrize("conflict", ["package", "host", "port", "health"])
+@pytest.mark.parametrize("requested_port", [0, 8091])
 def test_start_rejects_named_server_config_or_health_conflict_without_restart(
-    tmp_path: Path, monkeypatch, conflict: str
+    tmp_path: Path, monkeypatch, conflict: str, requested_port: int
 ) -> None:
     import semantic_rails.mcp_manager as manager
 
@@ -219,6 +223,7 @@ def test_start_rejects_named_server_config_or_health_conflict_without_restart(
         "transport": "http",
         "host": "127.0.0.1",
         "port": 8091,
+        "requested_port": requested_port,
         "package_id": "jaffle_shop",
         "package_path": "",
         "process_identity": {"started": "now", "command": "semantic-rails mcp http"},
@@ -253,11 +258,13 @@ def test_start_rejects_named_server_config_or_health_conflict_without_restart(
         package_id="other_package" if conflict == "package" else "jaffle_shop",
     )
     host = "0.0.0.0" if conflict == "host" else "127.0.0.1"
-    port = 8092 if conflict == "port" else 8091
+    port = 8092 if conflict == "port" else requested_port
     with pytest.raises(SemanticLayerError) as exc:
         start_mcp_http_server(ref, name="named", host=host, port=port)
 
     assert exc.value.code == "CONFIG_CONFLICT"
+    assert exc.value.details["assigned_port"] == record["port"]
+    assert exc.value.details["registered"]["port"] == requested_port
     assert exc.value.details["restart_performed"] is False
     expected_mismatch = "package_id" if conflict == "package" else conflict
     assert expected_mismatch in exc.value.details["mismatches"]
@@ -343,20 +350,154 @@ def test_available_servers_uses_foreground_http_when_managed_lifecycle_is_unsupp
 
 
 @pytest.mark.skipif(shutil.which("ps") is None, reason="process identity requires ps")
+def test_concurrent_managed_servers_do_not_verify_each_others_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import semantic_rails.mcp_manager as manager
+
+    monkeypatch.setenv("SEMANTIC_RAILS_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("SEMANTIC_RAILS_MCP_START_TIMEOUT_SECONDS", "10")
+    ready = Barrier(2)
+    names = ("concurrent-one", "concurrent-two")
+    ref = PackageReference(source_path="", package_id="jaffle_shop")
+    homes = {name: tmp_path / name for name in names}
+    context = local()
+    # Separate registries model independent test workers without serializing startup.
+    monkeypatch.setattr(manager, "semantic_rails_home", lambda: context.home)
+
+    def start(name):
+        context.home = homes[name]
+        ready.wait(timeout=5)
+        return start_mcp_http_server(ref, name=name, port=0)
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(start, name) for name in names]
+            reports = [future.result(timeout=30) for future in futures]
+        assert all(report["ok"] for report in reports), reports
+        servers = [report["server"] for report in reports]
+        assert len({server["port"] for server in servers}) == 2
+        assert len({server["pid"] for server in servers}) == 2
+        records = {
+            name: load_mcp_registry(homes[name] / "mcp" / "servers.yml")["servers"][name]
+            for name in names
+        }
+        assert records[names[0]]["instance_nonce"] != records[names[1]]["instance_nonce"]
+        for own, other in (names, tuple(reversed(names))):
+            record = records[own]
+            assert manager._record_process_matches(record)
+            health = manager._http_health(
+                record["host"],
+                record["port"],
+                expected_nonce=records[other]["instance_nonce"],
+                expected_package_id=record["package_id"],
+            )
+            assert health["status"] == 200
+            assert health["ok"] is False
+            assert health["error"] == "health identity mismatch: instance_nonce"
+            assert health["payload"]["instance_nonce"] == record["instance_nonce"]
+    finally:
+        for name in names:
+            context.home = homes[name]
+            stop_mcp_http_server(name)
+
+
+@pytest.mark.parametrize("error", [OSError("cannot bind"), socket.gaierror("cannot resolve")])
+def test_start_reports_ephemeral_bind_failure_without_spawning_or_registering(
+    tmp_path: Path, monkeypatch, error: OSError
+) -> None:
+    import semantic_rails.mcp_manager as manager
+
+    monkeypatch.setenv("SEMANTIC_RAILS_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(manager, "_assert_process_identity_supported", lambda: None)
+    spawned = []
+    monkeypatch.setattr(manager.subprocess, "Popen", lambda *a, **k: spawned.append((a, k)))
+
+    def bind(address):
+        assert address == ("invalid-host", 0)
+        raise error
+
+    monkeypatch.setattr(manager.socket, "create_server", bind)
+    with pytest.raises(SemanticLayerError) as exc:
+        start_mcp_http_server(
+            PackageReference(source_path="", package_id="jaffle_shop"),
+            host="invalid-host",
+            port=0,
+        )
+
+    assert exc.value.code == "INVALID_CONFIG"
+    assert exc.value.details == {"host": "invalid-host", "spawned": False}
+    assert spawned == []
+    assert not manager.mcp_registry_path().exists()
+    assert load_mcp_registry()["servers"] == {}
+
+
+@pytest.mark.skipif(os.name != "posix", reason="socket fd inheritance requires POSIX")
+@pytest.mark.parametrize("requested_port", [0, 8091])
+def test_start_holds_an_ephemeral_listener_through_spawn(
+    tmp_path: Path, monkeypatch, requested_port: int
+) -> None:
+    import semantic_rails.mcp_manager as manager
+
+    monkeypatch.setenv("SEMANTIC_RAILS_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("SEMANTIC_RAILS_MCP_SOCKET_FD", "stale-inherited-fd")
+    monkeypatch.setattr(manager, "_assert_process_identity_supported", lambda: None)
+    monkeypatch.setattr(
+        manager, "_process_identity", lambda *a, **k: {"started": "now", "command": "test"}
+    )
+    child_sockets = []
+
+    def spawn(cmd, *, env, pass_fds=(), **kwargs):
+        assert cmd[cmd.index("--port") + 1] == str(requested_port)
+        if requested_port == 0:
+            assert len(pass_fds) == 1
+            assert pass_fds == (int(env["SEMANTIC_RAILS_MCP_SOCKET_FD"]),)
+            child = socket.socket(fileno=os.dup(pass_fds[0]))
+            child_sockets.append(child)
+            with socket.socket() as competing, pytest.raises(OSError):
+                competing.bind(child.getsockname())
+        else:
+            assert pass_fds == ()
+            assert "SEMANTIC_RAILS_MCP_SOCKET_FD" not in env
+        return SimpleNamespace(pid=os.getpid())
+
+    def health(proc, *, host, port, expected_nonce, expected_package_id):
+        assert port == (child_sockets[0].getsockname()[1] if child_sockets else requested_port)
+        return {"ok": True}
+
+    monkeypatch.setattr(manager.subprocess, "Popen", spawn)
+    monkeypatch.setattr(manager, "_wait_for_http_health", health)
+    monkeypatch.setattr(manager, "_http_health", lambda *a, **k: {"ok": True})
+    try:
+        started = start_mcp_http_server(
+            PackageReference(source_path="", package_id="jaffle_shop"), port=requested_port
+        )
+        assert started["ok"] is True
+        assert started["server"]["port"] > 0
+        record = load_mcp_registry()["servers"]["default"]
+        assert record["requested_port"] == requested_port
+        assert record["port"] == started["server"]["port"]
+        repeated = start_mcp_http_server(
+            PackageReference(source_path="", package_id="jaffle_shop"), port=requested_port
+        )
+        assert repeated["status"] == "already_running"
+        assert repeated["server"]["port"] == record["port"]
+    finally:
+        for child in child_sockets:
+            child.close()
+
+
+@pytest.mark.skipif(shutil.which("ps") is None, reason="process identity requires ps")
 def test_managed_mcp_server_lifecycle_waits_for_health_and_verifies_identity(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     monkeypatch.setenv("SEMANTIC_RAILS_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("SEMANTIC_RAILS_MCP_START_TIMEOUT_SECONDS", "10")
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = int(probe.getsockname()[1])
-
     started = start_mcp_http_server(
         PackageReference(source_path="", package_id="jaffle_shop"),
         name="lifecycle",
-        port=port,
+        port=0,
     )
     try:
         server = started["server"]
@@ -366,8 +507,18 @@ def test_managed_mcp_server_lifecycle_waits_for_health_and_verifies_identity(
         assert started["status"] == "started"
         assert started["server"]["health"]["ok"] is True
         assert started["server"]["process_identity_verified"] is True
+        port = server["port"]
+        assert port > 0
         nonce = started["server"]["health"]["payload"]["instance_nonce"]
         assert nonce
+
+        repeated = start_mcp_http_server(
+            PackageReference(source_path="", package_id="jaffle_shop"),
+            name="lifecycle",
+            port=0,
+        )
+        assert repeated["status"] == "already_running"
+        assert repeated["server"]["port"] == port
 
         collision = start_mcp_http_server(
             PackageReference(source_path="", package_id="jaffle_shop"),

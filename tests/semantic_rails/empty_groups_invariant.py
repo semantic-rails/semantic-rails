@@ -59,7 +59,7 @@ def assert_settled_in_one_place(compiled: dict[str, Any], config: PackageConfig)
     if _anchored_entity_set_select(plan, config) is not None:
         return  # one aggregate over another, NULL when the denominator is empty
     # A branch-combined query settles each branch and then its combine.
-    dag = _plan_requires_agent_dag_lowering(plan)
+    dag = _plan_requires_agent_dag_lowering(plan, config)
     expected = zero_outputs(plan, config) if dag else zero_aliases(plan.measure_plans, config)
     source = _projection(select).from_table
     assert source is not None
