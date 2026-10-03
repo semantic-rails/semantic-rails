@@ -164,7 +164,11 @@ def trailing_window_runtime(tmp_path_factory):
         "t(repo, snapshot_date, visitors_14d)"
     )
     connection.close()
-    return opened(Runtime.from_path(str(package)))
+    runtime = Runtime.from_path(str(package))
+    try:
+        yield opened(runtime)
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize(

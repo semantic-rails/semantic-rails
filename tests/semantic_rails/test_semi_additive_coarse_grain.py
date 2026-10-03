@@ -28,7 +28,11 @@ def runtime(tmp_path_factory):
     package_dir = copy_package_config(
         tmp_path_factory.mktemp("semi_additive"), "jaffle_shop", preseed_db=True
     )
-    return opened(Runtime.from_path(str(package_dir)))
+    rt = Runtime.from_path(str(package_dir))
+    try:
+        yield opened(rt)
+    finally:
+        rt.close()
 
 
 def _rows(runtime: Runtime, payload: dict) -> list[dict]:

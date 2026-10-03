@@ -10,6 +10,7 @@ one series); anything else is refused, and avg/min/max stay available.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -131,8 +132,12 @@ def package_dir(tmp_path_factory) -> Path:
 
 
 @pytest.fixture(scope="module")
-def runtime(package_dir: Path) -> Runtime:
-    return opened(Runtime.from_path(str(package_dir)))
+def runtime(package_dir: Path) -> Iterator[Runtime]:
+    rt = Runtime.from_path(str(package_dir))
+    try:
+        yield opened(rt)
+    finally:
+        rt.close()
 
 
 def _query(

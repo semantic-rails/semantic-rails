@@ -443,7 +443,7 @@ def shop_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def shop(shop_package: Path) -> Iterator[Runtime]:
     rt = Runtime.from_path(str(shop_package))
     try:
-        yield rt
+        yield opened(rt)
     finally:
         rt.close()
 
@@ -1175,7 +1175,7 @@ def shop_with_net(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]
     )
     rt = Runtime.from_config(config, source_path=str(package))
     try:
-        yield rt
+        yield opened(rt)
     finally:
         rt.close()
 

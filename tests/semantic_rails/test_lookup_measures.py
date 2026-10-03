@@ -8,6 +8,7 @@ rows. Every number here is checked against SQL written on the base tables, not t
 from __future__ import annotations
 
 import copy
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -229,8 +230,12 @@ def package_dir(tmp_path_factory) -> Path:
 
 
 @pytest.fixture(scope="module")
-def runtime(package_dir: Path) -> Runtime:
-    return opened(Runtime.from_path(str(package_dir)))
+def runtime(package_dir: Path) -> Iterator[Runtime]:
+    rt = Runtime.from_path(str(package_dir))
+    try:
+        yield opened(rt)
+    finally:
+        rt.close()
 
 
 def _reference(package_dir: Path, sql: str) -> dict[Any, Any]:

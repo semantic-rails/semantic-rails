@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -38,8 +39,12 @@ SCHEMA_PATH = REPO_ROOT / "schemas" / "query_ir.v1.json"
 
 
 @pytest.fixture(scope="module")
-def runtime() -> Runtime:
-    return opened(Runtime("jaffle_shop"))
+def runtime() -> Iterator[Runtime]:
+    rt = Runtime("jaffle_shop")
+    try:
+        yield opened(rt)
+    finally:
+        rt.close()
 
 
 # ---------------------------------------------------------------------------
