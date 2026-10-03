@@ -76,6 +76,7 @@ from .db import (
 )
 from .db_parts.base import query_with_limits, reject_parameters
 from .diagnostics import (
+    enrich_diagnostic_candidates,
     enrich_expression_ast_error,
     enrich_object_not_found,
     enrich_path_not_found,
@@ -261,9 +262,10 @@ def _enrich_runtime_error(
     hidden_ids = diagnostic_hidden_object_ids(config, policy_context)
     if isinstance(exc, NonAdditiveRefusal):
         exc = _non_additive_refusal_for_visibility(exc, config, hidden_ids)
+    exc = enrich_diagnostic_candidates(exc, config, hidden_ids=hidden_ids)
     exc = enrich_object_not_found(exc, config, hidden_ids=hidden_ids)
-    exc = enrich_expression_ast_error(exc, config)
-    exc = enrich_path_not_found(exc, config)
+    exc = enrich_expression_ast_error(exc, config, hidden_ids=hidden_ids)
+    exc = enrich_path_not_found(exc, config, hidden_ids=hidden_ids)
     return exc
 
 

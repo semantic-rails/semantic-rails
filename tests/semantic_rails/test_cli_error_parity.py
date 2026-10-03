@@ -71,6 +71,7 @@ def test_cli_closest_matches_match_http_surface(runtime_factory) -> None:
     near-miss ids — one enrichment chain, no per-surface drift."""
     from semantic_rails.errors import SemanticLayerError
     from semantic_rails.http_core import SemanticHTTPService
+    from semantic_rails.request_context import RequestContext
 
     runtime = runtime_factory("jaffle_shop")
     try:
@@ -79,7 +80,9 @@ def test_cli_closest_matches_match_http_surface(runtime_factory) -> None:
             service.handle("POST", "/inspect", {"object_id": TYPO_OBJECT_ID})
             raise AssertionError("expected OBJECT_NOT_FOUND from /inspect")
         except SemanticLayerError as exc:
-            http_payload, http_status = service.exception_payload(exc, stage="inspect")
+            http_payload, http_status = service.exception_payload(
+                exc, stage="inspect", context=RequestContext()
+            )
     finally:
         runtime.close()
     assert http_status == 400

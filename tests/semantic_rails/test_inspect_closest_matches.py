@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from semantic_rails.http_core import SemanticHTTPService
 from semantic_rails.mcp import SemanticLayerMCPAdapter
+from semantic_rails.request_context import RequestContext
 
 
 def test_mcp_inspect_typo_returns_closest_matches(runtime_factory) -> None:
@@ -55,7 +56,7 @@ def test_http_inspect_typo_returns_closest_matches(runtime_factory) -> None:
             )
             raise AssertionError("expected SemanticLayerError to propagate")
         except Exception as exc:  # noqa: BLE001 — assertion harness
-            result, status = service.exception_payload(exc, stage="http")
+            result, status = service.exception_payload(exc, stage="http", context=RequestContext())
         assert status == 400
         error = dict(result.get("error", {}) or {})
         assert error.get("code") == "OBJECT_NOT_FOUND"

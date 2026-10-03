@@ -19,8 +19,12 @@ from .ast import every_filter, normalize_query, plain_filters
 from .compiler import BoundQuery, bind_metadata_objects, bind_query
 from .errors import SemanticLayerError
 from .policy_rules import MAX_RANK, withheld_max_rank
+from .policy_rules import context_scope_matches as context_scope_matches
+from .policy_rules import hidden_object_ids as hidden_object_ids
 from .policy_rules import policy_action as _policy_action
 from .policy_rules import policy_config as _policy_config
+from .policy_rules import policy_matches as _policy_matches
+from .policy_rules import role_scope_matches as role_scope_matches
 from .request_context import context_from_policy_context
 from .row_filters import RowFilter, is_row_filter, row_filter
 from .schema import PackageConfig, SemanticPolicyConfig
@@ -58,28 +62,6 @@ def policy_effects_for_object(
             continue
         effects.append(_base_policy_effect(policy, action=action))
     return effects
-
-
-def hidden_object_ids(
-    config: PackageConfig,
-    *,
-    environment: str = "",
-    audience: str = "",
-    roles: Iterable[str] | None = None,
-) -> set[str]:
-    return {
-        object_id
-        for policy in config.semantic_policies
-        for object_id in list(policy.object_ids or [])
-        if _policy_matches(
-            policy,
-            object_id=object_id,
-            environment=environment,
-            audience=audience,
-            roles=roles,
-        )
-        and _policy_action(policy) == "hidden"
-    }
 
 
 def diagnostic_hidden_object_ids(
@@ -484,42 +466,6 @@ def package_release_labels(config: PackageConfig) -> list[str]:
             if label:
                 labels.append(label)
     return list(dict.fromkeys(labels))
-
-
-def context_scope_matches(allowed: Iterable[str], value: str) -> bool:
-    """Shared audience/environment gate for policies and caveats.
-
-    An empty ``allowed`` list matches any context; a non-empty list
-    requires the context value to be present and listed. Keeping this
-    in one place stops policy and caveat scoping from drifting apart.
-    """
-    allowed_set = set(allowed or [])
-    return not allowed_set or (bool(value) and value in allowed_set)
-
-
-def role_scope_matches(allowed: Iterable[str], roles: Iterable[str] | None) -> bool:
-    allowed_set = {str(role).strip().lower() for role in list(allowed or []) if str(role).strip()}
-    if not allowed_set:
-        return True
-    role_set = {str(role).strip().lower() for role in list(roles or []) if str(role).strip()}
-    return bool(allowed_set & role_set)
-
-
-def _policy_matches(
-    policy: SemanticPolicyConfig,
-    *,
-    object_id: str,
-    environment: str,
-    audience: str,
-    roles: Iterable[str] | None = None,
-) -> bool:
-    if policy.object_ids and object_id not in set(policy.object_ids):
-        return False
-    if not context_scope_matches(policy.environments, environment):
-        return False
-    if not context_scope_matches(policy.audiences, audience):
-        return False
-    return role_scope_matches(policy.roles, roles)
 
 
 def _policy_rationale(policy: SemanticPolicyConfig) -> str:

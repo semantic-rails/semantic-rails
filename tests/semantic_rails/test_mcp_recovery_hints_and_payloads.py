@@ -199,10 +199,7 @@ def test_http_counterpart_suggestions_use_resolved_visibility(
             assert response["error"]["details"]["closest_matches"][0] == hidden_id
         else:
             assert hidden_id not in json.dumps(response)
-            if audience == "external":
-                assert fuzzy_id not in json.dumps(response)
-            else:
-                assert response["error"]["details"]["closest_matches"] == [fuzzy_id]
+            assert fuzzy_id not in json.dumps(response)
     finally:
         runtime.close()
 
