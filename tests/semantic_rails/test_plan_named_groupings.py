@@ -154,6 +154,8 @@ def test_each_spelling_records_the_exact_named_term(
         ("revenue at mystery level", ["mystery"]),
         ("revenue per mystery", ["mystery"]),
         ("revenue byproduct", []),
+        ("revenue for each of the last 3 months", []),
+        ("revenue at the level", []),
     ],
 )
 def test_clause_grammar_keeps_lists_windows_and_ranked_nouns(
@@ -524,3 +526,39 @@ def test_level_in_a_dimension_name_stays_ready(
     assert typed_rows(retail.query(complete["best"]["query_ir"])) == typed_rows(
         retail.query(before["best"]["query_ir"])
     )
+
+
+@pytest.mark.parametrize(
+    ("question", "terms"),
+    [
+        ("revenue by store name and store name", ["store name", "store name"]),
+        ("revenue per mystery each mystery", ["mystery", "mystery"]),
+        ("revenue per store name each store", ["store name", "store"]),
+    ],
+)
+def test_legacy_unknown_and_ambiguous_obligations_are_not_deduplicated(
+    retail: Runtime, monkeypatch: pytest.MonkeyPatch, question: str, terms: list[str]
+) -> None:
+    assert _named_grouping_terms(question, retail._config) == terms
+    _, held = _compare_base(retail, monkeypatch, question, {"group_by": [STORE_NAME]})
+    assert "execute" not in held["next"].get("ready_for", [])
+
+
+def test_a_grouping_marker_inside_a_metric_name_preserves_the_complete_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.semantic_rails.test_runtime_and_metadata import _write_generic_planning_package
+
+    _write_generic_planning_package(tmp_path)
+    runtime = Runtime.from_path(str(tmp_path))
+    try:
+        before, after = _compare_base(
+            runtime, monkeypatch, "sends per account by product and send type for current month"
+        )
+        assert before["status"] == after["status"] == "ok", after.get("why")
+        assert "execute" in after["next"]["ready_for"]
+        assert _named_grouping_terms(
+            "sends per account by product and send type for current month", runtime._config
+        ) == ["product", "send type"]
+    finally:
+        runtime.close()

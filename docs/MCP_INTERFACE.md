@@ -313,8 +313,13 @@ as two incidents can share a name, and neither is "repair cost by incident name,
 incident". It also checks terms after `by` with a comma, tab or newline, after `per`,
 `each`, `for each` or `every`, and before `level` or `grain` (including `at the store id level`).
 Lists joined by commas, `and`, `&` or repeated grouping clauses are checked, as are the nouns
-before `by` in `top`, `highest` and `lowest` rankings. Each additional term records its source
-span. This broader reader adds obligations only to the dropped-grouping check; planning and
+before `by` in `top`, `highest` and `lowest` rankings. A suffix list such as "customer type and
+store name level" requires both groupings. A declared name such as "Severity level" or "Sends
+per account" does not introduce an extra grouping. Repeated descriptions of one uniquely named
+dimension share an additional obligation; legacy lists, ambiguous terms and unknown terms
+retain their obligations. Pieces consisting only of connector words add none.
+Each additional term records its source span. This broader reader adds obligations only to
+the dropped-grouping check; planning and
 the checks that authorize a draft's groupings retain their existing readers. Existing holds
 remain holds, including a complete grouping phrasing planning does not already authorize.
 The check only holds a plan; it never changes a draft or makes one ready.
