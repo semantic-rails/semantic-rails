@@ -19,7 +19,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.mcp_server import _tool_content
 from semantic_rails.metadata_parts.valid_values import valid_values_payload
-from semantic_rails.policies import enforce_query_policies, withheld_shape
+from semantic_rails.policies import enforce_query_policies, withheld_measure_ids, withheld_shape
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
 from tests.semantic_rails.conftest import copy_package_config
@@ -27,6 +27,7 @@ from tests.semantic_rails.conftest import copy_package_config
 REVENUE = "measure.jaffle.revenue_usd"
 LIFETIME = "measure.jaffle.lifetime_spend_usd"
 AOV = "metric.sales.aov_usd"
+CUSTOMERS = "metric.sales.customer_count"
 STORE = "dimension.jaffle_store_name"
 ROLE = "temporal_role.jaffle_order_time"
 SALES = {"roles": ["sales"]}
@@ -266,6 +267,28 @@ def test_valid_values_never_anchors_on_a_withheld_measure(engine):
     )
     assert result["values"]
     assert result["anchor_measure"] not in {REVENUE, LIFETIME}
+
+
+def test_a_withheld_metric_ranks_and_keeps_its_measures_from_valid_values(package):
+    policy = replace(_policy(), object_ids=[CUSTOMERS])
+    runtime = _engine(package, policy)
+    rank = {**RANK, "select": [_value({"metric": CUSTOMERS}, "revenue")]}
+    try:
+        result = runtime.query(rank)
+        assert result["withheld"] == [CUSTOMERS]
+        assert result["rows"] and all(set(row) == {STORE} for row in result["rows"])
+        reads = withheld_measure_ids(runtime._config, roles=["sales"])
+        assert reads and reads <= {row.id for row in runtime._config.measures}
+        values = valid_values_payload(
+            runtime, dimension_id=STORE, query=rank, allow_live_query=True, include_counts=True
+        )
+        assert values["values"] and values["anchor_measure"] not in reads
+        # Selected a second time, beside the rank, its values would show.
+        twice = {**rank, "select": [*rank["select"], _value({"metric": CUSTOMERS})]}
+        for code, details in _codes(runtime, twice):
+            assert (code, details["reason"]) == ("POLICY_DENIED", "withheld_value_dependency")
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize("action", ["deny", "redact"])

@@ -184,7 +184,11 @@ def enforce_query_policies(
             },
         )
     withheld = withheld_object_ids(
-        config, object_ids, environment=environment, audience=audience, roles=roles
+        config,
+        [*object_ids, *(binding.object_ids if binding is not None else ())],
+        environment=environment,
+        audience=audience,
+        roles=roles,
     )
     if withheld:
         if binding is None and query is not None:
