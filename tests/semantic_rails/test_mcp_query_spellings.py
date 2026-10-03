@@ -68,7 +68,15 @@ def test_arithmetic_spellings_match_reference_sql(adapter, op, sql_op, shape):
 
 
 @pytest.mark.parametrize(
-    "item", [{"dimension": DIMENSION}, {"expression": {"dimension": DIMENSION}}]
+    "item",
+    [
+        {"dimension": DIMENSION},
+        {"expression": {"dimension": DIMENSION}},
+        *[
+            {"expression": {"kind": kind, "dimension": DIMENSION}}
+            for kind in ("dimension", "group", "ref")
+        ],
+    ],
 )
 def test_selected_dimension_moves_to_group_by(adapter, item):
     canonical = adapter.call_tool(
@@ -85,11 +93,12 @@ def test_selected_dimension_moves_to_group_by(adapter, item):
 
 @pytest.mark.parametrize("encoded", [False, True])
 def test_nested_tool_options_are_lifted(adapter, encoded):
-    query = {**QUERY, "mode": "sql", "max_rows": 2, "row_format": "columns"}
+    query = {**QUERY, "mode": "sql", "max_rows": 2, "row_format": "columns", "verbosity": "minimal"}
     actual = adapter.call_tool("execute", {"query": json.dumps(query) if encoded else query})
     assert actual["ok"] and actual["rendered_sql"], actual
     assert "rows" not in actual
     assert any("mode: lifted" in note for note in actual["normalized"])
+    assert any("verbosity: lifted" in note for note in actual["normalized"])
     assert any("parsed JSON" in note for note in actual["normalized"]) is encoded
 
 
@@ -179,3 +188,33 @@ def test_selected_dimension_custom_alias_refuses(adapter):
         {"query": {"select": [{"expression": {"dimension": DIMENSION}, "as": "customer"}]}},
     )
     assert not out["ok"] and out["errors"][0]["code"] == "INVALID_QUERY"
+
+
+def test_live_values_retry_keeps_filters_without_host_attributes(adapter):
+    query = {"where": [{"field": DIMENSION, "op": "is_not_null"}]}
+    out = adapter.call_tool(
+        "valid-values",
+        {"dimension_id": DIMENSION, "query": query},
+        request_context=RequestContext(attributes={"owner": "private-owner"}),
+    )
+    assert out["status"] == "needs_live_query" and not out["ok"], out
+    retry = out["next_call"]["arguments"]
+    assert retry["query"]["where"] == [{"field": DIMENSION, "op": "IS NOT NULL"}]
+    assert retry["allow_live_query"] is True
+    assert "attributes" not in retry["query"].get("policy_context", {})
+    assert "private-owner" not in json.dumps(out)
+
+
+def test_declared_empty_domain_is_a_successful_empty_lookup(adapter, monkeypatch):
+    from dataclasses import replace
+
+    from semantic_rails.metadata_parts import valid_values
+
+    dimension = "dimension.jaffle_item_product_type"
+    domain = valid_values._value_domain_for_dimension(adapter.runtime._config, dimension)
+    monkeypatch.setattr(
+        valid_values, "_value_domain_for_dimension", lambda *_: replace(domain, values=[])
+    )
+    out = adapter.call_tool("valid-values", {"dimension_id": dimension})
+    assert out["ok"] and out["status"] == "ok", out
+    assert out["values"] == [] and "next_call" not in out

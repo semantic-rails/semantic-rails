@@ -41,19 +41,22 @@ def normalize_arguments(
             raise SemanticLayerError(
                 "INVALID_MCP_ARGUMENTS",
                 "query must encode a JSON object.",
-                details={"field": "query"},
+                details={"field": "query", "argument_type": "str"},
             ) from exc
         if not isinstance(query, dict):
             raise SemanticLayerError(
                 "INVALID_MCP_ARGUMENTS",
                 "query must encode a JSON object.",
-                details={"field": "query"},
+                details={"field": "query", "argument_type": "str"},
             )
         notes.append("query: parsed JSON string")
     if isinstance(query, Mapping):
         query = dict(query)
-        for key in sorted(known - {"query", "policy_context", "verbosity", "sql_profile"}):
+        for key in sorted(known - {"query", "policy_context"}):
             if key not in query:
+                continue
+            # These Query IR options already have documented inner precedence.
+            if key in out and key in {"verbosity", "sql_profile"}:
                 continue
             if key in out and out[key] != query[key]:
                 raise _invalid(f"Conflicting outer and nested {key}.", f"query.{key}", [key])
@@ -75,11 +78,11 @@ def normalize_query_spellings(query: dict[str, Any], notes: list[str]) -> dict[s
         op = row.get("op")
         kind = row.get("kind")
         if isinstance(op, str):
-            aliases = _ARITHMETIC if kind in {"arithmetic", "binary"} else _COMPARISONS
+            aliases = _ARITHMETIC if kind in ("arithmetic", "binary") else _COMPARISONS
             if op in aliases and op != aliases[op]:
                 row["op"] = aliases[op]
                 notes.append(f"{path}.op: {op} -> {aliases[op]}")
-        if kind in {"arithmetic", "binary"} and ("operands" in row or "terms" in row):
+        if kind in ("arithmetic", "binary") and ("operands" in row or "terms" in row):
             keys = set(row) & {"operands", "terms", "left", "right"}
             if len(keys) != 1:
                 raise _invalid("Arithmetic needs one operand shape.", path, ["left", "right"])
@@ -126,14 +129,18 @@ def normalize_query_spellings(query: dict[str, Any], notes: list[str]) -> dict[s
         for idx, item in enumerate(out["select"]):
             expr = item.get("expression", item) if isinstance(item, dict) else item
             dimension = expr.get("dimension") if isinstance(expr, dict) else None
-            if isinstance(dimension, str) and set(expr) == {"dimension"}:
+            if (
+                isinstance(dimension, str)
+                and set(expr) - {"kind"} == {"dimension"}
+                and expr.get("kind") in (None, "dimension", "group", "ref")
+            ):
                 if groups is None or (item.get("as") and item["as"] != dimension):
                     raise _invalid(
                         "A selected dimension needs an unaliased group_by.",
                         f"query.select[{idx}]",
                         ["group_by"],
                     )
-                if set(item) - {"expression", "as", "dimension"}:
+                if set(item) - {"expression", "as", "dimension", "kind"}:
                     raise _invalid(
                         "Ambiguous selected dimension.", f"query.select[{idx}]", ["group_by"]
                     )

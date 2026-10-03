@@ -188,7 +188,7 @@ POLICY_CONTEXT_SCHEMA: dict[str, Any] = {
 QUERY_SCHEMA: dict[str, Any] = {
     "type": ["object", "string"],
     "description": (
-        "Semantic Layer Query IR (object or JSON-encoded object): select [{expression: {measure: '<id>'}, as: '<alias>'}], "
+        "Query IR (object or JSON string): select [{expression: {measure: '<id>'}, as: '<alias>'}], "
         "group_by ['<dimension_id>'], where [{field: '<dimension_id>', op: '=', value: ...}]. "
         "Unknown keys rejected as "
         "INVALID_QUERY (offenders under details.unsupported_keys)."
@@ -270,14 +270,12 @@ QUERY_SCHEMA: dict[str, Any] = {
 
 # Slim Query-IR schema for tools/list dedupe. The full QUERY_SCHEMA
 # (with the detailed time-block spec) ships once, on 'execute', and the
-# other tools point there. Runtime acceptance is unchanged: both schemas are
-# `additionalProperties: true` documentation hints, not validators.
+# other tools point there. Both schemas document accepted inputs.
 QUERY_SCHEMA_SLIM: dict[str, Any] = {
-    "type": "object",
+    "type": ["object", "string"],
     "additionalProperties": True,
     "description": (
-        "Semantic Layer Query IR (JSON object). IR + time-block shape: "
-        "use the expression shapes listed in the 'execute' tool schema."
+        "Query IR (object or JSON string). IR and time shapes: execute's query schema."
     ),
 }
 
@@ -622,7 +620,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
         description=(
             "Run plan's best.query_ir (call plan first). time.end is exclusive. "
             "'validate' checks; 'sql' adds rendered_sql; neither runs. "
-            "query: object or JSON string; run queries the warehouse; "
+            "query: object or JSON string; run costs warehouse time; "
             "a query that already ran needs no validate. "
             "select may be empty: group_by alone lists rows. "
             "IR: select[]={expression:{...},as}, group_by[]=[<dim>,...], "
@@ -630,7 +628,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "{aggregation, measure} | {metric} | "
             "{kind: prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|arithmetic|...}\n"
             "ratio: per-order sum / order count.\n"
-            "arithmetic composes scalar or aggregate expressions; aggregate_if aggregates "
+            "arithmetic composes expressions; aggregate_if aggregates "
             "condition/value: {kind: aggregate_if, aggregation: avg, condition: {...}, "
             "value: {kind: call, name: date_diff, args: [...]}}.\n"
             "Empty groups: 0 if data exists (observation_scope=query: in filters)."
@@ -1965,13 +1963,14 @@ class SemanticLayerMCPAdapter:
         try:
             decoded, normalized = normalize_arguments(
                 arguments or {},
-                (_KNOWN_ARGS.get(name, frozenset()) - QUERY_INPUT_KEYS) | frozenset({"request_id"}),
+                _KNOWN_ARGS.get(name, frozenset())
+                - (QUERY_INPUT_KEYS - {"request_id", "verbosity", "sql_profile"}),
             )
         except SemanticLayerError as exc:
-            sanitized = _arguments_with_trusted_context(
-                {}, request_context, inject_policy_context=policy_aware
+            args_dict = _arguments_with_trusted_context(
+                arguments, request_context, inject_policy_context=policy_aware
             )
-            return finish(self._error_response(exc, sanitized))
+            return finish(self._error_response(exc, args_dict))
         args_dict = _arguments_with_trusted_context(
             decoded, request_context, inject_policy_context=policy_aware
         )

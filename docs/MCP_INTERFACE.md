@@ -213,14 +213,14 @@ returns the whole response with compiler plans. Minimal responses still include 
 segment policy effects, warnings, errors, and actionable recovery hints when present.
 
 MCP accepts a `query` object or a JSON string encoding that object. Tool arguments
-placed inside it are lifted; conflicting outer and inner values refuse with
-`INVALID_QUERY`. The response's `normalized` list reports each spelling change:
+placed inside it are lifted; conflicting tool options refuse with
+`INVALID_QUERY`. Query IR's `verbosity` and `sql_profile` retain inner precedence. The response's `normalized` list reports each spelling change:
 `eq`/`equals` → `=`, `neq` → `!=`, `gt`/`gte`/`lt`/`lte` → `>`/`>=`/`<`/`<=`,
 and `is_not_null` → `IS NOT NULL`; arithmetic `sub`/`mul`/`div` →
 `subtract`/`multiply`/`divide` (`add` is already canonical). Arithmetic `operands`
 or `terms` with at least two expressions fold left, including subtraction and
 division. Mixing operand shapes refuses. An unaliased `{dimension: "<id>"}` in
-`select` moves to `group_by`; a custom output alias refuses rather than losing it.
+`select` (also with `kind: dimension|group|ref`) moves to `group_by`; a custom output alias refuses rather than losing it.
 Unknown ids in a dimension-only list query return `OBJECT_NOT_FOUND`, with
 closest visible matches.
 
