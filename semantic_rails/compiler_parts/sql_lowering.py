@@ -3054,6 +3054,20 @@ def _measure_leaf_select(
                 and entities[dimensions[field.alias].entity].kind == "time"
             )
         ]
+        for dim_id in plan.group_by:
+            if dim_id not in period_aliases and dimensions[dim_id].data_type in {
+                "date",
+                "timestamp",
+            }:
+                raise SemanticLayerError(
+                    "REWRITE_NOT_SUPPORTED",
+                    "Grouping a stock by a date or timestamp attribute is ambiguous. "
+                    "Group by the stock's clock or a calendar dimension instead.",
+                    details={
+                        "reason": "stock_grouped_by_date_attribute",
+                        "dimension": dim_id,
+                    },
+                )
         return _semi_additive_leaf_select(
             key_fields=list(select_fields),
             period_aliases=period_aliases,

@@ -22,6 +22,7 @@ import duckdb
 import pytest
 
 from semantic_rails.dialects import DuckDbDialect
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
 
 ROLE = "temporal_role.seats_account_day_date_day"
@@ -48,7 +49,7 @@ def _rows() -> list[tuple[str, date, str, int]]:
     return rows
 
 
-def _package(root: Path) -> Path:
+def _package(root: Path, *, singleton: bool = False) -> Path:
     package = root / "seats"
     (package / "models").mkdir(parents=True)
     (package / "metrics").mkdir()
@@ -61,7 +62,8 @@ def _package(root: Path) -> Path:
     )
     (package / "graph.yml").write_text(
         "graph:\n  entities:\n"
-        "    account_day: {key: [account_id, date_day], model: account_days, "
+        f"    account_day: {{key: {'[date_day]' if singleton else '[account_id, date_day]'}, "
+        "model: account_days, "
         "allowed_as_root: true}\n"
         "    time: {kind: time, key: [date_day], model: calendar, allowed_as_root: false}\n"
     )
@@ -82,7 +84,10 @@ def _package(root: Path) -> Path:
         "  id: account_days\n"
         "  relation: account_day\n"
         "  entities: {account_day: {}, time: {}}\n"
-        "  dimensions: {plan: {kind: categorical}}\n"
+        "  dimensions:\n"
+        "    plan: {kind: categorical}\n"
+        "    snapshot_month: {kind: date}\n"
+        "    snapshot_timestamp: {kind: timestamp}\n"
         "  times:\n"
         "    date_day: {column: date_day, kind: date, class: as_of_time, default: true}\n"
         "  measures:\n"
@@ -98,16 +103,23 @@ def _package(root: Path) -> Path:
         )
     )
     connection = duckdb.connect(str(package / "data" / "seats.duckdb"))
-    _load(connection)
+    _load(connection, singleton=singleton)
     connection.close()
     return package
 
 
-def _load(connection: duckdb.DuckDBPyConnection) -> None:
+def _load(connection: duckdb.DuckDBPyConnection, *, singleton: bool = False) -> None:
     connection.execute(
         "create table account_day (account_id varchar, date_day date, plan varchar, seats integer)"
     )
-    connection.executemany("insert into account_day values (?, ?, ?, ?)", _rows())
+    rows = [row for row in _rows() if not singleton or row[0] == "a"]
+    connection.executemany("insert into account_day values (?, ?, ?, ?)", rows)
+    connection.execute("alter table account_day add column snapshot_month date")
+    connection.execute("alter table account_day add column snapshot_timestamp timestamp")
+    connection.execute(
+        "update account_day set snapshot_month = date_trunc('month', date_day)::date, "
+        "snapshot_timestamp = date_day::timestamp"
+    )
     connection.execute(
         "create table calendar as select d::date as date_day, "
         "date_trunc('week', d)::date as week_start "
@@ -134,10 +146,20 @@ def _reference(measure: str, group_by: list[str], grain: str = "week") -> list[t
         connection.close()
 
 
-def _query(runtime: Runtime, measure: str, group_by: list[str], time: dict | None) -> list[tuple]:
+def _query(
+    runtime: Runtime,
+    measure: str,
+    group_by: list[str],
+    time: dict | None,
+    *,
+    aggregation: str | None = None,
+) -> list[tuple]:
+    expression = {"measure": f"measure.seats.{measure}"}
+    if aggregation:
+        expression["aggregation"] = aggregation
     query: dict[str, Any] = {
         "version": 1,
-        "select": [{"expression": {"measure": f"measure.seats.{measure}"}, "as": "v"}],
+        "select": [{"expression": expression, "as": "v"}],
         "group_by": group_by,
     }
     if time:
@@ -158,7 +180,7 @@ def _day(value: Any) -> date:
 
 
 @pytest.fixture(params=["aggregate_join", "qualify"])
-def runtime(request, tmp_path: Path, monkeypatch) -> Iterator[Runtime]:
+def snapshot_lowering(request, monkeypatch) -> None:
     # DuckDB lowers the snapshot choice as an aggregate joined back; warehouses with
     # QUALIFY (Snowflake, BigQuery, Databricks) use ROW_NUMBER. DuckDB runs both.
     if request.param == "qualify":
@@ -166,6 +188,10 @@ def runtime(request, tmp_path: Path, monkeypatch) -> Iterator[Runtime]:
         monkeypatch.setattr(
             DuckDbDialect, "capabilities", lambda self: {**capabilities(self), "qualify": True}
         )
+
+
+@pytest.fixture
+def runtime(snapshot_lowering, tmp_path: Path) -> Iterator[Runtime]:
     runtime = Runtime.from_path(str(_package(tmp_path)))
     yield runtime
     runtime.close()
@@ -241,3 +267,84 @@ def test_the_clock_and_calendar_still_split_periods(
     if group_by == [DAY]:
         daily = _query(runtime, "seats", [DAY, PLAN], {"temporal_role": ROLE, "grain": "week"})
         assert [row[1:] for row in daily] == _reference("seats", ["plan"], "day")
+
+
+@pytest.mark.parametrize("attribute", ["snapshot_month", "snapshot_timestamp"])
+@pytest.mark.parametrize("grain", [None, "week"])
+def test_grouping_by_a_date_attribute_refuses(
+    runtime: Runtime, attribute: str, grain: str | None
+) -> None:
+    dimension = f"dimension.seats_account_day_{attribute}"
+    time = {"temporal_role": ROLE, "grain": grain} if grain else None
+    with pytest.raises(SemanticLayerError) as raised:
+        _query(runtime, "seats", [dimension], time)
+    assert raised.value.code == "REWRITE_NOT_SUPPORTED"
+    assert raised.value.details == {
+        "reason": "stock_grouped_by_date_attribute",
+        "dimension": dimension,
+    }
+    assert "stock's clock or a calendar dimension" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("singleton", "aggregation", "reference_sql", "expected"),
+    [
+        pytest.param(
+            True,
+            "last_value",
+            "select period, plan, sum(seats) from ("
+            "  select *, date_trunc('week', date_day)::date as period, row_number() over ("
+            "    partition by date_trunc('week', date_day) order by date_day desc) as rn"
+            "  from account_day"
+            ") where rn = 1 group by all order by all",
+            [(MONDAY, "Pro", 16), (date(2026, 10, 5), "Pro", 20)],
+            id="singleton-last-value",
+        ),
+        pytest.param(
+            False,
+            "max",
+            "select period, plan, max(seats) from ("
+            "  select *, date_trunc('week', date_day)::date as period, row_number() over ("
+            "    partition by account_id, date_trunc('week', date_day)"
+            "    order by date_day desc) as rn"
+            "  from account_day"
+            ") where rn = 1 group by all order by all",
+            [
+                (MONDAY, "Builder", 1006),
+                (MONDAY, "Pro", 100),
+                (date(2026, 10, 5), "Pro", 200),
+            ],
+            id="keyed-max",
+        ),
+    ],
+)
+def test_snapshot_shapes_match_reference_sql(
+    snapshot_lowering,
+    tmp_path: Path,
+    singleton: bool,
+    aggregation: str,
+    reference_sql: str,
+    expected: list[tuple],
+) -> None:
+    # Put two series in the same closing group so max must differ from sum.
+    fixture_sql = "update account_day set plan = 'Pro' where account_id = 'b'"
+    with duckdb.connect() as reference:
+        _load(reference, singleton=singleton)
+        reference.execute(fixture_sql)
+        reference_rows = reference.execute(reference_sql).fetchall()
+    assert reference_rows == expected
+    package = _package(tmp_path, singleton=singleton)
+    with duckdb.connect(str(package / "data" / "seats.duckdb")) as connection:
+        connection.execute(fixture_sql)
+    runtime = Runtime.from_path(str(package))
+    try:
+        actual = _query(
+            runtime,
+            "seats",
+            [PLAN],
+            {"temporal_role": ROLE, "grain": "week"},
+            aggregation=aggregation,
+        )
+        assert actual == reference_rows
+    finally:
+        runtime.close()
