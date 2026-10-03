@@ -306,7 +306,7 @@ WHOLE_QUERY_FILTERS = {
     ),
     "metric_filter_predicate": _select(
         {"measure": REVENUE},
-        metric_filters=[{"expression": RETURNING_CUSTOMER, "op": ">", "value": 0}],
+        metric_filters=[{"expression": RETURNING_CUSTOMER, "op": "=", "value": True}],
     ),
     "conversion_base": _select(
         {
