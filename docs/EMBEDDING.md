@@ -124,6 +124,10 @@ satisfies the `MCPAdapter` protocol (`package_id`, `list_tools`, `call_tool`,
 own tools through the engine's JSON-RPC envelope, errors, and audit events. Optional
 `interface` and `instructions` attributes fill the `initialize` result.
 
+For query MCP repeat hints, pass a separate `MCPQuerySession` from
+`semantic_rails.mcp_session` as `session=` to `handle_jsonrpc_message` for each
+client session. See [MCP_INTERFACE.md](MCP_INTERFACE.md) for the hint fields.
+
 To swap the body of one tool, for a test or a host's own implementation, call
 `replace_tool_handler(name, handler)` on a `SemanticLayerMCPAdapter`. It accepts only a
 tool the adapter lists and changes that adapter instance only. `call_tool` still validates
@@ -257,7 +261,7 @@ dialect_for_warehouse(warehouse)
 emit_audit_event(event, **payload)
 get_audit_sink()
 get_policy_context_resolver()
-handle_jsonrpc_message(adapter, message, *, request_context=)
+handle_jsonrpc_message(adapter, message, *, request_context=, session=)
 handle_streamable_http_request(adapter, *, method, headers, body=, request_context=)
 impact_report(ref, *, compare_path=, base_ref=, snapshot=)
 load_package_snapshot(path)

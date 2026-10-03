@@ -10,6 +10,7 @@ context cost" in docs/MCP_INTERFACE.md.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +54,36 @@ def test_query_mcp_stays_within_context_budgets(jaffle_package: Path) -> None:
         "Query MCP context budgets failed. Raise a budget only for an intended change, "
         "with `uv run python scripts/mcp_context.py --write-baseline`:\n" + "\n".join(failures)
     )
+
+
+def test_session_hints_do_not_increase_first_call_costs(
+    jaffle_package: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from semantic_rails.mcp_session import MCPQuerySession
+    from semantic_rails.runtime import Runtime
+
+    preview = Runtime.segment_preview
+    samples: dict[str, Any] = {}
+
+    def frozen_preview(self: Any, *args: Any, **kwargs: Any) -> Any:
+        # Unordered preview rows can vary in length between warehouse calls.
+        key = json.dumps([args, kwargs], sort_keys=True)
+        if key not in samples:
+            samples[key] = preview(self, *args, **kwargs)
+        return deepcopy(samples[key])
+
+    monkeypatch.setattr(Runtime, "segment_preview", frozen_preview)
+
+    enabled = mcp_context.measure_query_mcp(jaffle_package)
+    monkeypatch.setattr(MCPQuerySession, "annotate", lambda *_args, **_kwargs: None)
+    disabled = mcp_context.measure_query_mcp(jaffle_package)
+    first_calls = {
+        name: value
+        for name, value in enabled.items()
+        if name.startswith(("query.v2.default.", "query.v2.tools_list."))
+        or name == "query.v2.instructions_tokens"
+    }
+    assert first_calls == {name: disabled[name] for name in first_calls}
 
 
 def test_default_probes_call_every_tool(jaffle_package: Path) -> None:

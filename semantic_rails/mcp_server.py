@@ -35,6 +35,7 @@ from .http_core import (
     cors_origin_header,
 )
 from .mcp import MCP_SERVER_INSTRUCTIONS, SemanticLayerMCPAdapter, json_text
+from .mcp_session import MCPQuerySession
 from .request_context import (
     RequestContext,
     get_policy_context_resolver,
@@ -148,6 +149,7 @@ def handle_jsonrpc_message(
     message: dict[str, Any],
     *,
     request_context: RequestContext | None = None,
+    session: MCPQuerySession | None = None,
 ) -> dict[str, Any] | None:
     message_id = message.get("id")
     is_notification = "id" not in message
@@ -198,13 +200,20 @@ def handle_jsonrpc_message(
             raw_arguments = params.get("arguments", {}) or {}
             if not isinstance(raw_arguments, Mapping):
                 return _jsonrpc_error(message_id, -32602, "MCP tool arguments must be an object")
-            result = _tool_content(
-                adapter.call_tool(
+            if session is not None and isinstance(adapter, SemanticLayerMCPAdapter):
+                payload = adapter.call_tool(
+                    str(params.get("name", "")),
+                    dict(raw_arguments),
+                    request_context=request_context,
+                    session=session,
+                )
+            else:
+                payload = adapter.call_tool(
                     str(params.get("name", "")),
                     dict(raw_arguments),
                     request_context=request_context,
                 )
-            )
+            result = _tool_content(payload)
         elif method == "resources/list":
             result = {"resources": adapter.list_resources()}
         elif method == "resources/read":
@@ -310,6 +319,7 @@ def serve_stdio(
 ) -> None:
     input_stream = input_stream or sys.stdin
     output_stream = output_stream or sys.stdout
+    session = MCPQuerySession()
     for line in input_stream:
         if not line.strip():
             continue
@@ -322,7 +332,7 @@ def serve_stdio(
             if not isinstance(message, dict):
                 response = _jsonrpc_error(None, -32600, "JSON-RPC message must be an object")
             else:
-                response = handle_jsonrpc_message(adapter, message)
+                response = handle_jsonrpc_message(adapter, message, session=session)
         if response is not None:
             output_stream.write(json.dumps(response, sort_keys=True, default=str) + "\n")
             output_stream.flush()
