@@ -51,7 +51,7 @@ _CARDINALITY = {
     "1:N": "one_to_many",
     "M:N": "many_to_many",
 }
-_ROLLUPS = {"rollup_safe_aggregations": "forward", "rollup_safe_aggregations_reverse": "reverse"}
+_ROLLUPS = {"rollup_safe_aggregations_reverse": "reverse"}
 _MODEL_FIELDS = {"calendar_id", "freshness_source", "freshness_sla_seconds", "freshness_as_of"}
 _MEMBERSHIP = ("where", "metric_filters", "time", "temporal_role_overrides")
 
@@ -171,16 +171,13 @@ class _Writer:
                 **alias,
                 "kind": "entity_count" if counted else "aggregate",
                 "expr": expr_to_dict(measure.expr),
-                **_described(measure, skip={*skip, "subject_entity", "aggregation_entity"}),
+                **_described(measure, skip=skip),
             }
             # The aggregations the loader allows before `disallowed_aggregations:`.
             allowed = _derive_measure_semantics(spec)[1]
             disallowed = [agg for agg in allowed if agg not in measure.allowed_aggregations]
             if disallowed:
                 spec["disallowed_aggregations"] = disallowed
-            for name in ("subject_entity", "aggregation_entity"):
-                if getattr(measure, name) != measure.entity:
-                    spec[name] = getattr(measure, name)
             if measure.topics == _default_topics(measure.name, fallback=model_key):
                 spec.pop("topics", None)
             suggested = _suggested_aggregations(

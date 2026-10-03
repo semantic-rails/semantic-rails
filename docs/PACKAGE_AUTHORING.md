@@ -819,7 +819,6 @@ graph:
         valid_from: shop_customer_history.effective_from
         valid_to: shop_customer_history.effective_to
       rollup_safe:
-        forward: [sum, count]                   # aggregating customer_history → customer
         reverse: []                             # aggregating customer → customer_history
 ```
 
@@ -848,9 +847,9 @@ configurable.
 
 Each `relationships:` entry is an unordered pair of entities. Cardinality is
 declared relative to that pair (`many_to_one` = first is many, second is one).
-`rollup_safe` specifies which aggregations roll up safely in each direction.
-When several relationships join one pair (roles), an aggregation must be listed
-by every one that lists any.
+`rollup_safe.reverse: [count_distinct]` permits the population-count rewrite
+when traversing from the second entity to the first. Measures aggregate at their
+own model's row grain; parent-rollup declarations are not supported.
 
 Every authored relationship must declare `entities: [source, target]` and attach
 to graph models for both endpoints. An invalid or unattached entry fails loading

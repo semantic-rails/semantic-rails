@@ -13,14 +13,11 @@ from __future__ import annotations
 
 import itertools
 import textwrap
-from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
 import duckdb
 import pytest
 
-from semantic_rails.compiler import _validate_rollup_safety
 from semantic_rails.compiler_parts.paths import (
     _direct_dimension_source_expr,
     _direct_entity_key_source_expr,
@@ -221,9 +218,6 @@ def _write_package(
               dimension:
                 groupable: true
                 filterable: true
-              measure:
-                subject_entity: self
-                aggregation_entity: self
               relationship:
                 traversal: [forward, reverse]
             """
@@ -807,46 +801,3 @@ def test_a_pinned_role_reads_its_key_through_the_join_so_a_leg_without_an_airpor
     _write_package(tmp_path / "one", explicit=("destination",), extra_seed=ORPHAN_LEG)
     one_role = Runtime.from_path(str(tmp_path / "one" / "air"))
     assert _rows(one_role, query, [CODE], key=str) == own_column
-
-
-def _config_with_rollup_hints(tmp_path, hints: dict[str, list[str]], *, reverse_order=False):
-    """The role package with each relationship's ``rollup_safe_aggregations`` set, and the
-    seats measure rolled up to the airport."""
-    config = load_package_config(str(_write_package(tmp_path)))
-    relationships = [
-        replace(rel, rollup_safe_aggregations=hints.get(rel.id, [])) for rel in config.relationships
-    ]
-    if reverse_order:
-        relationships.reverse()
-    measure = replace(
-        next(m for m in config.measures if m.id == SEATS), aggregation_entity="entity.air_airport"
-    )
-    measures = [measure, *(m for m in config.measures if m.id != SEATS)]
-    return replace(config, relationships=relationships, measures=measures)
-
-
-def _rollup_is_refused(config, aggregation: str) -> bool:
-    bound = [SimpleNamespace(measure_id=SEATS, aggregation=aggregation)]
-    try:
-        _validate_rollup_safety(bound, config)
-    except SemanticLayerError as exc:
-        assert exc.code == "ROLLUP_UNSAFE"
-        return True
-    return False
-
-
-@pytest.mark.parametrize("reverse_order", [False, True])
-def test_rollup_hints_of_a_role_pair_are_intersected_whatever_the_order(tmp_path, reverse_order):
-    """Origin allows sum, destination allows sum and max: only sum is allowed by both."""
-    config = _config_with_rollup_hints(
-        tmp_path, {ORIGIN: ["sum"], DESTINATION: ["sum", "max"]}, reverse_order=reverse_order
-    )
-    assert not _rollup_is_refused(config, "sum")
-    assert _rollup_is_refused(config, "max")
-
-
-def test_rollup_hints_with_nothing_in_common_allow_no_aggregation(tmp_path):
-    """An empty intersection restricts everything; it must not read as "no restriction"."""
-    config = _config_with_rollup_hints(tmp_path, {ORIGIN: ["sum"], DESTINATION: ["max"]})
-    assert _rollup_is_refused(config, "sum")
-    assert _rollup_is_refused(config, "max")

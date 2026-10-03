@@ -20,6 +20,7 @@ from typing import Any
 
 from .config_parts.package_loader import normalize_package
 from .config_parts.route_rows import require_rows_agree
+from .config_parts.shape_checks import _MEASURE_KEYS
 from .dialects import (
     connection_option_errors,
     snowflake_adbc_connect_errors,
@@ -2132,6 +2133,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     "INVALID_CONFIG",
                     f"{path}: measure '{measure_key}' uses 'primitive:' shorthand which has been removed; expand to explicit 'kind' / 'accumulation' / 'value_type' fields",
                 )
+            _check_binding_keys(
+                measure_spec, _MEASURE_KEYS, label=f"{path}: measure '{measure_key}'"
+            )
             measure_id = str(
                 measure_spec.get("id", f"measure.{_slug(entity_cfg.name)}_{_slug(measure_key)}")
             )
@@ -2232,17 +2236,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             measure = MeasureConfig(
                 id=measure_id,
                 entity=entity_id,
-                subject_entity=entity_id
-                if str(measure_spec.get("subject_entity", "self")) == "self"
-                else entity_lookup.get(
-                    str(measure_spec.get("subject_entity")), str(measure_spec.get("subject_entity"))
-                ),
-                aggregation_entity=entity_id
-                if str(measure_spec.get("aggregation_entity", "self")) == "self"
-                else entity_lookup.get(
-                    str(measure_spec.get("aggregation_entity")),
-                    str(measure_spec.get("aggregation_entity")),
-                ),
                 row_grain=list(row_grain),
                 source_relation=fact_source_relation,
                 expr=parse_config_expression(expr_raw),
@@ -2383,9 +2376,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     },
                     target_key_type=str(join_spec.get("target_key_type", "primary") or "primary"),
                     join_semantics=str(join_spec.get("join_semantics", "")),
-                    rollup_safe_aggregations=_ensure_list(
-                        join_spec.get("rollup_safe_aggregations")
-                    ),
                     rollup_safe_aggregations_reverse=_ensure_list(
                         join_spec.get("rollup_safe_aggregations_reverse")
                     ),

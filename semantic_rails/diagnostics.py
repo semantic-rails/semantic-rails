@@ -84,7 +84,6 @@ def relationship_contract_payload(rel: RelationshipConfig) -> dict[str, Any]:
         "target_key_role": rel.target_key_role,
         "cardinality": rel.cardinality,
         "temporal_validity": bool(rel.temporal_validity),
-        "rollup_safe_aggregations": list(rel.rollup_safe_aggregations),
     }
 
 
@@ -666,13 +665,7 @@ def recovery_hints_for_error(
             }
         ]
     if code == "ROLLUP_UNSAFE":
-        return list(details.get("recovery_hints", []) or []) or [
-            {
-                "kind": "change_aggregation",
-                "message": "Use an additive primitive, provide sketch metadata, or query at the declared aggregation entity.",
-                "details": dict(details),
-            }
-        ]
+        return list(details.get("recovery_hints", []) or [])
     if code == "CONVERSION_WINDOW_REQUIRED":
         return list(details.get("recovery_hints", []) or [])
     if code == "CONVERSION_MATCHING_MODE_REQUIRED" and details.get("expression"):

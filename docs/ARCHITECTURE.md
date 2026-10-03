@@ -123,8 +123,6 @@ Current compiled fields:
 - `name`
 - `label`
 - `entity`
-- `subject_entity`
-- `aggregation_entity`
 - `row_grain`
 - `expr`
 - `default_aggregation`

@@ -1239,8 +1239,6 @@ def _synthetic_conditional_measure(
     measure = MeasureConfig(
         id=measure_id,
         entity=entity_id,
-        subject_entity=entity_id,
-        aggregation_entity=entity_id,
         row_grain=row_grain,
         expr=expr_for_measure,
         default_aggregation=aggregation,

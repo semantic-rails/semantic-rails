@@ -539,10 +539,8 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
     #     safety: safe
     #     allowed_directions: [...]
     #     temporal_validity: { ... }
-    #     rollup_safe:                  # per-direction (forward = a→b)
-    #       forward: [...]
-    #       reverse: [...]              # captured but downstream schema only
-    #                                   # has one rollup_safe_aggregations list
+    #     rollup_safe:
+    #       reverse: [...]              # b→a population-count rewrite permission
     relationship_block = graph.get("relationships") or {}
     if not isinstance(relationship_block, dict):
         raise SemanticLayerError("INVALID_CONFIG", "graph.relationships must be a mapping")
@@ -583,15 +581,10 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
                 "many_to_many": "M:N",
             }
             cardinality = cardinality_map.get(cardinality, cardinality)
-            # rollup_safe: forward is a→b; reverse is b→a.
             rollup_safe = spec.get("rollup_safe") or {}
-            forward_rollup: list[str] = []
-            reverse_rollup: list[str] = []
-            if isinstance(rollup_safe, dict):
-                forward_rollup = list(rollup_safe.get("forward", []) or [])
-                reverse_rollup = list(rollup_safe.get("reverse", []) or [])
-            elif isinstance(rollup_safe, list):
-                forward_rollup = list(rollup_safe)
+            reverse_rollup = (
+                list(rollup_safe.get("reverse", []) or []) if isinstance(rollup_safe, dict) else []
+            )
 
             # Attach to source model `a`'s joins block as edge `b`.
             source_model = entity_to_model[a]
@@ -627,12 +620,6 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             # `allowed_directions:`; we rename here at the translator boundary.
             if "allowed_directions" in spec:
                 edge_spec["traversal"] = spec["allowed_directions"]
-            if forward_rollup:
-                edge_spec["rollup_safe_aggregations"] = forward_rollup
-            # Reverse rollup is captured as a sibling key for now; the
-            # runtime schema has a single rollup_safe_aggregations field
-            # which is forward-only. Reverse stays available for future
-            # bidirectional rollup checks.
             if reverse_rollup:
                 edge_spec["rollup_safe_aggregations_reverse"] = reverse_rollup
             # A model keeps every relationship to an entity. A route is its source
