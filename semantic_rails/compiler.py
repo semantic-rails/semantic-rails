@@ -393,7 +393,6 @@ __all__ = [
     "_validate_metric_predicate_filter_envelope",
     "_validate_query_temporal_bindings",
     "_validate_restrictive_time_semantics",
-    "_validate_rollup_safety",
     "_validate_where_value_type",
     "analyze_fanout",
     "attach_relation_ctes",
@@ -477,43 +476,6 @@ def _can_project_entity_key_from_source(
         _direct_entity_key_source_expr(source_entity, target_entity, key_col, config) is not None
         for key_col in list(target.key or [target.primary_key])
     )
-
-
-def _validate_rollup_safety(bound_measures: Iterable[BoundMeasure], config: PackageConfig) -> None:
-    measures = _measure_index(config)
-    unsafe_aggregations = {"avg", "median", "percentile", "count_distinct"}
-    # Relationships between one pair (role-playing keys) may each list rollup-safe
-    # aggregations; only what every one of them allows is allowed, whatever the order.
-    rollup_hints_by_pair: dict[tuple[str, str], set[str]] = {}
-    for rel in config.relationships:
-        if not rel.rollup_safe_aggregations:
-            continue
-        hints = {str(item).lower() for item in rel.rollup_safe_aggregations}
-        pair = (rel.source_entity, rel.target_entity)
-        rollup_hints_by_pair[pair] = rollup_hints_by_pair.get(pair, hints) & hints
-    for bound in bound_measures:
-        measure = measures[bound.measure_id]
-        if not measure.aggregation_entity or measure.aggregation_entity == measure.entity:
-            continue
-        aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
-        allowed = rollup_hints_by_pair.get((measure.entity, measure.aggregation_entity))
-        sketch_safe = bool(measure.meta.get("rollup_sketch") or measure.meta.get("sketch"))
-        if (aggregation in unsafe_aggregations and not sketch_safe) or (
-            allowed is not None and aggregation not in allowed and not sketch_safe
-        ):
-            raise SemanticLayerError(
-                "ROLLUP_UNSAFE",
-                f"Measure '{measure.id}' cannot be rolled from '{measure.entity}' to '{measure.aggregation_entity}' with aggregation '{aggregation}'",
-                details={
-                    "measure_id": measure.id,
-                    "source_entity": measure.entity,
-                    "aggregation_entity": measure.aggregation_entity,
-                    "aggregation": aggregation,
-                    "unsupported_construct": "non_additive_parent_rollup",
-                    "why_invalid": "Non-additive aggregations cannot be safely re-aggregated across parent entities without sketch or rollup metadata.",
-                    "missing_metadata_or_capability": "rollup_sketch or additive primitive",
-                },
-            )
 
 
 # A window adds periods and a per-entity rollup adds an entity's rows before comparing
@@ -994,7 +956,6 @@ def _fanout_dedup_refusal(
         measure.additive
         and measure.measure_class not in {"semi_additive", "snapshot"}
         and _measure_has_source_row_key(measure, entity)
-        and measure.aggregation_entity in {"", measure.entity}
         and (entity.key or entity.primary_key)
     ):
         return (
@@ -4492,7 +4453,6 @@ def _plan_query(
     }
     bound_measures = list(dedup_measures.values())
     _validate_measure_validity_windows(bound_measures, config, query)
-    _validate_rollup_safety(bound_measures, config)
     _validate_non_additive_sums(bound_measures, config, query)
     measure_plans: list[MeasurePlan] = []
     leaf_strategies: list[str] = []  # each leaf's strategy before rollup routing

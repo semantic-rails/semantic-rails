@@ -9,7 +9,7 @@ compiler surfaces via ``_compiled_package_warnings``.
 This mirrors :mod:`semantic_rails.operational` in shape (same field types,
 same ``allow_unknown_fields`` toggle), but is strictly advisory. When no
 contract is declared (the common case today), payloads pass through
-untouched — load-bearing meta keys (e.g. MNPI gates, rollup_sketch) keep
+untouched — load-bearing meta keys (e.g. MNPI gates) keep
 working.
 """
 

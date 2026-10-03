@@ -841,9 +841,6 @@ graph:
       temporal_validity:                        # <model relation name>.<column>
         valid_from: shop_customer_history.effective_from
         valid_to: shop_customer_history.effective_to
-      rollup_safe:
-        forward: [sum, count]                   # aggregating customer_history → customer
-        reverse: []                             # aggregating customer → customer_history
 ```
 
 A query that joins into the table holding the window needs a `time`, so each row reads the
@@ -871,9 +868,21 @@ configurable.
 
 Each `relationships:` entry is an unordered pair of entities. Cardinality is
 declared relative to that pair (`many_to_one` = first is many, second is one).
-`rollup_safe` specifies which aggregations roll up safely in each direction.
-When several relationships join one pair (roles), an aggregation must be listed
-by every one that lists any.
+`rollup_safe.reverse: [count_distinct]` permits the population-count rewrite
+when traversing from the second entity to the first. Measures aggregate at their
+own model's row grain; parent-rollup declarations are not supported.
+To migrate existing packages, delete `subject_entity` and `aggregation_entity`
+lines from `defaults.measure` and individual measures. Defaults are checked once
+per package, with an error naming `defaults.measure.<key>` and the line to delete.
+In `graph.relationships`, `rollup_safe` must be a mapping containing only `reverse`;
+forward declarations, the former list form, and `rollup_safe_aggregations` in model
+joins or relationship defaults fail loading with `INVALID_CONFIG` naming the authored location.
+Model joins and `defaults.relationship` do not accept `rollup_safe` in any form;
+declare reverse permissions in `graph.relationships` using `rollup_safe.reverse`.
+A `rollup_safe` or `rollup_safe_aggregations` default is refused by key presence,
+including `null`, even when the package has no relationships.
+Authored model joins are checked before graph relationships override them;
+removed keys are refused even when their value is `null`.
 
 Every authored relationship must declare `entities: [source, target]` and attach
 to graph models for both endpoints. An invalid or unattached entry fails loading

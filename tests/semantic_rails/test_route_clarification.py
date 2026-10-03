@@ -173,9 +173,6 @@ def _write_package(root: Path, *, decisions: list[dict[str, Any]] | None = None)
               dimension:
                 groupable: true
                 filterable: true
-              measure:
-                subject_entity: self
-                aggregation_entity: self
               relationship:
                 traversal: [forward, reverse]
             """
