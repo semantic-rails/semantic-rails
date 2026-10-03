@@ -1040,6 +1040,19 @@ filter: `=` for one value and `in` for several. This yields one total or one
 combined ranking; no grouping is added for those values. A per-value breakdown
 needs an explicit grouping in the question (for example, "by store") or the
 caller's `group_by`.
+For example, "top 3 product type by item revenue for Brooklyn and
+Philadelphia" groups by product type and uses both stores in one membership
+filter. Catalog fallback resolves each requested grouping before deduplicating
+by dimension ID.
+When the caller passes `group_by` and the draft adds a grouping dimension the
+caller didn't pass, the plan is not ready to execute: the plan keeps both
+groupings in `group_by` and returns `low_confidence` with an
+`ambiguous_grouping` gap in `PLAN_INTENT_COVERAGE_GAP` and a `clarify_grouping`
+hint. The planner doesn't guess whether the question's grouping phrase restates
+a caller dimension or asks for another one. For example, "item revenue by store"
+with `group_by: ["dimension.jaffle_item_product_type"]` keeps both the product
+type and store groupings. To execute, pass every intended grouping dimension ID
+in `group_by`, here both IDs.
 Caller filter rows stay as written, in their original order, with only string
 field IDs stripped of surrounding whitespace. Their operators and values are
 preserved, and generated rows are appended unless identical rows already exist.

@@ -449,57 +449,59 @@ def _term_matches_value_domain(config: Any, term: str) -> bool:
     return False
 
 
+def _grouping_term_matches(runtime: Any, query: dict[str, Any], term: str) -> list[str] | None:
+    """Return discovery's matched dimension IDs, or None for a skipped grouping term."""
+
+    from ..metadata import discover_payload  # noqa: WPS433 - shared metadata helper
+
+    if _is_temporal_grouping_term(term) or _term_matches_value_domain(runtime._config, term):
+        return None
+    dim_discovery = discover_payload(
+        runtime,
+        terms=term,
+        partial_query=query,
+        kinds=["dimension"],
+        stage="post_measure",
+        limit=5,
+    )
+    return [
+        str(row["id"])
+        for row in dim_discovery["dimensions"]
+        if any(
+            "label/name matched" in reason
+            or "search term matched" in reason
+            or "exact name match" in reason
+            for reason in row["match_reasons"]
+        )
+    ]
+
+
 def _choose_group_dimensions(
     runtime: Any, query: dict[str, Any], text: str, chosen_group_dim: str = ""
 ) -> list[str]:
     from ..metadata import (  # noqa: WPS433 - shared metadata helpers
         _availability_for_object,
         _selection_context,
-        discover_payload,
     )
-    from ..metadata_parts.relevance import _tokenize  # noqa: WPS433
 
     if chosen_group_dim:
         return [chosen_group_dim]
     selection = _selection_context(runtime._config, query)
     group_dims: list[str] = []
-    covered_terms: set[str] = set()
-    for dimension_terms in _requested_grouping_terms(text):
-        if _is_temporal_grouping_term(dimension_terms) or _term_matches_value_domain(
-            runtime._config, dimension_terms
-        ):
+    for term in _requested_grouping_terms(text):
+        matched_ids = _grouping_term_matches(runtime, query, term)
+        if matched_ids is None:
             continue
-        dimension_tokens = set(_tokenize(dimension_terms))
-        if dimension_tokens and dimension_tokens.issubset(covered_terms):
-            continue
-        dim_discovery = discover_payload(
-            runtime,
-            terms=dimension_terms,
-            partial_query=query,
-            kinds=["dimension"],
-            stage="post_measure",
-            limit=5,
-        )
-        matched_rows = [
-            row
-            for row in dim_discovery["dimensions"]
-            if any(
-                "label/name matched" in reason
-                or "search term matched" in reason
-                or "exact name match" in reason
-                for reason in row["match_reasons"]
-            )
-        ]
         chosen = ""
-        for row in matched_rows:
+        for dimension_id in matched_ids:
             availability = _availability_for_object(
-                runtime._config, selection["root_entity"], str(row["id"]), "dimension"
+                runtime._config, selection["root_entity"], dimension_id, "dimension"
             )
             if availability["available"]:
-                chosen = str(row["id"])
+                chosen = dimension_id
                 break
-        if not chosen and matched_rows:
-            chosen = str(matched_rows[0]["id"])
+        if not chosen and matched_ids:
+            chosen = matched_ids[0]
         if chosen:
             group_dims.append(chosen)
     return list(dict.fromkeys(group_dims))
@@ -702,11 +704,23 @@ def _matched_value_rows(runtime: Any, query: dict[str, Any], text: str) -> list[
                 for reason in row["match_reasons"]
             ):
                 continue
+            # Discovery scores the whole filter phrase. Each value must have
+            # its own literal/label match, rather than compete under that phrase.
+            matched_phrase = ""
+            for source in (row["value"], row.get("label")):
+                phrase = str(source or "").strip().lower()
+                if phrase and re.search(
+                    rf"(?<![a-z0-9]){re.escape(phrase)}s?(?![a-z0-9])", lowered_text
+                ):
+                    matched_phrase = phrase
+                    break
+            if not matched_phrase:
+                continue
             key = (row["dimension_id"], row["value"])
             if key in seen_value_keys:
                 continue
             seen_value_keys.add(key)
-            _add_candidate(row, match_key=filter_term)
+            _add_candidate(row, match_key=matched_phrase, context=_value_context(matched_phrase))
     for domain in runtime._config.value_domains:
         for value in list(domain.values or []):
             value_phrases = [
@@ -766,7 +780,7 @@ def _matched_value_rows(runtime: Any, query: dict[str, Any], text: str) -> list[
     out = []
     for row in best_by_match.values():
         cleaned = {key: value for key, value in row.items() if not key.startswith("_")}
-        for source in (row["value"], row.get("label"), row["_match_key"]):
+        for source in (row["_match_key"], row["value"], row.get("label")):
             if source is None or not str(source).strip():
                 continue
             phrase = re.escape(str(source).strip().lower())

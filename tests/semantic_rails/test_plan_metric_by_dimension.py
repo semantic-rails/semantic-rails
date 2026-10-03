@@ -10,12 +10,14 @@ intent shape. It must:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
 from semantic_rails.expressions import AggregateExpr, ColumnRefExpr
 from semantic_rails.planner import compose
+from semantic_rails.planner.generators import _choose_group_dimensions
 from semantic_rails.schema import (
     DimensionConfig,
     EntityConfig,
@@ -209,3 +211,35 @@ def test_top_n_group_by_phrase_uses_after_by_as_measure_target() -> None:
     assert query["limit"] == 5
     assert result.intent_ir.subjects[0].id == "measure.claim_paid_amount"
     assert "five" not in result.intent_ir.unresolved
+
+
+def test_fallback_discovery_keeps_region_instead_of_a_planner_synonym(
+    runtime_factory, monkeypatch
+) -> None:
+    import semantic_rails.metadata as metadata
+
+    geo = DimensionConfig(
+        id="dimension.jaffle_item_geo",
+        entity="entity.jaffle_item",
+        column="geo",
+        data_type="string",
+        label="Geo",
+    )
+    runtime = runtime_factory("jaffle_shop")
+    monkeypatch.setattr(
+        runtime, "_config", replace(runtime._config, dimensions=[*runtime._config.dimensions, geo])
+    )
+    discover = metadata.discover_payload
+    discovered_terms = []
+
+    def capture_discovery(*args, **kwargs):
+        discovered_terms.append(kwargs["terms"])
+        return discover(*args, **kwargs)
+
+    monkeypatch.setattr(metadata, "discover_payload", capture_discovery)
+    try:
+        groups = _choose_group_dimensions(runtime, {}, "item revenue by region")
+        assert discovered_terms == ["region"]
+        assert geo.id not in groups
+    finally:
+        runtime.close()
