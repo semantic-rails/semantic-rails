@@ -1321,6 +1321,7 @@ def _no_data_in_scope_warnings(
     if not outputs:
         return []
     if dataset and runtime is not None:
+        from .relation_pipelines import attach_relation_ctes
         from .renderer import render_select_for_profile
         from .sql_ast import SqlField, SqlIdentifier, SqlJoin, SqlParameter, SqlSelect, SqlTableRef
         from .sql_preparation import finalize_parameters
@@ -1358,6 +1359,7 @@ def _no_data_in_scope_warnings(
                         if name in probes or name in {f"{p}_rows" for p in probes}
                     ],
                 )
+                probe = attach_relation_ctes(runtime._config, probe)
                 dialect = dialect_for_warehouse(runtime.warehouse)
                 prepared = replace(
                     dialect.prepare_query(render_select_for_profile(probe, dialect=dialect)),
@@ -1419,7 +1421,7 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
     query = compiled["logical_plan"].query
     if observation_scope(query, config) != "dataset":
         return []
-    strings = {row.id: row for row in config.dimensions if row.data_type == "string"}
+    dimensions = {row.id: row for row in config.dimensions}
     probe = {"version": 1, "select": [], "observation_scope": "query"}
     for key in ("policy_context", "limits", "request_id"):
         if key in payload:
@@ -1438,12 +1440,12 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
         field, raw = str(item["field"]), item.get("value")
         literals = [v for v in (raw if isinstance(raw, list) else [raw]) if isinstance(v, str)]
         op = str(item.get("op", "=")).upper()
-        if not literals or field not in strings or op not in {"=", "IN"}:
+        if not literals or field not in dimensions or op not in {"=", "IN"}:
             continue
         for literal in literals:
             found = (
                 values(field, [{"field": field, "op": "=", "value": literal}], 1)
-                if strings[field].groupable
+                if dimensions[field].groupable
                 else None
             )
             if found is None:

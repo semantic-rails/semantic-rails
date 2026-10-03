@@ -1034,10 +1034,12 @@ are internal: they settle inside their own scope in both modes.
 When an output that is a sum, count or distinct count (or a sum or difference of them) reads
 `NULL` on every returned row, or nothing came back with no time bounds and no metric filter,
 the response carries one `NO_DATA_IN_SCOPE` warning that names those outputs. A `prior_period`,
-ratio or rolling output never gets it: it can be `NULL` while its measure has data. It costs
-no extra query, and a clipped result (`truncated`) never gets it. Under `dataset`, an empty
-answer to a query with a `where` filter never gets it either: its
-filters kept no row, which says nothing of the measure's data elsewhere.
+ratio or rolling output never gets it: it can be `NULL` while its measure has data. A clipped
+result (`truncated`) never gets it. Under `dataset`, an empty answer to a query with a `where`
+filter never gets it either: its filters kept no row, which says nothing of the measure's
+data elsewhere. For a non-empty all-`NULL` output under `dataset`, a bounded read of the
+settlement's observation probes checks whether its measures have data elsewhere; unknown
+amounts alone do not trigger the warning. Under `query`, no extra read is needed.
 
 ClickHouse fills an unmatched outer-join field with a type default (0 or an empty string)
 unless the join yields NULLs, so every ClickHouse statement ends with

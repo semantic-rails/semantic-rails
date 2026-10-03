@@ -140,7 +140,7 @@ def assert_settled_in_one_place(compiled: dict[str, Any], config: PackageConfig)
                     ]
                     for clause in _bound_filter_clauses(bound, config):
                         condition = _value_filter_condition(
-                            _resolve_dimension_expr(clause["field"], config), clause
+                            _resolve_dimension_expr(clause["field"], config)[0], clause
                         )
                         assert condition in leaf_nodes, (
                             f"authored condition missing from leaf: {clause}"

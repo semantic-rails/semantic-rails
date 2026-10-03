@@ -80,8 +80,9 @@ def test_rank_by_withheld_values_matches_reference(request, backend_name):
 @pytest.mark.parametrize("measure", [REVENUE["measure"], "measure.shop.average_order"])
 @pytest.mark.parametrize("verbosity", ["minimal", "full"])
 @pytest.mark.parametrize("transport", ["execute", "mcp"])
+@pytest.mark.parametrize("observation_scope", ["dataset", "query"])
 def test_null_withheld_value_has_no_data_diagnostic(
-    request, backend_name, measure, verbosity, transport
+    request, backend_name, measure, verbosity, transport, observation_scope
 ):
     backend = _backend(request, backend_name)
     runtime = backend.runtimes["utc_authored"]
@@ -93,6 +94,7 @@ def test_null_withheld_value_has_no_data_diagnostic(
         "where": [{"field": CUSTOMER, "op": "=", "value": 105}],
         "order_by": [{"field": "hidden_value", "direction": "DESC"}],
         "verbosity": verbosity,
+        "observation_scope": observation_scope,
     }
     try:
         unrestricted = runtime.query({**query, "policy_context": {}})
@@ -115,7 +117,9 @@ def test_null_withheld_value_has_no_data_diagnostic(
         assert '"hidden_value": null' not in serialized
         assert "reads NULL rather than 0" not in serialized
         if measure == REVENUE["measure"]:
-            assert any(row["code"] == "NO_DATA_IN_SCOPE" for row in unrestricted["warnings"])
+            assert any(row["code"] == "NO_DATA_IN_SCOPE" for row in unrestricted["warnings"]) is (
+                observation_scope == "query"
+            )
     finally:
         runtime._config.semantic_policies.remove(policy)
 

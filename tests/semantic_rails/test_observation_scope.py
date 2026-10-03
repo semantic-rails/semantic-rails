@@ -295,13 +295,26 @@ def test_a_filter_only_dimension_reports_unverified_values(package: Path) -> Non
         engine.close()
 
 
-def test_each_literal_uses_warehouse_equality(runtime: Runtime) -> None:
-    response = _ask(
-        runtime,
-        "dataset",
-        select=_select(qty=QTY),
-        where=_where(PRODUCT, ["apple", "Apple"], "IN"),
+@pytest.mark.parametrize("data_type", ["string", "id"])
+def test_each_literal_uses_warehouse_equality(package: Path, data_type: str) -> None:
+    config = load_package_config(str(package))
+    config = replace(
+        config,
+        dimensions=[
+            replace(row, data_type=data_type) if row.id == PRODUCT else row
+            for row in config.dimensions
+        ],
     )
+    engine = Runtime.from_config(config, source_path=str(package))
+    try:
+        response = _ask(
+            engine,
+            "dataset",
+            select=_select(qty=QTY),
+            where=_where(PRODUCT, ["apple", "Apple"], "IN"),
+        )
+    finally:
+        engine.close()
     assert response["rows"] == [{"qty": 5}]
     (warning,) = [w for w in response["warnings"] if w["code"] == "FILTER_VALUE_NOT_FOUND"]
     assert warning["details"]["filters"] == [
@@ -337,6 +350,65 @@ def test_every_value_probe_keeps_request_limits_and_identity(
         assert probe["limits"] == limits
         assert probe["request_id"] == "value-probe"
         assert probe["policy_context"] == context
+
+
+def test_the_settlement_read_keeps_policy_parameters_and_timeout(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    adapter = runtime._get_adapter()
+    original = adapter.query_prepared
+    calls: list[dict[str, Any]] = []
+
+    def query(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(adapter, "query_prepared", query)
+    context = replace(REGIONAL, attributes={"region": "west"}).to_policy_context()
+    response = _ask(
+        runtime,
+        "dataset",
+        select=_select(qty=QTY),
+        where=[*_where(PRODUCT, "apple"), *_where(STORE, "s4")],
+        policy_context=context,
+        limits={"statement_timeout_ms": 1000},
+    )
+    assert response["rows"] == [{"qty": None}]
+    assert "NO_DATA_IN_SCOPE" not in _codes(response)  # the west has known kale quantities
+    assert len(calls) == 4  # answer, settlement observation, two existence reads
+    for call in calls:
+        assert call["limits"]["statement_timeout_ms"] == 1000
+        assert call["parameters"] and set(call["parameters"]) == {"west"}
+
+
+def test_the_settlement_read_retains_derived_relation_dependencies(tmp_path: Path) -> None:
+    package = _package(tmp_path / "obs", {})
+    (package / "policies.yml").unlink()  # row filters require a plain physical relation
+    relations = {
+        "relations": {
+            "all_sales": {
+                "source": "sales",
+                "columns": ["sale_id", "store_id", "region", "product", "qty", "sold_at"],
+                "steps": [],
+            }
+        }
+    }
+    (package / "relations.yml").write_text(yaml.safe_dump(relations))
+    model = yaml.safe_load((package / "models/sales.yml").read_text())
+    model["model"]["relation"] = "all_sales"
+    (package / "models/sales.yml").write_text(yaml.safe_dump(model))
+    engine = Runtime.from_path(str(package))
+    try:
+        response = _ask(
+            engine,
+            "dataset",
+            select=_select(qty=QTY),
+            where=[*_where(PRODUCT, "apple"), *_where(STORE, "s4")],
+        )
+        assert response["rows"] == [{"qty": None}]
+        assert "NO_DATA_IN_SCOPE" not in _codes(response)
+    finally:
+        engine.close()
 
 
 @pytest.mark.parametrize("scope", ["dataset", "query"])
