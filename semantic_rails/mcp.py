@@ -56,6 +56,7 @@ from .request_payload import (
 from .resource_access import GRANT_DISCOVER_KINDS
 from .runtime import Runtime
 from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL
+from .schema import PackageConfig
 
 __all__ = [
     "JSON_OBJECT_SCHEMA",
@@ -153,15 +154,14 @@ MCP_SERVER_INSTRUCTIONS = (
     " for several values), and time {temporal_role, grain, start, end}, where end is "
     "exclusive. A window without a grain returns one total, with no time column. The execute tool "
     "schema lists expression shapes.\n"
+    "No time block reads all history; nothing is filtered by default. Package policies still apply.\n"
     "\n"
     "segment(segment_id, action) validates, explains or previews a package-authored "
     "segment.\n"
     "\n"
     'Every tool returns its smallest response by default (verbosity "minimal", plan detail '
     '"query"); pass verbosity "compact" or "full", or detail "best", for more. Errors carry '
-    "recovery_hints and closest_matches; follow them before retrying. For local testing, "
-    "any tool accepts policy_context {environment, audience, roles}; hosted servers set it "
-    "for you."
+    "recovery_hints and closest_matches; follow them before retrying."
 )
 
 POLICY_CONTEXT_SCHEMA: dict[str, Any] = {
@@ -392,14 +392,9 @@ def _schema(
     required: list[str] | None = None,
     additional_properties: bool = False,
 ) -> dict[str, Any]:
-    # These optional fields are part of the published tool schemas. Keep
-    # them advertised even though the workflow explains them only once.
-    schema_properties = copy.deepcopy(dict(properties))
-    schema_properties.setdefault("request_id", {"type": "string"})
-    schema_properties.setdefault("policy_context", copy.deepcopy(POLICY_CONTEXT_SCHEMA))
     schema: dict[str, Any] = {
         "type": "object",
-        "properties": schema_properties,
+        "properties": copy.deepcopy(dict(properties)),
         "additionalProperties": additional_properties,
     }
     if required:
@@ -608,10 +603,13 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "max_rows rows; a capped one reports truncated and total_row_count. "
             "mode='validate' only checks; mode='sql' adds rendered_sql; "
             "neither runs. 'query' is a JSON object; mode 'run' costs "
-            "warehouse time. IR: select[]={expression:{...},as}, group_by[]=[<dim>,...] (not in "
-            "select), where[]={field,op,value}, order_by[]={field,direction}. select.expression: "
-            "{aggregation, measure} | {metric} | "
-            "{kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}."
+            "warehouse time. validate checks a query before it runs; a query that already ran "
+            "needs no validate. select may be empty: group_by alone lists rows. "
+            "IR: select[]={expression:{...},as}, group_by[]=[<dim>,...] (not in "
+            "select), where[]={field,op,value}, order_by[]={field,direction}. select.expression:\n"
+            'Per-order average: {"kind":"ratio","numerator":{"measure":"measure.jaffle.revenue_usd"},'
+            '"denominator":{"measure":"measure.jaffle.order_count"}}\n'
+            "arithmetic adds measures; aggregate_if: conditional count."
         ),
         input_schema=_schema(
             {
@@ -795,8 +793,12 @@ MCP_RESOURCE_DEFINITIONS = tuple(definition.to_dict() for definition in RESOURCE
 MCP_PROMPT_DEFINITIONS = tuple(definition.to_dict() for definition in PROMPT_DEFINITIONS)
 
 
-def list_tool_definitions() -> list[dict[str, Any]]:
-    return [definition.to_dict() for definition in TOOL_DEFINITIONS]
+def list_tool_definitions(*, config: PackageConfig | None = None) -> list[dict[str, Any]]:
+    return [
+        definition.to_dict()
+        for definition in TOOL_DEFINITIONS
+        if definition.name != "segment" or config is None or config.segments
+    ]
 
 
 def list_resource_definitions() -> list[dict[str, Any]]:
@@ -835,8 +837,10 @@ def _argument_error(message: str, *, field: str, value: Any | None = None) -> Se
 _TOOL_SCHEMAS: Mapping[str, Mapping[str, Any]] = {
     definition.name: dict(definition.input_schema or {}) for definition in TOOL_DEFINITIONS
 }
+_TRANSPORT_ARGS = ("request_id", "policy_context")
 _KNOWN_ARGS: Mapping[str, frozenset[str]] = {
     name: frozenset(schema.get("properties") or {})
+    | frozenset(_TRANSPORT_ARGS)
     | (QUERY_INPUT_KEYS if name == "execute" else frozenset())
     for name, schema in _TOOL_SCHEMAS.items()
 }
@@ -852,9 +856,12 @@ _WARN_AND_IGNORE_TOOLS: frozenset[str] = frozenset(_UNKNOWN_ARG_WARNING_CODE)
 
 
 def _tool_required_properties(tool_name: str) -> tuple[list[str], list[str]]:
-    """Return (required, known) properties from the tool's input_schema."""
+    """Return required schema properties and known runtime arguments."""
     schema = _TOOL_SCHEMAS.get(tool_name, {})
-    return list(schema.get("required") or []), list(schema.get("properties") or {})
+    return list(schema.get("required") or []), [
+        *list(schema.get("properties") or {}),
+        *_TRANSPORT_ARGS,
+    ]
 
 
 _ROW_FORMATS: frozenset[str] = frozenset({"records", "columns"})
@@ -1687,9 +1694,24 @@ class SemanticLayerMCPAdapter:
 
         _reject_removed_interface(interface)
         self.interface = _INTERFACE
-        self.instructions = MCP_SERVER_INSTRUCTIONS
         self.runtime = runtime
         self.package_id = runtime.package_id
+        config = runtime.config
+        self._tools = list_tool_definitions(config=config)
+        self.instructions = MCP_SERVER_INSTRUCTIONS
+        if config.package.package_id != "jaffle_shop":
+            examples = [measure.id for measure in config.measures[:1]]
+            examples += [dimension.id for dimension in config.dimensions if dimension.groupable][:1]
+            self.instructions = self.instructions.replace(
+                " (measure.jaffle.revenue_usd, dimension.jaffle_store_name)",
+                f" ({', '.join(examples)})" if examples else "",
+            )
+        if not any(tool["name"] == "segment" for tool in self._tools):
+            self.instructions = self.instructions.replace(
+                "segment(segment_id, action) validates, explains or previews a package-authored "
+                "segment.\n\n",
+                "",
+            )
         self._tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
             "discover": self._handle_discover,
             "inspect": self._handle_inspect,
@@ -1697,6 +1719,9 @@ class SemanticLayerMCPAdapter:
             "plan": self._handle_plan,
             "execute": self._handle_execute_mode,
             "segment": self._handle_segment_action,
+        }
+        self._tool_handlers = {
+            tool["name"]: self._tool_handlers[tool["name"]] for tool in self._tools
         }
 
     @classmethod
@@ -1730,7 +1755,7 @@ class SemanticLayerMCPAdapter:
         self.runtime.close()
 
     def list_tools(self) -> list[dict[str, Any]]:
-        return list_tool_definitions()
+        return copy.deepcopy(self._tools)
 
     def list_resources(self) -> list[dict[str, Any]]:
         return list_resource_definitions()

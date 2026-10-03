@@ -44,6 +44,13 @@ def test_eval_set_is_frozen(dev_cases: list[dict[str, Any]]) -> None:
 
 def test_query_mcp_stays_within_context_budgets(jaffle_package: Path) -> None:
     metrics = mcp_context.measure_query_mcp(jaffle_package)
+    for metric, maximum in {
+        "query.v2.instructions_tokens": 432,
+        "query.v2.tools_list.model_visible_tokens": 2803,
+        "query.v2.tools_list.wire_tokens": 3607,
+        "query.v2.tools_list.largest_tool_tokens": 1136,
+    }.items():
+        assert metrics[metric] <= maximum, (metric, metrics[metric], maximum)
     checks = mcp_context.check_budgets(metrics, mcp_context.load_budgets(), prefix="query.")
     failures = [
         f"{check.metric}: measured {check.value}, budget {check.budget} ({check.status})"

@@ -19,6 +19,7 @@ from semantic_rails.architect_scaffold import (
     ProjectWarehouse,
     project_scaffold_files,
 )
+from semantic_rails.cli.commands.mcp import _mcp_tool_check
 from semantic_rails.compiler import _compile_query_sql_ast, bind_query, compile_query, plan_query
 from semantic_rails.config import load_package_config
 from semantic_rails.config_validation import PackageReference, parse_config_report
@@ -90,6 +91,23 @@ def runtime(package_path: Path):
         yield runtime
     finally:
         runtime.close()
+
+
+def test_mcp_instructions_use_the_served_package_ids(runtime) -> None:
+    adapter = SemanticLayerMCPAdapter(runtime)
+    config = runtime.config
+    first_dimension = next(d.id for d in config.dimensions if d.groupable)
+    assert f"({config.measures[0].id}, {first_dimension})" in adapter.instructions
+    assert "jaffle" not in adapter.instructions
+    assert "segment" not in adapter.instructions
+    assert "segment" not in {tool["name"] for tool in adapter.list_tools()}
+
+
+def test_mcp_doctor_accepts_a_package_without_segments(runtime) -> None:
+    result = _mcp_tool_check(runtime)
+    assert result["required_tools_present"], result
+    assert result["missing_required_tools"] == []
+    assert result["tool_count"] == 5
 
 
 def test_validate_and_check_package_without_dates(package_path: Path) -> None:

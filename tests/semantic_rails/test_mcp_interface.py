@@ -201,7 +201,16 @@ def test_replace_tool_handler_swaps_one_adapter_body_behind_the_boundary(
     monkeypatch.setattr(
         "semantic_rails.mcp.emit_audit_event", lambda event, **fields: audited.append(fields)
     )
-    runtime = types.SimpleNamespace(package_id="host-test", close=lambda: None)
+    runtime = types.SimpleNamespace(
+        package_id="host-test",
+        close=lambda: None,
+        config=types.SimpleNamespace(
+            package=types.SimpleNamespace(package_id="host-test"),
+            measures=[],
+            dimensions=[],
+            segments=[],
+        ),
+    )
     adapter, other = SemanticLayerMCPAdapter(runtime), SemanticLayerMCPAdapter(runtime)
     seen: list[dict] = []
 
@@ -231,7 +240,7 @@ def test_replace_tool_handler_swaps_one_adapter_body_behind_the_boundary(
     assert other.tool_handlers["inspect"] == other._handle_inspect  # noqa: SLF001
     with pytest.raises(ValueError, match="Unknown MCP tool 'no-such-tool'"):
         adapter.replace_tool_handler("no-such-tool", handler)
-    assert set(adapter.tool_handlers) == REQUIRED_TOOL_NAMES
+    assert set(adapter.tool_handlers) == REQUIRED_TOOL_NAMES - {"segment"}
 
 
 class _HostAdapter:

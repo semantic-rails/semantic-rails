@@ -406,7 +406,7 @@ def test_mcp_doctor_checks_the_v2_tools(runtime: Any, monkeypatch: pytest.Monkey
 
 def test_v2_tools_take_the_trusted_transport_context(v2: SemanticLayerMCPAdapter) -> None:
     for tool in v2.list_tools():
-        assert {"request_id", "policy_context"} <= set(tool["inputSchema"]["properties"])
+        assert not {"request_id", "policy_context"} & set(tool["inputSchema"]["properties"])
     context = RequestContext(
         request_id="trusted", actor="analyst@example.com", roles=("analyst",), environment="dev"
     )

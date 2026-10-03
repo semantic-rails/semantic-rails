@@ -102,22 +102,30 @@ tool/schema drift cannot be merged silently.
 - `execute` (`/api/v1/query`): validate, compile and run Query IR. `mode="validate"` or
   `mode="sql"` stops before running it.
 - `segment`: `action="validate"`, `"explain"` or `"preview"` for a package-authored segment.
+  Listed only when the served package defines segments; its instruction is omitted otherwise.
 
 `initialize` returns the workflow as server `instructions` (under 2KB): find objects with
 `discover`, draft Query IR with `plan`, and run it with `execute`, which validates and compiles
 first, so its `validate` and `sql` modes are optional dry runs. The instructions also carry the
-conventions every tool shares: full ids, response detail controls, recovery hints, and
-`policy_context`. Each tool description then says what the tool does, when to use it, and its
+conventions every tool shares: full ids, response detail controls, and recovery hints.
+Package examples use its first measure and first groupable dimension; the bundled
+`jaffle_shop` keeps its revenue and store examples. With no time block, queries read all
+history and add no default filters; authored package policies still apply.
+Each tool description then says what the tool does, when to use it, and its
 one gotcha. Every tool returns its smallest response by default (`verbosity="minimal"`, `plan`
 `detail="query"`); ask for more only when you need it.
 
-Every tool schema advertises and accepts optional `request_id` and `policy_context`.
+Every tool accepts optional `request_id` and `policy_context` at runtime, including tools
+with closed schemas, but leaves these transport fields out of its advertised input schema.
 `policy_context` (`environment`, `audience`, `roles`) is for local testing; authenticated
 transports supply the trusted context and ignore the argument.
 
 `tools/list` is paid once at connect time, before the first call. To keep it bounded, the IR
 cheat-sheet and the full Query-IR time-block schema ship once, on `execute`; the other
-IR-accepting tools point at it.
+IR-accepting tools point at it. The description includes a runnable per-order ratio
+expression, arithmetic and conditional-count hints, and lists rows with an empty `select`
+and `group_by` alone. `validate` checks a query before it runs; a query that already ran
+needs no validation.
 
 ### Writing Tool Descriptions
 
@@ -128,16 +136,17 @@ The query MCP follows these rules, and other Semantic Rails MCP servers can reus
   up front.
 - **One description, three parts.** Say what the tool returns, when to use it (relative to
   other tools: "after `discover`", "before writing a `where` filter"), and its one gotcha,
-  introduced with "Gotcha:". Aim for 200–700 characters.
+  introduced with "Gotcha:". Aim for 200–700 characters; `execute` may use up to 850
+  for its IR guidance while staying within the fixed context budgets.
 - **No contradictions.** A description never tells the agent to call a tool that another
   description calls optional. If a step is optional, say so everywhere.
-- **Real examples.** Example ids must exist in the bundled `jaffle_shop` package
+- **Real examples.** Tool-description example ids must exist in the bundled `jaffle_shop` package
   (`dimension.jaffle_store_name`, not `dimension.jaffle.store_name`).
 - **Accurate cost claims.** Say which tools query the warehouse, and match the annotations
   (`readOnlyHint`, `openWorldHint`).
 - **Parameters describe themselves.** When a parameter's name doesn't explain it, put its
   meaning in its schema (`enum`, `default`, a short `description`) rather than in prose. Keep
-  the shared `request_id` and `policy_context` properties on every tool.
+  transport fields `request_id` and `policy_context` accepted without advertising them.
 - **Budgets.** `tests/semantic_rails/mcp_context/budgets.json` gates the size of `tools/list`
   and the instructions (see "Measuring Context Cost").
 
