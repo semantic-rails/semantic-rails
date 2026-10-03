@@ -263,8 +263,13 @@ def test_a_number_or_time_word_that_is_not_an_hour_is_never_read_as_one(
     why = payload.get("why") or {}
     assert why.get("code") != "TIME_WINDOW_UNRESOLVED", why
     if why.get("code") == "PLAN_UNMATCHED_TERMS":
-        # Left over, and named, only because the draft doesn't carry the number.
-        assert all(term.replace(".", "").isdigit() for term in why["details"]["terms"]), why
+        terms = why["details"]["terms"]
+        if why["recovery_hints"][0]["kind"] == "use_named_objects":
+            # A word naming a catalog object the draft doesn't use ("median", "customers").
+            assert "time" not in terms, why
+        else:
+            # Left over, and named, only because the draft doesn't carry the number.
+            assert all(term.replace(".", "").isdigit() for term in terms), why
 
 
 @pytest.mark.parametrize(
@@ -1121,28 +1126,30 @@ def test_a_window_with_no_open_end_states_no_assumption(text: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("text", "measure"),
+    ("text", "measure", "unconsumed"),
     [
-        ("item revenue in 2017", "measure.jaffle.item_revenue_usd"),
-        ("total item revenue by month", "measure.jaffle.item_revenue_usd"),
-        ("Item revenue (USD) in 2017", "measure.jaffle.item_revenue_usd"),
-        ("revenue in 2017", "measure.jaffle.revenue_usd"),
+        ("item revenue in 2017", "measure.jaffle.item_revenue_usd", []),
+        ("total item revenue by month", "measure.jaffle.item_revenue_usd", []),
+        ("Item revenue (USD) in 2017", "measure.jaffle.item_revenue_usd", []),
+        ("revenue in 2017", "measure.jaffle.revenue_usd", []),
         # The words are not a name when they are not adjacent, or name another thing.
-        ("revenue by item in 2017", "measure.jaffle.revenue_usd"),
-        ("food revenue in 2017", "measure.jaffle.food_revenue_usd"),
+        ("revenue by item in 2017", "measure.jaffle.revenue_usd", []),
+        ("food revenue in 2017", "measure.jaffle.food_revenue_usd", []),
         # A name inside other words is not the ask: this is revenue, not the count of large orders.
-        ("large order revenue by month", "measure.jaffle.revenue_usd"),
-        ("large orders by month", "measure.jaffle.large_order_count"),
+        # The draft doesn't filter on the large-order flag, so it isn't ready.
+        ("large order revenue by month", "measure.jaffle.revenue_usd", ["large"]),
+        ("large orders by month", "measure.jaffle.large_order_count", []),
     ],
 )
 def test_an_exact_multi_word_label_outranks_a_partial_one(
-    runtime_factory: Any, text: str, measure: str
+    runtime_factory: Any, text: str, measure: str, unconsumed: list[str]
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(runtime, intent=text, detail="query")
         assert _measures(payload) == [measure]
-        assert payload["status"] == "ok", payload.get("why")
+        assert payload["status"] == ("low_confidence" if unconsumed else "ok"), payload.get("why")
+        assert (payload.get("why") or {}).get("details", {}).get("terms", []) == unconsumed
     finally:
         runtime.close()
 
@@ -1359,7 +1366,8 @@ def test_a_list_of_names_the_draft_does_not_filter_on_is_not_ok(
 
 @pytest.mark.parametrize(
     "intent",
-    ["revenue with YoY", "revenue with cumulative"],
+    # "revenue with cumulative" is not here: "cumulative" names the Cumulative revenue metric.
+    ["revenue with YoY"],
 )
 def test_a_single_word_the_planner_reads_elsewhere_is_only_a_warning(
     runtime_factory: Any, intent: str

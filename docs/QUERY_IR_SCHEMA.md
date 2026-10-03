@@ -416,6 +416,25 @@ Different shape from `select`. The most common pattern is `kind: metric_predicat
 `entity_only`. `time_alignment` is one of `same_query_period`,
 `query_window`, or `rolling_window_in_period`.
 
+Ordinary `metric_filters` evaluate aggregated expressions at the grain the query
+returns, after grouping. A `metric_predicate` instead evaluates its input at its
+declared entity within that scope. A contextual predicate inherits the query's
+time and grouped context. When a grouped dimension belongs to the input's own
+row entity, the predicate groups by that dimension's values, including NULL,
+rather than by each row's entity key. A `where` filter is inherited before this
+aggregation; `entity_only` omits grouped context and compatible `where` filters.
+
+Comparison and other post-aggregation `metric_filters` beside a `distribution`
+refuse with `REWRITE_NOT_SUPPORTED`: branch lowering cannot apply them once at
+the returned group's grain. This includes distributions reached through derived
+metrics. Run the group-level filter without the distribution first. A contextual
+`metric_predicate` on an entity different from the distribution's per-entity
+grain refuses with `PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE`; use `entity_only` or
+a `where` filter. This refusal also covers predicates inside the distribution's
+input, including scoped aggregates and inputs reached through metric recipes.
+A distribution nested inside another expression also refuses
+with `REWRITE_NOT_SUPPORTED`; select the distribution separately.
+
 ## WhereFilter
 
 ```jsonc
