@@ -330,10 +330,12 @@ Which route between two entities a question means is a business definition (see
   would refuse an answered pair whose route still exists, or answer it by another route, refuses
   with `ROUTE_DECISION_NOT_RECORDED` until the author records an explicit decision. Previews use
   the same guard. Nothing is written and no route rows are generated. The refusal's
-  `details.route_changes` lists affected pairs and `details.rows` supplies explicit
-  `graph.path_preferences` syntax: pass a row to `record_route_decision` before adding the
-  relationship, or include chosen rows in the authored change. An ordinary change that moves
-  an inherited answer needs that pair's own decision.
+  `details.route_changes` lists affected pairs. The message names the explicit
+  `graph.path_preferences` fields (`source_entity`, `target_entity`, `relationship_path`),
+  without suggesting rows: choose a route and use `record_route_decision` before adding
+  the relationship, or include chosen rows in the authored change. Census and guard
+  comparisons use package decisions independently of active query route overrides. An ordinary
+  change that moves an inherited answer needs that pair's own decision.
 - `record_route_decision` uses the loader location: top-level
   `package.yml` `path_preferences`, else the file holding `graph`. That file is rewritten as
   Architect YAML, dropping comments.
@@ -342,8 +344,8 @@ Which route between two entities a question means is a business definition (see
 - `record_route_decision` deliberately changes the default.
   `remove_object` uses the same preservation guard. The result's `route_changes` lists
   every pair that resolves differently, including refused → answered, as `impact_project`
-  does. `base` and `head` hold the route or refusal code; `keep_base` holds the row that keeps
-  the base route, or `null` when it cannot be kept. `route_decisions_added` is empty.
+  does. `base` and `head` hold the route or refusal code, without suggested recovery rows.
+  `route_decisions_added` is empty.
   `create_project` and undo skip the guard: one starts a package, the other restores files exactly.
 - An explicit path records the route's meaning. It does not guarantee unchanged orphan-key
   values when adding a second foreign-key role changes a source-key read to a lookup. See

@@ -1712,7 +1712,8 @@ A route is a business definition, so a package needs one for every entity pair
 a question can need: every entity is a start, including distinct-values and
 synthetic-count queries, to each other reachable entity. The
 census resolves only pairs with two or more routes, once per pair; impact and
-keep reports resolve every pair, by the same route rule queries use.
+guard comparisons resolve every pair using package decisions, independently
+of any active query route overrides.
 
 **Census.** The parse report (`semantic-rails check`, `validate`, and
 Architect's `project_status`) carries `route_census`:
@@ -1739,15 +1740,11 @@ resolves differently under `route_changes`:
 ```json
 {"source_entity": "entity.bank_invoice", "target_entity": "entity.bank_region",
  "base": {"relationship_path": ["relationship.invoices_account", "relationship.accounts_branch_region"]},
- "head": {"refused": "AMBIGUOUS_PATH"},
- "keep_base": {"source_entity": "entity.bank_invoice", "target_entity": "entity.bank_region",
-               "relationship_path": ["relationship.invoices_account", "relationship.accounts_branch_region"]}}
+ "head": {"refused": "AMBIGUOUS_PATH"}}
 ```
 
 `base` and `head` hold the pair's route or the code it is refused with.
-`keep_base` is the `graph.path_preferences` row that keeps the base route, or
-`null` when the base refused, its route no longer exists, or it exceeds the
-new hop ceiling. Any entry makes the
+No recovery rows are suggested. Any entry makes the
 risk `high` and counts in `changed_behavior_count`, and the Markdown summary
 lists each one in entity labels ("Invoice to Region: was Invoice → Account →
 Region, now refused (AMBIGUOUS_PATH)").
@@ -1758,9 +1755,10 @@ change. A change that would refuse an answered pair whose route still exists,
 or answer it by another route, is refused with `ROUTE_DECISION_NOT_RECORDED`
 until the author records a decision. Previews use the same guard; nothing is
 written and no route rows are generated. The refusal lists affected pairs in
-`details.route_changes` and explicit `graph.path_preferences` syntax in
-`details.rows`: use `record_route_decision(**row)` before adding the relationship,
-or include the chosen rows in the authored change. An ordinary change that
+`details.route_changes`. Its message names the explicit `graph.path_preferences`
+fields (`source_entity`, `target_entity`, `relationship_path`), without suggesting
+rows: choose a route and use `record_route_decision` before adding the relationship,
+or include chosen rows in the authored change. An ordinary change that
 moves an inherited answer also needs that pair's own decision.
 
 An explicit route chooses a relationship path, not a promise that orphan keys

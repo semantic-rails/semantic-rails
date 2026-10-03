@@ -952,8 +952,8 @@ def impact_report(
     snapshot: LoadedPackageSnapshot | None = None,
 ) -> dict[str, Any]:
     """The diff plus its review impact. ``route_changes`` lists every entity pair a question
-    can need (``route_census``) that the change resolves differently, each with the
-    ``keep_base`` row that keeps the earlier route; any entry makes the risk high."""
+    can need (``route_census``) that the package change resolves differently, ignoring query
+    overrides and suggesting no recovery rows; any entry makes the risk high."""
     snapshot = snapshot or load_package_snapshot(ref.source_path)
     diff, previous = _diff_against_baseline(
         ref, compare_path=compare_path, base_ref=base_ref, snapshot=snapshot

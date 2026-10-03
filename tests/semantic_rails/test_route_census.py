@@ -29,7 +29,7 @@ from semantic_rails.architect_transactions import ProjectFileUpdate, ProjectTran
 from semantic_rails.config import load_package_config
 from semantic_rails.config_validation import PackageReference
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.fanout import resolve_path
+from semantic_rails.fanout import query_route_decisions, resolve_path
 from semantic_rails.package_tools import impact_report, promote_package_report
 from semantic_rails.route_census import census_pairs, route_census
 from semantic_rails.runtime import Runtime
@@ -87,6 +87,14 @@ def _allow_external_package_paths(monkeypatch):
 
 def _pairs(rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
     return [(row["source_entity"], row["target_entity"]) for row in rows]
+
+
+def _base_decisions(changes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Author the known baseline paths explicitly when testing a preservation retry."""
+    return [
+        _pin(change["source_entity"], change["target_entity"], change["base"]["relationship_path"])
+        for change in changes
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +205,7 @@ def test_the_census_asks_the_resolver_once_per_multi_route_pair_and_reuses_its_c
     config = load_package_config(str(_write_package(tmp_path)))
     asked: list[tuple[str, str]] = []
     enumerated: list[tuple[str, str]] = []
-    resolve, uncached = census_module.resolve_route, fanout_module._resolve_uncached
+    resolve, uncached = census_module.package_route, fanout_module._resolve_uncached
 
     def counted_resolve(config, *, start, target):
         asked.append((start, target))
@@ -207,7 +215,7 @@ def test_the_census_asks_the_resolver_once_per_multi_route_pair_and_reuses_its_c
         enumerated.append((start, target))
         return uncached(config, start, target)
 
-    monkeypatch.setattr(census_module, "resolve_route", counted_resolve)
+    monkeypatch.setattr(census_module, "package_route", counted_resolve)
     monkeypatch.setattr(fanout_module, "_resolve_uncached", counted_uncached)
     census = route_census(config)
     graph = census_module.get_package_analysis(config).graph
@@ -314,7 +322,7 @@ def _impact(base: Path, head: Path) -> dict[str, Any]:
     return impact_report(PackageReference(source_path=str(head)), compare_path=str(base))
 
 
-def test_impact_lists_each_answer_a_second_route_moves_with_the_row_that_keeps_it(tmp_path):
+def test_impact_lists_each_answer_a_second_route_moves_without_suggesting_rows(tmp_path):
     base = _write_package(tmp_path / "base", relationships=BASE)
     head = _write_package(tmp_path / "head", relationships=SECOND_ROUTE)
     report = _impact(base, head)
@@ -324,17 +332,16 @@ def test_impact_lists_each_answer_a_second_route_moves_with_the_row_that_keeps_i
         "target_entity": REGION,
         "base": {"relationship_path": INVOICE_BRANCH},
         "head": {"refused": "AMBIGUOUS_PATH"},
-        "keep_base": _pin(INVOICE, REGION, INVOICE_BRANCH),
     }
     assert report["impact"]["risk"] == "high"
     diff_behavior = sum(1 for change in report["changes"] if change["behavior_change"])
     assert report["impact"]["changed_behavior_count"] == diff_behavior + len(MOVED)
     assert (
-        "- Invoice to Region: was the Region of the Invoice's Account, now refused (AMBIGUOUS_PATH); "
-        "`keep_base` keeps the earlier route"
+        "- Invoice to Region: was the Region of the Invoice's Account, now refused (AMBIGUOUS_PATH)"
     ) in report["markdown_summary"].splitlines()
-    # The head with every keep_base row answers exactly as the base did.
-    rows = [change["keep_base"] for change in report["route_changes"]]
+    # The author can explicitly record the base paths to preserve the reference-SQL answers.
+    assert all("keep_base" not in change for change in report["route_changes"])
+    rows = _base_decisions(report["route_changes"])
     kept = _write_package(tmp_path / "kept", relationships=SECOND_ROUTE, pins=rows)
     gold = {name: _gold(sql) for name, sql in BASE_GOLD.items()}
     assert _answers(base) == gold
@@ -363,7 +370,6 @@ def test_impact_lists_a_row_that_answers_a_pair_the_base_refused(tmp_path):
         "target_entity": REGION,
         "base": {"refused": "AMBIGUOUS_PATH"},
         "head": {"relationship_path": INVOICE_HOME},
-        "keep_base": None,
     }
 
 
@@ -431,7 +437,7 @@ def test_a_relationship_that_moves_an_answer_requires_explicit_decisions(
     assert project.revision() == revision
     assert _files_and_receipts(project) == before
     assert _answers(project.project_path) == {name: _gold(sql) for name, sql in BASE_GOLD.items()}
-    for row in raised.value.details["rows"]:
+    for row in _base_decisions(raised.value.details["route_changes"]):
         assert project.record_route_decision(**row).report["ok"]
     report = project.upsert_relationship(
         from_entity=from_entity, to_entity="region", columns=columns
@@ -508,7 +514,7 @@ def test_adding_a_role_cannot_silently_change_an_unmatched_key(tmp_path, dry_run
         assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
         pair = ("entity.air_leg", "entity.air_airport")
         assert pair in _pairs(raised.value.details["route_changes"])
-        assert _pin(*pair, [DESTINATION]) in raised.value.details["rows"]
+        assert "rows" not in raised.value.details
         assert project.revision() == revision
         assert _files_and_receipts(project) == before
         assert answer() == base_gold
@@ -562,7 +568,7 @@ def test_a_removal_reports_the_answers_it_moves_and_records_nothing(tmp_path):
         (REGION, ACCOUNT): {"refused": "PATH_NOT_FOUND"},
         (REGION, INVOICE): {"refused": "PATH_NOT_FOUND"},
     }
-    assert all(row["keep_base"] is None for row in report["route_changes"])
+    assert all("keep_base" not in row for row in report["route_changes"])
     assert "path_preferences" not in _graph(project)["graph"]
 
 
@@ -596,7 +602,7 @@ def test_removing_an_issued_region_key_refuses_a_switch_to_branch_region(tmp_pat
         for row in raised.value.details["route_changes"]
     }
     assert changes[(INVOICE, REGION)]["head"] == {"relationship_path": INVOICE_BRANCH}
-    assert changes[(INVOICE, REGION)]["keep_base"] is None
+    assert "keep_base" not in changes[(INVOICE, REGION)]
     assert project.revision() == revision
     assert _files_and_receipts(project) == before
     assert _invoice_amounts(project.project_path) == issued
@@ -661,7 +667,7 @@ def test_raw_transactions_refuse_until_the_change_records_each_affected_pair(tmp
     assert project.revision() == revision
     assert _files_and_receipts(project) == before
     graph = _with_home_region(project)
-    graph["graph"]["path_preferences"] = exc_info.value.details["rows"]
+    graph["graph"]["path_preferences"] = _base_decisions(exc_info.value.details["route_changes"])
     update = ProjectFileUpdate("graph.yml", yaml.safe_dump(graph).encode())
     outcome = transaction.apply(
         [update], expected_revision=revision, idempotency_key="raw-2", intent={"raw": 2}
@@ -790,7 +796,6 @@ def test_a_second_route_to_a_dimensionless_child_requires_a_decision(tmp_path, c
     census = route_census(head)
     # Directory lint requires graph keys; the loader accepts the model's key.
     pair = ("entity.small_a", "entity.small_c")
-    row = _pin(*pair, ["relationship.ab", "relationship.bc"])
     assert pair in _pairs(changes)
     assert pair in _pairs(
         census["undecided"] if cardinality == "one_to_many" else census["assumed"]
@@ -799,11 +804,11 @@ def test_a_second_route_to_a_dimensionless_child_requires_a_decision(tmp_path, c
     with pytest.raises(SemanticLayerError) as raised:
         project.write_file(relative_path="graph.yml", content=content, validate_after=False)
     assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
-    assert row in raised.value.details["rows"]
+    assert "rows" not in raised.value.details
     assert project.revision() == revision
     assert _files_and_receipts(project) == before
     assert answer() == gold
-    graph["graph"]["path_preferences"] = raised.value.details["rows"]
+    graph["graph"]["path_preferences"] = _base_decisions(raised.value.details["route_changes"])
     report = project.write_file(
         relative_path="graph.yml", content=yaml.safe_dump(graph), validate_after=False
     ).report
@@ -866,11 +871,12 @@ def test_queries_without_authored_measures_require_explicit_decisions(tmp_path):
     with pytest.raises(SemanticLayerError) as raised:
         project.upsert_relationship(from_entity="b", to_entity="c", columns=["c_id"])
     assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
-    assert ("entity.small_b", "entity.small_c") in _pairs(raised.value.details["rows"])
+    assert ("entity.small_b", "entity.small_c") in _pairs(raised.value.details["route_changes"])
+    assert "rows" not in raised.value.details
     assert project.revision() == revision
     assert _files_and_receipts(project) == before
     assert answers() == ([("B", "North")], [("North", 1)])
-    for row in raised.value.details["rows"]:
+    for row in _base_decisions(raised.value.details["route_changes"]):
         project.record_route_decision(**row)
     report = project.upsert_relationship(from_entity="b", to_entity="c", columns=["c_id"]).report
     assert report["route_decisions_added"] == []
@@ -892,7 +898,7 @@ def test_lowering_the_hop_ceiling_commits_without_undoing_the_cut(tmp_path):
     assert report["route_decisions_added"] == []
     assert len(report["route_changes"]) == 6
     assert all(
-        row["head"] == {"refused": "PATH_NOT_FOUND"} and row["keep_base"] is None
+        row["head"] == {"refused": "PATH_NOT_FOUND"} and "keep_base" not in row
         for row in report["route_changes"]
     )
     assert _graph(project)["graph"]["path_policy"] == {"max_hops": 1}
@@ -1115,7 +1121,7 @@ def test_an_invalid_intermediate_write_cannot_erase_the_branch_region_baseline(t
     assert project.revision() == revision
     assert _files_and_receipts(project) == before
     assert _invoice_amounts(project.project_path) == branch
-    graph["graph"]["path_preferences"] = raised.value.details["rows"]
+    graph["graph"]["path_preferences"] = _base_decisions(raised.value.details["route_changes"])
     report = project.write_file(
         relative_path="graph.yml", content=yaml.safe_dump(graph), validate_after=False
     ).report
@@ -1242,11 +1248,64 @@ def test_an_edited_row_that_moves_an_inherited_pair_requires_its_own_decision(tm
         project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph))
     assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
     assert _pairs(raised.value.details["route_changes"]) == [(LOAN, DISTRICT)]
-    assert raised.value.details["rows"] == [
-        _pin(LOAN, DISTRICT, ["relationship.loan_account", *SMALL_BRANCH])
-    ]
+    assert "rows" not in raised.value.details
+    assert "keep_base" not in raised.value.details["route_changes"][0]
+    assert "graph.path_preferences" in str(raised.value)
+    for field in ("source_entity", "target_entity", "relationship_path"):
+        assert field in str(raised.value)
     assert project.revision() == revision
     assert _files_and_receipts(project) == before
+
+
+@pytest.mark.parametrize("override_account", [False, True], ids=["loan-only", "account-and-loan"])
+def test_package_census_impact_and_guard_ignore_query_route_overrides(tmp_path, override_account):
+    base = _loan_package(tmp_path / "base")
+    head = _loan_package(tmp_path / "head")
+    for pkg, route in ((base, SMALL_BRANCH), (head, SMALL_HOME)):
+        graph = yaml.safe_load((pkg / "graph.yml").read_text())
+        graph["graph"]["relationships"]["owner_district"] = {
+            "id": "relationship.owner_district",
+            "entities": ["owner", "district"],
+            "via": ["district_id"],
+            "target": ["id"],
+            "cardinality": "many_to_one",
+            "allowed_directions": ["forward"],
+        }
+        graph["graph"]["path_preferences"] = [_pin(SMALL_ACCOUNT, DISTRICT, route)]
+        (pkg / "graph.yml").write_text(yaml.safe_dump(graph))
+    config = load_package_config(str(base))
+    ambiguous = replace(config, path_preferences=[])
+    expected_census = route_census(ambiguous)
+    assert (LOAN, DISTRICT) in _pairs(expected_census["undecided"])
+    expected_decided_census = route_census(config)
+    expected_impact = _impact(base, head)
+    assert _pairs(expected_impact["route_changes"]) == [(SMALL_ACCOUNT, DISTRICT), (LOAN, DISTRICT)]
+    transaction = ProjectTransaction(base, workspace_root=tmp_path)
+    updates = (ProjectFileUpdate("graph.yml", (head / "graph.yml").read_bytes()),)
+    expected_report = transaction._guard_routes(updates, guard=False, validate_after=True)
+    with pytest.raises(SemanticLayerError) as baseline:
+        transaction._guard_routes(updates, guard=True, validate_after=True)
+    assert baseline.value.code == "ROUTE_DECISION_NOT_RECORDED"
+    assert _pairs(baseline.value.details["route_changes"]) == [(LOAN, DISTRICT)]
+
+    overrides = {(LOAN, DISTRICT): ["relationship.loan_account", *SMALL_BRANCH]}
+    if override_account:
+        overrides[(SMALL_ACCOUNT, DISTRICT)] = SMALL_BRANCH
+    with query_route_decisions(overrides):
+        # The query override is active, including for an otherwise ambiguous pair.
+        assert (
+            resolve_path(ambiguous, start=LOAN, target=DISTRICT)[0] == overrides[(LOAN, DISTRICT)]
+        )
+        assert route_census(ambiguous) == expected_census
+        assert route_census(config) == expected_decided_census
+        assert _impact(base, head) == expected_impact
+        assert (
+            transaction._guard_routes(updates, guard=False, validate_after=True) == expected_report
+        )
+        with pytest.raises(SemanticLayerError) as active:
+            transaction._guard_routes(updates, guard=True, validate_after=True)
+        assert active.value.code == baseline.value.code
+        assert active.value.details == baseline.value.details
 
 
 def test_deleting_a_pairs_row_never_silently_switches_its_answer(tmp_path):
@@ -1262,7 +1321,8 @@ def test_deleting_a_pairs_row_never_silently_switches_its_answer(tmp_path):
     with pytest.raises(SemanticLayerError) as raised:
         project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph))
     assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
-    assert _pin(OWNER, REGION, [OWNS, *BRANCH]) in raised.value.details["rows"]
+    assert "rows" not in raised.value.details
+    assert (OWNER, REGION) in _pairs(raised.value.details["route_changes"])
     assert project.revision() == revision
     assert _files_and_receipts(project) == before
     config = load_package_config(str(project.project_path))

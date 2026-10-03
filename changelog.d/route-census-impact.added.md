@@ -10,13 +10,15 @@
   `advisories`, never as a blocker.
 - `impact-report` lists `route_changes`: each such pair a change resolves differently, such as a
   pair refused after a new relationship adds a second route, with its base and head route or
-  refusal code and the `keep_base` row that keeps the earlier route. Any entry makes the risk
+  refusal code, without suggesting recovery rows. Any entry makes the risk
   `high`, and the Markdown summary lists each one in entity labels. See
   [the route census](docs/PACKAGE_AUTHORING.md#route-census-and-route-changes).
 - Architect writes and previews refuse unapproved changes to answered join routes with
   `ROUTE_DECISION_NOT_RECORDED`, listing affected pairs and explicit `graph.path_preferences`
-  syntax. Authors record decisions with `record_route_decision` or include chosen rows in
-  the change; Architect generates no route rows and `route_decisions_added` stays empty.
+  fields (`source_entity`, `target_entity`, `relationship_path`), without suggesting rows.
+  Census, impact and guard comparisons use package decisions independently of active query
+  route overrides. Authors record decisions with `record_route_decision` or include chosen rows
+  in the change; Architect generates no route rows and `route_decisions_added` stays empty.
   An explicit route defines lookup semantics, including unmatched keys. Removals use the
   same preservation guard: a cut may leave a pair refused, while another answer requires
   its own decision. Deliberate decisions and removals report every changed pair in

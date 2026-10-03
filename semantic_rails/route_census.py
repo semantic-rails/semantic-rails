@@ -1,14 +1,15 @@
 """Which entity pairs need a route decision, and which answers a package change moves.
 
-A route between two entities is a business definition, and ``fanout.resolve_route`` is the one
-place that applies the package's decisions. This module asks it about every pair a question
-can need: any entity as the start (distinct values and synthetic counts included), and each
-other reachable entity as the target (child groups need no dimension on the child itself).
+A route between two entities is a business definition, and ``fanout.package_route`` applies
+the package's decisions independently of query overrides. This module asks it about every
+pair a question can need: any entity as the start (distinct values and synthetic counts
+included), and each other reachable entity as the target (child groups need no dimension
+on the child itself).
 
 * :func:`route_census` lists the pairs the resolver refuses until a decision is recorded
   (``undecided``) and multi-route pairs answered by the start's own key (``assumed``).
 * :func:`route_changes` lists the pairs whose resolution differs between two versions of a
-  package, with the ``graph.path_preferences`` row that keeps the earlier route.
+  package.
 * :func:`unkept_route_changes` lists answered pairs a change moves without an explicit
   decision. Architect refuses these changes rather than recording a decision for the author.
 """
@@ -25,8 +26,7 @@ from .errors import SemanticLayerError
 from .fanout import (
     _has_multiple_routes,
     package_hop_limit,
-    resolve_route,
-    route_pin,
+    package_route,
     route_reading,
 )
 from .schema import PackageConfig
@@ -36,7 +36,7 @@ Pair = tuple[str, str]
 
 @dataclass(frozen=True)
 class RouteOutcome:
-    """``resolve_route``'s answer for a pair: its route and every route considered, or the code
+    """``package_route``'s answer for a pair: its route and every route considered, or the code
     and details of its refusal."""
 
     path: tuple[str, ...] = ()
@@ -68,11 +68,11 @@ def census_pairs(config: PackageConfig) -> list[Pair]:
 
 
 def resolve_pairs(config: PackageConfig, pairs: Iterable[Pair]) -> dict[Pair, RouteOutcome]:
-    """Each pair's outcome, asking ``resolve_route`` once per pair (it caches per package)."""
+    """Each pair's package-only outcome, cached per package regardless of query overrides."""
     outcomes: dict[Pair, RouteOutcome] = {}
     for start, target in pairs:
         try:
-            resolution = resolve_route(config, start=start, target=target)
+            resolution = package_route(config, start=start, target=target)
         except SemanticLayerError as exc:
             outcomes[(start, target)] = RouteOutcome(refused=exc.code, details=exc.details)
         else:
@@ -111,7 +111,6 @@ class RouteChange:
     pair: Pair
     base: RouteOutcome
     head: RouteOutcome
-    keep_base: dict[str, Any] | None
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -119,7 +118,6 @@ class RouteChange:
             "target_entity": self.pair[1],
             "base": self.base.shape(),
             "head": self.head.shape(),
-            "keep_base": self.keep_base,
         }
 
 
@@ -149,21 +147,14 @@ def _changes(base: PackageConfig, head: PackageConfig) -> list[RouteChange]:
         old, new = before[pair], after[pair]
         if old.shape() == new.shape():
             continue
-        kept = (
-            not old.refused
-            and len(old.path) <= package_hop_limit(head)
-            and _route_exists(head, *pair, old.path)
-        )
-        changes.append(RouteChange(pair, old, new, route_pin(*pair, [*old.path]) if kept else None))
+        changes.append(RouteChange(pair, old, new))
     return changes
 
 
 def route_changes(base: PackageConfig, head: PackageConfig) -> list[dict[str, Any]]:
     """Every census pair of either package, between entities both declare, that ``head``
     resolves differently from ``base``: ``base`` and ``head`` hold its ``relationship_path``
-    or the code it is ``refused`` with; ``keep_base`` is the ``graph.path_preferences`` row
-    that keeps the base route in ``head``, or ``None`` when the base refused or its route no
-    longer exists or exceeds the head's hop ceiling."""
+    or the code it is ``refused`` with. No recovery rows are suggested."""
     return [change.payload() for change in _changes(base, head)]
 
 
@@ -177,7 +168,13 @@ def _unkept(base: PackageConfig, head: PackageConfig) -> list[RouteChange]:
         change
         for change in _changes(base, head)
         if not change.base.refused
-        and (change.keep_base is not None or not change.head.refused)
+        and (
+            not change.head.refused
+            or (
+                len(change.base.path) <= package_hop_limit(head)
+                and _route_exists(head, *change.pair, change.base.path)
+            )
+        )
         and (
             head_rows.get(change.pair) is None
             or head_rows.get(change.pair) == base_rows.get(change.pair)
@@ -208,10 +205,8 @@ def route_change_lines(
     lines = []
     for change in changes:
         start, target = change["source_entity"], change["target_entity"]
-        keep = "; `keep_base` keeps the earlier route" if change["keep_base"] else ""
         lines.append(
             f"- {label(head, start)} to {label(head, target)}: was "
             f"{reads(base, start, change['base'])}, now {reads(head, start, change['head'])}"
-            f"{keep}"
         )
     return lines
