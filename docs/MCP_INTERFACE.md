@@ -282,8 +282,8 @@ names an entity only with every word of that entity's label ("customer" names Cu
 Customer history); a declared time, such as Store opened at, never stands in for its entity.
 Any other grouping matches a dimension whose own words name it: its label, its aliases and the
 last part of its name, not the prefix of its id. A comma continues the grouping list only when
-the next piece names a dimension, entity or clock term; otherwise it ends the clause. A grain phrase
-such as "at week grain" or "month level" sets the grain on the measure's own clock.
+the next piece names a dimension, entity or clock term; otherwise it ends the clause. A grain
+phrase such as "at week grain" or "month level" sets the grain on the measure's own clock.
 A word names an object when it is a word of the
 object's label or aliases, or of the last dotted part of its id or name outside the object's own
 namespaces ("sales" in `metric.sales.aov_usd` names nothing); a plural counts as its singular.

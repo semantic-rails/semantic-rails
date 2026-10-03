@@ -755,14 +755,14 @@ def _dropped_grouping_why(
         for item in dict.fromkeys(query.get("group_by") or [])
         if (row := _object_by_id(config.dimensions, item)) is not None
     ]
+    stand_ins = [_entity_grouping_dimensions(config, term) for term in terms]
     candidates = [
         [
             index
             for index, dimension in enumerate(grouped)
             if (_grouping_matches(term, dimension) if ids is None else dimension.id in ids)
         ]
-        for term in terms
-        for ids in [_entity_grouping_dimensions(config, term)]
+        for term, ids in zip(terms, stand_ins, strict=True)
     ]
     assigned: dict[int, int] = {}
 
