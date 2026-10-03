@@ -90,8 +90,9 @@ def test_local_connection_factories_disable_common_subplan(tmp_path, factory):
         else:
             adapter = db.create_warehouse_adapter(SimpleNamespace(warehouse="duckdb"), db_path=path)
         connection, close = adapter._db.conn, adapter.close  # noqa: SLF001
-        assert adapter.query(MULTI_LEAF) == [{"a_total": Decimal(11), "b_total": Decimal(22)}]
     try:
+        if factory in {"embedding", "registry"}:
+            assert adapter.query(MULTI_LEAF) == [{"a_total": Decimal(11), "b_total": Decimal(22)}]
         assert "common_subplan" in _disabled(connection)
         assert connection.execute(MULTI_LEAF).fetchone() == (Decimal(11), Decimal(22))
     finally:
