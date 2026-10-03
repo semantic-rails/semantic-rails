@@ -160,12 +160,13 @@ def test_source_row_key_counts_still_feed_summing_windows(config, kind, measure_
 
 
 @pytest.mark.parametrize("key_source", ["row_grain", "entity_key", "primary_key"])
-def test_distinct_count_accepts_each_source_key_declaration(config, key_source):
+@pytest.mark.parametrize("other_key", [[], ["order_id", "customer_id"]])
+def test_distinct_count_accepts_each_source_key_declaration(config, key_source, other_key):
     measure = next(m for m in config.measures if m.id == ORDERS["measure"])
     config = replace(
         config,
         measures=[
-            replace(m, row_grain=["order_id"] if key_source == "row_grain" else [])
+            replace(m, row_grain=["order_id"] if key_source == "row_grain" else other_key)
             if m.id == measure.id
             else m
             for m in config.measures
@@ -173,7 +174,13 @@ def test_distinct_count_accepts_each_source_key_declaration(config, key_source):
         entities=[
             replace(
                 e,
-                key=["order_id"] if key_source == "entity_key" else [],
+                key=(
+                    ["order_id"]
+                    if key_source == "entity_key"
+                    else other_key
+                    if key_source == "row_grain"
+                    else []
+                ),
                 primary_key="order_id" if key_source == "primary_key" else "unrelated",
             )
             if e.id == measure.entity
@@ -183,6 +190,53 @@ def test_distinct_count_accepts_each_source_key_declaration(config, key_source):
     )
     expr = parse_semantic_expression(ORDERS, context="query")
     assert _summing_window_parts(expr, config, construct="rolling") == (expr,)
+
+
+@pytest.mark.parametrize("key_source", ["row_grain", "entity_key", "both"])
+@pytest.mark.parametrize("ratio", [False, True], ids=["count", "ratio_denominator"])
+@pytest.mark.parametrize("kind", ["rolling", "cumulative", "period_to_date"])
+@pytest.mark.parametrize("route", ["compile", "lower"])
+def test_composite_key_components_cannot_feed_a_summing_window(
+    config, key_source, ratio, kind, route
+):
+    measure = next(m for m in config.measures if m.id == ORDERS["measure"])
+    composite_key = ["order_id", "customer_id"]
+    config = replace(
+        config,
+        measures=[
+            replace(m, row_grain=composite_key if key_source in {"row_grain", "both"} else [])
+            if m.id == measure.id
+            else m
+            for m in config.measures
+        ],
+        entities=[
+            replace(
+                e,
+                key=composite_key if key_source in {"entity_key", "both"} else [],
+                primary_key="order_id" if key_source in {"entity_key", "both"} else "unrelated",
+            )
+            if e.id == measure.entity
+            else e
+            for e in config.entities
+        ],
+    )
+    expression = window(RATIO if ratio else ORDERS, kind)
+    with pytest.raises(SemanticLayerError) as raised:
+        if route == "compile":
+            compile_query(config, Registry(config), query(expression))
+        else:
+            expr = _as_offset_window_expr(parse_semantic_expression(expression, context="query"))
+            assert expr is not None
+            _compile_offset_window_expr(
+                expr,
+                config,
+                time_alias="t",
+                group_aliases=[],
+                query_grain="month",
+                table_alias="base",
+            )
+    assert raised.value.code == "ROLLUP_UNSAFE"
+    assert raised.value.details["unsupported_construct"] == "non_additive_window_input"
 
 
 @pytest.mark.parametrize("qualifier", [{"entity": "entity.jaffle_customer"}, {"table": "other"}])

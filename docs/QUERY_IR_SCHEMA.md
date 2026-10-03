@@ -174,7 +174,8 @@ shorthands for the most common cases:
 
 **Summing windows require values that add up across periods.** `rolling`, `cumulative`,
 and `period_to_date` accept additive flows using `sum` or `count`, event counts using
-`count_distinct` of a source-row key (the measure's row grain or its model entity's key),
+`count_distinct` of a complete single-column source-row key (the measure's row grain
+or its model entity's full key),
 and sums, differences, or multiplication/division by numeric literals of those inputs.
 A ratio (including arithmetic `divide` with a nonliteral denominator and metric recipes
 that resolve to a ratio) computes the ratio of its windowed
@@ -183,7 +184,8 @@ same partition and frame, after the ordinary empty-group settlement; a zero deno
 returns `NULL`. It does not sum each period's ratio.
 
 Inputs using `avg`, `min`, `max`, `median`, or `percentile`, stocks (semi-additive
-measures), distinct populations, distinct counts of non-key columns, distributions,
+measures), distinct populations, distinct counts of non-key columns or individual
+components of composite keys, distributions,
 products of measures, nested windows, and ratios inside other arithmetic or inside
 another ratio refuse with `ROLLUP_UNSAFE`
 before SQL executes. Ask for a ratio of windowed additive parts, or query the measure's

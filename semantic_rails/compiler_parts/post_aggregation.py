@@ -144,13 +144,16 @@ def _summing_window_parts(
             )
             if aggregation == "count_distinct":
                 entity = _entity_index(config).get(measure.entity)
-                row_keys = set(measure.row_grain)
-                if entity is not None:
-                    row_keys.update(entity.key or [entity.primary_key])
                 counted = measure.expr
                 if not (
                     isinstance(counted, ColumnRefExpr)
-                    and counted.column in row_keys
+                    and (
+                        measure.row_grain == [counted.column]
+                        or (
+                            entity is not None
+                            and (entity.key or [entity.primary_key]) == [counted.column]
+                        )
+                    )
                     and counted.entity in {"", measure.entity}
                     and counted.table
                     in {"", measure.source_relation or (entity.table if entity else "")}
