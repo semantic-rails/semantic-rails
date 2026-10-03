@@ -28,6 +28,7 @@ from typing import Any
 from ..ast import every_filter, is_child_group, rewrite_select_shorthand
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
+from ..runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL
 from ..temporal_support import validate_temporal_support
 from ._base import (
     _TIME_UNITS,
@@ -46,6 +47,7 @@ from ._base import (
 from .faithfulness import (
     _dimension_nouns,
     _ranking_request,
+    _singular,
     intent_faithfulness_why,
     intent_subject_why,
     unconsumed_catalog_words,
@@ -973,15 +975,8 @@ def _names_grain(config: Any, question: str, query: dict[str, Any], grain: str) 
     grain's buckets: its unit or "-ly" form ("by month", "monthly", "month level", "per
     week", "daily"); a series ("over time", "trend", "trending", "time series"), which plan
     buckets at its default grain; or, for days, a listed grouping that names the query's clock
-    ("by order date"). A window of whole calendar years ("in 2016 and 2017") names each of its
-    years, so it names the year grain plan reads it at: one total per year."""
+    ("by order date")."""
 
-    time = _time_of(query)
-    if grain == "year" and all(
-        re.fullmatch(r"\d{4}-01-01(?:T00:00(?::00)?)?", str(time.get(key) or ""))
-        for key in ("start", "end")
-    ):
-        return True
     lowered = _without_windows(question)
     forms = {grain, f"{grain}s", "daily" if grain == "day" else f"{grain}ly"}
     if forms & set(re.findall(r"[^\W\d_]+", lowered)) or _SERIES_RE.search(lowered):
@@ -1036,10 +1031,8 @@ def _unasked_grouping_why(
     picks for a comparison, a year-over-year shift or a window of several periods doesn't
     trace.
 
-    A ranking whose rows are split by a traced grain is a clarification instead: the draft
-    would keep the top N of (entity x period). ``why.details.clarification`` offers the top N
-    overall and the top N in each period. The check only holds a plan; it never changes the
-    draft.
+    A ranking must then keep the top N of the entity it ranks (``_ranking_why``). The check
+    only holds a plan; it never changes the draft.
     """
 
     config = runtime._config
@@ -1105,38 +1098,128 @@ def _unasked_grouping_why(
     aliases = {row.get("as") for row in query.get("select") or [] if isinstance(row, dict)}
     aliases.discard(None)
     if not (
-        splits
-        and grouped
+        grouped
         and query.get("limit") is not None
         and order_by
         and order_by[0].get("field") in aliases
     ):
         return None
-    request = _ranking_request(question, _dimension_nouns(config))
-    entity = str(request["noun"]) if request else " and ".join(str(row.label) for row in grouped)
-    return _ranking_period_why(query, [row.id for row in grouped], entity, grain, order_by[0])
+    return _ranking_why(runtime, question, query, partial_query, grouped, splits, order_by[0])
 
 
-def _ranking_period_why(
-    query: dict[str, Any], keys: list[str], entity: str, grain: str, ranked_by: dict[str, Any]
-) -> dict[str, Any]:
-    """The clarification for a ranking split by a period: top N overall, or in each period.
+def _ranking_why(
+    runtime: Any,
+    question: str,
+    query: dict[str, Any],
+    partial_query: dict[str, Any] | None,
+    grouped: list[Any],
+    splits: bool,
+    ranked_by: dict[str, Any],
+) -> dict[str, Any] | None:
+    """A ranking keeps the top N of the entity it ranks, or the plan is not ready.
 
-    Each option carries a Query IR that runs as is. Query IR ranks only over all rows, so
-    ``top_overall`` returns the N ``entity`` rows on their total and its ``breakdown`` runs
-    the draft for them, and ``top_per_period`` returns every row with each period's highest
-    first, to keep each period's first N.
+    The draft keeps the top N of its group_by rows, split by its grain when that can split
+    them. Those rows are the entity the question ranks only when the noun it ranks
+    (``_ranking_request``) is not a time unit and reads every group_by dimension, as
+    ``_unasked_grouping_why`` reads an asked grouping (an entity's key and its label). Else
+    the draft may keep the top N (store, customer type) pairs, or (month, store) rows, so
+    the plan is held with no runnable option. A ranking of the entity split by a grain asks
+    which ranking it means, with runnable options only when ``_ranking_options`` checks
+    them; without them it is held the same way.
     """
 
+    config = runtime._config
+    request = _ranking_request(question, _dimension_nouns(config))
+    noun = str(request["noun"]) if request else ""
+    stand_ins = _entity_grouping_dimensions(config, noun) if noun else None
+    ranks_entity = (
+        bool(noun)
+        and _singular(noun) not in _TIME_UNITS
+        and all(_reads_grouping(noun, stand_ins, row) for row in grouped)
+    )
+    if ranks_entity and not splits:
+        return None
+    keys = [row.id for row in grouped]
+    entity = noun or " and ".join(str(row.label or row.id) for row in grouped)
     limit = int(query["limit"])
+    grain = str(_time_of(query).get("grain") or "") if splits else ""
+    options = (
+        _ranking_options(runtime, query, partial_query, keys, ranked_by) if ranks_entity else None
+    )
+    if options is not None:
+        return _ranking_period_why(keys, entity, limit, grain, options)
+    rows = ", ".join([str(row.label or row.id) for row in grouped] + ([grain] if grain else []))
+    return {
+        "code": "PLAN_RANKING_PERIOD_AMBIGUOUS",
+        "message": (
+            f"The question ranks {entity}, but the draft keeps the top {limit} ({rows}) rows, "
+            f"which may not be the top {limit} {entity}, so plan doesn't call it ready."
+        ),
+        "details": {"limit": limit, "ranked": keys, **({"grain": grain} if grain else {})},
+        "recovery_hints": [
+            {
+                "kind": "ask_which_ranking",
+                "message": (
+                    "Ask the user which ranking they mean, then plan again with a question "
+                    "that names it."
+                ),
+            }
+        ],
+    }
+
+
+def _ranking_options(
+    runtime: Any,
+    query: dict[str, Any],
+    partial_query: dict[str, Any] | None,
+    keys: list[str],
+    ranked_by: dict[str, Any],
+) -> dict[str, dict[str, Any]] | None:
+    """The Query IR of the top N overall and of the top N in each period, or None.
+
+    Only a draft whose values are totals over a window has them: each select item a plain
+    measure or metric reference, no metric filter, and the compiler sums each over a window
+    to one total per group (validate's ``time_shape`` is ``window_total``), so no time-axis
+    value (cumulative, rolling, period-to-date, prior period, conversion) and no metric
+    predicate. Query IR ranks only over all rows, so ``overall`` returns the N rows on their
+    total over the draft's window (its calendar kept), ``breakdown`` runs the draft for them,
+    and ``per_period`` returns every row with each period's highest first. Each one
+    validates, or there are none.
+    """
+
+    select = [row for row in query.get("select") or [] if isinstance(row, dict)]
+    plain = all(
+        isinstance(expression := row.get("expression"), dict)
+        and expression.get("kind", "") in {"", "measure", "measure_ref", "metric"}
+        and set(expression) - {"kind"} in ({"measure"}, {"measure", "aggregation"}, {"metric"})
+        for row in select
+    )
+    if not (select and plain) or query.get("metric_filters"):
+        return None
     time = _time_of(query)
     window = {key: time[key] for key in ("start", "end", "range") if key in time}
-    overall: dict[str, Any] = {
-        key: value for key, value in query.items() if key not in {"time", "order_by"}
+    clock = {key: time[key] for key in ("temporal_role", "calendar_id") if key in time}
+    totals = {
+        key: value for key, value in query.items() if key not in {"time", "order_by", "limit"}
     }
-    if window:
-        overall["time"] = {"temporal_role": time["temporal_role"], **window}
-    overall["order_by"] = [ranked_by, *({"field": key, "direction": "ASC"} for key in keys)]
+    # Any window shows whether the select collapses; the draft's own when it has one.
+    probe = {
+        **totals,
+        "time": {**clock, **(window or {"range": {"last": {"unit": "year", "value": 1}}})},
+    }
+    policy = (partial_query or {}).get("policy_context")
+    try:
+        report = runtime.validate({**probe, **({"policy_context": policy} if policy else {})})
+    except Exception:  # noqa: BLE001 - a probe that fails leaves the ranking unchecked
+        return None
+    if not report.get("ok") or report.get("time_shape") != TIME_SHAPE_WINDOW_TOTAL:
+        return None
+    overall = {
+        **totals,
+        **({"time": {**clock, **window}} if window else {}),
+        "order_by": [ranked_by, *({"field": key, "direction": "ASC"} for key in keys)],
+        "limit": query["limit"],
+    }
     every_row = {key: value for key, value in query.items() if key not in {"limit", "order_by"}}
     breakdown = {
         **every_row,
@@ -1153,6 +1236,22 @@ def _ranking_period_why(
             *({"field": key, "direction": "ASC"} for key in keys),
         ],
     }
+    options = {"overall": overall, "breakdown": breakdown, "per_period": per_period}
+    if not all(_validate_query(runtime, row, partial_query)["ok"] for row in options.values()):
+        return None
+    return options
+
+
+def _ranking_period_why(
+    keys: list[str],
+    entity: str,
+    limit: int,
+    grain: str,
+    options: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """The clarification for a ranking of an entity split by a period: the top N overall, or
+    in each period, each with the checked Query IR of ``_ranking_options``."""
+
     question = (
         f"The top {limit} {entity} over the whole window, or the top {limit} {entity} in each "
         f"{grain}?"
@@ -1179,8 +1278,8 @@ def _ranking_period_why(
                             f"their total. For each one by {grain}, run breakdown.query_ir "
                             f"with a where filter keeping the {entity} this query returns."
                         ),
-                        "query_ir": overall,
-                        "breakdown": {"query_ir": breakdown, "filter_fields": keys},
+                        "query_ir": options["overall"],
+                        "breakdown": {"query_ir": options["breakdown"], "filter_fields": keys},
                     },
                     {
                         "id": "top_per_period",
@@ -1190,7 +1289,7 @@ def _ranking_period_why(
                             f"row with each {grain}'s highest first, so keep each {grain}'s "
                             f"first {limit} rows."
                         ),
-                        "query_ir": per_period,
+                        "query_ir": options["per_period"],
                         "keep_first_per_period": limit,
                     },
                 ],
