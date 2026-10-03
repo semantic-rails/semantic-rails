@@ -1,0 +1,1 @@
+- DuckDB queries with window functions can no longer hang while their rows are read.
