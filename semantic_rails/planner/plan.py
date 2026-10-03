@@ -957,10 +957,7 @@ def _grouping_filter_value_spans(
     config: Any, lowered: str, query: dict[str, Any]
 ) -> list[tuple[tuple[int, int], str, str]]:
     """Source spans of declared values carried by a positive draft filter, with the filter's
-    field and the value.
-
-    Match the same literal, label and alias spellings as value inference. A match inside a
-    grouping name cannot authorize the filter (``_named_groupings_unmet``).
+    field and the value, matching the literal, label and alias spellings value inference does.
     """
 
     filters = _where_filters(query)
@@ -995,15 +992,14 @@ def _grouping_filter_value_spans(
 def _named_groupings_unmet(
     config: Any, question: str, query: dict[str, Any]
 ) -> tuple[list[str], list[dict[str, str]]]:
-    """The caller-visible dimension and entity names in any question, read with spaces,
-    underscores and any case (``_declared_name_spans``), that the draft leaves unmet, and the
-    filters read from inside them as ``{"term", "field", "value"}``.
-
-    Outside a clock phrase (``_clock_spans``), the draft must group by the dimension a name names
-    (for an entity, one of its dimensions) or pin it to one value (``_pinned_fields``) in ``where``
-    or a selected metric's ``all`` filter. No value word inside the name or word of the measure's
-    label discharges it, and a positive filter whose value is read from inside the name holds the
-    plan even when the draft groups by it. The check only holds a plan; it never changes a draft.
+    """The caller-visible names in any question, read with spaces, underscores and any case
+    (``_declared_name_spans``), that the draft leaves unmet, and the filters read from inside
+    them as ``{"term", "field", "value"}``. Outside a clock phrase (``_clock_spans``), a
+    dimension name needs its dimension grouped or pinned (``_pinned_fields``) by ``where`` or a
+    selected metric's ``all`` filter; an entity name needs a stand-in grouped in a level or grain
+    question (elsewhere it often describes the measure: "repeat-customer orders"). No value word
+    inside a name or word of the measure's label discharges it, and a positive filter whose value
+    is read from inside a name holds the plan even when grouped. It never changes a draft.
     """
 
     lowered = str(question or "").lower()
@@ -1016,22 +1012,26 @@ def _named_groupings_unmet(
         metric = _object_by_id(config.metric_recipes, str(expression.get("metric")))
         spec = getattr(getattr(metric, "expression", None), "filter", None) or {}
         where += spec.get("all") or []
-    settled = set(query.get("group_by") or []) | _pinned_fields({"where": where})
-    dimensions = visible_dimensions(config)
+    grouped = set(query.get("group_by") or [])
+    settled = grouped | _pinned_fields({"where": where})
     spans = _declared_name_spans(config, lowered, underscores=True)
+    words = _LEVEL_WORD_RE.finditer(lowered)
+    level = any(not any(a <= word.start() < b for a, b in spans) for word in words)
+    visible = replace(config, dimensions=visible_dimensions(config))
     unmet: list[str] = []
     inside: list[dict[str, str]] = []
     for (low, high), named in sorted(spans.items()):
-        ids = {row.id for kind, row in named if kind != "value"}
-        if not ids or any(a <= low and high <= b for a, b in clock_spans):
+        dimensions = {row.id for kind, row in named if kind == "dimension"}
+        entity = any(kind == "entity" for kind, _ in named)
+        if not (dimensions or entity) or any(a <= low and high <= b for a, b in clock_spans):
             continue
         term = " ".join(lowered[low:high].split())
         found = {(f, v): None for (start, end), f, v in values if low <= start and end <= high}
         for field, value in found:
             if (row := {"term": term, "field": field, "value": value}) not in inside:
                 inside.append(row)
-        ids |= {row.id for row in dimensions if row.entity in ids}
-        if found or not ids & settled:
+        stand_ins = (_entity_grouping_dimensions(visible, term) or set()) if entity else set()
+        if found or ((dimensions or level) and not (dimensions & settled or stand_ins & grouped)):
             unmet.append(term)
     return list(dict.fromkeys(unmet)), inside
 
@@ -1050,8 +1050,8 @@ def _dropped_grouping_why(
     month", "by order date") is the time block's and a declared value is a filter, so neither
     needs one. One dimension satisfies one listed grouping. A question asking for a level or
     grain must also have every grouping it names (``_level_groupings_unmet``), and any question
-    every caller-visible name it holds (``_named_groupings_unmet``), never a filter read from
-    inside one: ``details.filter_inside_grouping`` names each for the caller to confirm or remove.
+    every caller-visible dimension it names (``_named_groupings_unmet``), never a filter read from
+    inside a name: ``details.filter_inside_grouping`` names each for the caller to confirm or remove.
 
     A grouping whose dimensions belong to two or more entities, none of them the measure's own
     ("name" for an order count: Customer name, Store name and more), is ambiguous: plan holds

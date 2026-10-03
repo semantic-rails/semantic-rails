@@ -334,14 +334,15 @@ repeat", "customer types" is no declared name, so the entity Customer must be gr
 These readers add obligations only to the dropped-grouping check; planning and the checks that
 authorize a draft's groupings retain their existing readers. The check only holds a plan; it
 never changes a draft or makes one ready.
-In any question, with a level word or not, every caller-visible dimension or entity name the
-question holds has the same obligation, whatever words surround it. Names are read as above and
-also with underscores, spaces and any case: `customer_type` and `customer type` name Customer
-type, and declared leading and trailing underscores are kept, so aliases such as
-`_customer_type` and `customer_type_` count too. The draft must group by the dimension, or pin
-it to one value with a `where` filter or with the `all` filter of a metric it selects; an
-entity needs one of its own dimensions grouped or pinned. A value word inside the name never
-discharges it, and neither do words the selected measure's label shares: with an alias
+In any question, with a level word or not, every caller-visible dimension name the question
+holds has the same obligation, whatever words surround it. An entity name has it in a level or
+grain question, where one of its stand-ins must be grouped; elsewhere an entity name often
+describes the measure ("repeat-customer orders"). Names are read as above and also with
+underscores, spaces and any case: `customer_type` and `customer type` name Customer type, and
+declared leading and trailing underscores are kept, so aliases such as `_customer_type` and
+`customer_type_` count too. The draft must group by the dimension, or pin it to one value with
+a `where` filter or with the `all` filter of a metric it selects. A value word inside the name
+never discharges it, and neither do words the selected measure's label shares: with an alias
 `_new_type` for Customer type and revenue labelled "Revenue (new and repeat types)", "revenue
 by _new_type and store name" grouped only by Store name is not ready. A name holding a value
 that a draft filter keeps (`=` that value, or `IN` with it) holds the plan even when the draft
