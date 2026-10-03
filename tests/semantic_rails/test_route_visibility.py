@@ -182,18 +182,18 @@ def test_no_visible_refusal_option_still_refuses(tmp_path, monkeypatch, tool, ve
 
 @pytest.mark.parametrize("tool", ["execute", "validate", "compile"])
 @pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
-@pytest.mark.parametrize("mode", ["conflict", "inherited"])
+@pytest.mark.parametrize("mode", ["conflict", "inherited", "refusal_conflict"])
 def test_related_route_rows_are_visible_before_they_are_named(tmp_path, tool, verbosity, mode):
     # A visible own-key route conflicts with a recorded route through a hidden client.
     # An inherited visible route can instead follow a row whose other endpoint is hidden.
-    hidden = precedence._entity("client")
-    rows = (
-        [precedence.ACCOUNT_OWNER_ROW]
-        if mode == "conflict"
-        else [
+    hidden = precedence.LOAN if mode == "refusal_conflict" else precedence._entity("client")
+    rows = {
+        "conflict": [precedence.ACCOUNT_OWNER_ROW],
+        "inherited": [
             precedence._row(hidden, precedence.DISTRICT, [precedence.OWNER[0], *precedence.BRANCH])
-        ]
-    )
+        ],
+        "refusal_conflict": [precedence.LOAN_REGION_BY_OWNER],
+    }[mode]
     pkg = precedence._write_package(
         tmp_path,
         relationships=precedence.OWN_DISTRICT if mode == "conflict" else precedence.LENDER,
@@ -220,8 +220,10 @@ def test_related_route_rows_are_visible_before_they_are_named(tmp_path, tool, ve
     try:
         for audience in ("author", "reader"):
             out, channels = _mcp(adapter, tool, query, verbosity, audience)
-            assert out["ok"] is True, out
-            if tool == "execute":
+            assert out["ok"] is (mode != "refusal_conflict"), out
+            if mode == "refusal_conflict":
+                assert out["errors"][0]["code"] == "AMBIGUOUS_PATH"
+            elif tool == "execute":
                 gold = (
                     precedence.OWN_KEY_GOLD
                     if mode == "conflict"
@@ -230,7 +232,7 @@ def test_related_route_rows_are_visible_before_they_are_named(tmp_path, tool, ve
                 assert precedence._rows(out, [precedence.DISTRICT_NAME, "v"]) == precedence._gold(
                     gold
                 )
-            if verbosity != "minimal":
+            if verbosity != "minimal" or mode == "refusal_conflict":
                 for channel in channels:
                     token = precedence.OWNER[0] if mode == "conflict" else hidden
                     assert (token in channel) is (audience == "author")
