@@ -339,9 +339,11 @@ raw relation.
 `validate`, `compile`, and `query` accept a `verbosity` field (`minimal` | `compact` |
 `full`). The HTTP default is `compact`. Over MCP they are one tool, `execute` with `mode`
 `validate`, `sql` or `run`, which defaults to `minimal` instead: it keeps only
-`{ok, status, errors, warnings, recovery_hints}` plus `rendered_sql` in mode `sql` and
+`{ok, status, errors, warnings}` (plus `error` on failure) and `rendered_sql` in mode `sql` and
 `rows` + `row_count` in mode `run` — see
-[MCP_INTERFACE.md](MCP_INTERFACE.md). An explicit `verbosity` always wins on both surfaces.
+[MCP_INTERFACE.md](MCP_INTERFACE.md). Recovery hints live on each issue in `errors`.
+An explicit `verbosity` overrides the default on both surfaces; over MCP,
+`query.verbosity` takes precedence over the outer `verbosity` argument.
 
 `sql_profile` currently defaults to `audit`. Callers may pass `sql_profile: "compact"` or `sql_profile: "debug"`; unsupported profile-specific rewrites fall back to audit-safe SQL while preserving the requested profile in metadata.
 

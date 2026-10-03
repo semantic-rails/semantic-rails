@@ -55,7 +55,7 @@ from .request_payload import (
 )
 from .resource_access import GRANT_DISCOVER_KINDS
 from .runtime import Runtime
-from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL
+from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL, resolve_verbosity
 
 __all__ = [
     "JSON_OBJECT_SCHEMA",
@@ -2015,11 +2015,11 @@ class SemanticLayerMCPAdapter:
             else:
                 out["errors"] = []
         arguments = arguments or {}
-        query = arguments.get("query")
-        query = query if isinstance(query, Mapping) else {}
-        verbosity = (
-            str(arguments.get("verbosity") or query.get("verbosity") or "minimal").strip().lower()
-        )
+        verbosity = MCP_DEFAULT_QUERY_VERBOSITY
+        # Use the handler's query shaping and runtime normalization. Invalid
+        # arguments still need an envelope even when no query can be built.
+        with contextlib.suppress(SemanticLayerError):
+            verbosity = resolve_verbosity(_query_payload_with_mcp_default_verbosity(arguments))
         for key in ("errors", "warnings"):
             out[key] = [_lean_issue(issue, verbosity=verbosity) for issue in out[key] or []]
         # Keep the conventional truthy error branch for validate soft-fails,

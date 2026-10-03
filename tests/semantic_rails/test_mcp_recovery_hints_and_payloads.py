@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from semantic_rails.metadata import catalog_payload
 from tests.plan_candidate_envelope import plan_candidate_envelope
 
@@ -735,7 +737,8 @@ def test_where_uses_field_key_and_rejects_legacy_dimension_key(runtime_factory):
         runtime.close()
 
 
-def test_cross_fact_rewrite_analysis_is_opt_in(runtime_factory):
+@pytest.mark.parametrize("outer_verbosity", [None, "minimal", "compact"])
+def test_cross_fact_rewrite_analysis_is_opt_in(runtime_factory, outer_verbosity):
     from semantic_rails.mcp import SemanticLayerMCPAdapter
 
     runtime = runtime_factory("jaffle_shop")
@@ -762,7 +765,14 @@ def test_cross_fact_rewrite_analysis_is_opt_in(runtime_factory):
     }
     try:
         responses = [
-            adapter.call_tool("execute", {"query": query, "mode": "run", "verbosity": verbosity})
+            adapter.call_tool(
+                "execute",
+                {
+                    "query": {**query, "verbosity": verbosity},
+                    "mode": "run",
+                    "verbosity": outer_verbosity or verbosity,
+                },
+            )
             for verbosity in ("minimal", "compact", "full")
         ]
         minimal, compact, full = responses
@@ -773,6 +783,8 @@ def test_cross_fact_rewrite_analysis_is_opt_in(runtime_factory):
         assert rewrites[0]
         assert rewrites[1] == rewrites[2]
         for small, verbose in zip(rewrites[0], rewrites[1], strict=True):
+            assert verbose["details"]["analysis"]
+            assert verbose["details"]["path"]
             assert small["code"] == verbose["code"] and small["message"] == verbose["message"]
             assert small["details"] == {
                 key: value

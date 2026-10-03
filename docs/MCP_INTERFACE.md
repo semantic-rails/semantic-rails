@@ -372,8 +372,9 @@ Use `detail="full"` only when you need alternatives or blocked drafts.
 
 ### Query Verbosity Tiers (execute modes)
 
-`execute` defaults to `verbosity=minimal` in every mode. An explicit `verbosity` argument always
-wins, and error envelopes (`ok: false`) inherit the same default. This is an MCP-only default —
+`execute` defaults to `verbosity=minimal` in every mode. `query.verbosity` takes precedence
+over the outer `verbosity` argument; error envelopes (`ok: false`) use the same resolved
+verbosity as the runtime. This is an MCP-only default —
 the HTTP `/api/v1/*` default remains `compact`.
 
 | Verbosity | What's kept | Size (jaffle, measured*) | When to use |
