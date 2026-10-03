@@ -30,11 +30,253 @@ Second batch (recovery-hint papercuts) — four extensions:
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
+from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import catalog_payload
+from semantic_rails.runtime import Runtime
+from semantic_rails.schema import SemanticPolicyConfig
 from tests.plan_candidate_envelope import plan_candidate_envelope
+
+
+def _counterpart_config(config, missing_kind, with_policy):
+    other_kind = "measure" if missing_kind == "metric" else "metric"
+    hidden_id = f"{other_kind}.synthetic.private_fee"
+    fuzzy_id = f"{missing_kind}.synthetic.private_fees"
+    config = replace(
+        config,
+        measures=[
+            replace(config.measures[0], id=hidden_id if other_kind == "measure" else fuzzy_id)
+        ],
+        metric_recipes=[
+            replace(config.metric_recipes[0], id=hidden_id if other_kind == "metric" else fuzzy_id)
+        ],
+        semantic_policies=[
+            SemanticPolicyConfig(
+                id="policy.synthetic.visibility",
+                kind="object_visibility",
+                object_ids=[hidden_id, fuzzy_id],
+                audiences=["external"],
+                action="hidden",
+            )
+        ]
+        if with_policy
+        else [],
+    )
+    return config, hidden_id, fuzzy_id
+
+
+@pytest.mark.parametrize("transport", ["http", "mcp"])
+def test_counterpart_visibility_uses_one_package_snapshot(package_config_factory, transport):
+    from semantic_rails.errors import SemanticLayerError
+    from semantic_rails.http_core import SemanticHTTPService
+    from semantic_rails.request_context import RequestContext
+
+    config, package = package_config_factory("jaffle_shop")
+    config, hidden_id, _ = _counterpart_config(config, "metric", True)
+    config = replace(config, metric_recipes=[])
+    reloaded_config = replace(config, measures=[], semantic_policies=[])
+
+    class ReloadingRuntime:
+        def __init__(self, runtime):
+            self.runtime = runtime
+            self.config_reads = 0
+
+        @property
+        def _config(self):
+            self.config_reads += 1
+            return config if self.config_reads == 1 else reloaded_config
+
+        def __getattr__(self, name):
+            return getattr(self.runtime, name)
+
+    runtime = Runtime.from_config(config, source_path=str(package))
+    proxy = ReloadingRuntime(runtime)
+    missing_id = "metric.synthetic.private_fee"
+    try:
+        if transport == "http":
+            response, status = SemanticHTTPService(proxy).exception_payload(
+                SemanticLayerError(
+                    "OBJECT_NOT_FOUND", "Unknown object", details={"object_id": missing_id}
+                ),
+                stage="http",
+                context=RequestContext(audience="external"),
+            )
+            assert status == 400
+        else:
+            response = SemanticLayerMCPAdapter(proxy).call_tool(
+                "execute",
+                {
+                    "query": {"select": [{"expression": {"metric": missing_id}}]},
+                    "mode": "sql",
+                    "policy_context": {"audience": "external"},
+                    "verbosity": "full",
+                },
+            )
+        assert response["ok"] is False
+        assert response["errors"][0]["code"] == "OBJECT_NOT_FOUND"
+        serialized = json.dumps(response)
+        assert hidden_id not in serialized
+        # The error still echoes the caller's missing ID; every other value must
+        # exclude the private name, including duplicated hints and suggestions.
+        assert "private_fee" not in serialized.replace(missing_id, "")
+        assert proxy.config_reads == 1
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("missing_kind", ["metric", "measure"])
+@pytest.mark.parametrize("mode", ["run", "validate", "sql"])
+@pytest.mark.parametrize("with_policy", [False, True], ids=["public", "hidden"])
+@pytest.mark.parametrize("context_source", ["outer", "nested", "host"])
+def test_missing_counterpart_suggestions_follow_request_visibility(
+    package_config_factory, missing_kind, mode, with_policy, context_source
+):
+    from semantic_rails.request_context import RequestContext
+
+    config, package = package_config_factory("jaffle_shop")
+    config, hidden_id, fuzzy_id = _counterpart_config(config, missing_kind, with_policy)
+    runtime = Runtime.from_config(config, source_path=str(package))
+    try:
+        query = {
+            "select": [{"expression": {missing_kind: f"{missing_kind}.synthetic.private_fee"}}],
+        }
+        arguments = {"query": query, "mode": mode, "verbosity": "full"}
+        context = {"audience": "external"}
+        if context_source == "nested":
+            query["policy_context"] = context
+        else:
+            arguments["policy_context"] = context
+        if context_source == "host":
+            # Trusted transport context must win over caller-supplied visibility.
+            arguments["policy_context"] = {"audience": "internal"}
+        response = SemanticLayerMCPAdapter(runtime).call_tool(
+            "execute",
+            arguments,
+            request_context=RequestContext(audience="external")
+            if context_source == "host"
+            else None,
+        )
+        assert response["ok"] is False
+        issue = response["errors"][0]
+        assert issue["code"] == "OBJECT_NOT_FOUND"
+        if with_policy:
+            serialized = json.dumps(response)
+            assert hidden_id not in serialized
+            assert fuzzy_id not in serialized
+        else:
+            assert issue["details"]["closest_matches"][0] == hidden_id
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("missing_kind", ["metric", "measure"])
+@pytest.mark.parametrize("audience", ["external", "internal", None])
+def test_http_counterpart_suggestions_use_resolved_visibility(
+    package_config_factory, missing_kind, audience
+):
+    from semantic_rails.errors import SemanticLayerError
+    from semantic_rails.http_core import SemanticHTTPService
+    from semantic_rails.request_context import RequestContext
+
+    config, package = package_config_factory("jaffle_shop")
+    config, hidden_id, fuzzy_id = _counterpart_config(config, missing_kind, True)
+    runtime = Runtime.from_config(config, source_path=str(package))
+    try:
+        response, status = SemanticHTTPService(runtime).exception_payload(
+            SemanticLayerError(
+                "OBJECT_NOT_FOUND",
+                "Unknown object",
+                details={"object_id": f"{missing_kind}.synthetic.private_fee"},
+            ),
+            stage="http",
+            context=RequestContext(audience=audience) if audience is not None else None,
+        )
+        assert status == 400
+        if audience == "internal":
+            assert response["error"]["details"]["closest_matches"][0] == hidden_id
+        else:
+            assert hidden_id not in json.dumps(response)
+            if audience == "external":
+                assert fuzzy_id not in json.dumps(response)
+            else:
+                assert response["error"]["details"]["closest_matches"] == [fuzzy_id]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("missing_kind", ["metric", "measure"])
+@pytest.mark.parametrize("mode", ["run", "validate", "sql"])
+def test_unavailable_visibility_cannot_add_a_counterpart(
+    package_config_factory, monkeypatch, missing_kind, mode
+):
+    from semantic_rails import policies
+
+    config, package = package_config_factory("jaffle_shop")
+    config, hidden_id, _ = _counterpart_config(config, missing_kind, True)
+
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("Visibility unavailable")
+
+    monkeypatch.setattr(policies, "hidden_object_ids", unavailable)
+    runtime = Runtime.from_config(config, source_path=str(package))
+    try:
+        response = SemanticLayerMCPAdapter(runtime).call_tool(
+            "execute",
+            {
+                "query": {
+                    "select": [
+                        {"expression": {missing_kind: f"{missing_kind}.synthetic.private_fee"}}
+                    ]
+                },
+                "mode": mode,
+                "policy_context": {"audience": "external"},
+            },
+        )
+        assert response["errors"][0]["code"] == "OBJECT_NOT_FOUND"
+        assert hidden_id not in json.dumps(response)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("op", ["is_null", "is_not_null", "unknown"])
+def test_where_operator_refusal_names_query_operators_and_null_form(runtime_factory, op):
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        adapter = SemanticLayerMCPAdapter(runtime)
+        query = {
+            "select": [{"expression": {"measure": "measure.jaffle.order_count"}}],
+            "where": [{"field": "dimension.jaffle_store_name", "op": op}],
+        }
+        response = adapter.call_tool("execute", {"query": query, "mode": "validate"})
+        issue = response["errors"][0]
+        assert issue["code"] == "INVALID_EXPRESSION_AST"
+        allowed = [
+            "=",
+            "!=",
+            "<",
+            "<=",
+            ">",
+            ">=",
+            "IN",
+            "NOT IN",
+            "LIKE",
+            "NOT LIKE",
+            "IS NULL",
+            "IS NOT NULL",
+        ]
+        assert issue["details"]["allowed"] == allowed
+        hint = issue["recovery_hints"][0]
+        assert hint["allowed"] == allowed
+        assert "op 'IS NULL' or 'IS NOT NULL' and omit value" in hint["message"]
+        assert "SQL" not in hint["message"]
+        for null_op in ("IS NULL", "IS NOT NULL"):
+            query["where"][0]["op"] = null_op
+            assert adapter.call_tool("execute", {"query": query, "mode": "validate"})["ok"]
+    finally:
+        runtime.close()
 
 
 def test_inline_prior_period_with_offset_alias_returns_authored_alternative(runtime_factory):

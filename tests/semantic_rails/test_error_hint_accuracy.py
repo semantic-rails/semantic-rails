@@ -9,8 +9,10 @@ from semantic_rails.ast import normalize_query
 from semantic_rails.compiler_parts.bind import _bind_measure
 from semantic_rails.compiler_parts.indexes import get_package_analysis
 from semantic_rails.diagnostics import (
+    enrich_object_not_found,
     enrich_path_not_found,
     exception_issue,
+    object_id_suggestions,
     recovery_hints_for_error,
 )
 from semantic_rails.errors import SemanticLayerError
@@ -22,7 +24,9 @@ from semantic_rails.schema import (
     PathPolicyConfig,
     PathPreferenceConfig,
     RelationshipConfig,
+    SemanticPolicyConfig,
 )
+from semantic_rails.sql_ast import SqlLiteral, build_filter_condition
 
 
 @pytest.mark.parametrize("aggregation", ["count", "percentile", "unknown", None])
@@ -52,6 +56,118 @@ def test_unknown_aggregation_hint_does_not_invent_allowed_values():
     hint = recovery_hints_for_error("UNSUPPORTED_AGGREGATION", {"aggregation": "unknown"})[0]
     assert hint["aggregation_received"] == "unknown"
     assert "count" not in hint["message"]
+
+
+@pytest.mark.parametrize("path", ["metric_predicate", "metric_filters", "relation.filter"])
+def test_filter_operator_guidance_keeps_other_expression_positions_unchanged(path):
+    with pytest.raises(SemanticLayerError) as raised:
+        build_filter_condition(SqlLiteral(1), "is_null", None, path=path)
+    assert raised.value.code == "INVALID_EXPRESSION_AST"
+    assert raised.value.details["token_kind"] == "operator"
+    assert "expression_position" not in raised.value.details
+
+
+@pytest.mark.parametrize("default", ["sum", "avg", "max"])
+def test_unsupported_aggregation_hint_names_the_actual_default(package_config_factory, default):
+    config, _ = package_config_factory("jaffle_shop")
+    measure = replace(
+        config.measures[0], allowed_aggregations=["sum", "avg", "max"], default_aggregation=default
+    )
+    config = replace(config, measures=[measure])
+    query = normalize_query({"select": [{"expression": {"measure": measure.id}}]})
+    with pytest.raises(SemanticLayerError) as raised:
+        _bind_measure(MeasureRefExpr(measure=measure.id, aggregation="count"), config, query)
+    hint = exception_issue(raised.value, stage="bind")["recovery_hints"][0]
+    assert f"or omit `aggregation` to use the measure's default ({default})" in hint["message"]
+    assert hint["allowed"] == ["sum", "avg", "max"]
+
+
+@pytest.mark.parametrize("missing_kind", ["metric", "measure"])
+def test_missing_id_prefers_an_exact_counterpart_across_kinds(package_config_factory, missing_kind):
+    config, _ = package_config_factory("jaffle_shop")
+    config = replace(
+        config,
+        measures=[replace(config.measures[0], id="measure.synthetic.delivery_charge")],
+        metric_recipes=[replace(config.metric_recipes[0], id="metric.synthetic.delivery_charge")],
+        semantic_policies=[],
+    )
+    other_kind = "measure" if missing_kind == "metric" else "metric"
+    if missing_kind == "metric":
+        config = replace(
+            config,
+            metric_recipes=[
+                replace(config.metric_recipes[0], id="metric.synthetic.delivery_charges")
+            ],
+        )
+    else:
+        config = replace(
+            config, measures=[replace(config.measures[0], id="measure.synthetic.delivery_charges")]
+        )
+    missing_id = f"{missing_kind}.synthetic.delivery_charge"
+    error = enrich_object_not_found(
+        SemanticLayerError("OBJECT_NOT_FOUND", "Unknown object", details={"object_id": missing_id}),
+        config,
+    )
+    assert error.details["closest_matches"][0] == f"{other_kind}.synthetic.delivery_charge"
+    # An ordinary typo retains same-kind suggestions, without fuzzy cross-kind guesses.
+    unrelated = f"{missing_kind}.synthetic.delivery_chargs"
+    error = enrich_object_not_found(
+        SemanticLayerError("OBJECT_NOT_FOUND", "Unknown object", details={"object_id": unrelated}),
+        config,
+    )
+    assert error.details["closest_matches"] == [f"{missing_kind}.synthetic.delivery_charges"]
+
+
+@pytest.mark.parametrize("missing_kind", ["metric", "measure"])
+@pytest.mark.parametrize("visibility_known", [False, True])
+def test_object_suggestions_respect_known_or_uncertain_visibility(
+    package_config_factory, missing_kind, visibility_known
+):
+    config, _ = package_config_factory("jaffle_shop")
+    other_kind = "measure" if missing_kind == "metric" else "metric"
+    counterpart = f"{other_kind}.synthetic.private_fee"
+    fuzzy_match = f"{missing_kind}.synthetic.private_fees"
+    config = replace(
+        config,
+        measures=[
+            replace(config.measures[0], id=counterpart if other_kind == "measure" else fuzzy_match)
+        ],
+        metric_recipes=[
+            replace(
+                config.metric_recipes[0], id=counterpart if other_kind == "metric" else fuzzy_match
+            )
+        ],
+        semantic_policies=[
+            SemanticPolicyConfig(
+                id="policy.synthetic.visibility",
+                kind="object_visibility",
+                object_ids=[counterpart, fuzzy_match],
+                audiences=["external"],
+                action="hidden",
+            )
+        ],
+    )
+    hidden_ids = frozenset({counterpart, fuzzy_match}) if visibility_known else None
+    suggestions = object_id_suggestions(
+        config, f"{missing_kind}.synthetic.private_fee", hidden_ids=hidden_ids
+    )
+    # Without a resolved context, preserve only the existing same-kind fuzzy behavior.
+    assert suggestions == ([] if visibility_known else [fuzzy_match])
+
+
+def test_existing_closest_matches_cannot_bypass_visibility_filter(package_config_factory):
+    config, _ = package_config_factory("jaffle_shop")
+    hidden = config.measures[0].id
+    error = enrich_object_not_found(
+        SemanticLayerError(
+            "OBJECT_NOT_FOUND",
+            "Unknown object",
+            details={"object_id": "measure.synthetic.unrelated", "closest_matches": [hidden]},
+        ),
+        config,
+        hidden_ids=frozenset({hidden}),
+    )
+    assert hidden not in error.details.get("closest_matches", [])
 
 
 @pytest.mark.parametrize(

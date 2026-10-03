@@ -726,9 +726,8 @@ def _validate_non_additive_sums(
 class NonAdditiveRefusal(SemanticLayerError):
     """``ROLLUP_UNSAFE`` for an ``additive: false`` measure summed above its stored grain.
 
-    Its message and details point to the measure's key rather than list it; the key
-    columns and dimensions stay on the object for in-process callers, such as
-    ``project validate``'s probe.
+    Key columns and dimensions stay available to in-process callers. Public
+    diagnostics name dimensions only after checking the request's visibility.
     """
 
     def __init__(

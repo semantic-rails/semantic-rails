@@ -37,6 +37,7 @@ from .metadata import (
     valid_values_payload,
 )
 from .planner import plan_payload
+from .policies import diagnostic_hidden_object_ids
 from .request_context import (
     RequestContext,
     context_from_policy_context,
@@ -2113,7 +2114,15 @@ class SemanticLayerMCPAdapter:
         # but we defensively never want diagnostics enrichment to mask
         # the original error.
         with contextlib.suppress(Exception):
-            exc = enrich_object_not_found(exc, self.runtime._config)
+            config = self.runtime._config
+            exc = enrich_object_not_found(
+                exc,
+                config,
+                hidden_ids=diagnostic_hidden_object_ids(
+                    config,
+                    _resolved_tool_request_context(arguments).to_policy_context(),
+                ),
+            )
         issue = exception_issue(exc, stage="mcp")
         out = self._envelope(
             {"ok": False, "status": "error", "error": issue, "errors": [issue]},
