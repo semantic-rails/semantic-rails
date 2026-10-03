@@ -30,7 +30,7 @@ import sqlite3
 import subprocess  # noqa: F401 — re-exported for tests that monkeypatch semantic_rails.db.subprocess
 import threading
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -203,8 +203,11 @@ class Database:
         *,
         max_rows: int | None = None,
         time_zone: str = "",
+        on_cursor: Callable[[Any], None] | None = None,
     ) -> list[dict[str, Any]]:
         cur = self.conn.cursor()
+        if on_cursor is not None:
+            on_cursor(cur)  # e.g. a statement timeout must interrupt this cursor, not self.conn
         if self.engine == "duckdb":
             set_duckdb_time_zone(cur, time_zone)
         cur.execute(sql, list(params or []))
@@ -227,6 +230,9 @@ def _takes_time_zone(query: Any) -> bool:
         return "time_zone" in inspect.signature(query).parameters
     except (TypeError, ValueError):
         return False
+
+
+_INTERRUPT_RETRY_SECONDS = 0.05
 
 
 class DuckDBAdapter(WarehouseAdapter):
@@ -261,18 +267,29 @@ class DuckDBAdapter(WarehouseAdapter):
         timeout_ms = _limit_timeout_milliseconds(limits)
         finished = threading.Event()
         watchdog: threading.Timer | None = None
+        extra: dict[str, Any] = {}
         if timeout_ms > 0:
+            # DuckDB runs each statement on a cursor of its own, and interrupting
+            # the parent connection does not stop it, so the watchdog interrupts
+            # this call's cursor and nothing else.
+            cursors: list[Any] = []
+            extra["on_cursor"] = cursors.append
 
-            def interrupt_if_running() -> None:
-                if not finished.is_set():
-                    self._db.conn.interrupt()
+            def interrupt_until_finished() -> None:
+                # An interrupt that lands before the statement starts is lost, so
+                # repeat it until the call ends (also covers a cursor made late).
+                while not finished.is_set():
+                    for cursor in cursors:
+                        cursor.interrupt()
+                    finished.wait(_INTERRUPT_RETRY_SECONDS)
 
-            watchdog = threading.Timer(timeout_ms / 1_000.0, interrupt_if_running)
+            watchdog = threading.Timer(timeout_ms / 1_000.0, interrupt_until_finished)
             watchdog.daemon = True
             watchdog.start()
         try:
             zone = session_time_zone(limits)
-            extra = {"time_zone": zone} if zone and _takes_time_zone(self._db.query) else {}
+            if zone and _takes_time_zone(self._db.query):
+                extra["time_zone"] = zone
             rows = self._db.query(sql, parameters, max_rows=_limit_max_rows(limits), **extra)
             return _clip_rows(rows, limits)
         except SemanticLayerError:
@@ -284,7 +301,7 @@ class DuckDBAdapter(WarehouseAdapter):
             if watchdog is not None:
                 watchdog.cancel()
                 # Ensure a callback that won the cancellation race has
-                # finished before the shared connection can run another query.
+                # finished before this call returns.
                 watchdog.join()
 
     def close(self) -> None:

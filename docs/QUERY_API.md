@@ -458,8 +458,9 @@ resource hints:
 ```
 
 - `statement_timeout_ms` — DuckDB enforces the requested millisecond deadline
-  with a per-query watchdog that calls `Connection.interrupt()` and drains the
-  watchdog before the shared connection is reused. Warehouse-native adapters
+  with a per-query watchdog that interrupts the cursor running that query (never
+  the shared connection or another query) and drains the watchdog before the
+  query returns. Warehouse-native adapters
   with second-granularity controls round up to the next second.
 - `max_rows` — DB-API, DuckDB, and native Snowflake cursors fetch at most
   `max_rows + 1`, return at most `max_rows`, and set `truncated=true` when an
