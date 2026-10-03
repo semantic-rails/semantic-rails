@@ -457,7 +457,9 @@ def _term_matches_value_domain(config: Any, term: str) -> bool:
     return False
 
 
-def _grouping_term_matches(runtime: Any, query: dict[str, Any], term: str) -> list[str] | None:
+def _grouping_term_matches(
+    runtime: Any, query: dict[str, Any], term: str, *, limit: int = 5
+) -> list[str] | None:
     """Return discovery's matched dimension IDs, or None for a skipped grouping term."""
 
     from ..metadata import discover_payload  # noqa: WPS433 - shared metadata helper
@@ -473,7 +475,7 @@ def _grouping_term_matches(runtime: Any, query: dict[str, Any], term: str) -> li
         partial_query=discovery_query(query),
         kinds=["dimension"],
         stage="post_measure",
-        limit=5,
+        limit=limit,
     )
     return [
         str(row["id"])
