@@ -125,7 +125,9 @@ class Handler(BaseHTTPRequestHandler):
                 context=getattr(self, "_request_context", None),
             )
         except Exception as exc:  # pragma: no cover - defensive HTTP guardrail
-            payload, status = service.exception_payload(exc, stage="http")
+            payload, status = service.exception_payload(
+                exc, stage="http", context=getattr(self, "_request_context", None)
+            )
         return _json(self, status, payload)
 
     def do_POST(self) -> None:  # noqa: N802
@@ -171,7 +173,9 @@ class Handler(BaseHTTPRequestHandler):
                 context=getattr(self, "_request_context", None),
             )
         except Exception as exc:  # pragma: no cover - defensive HTTP guardrail
-            result, status = service.exception_payload(exc, stage="http")
+            result, status = service.exception_payload(
+                exc, stage="http", context=getattr(self, "_request_context", None)
+            )
         return _json(self, status, result)
 
 

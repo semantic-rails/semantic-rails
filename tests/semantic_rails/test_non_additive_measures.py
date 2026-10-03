@@ -9,7 +9,8 @@ one series); anything else is refused, and avg/min/max stay available.
 
 from __future__ import annotations
 
-import re
+import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -166,7 +167,7 @@ def _refused(runtime: Runtime, payload: dict[str, Any]) -> dict[str, Any]:
         runtime.query(payload)
     assert raised.value.code == "ROLLUP_UNSAFE"
     assert raised.value.details["unsupported_construct"] == "non_additive_sum"
-    # The key columns the refusal keeps off its message and details stay on the object.
+    # Key columns remain available to in-process validation callers.
     assert isinstance(raised.value, NonAdditiveRefusal)
     return {**raised.value.details, "missing_columns": raised.value.columns}
 
@@ -377,36 +378,156 @@ def test_refusal_hints_reach_the_error_envelope(runtime: Runtime) -> None:
     assert "avg / min / max / median" in details["recovery_hints"][0]["message"]
 
 
-def test_the_refusal_lists_no_key_under_any_policy(runtime: Runtime, package_dir: Path) -> None:
-    # The diagnostic lists no key column or dimension, so it reads the same under an
-    # object_visibility policy.
-    from dataclasses import replace
-
+@pytest.mark.parametrize("with_aggregate_if", [False, True], ids=["plain", "with-aggregate-if"])
+@pytest.mark.parametrize("mode", ["run", "validate", "sql"])
+@pytest.mark.parametrize("hidden_key", [None, REPO_DAY, f"dimension.{NS}_traffic_day_day"])
+def test_refusal_names_keys_only_when_all_are_visible(
+    runtime: Runtime, package_dir: Path, with_aggregate_if: bool, mode: str, hidden_key: str | None
+) -> None:
+    from semantic_rails.mcp import SemanticLayerMCPAdapter
     from semantic_rails.schema import SemanticPolicyConfig
 
-    hidden = [f"dimension.{NS}_traffic_day_day", REPO_DAY]
-    assert set(hidden) <= {dimension.id for dimension in runtime.config.dimensions}
-    policy = SemanticPolicyConfig(
-        id="policy.test.hide_the_key",
-        kind="object_visibility",
-        object_ids=hidden,
-        audiences=["external"],
-        action="hidden",
-    )
-    hiding = Runtime.from_config(
-        replace(runtime.config, semantic_policies=[policy]), source_path=str(package_dir)
+    policies = []
+    if hidden_key:
+        policies = [
+            SemanticPolicyConfig(
+                id="policy.test.hide_the_key",
+                kind="object_visibility",
+                object_ids=[hidden_key],
+                audiences=["external"],
+                action="hidden",
+            )
+        ]
+    engine = Runtime.from_config(
+        replace(runtime.config, semantic_policies=policies), source_path=str(package_dir)
     )
     query = {**_query("daily_visitors"), "policy_context": {"audience": "external"}}
-    refusals = []
-    for engine in (runtime, hiding):
-        with pytest.raises(SemanticLayerError) as raised:
-            engine.query(query)
-        assert raised.value.code == "ROLLUP_UNSAFE"
-        refusals.append(f"{raised.value} {raised.value.details}")
-    assert refusals[0] == refusals[1]
-    assert raised.value.columns  # the key columns stay on the error object
-    for name in hidden:
-        assert name not in refusals[1]
-    # No key column appears as a word (the measure id aside).
-    shown = refusals[1].replace(f"measure.{NS}.daily_visitors", "")
-    assert re.search(r"\b(repo|day)\b", shown) is None
+    if with_aggregate_if:
+        # The conditional rewrite must not bypass or lose context on the ordinary
+        # non-additive measure beside it.
+        query["select"].append(
+            {
+                "as": "matching_rows",
+                "expression": {
+                    "kind": "aggregate_if",
+                    "aggregation": "count",
+                    "condition": {
+                        "kind": "comparison",
+                        "op": "=",
+                        "left": {
+                            "kind": "column",
+                            "entity": f"entity.{NS}_traffic_day",
+                            "column": "repo",
+                        },
+                        "right": {"kind": "literal", "value": "a"},
+                    },
+                },
+            }
+        )
+    try:
+        response = SemanticLayerMCPAdapter(engine).call_tool(
+            "execute", {"query": query, "mode": mode, "verbosity": "full"}
+        )
+        assert response["ok"] is False
+        issue = response["errors"][0]
+        assert issue["code"] == "ROLLUP_UNSAFE"
+        names = [REPO_DAY, f"dimension.{NS}_traffic_day_day"]
+        if hidden_key:
+            assert issue["message"] == (
+                f"Measure 'measure.{NS}.daily_visitors' is additive: false, and this query would "
+                "sum more than one of its rows into an output row: group by or filter (=) "
+                "each column of its key, or query a finer grain, or use aggregation avg / min / max / median."
+            )
+            assert issue["details"] == {
+                "measure_id": f"measure.{NS}.daily_visitors",
+                "unsupported_construct": "non_additive_sum",
+                "construct": "sum",
+            }
+            assert issue["recovery_hints"] == [
+                {
+                    "kind": "stay_at_stored_grain",
+                    "message": "Group by, or filter with = to one value, each column of the measure's "
+                    "key, or use aggregation avg / min / max / median.",
+                }
+            ]
+            assert "recovery_hints" not in response
+            assert response["error"] == {key: issue[key] for key in ("code", "message")}
+            assert all(name not in json.dumps(response) for name in names)
+        else:
+            assert issue["details"]["key_dimensions"] == names
+            for name in names:
+                assert name in issue["message"]
+                assert name in issue["recovery_hints"][0]["message"]
+    finally:
+        engine.close()
+
+
+def test_uncertain_key_visibility_preserves_the_generic_refusal(
+    runtime: Runtime, monkeypatch
+) -> None:
+    from semantic_rails import policies
+
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("Visibility unavailable")
+
+    monkeypatch.setattr(policies, "hidden_object_ids", unavailable)
+    with pytest.raises(NonAdditiveRefusal) as raised:
+        runtime.compile(_query("daily_visitors"))
+    assert "key_dimensions" not in raised.value.details
+    assert REPO_DAY not in str(raised.value)
+    assert REPO_DAY not in json.dumps(raised.value.details)
+
+
+@pytest.mark.parametrize(
+    ("context", "visible"),
+    [
+        ({"audience": "internal", "environment": "production", "roles": ["reader"]}, False),
+        ({"audience": "external", "environment": "production", "roles": ["reader"]}, True),
+        ({"audience": "internal", "environment": "development", "roles": ["reader"]}, True),
+        ({"audience": "internal", "environment": "production", "role": "operator"}, True),
+    ],
+)
+def test_key_names_follow_discovery_policy_context(runtime: Runtime, context, visible) -> None:
+    from semantic_rails.schema import SemanticPolicyConfig
+
+    policy = SemanticPolicyConfig(
+        id="policy.test.key_visibility",
+        kind="object_visibility",
+        object_ids=[REPO_DAY],
+        audiences=["internal"],
+        environments=["production"],
+        roles=["reader"],
+        action="hidden",
+    )
+    config = replace(runtime.config, semantic_policies=[policy])
+    engine = Runtime.from_config(config, source_path=runtime.source_path)
+    try:
+        with pytest.raises(NonAdditiveRefusal) as raised:
+            engine.compile({**_query("daily_visitors"), "policy_context": context})
+        assert (REPO_DAY in str(raised.value)) is visible
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("entry_point", ["internal", "plan", "compile"])
+def test_internal_planning_without_visibility_context_keeps_keys_private(
+    runtime: Runtime, entry_point: str
+) -> None:
+    from semantic_rails.ast import normalize_query
+    from semantic_rails.compiler import _plan_query, compile_query, plan_query
+
+    # Forcing the internal planning path cannot opt into naming a key: it has
+    # no request context with which to authorize that disclosure.
+    with pytest.raises(NonAdditiveRefusal) as raised:
+        if entry_point == "internal":
+            _plan_query(
+                runtime.config,
+                None,
+                normalize_query(_query("daily_visitors")),
+                collapse_window=True,
+            )
+        else:
+            operation = plan_query if entry_point == "plan" else compile_query
+            operation(runtime.config, None, _query("daily_visitors"))
+    assert "key_dimensions" not in raised.value.details
+    assert REPO_DAY not in str(raised.value)

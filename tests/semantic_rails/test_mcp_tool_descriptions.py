@@ -17,6 +17,7 @@ three constraints:
 from __future__ import annotations
 
 import copy
+import json
 
 from semantic_rails.mcp import list_tool_definitions
 
@@ -58,12 +59,12 @@ def test_every_tool_description_is_non_trivial():
         )
 
 
-def test_every_tool_description_under_700_chars():
+def test_every_tool_description_stays_scannable():
     """Upper bound so descriptions stay scannable in tools/list."""
     tools = list_tool_definitions()
     for tool in tools:
         desc = tool["description"]
-        assert len(desc) <= 700, (
+        assert len(desc) <= (850 if tool["name"] == "execute" else 700), (
             f"tool {tool['name']!r} description is too long ({len(desc)} chars); "
             f"keep agent-rated descriptions scannable."
         )
@@ -81,16 +82,38 @@ def test_plan_description_mentions_out_of_scope_branch():
     )
 
 
-def test_ir_accepting_tool_descriptions_enumerate_select_expression_shapes():
-    """The handoff finding F4: blind agents had no signal about which
-    `select.expression` shapes are accepted. The cheat-sheet ships once, on
-    `execute`, the only tool that takes Query IR to run."""
+def test_execute_description_shapes_and_empty_select_validate(runtime_factory):
     tools = list_tool_definitions()
     execute_desc = next(t["description"] for t in tools if t["name"] == "execute")
-    for shape in ("{aggregation, measure}", "{metric}", "prior_period"):
-        assert shape in execute_desc, (
-            f"execute description must enumerate {shape}; got {execute_desc!r}"
+    assert "{aggregation, measure} | {metric}" in execute_desc
+    for kind in (
+        "prior_period",
+        "rolling",
+        "cumulative",
+        "ratio",
+        "conversion",
+        "aggregate_if",
+        "between",
+        "arithmetic",
+    ):
+        assert kind in execute_desc
+    assert "ratio: per-order sum / order count" in execute_desc
+    assert "arithmetic adds measures" in execute_desc
+    assert "aggregate_if: conditional count" in execute_desc
+    assert "select may be empty: group_by alone lists rows" in execute_desc
+    assert "a query that already ran needs no validate" in execute_desc
+    from semantic_rails.mcp import SemanticLayerMCPAdapter
+
+    adapter = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
+    try:
+        result = adapter.call_tool(
+            "execute",
+            {"mode": "run", "query": {"select": [], "group_by": ["dimension.jaffle_store_name"]}},
         )
+        assert result["ok"] and result["rows"], result
+        assert all(set(row) == {"dimension.jaffle_store_name"} for row in result["rows"])
+    finally:
+        adapter.close()
 
 
 def test_no_orphan_explain_tool_references():
@@ -319,7 +342,6 @@ def test_discover_minimal_verbosity_slims_records(runtime_factory):
     Also verify the wire size shrinks materially — minimal should be
     a fraction of compact, otherwise the verbosity level is doing no
     work."""
-    import json
 
     from semantic_rails.mcp import SemanticLayerMCPAdapter
 

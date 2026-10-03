@@ -32,17 +32,20 @@ from ..common import (
 )
 from ..output import _package_display
 
-MCP_REQUIRED_TOOLS = ("discover", "inspect", "valid-values", "plan", "execute", "segment")
+MCP_REQUIRED_TOOLS = ("discover", "inspect", "valid-values", "plan", "execute")
 
 
 def _mcp_tool_check(runtime: Runtime) -> dict[str, Any]:
+    required_tools = list(MCP_REQUIRED_TOOLS)
+    if runtime.config.segments:
+        required_tools.append("segment")
     adapter = SemanticLayerMCPAdapter(runtime)
     try:
         tools = adapter.list_tools()
     finally:
         adapter.close()
     tool_names = sorted(str(tool.get("name", "")) for tool in tools if tool.get("name"))
-    missing = [name for name in MCP_REQUIRED_TOOLS if name not in tool_names]
+    missing = [name for name in required_tools if name not in tool_names]
     return {
         "adapter": "ok",
         "interface": adapter.interface,
