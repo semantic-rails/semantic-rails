@@ -875,11 +875,13 @@ def test_bigquery_date_diff_column_endpoints_normalized_on_every_surface(package
         expression = call(
             "DATE_DIFF", literal("day"), maximum(column("opened_at")), maximum(column("closed_at"))
         )
-        expected = "DATETIME_DIFF(DATETIME(base.m2), DATETIME(base.m1), DAY)"
+        expected = "DATETIME_DIFF(CAST(base.m2 AS DATETIME), CAST(base.m1 AS DATETIME), DAY)"
     elif surface == "relation":
-        expected = "DATETIME_DIFF(DATETIME(base.closed_at), DATETIME(base.opened_at), DAY)"
+        expected = (
+            "DATETIME_DIFF(CAST(base.closed_at AS DATETIME), CAST(base.opened_at AS DATETIME), DAY)"
+        )
     else:
-        expected = "DATETIME_DIFF(DATETIME(numbers.closed_at), DATETIME(numbers.opened_at), DAY)"
+        expected = "DATETIME_DIFF(CAST(numbers.closed_at AS DATETIME), CAST(numbers.opened_at AS DATETIME), DAY)"
     if surface == "package":
         expression = {"measure": "measure.numbers.amount", "aggregation": "avg"}
     elif surface == "aggregate_if":
@@ -916,7 +918,7 @@ def test_bigquery_date_diff_column_endpoints_normalized_on_every_surface(package
             "snowflake",
             f"DATEDIFF('day', CAST('{START}' AS TIMESTAMP_NTZ), CAST('{END}' AS TIMESTAMP_NTZ))",
         ),
-        ("bigquery", f"DATETIME_DIFF(DATETIME('{END}'), DATETIME('{START}'), DAY)"),
+        ("bigquery", f"DATETIME_DIFF(CAST('{END}' AS DATETIME), CAST('{START}' AS DATETIME), DAY)"),
         (
             "databricks",
             f"TIMESTAMPDIFF(DAY, DATE_TRUNC('day', CAST('{START}' AS TIMESTAMP)), DATE_TRUNC('day', CAST('{END}' AS TIMESTAMP)))",

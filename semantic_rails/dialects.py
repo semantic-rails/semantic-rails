@@ -111,7 +111,7 @@ class SqlDialect:
             if self.name == "bigquery":
                 # Force calendar boundaries in UTC, including TIMESTAMP endpoints;
                 # unwrapped TIMESTAMPs select BigQuery's elapsed-duration overload.
-                start, end = SqlCall("DATETIME", [start]), SqlCall("DATETIME", [end])
+                start, end = SqlCast(start, "DATETIME"), SqlCast(end, "DATETIME")
             return self.date_diff(unit, start, end)
         if name != "CAST":
             return SqlCall(name, args)

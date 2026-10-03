@@ -121,7 +121,7 @@ def test_authored_date_diff_normalizes_timestamp_columns(unit, start, end, expec
     )
     sql = render_select(query)
     assert (
-        f"DATETIME_DIFF(DATETIME(e.closed_at), DATETIME(e.opened_at), {unit.upper()}) AS delta"
+        f"DATETIME_DIFF(CAST(e.closed_at AS DATETIME), CAST(e.opened_at AS DATETIME), {unit.upper()}) AS delta"
         in sql
     )
     # Execute only the DuckDB reference, never substitute it for BigQuery execution.
@@ -131,6 +131,31 @@ def test_authored_date_diff_normalizes_timestamp_columns(unit, start, end, expec
     )
     with duckdb.connect() as conn:
         assert conn.execute(render_select(reference)).fetchall() == [(expected,)]
+
+
+def test_authored_date_diff_normalizes_datetime_columns():
+    endpoints = SqlCte(
+        "endpoints",
+        SqlSelect(
+            select=[
+                SqlField(SqlCast(SqlLiteral("2024-01-01 23:00:00"), "DATETIME"), "opened_at"),
+                SqlField(SqlCast(SqlLiteral("2024-01-03 01:00:00"), "DATETIME"), "closed_at"),
+            ]
+        ),
+    )
+    args = [SqlLiteral("day"), _col("e", "opened_at"), _col("e", "closed_at")]
+    query = SqlSelect(
+        ctes=[endpoints],
+        select=[SqlField(DIALECT.scalar_call("DATE_DIFF", args), "delta")],
+        from_table=SqlTableRef("endpoints", "e"),
+    )
+    sql = render_select(query)
+    assert "CAST('2024-01-01 23:00:00' AS DATETIME) AS opened_at" in sql
+    assert "CAST('2024-01-03 01:00:00' AS DATETIME) AS closed_at" in sql
+    assert (
+        "DATETIME_DIFF(CAST(e.closed_at AS DATETIME), CAST(e.opened_at AS DATETIME), DAY) AS delta"
+        in sql
+    )
 
 
 def test_date_add_renders_parenthesized_interval():
