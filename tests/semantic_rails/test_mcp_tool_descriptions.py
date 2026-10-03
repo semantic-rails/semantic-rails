@@ -340,7 +340,7 @@ def test_discover_minimal_verbosity_slims_records(runtime_factory):
     must NOT appear.
 
     Also verify the wire size shrinks materially — minimal should be
-    a fraction of compact, otherwise the verbosity level is doing no
+    a fraction of full, otherwise the verbosity level is doing no
     work."""
 
     from semantic_rails.mcp import SemanticLayerMCPAdapter
@@ -348,18 +348,16 @@ def test_discover_minimal_verbosity_slims_records(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     adapter = SemanticLayerMCPAdapter(runtime)
     try:
-        compact = adapter.call_tool(
-            "discover", {"terms": "orders by store", "verbosity": "compact"}
-        )
+        full = adapter.call_tool("discover", {"terms": "orders by store", "verbosity": "full"})
         minimal = adapter.call_tool(
             "discover", {"terms": "orders by store", "verbosity": "minimal"}
         )
 
         # Both must be ok and ship records.
-        assert compact.get("ok") is not False
+        assert full.get("ok") is not False
         assert minimal.get("ok") is not False
         # Discover returns a flat envelope (no separate `payload` key).
-        compact_payload = compact
+        full_payload = full
         minimal_payload = minimal
 
         permitted = {
@@ -382,12 +380,12 @@ def test_discover_minimal_verbosity_slims_records(runtime_factory):
                 assert not extra, f"minimal verbosity {bucket} row leaked verbose keys: {extra}"
                 assert "score" not in row
 
-        # Wire-size check: minimal must be materially smaller than compact.
-        compact_bytes = len(json.dumps(compact_payload))
+        # Wire-size check: minimal must be materially smaller than full.
+        full_bytes = len(json.dumps(full_payload))
         minimal_bytes = len(json.dumps(minimal_payload))
-        assert minimal_bytes < compact_bytes * 0.5, (
-            f"minimal ({minimal_bytes:,}B) should be <50% of compact "
-            f"({compact_bytes:,}B); otherwise the verbosity is doing no work."
+        assert minimal_bytes < full_bytes * 0.5, (
+            f"minimal ({minimal_bytes:,}B) should be <50% of full "
+            f"({full_bytes:,}B); otherwise the verbosity is doing no work."
         )
     finally:
         adapter.close()
