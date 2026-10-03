@@ -69,7 +69,7 @@ def test_dbapi_cursor_fetch_is_bounded_and_reports_truncation():
     assert rows.truncated is True
 
 
-SLOW_DUCKDB_QUERY = "SELECT count(*) FROM range(100000000000) a"
+SLOW_DUCKDB_QUERY = "SELECT count(*) FROM range(1000000000000) a"
 
 
 def _duckdb_file(tmp_path) -> str:
