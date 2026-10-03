@@ -827,7 +827,6 @@ def _dropped_grouping_why(
         if (row := _object_by_id(config.dimensions, item)) is not None
     ]
     stand_ins = [_entity_grouping_dimensions(config, term) for term in terms]
-    reads = _reads_grouping
     chosen = set((partial_query or {}).get("group_by") or [])
 
     def unsettled(term: str, ids: set[str] | None) -> bool:
@@ -835,9 +834,11 @@ def _dropped_grouping_why(
         the caller's group_by doesn't say which: it names none, or the draft added one."""
 
         entities = {
-            row.entity for row in config.dimensions if row.groupable and reads(term, ids, row)
+            row.entity
+            for row in config.dimensions
+            if row.groupable and _reads_grouping(term, ids, row)
         }
-        picked = {row.id for row in grouped if reads(term, ids, row)}
+        picked = {row.id for row in grouped if _reads_grouping(term, ids, row)}
         return len(entities) > 1 and root not in entities and not (picked and picked <= chosen)
 
     ambiguous = [term for term, ids in zip(terms, stand_ins, strict=True) if unsettled(term, ids)]
@@ -845,7 +846,7 @@ def _dropped_grouping_why(
         [
             index
             for index, dimension in enumerate(grouped)
-            if term not in ambiguous and reads(term, ids, dimension)
+            if term not in ambiguous and _reads_grouping(term, ids, dimension)
         ]
         for term, ids in zip(terms, stand_ins, strict=True)
     ]
@@ -954,6 +955,15 @@ def _grain_splits(time: dict[str, Any]) -> bool:
     return _grain_bucket(start.date(), grain) != _grain_bucket(final, grain)
 
 
+def _without_windows(question: str) -> str:
+    """The lowercase question with every time window it states blanked out."""
+
+    lowered = str(question or "").lower()
+    for start, end in _time_window(question).spans:
+        lowered = lowered[:start] + " " * (end - start) + lowered[end:]
+    return lowered
+
+
 # A series the question asks for in words: it splits the answer by time at plan's grain.
 _SERIES_RE = re.compile(r"\b(?:over\s+time|trends?|trending|time\s+series)\b")
 
@@ -972,9 +982,7 @@ def _names_grain(config: Any, question: str, query: dict[str, Any], grain: str) 
         for key in ("start", "end")
     ):
         return True
-    lowered = str(question or "").lower()
-    for start, end in _time_window(question).spans:
-        lowered = lowered[:start] + " " * (end - start) + lowered[end:]
+    lowered = _without_windows(question)
     forms = {grain, f"{grain}s", "daily" if grain == "day" else f"{grain}ly"}
     if forms & set(re.findall(r"[^\W\d_]+", lowered)) or _SERIES_RE.search(lowered):
         return True
@@ -999,14 +1007,14 @@ def _asked_grouping_terms(config: Any, question: str) -> list[str]:
     the noun a ranking ranks ("which 5 stores had the most orders"), and the words after
     "per", "each" or "every" ("revenue per store"). Windows are not part of any of them."""
 
-    lowered = str(question or "").lower()
-    for start, end in _time_window(question).spans:
-        lowered = lowered[:start] + " " * (end - start) + lowered[end:]
     request = _ranking_request(question, _dimension_nouns(config))
     return [
         *_listed_grouping_terms(question, config),
         *([str(request["noun"])] if request else []),
-        *(match.group(1).strip() for match in _PER_GROUPING_RE.finditer(lowered)),
+        *(
+            match.group(1).strip()
+            for match in _PER_GROUPING_RE.finditer(_without_windows(question))
+        ),
     ]
 
 
@@ -1021,11 +1029,12 @@ def _unasked_grouping_why(
     A group_by dimension traces when a grouping the question asks for reads it
     (``_asked_grouping_terms``, read as ``_dropped_grouping_why`` reads a listed one), when the
     caller's ``partial_query`` group_by has it, or when the draft's own ``=`` or ``IN`` filter
-    keeps only values of it the question names. The time block's grain
-    traces when the question's words outside its windows name it (``_names_grain``), when the
-    caller's ``partial_query`` time has it, or when it can't split the rows because the window
-    fits in one bucket (``_grain_splits``). The package declares no default grain, so a grain
-    plan picks for a comparison, a trend or a window of several periods doesn't trace.
+    keeps only values of it the question names. The time block's grain traces when the
+    question's words outside its windows name it (``_names_grain``), when the caller's
+    ``partial_query`` time has it, or when it can't split the rows because the window fits in
+    one bucket (``_grain_splits``). The package declares no default grain, so a grain plan
+    picks for a comparison, a year-over-year shift or a window of several periods doesn't
+    trace.
 
     A ranking whose rows are split by a traced grain is a clarification instead: the draft
     would keep the top N of (entity x period). ``why.details.clarification`` offers the top N
@@ -1071,9 +1080,9 @@ def _unasked_grouping_why(
         return {
             "code": "PLAN_UNASKED_GROUPING",
             "message": (
-                f"The draft groups by {', '.join(names)}, which the question never asks for: "
-                "that splits the answer into rows the question doesn't ask for, so plan doesn't "
-                "call it ready."
+                f"The draft groups by {', '.join(names)}, which the question never asks for, "
+                "so it splits the answer into more rows than asked and plan doesn't call it "
+                "ready."
             ),
             "details": {
                 "unasked_groupings": names,
@@ -1094,6 +1103,7 @@ def _unasked_grouping_why(
         }
     order_by = [row for row in query.get("order_by") or [] if isinstance(row, dict)]
     aliases = {row.get("as") for row in query.get("select") or [] if isinstance(row, dict)}
+    aliases.discard(None)
     if not (
         splits
         and grouped
