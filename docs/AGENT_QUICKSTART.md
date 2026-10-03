@@ -154,6 +154,9 @@ there are no `warnings`, agents can forward `best.query_ir` directly to `execute
 (`/api/v1/query`). Call `validate` only when you want diagnostics without running the query, for
 example after editing Query IR or after `low_confidence`.
 
+Catalog fallback ranking breaks equal intent-match scores by discovery score, then object id,
+so candidate order and refusal diagnostics stay the same across Python hash seeds.
+
 The checks cover time windows, rankings, named filter values, and exclusions, not every phrasing:
 a draft can still misread a question and report `ok`, sometimes with only a `PLAN_UNMATCHED_TERMS`
 warning (see the README's known limitations). Compare `best.query_ir` with the question before

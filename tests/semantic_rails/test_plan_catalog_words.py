@@ -322,7 +322,23 @@ def test_every_draft_goes_through_the_one_gate(
     )
     fallback = plan_payload(jaffle, intent="orders by store, customer type")
     assert fallback["best"]["pattern"] == "catalog_fallback"
-    _not_ready(fallback, ["type"])
+    # The history grouping needs query time. Validation refuses the primary;
+    # the validating delivered-orders alternative changes its target and grouping.
+    assert fallback["status"] == "low_confidence"
+    assert fallback["why"]["code"] == "PLAN_FALLBACK_SEMANTIC_DRIFT"
+    assert fallback["best"]["validation_ok"] is False
+    assert "ready_for" not in fallback["next"]
+
+    # Force an executable catalog draft past validation: it must still pass the
+    # same catalog-word gate as a named pattern, rather than become ready.
+    [draft, *_] = plan_module.fallback_drafts(jaffle, intent="orders by store, customer type")
+    valid_draft = replace(draft[0], query={**draft[0].query, "group_by": [STORE]})
+    monkeypatch.setattr(
+        plan_module, "fallback_drafts", lambda *args, **kwargs: [(valid_draft, draft[1])]
+    )
+    gated = plan_payload(jaffle, intent="orders by store, customer type")
+    assert gated["best"]["validation_ok"] is True
+    _not_ready(gated, ["customer", "type"])
 
 
 def test_a_long_question_is_read_to_its_last_word(
