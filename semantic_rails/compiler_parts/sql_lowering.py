@@ -523,7 +523,8 @@ def _dataset_scope(row: MeasurePlan, config: PackageConfig) -> LeafScope | None:
     """A sum or count's own rows under its authored conditions (its filter, its CASE, the joins
     they need), without the query's filters or window: what ``dataset`` observation probes,
     whichever leaf answers. None for a condition on a metric predicate, a fan-out or a hop
-    valid over time, which the probe can't read; the guard then refuses."""
+    valid over time, which the probe can't read, and for a nested CASE, whose settlement
+    can't tell unknown amounts from no rows: the guard then refuses."""
     from ..compiler import _path_has_temporal_validity
 
     bound = row.bound_measure
@@ -532,6 +533,7 @@ def _dataset_scope(row: MeasurePlan, config: PackageConfig) -> LeafScope | None:
     if (
         not resolves_to_zero(bound.aggregation, measure)
         or measure.lookup_from
+        or has_nested_case(measure)
         or _bound_metric_predicates(bound)
         or any(
             s.analysis.get("status") != "ok" or _path_has_temporal_validity(s.chosen_path, config)

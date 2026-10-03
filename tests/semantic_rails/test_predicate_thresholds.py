@@ -458,6 +458,7 @@ def test_a_conditional_count_with_no_match_in_scope_is_unobserved_for_a_customer
 
     Nothing matched anywhere in scope, so that 0 is no data. Customer 2 reads NULL, so
     `= 0` selects nobody, and the query says so instead of answering with a confident 0.
+    Under the dataset scope the count of nobody's orders is 0, as the raw count is.
     """
     (kept,) = _gold(
         "select count(*) from orders o where o.status = 'returned' and o.customer_id in ("
@@ -466,18 +467,19 @@ def test_a_conditional_count_with_no_match_in_scope_is_unobserved_for_a_customer
         "where y.customer_id = c.customer_id and y.status = 'returned' and y.amount >= 100) = 0)"
     )[0]
     assert kept == 0
-    response = runtime.query(
-        {
-            "version": 1,
-            "select": [{"as": "n", "expression": {"measure": "measure.pred.order_count"}}],
-            "where": [{"field": "dimension.pred_status", "op": "=", "value": "returned"}],
-            "metric_filters": [_predicate(CUSTOMER, large, op, value, scope_mode="contextual")],
-        }
-    )
+    query = {
+        "version": 1,
+        "select": [{"as": "n", "expression": {"measure": "measure.pred.order_count"}}],
+        "where": [{"field": "dimension.pred_status", "op": "=", "value": "returned"}],
+        "metric_filters": [_predicate(CUSTOMER, large, op, value, scope_mode="contextual")],
+    }
+    response = runtime.query({**query, "observation_scope": "query"})
     assert response["rows"] == [{"n": None}]
     (warning,) = _no_data_warnings(response)
     assert warning["details"]["outputs"] == ["n"]
     assert warning["object_ids"] == ["measure.pred.order_count"]
+    dataset = runtime.query(query)
+    assert dataset["rows"] == [{"n": kept}] and not _no_data_warnings(dataset)
 
 
 @HUGE_ORDER_COUNTS
@@ -507,6 +509,7 @@ def test_a_conditional_count_with_no_match_in_scope_is_unobserved_for_a_member_w
 
     Members 2 to 4 would have 4 activities between them if an entity with no rows counted as
     0 while the measure had no data anywhere, which is what one rule for every entity rules out.
+    Under the dataset scope the count of nobody's activities is 0, as the raw count is.
     """
     (kept,) = _gold(
         "select count(*) from activities a where a.member_id in (select m.member_id from members m "
@@ -514,16 +517,17 @@ def test_a_conditional_count_with_no_match_in_scope_is_unobserved_for_a_member_w
         "from tickets u where u.member_id = m.member_id and u.ticket_id >= 100) = 0)"
     )[0]
     assert kept == 0
-    response = runtime.query(
-        {
-            "version": 1,
-            "select": [{"as": "n", "expression": {"measure": "measure.pred.activity_count"}}],
-            "metric_filters": [_predicate(MEMBER, late, op, value)],
-        }
-    )
+    query = {
+        "version": 1,
+        "select": [{"as": "n", "expression": {"measure": "measure.pred.activity_count"}}],
+        "metric_filters": [_predicate(MEMBER, late, op, value)],
+    }
+    response = runtime.query({**query, "observation_scope": "query"})
     assert response["rows"] == [{"n": None}]
     (warning,) = _no_data_warnings(response)
     assert warning["details"]["outputs"] == ["n"]
+    dataset = runtime.query(query)
+    assert dataset["rows"] == [{"n": kept}] and not _no_data_warnings(dataset)
 
 
 @LARGE_ORDER_COUNTS
