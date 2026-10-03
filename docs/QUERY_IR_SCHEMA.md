@@ -28,6 +28,7 @@ and the comparison fixtures: see
 | `time` | `TimeBlock` (or `null`) | Query-level time anchor: temporal_role + grain + bounds. `start` is inclusive, `end` is exclusive. |
 | `temporal_role_overrides` | `object<measure_id, temporal_role_id>` | Per-measure clock bindings. |
 | `route_decisions` | `array` of `RouteDecision` | This query's own route for an entity pair: the `decision` of an `AMBIGUOUS_PATH` option. See [`route_decisions`](#route_decisions). |
+| `observation_scope` | `"dataset"\|"query"` | Whether a sum or count with no rows in a group reads 0 when its measure has data anywhere (`dataset`, the default) or only inside the query's filters (`query`). See "Empty groups" below. |
 | `policy_context` | `object` | Caller-supplied access context (`environment`, `audience`, `roles`, `now`, ...). |
 | `limits` | `object` | Per-request `statement_timeout_ms`, `max_rows`. |
 | `verbosity` | `"summary"\|"minimal"\|"compact"\|"full"` | Response detail level (default `compact`). On `catalog`, `summary` returns counts + flat ID lists per kind (under 10KB) — recommended for cold-start orientation. |
@@ -903,10 +904,24 @@ no rows reads one or the other, by one rule, in every query:
 | `avg`, `min`, `max`, `median`, `percentile` | `NULL` | `NULL` |
 | semi-additive measures (stocks), distinct populations, and measures with `additive: false` | `NULL` | `NULL` |
 
-A measure has data in scope when at least one group of the answer holds a value: a sum with a
-non-NULL amount, or a count above zero. The scope is the measure's own filters, the query's
-`where` filters and policy row filters, before the `group_by`. Plain time leaves check
-for data outside the query's time bounds (DuckDB and Postgres; see time coverage below).
+A measure has data in scope when at least one of its rows in scope holds a value: a sum with a
+non-NULL amount, or a count above zero. The scope is the measure's own authored conditions
+(its `filter`, an `aggregate_if` condition or a `CASE`) and policy row filters, before the
+`group_by`, and the query's `observation_scope` says whether the query's own filters count:
+
+- **`dataset`** (the default, or the package's `defaults.observation_scope`): they don't. When
+  the query has a `where` filter or a metric predicate, the guard reads the measure's first
+  row under its authored conditions and row filters, on every leaf, route and warehouse. If
+  store 5 sold no apples, "apples at store 5" reads `0`, as store 5 does in a `group_by:
+  store` answer. A string `=` or `IN` `where` value that matches no row of its dimension
+  (under the caller's row filters) adds one `FILTER_VALUE_NOT_FOUND` warning naming each such
+  value and the closest one, so a misspelled `product = 'appels'` isn't read as a confident 0.
+- **`query`**: they do. A measure with no value inside the query's filters reads `NULL` in
+  every group with `NO_DATA_IN_SCOPE`: "apples at store 5" reads `NULL`, and a misspelled
+  filter value reads `NULL`, not a confident 0.
+
+Either way a time window is judged as below: plain time leaves check for data outside the
+query's time bounds (DuckDB and Postgres; see time coverage below).
 Where a measure has data in scope,
 a group with no rows reads `0`: a store with orders but no refunds has 0 refunds. Where it has
 none, every group reads `NULL`: with no refunds anywhere in scope, no store has "0 refunds",
@@ -937,14 +952,20 @@ on the base table and never reads a rollup. Its sum is `0` for a no-match group
 when its measure has a known amount elsewhere in scope. Under this fallback,
 a matched-unknown group also reads `0` when another group has a known amount;
 if no amount is known anywhere in scope, it stays `NULL`. Other measures in the
-query keep their own settlement rule.
+query keep their own settlement rule. Under `dataset`, a query with a `where` filter or a
+metric predicate over such a measure is refused with `EMPTY_GROUPS_UNSETTLED`, since its
+unknown amounts would read `0`; send `observation_scope: "query"`.
 
 A query with a `distribution` output keeps the earlier settlement in every output, which reads
 a group's unknown amounts like no rows: there a sum is `0` in a group whose amounts are all
 NULL, wherever its measure has data in scope, and arithmetic settles each operand that way, so
 `goods + shipping` beside a median is `0` for a store with no refunds and a number for one
 whose refunds leave a column NULL. Its plan and SQL are the same as before unknown amounts
-stayed `NULL`.
+stayed `NULL`. Its combined outputs have no probe of their own, so under `dataset` such a
+query with a `where` filter or a metric predicate is refused the same way. So is one whose
+measure's authored condition reads a fan-out, a hop valid over time or a metric predicate.
+A metric predicate's own per-entity values, a lookup's source and a distribution's branches
+are internal: they settle inside their own scope in both modes.
 
 - **Arithmetic** settles each operand first, then combines them. An operand that is unknown
   or has no data in scope is `NULL`, and so is the result: `goods + shipping` by refund type
@@ -968,9 +989,6 @@ stayed `NULL`.
   where every refunded order has goods or shipping amounts but never both. In a query with a
   `distribution` output, every predicate reads unknown amounts that way. A measure with a
   nested `CASE` keeps its earlier settlement inside a predicate too.
-- **Filters narrow the scope.** With `where: store = 'x'`, a measure that has no rows at
-  store x reads `NULL`, even though the same store reads `0` in a `group_by: store` answer. A
-  filter value that matches nothing (a misspelled `product`) reads `NULL`, not a confident 0.
 - **Time coverage bounds zero filling.** Bounded plain time leaves check for observation
   outside the query's window under the same authored, query and policy row filters. For
   fill, dense series and combined leaves, an empty bucket inside the base relation's loaded
@@ -987,7 +1005,9 @@ stayed `NULL`.
   Filled, dense-series (rolling, prior-period) and combined plans, bounded or not, read
   the base relation even when rollups are available, so routing cannot change their
   coverage answers. Other routed
-  aggregates, nested, fanout and predicate sources retain the window observation test.
+  aggregates, nested, fanout and predicate sources retain the window observation test,
+  except that a `dataset` query with a `where` filter or a metric predicate probes each
+  measure's rows untimed.
   Coverage uses data alone. Performance guidance includes the emitted observation and
   coverage reads as scans without request-window bounds; narrowing the requested window
   does not bound those reads.
@@ -1008,7 +1028,9 @@ When an output that is a sum, count or distinct count (or a sum or difference of
 `NULL` on every returned row, or nothing came back with no time bounds and no metric filter,
 the response carries one `NO_DATA_IN_SCOPE` warning that names those outputs. A `prior_period`,
 ratio or rolling output never gets it: it can be `NULL` while its measure has data. It costs
-no extra query, and a clipped result (`truncated`) never gets it.
+no extra query, and a clipped result (`truncated`) never gets it. Under `dataset`, an empty
+answer to a query with a `where` filter or a metric predicate never gets it either: its
+filters kept no row, which says nothing of the measure's data elsewhere.
 
 ClickHouse fills an unmatched outer-join field with a type default (0 or an empty string)
 unless the join yields NULLs, so every ClickHouse statement ends with
