@@ -18,7 +18,7 @@ from .ast import child_groups, every_filter, normalize_query
 from .compiler import bind_metadata_objects, bind_query
 from .errors import ERROR_CODES, SemanticLayerError, query_execution_error
 from .expressions import MetricRecipeRefExpr, collect_object_references
-from .policies import enforce_query_policies
+from .policies import enforce_query_policies, withheld_rank_order
 from .request_context import RequestContext, context_from_policy_context
 from .request_payload import checked_discover_kinds, unknown_discover_kinds_error
 from .schema import PackageConfig
@@ -119,6 +119,16 @@ class ResourceAccess:
             binding = None
             if query is not None:
                 binding = bind_query(self.config, None, query)
+                order = withheld_rank_order(
+                    self.config,
+                    binding,
+                    environment=self.context.environment,
+                    audience=self.context.audience,
+                    roles=self.context.roles,
+                )
+                if order is not None:
+                    query = {**query, "order_by": order}
+                    binding = bind_query(self.config, None, query)
                 references = set(binding.object_ids)
             else:
                 references.update(bind_metadata_objects(self.config, object_ids))

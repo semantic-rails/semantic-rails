@@ -784,6 +784,14 @@ def recovery_hints_for_error(
             }
         ]
     if code == "POLICY_DENIED":
+        if details.get("withheld_objects"):
+            return [
+                {
+                    "kind": "rank_by_withheld_values",
+                    "message": str(details.get("accepted_shape", "")),
+                    "details": dict(details),
+                }
+            ]
         effects = list(details.get("policy_effects", []) or [])
         if any(str(effect.get("kind", "")) == "metric_constraint" for effect in effects):
             return [

@@ -91,7 +91,12 @@ from .fanout import (
 )
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
-from .policies import enforce_query_policies, query_policy_effects, row_filters_for_context
+from .policies import (
+    enforce_query_policies,
+    query_policy_effects,
+    row_filters_for_context,
+    withheld_rank_order,
+)
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
 from .request_context import (
@@ -822,6 +827,37 @@ def _window_total_fields(compiled) -> dict[str, Any]:
     if not compiled["logical_plan"].time.get("window_total"):
         return {"assumptions": []}
     return {"assumptions": [WINDOW_TOTAL_ASSUMPTION], "time_shape": TIME_SHAPE_WINDOW_TOTAL}
+
+
+def _withhold_values(out: dict[str, Any], policy_effects: list[dict[str, Any]]) -> None:
+    """Drop the column of a rank by withheld values, and name the withheld objects instead."""
+    effects = [row for row in policy_effects if row.get("withheld_column")]
+    if not effects:
+        return
+    column = effects[0]["withheld_column"]
+    withheld = sorted({object_id for row in effects for object_id in row["withheld_objects"]})
+    if "rows" in out:
+        out["rows"] = [
+            {key: value for key, value in row.items() if key != column} for row in out["rows"]
+        ]
+        out["column_types"].pop(column, None)
+    if "output_columns" in out:
+        out["output_columns"] = [row for row in out["output_columns"] if row.get("field") != column]
+    out["withheld"] = withheld
+    out["warnings"] = [
+        *out["warnings"],
+        semantic_issue(
+            code="VALUES_WITHHELD",
+            message=(
+                f"Rows are ordered by {', '.join(withheld)}, whose values are withheld by "
+                "policy and not shown; ties are ordered by the group keys."
+            ),
+            severity="info",
+            stage="policy",
+            details={"withheld_objects": withheld, "order_by": column},
+            object_ids=withheld,
+        ),
+    ]
 
 
 def _shorthand_normalized_warnings(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2170,6 +2206,7 @@ class Runtime:
                 "trace",
             }
             out.update({key: value for key, value in metadata.items() if key in validate_keep})
+            _withhold_values(out, policy_effects)
             if verbosity == "full":
                 out["compile_stats"] = dict(compiled.get("compile_stats", {}) or {})
                 out["performance_plan"] = asdict(compiled["performance_plan"])
@@ -2262,6 +2299,7 @@ class Runtime:
             "explain": asdict(compiled["explain"]),
             **compile_response_metadata(self, payload, compiled),
         }
+        _withhold_values(out, policy_effects)
         return apply_response_verbosity(
             out, verbosity=verbosity, sql_profile=sql_profile, kind="compile"
         )
@@ -2505,6 +2543,7 @@ class Runtime:
                         },
                     }
                 )
+        _withhold_values(out, policy_effects)
         if verbosity == "full":
             out["physical_plan"] = asdict(compiled["physical_plan"])
             out["performance_plan"] = asdict(compiled["performance_plan"])
@@ -2528,13 +2567,25 @@ class Runtime:
                 binding=binding,
             )
 
-        return bind_query(
+        def bind(query: dict[str, Any]) -> BoundQuery:
+            return bind_query(
+                self._config,
+                self.registry,
+                query,
+                row_filters=filters,
+                check_policies=check_policies,
+            )
+
+        binding = bind(payload)
+        # A rank by a withheld value breaks its ties by the group keys, in the same direction.
+        order = withheld_rank_order(
             self._config,
-            self.registry,
-            payload,
-            row_filters=filters,
-            check_policies=check_policies,
+            binding,
+            environment=str(policy_context.get("environment", "")),
+            audience=str(policy_context.get("audience", "")),
+            roles=policy_context.get("roles", []),
         )
+        return binding if order is None else bind({**payload, "order_by": order})
 
     def _segment_policy_effects(
         self, segment_id: str, context: dict[str, Any]

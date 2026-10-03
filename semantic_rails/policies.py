@@ -17,12 +17,20 @@ from typing import Any
 from .ast import every_filter, normalize_query, plain_filters
 from .compiler import BoundQuery, bind_query
 from .errors import SemanticLayerError
+from .policy_rules import MAX_RANK, withheld_max_rank
 from .policy_rules import policy_action as _policy_action
 from .policy_rules import policy_config as _policy_config
 from .request_context import context_from_policy_context
 from .row_filters import RowFilter, is_row_filter, row_filter
 from .schema import PackageConfig, SemanticPolicyConfig
 from .sql_preparation import checked_slot_value
+
+WITHHOLD = "withhold_values"
+WITHHELD_SHAPE = (
+    "Select the withheld metric directly, put it first in order_by, then every group key in "
+    "the same direction (added for you when order_by names only the metric), with a limit of "
+    "at most max_rank. Do not select, filter, threshold, compare or export it anywhere else."
+)
 
 
 def policy_effects_for_object(
@@ -174,7 +182,171 @@ def enforce_query_policies(
                 ],
             },
         )
+    withheld = withheld_object_ids(
+        config, object_ids, environment=environment, audience=audience, roles=roles
+    )
+    if withheld:
+        if binding is None and query is not None:
+            binding = bind_query(config, None, dict(query))
+        refusal = withheld_shape(config, binding, withheld)
+        if refusal is not None:
+            raise refusal
+        assert binding is not None  # withheld_shape refuses an unbound query
+        column = binding.plan.query["order_by"][0]["field"]
+        for row in effects:
+            if row["action"] == WITHHOLD:
+                row["withheld_objects"] = sorted(withheld)
+                row["withheld_column"] = column
     return effects
+
+
+def withheld_object_ids(
+    config: PackageConfig,
+    object_ids: Iterable[str],
+    *,
+    environment: str = "",
+    audience: str = "",
+    roles: Iterable[str] | None = None,
+) -> dict[str, int]:
+    """Each object whose values a matching ``withhold_values`` policy keeps from this caller,
+    with the smallest ``max_rank`` among those policies."""
+    ranks: dict[str, int] = {}
+    for policy in config.semantic_policies:
+        if _policy_action(policy) != WITHHOLD:
+            continue
+        for object_id in dict.fromkeys(str(item) for item in object_ids):
+            if _policy_matches(
+                policy, object_id=object_id, environment=environment, audience=audience, roles=roles
+            ):
+                ranks[object_id] = min(ranks.get(object_id, MAX_RANK), withheld_max_rank(policy))
+    return ranks
+
+
+def withheld_shape(
+    config: PackageConfig, binding: BoundQuery | None, withheld: Mapping[str, int]
+) -> SemanticLayerError | None:
+    """The one guard on withheld values: ``None`` when the bound query only ranks by one.
+
+    Accepted: a grouped query whose first ``order_by`` field is a select item naming one
+    withheld metric or measure directly, ordered then by every group key in the same direction,
+    with a ``limit`` of at most ``max_rank``, no ``export``, and no other part of the query
+    reading a withheld object. Dependencies come from binding the query without that item, so
+    a filter, segment, derived metric or comparison reading it is caught as the compiler sees
+    it. Anything else is a ``POLICY_DENIED`` refusal.
+    """
+
+    def refuse(reason: str, message: str) -> SemanticLayerError:
+        return SemanticLayerError(
+            "POLICY_DENIED",
+            f"Values of {', '.join(sorted(withheld))} are withheld by policy: {message}",
+            details={
+                "reason": reason,
+                "withheld_objects": sorted(withheld),
+                "max_rank": max_rank,
+                "accepted_shape": WITHHELD_SHAPE,
+            },
+        )
+
+    max_rank = min(withheld.values())
+    if binding is None:
+        return refuse("withheld_unbound", "only a query can rank by them.")
+    query = binding.plan.query
+    if query.get("export"):
+        return refuse("withheld_export", "a query that reads them cannot be exported.")
+    order = list(query.get("order_by") or [])
+    ranked = next(
+        (item for item in query["select"] if order and item["as"] == order[0]["field"]), None
+    )
+    if ranked is None or _direct_reference(ranked["expression"]) not in withheld:
+        return refuse(
+            "withheld_not_ranked", "the first order_by field must select one of them directly."
+        )
+    keys = rank_keys(query)
+    if not keys:
+        return refuse("withheld_ungrouped", "a rank needs group_by keys.")
+    direction = order[0]["direction"]
+    if [(_order_field(query, item["field"]), item["direction"]) for item in order[1:]] != [
+        (key, direction) for key in keys
+    ]:
+        return refuse(
+            "withheld_tie_order",
+            f"ties are ordered by every group key, {direction}, and nothing else.",
+        )
+    limit = query.get("limit")
+    if limit is None or limit > max_rank:
+        return refuse("withheld_rank_limit", f"limit must be at most {max_rank}.")
+    witness = {
+        **query,
+        "select": [item for item in query["select"] if item is not ranked],
+        "order_by": [],
+        "limit": None,
+    }
+    try:
+        read = bind_query(config, None, witness).object_ids
+    except SemanticLayerError:
+        return refuse("withheld_unproven", "the rest of the query could not be bound without it.")
+    if read & set(withheld):
+        return refuse(
+            "withheld_value_dependency",
+            f"{', '.join(sorted(read & set(withheld)))} is read outside the ranked order_by field "
+            "(a selected expression, filter, threshold, segment or comparison).",
+        )
+    return None
+
+
+def rank_keys(query: Mapping[str, Any]) -> list[str]:
+    """A normalized query's output group keys: its group_by, then a time bucket."""
+    time = query.get("time") or {}
+    bucket = [f"{time['temporal_role']}__{time['grain']}"] if time.get("grain") else []
+    return [*query.get("group_by", []), *bucket]
+
+
+def withheld_rank_order(
+    config: PackageConfig,
+    binding: BoundQuery,
+    *,
+    environment: str = "",
+    audience: str = "",
+    roles: Iterable[str] | None = None,
+) -> list[dict[str, str]] | None:
+    """The tie order a rank by a withheld object needs, when its only order_by field is that
+    rank; the caller binds again with it, and :func:`withheld_shape` checks the result."""
+    query = binding.plan.query
+    order = list(query.get("order_by") or [])
+    ranked = next(
+        (item for item in query["select"] if order and item["as"] == order[0]["field"]), None
+    )
+    if len(order) != 1 or ranked is None:
+        return None
+    target = _direct_reference(ranked["expression"])
+    if not target or not withheld_object_ids(
+        config, [target], environment=environment, audience=audience, roles=roles
+    ):
+        return None
+    return [
+        order[0],
+        *({"field": key, "direction": order[0]["direction"]} for key in rank_keys(query)),
+    ]
+
+
+def _direct_reference(expression: Mapping[str, Any]) -> str:
+    """The metric or measure a select expression names with no wrapper or override."""
+    if set(expression) == {"kind", "metric"} and expression["kind"] == "metric":
+        return str(expression["metric"])
+    if (
+        set(expression) == {"kind", "measure", "aggregation", "temporal_role"}
+        and expression["kind"] == "measure"
+        and not expression["aggregation"]
+        and not expression["temporal_role"]
+    ):
+        return str(expression["measure"])
+    return ""
+
+
+def _order_field(query: Mapping[str, Any], field: str) -> str:
+    """``time`` names the query's time bucket."""
+    bucket = rank_keys({**query, "group_by": []})
+    return bucket[0] if field == "time" and bucket else field
 
 
 def row_filters_for_context(
