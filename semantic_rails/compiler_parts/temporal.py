@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import difflib
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from dataclasses import fields, is_dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -219,6 +220,56 @@ def _expr_compatible_temporal_roles(
     if isinstance(expr, ConversionExpr):
         return _expr_compatible_temporal_roles(expr.base, config, query)
     return set()
+
+
+def _window_measure_exprs(
+    expr: Any, config: PackageConfig
+) -> Iterator[MeasureRefExpr | AggregateExpr | ScopedAggregateExpr]:
+    """Leaves filtered by an expression's period; conversions filter only base events."""
+    if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
+        yield expr
+    elif isinstance(expr, MetricRecipeRefExpr):
+        recipe = _recipe_index(config).get(expr.metric_recipe)
+        if recipe is None:
+            raise SemanticLayerError(
+                "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
+            )
+        yield from _window_measure_exprs(recipe.expression, config)
+    elif isinstance(expr, ConversionExpr):
+        yield from _window_measure_exprs(expr.base, config)
+    elif is_dataclass(expr):
+        for item in fields(expr):
+            value = getattr(expr, item.name)
+            for child in value if isinstance(value, list) else [value]:
+                if is_dataclass(child):
+                    yield from _window_measure_exprs(child, config)
+
+
+def _validate_leaf_window_clock(
+    measure_id: str, bound_role: str, requested: str, config: PackageConfig
+) -> None:
+    """A query must never replace a bound clock with another clock the measure advertises."""
+    if (
+        bound_role
+        and bound_role != requested
+        and requested in _measure_index(config)[measure_id].compatible_temporal_roles
+    ):
+        raise SemanticLayerError(
+            "INVALID_TEMPORAL_BINDING",
+            f"Measure '{measure_id}' is bound to '{bound_role}', so its output cannot be "
+            f"filtered or bucketed on '{requested}'. Query its bound clock instead.",
+            details={
+                "measure": measure_id,
+                "requested": requested,
+                "compatible": [bound_role],
+                "recovery_hints": [
+                    {
+                        "code": "CHOOSE_OUTPUT_CLOCK",
+                        "message": f"Set query.time.temporal_role to '{bound_role}'.",
+                    }
+                ],
+            },
+        )
 
 
 def _metric_ref_leaf_temporal_role_sets(
@@ -658,6 +709,16 @@ def _validate_query_temporal_bindings(query: NormalizedQuery, config: PackageCon
     # not a downstream binder error at execute time.
     _validate_conversion_temporal_bindings(query, config)
     allow_metric_time_alignment = _query_allows_metric_time_alignment(query, config, expressions)
+    # Published metric clocks cannot overrule an expression pin or a measure override.
+    # Check before the outer compatibility/alignment exceptions, using the same leaf
+    # resolution as predicates. Lowering checks the resolved bound clock again.
+    for expr in expressions:
+        if isinstance(expr, MetricPredicateExpr):
+            continue  # Its own source query validates its window, independently of this one.
+        for leaf in _window_measure_exprs(expr, config):
+            clocks = _expr_compatible_temporal_roles(leaf, config, query)
+            if len(clocks) == 1:
+                _validate_leaf_window_clock(leaf.measure, next(iter(clocks)), requested, config)
     for expr in expressions:
         compatible = _expr_compatible_temporal_roles(expr, config, query)
         if compatible and requested not in compatible:

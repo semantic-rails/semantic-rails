@@ -262,7 +262,10 @@ def test_catalog_probe_refuses_before_binding_when_confinement_fails(
     paths: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     closed = []
-    conn = SimpleNamespace(close=lambda: closed.append(True))
+    conn = SimpleNamespace(
+        close=lambda: closed.append(True),
+        execute=lambda sql: SimpleNamespace(fetchone=lambda: ("common_subplan",)),
+    )
 
     def connect(path: str, *, read_only: bool) -> Any:
         assert path == str(paths.db)
