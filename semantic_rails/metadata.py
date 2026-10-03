@@ -2607,6 +2607,7 @@ _MINIMAL_DISCOVER_RECORD_KEYS = (
     "id",
     "kind",
     "label",
+    "score",
     "default_temporal_role",
     "available",
 )
@@ -2625,7 +2626,8 @@ def _slim_discover_minimal(
     Drops ranking and debug detail (match_reasons, topics, comparison
     metadata, recommended_next_actions) and the starter_query_patch, which
     follows from id and kind. Callers that need the full card request
-    verbosity='compact'."""
+    verbosity='compact'. With no config, preserve the direct metadata API's
+    existing minimal projection; MCP supplies config for its richer shaping."""
 
     objects: list[Any] = (
         [*config.dimensions, *config.entities, *config.measures, *config.metric_recipes]
@@ -2686,9 +2688,11 @@ def _slim_discover_minimal(
         # explicit availability flag, for regular and blocked value cards.
         slim: dict[str, Any] = {
             k: row[k]
-            for k in ("id", "kind", "dimension_id", "value", "label", "available")
-            if k in row
+            for k in ("id", "kind", "dimension_id", "value", "label", "available", "score")
+            if k in row and (config is None or k != "score")
         }
+        if isinstance(slim.get("score"), float):
+            slim["score"] = round(slim["score"], 1)
         return slim
 
     def _slim(row: dict[str, Any]) -> dict[str, Any]:
@@ -2696,21 +2700,35 @@ def _slim_discover_minimal(
         if row.get("kind") == "dimension_value":
             slim = _slim_value(row)
         else:
-            slim = {k: row[k] for k in _MINIMAL_DISCOVER_RECORD_KEYS if k in row}
+            slim = {
+                k: row[k]
+                for k in _MINIMAL_DISCOVER_RECORD_KEYS
+                if k in row and (config is None or k != "score")
+            }
+            if isinstance(slim.get("score"), float):
+                slim["score"] = round(slim["score"], 1)
             if row.get("measure"):
                 slim["measure"] = row["measure"]
             description = " ".join(str(row.get("description") or "").split())
             if description and description != str(row.get("label") or ""):
-                sentences: list[str] = []
-                for sentence in re.split(r"(?<=[.!?])\s+", description):
-                    if (
-                        len(" ".join([*sentences, sentence])) <= _MINIMAL_DESCRIPTION_CHARS
-                        or references
-                        and references.search(sentence.casefold())
-                    ):
-                        sentences.append(sentence)
-                if sentences:
-                    slim["description"] = " ".join(sentences)
+                if config is None:
+                    description = (
+                        description[: _MINIMAL_DESCRIPTION_CHARS - 1].rstrip() + "…"
+                        if len(description) > _MINIMAL_DESCRIPTION_CHARS
+                        else description
+                    )
+                else:
+                    sentences: list[str] = []
+                    for sentence in re.split(r"(?<=[.!?])\s+", description):
+                        if (
+                            len(" ".join([*sentences, sentence])) <= _MINIMAL_DESCRIPTION_CHARS
+                            or references
+                            and references.search(sentence.casefold())
+                        ):
+                            sentences.append(sentence)
+                    description = " ".join(sentences)
+                if description:
+                    slim["description"] = description
         # Without the reason, an agent can't tell "unavailable" from a bug.
         if row.get("blocked_reason"):
             slim["blocked_reason"] = row["blocked_reason"]

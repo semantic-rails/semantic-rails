@@ -116,6 +116,22 @@ def test_unavailable_candidates_keep_their_reason(adapter: SemanticLayerMCPAdapt
     assert all("blocked_reason" not in row for row in available if row.get("available", True))
 
 
+def test_direct_metadata_minimal_projection_is_unchanged(adapter: SemanticLayerMCPAdapter) -> None:
+    args = {"terms": "revenue by store", "limit": 10}
+    compact = discover_payload(adapter.runtime, **args, verbosity="compact")
+    minimal = discover_payload(adapter.runtime, **args, verbosity="minimal")
+    for bucket in ("measures", "metrics", "dimensions", "entities", "dimension_values", "blocked"):
+        assert [r["id"] for r in compact[bucket]] == [r["id"] for r in minimal[bucket]]
+        for full, slim in zip(compact[bucket], minimal[bucket], strict=True):
+            assert slim["score"] == round(full["score"], 1)
+            description = " ".join(str(full.get("description") or "").split())
+            if description and description != full.get("label"):
+                expected = (
+                    description[:119].rstrip() + "…" if len(description) > 120 else description
+                )
+                assert slim["description"] == expected
+
+
 @pytest.mark.parametrize("verbosity", ["compact", "full"])
 def test_full_cards_on_request(adapter: SemanticLayerMCPAdapter, verbosity: str) -> None:
     response = adapter.call_tool(
