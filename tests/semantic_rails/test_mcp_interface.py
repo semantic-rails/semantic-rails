@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
+import socket
 import sys
 import threading
 import types
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from http.server import HTTPServer
 from io import StringIO
@@ -529,6 +532,29 @@ def _serve_mcp_http(adapter):
     finally:
         httpd.shutdown()
         thread.join(timeout=5)
+
+
+def test_mcp_http_adopts_the_managers_listener_without_rebinding(monkeypatch, capsys):
+    import semantic_rails.mcp_server as server
+
+    def serve_one_request(httpd):
+        httpd.timeout = 2
+        httpd.handle_request()
+
+    monkeypatch.setattr(server.HTTPServer, "serve_forever", serve_one_request)
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        port = listener.getsockname()[1]
+        inherited_fd = os.dup(listener.fileno())
+        monkeypatch.setenv("SEMANTIC_RAILS_MCP_SOCKET_FD", str(inherited_fd))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            serving = pool.submit(server.serve_http, _HostAdapter(), port=0)
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=3) as resp:
+                assert resp.status == 200
+                assert json.load(resp)["package_id"] == "host-package"
+            serving.result(timeout=3)
+        with pytest.raises(OSError):
+            os.fstat(inherited_fd)
+    assert f"http://127.0.0.1:{port}/mcp" in capsys.readouterr().out
 
 
 def test_mcp_http_and_sse_transport_smoke(runtime_factory):
