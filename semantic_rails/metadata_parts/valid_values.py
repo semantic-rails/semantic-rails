@@ -19,7 +19,7 @@ from ..errors import SemanticLayerError
 from ..policies import hidden_object_ids, row_filters_for_context
 from ..request_context import context_from_policy_context
 from ..runtime import Runtime, runtime_request_scope
-from ..schema import MeasureConfig
+from ..schema import MeasureConfig, PackageConfig
 from ..temporal_support import validate_temporal_support
 from .path_coverage import (
     _declared_value_rows,
@@ -57,7 +57,7 @@ def _policy_context(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     return context_from_policy_context(context).to_policy_context()
 
 
-def _query_state(query: dict[str, Any]) -> dict[str, Any]:
+def _query_state(query: dict[str, Any], config: PackageConfig) -> dict[str, Any]:
     keys = [
         "version",
         "select",
@@ -75,7 +75,7 @@ def _query_state(query: dict[str, Any]) -> dict[str, Any]:
     ]
     state = {key: query[key] for key in keys if key in query}
     with contextlib.suppress(SemanticLayerError):
-        state["normalized_query"] = normalize_query(dict(query)).to_dict()
+        state["normalized_query"] = normalize_query(dict(query), config=config).to_dict()
     return state
 
 
@@ -276,7 +276,7 @@ def valid_values_payload(
         "total_count": total_count,
         "has_more": has_more,
         "source": runtime.warehouse_engine,
-        "query_state": _query_state(query_payload),
+        "query_state": _query_state(query_payload, runtime._config),
         "selection": {"dimension_id": dimension_id, "entity": dim.entity},
         "selection_context": {"dimension_id": dimension_id, "entity": dim.entity},
         "value_domain_id": domain.id if domain is not None else "",

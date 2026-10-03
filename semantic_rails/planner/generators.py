@@ -139,14 +139,9 @@ def _draft_for_choice(
     if "time" not in query:
         query = _apply_time_from_text(runtime, query, intent, [str(choice["id"])])
 
-    existing_where = list(query.get("where", []) or [])
-    inferred_where = [
-        {"field": row["dimension_id"], "op": "=", "value": row["value"]}
-        for row in _matched_value_rows(runtime, query, intent)
-    ]
-    where = _append_unique_dicts(existing_where, inferred_where)
-    if where:
-        query["where"] = where
+    query = _normalize_value_filters(
+        query, _matched_value_rows(runtime, query, intent), text=intent
+    )
 
     resolved = [
         {
@@ -168,6 +163,52 @@ def _draft_for_choice(
         },
         score=0.25,
     )
+
+
+def _normalize_value_filters(
+    query: dict[str, Any], matched_values: list[dict[str, Any]] | None = None, *, text: str = ""
+) -> dict[str, Any]:
+    """Fold one contiguous value phrase; preserve separate clauses and caller filters."""
+
+    where = [
+        {**row, "field": row["field"].strip()}
+        if isinstance(row, dict) and isinstance(row.get("field"), str)
+        else row
+        for row in list(query.get("where", []) or [])
+    ]
+    named: dict[str, list[dict[str, Any]]] = {}
+    for row in matched_values or []:
+        rows = named.setdefault(row["dimension_id"].strip(), [])
+        value = row["value"]
+        if not any(
+            type(value) is type(existing["value"]) and value == existing["value"]
+            for existing in rows
+        ):
+            rows.append(row)
+    for field, rows in named.items():
+        values = [row["value"] for row in rows]
+        spans = [row["matched_span"] for row in rows if row.get("matched_span") is not None]
+        fold = len(values) > 1 and len(spans) == len(values)
+        if fold:
+            ordered = sorted(spans)
+            # Every gap must be only a list separator. Clause text, overlapping
+            # matches or missing provenance cannot prove one value-list phrase.
+            fold = all(
+                before[1] <= after[0]
+                and re.fullmatch(
+                    r"\s*(?:,|and|,\s*and|from)\s*", text[before[1] : after[0]].lower()
+                )
+                is not None
+                for before, after in zip(ordered, ordered[1:], strict=False)
+            )
+        for value in [values] if fold else values:
+            normalized = {"field": field, "op": "in" if fold else "=", "value": value}
+            if normalized not in where:
+                where.append(normalized)
+    result = dict(query)
+    if where:
+        result["where"] = where
+    return result
 
 
 def _choose_object_for_terms(
@@ -725,6 +766,15 @@ def _matched_value_rows(runtime: Any, query: dict[str, Any], text: str) -> list[
     out = []
     for row in best_by_match.values():
         cleaned = {key: value for key, value in row.items() if not key.startswith("_")}
+        for source in (row["value"], row.get("label"), row["_match_key"]):
+            if source is None or not str(source).strip():
+                continue
+            phrase = re.escape(str(source).strip().lower())
+            matches = list(re.finditer(rf"(?<![a-z0-9]){phrase}s?(?![a-z0-9])", lowered_text))
+            if matches:
+                if len(matches) == 1:
+                    cleaned["matched_span"] = matches[0].span()
+                break
         out.append(cleaned)
     out.sort(
         key=lambda row: (-float(row.get("score", 0.0) or 0.0), str(row.get("dimension_id", "")))

@@ -1040,7 +1040,7 @@ def test_mcp_time_refusal_keeps_code_and_actionable_hint(runtime, mode) -> None:
     assert result["ok"] is False
     assert result["error"]["code"] == "INVALID_TEMPORAL_ROLE"
     assert "declares no time" in result["error"]["message"]
-    assert result["recovery_hints"][0]["kind"] == "remove_time_or_declare_role"
+    assert result["errors"][0]["recovery_hints"][0]["kind"] == "remove_time_or_declare_role"
 
 
 def test_http_time_refusal_is_a_client_error(runtime) -> None:

@@ -67,7 +67,22 @@
       "type": [
         "object",
         "array"
-      ]
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "enum": [
+              "package_release",
+              "object_visibility",
+              "object_access",
+              "protected_object",
+              "metric_constraint",
+              "row_filter"
+            ]
+          }
+        }
+      }
     },
     "semantic_caveats": {
       "type": [

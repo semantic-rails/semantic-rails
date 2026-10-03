@@ -23,6 +23,7 @@ def _run_cli(*args: str) -> dict:
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
+        timeout=120,
     )
     if not proc.stdout.strip():
         raise AssertionError(f"CLI produced no stdout. args={args!r} stderr={proc.stderr!r}")

@@ -42,7 +42,7 @@ from .._base import (
     _top_n_intent,
     _unresolved_time_phrases,
 )
-from ..generators import _matched_value_rows, _target_focus_text
+from ..generators import _matched_value_rows, _normalize_value_filters, _target_focus_text
 from ..intent_ir import _FALLBACK_STOPWORDS
 from ._protocol import IntentPattern
 
@@ -191,16 +191,11 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
 
     if group_by:
         query["group_by"] = group_by
-    where = [
-        {"field": row["dimension_id"], "op": "=", "value": row["value"]}
-        for row in _matched_value_rows(runtime, query, text)
-    ]
-    if where:
-        query["where"] = where
-
+    query = _normalize_value_filters(query, _matched_value_rows(runtime, query, text), text=text)
     if is_top:
         query["order_by"] = [{"field": select_alias, "direction": "DESC"}]
         query["limit"] = top_n
+
     else:
         _add_order(query)
 

@@ -190,11 +190,11 @@ def test_mcp_adapter_surfaces_grain_error_with_recovery_hints(runtime_factory):
         details = first.get("details") or {}
         assert details.get("received") == "fortnight"
         assert details.get("closest_matches"), "closest_matches must be set"
-        # recovery_hints aggregated at the envelope top level.
-        top_hints = list(out.get("recovery_hints") or [])
+        # Recovery hints belong to the full issue.
+        top_hints = list(first.get("recovery_hints") or [])
         replace_hints = [h for h in top_hints if h.get("kind") == "replace_grain"]
         assert replace_hints, (
-            f"expected replace_grain in top-level recovery_hints, got {top_hints!r}"
+            f"expected replace_grain in the issue recovery_hints, got {top_hints!r}"
         )
     finally:
         runtime.close()

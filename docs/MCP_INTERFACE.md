@@ -55,9 +55,13 @@ API:
 - `package_id`
 - `warnings`
 - `errors`
-- `recovery_hints` (the errors' hints, and other next steps; left out when there are none)
+- `error` (`{code, message}` from `errors[0]`, present for errors including validate soft-fails)
+- `recovery_hints` (independent discovery next steps only; error hints live in `errors[i].recovery_hints`)
 - `timing_ms`
 
+Each full error issue appears once in `errors`, with its own `recovery_hints`;
+the hints are not repeated at the response root, in `query_ir_hints`, or in that
+issue's `details`. Distinct query-IR hints and independent discovery next steps remain.
 MCP issues leave out empty optional fields and a
 `why_invalid` or `unsupported_construct` that only repeats its `message` or `code`, and
 `request_context` appears only when a transport or `policy_context` set one.
@@ -160,8 +164,9 @@ ids, `kinds` limits the kinds listed, and a `DISCOVER_IDS_TRUNCATED` warning giv
 and `catalog/full` resources return the whole index, descriptive rows, or every card with the
 alias index (see [Resources And Prompts](#resources-and-prompts)).
 
-`discover` returns slim cards by default: `id`, `label`, `score`, a `description` trimmed to 120
-characters (left out when it only repeats the label) and `default_temporal_role`, plus
+`discover` returns slim cards by default: `id`, `label`, a `description` retaining whole sentences
+up to 120 characters (sentences naming package dimensions, entities, measures or metrics survive
+past the cap; descriptions repeating the label are omitted) and `default_temporal_role`, plus
 `available: false` and `blocked_reason` for a candidate that isn't available. A card in a kind's
 bucket leaves out its `kind`; the response leaves out the `terms` and `verbosity` it was called
 with. `verbosity="compact"` returns full cards with match reasons, starter patches and comparison
@@ -169,11 +174,17 @@ metadata. When the question uses an object's whole name ("revenue by store"), th
 above near-duplicates that add a qualifier the question doesn't use ("Delivered revenue").
 `kinds` takes an array or a comma-separated string, and also a JSON array sent as a string.
 Dimension-value cards keep the raw filter `value`, its business-facing `label`, and explicit
-`available` flag, including when a value is blocked.
+`available` flag, including when a value is blocked. Minimal cards omit `score`; order gives rank.
+An aggregate metric at its measure's default aggregation, without filters, windows, parameters
+or temporal pins, replaces its measure card when both are available in the response and neither
+is named in a policy's `object_ids`. It carries `measure` with that measure's id. At most one
+metric replaces each measure; additional equivalent metrics keep their own cards. Other metrics
+and measure-only requests retain separate cards. Grant-scoped discovery retains its card fields,
+including `starter_query_patch`, at every verbosity.
 
 `inspect` (default `verbosity="minimal"`) states each fact once. It leaves out fields that
 repeat another one (`object_type`, `usage_summary`, `top_values`), a description that only repeats
-the label, empty structural fields, and every starter patch after the first. Declared sample values
+the label, generic `recommended_next_actions`, empty structural fields, and every starter patch after the first. Declared sample values
 and query literals remain exact, including blank and null values. `"compact"` or `"full"` return
 the whole card, which is also the HTTP default.
 
@@ -378,13 +389,14 @@ Use `detail="full"` only when you need alternatives or blocked drafts.
 
 ### Query Verbosity Tiers (execute modes)
 
-`execute` defaults to `verbosity=minimal` in every mode. An explicit `verbosity` argument always
-wins, and error envelopes (`ok: false`) inherit the same default. This is an MCP-only default —
+`execute` defaults to `verbosity=minimal` in every mode. `query.verbosity` takes precedence
+over the outer `verbosity` argument; error envelopes (`ok: false`) use the same resolved
+verbosity as the runtime. This is an MCP-only default —
 the HTTP `/api/v1/*` default remains `compact`.
 
 | Verbosity | What's kept | Size (jaffle, measured*) | When to use |
 |---|---|---|---|
-| `minimal` (MCP default) | `{ok, status, errors, warnings, recovery_hints}`; mode `sql` also keeps `rendered_sql`; mode `run` also keeps `rows` + `row_count` | ~0.7KB / ~1.9KB / ~2.4KB | Tight agent loops with a tool-output cap |
+| `minimal` (MCP default) | `{ok, status, errors, warnings}` (plus `error` on failure); mode `sql` also keeps `rendered_sql`; mode `run` also keeps `rows` + `row_count` | ~0.7KB / ~1.9KB / ~2.4KB | Tight agent loops with a tool-output cap |
 | `compact` (HTTP default) | includes compact `trace`; drops top-level `physical_plan`, `performance_plan`, `semantic_summary`, `compile_stats`; strips `output_columns.lineage` | ~88KB / ~94KB / ~96KB | Diagnostics, `explain` review |
 | `full` | includes compact `trace` plus every field, including the heavy plan trees | ~97KB / ~114KB / ~116KB | Debugging, code-gen |
 
@@ -422,6 +434,14 @@ what would fit (a coarser or set `time.grain`, a filter, fewer `group_by` dimens
 `details` carries `row_count`, `total_row_count`, `result_chars` and `max_result_chars`. An operator
 changes the limit with the `SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS` environment variable, read on
 every call; a missing or non-positive value means the default.
+At effective `verbosity="compact"` (including normalized values and unknown values that fall
+back to compact), the same limit also bounds the execute result, including rows, `explain`
+and `sql_plan`, before the transport adds unknown-argument warnings and session annotations
+(`same_as`, `request_context`). Those additions can exceed the limit. If needed, execute omits
+`explain`, then `sql_plan`, adding one `EXECUTE_DETAILS_OMITTED` warning naming the omitted fields.
+Use `mode="sql"` or `verbosity="full"` for the complete plan; if already using `verbosity="full"`,
+use `mode="sql"`. If the remaining execute result still cannot fit, execute returns
+`RESULT_TOO_LARGE` without rows: its `details` contains only `max_result_chars`.
 The `query` that execute echoes back carries the caller's own `limits`; a transport-level
 `max_rows` does not become part of that query. The HTTP `/api/v1/query` endpoint leaves
 the response uncapped unless the query itself sets a limit.
@@ -787,7 +807,13 @@ Every error surfaced through the MCP or HTTP transport is wrapped in a structure
 }
 ```
 
-Every envelope carries `code` and `message`, plus at least one of `details`, `recovery_hints`, or `closest_matches`. Over MCP, empty optional fields are left out; recovery hints keep their own details so each hint is actionable on its own. Bare `KeyError` / `AttributeError` leaks are wrapped as `INTERNAL_ERROR` envelopes with a bug-tracker hint so the surface is always actionable.
+Each issue carries `code` and `message`, plus at least one of `details`, `recovery_hints`, or `closest_matches`. Over MCP, empty optional fields are left out; recovery hints keep their own details so each hint is actionable on its own. Bare `KeyError` / `AttributeError` leaks are wrapped as `INTERNAL_ERROR` envelopes with a bug-tracker hint so the surface is always actionable.
+
+At MCP verbosity `minimal`, `MIXED_GRAIN_INVALID` omits the relationship analysis
+dump while retaining offending dimensions, compatible measures and dimensions,
+time-axis recovery, and every recovery hint. `REWRITE_APPLIED` omits `details.analysis`
+and `details.path`, retaining its code, message, and `details.rewrite_kind`.
+Request `compact` or `full` for the complete analysis details.
 
 ### Error Code Catalog
 

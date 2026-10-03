@@ -32,6 +32,7 @@ def _run_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.Comple
         env=run_env,
         capture_output=True,
         text=True,
+        timeout=120,
     )
 
 
@@ -57,6 +58,7 @@ def _run_cli_in(
         env=run_env,
         capture_output=True,
         text=True,
+        timeout=120,
     )
 
 
