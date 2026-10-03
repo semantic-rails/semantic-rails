@@ -5,8 +5,7 @@
   and how to pin one: the airport's city, its key column, a filter on either, and a metric
   predicate on the airport, including when one role joins to a non-key column of the airport. A
   `graph.path_preferences` row pins the role for queries from its source entity to its target
-  entity. Parsing the package warns with `RELATIONSHIP_ROLES_UNPINNED`, whichever side each
-  relationship is declared from. A pinned
+  entity. Parsing the package warns with `ROUTES_UNDECIDED`, for every undecided pair a question can need. A pinned
   role reads the airport's key through the pinned relationship's join, so a leg whose code matches
   no airport groups under a NULL key. When a `graph.path_preferences` row exists for the pair (even one
   that names a route through another entity), the key is read through path selection too, so a

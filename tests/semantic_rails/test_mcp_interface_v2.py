@@ -75,6 +75,83 @@ def _stable(response: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in response.items() if key not in VOLATILE}
 
 
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("verbosity", ["compact", " Compact ", "bogus"])
+@pytest.mark.parametrize(
+    ("explain_size", "sql_size", "omitted"),
+    [(4000, 10, ["explain"]), (4000, 4000, ["explain", "sql_plan"])],
+)
+def test_compact_execute_sizes_the_result_before_transport_additions(
+    v2: SemanticLayerMCPAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+    explain_size: int,
+    sql_size: int,
+    omitted: list[str],
+    nested: bool,
+    verbosity: str,
+) -> None:
+    monkeypatch.setenv("SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS", "2000")
+    payload = {
+        "ok": True,
+        "row_count": 1,
+        "rows": [{"value": "x" * 100}],
+        "explain": "e" * explain_size,
+        "sql_plan": "s" * sql_size,
+    }
+    monkeypatch.setattr(v2.runtime, "query", lambda _query: payload.copy())
+    arguments = (
+        {"query": {**QUERY, "verbosity": verbosity}, "verbosity": "full"}
+        if nested
+        else {"query": QUERY, "verbosity": verbosity}
+    )
+    result = v2.call_tool("execute", arguments)
+    assert result["ok"] and result["rows"] == payload["rows"]
+    assert len(json.dumps(result, default=str, separators=(",", ":"))) <= 2000
+    assert all(field not in result for field in omitted)
+    if "sql_plan" not in omitted:
+        assert result["sql_plan"] == payload["sql_plan"]
+    notes = [w for w in result["warnings"] if w["code"] == "EXECUTE_DETAILS_OMITTED"]
+    assert len(notes) == 1
+    assert notes[0]["severity"] == "warning"
+    assert ", ".join(omitted) in notes[0]["message"]
+    assert "mode='sql'" in notes[0]["message"]
+    assert "verbosity='full'" not in notes[0]["message"]
+    full = v2.call_tool("execute", {"query": QUERY, "verbosity": "full"})
+    assert full["explain"] == payload["explain"] and full["sql_plan"] == payload["sql_plan"]
+
+
+def test_compact_execute_under_limit_is_byte_identical(
+    v2: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = {"query": QUERY, "verbosity": "compact"}
+    payload = {
+        "ok": True,
+        "row_count": 1,
+        "rows": [{"revenue": 12.5}],
+        "explain": {"query": QUERY},
+        "sql_plan": {"sql": "SELECT 12.5 AS revenue"},
+    }
+    monkeypatch.setattr(v2.runtime, "query", lambda _query: payload.copy())
+    monkeypatch.setenv("SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS", "10000000")
+    expected = json.dumps(_stable(v2.call_tool("execute", args)), default=str)
+    monkeypatch.delenv("SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS")
+    assert json.dumps(_stable(v2.call_tool("execute", args)), default=str) == expected
+
+
+def test_compact_execute_refuses_an_envelope_that_cannot_fit(
+    v2: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS", "500")
+    monkeypatch.setattr(
+        v2.runtime,
+        "query",
+        lambda _query: {"ok": True, "row_count": 1, "rows": [{"value": "x" * 450}]},
+    )
+    result = v2.call_tool("execute", {"query": QUERY, "verbosity": "compact"})
+    assert not result["ok"] and result["error"]["code"] == "RESULT_TOO_LARGE"
+    assert "rows" not in result
+
+
 def _initialize(adapter: SemanticLayerMCPAdapter) -> dict[str, Any]:
     message = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
     response = handle_jsonrpc_message(adapter, message)
