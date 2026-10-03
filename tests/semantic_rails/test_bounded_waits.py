@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 import ast
-import sys
 import textwrap
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
-
-from tests import conftest
 
 pytest_plugins = ["pytester"]
 
@@ -87,19 +83,6 @@ def test_every_wait_in_the_backend_tests_is_bounded() -> None:
         for line, call in unbounded_waits(path.read_text(encoding="utf-8"))
     ]
     assert not found, "Bound these waits with a timeout:\n" + "\n".join(found)
-
-
-@pytest.mark.parametrize(("worker", "armed"), [(True, True), (False, False)])
-def test_session_end_arms_the_exit_watchdog_only_in_xdist_workers(
-    monkeypatch: pytest.MonkeyPatch, worker: bool, armed: bool
-) -> None:
-    calls = []
-    monkeypatch.setattr(
-        conftest.faulthandler, "dump_traceback_later", lambda *a, **k: calls.append((a, k))
-    )
-    config = SimpleNamespace(workerinput={}) if worker else SimpleNamespace()
-    conftest.pytest_sessionfinish(SimpleNamespace(config=config))
-    assert calls == ([((120,), {"exit": True, "file": sys.__stderr__})] if armed else [])
 
 
 @pytest.mark.timeout(90)

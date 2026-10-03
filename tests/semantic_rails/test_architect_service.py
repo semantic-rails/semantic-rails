@@ -63,7 +63,7 @@ def _cross_process_upsert(
     start,
     results,
 ) -> None:
-    assert start.wait(timeout=60), "the parent never signalled the writers to start"
+    assert start.wait(timeout=10), "the parent never signalled the writers to start"
     try:
         report = (
             ArchitectProject(project_path, workspace_root=workspace_root)

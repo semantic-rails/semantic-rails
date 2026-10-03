@@ -123,8 +123,7 @@ Each test has a five-minute timeout using `pytest-timeout`'s thread method,
 which dumps all thread stacks before terminating the process. Under xdist,
 the controller reports the crashed worker and test node ID; that stack dump
 is not relayed, so `faulthandler_timeout` (240 s) first writes every thread's
-stack to the worker's stderr, which reaches the CI log. A worker still alive
-120 s after its last test dumps its stacks and exits. Tests that legitimately
+stack to the worker's stderr, which reaches the CI log. Tests that legitimately
 need longer must declare an explicit `@pytest.mark.timeout(...)` override. The
 backend CI job's 20-minute timeout remains the backstop.
 
