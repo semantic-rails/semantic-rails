@@ -227,8 +227,8 @@ A draft that validates can still leave out part of the question. `plan` returns
   (`fiscal_calendar_unrealized`). When the package has one calendar whose name says fiscal,
   `plan` buckets the draft on it itself (`time.calendar_id` with `time.fill: true`) only when
   the question's fiscal words ask for buckets of the draft's grain ("by fiscal quarter",
-  "fiscal quarterly") and no to-date or rolling value (period-to-date resets on Gregorian
-  periods). Any other fiscal period ("the first fiscal quarter", "vs prior fiscal year") is
+  "fiscal quarterly") and no to-date or rolling value (`period_to_date` refuses non-default
+  calendars). Any other fiscal period ("the first fiscal quarter", "vs prior fiscal year") is
   reported, and its recovery hint asks for the period as exact dates; without such a calendar
   the hint names the package's calendars;
 - picked its subject from several that match the question equally well, when neither the
