@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from ..ast import every_filter, is_child_group, rewrite_select_shorthand
@@ -29,6 +30,7 @@ from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
 from ._base import (
+    _TIME_UNITS,
     _grouping_matches,
     _is_temporal_grouping_term,
     _listed_grouping_terms,
@@ -42,6 +44,8 @@ from ._base import (
     _with_fiscal_calendar,
 )
 from .faithfulness import (
+    _dimension_nouns,
+    _ranking_request,
     intent_faithfulness_why,
     intent_subject_why,
     unconsumed_catalog_words,
@@ -326,7 +330,8 @@ def plan_payload(
     # that names a catalog object, is consumed by something the draft carries. Otherwise an
     # hour, a range, a threshold, a grouping or the asked-for subject was dropped. Last, every
     # grouping the question lists, apart from clock terms and declared values, has its own
-    # group_by dimension; that check only holds a draft, it never changes one.
+    # group_by dimension, and every grouping the draft adds traces to the question; those
+    # checks only hold a draft, they never change one.
     value_why = (
         (
             _unconsumed_terms_why(unconsumed_terms(runtime, intent_str, best_draft.query))
@@ -338,6 +343,7 @@ def plan_payload(
                 set(intent_ir.unresolved),
             )
             or _dropped_grouping_why(runtime, intent_str, best_draft.query, partial_query)
+            or _unasked_grouping_why(runtime, intent_str, best_draft.query, partial_query)
         )
         if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
         else None
@@ -740,6 +746,53 @@ def _entity_grouping_dimensions(config: Any, term: str) -> set[str] | None:
     return allowed
 
 
+def _query_clocks(config: Any, query: dict[str, Any]) -> list[str]:
+    """The labels of the time block's clock: its temporal role, and the calendar it buckets on."""
+
+    time = _time_of(query)
+    return [
+        str(row.label or "")
+        for row in [
+            _object_by_id(config.temporal_roles, str(time.get("temporal_role") or "")),
+            *(
+                row
+                for row in config.entities
+                if row.calendar_id and row.calendar_id == time.get("calendar_id")
+            ),
+        ]
+        if row is not None
+    ]
+
+
+def _listed_dimension_terms(config: Any, question: str, query: dict[str, Any]) -> list[str]:
+    """The listed groupings a dimension answers: not a clock term ("by month", "by order
+    date"), which is the time block's, nor a declared value, which is a filter."""
+
+    clocks = _query_clocks(config, query)
+    return [
+        term
+        for term in _listed_grouping_terms(question, config)
+        if not (
+            _is_temporal_grouping_term(term)
+            or any(_names_time_axis(term, clock) for clock in clocks)
+            or _term_matches_value_domain(config, term)
+        )
+    ]
+
+
+def _reads_grouping(term: str, ids: set[str] | None, row: Any) -> bool:
+    """Whether a dimension is a reading of a listed grouping: one of the entity's stand-ins
+    (``_entity_grouping_dimensions``) for a term naming an entity, else a dimension whose own
+    words name the term."""
+
+    return _grouping_matches(term, row) if ids is None else row.id in ids
+
+
+def _time_of(query: dict[str, Any]) -> dict[str, Any]:
+    raw = (query or {}).get("time")
+    return raw if isinstance(raw, dict) else {}
+
+
 def _dropped_grouping_why(
     runtime: Any,
     question: str,
@@ -767,40 +820,14 @@ def _dropped_grouping_why(
         root = _selection_context(config, query)["root_entity"]
     except SemanticLayerError:
         root = ""
-    raw_time = query.get("time")
-    time: dict[str, Any] = raw_time if isinstance(raw_time, dict) else {}
-    # The time block's clock: its temporal role, and the calendar it buckets on.
-    clocks = [
-        str(row.label or "")
-        for row in [
-            _object_by_id(config.temporal_roles, str(time.get("temporal_role") or "")),
-            *(
-                row
-                for row in config.entities
-                if row.calendar_id and row.calendar_id == time.get("calendar_id")
-            ),
-        ]
-        if row is not None
-    ]
-    terms = [
-        term
-        for term in _listed_grouping_terms(question, config)
-        if not (
-            _is_temporal_grouping_term(term)
-            or any(_names_time_axis(term, clock) for clock in clocks)
-            or _term_matches_value_domain(config, term)
-        )
-    ]
+    terms = _listed_dimension_terms(config, question, query)
     grouped = [
         row
         for item in dict.fromkeys(query.get("group_by") or [])
         if (row := _object_by_id(config.dimensions, item)) is not None
     ]
     stand_ins = [_entity_grouping_dimensions(config, term) for term in terms]
-
-    def reads(term: str, ids: set[str] | None, row: Any) -> bool:
-        return _grouping_matches(term, row) if ids is None else row.id in ids
-
+    reads = _reads_grouping
     chosen = set((partial_query or {}).get("group_by") or [])
 
     def unsettled(term: str, ids: set[str] | None) -> bool:
@@ -878,6 +905,283 @@ def _dropped_grouping_why(
                         if unclear
                         else ""
                     )
+                ),
+            }
+        ],
+    }
+
+
+def _grain_bucket(day: date, grain: str) -> Any:
+    """The calendar bucket of a day at a grain; weeks start on Monday, as the engine's do."""
+
+    if grain == "week":
+        return day - timedelta(days=day.weekday())
+    if grain == "month":
+        return day.year, day.month
+    if grain == "quarter":
+        return day.year, (day.month - 1) // 3
+    if grain == "year":
+        return day.year
+    return day
+
+
+def _grain_splits(time: dict[str, Any]) -> bool:
+    """Whether the time block's grain can put the rows in two or more buckets.
+
+    It can't when the block's window fits in one bucket: a calendar window inside one period of
+    the grain ("in Q1 2017" at quarter or year), or the last single period of the grain ("last
+    month" at month), or of a day. Any other grain, an open or relative window of more periods,
+    or a non-Gregorian calendar may split them.
+    """
+
+    grain = str(time.get("grain") or "")
+    if not grain:
+        return False
+    if grain not in _TIME_UNITS or str(time.get("calendar_id") or "default") != "default":
+        return True
+    window = time.get("range")
+    if isinstance(window, dict):
+        last = window.get("last")
+        return not (
+            isinstance(last, dict) and last.get("value") == 1 and last.get("unit") in {grain, "day"}
+        )
+    try:
+        start = datetime.fromisoformat(str(time["start"]))
+        end = datetime.fromisoformat(str(time["end"]))
+    except (KeyError, ValueError):
+        return True
+    final = max((end - timedelta(microseconds=1)).date(), start.date())
+    return _grain_bucket(start.date(), grain) != _grain_bucket(final, grain)
+
+
+def _names_grain(config: Any, question: str, query: dict[str, Any], grain: str) -> bool:
+    """Whether the question's own words, outside every time window it states, name the grain:
+    its unit or "-ly" form ("by month", "monthly", "month level", "per week", "daily"), or, for
+    days, a listed grouping that names the query's clock ("by order date"). A window of whole
+    calendar years ("in 2016 and 2017") names each of its years, so it names the year grain
+    plan reads it at: one total per year."""
+
+    time = _time_of(query)
+    if grain == "year" and all(
+        re.fullmatch(r"\d{4}-01-01(?:T00:00(?::00)?)?", str(time.get(key) or ""))
+        for key in ("start", "end")
+    ):
+        return True
+    lowered = str(question or "").lower()
+    for start, end in _time_window(question).spans:
+        lowered = lowered[:start] + " " * (end - start) + lowered[end:]
+    forms = {grain, f"{grain}s", "daily" if grain == "day" else f"{grain}ly"}
+    if forms & set(re.findall(r"[^\W\d_]+", lowered)):
+        return True
+    clocks = _query_clocks(config, query)
+    return grain == "day" and any(
+        _names_time_axis(term, clock)
+        for term in _listed_grouping_terms(question, config)
+        for clock in clocks
+    )
+
+
+# "revenue per store" is "revenue by store": the words after "per", up to a clause.
+_PER_GROUPING_RE = re.compile(
+    r"\bper\s+([a-z _-]+?)(?=\s+(?:by|and|where|for|from|in|with|during|over|having|who|that)\b"
+    r"|\s*[.?!,;]|\s*$)"
+)
+
+
+def _asked_grouping_terms(config: Any, question: str) -> list[str]:
+    """What the question asks to group by: each grouping it lists (``_listed_grouping_terms``),
+    the noun a ranking ranks ("which 5 stores had the most orders"), and the words after
+    "per" ("revenue per store"). Windows are not part of any of them."""
+
+    lowered = str(question or "").lower()
+    for start, end in _time_window(question).spans:
+        lowered = lowered[:start] + " " * (end - start) + lowered[end:]
+    request = _ranking_request(question, _dimension_nouns(config))
+    return [
+        *_listed_grouping_terms(question, config),
+        *([str(request["noun"])] if request else []),
+        *(match.group(1).strip() for match in _PER_GROUPING_RE.finditer(lowered)),
+    ]
+
+
+def _unasked_grouping_why(
+    runtime: Any,
+    question: str,
+    query: dict[str, Any],
+    partial_query: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Every grouping the draft adds traces to the question, or the plan is not ready.
+
+    A group_by dimension traces when a grouping the question asks for reads it
+    (``_asked_grouping_terms``, read as ``_dropped_grouping_why`` reads a listed one), when the
+    caller's ``partial_query`` group_by has it, or when the draft's own ``=`` filter pins it to
+    one value, so it can't split the rows. The time block's grain
+    traces when the question's words outside its windows name it (``_names_grain``), when the
+    caller's ``partial_query`` time has it, or when it can't split the rows because the window
+    fits in one bucket (``_grain_splits``). The package declares no default grain, so a grain
+    plan picks for a comparison, a trend or a window of several periods doesn't trace.
+
+    A ranking whose rows are split by a traced grain is a clarification instead: the draft
+    would keep the top N of (entity x period). ``why.details.clarification`` offers the top N
+    overall and the top N in each period. The check only holds a plan; it never changes the
+    draft.
+    """
+
+    config = runtime._config
+    caller = partial_query or {}
+    time = _time_of(query)
+    grain = str(time.get("grain") or "")
+    splits = _grain_splits(time)
+    grain_traced = not splits or (
+        _time_of(caller).get("grain") == grain or _names_grain(config, question, query, grain)
+    )
+    terms = _asked_grouping_terms(config, question)
+    stand_ins = [_entity_grouping_dimensions(config, term) for term in terms]
+    pinned = {
+        str(row["field"])
+        for row in _where_filters(query)
+        if row.get("op") == "=" and not isinstance(row.get("value"), (list, tuple, dict))
+    }
+    chosen = set(caller.get("group_by") or [])
+    grouped = [
+        row
+        for item in dict.fromkeys(query.get("group_by") or [])
+        if (row := _object_by_id(config.dimensions, item)) is not None
+    ]
+    unasked = [
+        row
+        for row in grouped
+        if row.id not in chosen
+        and row.id not in pinned
+        and not any(
+            _reads_grouping(term, ids, row) for term, ids in zip(terms, stand_ins, strict=True)
+        )
+    ]
+    if unasked or not grain_traced:
+        names = [str(row.label or row.id) for row in unasked] + ([] if grain_traced else [grain])
+        return {
+            "code": "PLAN_UNASKED_GROUPING",
+            "message": (
+                f"The draft groups by {', '.join(names)}, which the question never asks for: "
+                "that splits the answer into rows the question doesn't ask for, so plan doesn't "
+                "call it ready."
+            ),
+            "details": {
+                "unasked_groupings": names,
+                **({"dimensions": [row.id for row in unasked]} if unasked else {}),
+                **({} if grain_traced else {"grain": grain}),
+            },
+            "recovery_hints": [
+                {
+                    "kind": "remove_unasked_grouping",
+                    "message": (
+                        "Remove them from best.query_ir (the dimension from group_by; the "
+                        "grain from time, keeping any start, end or range), then validate; or "
+                        'ask again naming the grouping you want ("by month", "monthly").'
+                    ),
+                }
+            ],
+        }
+    order_by = [row for row in query.get("order_by") or [] if isinstance(row, dict)]
+    aliases = {row.get("as") for row in query.get("select") or [] if isinstance(row, dict)}
+    if not (
+        splits
+        and grouped
+        and query.get("limit") is not None
+        and order_by
+        and order_by[0].get("field") in aliases
+    ):
+        return None
+    request = _ranking_request(question, _dimension_nouns(config))
+    entity = str(request["noun"]) if request else " and ".join(str(row.label) for row in grouped)
+    return _ranking_period_why(query, [row.id for row in grouped], entity, grain, order_by[0])
+
+
+def _ranking_period_why(
+    query: dict[str, Any], keys: list[str], entity: str, grain: str, ranked_by: dict[str, Any]
+) -> dict[str, Any]:
+    """The clarification for a ranking split by a period: top N overall, or in each period.
+
+    Each option carries a Query IR that runs as is. Query IR ranks only over all rows, so
+    ``top_overall`` returns the N ``entity`` rows on their total and its ``breakdown`` runs
+    the draft for them, and ``top_per_period`` returns every row with each period's highest
+    first, to keep each period's first N.
+    """
+
+    limit = int(query["limit"])
+    time = _time_of(query)
+    window = {key: time[key] for key in ("start", "end", "range") if key in time}
+    overall: dict[str, Any] = {
+        key: value for key, value in query.items() if key not in {"time", "order_by"}
+    }
+    if window:
+        overall["time"] = {"temporal_role": time["temporal_role"], **window}
+    overall["order_by"] = [ranked_by, *({"field": key, "direction": "ASC"} for key in keys)]
+    every_row = {key: value for key, value in query.items() if key not in {"limit", "order_by"}}
+    breakdown = {
+        **every_row,
+        "order_by": [
+            *({"field": key, "direction": "ASC"} for key in keys),
+            {"field": "time", "direction": "ASC"},
+        ],
+    }
+    per_period = {
+        **every_row,
+        "order_by": [
+            {"field": "time", "direction": "ASC"},
+            ranked_by,
+            *({"field": key, "direction": "ASC"} for key in keys),
+        ],
+    }
+    question = (
+        f"The top {limit} {entity} over the whole window, or the top {limit} {entity} in each "
+        f"{grain}?"
+    )
+    return {
+        "code": "PLAN_RANKING_PERIOD_AMBIGUOUS",
+        "message": (
+            f"The question ranks {entity} and splits the rows by {grain}, so the draft would "
+            f"keep the top {limit} ({entity}, {grain}) rows. {question}"
+        ),
+        "details": {
+            "limit": limit,
+            "ranked": keys,
+            "grain": grain,
+            "clarification": {
+                "kind": "ranking_period",
+                "apply": ["query"],
+                "question": question,
+                "options": [
+                    {
+                        "id": "top_overall",
+                        "meaning": (
+                            f"The {limit} {entity} with the most over the whole window, on "
+                            f"their total. For each one by {grain}, run breakdown.query_ir "
+                            f"with a where filter keeping the {entity} this query returns."
+                        ),
+                        "query_ir": overall,
+                        "breakdown": {"query_ir": breakdown, "filter_fields": keys},
+                    },
+                    {
+                        "id": "top_per_period",
+                        "meaning": (
+                            f"In each {grain}, the {limit} {entity} with the most that {grain}. "
+                            f"Query IR can't rank within a {grain}: this query returns every "
+                            f"row with each {grain}'s highest first, so keep each {grain}'s "
+                            f"first {limit} rows."
+                        ),
+                        "query_ir": per_period,
+                        "keep_first_per_period": limit,
+                    },
+                ],
+            },
+        },
+        "recovery_hints": [
+            {
+                "kind": "choose_ranking_period",
+                "message": (
+                    "Ask which option the question means, then run that option's query_ir as "
+                    "its meaning says."
                 ),
             }
         ],
