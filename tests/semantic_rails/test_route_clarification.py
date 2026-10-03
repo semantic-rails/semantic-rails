@@ -38,18 +38,25 @@ from semantic_rails.architect_service import ArchitectProject
 from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts.indexes import RouteRefusal, get_package_analysis
 from semantic_rails.config import load_package_config
+from semantic_rails.db import DuckDBAdapter
 from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import MeasureRefExpr
-from semantic_rails.fanout import query_route_decisions
+from semantic_rails.fanout import query_route_decisions, route_reading
 from semantic_rails.interop.package_writer import package_documents, write_package
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import build_options_payload, valid_values_payload
 from semantic_rails.metadata_parts.path_coverage import _path_availability
 from semantic_rails.policies import row_filters_for_context
 from semantic_rails.registry import Registry
-from semantic_rails.runtime import Runtime
-from semantic_rails.schema import MetricConfig, SemanticPolicyConfig
+from semantic_rails.runtime import Runtime, _route_notes
+from semantic_rails.schema import (
+    EntityConfig,
+    MetricConfig,
+    PathPolicyConfig,
+    RelationshipConfig,
+    SemanticPolicyConfig,
+)
 from tests.semantic_rails import test_route_resolution as resolution
 
 SEED_SQL = """
@@ -502,13 +509,29 @@ REPLACED: dict[str, tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], 
 @pytest.mark.parametrize("basis", REPLACED)
 def test_replaced_names_how_the_package_resolves_the_pair(tmp_path, basis):
     rows, query, row, gold, columns = REPLACED[basis]
-    runtime = Runtime.from_path(str(_write_package(tmp_path, decisions=rows or None)))
+    pkg = _write_package(tmp_path, decisions=rows or None)
+    runtime = Runtime.from_path(str(pkg))
     out = runtime.query({**query, "route_decisions": [row]})
     assert _rows(out, columns) == _gold(gold)
     (chosen,) = _chosen_by_query(out)
-    assert (chosen["row"], chosen["replaced"]) == (row, basis)
-    if basis == "only_route":
-        assert chosen == {"row": row, "replaced": basis}
+    expected = {"row": row, "replaced": basis}
+    if basis == "undecided":
+        options = _refusal(pkg, query).details["clarification"]["options"]
+        selected = next(
+            option for option in options if option["relationship_path"] == row["relationship_path"]
+        )
+        expected.update(
+            meaning=selected["meaning"],
+            route_alternatives=[option["decision"] for option in options if option != selected],
+        )
+    assert chosen == expected
+    if basis != "undecided":
+        (warning,) = [w for w in out["warnings"] if w["code"] == "ROUTE_CHOSEN_BY_QUERY"]
+        assert (
+            warning["message"]
+            == f"{route_reading(runtime._config, row['source_entity'], row['relationship_path'])} (chosen by this query)"
+        )
+    runtime.close()
 
 
 @pytest.mark.parametrize(
@@ -667,15 +690,363 @@ def test_query_route_switches_are_disclosed_without_another_execution(
         },
         "replaced": "undecided",
         "meaning": chosen["meaning"],
-        "route_alternatives": [{"meaning": other["meaning"], "decision": other["decision"]}],
+        "route_alternatives": [other["decision"]],
     }
     assert chosen["meaning"] in warning["message"]
     assert other["meaning"] in warning["message"]
     assert "one-step switch" in warning["message"]
     assert warning["message"].count("package default") == 1
     assert not warning.get("recovery_hints") and not out.get("recovery_hints")
-    # Keep only meaning and the ready row per switch, without copying the full clarification.
+    # A switch is its ready row, with its meaning only in label.
     assert len(json.dumps(warning)) < 1500
+
+
+@pytest.mark.parametrize("selected_index", [0, 1, 2])
+def test_query_switches_use_only_the_options_the_package_refusal_offered(tmp_path, selected_index):
+    pkg = _write_package(tmp_path)
+    graph_file = pkg / "graph.yml"
+    document = yaml.safe_load(graph_file.read_text())
+    graph = document["graph"]
+    graph["relationships"]["accounts_branch"]["label"] = "Branch"
+    graph["relationships"]["accounts_other_branch"] = {
+        **graph["relationships"]["accounts_branch"],
+        "id": "relationship.accounts_other_branch",
+        "via": ["other_branch_id"],
+    }
+    seed_file = pkg / "data" / "seed.sql"
+    seed_file.write_text(
+        SEED_SQL + "\nALTER TABLE accounts ADD COLUMN other_branch_id INTEGER; "
+        "UPDATE accounts SET other_branch_id = branch_id;\n"
+    )
+    graph["path_preferences"] = [
+        {
+            "source_entity": "entity.bank_branch",
+            "target_entity": ACCOUNT,
+            "relationship_path": [BRANCH_ROUTE[0]],
+        }
+    ]
+    graph_file.write_text(yaml.safe_dump(document))
+    options = _refusal(pkg, BALANCE_BY_DISTRICT).details["clarification"]["options"]
+    assert len(options) == 2
+    excluded = {
+        **DIAMOND_ROW,
+        "relationship_path": ["relationship.accounts_other_branch", BRANCH_ROUTE[1]],
+    }
+    selected = options[selected_index]["decision"] if selected_index < 2 else excluded
+    runtime = Runtime.from_path(str(pkg))
+    try:
+        out = runtime.query({**BALANCE_BY_DISTRICT, "route_decisions": [selected]})
+    finally:
+        runtime.close()
+    (details,) = _chosen_by_query(out)
+    expected = {
+        "row": {
+            key: selected[key] for key in ("source_entity", "target_entity", "relationship_path")
+        },
+        "replaced": "undecided",
+    }
+    if selected_index < 2:
+        expected.update(
+            meaning=options[selected_index]["meaning"],
+            route_alternatives=[options[1 - selected_index]["decision"]],
+        )
+    assert details == expected
+    assert _rows(out, ["dimension.bank_district_name", "v"]) == _gold(
+        BY_OWNER if selected_index == 1 else BY_BRANCH
+    )
+
+
+def test_route_switch_notes_reuse_the_cached_refusal_without_enumerating(tmp_path, monkeypatch):
+    config = load_package_config(str(_write_package(tmp_path)))
+    query = {
+        **BALANCE_BY_DISTRICT,
+        "route_decisions": [{**DIAMOND_ROW, "relationship_path": BRANCH_ROUTE}],
+    }
+    compiled = compile_query(config, Registry(config), query)
+    refusal = get_package_analysis(config).path_cache[(ACCOUNT, DISTRICT)]
+    assert isinstance(refusal, RouteRefusal)
+    options = refusal.details["clarification"]["options"]
+
+    def rebuild(*args, **kwargs):
+        pytest.fail("route notes must reuse the package's cached clarification")
+
+    monkeypatch.setattr("semantic_rails.fanout.enumerate_paths", rebuild)
+    monkeypatch.setattr("semantic_rails.fanout.route_clarification", rebuild)
+    (note,) = _route_notes(config, compiled, query, policy_context={})
+    assert note["details"]["meaning"] == options[0]["meaning"]
+    assert note["details"]["route_alternatives"] == [options[1]["decision"]]
+
+
+@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+@pytest.mark.parametrize("entry", ["query", "compile", "validate", "mcp_execute"])
+@pytest.mark.parametrize("hidden", [OWNER, OWNER_ROUTE[0]])
+def test_query_route_switches_never_disclose_hidden_waypoints(
+    tmp_path, monkeypatch, verbosity, entry, hidden
+):
+    pkg = _write_package(tmp_path)
+    config = load_package_config(str(pkg))
+    config = replace(
+        config,
+        entities=[
+            replace(entity, label="Private Owner") if entity.id == OWNER else entity
+            for entity in config.entities
+        ],
+        semantic_policies=[
+            SemanticPolicyConfig(
+                id="policy.hide_waypoint",
+                kind="object_visibility",
+                action="hidden",
+                object_ids=[hidden],
+                environments=["production"],
+                audiences=["customer"],
+                roles=["reader"],
+            )
+        ],
+    )
+    runtime = Runtime.from_config(config, source_path=str(pkg))
+    warehouse = runtime._get_adapter()
+    execute = Mock(wraps=warehouse.query)
+    monkeypatch.setattr(warehouse, "query", execute)
+    query = {
+        **BALANCE_BY_DISTRICT,
+        "route_decisions": [{**DIAMOND_ROW, "relationship_path": BRANCH_ROUTE}],
+        "verbosity": verbosity,
+        "policy_context": RequestContext(
+            environment="production", audience="customer", roles=("reader",)
+        ).to_policy_context(),
+    }
+    try:
+        if entry == "mcp_execute":
+            adapter = SemanticLayerMCPAdapter(runtime)
+            try:
+                out = adapter.call_tool("execute", {"query": query, "verbosity": verbosity})
+            finally:
+                adapter.close()
+        else:
+            out = getattr(runtime, entry)(query)
+    finally:
+        runtime.close()
+    assert out["ok"] is True, out
+    assert execute.call_count == (1 if entry in {"query", "mcp_execute"} else 0)
+    if entry in {"query", "mcp_execute"}:
+        assert _rows(out, ["dimension.bank_district_name", "v"]) == _gold(BY_BRANCH)
+    text = json.dumps(out)
+    assert "Private Owner" not in text and OWNER not in text
+    assert all(relationship not in text for relationship in OWNER_ROUTE)
+    (details,) = _chosen_by_query(out)
+    assert details["route_alternatives"] == []
+    assert "more_alternatives" not in details
+
+
+@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+@pytest.mark.parametrize("hidden", [resolution.OWNER, resolution.HOME[0]])
+def test_own_key_route_notes_never_offer_hidden_waypoints(tmp_path, monkeypatch, verbosity, hidden):
+    pkg = resolution._write_package(tmp_path)
+    config = load_package_config(str(pkg))
+    config = replace(
+        config,
+        semantic_policies=[
+            SemanticPolicyConfig(
+                id="policy.hide_waypoint",
+                kind="object_visibility",
+                action="hidden",
+                object_ids=[hidden],
+            )
+        ],
+    )
+    runtime = Runtime.from_config(config, source_path=str(pkg))
+    execute = Mock(wraps=runtime._get_adapter().query)
+    monkeypatch.setattr(runtime._get_adapter(), "query", execute)
+    try:
+        out = runtime.query(
+            {
+                **_query(resolution.BALANCE, group_by=[resolution.REGION_NAME]),
+                "verbosity": verbosity,
+            }
+        )
+    finally:
+        runtime.close()
+    assert execute.call_count == 1
+    assert _rows(out, [resolution.REGION_NAME, "v"]) == resolution._gold(resolution.BY_BRANCH)
+    assert hidden not in json.dumps(out["warnings"])
+    notes = [w for w in out["warnings"] if w["code"] == "ROUTE_COLOCATED_KEY"]
+    assert len(notes) == (0 if verbosity == "minimal" else 1)
+    if notes:
+        alternatives = (
+            []
+            if hidden == resolution.OWNER
+            else [
+                {
+                    "source_entity": resolution.ACCOUNT,
+                    "target_entity": resolution.REGION,
+                    "relationship_path": [
+                        "relationship.memberships_account",
+                        "relationship.owners_primary_membership",
+                        "relationship.owners_home_region",
+                    ],
+                }
+            ]
+        )
+        assert notes[0]["details"] == {"route": resolution.BRANCH, "alternatives": alternatives}
+
+
+@pytest.mark.parametrize("visibility", ["missing", "unresolved"])
+def test_route_notes_withhold_switches_when_visibility_is_unknown(
+    tmp_path, monkeypatch, visibility
+):
+    config = load_package_config(str(_write_package(tmp_path)))
+    config = replace(
+        config,
+        semantic_policies=[
+            SemanticPolicyConfig(
+                id="policy.hide_owner",
+                kind="object_visibility",
+                action="hidden",
+                object_ids=[OWNER],
+            )
+        ],
+    )
+    query = {
+        **BALANCE_BY_DISTRICT,
+        "route_decisions": [{**DIAMOND_ROW, "relationship_path": BRANCH_ROUTE}],
+    }
+    compiled = compile_query(config, Registry(config), query)
+    if visibility == "unresolved":
+        monkeypatch.setattr("semantic_rails.runtime.diagnostic_hidden_object_ids", lambda *_: None)
+    notes = _route_notes(
+        config, compiled, query, **({"policy_context": {}} if visibility == "unresolved" else {})
+    )
+    assert notes[0]["details"] == {"row": query["route_decisions"][0], "replaced": "undecided"}
+    assert all(relationship not in json.dumps(notes) for relationship in OWNER_ROUTE)
+
+
+def _many_route_config(tmp_path):
+    base = load_package_config(str(_write_package(tmp_path)))
+    layers = [
+        ["account"],
+        *[[f"{letter}{index}" for index in range(5)] for letter in "abc"],
+        ["district"],
+    ]
+    entities = [
+        EntityConfig(
+            id=f"entity.bank_{name}",
+            table=name,
+            primary_key="id",
+            key=["id"],
+            name=name,
+            label=name.title(),
+        )
+        for layer in layers
+        for name in layer
+    ]
+    relationships = [
+        RelationshipConfig(
+            id=f"relationship.{source}_{target}",
+            source_entity=f"entity.bank_{source}",
+            target_entity=f"entity.bank_{target}",
+            source_column="id",
+            target_column="id",
+            cardinality="N:1",
+            safety="safe",
+            allowed_directions=["forward"],
+        )
+        for sources, targets in zip(layers, layers[1:], strict=False)
+        for source in sources
+        for target in targets
+    ]
+    config = replace(
+        base,
+        entities=entities,
+        relationships=relationships,
+        path_policy=PathPolicyConfig(max_hops=4),
+        dimensions=[
+            replace(
+                next(d for d in base.dimensions if d.id == "dimension.bank_district_name"),
+                column="name",
+            )
+        ],
+        measures=[next(m for m in base.measures if m.id == "measure.bank.balance")],
+    )
+    con = duckdb.connect(base.package.default_db)
+    for entity in entities:
+        columns = (
+            ", 100 AS balance"
+            if entity.id == ACCOUNT
+            else (", 'North' AS name" if entity.id == DISTRICT else "")
+        )
+        con.execute(f"CREATE TABLE {entity.table} AS SELECT 1 AS id{columns}")
+    con.close()
+    return config, DuckDBAdapter(base.package.default_db)
+
+
+@pytest.mark.parametrize("hidden", [None, "entity.bank_a4"])
+def test_many_route_compact_execute_keeps_rows_and_caps_switch_metadata(
+    tmp_path, monkeypatch, hidden
+):
+    config, warehouse = _many_route_config(tmp_path)
+    if hidden:
+        config = replace(
+            config,
+            semantic_policies=[
+                SemanticPolicyConfig(
+                    id="policy.hide_waypoint",
+                    kind="object_visibility",
+                    action="hidden",
+                    object_ids=[hidden],
+                )
+            ],
+        )
+    runtime = Runtime.from_config(config, source_path=str(tmp_path / "bank"))
+    runtime.set_adapter(warehouse)
+    execute = Mock(wraps=runtime._get_adapter().query)
+    monkeypatch.setattr(runtime._get_adapter(), "query", execute)
+    adapter = SemanticLayerMCPAdapter(runtime)
+    try:
+        refusal = runtime.validate(BALANCE_BY_DISTRICT)
+        options = refusal["errors"][0]["details"]["clarification"]["options"]
+        assert len(config.entities) == 17 and len(options) == 125
+        assert execute.call_count == 0
+        out = adapter.call_tool(
+            "execute",
+            {
+                "query": {**BALANCE_BY_DISTRICT, "route_decisions": [options[0]["decision"]]},
+                "verbosity": "compact",
+            },
+        )
+        assert execute.call_count == 1
+        assert out["ok"] is True, out
+        assert (
+            _rows(out, ["dimension.bank_district_name", "v"])
+            == warehouse._db.conn.execute(
+                "SELECT d.name, SUM(a.balance) FROM account a JOIN a0 USING (id) "
+                "JOIN b0 USING (id) JOIN c0 USING (id) JOIN district d USING (id) GROUP BY d.name"
+            ).fetchall()
+        )
+        (warning,) = [w for w in out["warnings"] if w["code"] == "ROUTE_CHOSEN_BY_QUERY"]
+        alternatives = warning["details"]["route_alternatives"]
+        visible_options = [o for o in options if "A4" not in o["meaning"]] if hidden else options
+        assert len(visible_options) == (100 if hidden else 125)
+        assert 1 <= len(alternatives) <= 3
+        assert alternatives == [o["decision"] for o in visible_options[1 : 1 + len(alternatives)]]
+        assert warning["details"]["more_alternatives"] == len(visible_options) - 1 - len(
+            alternatives
+        )
+        if hidden:
+            assert "A4" not in json.dumps(out)
+        assert len(json.dumps(warning)) < 1500
+        assert "without route_decisions" in warning["message"]
+        assert "no warehouse query" in warning["message"]
+        # The warning's continuation returns every refusal option without another execution.
+        assert (
+            runtime.validate(BALANCE_BY_DISTRICT)["errors"][0]["details"]["clarification"][
+                "options"
+            ]
+            == options
+        )
+        assert execute.call_count == 1
+    finally:
+        adapter.close()
+        runtime.close()
 
 
 @pytest.mark.parametrize("option_index", [0, 1])

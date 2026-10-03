@@ -1280,14 +1280,21 @@ The response `warnings` array can carry these non-error signals:
 - `ROUTE_CHOSEN_BY_QUERY` — severity `info`, at every verbosity: one per
   `route_decisions` row the query applied. `details.row` is the row and
   `details.replaced` what would have applied without it (`decided`,
-  `colocated_key`, `inherited`, `only_route` or `undecided`). For a pair with
-  several routes, `details.meaning` names the meaning used and
-  `details.route_alternatives` carries each other `meaning` and its ready
-  `decision` row. State the chosen meaning and offer the others as one-step
-  query switches; alternatives are never executed. The warning mentions a
-  reviewed package default using `details.row` once, without a duplicate
-  recovery hint. Package decisions and own-key choices keep their existing
-  notes without `route_alternatives`. See
+  `colocated_key`, `inherited`, `only_route` or `undecided`). Only an
+  `undecided` pair whose chosen route was offered by the package's own
+  `AMBIGUOUS_PATH` clarification gets `details.meaning` and
+  `details.route_alternatives`: at most three ready decision rows from those
+  same options, with each meaning in the row's `label`. Routes through entities
+  or relationships hidden under the query's policy context are omitted before
+  constructing messages or counts; unresolved visibility with an
+  `object_visibility` policy withholds alternatives. `details.more_alternatives`,
+  when present, counts the remaining visible alternatives. Validate the query
+  without `route_decisions` to receive every clarification option without a
+  warehouse query. State the chosen meaning and offer the listed rows as
+  one-step query switches; alternatives are never executed. The warning mentions
+  a reviewed package default using `details.row` once, without a duplicate
+  recovery hint. Pairs the package already resolves keep their existing message
+  and details. Own-key notes also omit hidden alternative routes. See
   [`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions).
 
 HTTP failures return:

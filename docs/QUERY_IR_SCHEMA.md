@@ -108,11 +108,17 @@ ignored).
   `details.replaced`, how the package resolves the pair without it (`decided`:
   its own row; `colocated_key`: the start's own key; `inherited`: rows for pairs
   its routes walk through; `only_route`; `undecided`: the package refuses it).
-  For a pair with several routes, `details.meaning` names the meaning used,
-  and `details.route_alternatives` lists each other meaning and its ready
-  `decision` row from the route clarification options. State the meaning used
-  and offer the others as one-step switches: resend the query with the other
-  `decision` in `route_decisions`. No alternative is executed. The warning
+  Only an `undecided` pair gets `details.meaning` and
+  `details.route_alternatives`, using the package's own refusal options when they
+  include the chosen route. Alternatives are at most three ready decision rows;
+  each row's `label` is its meaning. Routes through hidden entities or
+  relationships are excluded under the query's policy context, including from
+  messages and counts. Unknown visibility under an `object_visibility` policy
+  withholds alternatives. `details.more_alternatives` counts any remaining
+  visible alternatives; validating the query without `route_decisions` returns
+  every clarification option without a warehouse query. State the meaning used
+  and offer the listed rows as one-step switches: resend the query with an
+  alternative row in `route_decisions`. No alternative is executed. The warning
   mentions once that a reviewed package default using `details.row` would
   remove the question; this advice is not repeated in `recovery_hints`.
   `hop_profile.targets[*].route_basis` is `query` for the pair.
