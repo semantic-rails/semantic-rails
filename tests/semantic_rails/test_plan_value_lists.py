@@ -75,7 +75,7 @@ def test_separate_equality_clauses_match_empty_duckdb_reference(
         assert "execute" not in payload["next"].get("ready_for", [])
         actual = runtime.query(payload["best"]["query_ir"])["rows"]
         runtime.close()
-        with duckdb.connect(runtime.db_path) as connection:
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
             expected = connection.execute(
                 "SELECT i.product_type, SUM(i.item_revenue_cents / 100.0) "
                 "FROM jaffle_item i JOIN jaffle_order o ON i.order_id = o.order_id "
@@ -133,7 +133,7 @@ def test_multi_value_draft_executes_combined_values_per_group(runtime_factory) -
         actual = {row[PRODUCT_TYPE]: row["item_revenue_usd"] for row in rows}
         assert len(actual) == len(rows)
         runtime.close()
-        with duckdb.connect(runtime.db_path) as connection:
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
             expected = {
                 product: revenue
                 for product, revenue in connection.execute(
@@ -319,7 +319,7 @@ def test_caller_only_intersection_keeps_filters_and_executed_rows(
         alias = query["select"][0]["as"]
         actual = {row[product]: row[alias] for row in rows}
         runtime.close()
-        with duckdb.connect(runtime.db_path) as connection:
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
             expected = dict(
                 connection.execute(
                     "SELECT i.product_type, SUM(i.item_revenue_cents / 100.0) "
@@ -386,7 +386,7 @@ def test_ranked_named_values_execute_one_combined_top_three(
         rows = runtime.query(query)["rows"]
         actual = [(row[PRODUCT_TYPE], row["item_revenue_usd"]) for row in rows]
         runtime.close()
-        with duckdb.connect(runtime.db_path) as connection:
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
             expected = connection.execute(
                 "SELECT i.product_type, SUM(i.item_revenue_cents / 100.0) "
                 "FROM jaffle_item i JOIN jaffle_order o ON i.order_id = o.order_id "
@@ -534,7 +534,7 @@ def test_supplied_ranking_does_not_add_named_value_grouping(runtime_factory, mon
         rows = runtime.query(query)["rows"]
         actual = [(row[PRODUCT_TYPE], row["item_revenue_usd"]) for row in rows]
         runtime.close()
-        with duckdb.connect(runtime.db_path) as connection:
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
             expected = connection.execute(
                 "SELECT i.product_type, SUM(i.item_revenue_cents / 100.0) "
                 "FROM jaffle_item i JOIN jaffle_order o ON i.order_id = o.order_id "
@@ -618,7 +618,7 @@ def test_unranked_resolved_named_values_execute_a_total_with_caller_filters_pres
         assert len(rows) == 1
         actual = rows[0][query["select"][0]["as"]]
         runtime.close()
-        with duckdb.connect(runtime.db_path) as connection:
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
             expected = connection.execute(
                 "SELECT SUM(i.item_revenue_cents / 100.0) "
                 "FROM jaffle_item i JOIN jaffle_order o ON i.order_id = o.order_id "
