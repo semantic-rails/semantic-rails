@@ -21,6 +21,7 @@ from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
+from tests.semantic_rails.conftest import opened
 
 NS = "lkp"
 CLAIM_KEY = f"dimension.{NS}_claim_id"
@@ -229,7 +230,7 @@ def package_dir(tmp_path_factory) -> Path:
 
 @pytest.fixture(scope="module")
 def runtime(package_dir: Path) -> Runtime:
-    return Runtime.from_path(str(package_dir))
+    return opened(Runtime.from_path(str(package_dir)))
 
 
 def _reference(package_dir: Path, sql: str) -> dict[Any, Any]:
