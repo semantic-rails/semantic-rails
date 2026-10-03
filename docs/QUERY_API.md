@@ -439,6 +439,11 @@ period instead. Queries that need a time axis, such as a rolling or prior-period
 metric predicate (including one in an aggregate's `filter` or a metric recipe), and a `time` block
 with no window are not collapsed.
 
+An `avg`, `min`, `max`, `median` or `percentile` of a measure whose rows have a parent the output
+doesn't group by also gets an `assumptions` entry naming the rows it runs over, with the
+per-parent average as a ratio for an `avg` when the package counts that parent; see
+[What an answer covers](QUERY_IR_SCHEMA.md#what-an-answer-covers).
+
 `policy_context` is optional and scopes visibility, access, and metric-constraint policies for metadata, validation, and query routes.
 
 ### Request `limits` block (optional)
@@ -1149,6 +1154,12 @@ The response `warnings` array can carry these non-error signals:
   measure reads `0` in an empty group only where it has data in scope; here it has none, so it
   is `NULL`. `details.outputs` names the outputs. It never fires on a clipped (`truncated`)
   result. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
+- `MIXED_TIME_ROLES` — fires on `validate`, `compile` and `execute` when a query with no
+  `start`, `end` or `range` and no `grain` selects measures of two or more entities dated by
+  different time roles (a measure with no time role is its own clock; a metric is one clock), so
+  each covers all of its own history. The message names each measure's role, and
+  `details.clocks` lists each `subject` with its `temporal_roles`. See
+  [What an answer covers](QUERY_IR_SCHEMA.md#what-an-answer-covers).
 - `EXPRESSION_NORMALIZED_AWAY` — fires when an input expression `kind`
   was recognized by the parser but did not survive normalization (or
   the user's `as:` alias is missing from compiled output). Carries

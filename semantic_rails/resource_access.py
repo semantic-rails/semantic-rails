@@ -459,7 +459,8 @@ def run_authorized_operation(
                     "warehouse",
                     "dialect",
                     "sql_profile",
-                    # Fixed engine strings that name no objects.
+                    # Engine strings that name no objects here: only an average over a
+                    # measure outside a metric names one, and this contract selects metrics.
                     "assumptions",
                     "time_shape",
                 }
