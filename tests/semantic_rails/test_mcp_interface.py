@@ -581,12 +581,12 @@ def test_mcp_http_and_sse_transport_smoke(runtime_factory):
     try:
         with _serve_mcp_http(adapter) as base:
             options_req = urllib.request.Request(base + "/mcp", method="OPTIONS")
-            with urllib.request.urlopen(options_req) as resp:  # nosec - local test server only
+            with urllib.request.urlopen(options_req, timeout=30) as resp:  # nosec - local test server only
                 assert resp.status == 204
                 assert resp.headers["Content-Length"] == "0"
                 assert "X-Semantic-API-Key" in resp.headers["Access-Control-Allow-Headers"]
 
-            with urllib.request.urlopen(base + "/sse?request_id=sse-req") as resp:  # nosec - local test server only
+            with urllib.request.urlopen(base + "/sse?request_id=sse-req", timeout=30) as resp:  # nosec - local test server only
                 assert resp.headers["Content-Type"] == "text/event-stream"
                 assert resp.headers["X-Request-ID"] == "sse-req"
                 sse_body = resp.read().decode("utf-8")
@@ -601,7 +601,7 @@ def test_mcp_http_and_sse_transport_smoke(runtime_factory):
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req) as resp:  # nosec - local test server only
+            with urllib.request.urlopen(req, timeout=30) as resp:  # nosec - local test server only
                 payload = dict(json.loads(resp.read().decode("utf-8")) or {})
                 assert resp.headers["X-Request-ID"] == "mcp-query-req"
                 assert payload["result"]["resources"]
@@ -614,7 +614,7 @@ def test_mcp_http_and_sse_transport_smoke(runtime_factory):
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(notification_req) as resp:  # nosec - local test server only
+            with urllib.request.urlopen(notification_req, timeout=30) as resp:  # nosec - local test server only
                 assert resp.status == 204
                 assert resp.read() == b""
 
@@ -626,7 +626,7 @@ def test_mcp_http_and_sse_transport_smoke(runtime_factory):
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(notification_batch_req) as resp:  # nosec - local test server only
+            with urllib.request.urlopen(notification_batch_req, timeout=30) as resp:  # nosec - local test server only
                 assert resp.status == 204
                 assert resp.read() == b""
 
@@ -636,7 +636,7 @@ def test_mcp_http_and_sse_transport_smoke(runtime_factory):
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(batch_req) as resp:  # nosec - local test server only
+            with urllib.request.urlopen(batch_req, timeout=30) as resp:  # nosec - local test server only
                 batch_payload = list(json.loads(resp.read().decode("utf-8")) or [])
                 assert resp.status == 200
                 assert batch_payload[0]["result"] == {}
@@ -648,7 +648,7 @@ def test_mcp_http_and_sse_transport_smoke(runtime_factory):
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(empty_batch_req) as resp:  # nosec - local test server only
+            with urllib.request.urlopen(empty_batch_req, timeout=30) as resp:  # nosec - local test server only
                 empty_batch_payload = dict(json.loads(resp.read().decode("utf-8")) or {})
                 assert resp.status == 200
                 assert empty_batch_payload["error"]["code"] == -32600
@@ -660,7 +660,7 @@ def test_mcp_http_and_sse_transport_smoke(runtime_factory):
                 method="POST",
             )
             try:
-                urllib.request.urlopen(scalar_req)  # nosec - local test server only
+                urllib.request.urlopen(scalar_req, timeout=30)  # nosec - local test server only
                 raise AssertionError("expected scalar JSON body to fail")
             except urllib.error.HTTPError as exc:
                 scalar_payload = dict(json.loads(exc.read().decode("utf-8")) or {})
@@ -676,11 +676,11 @@ def test_mcp_http_sse_requires_api_key_when_configured(runtime_factory, monkeypa
     adapter = SemanticLayerMCPAdapter(runtime)
     try:
         with _serve_mcp_http(adapter) as base:
-            with urllib.request.urlopen(base + "/health") as resp:  # nosec - local test server only
+            with urllib.request.urlopen(base + "/health", timeout=30) as resp:  # nosec - local test server only
                 assert resp.status == 200
 
             try:
-                urllib.request.urlopen(base + "/sse")  # nosec - local test server only
+                urllib.request.urlopen(base + "/sse", timeout=30)  # nosec - local test server only
                 raise AssertionError("expected unauthorized SSE request")
             except urllib.error.HTTPError as exc:
                 assert exc.code == 401
@@ -688,7 +688,7 @@ def test_mcp_http_sse_requires_api_key_when_configured(runtime_factory, monkeypa
             req = urllib.request.Request(
                 base + "/sse", headers={"Authorization": "Bearer mcp-secret"}
             )
-            with urllib.request.urlopen(req) as resp:  # nosec - local test server only
+            with urllib.request.urlopen(req, timeout=30) as resp:  # nosec - local test server only
                 assert resp.headers["Content-Type"] == "text/event-stream"
     finally:
         adapter.close()
@@ -745,7 +745,7 @@ def test_legacy_mcp_http_uses_resolver_and_strips_spoofed_policy_context(runtime
                 },
                 method="POST",
             )
-            with urllib.request.urlopen(request) as response:  # nosec - local test only
+            with urllib.request.urlopen(request, timeout=30) as response:  # nosec - local test only
                 structured = json.loads(response.read())["result"]["structuredContent"]
             assert structured["ok"] is True
             assert structured["request_context"]["actor"] == "legacy-identity"
@@ -756,7 +756,7 @@ def test_legacy_mcp_http_uses_resolver_and_strips_spoofed_policy_context(runtime
             assert "spoofed-nested" not in serialized
             assert "spoofed-header" not in serialized
 
-            with urllib.request.urlopen(base + "/sse") as response:  # nosec - local test only
+            with urllib.request.urlopen(base + "/sse", timeout=30) as response:  # nosec - local test only
                 sse = response.read().decode("utf-8")
             assert '"actor": "legacy-identity"' in sse
             assert '"tenant": "legacy-tenant"' in sse
@@ -775,7 +775,7 @@ def test_mcp_http_root_serves_route_discovery_banner(runtime_factory):
     adapter = SemanticLayerMCPAdapter(runtime)
     try:
         with _serve_mcp_http(adapter) as base:
-            with urllib.request.urlopen(base + "/") as resp:  # nosec - local test server only
+            with urllib.request.urlopen(base + "/", timeout=30) as resp:  # nosec - local test server only
                 assert resp.status == 200
                 payload = dict(json.loads(resp.read().decode("utf-8")) or {})
             assert payload["service"] == "semantic-rails-mcp"
@@ -791,7 +791,7 @@ def test_mcp_http_root_serves_route_discovery_banner(runtime_factory):
 
             # /health must include the same identifying fields so a probe
             # that already discovered /health gets the route inventory too.
-            with urllib.request.urlopen(base + "/health") as resp:  # nosec - local test server only
+            with urllib.request.urlopen(base + "/health", timeout=30) as resp:  # nosec - local test server only
                 health = dict(json.loads(resp.read().decode("utf-8")) or {})
             assert health["ok"] is True
             assert health["service"] == "semantic-rails-mcp"
@@ -801,7 +801,7 @@ def test_mcp_http_root_serves_route_discovery_banner(runtime_factory):
             # `data` so agents that miss the banner get the hint on their
             # first error.
             try:
-                urllib.request.urlopen(base + "/does-not-exist")  # nosec - local test server only
+                urllib.request.urlopen(base + "/does-not-exist", timeout=30)  # nosec - local test server only
                 raise AssertionError("expected 404 for unknown GET route")
             except urllib.error.HTTPError as exc:
                 assert exc.code == 404
@@ -818,7 +818,7 @@ def test_mcp_http_root_serves_route_discovery_banner(runtime_factory):
                 method="POST",
             )
             try:
-                urllib.request.urlopen(req)  # nosec - local test server only
+                urllib.request.urlopen(req, timeout=30)  # nosec - local test server only
                 raise AssertionError("expected 404 for unknown POST route")
             except urllib.error.HTTPError as exc:
                 assert exc.code == 404
@@ -850,7 +850,7 @@ def test_mcp_execute_with_string_query_returns_wrap_query_hint(runtime_factory, 
         adapter.close()
     assert out["ok"] is False
     assert out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-    hints = out["recovery_hints"]
+    hints = out["errors"][0]["recovery_hints"]
     assert hints, "recovery_hints must be non-empty for INVALID_MCP_ARGUMENTS"
     assert any(h.get("kind") == "wrap_query_as_object" for h in hints)
     wrap_hint = next(h for h in hints if h.get("kind") == "wrap_query_as_object")
@@ -866,7 +866,7 @@ def test_mcp_discover_with_bad_limit_returns_integer_hint(runtime_factory):
     finally:
         adapter.close()
     assert out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-    hints = out["recovery_hints"]
+    hints = out["errors"][0]["recovery_hints"]
     assert hints
     assert any(h.get("kind") == "use_integer" for h in hints)
     assert any("limit" in h["message"] for h in hints)
@@ -880,7 +880,7 @@ def test_mcp_discover_with_object_kinds_returns_array_hint(runtime_factory):
     finally:
         adapter.close()
     assert out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-    hints = out["recovery_hints"]
+    hints = out["errors"][0]["recovery_hints"]
     assert hints
     assert any(h.get("kind") == "use_string_or_array" for h in hints)
 
@@ -893,7 +893,7 @@ def test_mcp_unknown_tool_returns_available_tool_hint(runtime_factory):
     finally:
         adapter.close()
     assert out["error"]["code"] == "UNKNOWN_MCP_TOOL"
-    hints = out["recovery_hints"]
+    hints = out["errors"][0]["recovery_hints"]
     assert hints
     hint = hints[0]
     assert hint["kind"] == "use_available_tool"
@@ -909,7 +909,7 @@ def test_mcp_unknown_prompt_returns_available_prompt_hint(runtime_factory):
     finally:
         adapter.close()
     assert out["error"]["code"] == "UNKNOWN_MCP_PROMPT"
-    hints = out["error"]["recovery_hints"]
+    hints = out["errors"][0]["recovery_hints"]
     assert hints
     assert hints[0]["kind"] == "use_available_prompt"
     assert hints[0]["available_prompts"]
@@ -924,7 +924,7 @@ def test_mcp_unknown_resource_returns_available_resource_hint(runtime_factory):
         adapter.close()
     payload = out["payload"]
     assert payload["error"]["code"] == "UNKNOWN_MCP_RESOURCE"
-    hints = payload["error"]["recovery_hints"]
+    hints = payload["errors"][0]["recovery_hints"]
     assert hints
     assert hints[0]["kind"] == "use_available_resource"
     assert hints[0]["available_resources"]
@@ -999,7 +999,8 @@ def test_mcp_jsonrpc_error_envelope_populates_top_level_closest_valid_query(runt
         adapter.close()
     structured = result["result"]["structuredContent"]
     assert any(
-        dict(h.get("closest_valid_query", {}) or {}) for h in structured.get("recovery_hints", [])
+        dict(h.get("closest_valid_query", {}) or {})
+        for h in structured["errors"][0].get("recovery_hints", [])
     ), "expected at least one hint to carry a closest_valid_query template"
 
 
@@ -1027,7 +1028,7 @@ def test_legacy_mcp_http_handler_rejects_browser_origins(runtime_factory, monkey
                 method="POST",
             )
             with pytest.raises(urllib.error.HTTPError) as exc:
-                urllib.request.urlopen(req)  # nosec - local test server only
+                urllib.request.urlopen(req, timeout=30)  # nosec - local test server only
             assert exc.value.code == 403
 
             # GET and OPTIONS are guarded on the same rule.
@@ -1038,7 +1039,7 @@ def test_legacy_mcp_http_handler_rejects_browser_origins(runtime_factory, monkey
                     method=method,
                 )
                 with pytest.raises(urllib.error.HTTPError) as exc:
-                    urllib.request.urlopen(probe)  # nosec - local test server only
+                    urllib.request.urlopen(probe, timeout=30)  # nosec - local test server only
                 assert exc.value.code == 403
     finally:
         adapter.close()
@@ -1061,7 +1062,7 @@ def test_legacy_mcp_http_handler_requires_a_json_content_type(runtime_factory, m
                 method="POST",
             )
             with pytest.raises(urllib.error.HTTPError) as exc:
-                urllib.request.urlopen(req)  # nosec - local test server only
+                urllib.request.urlopen(req, timeout=30)  # nosec - local test server only
             assert exc.value.code == 415
     finally:
         adapter.close()

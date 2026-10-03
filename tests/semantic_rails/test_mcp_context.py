@@ -622,3 +622,77 @@ def test_a_session_may_only_use_ids_it_was_shown(
     monkeypatch.setattr(mcp_context, "SESSIONS", {"blind": blind})
     with pytest.raises(mcp_context.MeasurementError, match="no earlier call in the session"):
         mcp_context.measure_query_mcp(jaffle_package)
+
+
+@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+@pytest.mark.parametrize("probe", mcp_context.ERROR_PROBES, ids=lambda p: p[0])
+def test_error_probe_hints_appear_once(jaffle_package: Path, probe, verbosity: str) -> None:
+    _name, tool, arguments, ok, code = probe
+    with mcp_context.QueryMCPClient(jaffle_package) as client:
+        result = client.call_tool(tool, {**arguments, "verbosity": verbosity})
+    payload = result["structuredContent"]
+    assert payload["ok"] is ok
+    issues = payload["warnings" if ok else "errors"]
+    assert code in {issue["code"] for issue in issues}
+    if not ok:
+        assert payload["error"] == {key: issues[0][key] for key in ("code", "message")}
+        assert "recovery_hints" not in payload
+    serialized = json.dumps(payload)
+    for issue in issues:
+        assert "recovery_hints" not in issue.get("details", {})
+        for hint in issue.get("recovery_hints", []):
+            assert serialized.count(json.dumps(hint["message"])) == 1
+
+
+def test_minimal_mixed_grain_preserves_all_recovery(jaffle_package: Path) -> None:
+    probe = next(p for p in mcp_context.ERROR_PROBES if p[0] == "validate_fanout")
+    _name, tool, arguments, _ok, _code = probe
+    with mcp_context.QueryMCPClient(jaffle_package) as client:
+        compact = client.call_tool(tool, {**arguments, "verbosity": "compact"})[
+            "structuredContent"
+        ]["errors"][0]
+        minimal = client.call_tool(tool, arguments)["structuredContent"]["errors"][0]
+    assert compact["details"]["analysis"]["relationships"]
+    assert "analysis" not in minimal["details"]
+    assert minimal["details"] == {
+        key: value for key, value in compact["details"].items() if key != "analysis"
+    }
+    assert minimal["recovery_hints"] == compact["recovery_hints"]
+    recovery_facts = {key: minimal[key] for key in ("code", "message", "details")}
+    assert mcp_context.semantic_ids(minimal["recovery_hints"]) <= mcp_context.semantic_ids(
+        recovery_facts
+    )
+
+
+@pytest.mark.parametrize(
+    ("outer_verbosity", "query_verbosity", "keeps_analysis"),
+    [
+        ("minimal", "compact", True),
+        ("compact", "minimal", False),
+        ("minimal", " COMPACT ", True),
+        ("compact", " MINIMAL ", False),
+        ("compact", "", False),
+        ("compact", None, False),
+    ],
+)
+def test_mixed_grain_uses_query_verbosity(
+    jaffle_package: Path, outer_verbosity: str, query_verbosity: str | None, keeps_analysis: bool
+) -> None:
+    probe = next(p for p in mcp_context.ERROR_PROBES if p[0] == "validate_fanout")
+    _name, tool, arguments, _ok, _code = probe
+    with mcp_context.QueryMCPClient(jaffle_package) as client:
+        payload = client.call_tool(
+            tool,
+            {
+                **arguments,
+                "mode": "run",
+                "verbosity": outer_verbosity,
+                "query": {**arguments["query"], "verbosity": query_verbosity},
+            },
+        )["structuredContent"]
+    assert payload["ok"] is False
+    issue = payload["errors"][0]
+    assert issue["code"] == "MIXED_GRAIN_INVALID"
+    assert ("analysis" in issue["details"]) is keeps_analysis
+    if keeps_analysis:
+        assert issue["details"]["analysis"]["relationships"]

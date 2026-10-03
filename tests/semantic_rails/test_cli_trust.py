@@ -72,6 +72,7 @@ def _run(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
+        timeout=120,
     )
 
 

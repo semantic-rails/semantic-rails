@@ -55,9 +55,13 @@ API:
 - `package_id`
 - `warnings`
 - `errors`
-- `recovery_hints` (the errors' hints, and other next steps; left out when there are none)
+- `error` (`{code, message}` from `errors[0]`, present for errors including validate soft-fails)
+- `recovery_hints` (independent discovery next steps only; error hints live in `errors[i].recovery_hints`)
 - `timing_ms`
 
+Each full error issue appears once in `errors`, with its own `recovery_hints`;
+the hints are not repeated at the response root, in `query_ir_hints`, or in that
+issue's `details`. Distinct query-IR hints and independent discovery next steps remain.
 MCP issues leave out empty optional fields and a
 `why_invalid` or `unsupported_construct` that only repeats its `message` or `code`, and
 `request_context` appears only when a transport or `policy_context` set one.
@@ -384,13 +388,14 @@ Use `detail="full"` only when you need alternatives or blocked drafts.
 
 ### Query Verbosity Tiers (execute modes)
 
-`execute` defaults to `verbosity=minimal` in every mode. An explicit `verbosity` argument always
-wins, and error envelopes (`ok: false`) inherit the same default. This is an MCP-only default —
+`execute` defaults to `verbosity=minimal` in every mode. `query.verbosity` takes precedence
+over the outer `verbosity` argument; error envelopes (`ok: false`) use the same resolved
+verbosity as the runtime. This is an MCP-only default —
 the HTTP `/api/v1/*` default remains `compact`.
 
 | Verbosity | What's kept | Size (jaffle, measured*) | When to use |
 |---|---|---|---|
-| `minimal` (MCP default) | `{ok, status, errors, warnings, recovery_hints}`; mode `sql` also keeps `rendered_sql`; mode `run` also keeps `rows` + `row_count` | ~0.7KB / ~1.9KB / ~2.4KB | Tight agent loops with a tool-output cap |
+| `minimal` (MCP default) | `{ok, status, errors, warnings}` (plus `error` on failure); mode `sql` also keeps `rendered_sql`; mode `run` also keeps `rows` + `row_count` | ~0.7KB / ~1.9KB / ~2.4KB | Tight agent loops with a tool-output cap |
 | `compact` (HTTP default) | includes compact `trace`; drops top-level `physical_plan`, `performance_plan`, `semantic_summary`, `compile_stats`; strips `output_columns.lineage` | ~88KB / ~94KB / ~96KB | Diagnostics, `explain` review |
 | `full` | includes compact `trace` plus every field, including the heavy plan trees | ~97KB / ~114KB / ~116KB | Debugging, code-gen |
 
@@ -801,7 +806,13 @@ Every error surfaced through the MCP or HTTP transport is wrapped in a structure
 }
 ```
 
-Every envelope carries `code` and `message`, plus at least one of `details`, `recovery_hints`, or `closest_matches`. Over MCP, empty optional fields are left out; recovery hints keep their own details so each hint is actionable on its own. Bare `KeyError` / `AttributeError` leaks are wrapped as `INTERNAL_ERROR` envelopes with a bug-tracker hint so the surface is always actionable.
+Each issue carries `code` and `message`, plus at least one of `details`, `recovery_hints`, or `closest_matches`. Over MCP, empty optional fields are left out; recovery hints keep their own details so each hint is actionable on its own. Bare `KeyError` / `AttributeError` leaks are wrapped as `INTERNAL_ERROR` envelopes with a bug-tracker hint so the surface is always actionable.
+
+At MCP verbosity `minimal`, `MIXED_GRAIN_INVALID` omits the relationship analysis
+dump while retaining offending dimensions, compatible measures and dimensions,
+time-axis recovery, and every recovery hint. `REWRITE_APPLIED` omits `details.analysis`
+and `details.path`, retaining its code, message, and `details.rewrite_kind`.
+Request `compact` or `full` for the complete analysis details.
 
 ### Error Code Catalog
 

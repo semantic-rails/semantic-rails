@@ -266,7 +266,7 @@ def test_api_post_rejects_oversized_body_with_413(runtime_factory):
             method="POST",
         )
         with pytest.raises(urllib.error.HTTPError) as exc:
-            urllib.request.urlopen(req)  # nosec - local test server only
+            urllib.request.urlopen(req, timeout=30)  # nosec - local test server only
         assert exc.value.code == 413
         payload = json.loads(exc.value.read().decode("utf-8"))
         assert any("KiB" in str(error.get("message", "")) for error in payload.get("errors", []))

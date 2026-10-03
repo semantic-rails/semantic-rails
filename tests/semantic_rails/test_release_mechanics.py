@@ -325,7 +325,11 @@ def test_release_marks_only_pre_release_tags_as_github_pre_releases(tmp_path, ta
     env = {**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}"}
     env |= {"GITHUB_REF_NAME": tag, "GH_ARGS": str(tmp_path / "args")}
     subprocess.run(
-        ["bash", "-e", "-o", "pipefail", "-c", script], cwd=tmp_path, env=env, check=True
+        ["bash", "-e", "-o", "pipefail", "-c", script],
+        cwd=tmp_path,
+        env=env,
+        check=True,
+        timeout=120,
     )
     args = (tmp_path / "args").read_text(encoding="utf-8").splitlines()
     assert args[:2] == ["release", "create"] and f"--prerelease={prerelease}" in args
