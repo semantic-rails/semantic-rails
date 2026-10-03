@@ -109,6 +109,7 @@ from .policies import (
 )
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
+from .renderer import render_select_for_profile
 from .request_context import (
     context_from_policy_context,
     request_context_payload,
@@ -132,6 +133,8 @@ from .seed_provenance import (
     recorded_seed_digest,
 )
 from .segments import build_segment_query, normalize_segment, strip_segment_preview_metric
+from .sql_ast import SqlCall, SqlField, SqlIdentifier, SqlSelect, SqlTableRef
+from .sql_identifiers import plain_relation_parts
 from .sql_preparation import PreparedQuery, checked_parameter_values
 
 __all__ = [
@@ -780,10 +783,42 @@ def _unchained_failure(exc: Exception, adapter: Any, query: PreparedQuery) -> Se
     return query_execution_error({"engine": engine, "sql_redacted": True})
 
 
+def _coverage_probe_query(
+    warehouse: str, table: str, column: str, *, entity: str, dimension: str
+) -> PreparedQuery:
+    """``SELECT MIN(column), MAX(column) FROM table``, rendered as compiled SQL is.
+
+    Both names come from package config, so each must be a plain SQL identifier;
+    anything else refuses before any SQL is built.
+    """
+    parts = plain_relation_parts(table)
+    if parts is None or ".".join(parts) != table or plain_relation_parts(column) != [column]:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "The data coverage probe reads only tables and columns with plain SQL names.",
+            details={
+                "reason": "probe_identifier_not_plain",
+                "entity": entity,
+                "dimension": dimension,
+            },
+        )
+    value = SqlIdentifier([column])
+    probe = SqlSelect(
+        select=[
+            SqlField(SqlCall("MIN", [value]), "min_t"),
+            SqlField(SqlCall("MAX", [value]), "max_t"),
+        ],
+        from_table=SqlTableRef(table),
+    )
+    dialect = dialect_for_warehouse(warehouse)
+    return dialect.prepare_query(render_select_for_profile(probe, dialect=dialect))
+
+
 def _data_coverage_probe(
     adapter: Any,
     config: Any,
     *,
+    warehouse: str,
     root_entity: str,
     temporal_role: str,
     limits: dict[str, Any],
@@ -796,8 +831,8 @@ def _data_coverage_probe(
     because the original query already ran and returned nothing.
 
     Returns ``{"min": iso, "max": iso}`` on success; empty dict if any
-    lookup fails or the probe raises. Failures are silent — coverage is
-    a hint, not a guarantee.
+    lookup fails, a name is not plain (see ``_coverage_probe_query``) or the
+    probe raises. Failures are silent — coverage is a hint, not a guarantee.
     """
     try:
         entity_idx = {row.id: row for row in config.entities}
@@ -810,11 +845,14 @@ def _data_coverage_probe(
         dim_row = dim_idx.get(role_row.dimension)
         if dim_row is None or not dim_row.column or not entity_row.table:
             return {}
-        sql = (
-            f"SELECT MIN({dim_row.column}) AS min_t, "
-            f"MAX({dim_row.column}) AS max_t FROM {entity_row.table}"
+        query = _coverage_probe_query(
+            warehouse,
+            entity_row.table,
+            dim_row.column,
+            entity=entity_row.id,
+            dimension=dim_row.id,
         )
-        rows = _adapter_query(adapter, sql, limits=limits)
+        rows = _adapter_query(adapter, query, limits=limits)
         if not rows:
             return {}
         first = rows[0] or {}
@@ -2725,6 +2763,7 @@ class Runtime:
                         actual_data_coverage = _data_coverage_probe(
                             self._get_adapter(),
                             self._config,
+                            warehouse=self.warehouse,
                             root_entity=root_entity,
                             temporal_role=str(time_block.get("temporal_role", "") or ""),
                             limits=limits,

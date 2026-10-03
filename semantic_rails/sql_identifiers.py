@@ -7,6 +7,10 @@ but never a dot. Authoring and introspection accept and return that form.
 
 from __future__ import annotations
 
+import re
+
+_PLAIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*")
+
 
 def relation_parts(relation: str) -> list[str] | None:
     """A relation's dotted parts (at most three), or None when it cannot be one."""
@@ -15,6 +19,18 @@ def relation_parts(relation: str) -> list[str] | None:
     if len(parts) > 3 or not all(
         part and part.isprintable() and not any(ch in "/\\" for ch in part) for part in parts
     ):
+        return None
+    return parts
+
+
+def plain_relation_parts(relation: str) -> list[str] | None:
+    """A relation's dotted parts when each is a plain SQL identifier, else None.
+
+    A probe the runtime builds outside the compiler accepts only these names, so
+    a package value never carries quotes, statements or file paths into its SQL.
+    """
+    parts = relation_parts(relation)
+    if parts is None or not all(_PLAIN_NAME.fullmatch(part) for part in parts):
         return None
     return parts
 

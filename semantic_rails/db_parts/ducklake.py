@@ -35,6 +35,7 @@ from .common import (
     require_missing_env,
     set_duckdb_time_zone,
 )
+from .duckdb_confinement import confine_duckdb, confinement_directory, require_inside
 
 # Alias under which the lake catalog is ATTACHed on the in-memory host.
 # Invisible to compiled SQL: the adapter immediately USEs it, so table
@@ -85,7 +86,14 @@ class DuckLakeAdapter(DbApiAdapter):
     # threaded ASGI hosting, so this stays truthfully False.
     supports_statement_timeout = False
 
-    def __init__(self, options: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        options: dict[str, Any] | None = None,
+        *,
+        confine_to: str | os.PathLike[str] = "",
+    ) -> None:
+        """``confine_to`` limits file access to that directory, which must hold the
+        catalog and data paths (see :mod:`semantic_rails.db_parts.duckdb_confinement`)."""
         super().__init__()
         self.options = normalize_connection_options(
             "ducklake",
@@ -94,6 +102,7 @@ class DuckLakeAdapter(DbApiAdapter):
             DUCKLAKE_CONNECTION_OPTIONS,
             label="DuckLake",
         )
+        self._confine_to = confinement_directory(confine_to) if confine_to else ""
 
     # -- path resolution ----------------------------------------------------
     def _resolve_path(self, option: str, missing_env: list[str]) -> str:
@@ -141,6 +150,11 @@ class DuckLakeAdapter(DbApiAdapter):
             connection_kind=self.connection_kind,
         )
         catalog_path, data_path = self._resolve_paths()
+        if self._confine_to:
+            # Before creating anything: a path outside the directory refuses.
+            require_inside(self._confine_to, catalog_path, option="catalog_path")
+            if data_path:
+                require_inside(self._confine_to, data_path, option="data_path")
         parent = os.path.dirname(catalog_path)
         if parent:
             os.makedirs(parent, exist_ok=True)
@@ -164,6 +178,9 @@ class DuckLakeAdapter(DbApiAdapter):
             use_sql = f"USE {use_target}"
             # Validate the namespace eagerly (catalog/schema must exist) …
             conn.execute(use_sql)
+            if self._confine_to:
+                # After the extension loads and the catalog attaches, which need access.
+                confine_duckdb(conn, self._confine_to)
         except BaseException:
             with contextlib.suppress(Exception):  # best-effort cleanup
                 conn.close()
@@ -173,7 +190,9 @@ class DuckLakeAdapter(DbApiAdapter):
         return _NamespacedConnection(conn, use_sql)
 
 
-def create_adapter(package: Any, *, db_path: str = "") -> WarehouseAdapter:
+def create_adapter(
+    package: Any, *, db_path: str = "", confine_to: str | os.PathLike[str] = ""
+) -> WarehouseAdapter:
     """Registry entry point for the ducklake warehouse (see dialects.py)."""
     kind = package.connection.kind
     if kind != "ducklake_native":
@@ -182,4 +201,4 @@ def create_adapter(package: Any, *, db_path: str = "") -> WarehouseAdapter:
             f"Unsupported DuckLake connection kind '{kind}'",
             details={"engine": "ducklake", "connection_kind": str(kind)},
         )
-    return DuckLakeAdapter(package.connection.options)
+    return DuckLakeAdapter(package.connection.options, confine_to=confine_to)
