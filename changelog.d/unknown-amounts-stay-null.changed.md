@@ -5,7 +5,9 @@
   meets its condition. The period's own value, filled (`time.fill`) or unfilled, and a
   `prior_period` read of it are `NULL`; rolling and cumulative windows skip its unknown
   value. A window of a sum or difference windows each operand first, so an unknown goods
-  amount drops only the goods, not that month's revenue.
+  amount drops only the goods, not that month's revenue. A summing window refuses a metric
+  referenced inside its input, such as `net * 2` where `net` is a metric, with `ROLLUP_UNSAFE`
+  (`nested_metric_window_input`); write that metric's expression inline instead.
   An unknown amount carries through: a ratio over it is `NULL`, and neither a
   `metric_filters` threshold nor a `metric_predicate` threshold keeps it, one that `0`
   passes (`< 5`) included, and

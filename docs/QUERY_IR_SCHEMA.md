@@ -888,6 +888,9 @@ whose rows all fail it has none and reads `0`, and one whose matching rows all h
 amount reads `NULL`. Filled or not, a group reads the same.
 A window of a sum or difference windows each operand first, so an unknown goods amount
 drops only the goods, not that month's revenue.
+A summing window refuses a metric referenced inside its input, such as `net * 2` where `net`
+is a metric, with `ROLLUP_UNSAFE` (`details.unsupported_construct: nested_metric_window_input`);
+write that metric's expression inline instead, or make the metric the window's whole input.
 A sum of a `CASE` with no `ELSE` or `ELSE NULL` follows that conditional rule, with one
 branch or several: a group none of whose rows meets a branch reads `0`, and such a sum is
 never answered from a rollup. An explicit non-NULL `ELSE`, including `ELSE 0`, contributes

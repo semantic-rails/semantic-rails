@@ -26,6 +26,7 @@ from semantic_rails.expressions import parse_config_expression
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime, _no_data_in_scope_warnings
+from semantic_rails.schema import MetricConfig
 from semantic_rails.sql_ast import SqlCte
 from tests.integration.correctness.conftest import _write_variant
 from tests.semantic_rails.conftest import copy_package_config
@@ -1125,6 +1126,103 @@ def test_a_summing_window_combines_each_operands_window(
     }
     for month, values in expected.items():
         assert got[month] == values[op == "subtract"], month
+
+
+NET = "metric.shop.net_revenue"
+NET_HUNDREDTHS = "metric.shop.net_revenue_hundredths"
+NET_INLINE = {"kind": "arithmetic", "op": "subtract", "left": SHOP_REVENUE, "right": SHOP_GOODS}
+TWO = {"kind": "literal", "value": 2}
+HUNDRED = {"kind": "literal", "value": 100}
+
+
+@pytest.fixture(scope="module")
+def shop_with_net(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
+    """The shop with net = revenue - goods_refunded declared, and a metric built on net."""
+    package = _write_variant(tmp_path_factory.mktemp("shop_net"), "utc_authored")
+    config = load_package_config(str(package))
+    recipes = {
+        NET: NET_INLINE,
+        NET_HUNDREDTHS: {"kind": "arithmetic", "op": "divide", "left": {"metric": NET}, "right": HUNDRED},
+    }
+    config = replace(
+        config,
+        metric_recipes=[
+            *config.metric_recipes,
+            *(
+                MetricConfig(id=key, kind="derived", expression=parse_config_expression(value))
+                for key, value in recipes.items()
+            ),
+        ],
+    )
+    rt = Runtime.from_config(config, source_path=str(package))
+    try:
+        yield rt
+    finally:
+        rt.close()
+
+
+def _summing_window_query(kind: str, input_expr: dict[str, Any]) -> dict[str, Any]:
+    expression = {"kind": kind, "input": input_expr}
+    if kind == "rolling":
+        expression["window"] = {"unit": "month", "value": 3}
+    elif kind == "period_to_date":
+        expression["period"] = "year"
+    return {"select": _select(value=expression), "time": {**SHOP_MONTH, "fill": True}}
+
+
+@pytest.mark.parametrize("kind", ["rolling", "cumulative", "period_to_date"])
+@pytest.mark.parametrize(
+    "input_expr",
+    [
+        {"kind": "arithmetic", "op": "multiply", "left": {"metric": NET}, "right": TWO},
+        {"kind": "arithmetic", "op": "divide", "left": {"metric": NET}, "right": HUNDRED},
+        {"kind": "arithmetic", "op": "add", "left": {"metric": NET}, "right": SHOP_REVENUE},
+        {"kind": "ratio", "numerator": {"metric": NET}, "denominator": SHOP_REVENUE},
+        {"metric": NET_HUNDREDTHS},
+    ],
+    ids=["times_two", "over_hundred", "plus_revenue", "ratio", "metric_over_hundred"],
+)
+def test_a_summing_window_refuses_a_metric_inside_its_input(
+    shop_with_net: Runtime, kind: str, input_expr: dict[str, Any]
+) -> None:
+    """Only inline operands are windowed one by one: a metric inside the input would be windowed
+    as one value, so January's unknown goods amount would drop its known revenue."""
+    query = _summing_window_query(kind, input_expr)
+    issue = shop_with_net.validate(query)["errors"][0]
+    with pytest.raises(SemanticLayerError) as raised:
+        shop_with_net.query(query)
+    for code, details in [(issue["code"], issue["details"]), (raised.value.code, raised.value.details)]:
+        assert code == "ROLLUP_UNSAFE"
+        assert details["unsupported_construct"] == "nested_metric_window_input"
+        assert details["construct"] == kind
+        assert details["input"] == NET
+
+
+@pytest.mark.parametrize(
+    ("input_expr", "factor", "expected"),
+    [
+        ({"kind": "arithmetic", "op": "multiply", "left": NET_INLINE, "right": TWO}, 2, 72),
+        ({"metric": NET}, 1, 36),
+    ],
+    ids=["inline_times_two", "whole_input_metric"],
+)
+def test_a_summing_window_answers_inline_operands_and_a_whole_input_metric(
+    shop_with_net: Runtime, input_expr: dict[str, Any], factor: int, expected: int
+) -> None:
+    response = shop_with_net.query(_summing_window_query("rolling", input_expr))
+    got = {
+        row[f"{SHOP_MONTH['temporal_role']}__month"].strftime("%Y-%m"): row["value"]
+        for row in typed_rows(response)
+    }
+    # November 2023 to January 2024, each part summed over the base rows on its own.
+    window = "o.ordered_at >= TIMESTAMP '2023-11-01' AND o.ordered_at < TIMESTAMP '2024-02-01'"
+    gold = _gold(
+        shop_with_net,
+        f"SELECT (SELECT SUM(o.amount) FROM orders o WHERE {window}) - (SELECT SUM(r.goods_amount) "
+        f"FROM refunds r JOIN orders o ON r.order_id = o.order_id WHERE {window}) AS net",
+    )
+    assert factor * gold[0]["net"] == expected
+    assert got["2024-01"] == expected
 
 
 @pytest.mark.parametrize("fill", [False, True])
