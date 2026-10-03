@@ -412,10 +412,12 @@ def _join_on_for_relationship(
             SqlBinary(_column_ref(left_table, left_col), "=", _column_ref(right_table, right_col)),
         )
     time_anchor = _time_anchor_expr(time_spec, config)
-    if time_anchor is None and enters_validity_window(rel, entities[current_entity].table):
+    enters_window = enters_validity_window(rel, entities[current_entity].table)
+    if time_anchor is None and enters_window:
         # analyze_fanout refuses such a hop when it plans the path; this is the join's own guard.
         raise unanchored_time_valid_hop_error([(rel.id, next_entity)], [rel.id])
-    if time_anchor is not None and rel.temporal_validity:
+    # Leaving the window table reads an existing version; only entering it selects a version.
+    if time_anchor is not None and enters_window:
         valid_from = str(rel.temporal_validity.get("valid_from", "")).strip()
         valid_to = str(rel.temporal_validity.get("valid_to", "")).strip()
         if valid_from:

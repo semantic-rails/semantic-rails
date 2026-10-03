@@ -286,6 +286,7 @@ Current behavior:
 - missing history is null-preserving
 - historical joins become left-join style paths once validity windows are applied
 - a query that joins into the table holding a `temporal_validity` window with no `time` is refused (`FANOUT_UNSAFE`, naming the relationship and the entity) instead of joining every version
+- a hop out of the versioned table keeps that version's far-side dimensions; the query clock does not reapply the near table's validity window to the lookup
 - the API now emits compact warnings/caveats so a `NULL` bucket can be interpreted as “no valid history row at the time anchor”
 - unsupported historical shapes fail semantically rather than silently dropping rows
 
