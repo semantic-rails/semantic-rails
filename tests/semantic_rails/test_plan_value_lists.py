@@ -492,30 +492,67 @@ def test_supplied_ranking_does_not_add_named_value_grouping(runtime_factory, mon
 
 @pytest.mark.parametrize("path", ["primary", "fallback"])
 @pytest.mark.parametrize("caller_filter", [False, True])
-def test_unranked_named_values_execute_a_total_with_caller_filters_preserved(
+def test_unranked_lowercase_shared_phrase_stays_fail_safe(
     runtime_factory, monkeypatch, path, caller_filter
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
-    intent = "item revenue for Brooklyn and Philadelphia"
+    intent = "item revenue for brooklyn and philadelphia"
     where = [{"field": STORE, "op": "=", "value": "Brooklyn"}] if caller_filter else []
     _force_fallback(runtime, monkeypatch, intent, path)
     try:
         payload = plan_payload(runtime, intent=intent, partial_query={"where": where})
-        query = payload["best"]["query_ir"]
+    finally:
+        runtime.close()
+    query = payload["best"]["query_ir"]
+    assert not query.get("group_by")
+    assert query["where"][: len(where)] == where
+    assert _keeping(query, STORE) == [{"field": STORE, "op": "=", "value": "Brooklyn"}]
+    assert payload["status"] == "low_confidence", payload.get("why")
+    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    assert "filter_values_unrealized" in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
+    assert "execute" not in payload["next"].get("ready_for", [])
+
+
+@pytest.mark.parametrize(
+    ("path", "intent"),
+    [
+        ("mixed-case-draft", "item revenue for Brooklyn and Philadelphia"),
+        ("primary", "item revenue for Brooklyn from Philadelphia"),
+        ("fallback", "item revenue for Brooklyn from Philadelphia"),
+    ],
+)
+@pytest.mark.parametrize("caller_filter", [False, True])
+def test_unranked_resolved_named_values_execute_a_total_with_caller_filters_preserved(
+    runtime_factory, monkeypatch, path, intent, caller_filter
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    where = [{"field": STORE, "op": "=", "value": "Brooklyn"}] if caller_filter else []
+    _force_fallback(runtime, monkeypatch, intent, path)
+    try:
+        if path == "mixed-case-draft":
+            # Direct inference retains case; plan lowercases the shared phrase.
+            query = _draft_for_choice(
+                runtime, intent=intent, partial_query={"where": where}, choice=CHOICE
+            ).query
+        else:
+            payload = plan_payload(runtime, intent=intent, partial_query={"where": where})
+            query = payload["best"]["query_ir"]
+            assert payload["status"] == ("low_confidence" if caller_filter else "ok"), payload.get(
+                "why"
+            )
+            if caller_filter:
+                assert "execute" not in payload["next"].get("ready_for", [])
+                assert "filter_values_unrealized" in [
+                    gap["kind"] for gap in payload["why"]["details"]["gaps"]
+                ]
+            else:
+                assert "execute" in payload["next"].get("ready_for", [])
         assert not query.get("group_by")
         assert query["where"][: len(where)] == where
         filters = _keeping(query, STORE)
         assert len(filters) == 1 + len(where)
         assert filters[-1]["op"] == "in"
         assert set(filters[-1]["value"]) == {"Brooklyn", "Philadelphia"}
-        assert payload["status"] == ("low_confidence" if caller_filter else "ok"), payload.get(
-            "why"
-        )
-        if caller_filter:
-            assert "execute" not in payload["next"].get("ready_for", [])
-            assert "filter_values_unrealized" in [
-                gap["kind"] for gap in payload["why"]["details"]["gaps"]
-            ]
         rows = runtime.query(query)["rows"]
         assert len(rows) == 1
         actual = rows[0][query["select"][0]["as"]]
