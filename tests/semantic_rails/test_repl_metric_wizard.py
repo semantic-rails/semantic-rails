@@ -282,7 +282,9 @@ def _author(
     return script, _saved(project, answers["Metric key"])
 
 
-def _values(project: Path, key: str, clock: str | None = ORDERED) -> list[Any]:
+def _values(
+    project: Path, key: str, clock: str | None = ORDERED, *, expect_refusal: bool = False
+) -> list[Any] | str:
     """The metric on ``clock`` by day, or by its window's unit; its total without a clock."""
 
     from semantic_rails.runtime import Runtime
@@ -298,6 +300,12 @@ def _values(project: Path, key: str, clock: str | None = ORDERED) -> list[Any]:
         query["time"] = {"temporal_role": clock, "grain": grain}
     runtime = Runtime.from_path(str(project))
     try:
+        if expect_refusal:
+            with pytest.raises(SemanticLayerError, match=r"\(avg, additive\)") as raised:
+                runtime.query(query)
+            assert raised.value.code == "ROLLUP_UNSAFE"
+            assert raised.value.details["unsupported_construct"] == "non_additive_window_input"
+            return raised.value.code
         rows = typed_rows(runtime.query(query))
     finally:
         runtime.close()
@@ -742,7 +750,9 @@ def test_enter_keeps_an_authored_metric_and_a_new_input_refreshes_it(
     project = _shop(tmp_path, shipped=True, calendar=True)
     spec = _authored_metric(recipe, ref, count="shop.OrdersPlaced", status="shop.Order.status")
     path = _write_metric(project, "m", {**spec, clock_field: SHIPPED})
-    original, before = path.read_bytes(), _values(project, "m", SHIPPED)
+    refuses = recipe in {"rolling", "cumulative", "period_to_date"}
+    original = path.read_bytes()
+    before = _values(project, "m", SHIPPED, expect_refusal=refuses)
     selector = SELECTORS.get(recipe, "Measure")
     undo: list[Any] = []
 
@@ -761,7 +771,7 @@ def test_enter_keeps_an_authored_metric_and_a_new_input_refreshes_it(
             "Time axis for this metric": "Shipped At (orders)",
         },
     )
-    assert _values(project, "m", SHIPPED) == before
+    assert _values(project, "m", SHIPPED, expect_refusal=refuses) == before
     _repl(project, "undo", None, undo)
     assert path.read_bytes() == original
 
@@ -783,7 +793,8 @@ def test_enter_keeps_an_authored_metric_and_a_new_input_refreshes_it(
     )
     assert _values(project, "m") != before
     _repl(project, "undo", None, undo)
-    assert path.read_bytes() == original and _values(project, "m", SHIPPED) == before
+    assert path.read_bytes() == original
+    assert _values(project, "m", SHIPPED, expect_refusal=refuses) == before
 
 
 # A changed input or recipe -> defaults from the new input.
@@ -1067,14 +1078,16 @@ def test_enter_keeps_an_authored_expression(
         "value_type": "number",
     }
     path = _write_metric(project, "m", spec)
-    before = _values(project, "m")
+    refuses = kind in {"rolling", "cumulative", "period_to_date"}
+    before = _values(project, "m", expect_refusal=refuses)
 
     script, metric = _author(project, {"Metric key": "m"})
 
     what = "derived expression" if kind == "derived" else "expression"
     assert script.offered["Metric recipe"] == f"Keep this {what} unchanged"
     assert "Result type" not in script.offered
-    assert metric["expression"] == expression and _values(project, "m") == before
+    assert metric["expression"] == expression
+    assert _values(project, "m", expect_refusal=refuses) == before
 
     kept, undo = path.read_bytes(), []
     rolling = {"Metric recipe": "Rolling window", "Measure": "revenue - "}
@@ -1329,7 +1342,9 @@ def test_real_backends_keep_the_saved_metric_on_enter(
             recipe, REVENUE, count=ORDER_COUNT, status="dimension.shop_order_status"
         )
     path = _write_metric(project, "m", {**spec, "temporal_role": SHIPPED})
-    original, before = path.read_bytes(), _values(project, "m", SHIPPED)
+    refuses = recipe == "rolling"
+    original = path.read_bytes()
+    before = _values(project, "m", SHIPPED, expect_refusal=refuses)
     undo: list[Any] = []
 
     with _real_backend(ui, monkeypatch, "m", search) as seen:
@@ -1361,7 +1376,7 @@ def test_real_backends_keep_the_saved_metric_on_enter(
         }
         _assert_has(offered, expected[recipe])
         _assert_has(metric, {**canonical, "temporal_role": SHIPPED})
-        assert _values(project, "m", SHIPPED) == before
+        assert _values(project, "m", SHIPPED, expect_refusal=refuses) == before
     _repl(project, "undo", None, undo)
     assert undo == [] and path.read_bytes() == original
 

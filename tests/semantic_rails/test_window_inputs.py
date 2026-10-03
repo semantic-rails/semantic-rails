@@ -4,19 +4,36 @@ from dataclasses import replace
 
 import pytest
 
+from semantic_rails.ast import normalize_query
 from semantic_rails.compiler import compile_query
-from semantic_rails.compiler_parts.post_aggregation import _compile_offset_window_expr
+from semantic_rails.compiler_parts.bind import lift_conditional_aggregates
+from semantic_rails.compiler_parts.post_aggregation import (
+    _as_offset_window_expr,
+    _compile_offset_window_expr,
+)
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import OffsetWindowExpr, parse_semantic_expression
 from semantic_rails.http_core import SemanticHTTPService
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.registry import Registry
 from semantic_rails.schema import MetricConfig
+from semantic_rails.sql_ast import SqlCall, SqlWindow
 
 ROLE = "temporal_role.jaffle_order_time"
 REVENUE = {"measure": "measure.jaffle.revenue_usd"}
 ORDERS = {"measure": "measure.jaffle.order_count"}
 RATIO = {"kind": "ratio", "numerator": REVENUE, "denominator": ORDERS}
+CONDITIONAL_COUNT = {
+    "kind": "aggregate_if",
+    "aggregation": "count",
+    "value": {"kind": "column", "column": "customer_id", "entity": "entity.jaffle_order"},
+    "condition": {
+        "kind": "comparison",
+        "op": "=",
+        "left": {"kind": "column", "column": "status", "entity": "entity.jaffle_order"},
+        "right": {"kind": "literal", "value": "completed"},
+    },
+}
 
 
 def window(input_expr, kind="rolling"):
@@ -38,6 +55,25 @@ def query(expression, **extra):
 def config(package_config_factory):
     config, _ = package_config_factory("jaffle_shop")
     return config
+
+
+def lower_conditional_window(config, expression):
+    # Synthetic measures have no authored clock. Exercise the shared lowering guard
+    # directly so the independent temporal-binding refusal cannot hide this input rule.
+    rewritten, synthetics = lift_conditional_aggregates(normalize_query(query(expression)), config)
+    config = replace(config, measures=[*config.measures, *synthetics.values()])
+    expr = _as_offset_window_expr(rewritten.select[0].expression)
+    assert expr is not None
+    return _compile_offset_window_expr(
+        expr, config, time_alias="t", group_aliases=[], query_grain="month", table_alias="base"
+    )
+
+
+@pytest.mark.parametrize("kind", ["rolling", "cumulative", "period_to_date"])
+def test_conditional_count_still_feeds_a_summing_window(config, kind):
+    result = lower_conditional_window(config, window(CONDITIONAL_COUNT, kind))
+    assert isinstance(result, SqlWindow)
+    assert isinstance(result.function, SqlCall) and result.function.name == "SUM"
 
 
 @pytest.mark.parametrize("kind", ["rolling", "cumulative", "period_to_date"])
@@ -64,6 +100,7 @@ UNSAFE = [
     ],
     ({"measure": "measure.jaffle.inventory_on_hand_eop"}, "inventory_on_hand_eop"),
     ({"measure": "measure.jaffle.customer_count"}, "customer_count"),
+    ({**CONDITIONAL_COUNT, "aggregation": "count_distinct"}, "count_distinct"),
     (
         {
             "kind": "distribution",
@@ -101,7 +138,10 @@ def test_non_additive_inputs_refuse_centrally(config, input_expr, name):
     if measure and measure.default_temporal_role:
         payload["time"]["temporal_role"] = measure.default_temporal_role
     with pytest.raises(SemanticLayerError) as raised:
-        compile_query(config, Registry(config), payload)
+        if input_expr.get("kind") == "aggregate_if":
+            lower_conditional_window(config, payload["select"][0]["expression"])
+        else:
+            compile_query(config, Registry(config), payload)
     assert raised.value.code == "ROLLUP_UNSAFE"
     assert name in str(raised.value)
     assert raised.value.details["recovery_hints"]

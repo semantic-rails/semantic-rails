@@ -173,8 +173,9 @@ shorthands for the most common cases:
 | Conversion | `{ "kind": "conversion", "base": {...}, "converted": {...}, "entity": "...", "window": {"unit": "day", "value": 7}, "matching_mode": "first_converted_after_base" }` — a converted event counts when `base <= converted < base + window` (7 × 24 hours here, not calendar days). |
 
 **Summing windows require values that add up across periods.** `rolling`, `cumulative`,
-and `period_to_date` accept additive flows and event counts using `sum`, `count`, or
-`count_distinct`, and sums or differences of those inputs. A ratio (including arithmetic
+and `period_to_date` accept additive flows using `sum` or `count`, event counts using
+`count_distinct`, and sums or differences of those inputs. A conditional
+`aggregate_if(count_distinct, …)` is not an event count and refuses. A ratio (including arithmetic
 `divide` and metric recipes that resolve to a ratio) computes the ratio of its windowed
 parts: `SUM(numerator) OVER w / NULLIF(SUM(denominator) OVER w, 0)`. Each part uses the
 same partition and frame, after the ordinary empty-group settlement; a zero denominator

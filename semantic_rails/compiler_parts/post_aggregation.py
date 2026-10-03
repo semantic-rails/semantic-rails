@@ -135,11 +135,13 @@ def _summing_window_parts(
             if measure is None:
                 raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown measure '{value.measure}'")
             aggregation = (value.aggregation or measure.default_aggregation).lower()
+            allowed = {"additive": {"sum", "count"}, "event_count": {"count_distinct"}}.get(
+                measure.measure_class, set()
+            )
             if (
                 measure.additive
-                and measure.measure_class in {"additive", "event_count"}
                 and measure.accumulation.kind in {"", "flow", "event"}
-                and aggregation in {"sum", "count", "count_distinct"}
+                and aggregation in allowed
             ):
                 return
             name = f"measure '{measure.id}' ({aggregation}, {measure.measure_class})"
