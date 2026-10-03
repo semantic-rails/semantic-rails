@@ -270,7 +270,8 @@ question spells out whole consumes its namespaces too), a value it filters on or
 declared names, a time grain it carries (only its unit and its "-ly" form), a prior-period
 shift's trigger phrase, one grouping that names the query's clock at the planned grain (a
 second one, as in "by order month and order date", is not consumed), "number of" for a
-selected count-valued measure, or a recorded time phrase or honored clause.
+selected count-valued measure when the draft has no grouping, or a recorded time phrase or
+honored clause.
 Stopwords are exempt unless they are exact catalog names. Regular plurals are recognized
 and consumed using the same forms; "-es" applies only after s, x, z, ch or sh. A
 synonym, a typo, a namespace, a description, a framing word or an object the draft doesn't select

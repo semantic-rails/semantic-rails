@@ -2380,10 +2380,10 @@ def _unconsumed_words(
             else:
                 reads.update({grain, "daily" if grain == "day" else f"{grain}ly"})
     reads.subtract(clock_units)
-    if count_valued and (not query.get("group_by") or _requested_grouping_spans(text)):
+    if count_valued and not query.get("group_by"):
         # Entity counts normalize to count_distinct; snapshot counts can use last_value.
-        # Either reads "number of", as an explicit counting aggregation does. A count the
-        # question doesn't ask to group ("number of stores open" by store) isn't one number.
+        # These read "number of" only when the draft has no group_by. A clock grain
+        # can still carry a monthly count without grouping by a catalog dimension.
         spans.extend(match.span() for match in re.finditer(r"\bnumber\s+of\b", lowered))
     named = names | {_singular(word) for word in names}
     consumed = used | {_singular(word) for word in used}

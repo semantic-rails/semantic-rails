@@ -5,5 +5,5 @@
 - Clock groupings consume only their planned grain and debit each unit once, and only one
   clock grouping per question is consumed, so a dropped second grain or date grouping cannot
   leave a plan ready. Count measures used only in filters no longer consume a selected
-  measure's "number of" request, and neither does a count the draft groups when the question
-  asks for no grouping ("number of stores open").
+  measure's "number of" request. A selected count-valued measure consumes "number of" only
+  when the draft has no grouping; grouped counts keep the plan from being ready.

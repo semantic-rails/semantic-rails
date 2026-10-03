@@ -496,7 +496,7 @@ def test_an_honored_inclusion_clause_consumes_its_marker(jaffle: Runtime) -> Non
 @pytest.mark.parametrize(
     ("intent", "aggregation", "terms"),
     [
-        ("number of orders by customer name", "count_distinct", []),
+        ("number of orders by customer name", "count_distinct", ["number"]),
         # Only a count reads "number of"; "number" also names Customer order number.
         ("number of revenue by customer name", "sum", ["number"]),
         # And a count reads only "number of", never the name's own "number".

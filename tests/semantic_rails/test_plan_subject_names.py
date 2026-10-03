@@ -157,7 +157,8 @@ CUSTOMERS = "measure.jaffle.customer_count"
         ("number of customers", CUSTOMERS, None, []),
         ("how many customers", CUSTOMERS, None, []),
         ("customers", CUSTOMERS, None, []),
-        ("number of customers by store", CUSTOMERS, ["dimension.jaffle_store_name"], []),
+        ("number of customers by month", CUSTOMERS, None, []),
+        ("number of customers by store", CUSTOMERS, ["dimension.jaffle_store_name"], ["number"]),
         # The measures whose descriptions start "Number of …" still answer their own questions.
         # Only the description holds "items", though, and it names the Item objects.
         # Snapshot measures still count things even though their aggregation is last_value.
@@ -170,6 +171,18 @@ CUSTOMERS = "measure.jaffle.customer_count"
         # The draft groups by store, which the question doesn't ask for: not one number.
         (
             "number of stores open",
+            "measure.jaffle.open_store_count_eop",
+            ["dimension.jaffle_store_name"],
+            ["number"],
+        ),
+        (
+            "number of stores open by month",
+            "measure.jaffle.open_store_count_eop",
+            ["dimension.jaffle_store_name"],
+            ["number"],
+        ),
+        (
+            "number of stores open by year",
             "measure.jaffle.open_store_count_eop",
             ["dimension.jaffle_store_name"],
             ["number"],
@@ -191,8 +204,12 @@ def test_counting_words_name_the_count_measure(
 
     assert plan["status"] == ("low_confidence" if unconsumed else "ok"), plan.get("why")
     assert ("ready_for" in plan["next"]) is not bool(unconsumed)
+    if unconsumed:
+        assert plan["why"]["code"] == "PLAN_UNMATCHED_TERMS"
     assert (plan.get("why") or {}).get("details", {}).get("terms", []) == unconsumed
     query = plan["best"]["query_ir"]
+    if question.endswith(("month", "year")):
+        assert query["time"]["grain"] == question.rsplit(" ", 1)[-1]
     [select] = query["select"]
     assert select["expression"]["measure"] == measure
     assert query.get("group_by") == group_by
