@@ -1,6 +1,7 @@
 """Store grouping preserves the requested attribute and reporting grain."""
 
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -57,7 +58,8 @@ def retail(tmp_path: Path) -> Iterator[Runtime]:
         "  times:\n"
         "    opened_at: {column: opened_at, kind: date, default: true}\n"
         "  dimensions:\n"
-        f"    store_id: {{as: {STORE_ID}, label: Store id}}\n"
+        f"    store_id: {{as: {STORE_ID}, label: Store id, "
+        "synonyms: [Store key, Store number, Store code]}\n"
         f"    store_name: {{as: {STORE_NAME}, label: Store name}}\n"
         "    store_label: {label: Store label}\n"
         "  measures:\n"
@@ -75,7 +77,15 @@ def retail(tmp_path: Path) -> Iterator[Runtime]:
     ("question", "dimension", "column", "row_count"),
     [
         ("revenue by store id", STORE_ID, "store_id", 3),
+        ("revenue by store key", STORE_ID, "store_id", 3),
+        ("revenue by store number", STORE_ID, "store_id", 3),
+        ("revenue by store code", STORE_ID, "store_id", 3),
         ("revenue by store name", STORE_NAME, "store_name", 2),
+        ("revenue by store", STORE_NAME, "store_name", 2),
+        ("revenue by stores", STORE_NAME, "store_name", 2),
+        # These retain the store-name shortcut's behavior on main.
+        ("revenue by, store name", STORE_NAME, "store_name", 2),
+        ("revenue for each store name", STORE_NAME, "store_name", 2),
     ],
 )
 def test_store_attribute_matches_reference_sql(
@@ -113,13 +123,12 @@ def test_store_attribute_matches_reference_sql(
         ),
     ],
 )
-def test_filtered_store_grouping_is_preserved_or_not_ready(
+def test_filtered_store_grouping_retains_main_behavior(
     jaffle: Runtime, question: str, groups: list[str]
 ) -> None:
     plan = plan_payload(jaffle, intent=question, partial_query={"where": [STORE_FILTER]})
-    if "execute" not in plan.get("next", {}).get("ready_for", []):
-        assert plan["status"] != "ok"
-        return
+    assert plan["status"] == "ok", plan.get("why")
+    assert "execute" in plan["next"]["ready_for"]
     query = plan["best"]["query_ir"]
     assert set(query.get("group_by", [])) == set(groups)
     [selected] = query["select"]
@@ -142,3 +151,47 @@ def test_filtered_store_grouping_is_preserved_or_not_ready(
     )
     assert [row[:-1] for row in actual] == [row[:-1] for row in reference]
     assert [row[-1] for row in actual] == pytest.approx([row[-1] for row in reference])
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "revenue by store id name",
+        "revenue by store id and store name",
+        "revenue by store label",
+        "revenue by store mystery",
+    ],
+)
+def test_unclear_store_attribute_is_not_ready(retail: Runtime, question: str) -> None:
+    plan = plan_payload(retail, intent=question)
+    assert plan["status"] != "ok"
+    assert "execute" not in plan.get("next", {}).get("ready_for", [])
+    assert plan["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+
+
+@pytest.mark.parametrize("term", ["store id", "store key", "store number", "store code"])
+def test_store_attribute_matching_both_dimensions_is_not_ready(retail: Runtime, term: str) -> None:
+    retail._config = replace(
+        retail._config,
+        dimensions=[
+            replace(dim, aliases=[*(dim.aliases or []), term])
+            if dim.id == STORE_NAME
+            else dim
+            for dim in retail._config.dimensions
+        ],
+    )
+    plan = plan_payload(retail, intent=f"revenue by {term}")
+    assert plan["status"] != "ok"
+    assert "execute" not in plan.get("next", {}).get("ready_for", [])
+    assert plan["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+
+
+@pytest.mark.parametrize("term", ["store id", "store key", "store number"])
+def test_missing_store_id_dimension_is_not_ready(retail: Runtime, term: str) -> None:
+    retail._config = replace(
+        retail._config, dimensions=[dim for dim in retail._config.dimensions if dim.id != STORE_ID]
+    )
+    plan = plan_payload(retail, intent=f"revenue by {term}")
+    assert plan["status"] != "ok"
+    assert "execute" not in plan.get("next", {}).get("ready_for", [])
+    assert plan["why"]["code"] == "PLAN_UNMATCHED_TERMS"

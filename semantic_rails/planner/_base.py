@@ -1452,6 +1452,36 @@ def _maybe_group_by(
         dim = _object_by_id(config.dimensions, "dimension.jaffle_customer_history_segment")
         if dim is not None:
             group_by.append(dim.id)
+    if "store" in terms:
+        requested = [
+            set(_tokens(term))
+            for term in _requested_grouping_terms(text)
+            if "store" in _tokens(term)
+        ] or [{"store", "name"}]
+        matches: set[str] = set()
+        for tokens in requested:
+            tokens = {"id" if token in {"key", "number"} else token for token in tokens}
+            if tokens == {"store"}:
+                tokens.add("name")
+            if {"id", "name"} <= tokens:
+                matches.clear()
+                break
+            candidates = []
+            for dim in config.dimensions:
+                names = [dim.label, _last_token(dim.id), *(dim.aliases or [])]
+                words = {
+                    "id" if word in {"key", "number"} else word
+                    for name in names
+                    for word in _tokens(name)
+                }
+                if tokens <= words and any({"store", role} <= words for role in ("id", "name")):
+                    candidates.append(dim.id)
+            if len(candidates) != 1:
+                matches.clear()
+                break
+            matches.update(candidates)
+        if len(matches) == 1:
+            group_by.extend(matches)
     if any(term in lowered for term in ("geo", "geography", "region", "parent")):
         dim = _dimension(config, ["geo"], prefer_parent="parent" in lowered)
         if dim is not None:
@@ -1459,7 +1489,7 @@ def _maybe_group_by(
     for term in _requested_grouping_terms(text):
         term_tokens = set(_tokens(term))
         if (
-            term_tokens & {"geo"}
+            term_tokens & {"store", "geo"}
             or _is_temporal_grouping_term(term)
             or _names_time_axis(term, clock)
             or _term_matches_value_domain(config, term)

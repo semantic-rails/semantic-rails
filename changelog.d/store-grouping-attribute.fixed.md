@@ -1,3 +1,3 @@
-- Store grouping uses the requested catalog dimension instead of automatically
-  adding store names. Grouping by store ID keeps distinct stores separate when
-  their names repeat; grouping by store name combines them.
+- Store grouping resolves explicit IDs, keys and numbers to the store ID
+  dimension, keeping stores with repeated names separate. Store-name and bare
+  store grouping retain name totals; ambiguous attributes remain not ready.

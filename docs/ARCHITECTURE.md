@@ -405,10 +405,9 @@ The runtime compiles a request through these stages:
 
 Important planner behaviors:
 
-- store attributes use the same catalog dimension resolution as other requested
-  grouping terms. `by store id` keeps distinct stores separate even when names
-  repeat; `by store name` combines stores sharing a name. Mentioning stores in a
-  total does not automatically add store-name grouping
+- the store shortcut resolves explicit store attributes to a unique ID or name
+  dimension. `by store id` keeps stores with repeated names separate; `by store
+  name` and bare `by store` retain name grouping
 - safe mixed-grain cases compile via leaf pre-aggregation rewrites
 - exact aggregate relations can be selected for compatible time-grain measure
   leaves; routed leaves expose `aggregate_relation_id` and physical/performance
