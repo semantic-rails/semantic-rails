@@ -8,3 +8,5 @@
 - Model joins and relationship defaults reject `rollup_safe` in any form instead
   of silently ignoring it; use `graph.relationships` with `rollup_safe.reverse`
   for reverse population-count rewrite permissions.
+- Relationship defaults reject `rollup_safe_aggregations` even when its value is
+  `null` or the package has no relationships; delete the named defaults line.

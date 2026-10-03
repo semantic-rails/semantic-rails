@@ -125,17 +125,23 @@ def test_removed_join_key_is_rejected_before_graph_override(
 
 
 @pytest.mark.parametrize(
-    "value",
-    [["sum"], {"forward": ["sum"]}, {"reverse": ["count_distinct"]}, None],
-    ids=["list", "forward", "reverse", "null"],
+    ("key", "value"),
+    [
+        pytest.param("rollup_safe", ["sum"], id="list"),
+        pytest.param("rollup_safe", {"forward": ["sum"]}, id="forward"),
+        pytest.param("rollup_safe", {"reverse": ["count_distinct"]}, id="reverse"),
+        pytest.param("rollup_safe", None, id="null"),
+        pytest.param("rollup_safe_aggregations", ["sum"], id="aggregations-populated"),
+        pytest.param("rollup_safe_aggregations", None, id="aggregations-null"),
+    ],
 )
 @pytest.mark.parametrize("layout", ["single_file", "directory"])
 @pytest.mark.parametrize("has_relationships", [True, False], ids=["with-joins", "without-joins"])
 def test_unconsumed_relationship_default_rollup_is_rejected(
-    starter_package: Path, value: object, layout: str, has_relationships: bool
+    starter_package: Path, key: str, value: object, layout: str, has_relationships: bool
 ) -> None:
     raw = yaml.safe_load(starter_package.read_text(encoding="utf-8"))
-    raw.setdefault("defaults", {}).setdefault("relationship", {})["rollup_safe"] = value
+    raw.setdefault("defaults", {}).setdefault("relationship", {})[key] = value
     if not has_relationships:
         # Defaults must be refused even when there is no join to inherit them.
         raw["models"] = {"customers": raw["models"]["customers"]}
@@ -147,7 +153,7 @@ def test_unconsumed_relationship_default_rollup_is_rejected(
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(path))
     assert exc.value.code == "INVALID_CONFIG"
-    assert "defaults.relationship.rollup_safe" in str(exc.value)
+    assert f"defaults.relationship.{key}" in str(exc.value)
 
 
 @pytest.mark.parametrize(
@@ -194,7 +200,7 @@ def test_removed_relationship_rollup_forms_fail_loading(
     assert exc.value.code == "INVALID_CONFIG"
     relationship = {
         "graph": "orders_customer",
-        "defaults": "orders.customer",
+        "defaults": "defaults.relationship.rollup_safe_aggregations",
         "join": "models.orders.joins.customer",
     }[location]
     assert relationship in str(exc.value)

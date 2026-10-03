@@ -107,13 +107,18 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
         package["namespace"] = namespace
     out["package"] = package
 
+    defaults = dict(out.get("defaults", {}) or {})
+    relationship_defaults = dict(defaults.get("relationship", {}) or {})
+    if "rollup_safe_aggregations" in relationship_defaults:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "defaults.relationship.rollup_safe_aggregations is not supported; "
+            "delete this line; forward rollup declarations were removed",
+        )
+    _reject_unconsumed_rollup_safe(relationship_defaults, location="defaults.relationship")
     graph = dict(out.get("graph", {}) or {})
     graph_entities = dict(graph.get("entities", {}) or {})
     models = _model_mapping(out)
-    defaults = dict(out.get("defaults", {}) or {})
-    _reject_unconsumed_rollup_safe(
-        dict(defaults.get("relationship", {}) or {}), location="defaults.relationship"
-    )
     # Validate authored joins before graph projection can replace their specs.
     for model_id, model in models.items():
         for join_key, join_raw in dict(model.get("joins", {}) or {}).items():

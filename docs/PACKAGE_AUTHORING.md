@@ -861,10 +861,11 @@ lines from `defaults.measure` and individual measures. Defaults are checked once
 per package, with an error naming `defaults.measure.<key>` and the line to delete.
 In `graph.relationships`, `rollup_safe` must be a mapping containing only `reverse`;
 forward declarations, the former list form, and `rollup_safe_aggregations` in model
-joins or relationship defaults fail loading with `INVALID_CONFIG` naming the relationship.
+joins or relationship defaults fail loading with `INVALID_CONFIG` naming the authored location.
 Model joins and `defaults.relationship` do not accept `rollup_safe` in any form;
 declare reverse permissions in `graph.relationships` using `rollup_safe.reverse`.
-A `rollup_safe` default is refused even when no relationship uses it.
+A `rollup_safe` or `rollup_safe_aggregations` default is refused by key presence,
+including `null`, even when the package has no relationships.
 Authored model joins are checked before graph relationships override them;
 removed keys are refused even when their value is `null`.
 
