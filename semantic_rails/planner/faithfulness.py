@@ -508,7 +508,7 @@ def intent_faithfulness_why(
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
     gaps.extend(_subject_window_gaps(runtime._config, query))
     gaps.extend(_ranking_gaps(runtime, text, query))
-    gaps.extend(_ambiguous_grouping_gaps(runtime, text, query, partial_query or {}))
+    gaps.extend(_ambiguous_grouping_gaps(text, query, partial_query or {}))
     gaps.extend(_where_clause_gaps(runtime, text, query))
     contradictions = _contradictory_filter_gaps(query)
     if contradictions:
@@ -522,34 +522,33 @@ def intent_faithfulness_why(
 
 
 def _ambiguous_grouping_gaps(
-    runtime: Any, text: str, query: dict[str, Any], partial_query: dict[str, Any]
+    text: str, query: dict[str, Any], partial_query: dict[str, Any]
 ) -> list[CoverageGap]:
-    """Refuse when one grouping phrase names both a caller and an added dimension."""
+    """Refuse when the draft adds a grouping beside the caller's ``group_by``.
 
-    from .generators import _grouping_term_matches, _requested_grouping_terms  # noqa: WPS433
+    Whether the question's grouping phrase restates a caller dimension or asks
+    for another one is not decided by matching names: the caller confirms by
+    passing every intended dimension ID in ``group_by``.
+    """
+
+    from .generators import _requested_grouping_terms  # noqa: WPS433
 
     authored = set(partial_query.get("group_by") or [])
     added = set(query.get("group_by") or []) - authored
     if not authored or not added:
         return []
-    base_query = {**query, "group_by": list(partial_query.get("group_by") or [])}
-    gaps = []
-    for term in _requested_grouping_terms(text):
-        matches = set(_grouping_term_matches(runtime, base_query, term) or []) & (authored | added)
-        if matches & authored and matches & added:
-            gaps.append(
-                CoverageGap(
-                    kind="ambiguous_grouping",
-                    clause=term,
-                    message="The grouping phrase matches distinct caller and inferred dimensions.",
-                    actual={"dimension_ids": sorted(matches)},
-                    recovery_hint={
-                        "kind": "clarify_grouping",
-                        "message": f"Choose the intended dimension ID for '{term}' and name it explicitly.",
-                    },
-                )
-            )
-    return gaps
+    return [
+        CoverageGap(
+            kind="ambiguous_grouping",
+            clause=", ".join(_requested_grouping_terms(text)) or text,
+            message="The draft adds a grouping dimension the caller's group_by does not include.",
+            actual={"dimension_ids": sorted(authored | added)},
+            recovery_hint={
+                "kind": "clarify_grouping",
+                "message": "Pass every intended grouping dimension ID in group_by.",
+            },
+        )
+    ]
 
 
 def _coverage_why(gaps: list[CoverageGap]) -> dict[str, Any] | None:

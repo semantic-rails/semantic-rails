@@ -19,6 +19,7 @@ from semantic_rails.planner.plan import _merge_partial_query
 
 STORE = "dimension.jaffle_store_name"
 PRODUCT_TYPE = "dimension.jaffle_item_product_type"
+CATALOG_PRODUCT_TYPE = "dimension.jaffle_product_type"
 INTENT = "item revenue for Brooklyn from Philadelphia by product type"
 CHOICE = {
     "id": "measure.jaffle.item_revenue_usd",
@@ -792,7 +793,88 @@ def test_ambiguous_added_grouping_cannot_bypass_readiness_guard(
             [PRODUCT_TYPE, "dimension.jaffle_product_type"]
         )
         assert payload["why"]["recovery_hints"][0]["kind"] == "clarify_grouping"
-        assert "product type" in payload["why"]["recovery_hints"][0]["message"]
+        assert "group_by" in payload["why"]["recovery_hints"][0]["message"]
         assert "execute" not in payload["next"].get("ready_for", [])
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("path", "intent", "caller", "group_by", "crowded"),
+    [
+        # Four more catalog "Product type" dimensions push the competing
+        # dimension out of discovery's shortlist; readiness must not rank names.
+        (
+            "primary",
+            "item revenue by product type",
+            [CATALOG_PRODUCT_TYPE],
+            [CATALOG_PRODUCT_TYPE, PRODUCT_TYPE],
+            True,
+        ),
+        (
+            "fallback",
+            "item revenue by product type",
+            [PRODUCT_TYPE],
+            [PRODUCT_TYPE, CATALOG_PRODUCT_TYPE],
+            True,
+        ),
+        ("primary", "item revenue by store", [PRODUCT_TYPE], [PRODUCT_TYPE, STORE], False),
+    ],
+)
+def test_grouping_added_beside_caller_group_by_is_not_execute_ready(
+    runtime_factory, monkeypatch, path, intent, caller, group_by, crowded
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    if crowded:
+        source = next(dim for dim in runtime._config.dimensions if dim.id == CATALOG_PRODUCT_TYPE)
+        copies = [
+            replace(source, id=f"dimension.product_class_{index}", name=f"ProductClass{index}")
+            for index in range(4)
+        ]
+        dimensions = [*runtime._config.dimensions, *copies]
+        monkeypatch.setattr(runtime, "_config", replace(runtime._config, dimensions=dimensions))
+    _force_fallback(runtime, monkeypatch, intent, path)
+    partial = {"group_by": caller}
+    before = deepcopy(partial)
+    try:
+        payload = plan_payload(runtime, intent=intent, partial_query=partial)
+    finally:
+        runtime.close()
+    assert partial == before
+    assert payload["best"]["query_ir"]["group_by"] == group_by
+    assert payload["status"] == "low_confidence", payload.get("why")
+    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    gap = next(
+        gap for gap in payload["why"]["details"]["gaps"] if gap["kind"] == "ambiguous_grouping"
+    )
+    assert gap["clause"] == intent.split(" by ")[1]
+    assert gap["actual"]["dimension_ids"] == sorted(group_by)
+    assert payload["why"]["recovery_hints"][0]["kind"] == "clarify_grouping"
+    assert "execute" not in payload["next"].get("ready_for", [])
+
+
+def test_caller_group_by_naming_every_grouping_is_execute_ready(runtime_factory) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    partial = {"group_by": [PRODUCT_TYPE, STORE]}
+    try:
+        payload = plan_payload(runtime, intent="item revenue by store", partial_query=partial)
+        query = payload["best"]["query_ir"]
+        assert query["group_by"] == [PRODUCT_TYPE, STORE]
+        assert payload["status"] == "ok", payload.get("why")
+        assert "execute" in payload["next"].get("ready_for", [])
+        measure = query["select"][0]["as"]
+        rows = runtime.query(query)["rows"]
+        actual = sorted((row[PRODUCT_TYPE], row[STORE], row[measure]) for row in rows)
+        runtime.close()
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            expected = sorted(
+                connection.execute(
+                    "SELECT i.product_type, s.store_name, SUM(i.item_revenue_cents / 100.0) "
+                    "FROM jaffle_item i JOIN jaffle_order o ON i.order_id = o.order_id "
+                    "JOIN jaffle_store s ON o.store_id = s.store_id GROUP BY 1, 2"
+                ).fetchall()
+            )
+        assert [row[:2] for row in actual] == [row[:2] for row in expected]
+        assert [row[2] for row in actual] == pytest.approx([row[2] for row in expected])
     finally:
         runtime.close()
