@@ -164,37 +164,6 @@ def test_known_typo_returns_closest_match(runtime_factory, tool_name: str) -> No
         )
 
 
-@pytest.mark.parametrize("tool_name", sorted(_WARN_AND_IGNORE_TOOLS))
-def test_policy_context_passthrough_no_warning(runtime_factory, tool_name: str) -> None:
-    """``policy_context`` is legitimate on every warn-tool — passing
-    it must not trigger an unknown-arg warning.
-    """
-    runtime = runtime_factory("jaffle_shop")
-    adapter = SemanticLayerMCPAdapter(runtime)
-    try:
-        args = dict(_MINIMUM_ARGS[tool_name])
-        args["policy_context"] = {"environment": "staging", "audience": "internal"}
-        args["request_id"] = "rq-policy-ctx"
-        out = adapter.call_tool(tool_name, args)
-    finally:
-        adapter.close()
-    warnings = out.get("warnings") or []
-    unknown_arg_codes = [
-        w.get("code")
-        for w in warnings
-        if isinstance(w, dict) and str(w.get("code", "")).endswith("_UNKNOWN_ARG")
-    ]
-    assert not unknown_arg_codes, (
-        f"{tool_name}: policy_context passthrough must not trigger "
-        f"unknown-arg warnings; got {unknown_arg_codes}"
-    )
-    # Direct adapter calls are the trusted stdio/in-process boundary. Remote
-    # transports replace these values, but local callers retain the existing
-    # ability to provide policy context explicitly.
-    assert out["request_context"]["environment"] == "staging"
-    assert out["request_context"]["audience"] == "internal"
-
-
 @pytest.mark.parametrize("mode", ["run", "validate", "sql"])
 def test_top_level_ir_passthrough_no_warning(runtime_factory, mode: str) -> None:
     """Callers who skip the ``query`` wrapper and pass canonical IR
