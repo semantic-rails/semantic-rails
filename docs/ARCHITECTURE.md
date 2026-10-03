@@ -288,6 +288,11 @@ Core query rules:
 - `time.fill` triggers dense-series planning against the calendar entity for `time.calendar_id`, or,
   for the default calendar when none is declared, an implicit Gregorian day spine generated in SQL
 - `time.calendar_id` selects a declared calendar when more than one exists
+- a query with a time axis and no explicit `order_by` orders its final SQL projection by
+  time ascending, then by `group_by` dimensions ascending in their stated order; this
+  shared lowering rule also covers dense series and combined or accelerated plans.
+  Internal branches, distribution inputs and contextual predicate sources receive
+  no default ordering; explicit `order_by` still takes precedence
 - `metric_filters` are applied after projected expressions except for `metric_predicate`, which is planned semantically at entity plus contextual time/group scope
 - `temporal_role_overrides` must only reference declared temporal roles
 - when only some measures have the query's clock, each other measure is timed by its own
@@ -402,16 +407,28 @@ Important planner behaviors:
   leaves; routed leaves expose `aggregate_relation_id` and physical/performance
   plan metadata
 - historical joins use temporal-validity conditions anchored to the effective time axis
-- a dimension the query groups or filters by, looked up through a many-to-one or one-to-one
-  hop from the request's own measure leaf, is a left join, so a row with a NULL or unmatched
-  foreign key keeps its measure value under NULL. Every other read of a lookup stays an inner
-  join: a time role, a measure or metric filter and its context entities, conversions, qualified
-  sets and metric predicates (including the queries nested in them), anchored entity-set
-  ratios, a dimension any rollup of the measure's model holds (even at a grain that rollup can
-  never answer), hops that fan out, and every hop
-  on a dialect without `outer_lookup_joins` (ClickHouse, whose unmatched outer-join columns
-  read a type default, not NULL). `_lookup_selections` (`compiler_parts/sql_lowering.py`) is the
-  one place that decides which path selections are left joins
+- a many-to-one or one-to-one hop never removes a measure's row: it is a left join in every
+  leaf, whatever reads the looked-up dimension, so a row with a NULL or unmatched foreign key
+  keeps its measure value under NULL. Only these reads keep an inner join: a time role
+  (`_INNER_LOOKUP_PURPOSES`), a metric predicate's route to its entity and its own nested
+  query, a distribution's per-entity values (both `inner_lookups`), conversions, the hops
+  from an `entity_in_terms_of` anchor back to the counted entity, a dimension any rollup of
+  the measure's model holds (even at a grain that rollup can never answer; the
+  `entity_in_terms_of` leaf leaves such a query to the measure's own leaf, and
+  `_joins_for_paths` refuses it from another model's rows with `REWRITE_NOT_SUPPORTED`; a
+  rollup of any other model, and any rollup in a query of dimensions alone, changes no
+  join), and every hop on
+  a dialect without `outer_lookup_joins` (ClickHouse, whose unmatched outer-join columns read
+  a type default, not NULL); a hop any of them walks is inner for every read. Hops that fan
+  out are inner joins. `_joins_for_paths` (`compiler_parts/paths.py`) is the one place that
+  decides, and the only caller of the join-condition builder; leaves cannot opt out
+- an `entity_in_terms_of` count always requires a matching row of the counted entity,
+  including when grouping only by the child's lookup without a parent dimension or time
+  axis. The shortcut requires exactly one relationship between child and parent, on the
+  counted path, with an available forward lookup; otherwise the measure's own leaf answers.
+  Its anchor plan adds that same relationship; `_joins_for_paths` checks both the relationship
+  and emitted joins, and refuses a missing, nullable or different parent check with
+  `REWRITE_NOT_SUPPORTED` if the shortcut's eligibility check is bypassed
 - dense fill uses the declared calendar entity for the requested calendar id, or the implicit
   Gregorian calendar for a default request in a package that declares no default calendar
 - `metric_predicate` compiles as a scoped predicate subplan rather than a projected boolean expression
@@ -531,6 +548,6 @@ Representative semantic errors:
 
 ## Active Remaining Limits
 
-- DuckDB is the zero-setup local backend; Snowflake execution depends on a configured `snowflake_cli` or `snowflake_native` connection.
+- DuckDB is the zero-setup local backend; Snowflake execution depends on a configured `snowflake_cli`, `snowflake_native`, or opt-in `snowflake_adbc` connection (see [ADBC profiles](ADDING_A_DIALECT.md#adbc-profiles)).
 - The executed conversion family is intentionally scoped to the supported event-count model rather than a fully general conversion planner. Each operand counts the rows of its entity's table by the entity key, so an operand measure must count exactly that key, spelled as the entity declares it: a measure that counts an expression (such as `CASE WHEN ... THEN key END`), another column or a fact model's rows is rejected with `CONVERSION_NOT_SUPPORTED`. Write a `CASE` condition as the operand's `filter` instead, and for another column use a measure on the entity whose rows are the events. Both operands counting the conversion entity itself on one clock is rejected too, by package validation and at query time: each entity is then a single event that converts to itself, so the window never applies.
 - `metric_predicate` is implemented for the supported contextual and entity-only cases used by the active package, but it is not yet a fully general arbitrary nested predicate planner.

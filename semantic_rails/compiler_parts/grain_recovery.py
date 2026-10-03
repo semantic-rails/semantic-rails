@@ -39,7 +39,7 @@ from copy import deepcopy
 from difflib import SequenceMatcher
 from typing import Any
 
-from ..ast import NormalizedQuery
+from ..ast import NormalizedQuery, every_filter
 from ..errors import SemanticLayerError
 from ..expressions import MetricPredicateExpr
 from ..fanout import analyze_fanout, resolve_path
@@ -124,9 +124,13 @@ def _pairing_is_clean(
     path = _chosen_path(config, start=measure.entity, target=dim.entity)
     if not path:
         return False
-    analysis = analyze_fanout(
-        config, measure.entity, path, time_bound_relationships=time_bound_relationships
-    )
+    try:
+        analysis = analyze_fanout(
+            config, measure.entity, path, time_bound_relationships=time_bound_relationships
+        )
+    except SemanticLayerError:
+        # A refused path (a fan-out, or a time-valid hop with no query time) is incompatible.
+        return False
     return analysis.get("status") == "ok"
 
 
@@ -141,7 +145,7 @@ def _offending_dimension_ids(
         dim = dimensions.get(dim_id)
         if dim is not None and dim.entity == target_entity:
             offending.append(dim_id)
-    for item in query.where:
+    for item in every_filter(query.where):
         dim = dimensions.get(item.field)
         if dim is not None and dim.entity == target_entity:
             offending.append(item.field)

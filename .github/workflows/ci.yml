@@ -84,9 +84,29 @@ jobs:
           enable-cache: true
           prune-cache: true
           cache-dependency-glob: uv.lock
-      - run: uv sync --group dev --locked
+      - if: matrix.python-version != '3.12'
+        run: uv sync --group dev --locked
+      - name: Install ADBC extras
+        if: matrix.python-version == '3.12'
+        run: |
+          uv sync --group dev --extra snowflake-adbc --extra postgres --locked
+          uv run --no-sync python -c "import pyarrow, adbc_driver_manager.dbapi, adbc_driver_postgresql.dbapi"
       - run: uv run python scripts/changelog_fragments.py check
-      - run: uv run pytest -q tests/semantic_rails tests/mf2sr -n auto --validate-quarantine
+      - run: uv run pytest -q tests/semantic_rails tests/mf2sr -n auto --validate-quarantine --junitxml=backend-results.xml
+      - name: Verify ADBC tests ran without skips
+        if: matrix.python-version == '3.12'
+        run: |
+          uv run --no-sync python - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          cases = ET.parse("backend-results.xml").findall(".//testcase")
+          for module in ("test_adbc_adapter", "test_adbc_snowflake"):
+              selected = [case for case in cases if case.get("classname") == f"tests.semantic_rails.{module}"]
+              skipped = [case.attrib["name"] for case in selected if case.find("skipped") is not None]
+              if not selected or skipped:
+                  raise SystemExit(f"{module} must run without skips: {skipped}")
+              print(f"All {len(selected)} {module} tests ran without skips.")
+          PY
       - name: Catch intermittent failures
         if: github.event_name == 'merge_group' && matrix.python-version == '3.12'
         timeout-minutes: 5
@@ -140,6 +160,7 @@ jobs:
         run: uv run ruff format --check .
       - name: mypy
         run: uv run mypy semantic_rails
+      - run: uv run python scripts/benchmark_plan.py --gate
 
   security:
     name: Security audit

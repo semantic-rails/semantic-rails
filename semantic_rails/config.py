@@ -19,8 +19,15 @@ from pathlib import Path
 from typing import Any
 
 from .config_parts.package_loader import normalize_package
+from .config_parts.route_rows import (
+    RouteRowError,
+    check_route_row,
+    entity_references,
+    require_rows_agree,
+)
 from .dialects import (
     connection_option_errors,
+    snowflake_adbc_connect_errors,
     snowflake_native_direct_connect_errors,
     supported_warehouses,
     warehouse_connector,
@@ -1211,6 +1218,18 @@ def _parse_package_meta(package_raw: dict[str, Any], *, path: str) -> PackageMet
                     "INVALID_CONFIG",
                     f"{path}: {warehouse} package.connection has invalid options: {'; '.join(direct_errors)}",
                 )
+        elif warehouse == "snowflake" and connection.kind == "snowflake_adbc":
+            if connection.name:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{path}: snowflake_adbc does not support package.connection.name",
+                )
+            adbc_errors = snowflake_adbc_connect_errors(connection.options)
+            if adbc_errors:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{path}: {warehouse} package.connection has invalid options: {'; '.join(adbc_errors)}",
+                )
         elif connector.requires_connection_name and not connection.name:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
@@ -1617,6 +1636,7 @@ def _parse_path_policy(raw: dict[str, Any], *, path: str) -> PathPolicyConfig:
 def _parse_path_preferences(
     raw: dict[str, Any],
     *,
+    entities: list[EntityConfig],
     entity_lookup: dict[str, str],
     relationships: list[RelationshipConfig],
     path: str,
@@ -1631,83 +1651,17 @@ def _parse_path_preferences(
     rows = list(raw.get("path_preferences", []) or [])
     if not rows:
         return []
-    rel_lookup: dict[str, RelationshipConfig] = {}
-    for known_rel in relationships:
-        rel_lookup[known_rel.id] = known_rel
-        _, _, suffix = known_rel.id.partition(".")
-        if suffix:
-            rel_lookup.setdefault(suffix, known_rel)
-    # An entity by key, name or id: an AMBIGUOUS_PATH refusal lists its pins by entity id.
-    entities = {**{entity_id: entity_id for entity_id in entity_lookup.values()}, **entity_lookup}
+    # An entity by key, name or id: an AMBIGUOUS_PATH refusal's decisions name entity ids.
+    references = entity_references(entities, entity_lookup)
     out: list[PathPreferenceConfig] = []
     for row in rows:
-        row_dict = dict(row or {})
-        source_ref = str(row_dict.get("source_entity", "")).strip()
-        target_ref = str(row_dict.get("target_entity", "")).strip()
-        for label, ref in (("source_entity", source_ref), ("target_entity", target_ref)):
-            if ref not in entities:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: path_preferences row references unknown {label} '{ref}'",
-                )
-        source_entity = entities[source_ref]
-        target_entity = entities[target_ref]
-        preferred = row_dict.get("preferred_paths")
-        if preferred is not None:
-            paths_raw = list(preferred or [])
-            if len(paths_raw) != 1:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: path_preferences for {source_ref} -> {target_ref} must "
-                    f"declare exactly one preferred path (got {len(paths_raw)})",
-                )
-            rel_refs = [str(item) for item in list(paths_raw[0] or [])]
-        else:
-            rel_refs = [str(item) for item in list(row_dict.get("relationship_path", []) or [])]
-        if not rel_refs:
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                f"{path}: path_preferences for {source_ref} -> {target_ref} declares an empty path",
+        try:
+            out.append(
+                check_route_row(dict(row or {}), entities=references, relationships=relationships)
             )
-        resolved: list[str] = []
-        current = source_entity
-        for rel_ref in rel_refs:
-            rel = rel_lookup.get(rel_ref)
-            if rel is None:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: path_preferences for {source_ref} -> {target_ref} references "
-                    f"unknown relationship '{rel_ref}'",
-                )
-            directions = {
-                str(item).strip().lower()
-                for item in list(rel.allowed_directions or ["forward", "reverse"])
-            }
-            if current == rel.source_entity and "forward" in directions:
-                current = rel.target_entity
-            elif current == rel.target_entity and "reverse" in directions:
-                current = rel.source_entity
-            else:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: path_preferences for {source_ref} -> {target_ref}: relationship "
-                    f"'{rel.id}' does not connect from '{current}' (or traversal in that "
-                    "direction is not allowed)",
-                )
-            resolved.append(rel.id)
-        if current != target_entity:
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                f"{path}: path_preferences path for {source_ref} -> {target_ref} ends at "
-                f"'{current}', not the declared target",
-            )
-        out.append(
-            PathPreferenceConfig(
-                source_entity=source_entity,
-                target_entity=target_entity,
-                relationship_path=resolved,
-            )
-        )
+        except RouteRowError as exc:
+            raise SemanticLayerError("INVALID_CONFIG", f"{path}: path_preferences {exc}") from None
+    require_rows_agree({rel.id: rel for rel in relationships}, out, path=path)
     return out
 
 
@@ -3115,7 +3069,11 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         metric_recipes=sorted(metric_recipes_by_id.values(), key=lambda row: row.id),
         segments=sorted(segments, key=lambda row: row.id),
         path_preferences=_parse_path_preferences(
-            raw, entity_lookup=entity_lookup, relationships=relationships, path=path
+            raw,
+            entities=entities,
+            entity_lookup=entity_lookup,
+            relationships=relationships,
+            path=path,
         ),
         path_policy=_parse_path_policy(raw, path=path),
         semantic_policies=policies,

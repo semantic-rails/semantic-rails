@@ -415,7 +415,11 @@ def _bind_measure(
         raise SemanticLayerError(
             "UNSUPPORTED_AGGREGATION",
             f"Aggregation '{aggregation}' is not allowed for '{measure_id}'",
-            details={"measure": measure_id, "allowed": list(measure.allowed_aggregations)},
+            details={
+                "measure": measure_id,
+                "aggregation": aggregation,
+                "allowed": list(measure.allowed_aggregations),
+            },
         )
     temporal_role = resolve_measure_temporal_role(
         measure,
@@ -902,7 +906,7 @@ def _collect_conversion_exprs(
 #    ``_aggregation_expr`` already supports (count, sum, avg, min, max,
 #    median, percentile). Window-only aggregations are rejected.
 #
-# When it reads another entity, each column it reads binds the dimensions
+# Each column it reads, including on its own entity, binds the dimensions
 # over that column, as a ``where`` filter binds its dimension, so object
 # policies on them refuse it (``bind_conditional_aggregate_column``).
 
@@ -1060,16 +1064,15 @@ _OBJECT_POLICY_KINDS = frozenset({"object_access", "object_visibility"})
 def bind_conditional_aggregate_column(
     measure: MeasureConfig, entity_id: str, column: str, config: PackageConfig
 ) -> None:
-    """Bind a column a cross-entity aggregate_if reads as a where filter binds its dimension.
+    """Bind a column an aggregate_if reads as a where filter binds its dimension.
 
     Every lowering of the measure's expression reads its columns here, so each dimension over
     the column becomes a dependency that object policies see before SQL is rendered. A column
     of another entity that no dimension declares cannot be named by a policy, so it is refused
-    whenever the package declares an object policy. A single-entity aggregate_if is unchanged.
+    whenever the package declares an object policy. An own-entity column with no dimension
+    remains allowed, as a measure's value column usually has none.
     """
     joined = _measure_required_entities(measure, config) - {measure.entity}
-    if not joined:
-        return
     dimensions = [
         row.id
         for row in config.dimensions
@@ -1121,7 +1124,8 @@ def _conditional_path_refusal(
 def conditional_aggregate_route_refusal(
     measure: MeasureConfig, target: str, exc: SemanticLayerError
 ) -> SemanticLayerError:
-    """The aggregate_if refusal for an entity its base reaches by no route, or by two."""
+    """The aggregate_if refusal for an entity its base reaches by no route, or by two (with
+    the route refusal's ``clarification``)."""
     return _conditional_path_refusal(
         measure.entity,
         target,
@@ -1129,7 +1133,11 @@ def conditional_aggregate_route_refusal(
         exc.code.lower(),
         str(exc.details.get("hint", ""))
         or "Declare a many-to-one relationship from the value's entity to this entity.",
-        candidates=exc.details.get("candidates", []),
+        **(
+            {"clarification": exc.details["clarification"]}
+            if "clarification" in exc.details
+            else {}
+        ),
     )
 
 
@@ -1196,6 +1204,18 @@ def _synthetic_conditional_measure(
     _require_null_rejecting_condition(expr, entity_id, config)
     entities = _entity_index(config)
     entity = entities[entity_id]
+    # It aggregates the rows of its entity's table, whose grain the measures of that table
+    # declare. A grain other than the entity's key wins, so a rewrite that relies on one row
+    # per key refuses this measure as it refuses theirs. With no such measure it is unknown.
+    key = sorted(entity.key or [entity.primary_key])
+    grains = sorted(
+        list(row.row_grain)
+        for row in config.measures
+        if row.entity == entity_id and row.source_relation in {"", entity.table} and row.row_grain
+    )
+    row_grain = next(
+        (grain for grain in grains if sorted(grain) != key), grains[0] if grains else []
+    )
 
     # Build the column-level expression: CASE WHEN cond THEN value END.
     # For COUNT_IF (value omitted) the body is literal 1 so COUNT()
@@ -1225,7 +1245,7 @@ def _synthetic_conditional_measure(
         entity=entity_id,
         subject_entity=entity_id,
         aggregation_entity=entity_id,
-        row_grain=[],
+        row_grain=row_grain,
         expr=expr_for_measure,
         default_aggregation=aggregation,
         allowed_aggregations=[aggregation],

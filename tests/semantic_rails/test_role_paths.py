@@ -29,7 +29,7 @@ from semantic_rails.compiler_parts.paths import (
 from semantic_rails.config import load_package_config, normalize_package
 from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.fanout import resolve_path
+from semantic_rails.fanout import resolve_path, resolve_route
 from semantic_rails.route_census import route_census
 from semantic_rails.runtime import Runtime
 
@@ -390,12 +390,13 @@ def test_query_through_two_roles_is_refused_whatever_the_declaration_order(tmp_p
 
     err = exc_info.value
     assert err.code == "AMBIGUOUS_PATH"
-    candidates = sorted(path[0] for path in err.details["candidates"])
+    options = err.details["clarification"]["options"]
+    candidates = sorted(option["relationship_path"][0] for option in options)
     assert candidates == _relationship_ids(config, "entity.air_leg", "entity.air_airport")
-    assert all(len(path) == 1 for path in err.details["candidates"])
+    assert all(len(option["relationship_path"]) == 1 for option in options)
     hint = err.details["hint"]
     assert "path_preferences" in hint
-    assert all(rel_id in str(err) for rel_id in candidates)
+    assert all(option["meaning"] in str(err) for option in options)
 
 
 def test_a_single_authored_role_still_answers(tmp_path):
@@ -632,7 +633,9 @@ def test_the_key_shortcut_stands_when_the_pin_names_only_the_direct_relationship
     assert expr.parts[-1] == "destination_code"
 
 
-def test_the_key_shortcut_declines_for_a_pin_written_from_the_target_side(tmp_path):
+def test_the_legs_own_key_beats_a_row_written_from_the_target_side(tmp_path):
+    """A row for airport -> leg is not a row for leg -> airport: the leg's one own key still
+    answers, and the key read takes it, as path selection does."""
     pin = (
         "  path_preferences:\n"
         "    - source_entity: airport\n"
@@ -642,12 +645,13 @@ def test_the_key_shortcut_declines_for_a_pin_written_from_the_target_side(tmp_pa
     config = load_package_config(
         str(_write_package(tmp_path, explicit=("origin",), gate_hop=True, path_preferences=pin))
     )
-    assert (
-        _direct_entity_key_source_expr(
-            "entity.air_leg", "entity.air_airport", "airport_code", config
-        )
-        is None
+    resolution = resolve_route(config, start="entity.air_leg", target="entity.air_airport")
+    assert resolution.basis == "colocated_key"
+    expr = _direct_entity_key_source_expr(
+        "entity.air_leg", "entity.air_airport", "airport_code", config
     )
+    assert expr is not None
+    assert expr.parts[-1] == "origin_code"
 
 
 def _normalized_joins(relationships: dict, inferred: list[str] | None = None) -> dict[str, dict]:

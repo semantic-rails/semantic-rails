@@ -1495,7 +1495,12 @@ def test_create_overwrite_refuses_ambiguous_graph_before_model_replacement(
         model["model"]["relation"] = "main_marts.authored_orders_view"
         model_path.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
         parse, _ = parse_config_report(PackageReference(source_path=str(project)))
-        assert parse["ok"] is True, parse
+        assert parse["ok"] is False, parse
+        assert any(
+            error["code"] == "INVALID_CONFIG"
+            and all(f"'{name}'" in error["message"] for name in ("orders", "order", "customer"))
+            for error in parse["errors"]
+        ), parse
     elif graph_case == "missing":
         graph_path.unlink()
         model_path.write_bytes(
@@ -1783,6 +1788,7 @@ def test_setup_questions_and_warehouse_options_come_from_the_registry() -> None:
     assert questions["connection_kind"]["choices_by_warehouse"]["snowflake"] == [
         "snowflake_cli",
         "snowflake_native",
+        "snowflake_adbc",
     ]
     assert "host_env" in questions["connection_options"]["options_by_warehouse"]["postgres"]
 

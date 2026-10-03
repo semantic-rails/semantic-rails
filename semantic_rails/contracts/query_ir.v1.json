@@ -28,8 +28,8 @@
     },
     "where": {
       "type": "array",
-      "description": "Dimension-level filters. Each item targets a dimension id with op/value. Expression-shaped filters belong in metric_filters.",
-      "items": { "$ref": "#/$defs/WhereFilter" }
+      "description": "Dimension-level filters, and child groups. A filter targets a dimension id with op/value; a child group {child, match, where} says whether its conditions apply to the same row of a child entity. Expression-shaped filters belong in metric_filters.",
+      "items": { "oneOf": [{ "$ref": "#/$defs/WhereFilter" }, { "$ref": "#/$defs/ChildGroup" }] }
     },
     "metric_filters": {
       "type": "array",
@@ -51,6 +51,11 @@
       "type": "object",
       "description": "Per-measure overrides keyed by measure id, value is the temporal_role id to bind.",
       "additionalProperties": { "type": "string" }
+    },
+    "route_decisions": {
+      "type": "array",
+      "description": "This query's own route between two entities, one row per (source_entity, target_entity) pair, shaped like a graph.path_preferences row: the decision of the AMBIGUOUS_PATH clarification option the person chose. It applies to this query only, before the package's row for the same pair, and is not a default. A row the package rejects, two rows for one pair, or a row for a pair the query never walks is INVALID_QUERY; under a row filter on any entity of the pair's routes it is POLICY_DENIED. Each applied row is disclosed as a ROUTE_CHOSEN_BY_QUERY warning.",
+      "items": { "$ref": "#/$defs/RouteDecision" }
     },
     "policy_context": { "$ref": "#/$defs/PolicyContext" },
     "limits": { "$ref": "#/$defs/Limits" },
@@ -82,6 +87,23 @@
     }
   },
   "$defs": {
+    "RouteDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_entity", "target_entity", "relationship_path"],
+      "description": "One exact-pair route decision.",
+      "properties": {
+        "source_entity": { "type": "string", "minLength": 1, "description": "Entity id." },
+        "target_entity": { "type": "string", "minLength": 1, "description": "Entity id." },
+        "relationship_path": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Relationship ids from source_entity to target_entity, in order."
+        },
+        "label": { "type": "string", "description": "Accepted and ignored." }
+      }
+    },
     "SelectItem": {
       "type": "object",
       "additionalProperties": false,
@@ -111,6 +133,17 @@
           "items": { "type": ["string", "number", "boolean"] },
           "description": "Comparison literal. Scalar for comparison/LIKE ops; a list of scalars for IN / NOT IN (a bare scalar is accepted as a one-element list); omitted for IS NULL / IS NOT NULL. Objects are rejected — inline expression thresholds belong in metric_predicate.value inside metric_filters."
         }
+      }
+    },
+    "ChildGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["child", "match", "where"],
+      "description": "Conditions on one row of a child entity, reached across a one-to-many hop from the measure's entity. 'any' keeps a row with at least one child row meeting every condition (correlated EXISTS); 'none' keeps a row with no such child row (NOT EXISTS). Conditions are dimensions of the child, or of a many-to-one or one-to-one lookup from it; a lookup that finds no row reads NULL, and NULL fails a comparison. Groups do not nest. Several groups are separate conditions, ANDed with the other where items; beside a group nothing else may cross a one-to-many hop, and groups on different children are refused. Two or more positive plain filters on one child, or one negated plain filter on a child, are refused with AMBIGUOUS_CHILD_SCOPE, whose clarification offers each reading as a where list.",
+      "properties": {
+        "child": { "type": "string", "description": "Entity id of the child." },
+        "match": { "type": "string", "enum": ["any", "none"] },
+        "where": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/WhereFilter" } }
       }
     },
     "MetricFilter": {

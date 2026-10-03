@@ -492,13 +492,28 @@ package:
       query_tag: semantic-rails
 ```
 
-Two connection kinds are supported:
+Three connection kinds are supported:
 
+- `snowflake_adbc` — opt-in Arrow connector with password or PKCS #8 key-pair
+  authentication, bound row-filter parameters and exact decimal results. See
+  [installation and connection options](ADDING_A_DIALECT.md#experimental-snowflake-profile).
 - `snowflake_cli` — uses a configured Snow CLI profile by name.
 - `snowflake_native` — direct connector via env-var indirection (account, user,
   password, etc. read from environment variables).
 
 Literal credentials in YAML are rejected.
+
+For `snowflake_adbc`, driver names, shared-library paths and manifests belong to
+the runtime operator's environment; package options selecting them are rejected
+with `INVALID_CONFIG`. Temporal values with nonzero sub-microsecond precision
+refuse with `RESULT_VALUE_UNSUPPORTED`; out-of-range nanosecond timestamps refuse
+with `QUERY_EXECUTION_ERROR`.
+Out-of-range timestamps such as `9999-12-31` refuse; cast those columns to
+`TIMESTAMP_*(6)` or `DATE` in the model.
+With `use_high_precision=true`, scale-0 `NUMBER` columns come back typed `decimal`.
+Package loading checks `account_env`, `user_env`, exactly one password or key
+source, and a key source when `private_key_passphrase_env` is authored, without
+reading credentials; `connection.name` is refused for this kind.
 
 ### Native adapter timeouts
 
@@ -603,10 +618,13 @@ behavior:
   it directly is governed by `object_access`, not visibility.
 - **`object_access`** — enforced at query time. `action: deny` refuses the
   query with a structured policy error; `action: redact` executes but replaces
-  the governed object's values in the result. An `aggregate_if` whose condition
-  reads another entity reads the dimensions over its columns, as a `where` filter
-  on them does, so their policies apply. While any `object_access` or
-  `object_visibility` policy is declared, it may not read a column of that entity
+  the governed object's values in the result. An `aggregate_if` reads every
+  dimension declared over the columns in its condition or value, including on
+  the measure's own entity, as a `where` filter or `group_by` on them does. A
+  matching `deny`, `redact` or `hidden` object policy on any such dimension
+  refuses the query with `POLICY_DENIED` before SQL is rendered. Own-entity
+  columns with no declared dimension remain allowed. While any `object_access`
+  or `object_visibility` policy is declared, it may not read another entity's column
   that no dimension declares (`POLICY_DENIED`, reason `column_without_dimension`).
 - **`protected_object`** — pins an object as protected in the named
   environments; `promote-package` and `impact-report` treat changes to
@@ -762,6 +780,15 @@ The graph is the canonical source for entity identity. It declares the entities
 the package exposes, their key column names, and any non-default relationships
 between them.
 
+Each graph entity must have a key, declared on the entity or through its own
+model's `keys.primary:` or `grain:`. An explicit graph model binding makes that
+entity the model's primary entity, regardless of the order of its `entities:` block. A
+conflicting resolved `entity:` fails with `INVALID_CONFIG` naming both entities,
+including for implicit bindings and bindings by model name. A
+keyless entity cannot borrow a foreign entity's key: loading fails with
+`INVALID_CONFIG` naming the entity and model before graph relationships are
+translated. Each model can be the primary home of only one graph entity.
+
 ```yaml
 graph:
   entities:
@@ -791,13 +818,26 @@ graph:
       entities: [customer_history, customer]    # bidirectional pair
       cardinality: many_to_one                  # first→second (history is many; customer is one)
       safety: requires_rewrite
-      temporal_validity:
-        valid_from: effective_from
-        valid_to: effective_to
+      temporal_validity:                        # <model relation name>.<column>
+        valid_from: shop_customer_history.effective_from
+        valid_to: shop_customer_history.effective_to
       rollup_safe:
         forward: [sum, count]                   # aggregating customer_history → customer
         reverse: []                             # aggregating customer → customer_history
 ```
+
+A query that joins into the table holding the window needs a `time`, so each row reads the
+version valid at its time. Without one, a many-to-one hop into it is refused with
+`FANOUT_UNSAFE`, naming the relationship and the entity, because joining every version would
+count a row once per version. A hop out of that table (`customer_history → customer` here)
+reads one version per row and needs no time. A metric predicate is stricter: when the path from
+its input to its entity, context or filters crosses a time-valid relationship in either
+direction, it needs a time of its own (a contextual predicate takes the query's `time`).
+
+Qualify the validity columns with the model's full `relation` name, including its schema or
+catalog when present (for example, `analytics.shop_customer_history.effective_from`). The
+relationship's declared window determines which side holds versions; schema qualification
+does not make an outgoing lookup require a query time.
 
 ### `disallowed_names:` — explicit anti-pattern guard
 
@@ -814,6 +854,10 @@ declared relative to that pair (`many_to_one` = first is many, second is one).
 `rollup_safe` specifies which aggregations roll up safely in each direction.
 When several relationships join one pair (roles), an aggregation must be listed
 by every one that lists any.
+
+Every authored relationship must declare `entities: [source, target]` and attach
+to graph models for both endpoints. An invalid or unattached entry fails loading
+with `INVALID_CONFIG` naming the relationship; it is never silently omitted.
 
 Most relationships are **inferred** from FK references in `model.entities:`
 blocks. Author an explicit `graph.relationships:` entry only when you need a
@@ -891,13 +935,33 @@ model:
 
 The **primary entity** of a model is resolved without authoring `grain:`:
 `graph.entities.<x>.model:` names the model that is the primary home of each
-entity (the jaffle and tpch packages author it this way), and the row grain is
-derived from that entity's canonical key. Single-file packages may instead pin
+entity (the jaffle and tpch packages author it this way), and an omitted row grain
+is derived from that entity's canonical key. Single-file packages may instead pin
 the primary by authoring `grain:` — the entity whose key matches the grain is
-primary, and all entities whose keys are in a compound grain (`grain: [date_id,
-account_id]`) are co-primary. Under `schema_strict`, directory packages reject
+primary. Under `schema_strict`, directory packages reject
 `grain:` authored alongside an `entities:` block ("Drop 'grain:' — it's derived
 from the primary entity's key"); single-file packages accept both.
+
+Without an explicit graph model binding, the loader resolves the primary from
+an authored singular `entity:`, then a matching grain, then an entity listed in
+the model's `entities:` block whose name matches the model and which has no
+explicit graph binding. It back-fills implicit graph bindings from the resolved
+identity. Declaration order never selects the primary; loading fails with
+`INVALID_CONFIG` if it cannot be resolved or two graph entities bind to one model.
+If multiple entity keys match the grain, bind the model in the graph or set
+`entity:`; otherwise loading fails with `INVALID_CONFIG` naming the model and
+matching entities.
+Two models claiming the same unbound graph entity also fail with `INVALID_CONFIG`
+naming both models. An explicit graph `model:` binding fixes primary identity
+independently of an authored `grain:`. That grain describes measure rows and may
+differ from the entity key (for example, payment rows belonging to one receipt,
+or snapshot rows keyed by their clock). It never replaces the bound entity's key.
+Without an explicit graph binding, when `grain:` accompanies an `entities:` block,
+it must match the resolved primary entity's `expr:` override or canonical graph
+key, including when a singular `entity:` supplies the identity. When neither
+declares columns, the check uses the model's own `keys.primary:`. If no key is declared,
+its own model's grain can supply it. Empty `entities:` blocks retain the graph's
+model-name default and still validate the grain.
 
 ### `bridge: false` — junction tables
 
@@ -1355,21 +1419,46 @@ paths, because most pairs have one route (see [the route rule](#the-route-rule))
   key, so the query is refused until a `graph.path_preferences` row records which one
   the package means.
 
-A query that groups or filters by a dimension looked up through a many-to-one or
-one-to-one hop joins it with a left join, so the measure keeps a row whose foreign key
-is NULL or matches no row: it groups under NULL, and grouped rows add up to the
-ungrouped total, except for a dimension a rollup holds (below). A filter on such a
-dimension treats the row as it treats a NULL value in the row itself: `IS NULL` selects it, so "passengers excluding crew"
-through a crew-roster lookup is a `crew_role IS NULL` filter, while `=`, `!=`, `IN`
-and `NOT IN` never match it. Every other read of a lookup keeps its inner join, so a
-row with no match is left out, as before: a time role read through a lookup, a
-measure's own filter, a metric filter and the context entities it matches on,
-conversions (their match keys and properties), qualified sets and metric predicates,
-anchored entity-set ratios, and a dimension a rollup of the measure's model holds
-(below). That last rule covers every dimension any rollup of the model holds, even at a
-grain the rollup can never answer, so those rows are dropped for that dimension however
-the query is grouped. So do hops that fan out, and every hop on ClickHouse, where an
-unmatched outer-join column reads `''` or `0` unless it is `Nullable`, not NULL.
+A many-to-one or one-to-one hop never removes a measure's row. Whatever reads the
+dimension it looks up (a grouping, a filter, the measure's own filter, an `aggregate_if`
+condition or a measure expression), and whatever shape the query takes (pre-aggregated
+before its joins, de-duplicated across a one-to-many hop, filtered with `EXISTS`, an
+entity-set ratio, or dimensions alone), the hop is a left join. A row whose foreign key is
+NULL or matches no row stays, with NULL for everything the hop looks up: it groups under
+NULL, and grouped rows add up to the ungrouped total. A filter on such a dimension treats
+the row as it treats a NULL value in the row itself, wherever the filter is written: `IS
+NULL` selects it, so "passengers excluding crew" through a crew-roster lookup is a
+`crew_role IS NULL` filter, while `=`, `!=`, `IN` and `NOT IN` never match it.
+
+Only these reads join a lookup with an inner join, so a row with no match is left out:
+
+- a time role read through a lookup (a row with no time has no time bucket), and so any
+  other read of the same hop;
+- a metric predicate's own query, and its route to the entity it qualifies. Its set is
+  matched on that entity and on the query's grouped (context) entities, so a row with none
+  of them is not in the set;
+- a distribution's per-entity values (its `over`): a row whose lookup of the entity finds
+  no match belongs to no entity, never to a NULL entity of its own;
+- conversions (their match keys and properties);
+- a dimension a rollup of the measure's model holds (below). That rule covers every
+  dimension any rollup of the model holds, even at a grain the rollup can never answer,
+  so those rows are dropped for that dimension however the query is grouped. A rollup of
+  another model changes nothing: a rollup of the items holding the country keeps an order
+  count's rows, even when the orders are counted from the items, and a query of
+  dimensions alone reads no rollup;
+- every hop on ClickHouse, where an unmatched outer-join column reads `''` or `0` unless
+  it is `Nullable`, not NULL.
+
+Hops that fan out are inner joins too. A distinct count read from a child model (a
+`rollup_safe` reverse `count_distinct`) joins back to the counted entity with an inner join,
+even when grouping only by a child's looked-up dimension and reading no parent dimension
+or time axis. A child row whose parent has no record counts nothing; valid parents whose
+child lookup finds no match still count under NULL. This shortcut requires exactly one
+relationship between child and parent, on the counted path, and permits the forward lookup.
+With multiple parent relationships or a reverse-only relationship, the query uses the
+counted entity's own leaf instead. The lookups past that entity keep their rows.
+Because of those inner reads, an `aggregate_if` condition that a row with no
+match could satisfy (such as `IS NULL`) is refused.
 
 Long chains are first-class: a measure can be grouped or filtered by a
 dimension four relationships away (`line_item → order → customer → city →
@@ -1382,11 +1471,10 @@ once when at least one child matches. Non-temporal paths of declared `N:1`,
 `1:N` and `1:1` hops may include a lookup before reaching children, and may
 use an alternate parent key; all authored join columns participate in the
 correlation. This supports parent counts and sums without multiplying their
-values. A lookup-before-child or alternate-key path requires exactly one
-candidate route after authored `graph.path_preferences` pins. Several
-remaining routes retain `MIXED_GRAIN_INVALID`, even when one is shorter.
-This applies to query filters and measure-bound filters, including beside
-a lookup. Unsafe, unknown-cardinality and temporal paths retain their refusals.
+values. A lookup-before-child or alternate-key path is the route the route
+rule chose (below); a pair it can't decide is refused with `AMBIGUOUS_PATH`,
+even when one route is shorter. This applies to query filters and
+measure-bound filters, including beside a lookup. Unsafe, unknown-cardinality and temporal paths retain their refusals.
 ClickHouse retains a deduplicated-parent leaf for servers without correlated
 subqueries. Key-based descents retain their existing SQL shape, including
 beside lookup selections, groupings and filters; those lookups remain inner
@@ -1398,11 +1486,17 @@ Grouping retains a narrower exception: a path that only goes down one-to-many ho
 (`order → order_item → product`), each hop joined on the declared key of its
 one side, lets a distinct parent count be grouped by the far dimension; the entity's key is what
 the engine de-duplicates on.
-At most one group or filter may cross a one-to-many hop. Negated child filters
-and `IS NULL` stay refused because "has a non-matching child" and "has no matching
-child" differ; the IR has no explicit `NOT EXISTS` predicate. A parent sum
-grouped by child dimensions, or a child value authored at parent grain, stays
-`MIXED_GRAIN_INVALID`.
+A query states which child rows its conditions mean with a child group in `where`
+(`{child, match: any|none, where}`, see
+[QUERY_IR_SCHEMA.md](QUERY_IR_SCHEMA.md#child-groups)); two or more positive plain filters
+on one child, or one negated one, are refused with `AMBIGUOUS_CHILD_SCOPE` and a
+clarification. Its readings are child groups, so it is offered only when a group on that
+child takes the plain filters' own route; otherwise the refusal is `MIXED_GRAIN_INVALID`,
+naming the `graph.path_preferences` row that records that route. A
+measure's own `filter` may cross a one-to-many hop with one positive condition;
+negated ones stay refused because "has a non-matching child" and "has no matching
+child" differ. A parent sum grouped by child dimensions, or a child value authored
+at parent grain, stays `MIXED_GRAIN_INVALID`.
 
 ### `graph.path_policy:` — hop ceiling
 
@@ -1428,30 +1522,81 @@ classic case: `order.ship_city_id` vs `order.customer → customer.city_id`),
 the routes have different *meanings*, and which one a question means is a
 business definition. The engine never guesses: the decision is recorded once
 in the package, then every query uses it, and adding a route never silently
-changes an existing answer. For each start entity and target entity, in this
-order:
+changes an existing answer. A route is chosen only by a recorded decision or
+the start entity's own key. For each start entity and target entity, over
+every route within the hop ceiling, in this order (a query's own
+[`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions) row for exactly the
+pair comes first, for that query only):
 
-1. A `graph.path_preferences` row for the pair (below) wins.
-2. Exactly one route: it is used.
-3. Otherwise, when exactly one route is a direct relationship from the start
-   entity that reaches at most one row (many-to-one, or one-to-one: the start
-   row holds the target's key), it is used.
-4. Otherwise the query is refused with `AMBIGUOUS_PATH`, whatever the routes'
-   lengths (equal or not) and whether they fan out: two direct keys (parallel
-   roles), routes with no direct key, and routes that all fan out are all
-   refused.
+1. **Decided.** A `graph.path_preferences` row for exactly the pair (below)
+   wins.
+2. **The start's own key.** When exactly one route is a direct relationship
+   from the start entity that reaches at most one row (many-to-one, or
+   one-to-one: the start row holds the target's key), it is used, even where a
+   row for another pair would point elsewhere. A loan that holds its own
+   `district_id` reads that district, though the package records an account's
+   district as its owner's. Two such keys to one entity (an origin and a
+   destination) are not one: go on.
+3. **Inherited.** Every row holds wherever a route walks its pair: a route
+   that passes through a row's two entities by another part than the row's
+   path is dropped. Walked the other way (from the row's target towards its
+   source), the part must be the row's path reversed, when every hop of that
+   path allows the reverse walk; otherwise the row says nothing about that
+   direction. So a row for (account, district) also decides the district of a
+   loan, a card or a transaction reached through its account, and the region
+   beyond the district.
+4. **Only route.** Exactly one route remains: it is used.
+5. Two or more remain: the query is refused with `AMBIGUOUS_PATH`, naming the
+   remaining routes, whatever their lengths (equal or not) and whether they fan
+   out.
+6. The rows dropped every route: the query is refused with `PATH_NOT_FOUND`
+   and `details.reason: excluded_by_decision`, naming the rows in
+   `details.rows` (raise `max_hops` if a longer route follows them, or change
+   the rows).
 
-Hop count never decides. Every path choice goes through this rule: grouping,
-filters, a measure's own filter, metric predicates, time roles, conversions,
-the direct read of a foreign key, and discovery, catalog and error hints. A
-calendar dimension reached only through other facts' rows is refused the same
-way, and its recovery hint points at `time.grain` instead.
+Hop count and weights never decide. Every path choice goes through this rule:
+grouping, filters, a measure's own filter, metric predicates, time roles,
+conversions, the direct read of a foreign key, a child filter's `EXISTS`, the
+distinct count read from a child's rows, and discovery, grain recovery,
+catalog and error hints. A calendar dimension reached only through other
+facts' rows is refused the same way, and its recovery hint points at
+`time.grain` instead.
 
 The refusal is a clarification: `details.reason` is `route_decision_required`,
-`details.candidates` lists every route, `details.meanings` reads each one as a
-chain of entity and relationship labels (`Account → Owner → Home region`), and
-`details.pins` holds the `graph.path_preferences` row that records each. Copy
-the row for the meaning the package intends into `graph.yml`.
+and `details.clarification` asks which route the question means, in business
+words built only from package labels:
+
+```json
+{"kind": "route", "apply": ["query", "package"],
+ "question": "Which District does the question mean for an Account?",
+ "options": [
+   {"id": "branch_district", "meaning": "the District of the Account's Branch",
+    "relationship_path": ["relationship.accounts_branch", "relationship.branches_district"],
+    "decision": {"source_entity": "entity.bank_account", "target_entity": "entity.bank_district",
+                 "relationship_path": ["relationship.accounts_branch", "relationship.branches_district"],
+                 "label": "the District of the Account's Branch"}},
+   {"id": "owner_district", "meaning": "the District of the Account's Owner", "...": "..."}]}
+```
+
+- `meaning` names every entity on the route by its label. A hop between two
+  entities related more than once is named by the relationship's own label, or
+  else by its foreign-key columns (`the Flight's Airport (origin_airport_id)`),
+  and a one-to-many hop reads "any of the …" (`any of the Account's Memberships`).
+- `id` is unique within the refusal and never an entity key: the waypoint and
+  target entity keys (`branch_district`), or a direct hop's foreign-key column
+  without its `_id`/`_key`/`_code` suffix (`origin_airport`); `_2` on a clash.
+- `decision` is the `graph.path_preferences` row that makes the option the
+  package default, with `label` set to the meaning. When that row would
+  disagree with existing rows (see "Rows must agree" below), the option adds
+  `conflicts_with`: those rows, to change before recording it. Its `decision`
+  still answers per query.
+
+Every option can be applied two ways. For the person who asked, the agent
+resends the query with the option's `decision` in
+[`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions): that query only, not a
+default. For everyone, a maintainer records the same row in the package (Architect
+`record_route_decision` writes it for review); then the question answers
+without asking.
 
 A relationship's `path_preference` weight no longer exists: a package that
 still sets one fails to load with `INVALID_CONFIG`, naming the relationship.
@@ -1473,32 +1618,56 @@ graph:
         - relationship.orders_customer
         - relationship.customers_city
         - relationship.cities_region
+      label: the Region of the City of the Line item's Customer
 ```
 
-`source_entity` and `target_entity` take an entity's key, name or id (the rows in
-`details.pins` use ids). Rows are validated at load time (unknown entities and
-relationships, broken chains, and disallowed traversal directions are
-`INVALID_CONFIG`), and the fanout safety analysis still applies to the recorded
-route. A row covers only queries that start at its `source_entity` and end at its
-`target_entity`. A comment stating the meaning in the question's own words keeps
-the decision reviewable.
+`source_entity` and `target_entity` take an entity's key, name or id (a
+clarification option's `decision` uses ids). Rows are validated at load time
+(unknown entities and relationships, broken chains, and disallowed traversal
+directions are `INVALID_CONFIG`), and the fanout safety analysis still applies
+to the recorded route. A row decides its own pair, and every other pair whose
+routes walk through it inherits it (rule 3 above), except where the start
+entity holds its own key to the target (rule 2). So one row usually serves a
+whole family of questions: record the shortest pair that carries the meaning.
+The optional `label` states the meaning in business words; it keeps the
+decision reviewable, the package writer keeps it, and a compile's `hop_profile`
+target and discovery's path availability show it as `route_label` for the
+pair's recorded route.
+
+Rows must agree. When one row's path walks through another row's pair, the
+part between them must be that row's path (or, walked the other way, its path
+reversed); otherwise the package fails to load with `INVALID_CONFIG`, naming
+the rows in `details.rows`. A configuration built in code (for example with
+`Runtime.from_config`) is held to the same check when it is first used. A row
+for a pair with one route is allowed: it records a definition.
 
 Four guard rails back this up:
 
 - **Route notes** — where the engine chose one of two or more routes for a pair
   the compiled query reads (root, leaf, predicate and conversion paths, and the
-  direct read of a key), compact and full responses carry one `info` note:
-  `ROUTE_RECORDED` (rule 1) or `ROUTE_COLOCATED_KEY` (rule 3), with the chosen
-  route's relationship ids in `details.route` and its readable meaning in the
-  message (`Order → Store (own key)`). A pair with one route gets none, and the
-  minimal response (the MCP default) leaves the notes out. So adding a route
-  never changes an answer silently: a pair whose one route is its own key keeps
-  its answer and now notes it, and any other pair is refused until a row
-  records it. Notes reuse the resolver's candidates for an unpinned pair. For
-  a recorded route, they check whether multiple routes fit `max_hops` using
-  bounded reachability scans, without enumerating alternatives or caching a
-  route refusal just to produce a note.
-- **`AMBIGUOUS_PATH` error** — rule 4 above. A `graph.relationships:` entry
+  direct read of a key), compact and full responses carry one `info` note, with
+  the chosen route's relationship ids in `details.route` and its readable
+  meaning in the message:
+  - `ROUTE_COLOCATED_KEY` (rule 2, `Order → Store (own key)`):
+    `details.alternatives` holds, for each other route whose row would load
+    beside the package's rows, the `graph.path_preferences` row that would make
+    it the default, and `details.conflicts_with` lists any other route with the
+    rows its row would disagree with;
+  - `ROUTE_RECORDED` (rule 1, `(recorded route)`, or rule 3,
+    `(recorded for Account → District)`, with the rows it follows in
+    `details.rows`).
+
+  A pair with one route gets none, and the minimal response (the MCP default)
+  leaves the notes out. So adding a route never changes an answer silently: a
+  pair whose one route is its own key keeps its answer and now notes it, and
+  any other pair is refused until a row records it. A note names only a route
+  the SQL reads, and only when the pair's resolution chose that route, so the
+  same query gets the same notes whatever ran before it; a count read from a
+  child's rows along the counted entity's route is noted once, for that route.
+  For a recorded route, notes check whether multiple routes fit `max_hops`
+  using bounded reachability scans, without enumerating alternatives or caching
+  a route refusal just to produce a note.
+- **`AMBIGUOUS_PATH` error** — rule 5 above. A `graph.relationships:` entry
   never replaces a foreign key on other columns: the model keeps both, so an
   origin and a destination key into one `airport` entity are two routes. Any
   query that reaches the airport is refused until you record the role it means:
@@ -1508,28 +1677,29 @@ Four guard rails back this up:
   replaces it. Two authored entries on the same `via` columns are refused at
   load (`INVALID_CONFIG`, naming both): keep one, or give each its own `via`
   if they are different roles.
-  A `path_preferences` row for the pair covers only queries that start at its
-  `source_entity` and end at its `target_entity`; a query from another entity
-  that passes through the pair, one that continues past the target, or one that
-  starts at the target, is still refused. A recorded role reads its key through
-  that relationship's join, like any other column of the airport, so a leg whose
-  code matches no airport row groups under a NULL key (a lookup read, above); a
-  package with a single role and no row for the pair reads the key from the
-  leg's own column and groups that leg under its code, when the route rule takes
-  that relationship. A `path_preferences` row for the pair, in either direction,
-  sends every read of the key, a filter on it and a metric predicate through the
-  recorded route, so the key and the airport's other columns always come from
-  the same airport.
+  A `path_preferences` row for the pair also decides a query from another
+  entity whose routes pass through the pair, one that continues past the
+  target, and one that starts at the target (walking the row backwards), unless
+  that query's start holds its own key to its target. A recorded role reads its
+  key through that relationship's join, like any other column of the airport,
+  so a leg whose code matches no airport row groups under a NULL key (a lookup
+  read, above); a package with a single role and no row for the pair reads the
+  key from the leg's own column and groups that leg under its code, when the
+  route rule takes that relationship. Every read of the key, a filter on it and
+  a metric predicate take the route the rule chose, so the key and the
+  airport's other columns always come from the same airport.
 - **Route census** — parsing the package (`semantic-rails check`, `validate`)
   lists every entity pair a question can need that is still refused for want of
   a decision, role-playing keys included, and warns once with `ROUTES_UNDECIDED`
   ([below](#route-census-and-route-changes)).
 - **`PATH_JOIN_CONFLICT` error** — one query needs the same physical table
-  through two different relationships (e.g. region recorded as the home-city
-  route while city is read through the ship-to key). One table instance
-  cannot serve both semantics, so the compiler refuses with both routes
-  named. Fix by recording a consistent route for every affected target, or by
-  modeling the second role as its own entity over a dedicated relation.
+  through two different relationships (e.g. a customer's region recorded as
+  the regions its orders ship to while its city is read through its own key).
+  One table instance cannot serve both semantics, so the compiler refuses with
+  both routes named. Fix by recording a consistent route for every affected
+  target, or by modeling the second role as its own entity over a dedicated
+  relation. Two rows that record different routes through one pair never get
+  this far: the package fails to load (above).
 
 ### Route census and route changes
 
@@ -1594,8 +1764,9 @@ written. Hand edits get the same `route_changes` from `impact-report`.
 
 Every compile/query response carries a `hop_profile`: the root entity, the
 chosen relationship chain per target entity with per-hop direction /
-cardinality / safety, the hop ceiling, and `long_hop_targets` (targets 3+
-hops out). Operators can log this to find questions that repeatedly cross
+cardinality / safety and the rule that chose it (`route_basis`: `decided`,
+`colocated_key`, `inherited` or `only_route`, the route rule's rungs 1-4), the
+hop ceiling, and `long_hop_targets` (targets 3+ hops out). Operators can log this to find questions that repeatedly cross
 many entities — those are the candidates for a shortcut relationship, an
 authored `aggregate_relations:` rollup, or physical colocation in the
 warehouse.

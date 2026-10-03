@@ -46,6 +46,7 @@ from .config_validation import PackageReference, parse_config_report, validate_c
 from .dialects import (
     connection_option_errors,
     normalize_connection_option_name,
+    snowflake_adbc_connect_errors,
     snowflake_native_direct_connect_errors,
     warehouse_connector,
 )
@@ -518,7 +519,11 @@ def _missing_setup_answers(draft: dict[str, Any]) -> list[str]:
     for keys in _REQUIRED_CONNECTION_OPTION_GROUPS.get(warehouse, ()):
         if not any(isinstance(options.get(key), str) and options[key].strip() for key in keys):
             missing.append(" or ".join(keys))
-    if warehouse == "snowflake" and not draft["connection_name"]:
+    if warehouse == "snowflake" and kind == "snowflake_adbc":
+        missing.extend(snowflake_adbc_connect_errors(options))
+        if draft["connection_name"]:
+            missing.append("remove unsupported connection_name")
+    elif warehouse == "snowflake" and not draft["connection_name"]:
         if kind == "snowflake_cli":
             missing.append("connection_name")
         elif kind == "snowflake_native" and snowflake_native_direct_connect_errors(options):
@@ -771,7 +776,8 @@ def create_architect_mcp_server(
             "Order: project_status (note its revision); explore a DuckDB warehouse (list_tables, "
             "describe_table, profile_columns, suggest_model) or a dbt target "
             "(suggest_models_from_dbt); write (upsert_model, upsert_relationship, upsert_metric, "
-            "upsert_segment, upsert_example, upsert_test, import_dbt_project, remove_object); "
+            "upsert_segment, upsert_example, upsert_test, import_dbt_project, remove_object, "
+            "record_route_decision); "
             "check (validate_project mode=parse after each change, mode=runtime before trusting "
             "answers; preview_query); review (diff_project, impact_project).\n"
             "Every write previews with dry_run: true and takes expected_revision (from "
@@ -1139,6 +1145,50 @@ def create_architect_mcp_server(
                     to_entity=to_entity,
                     columns=columns,
                     cardinality=cardinality,
+                    validate_after=True,
+                    expected_revision=expected_revision,
+                    idempotency_key=idempotency_key,
+                    dry_run=dry_run,
+                )
+                .report
+            )
+        except Exception as exc:
+            return _mutation_error_result(
+                exc,
+                project_path=project_path,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
+                dry_run=dry_run,
+            )
+
+    @mcp.tool(
+        annotations=_mutation_annotations("Record route decision"),
+        description=(
+            "Record which route a question between two entities means, as the package "
+            "default: write or replace the pair's graph.path_preferences row (pass the "
+            "decision of an AMBIGUOUS_PATH clarification option). An off-route path or an "
+            "unknown entity or relationship is INVALID_CONFIG with nothing written. Returns "
+            "replaced (the previous row) and summary, one sentence for the review."
+        ),
+    )
+    def record_route_decision(
+        project_path: str,
+        source_entity: str,
+        target_entity: str,
+        relationship_path: list[str],
+        expected_revision: str,
+        idempotency_key: str,
+        label: str = "",
+        dry_run: bool = False,
+    ) -> ArchitectMutationResult:
+        try:
+            return _mutation_result(
+                ArchitectProject(project_path, workspace_root=root)
+                .record_route_decision(
+                    source_entity=source_entity,
+                    target_entity=target_entity,
+                    relationship_path=relationship_path,
+                    label=label,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,

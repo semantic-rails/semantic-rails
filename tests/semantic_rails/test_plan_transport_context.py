@@ -108,8 +108,7 @@ def _query_irs(payload):
     """Include every returned draft and the advertised validation input."""
     rows = [payload["best"], *payload.get("alternatives", []), *payload.get("blocked", [])]
     queries = [row["query_ir"] for row in rows if row and "query_ir" in row]
-    if "validate" in payload.get("next", {}):
-        queries.append(payload["next"]["validate"]["query"])
+    assert "validate" not in payload.get("next", {})
     return queries
 
 
