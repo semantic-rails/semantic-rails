@@ -229,6 +229,35 @@ shorthands for the most common cases:
 | Period-to-date | `{ "kind": "period_to_date", "input": {...}, "period": "month" }` |
 | Conversion | `{ "kind": "conversion", "base": {...}, "converted": {...}, "entity": "...", "window": {"unit": "day", "value": 7}, "matching_mode": "first_converted_after_base" }` — a converted event counts when `base <= converted < base + window` (7 × 24 hours here, not calendar days). |
 
+**Summing windows require values that add up across periods.** `rolling`, `cumulative`,
+and `period_to_date` accept additive flows using `sum` or `count`, event counts using
+`count_distinct` of a complete single-column source-row key (the measure's row grain
+or its model entity's full key). The entity key qualifies only when the measure reads
+the entity's table and its row grain is absent or matches that key.
+Sums, differences, or multiplication/division by numeric literals of those inputs
+are also accepted.
+A ratio (including arithmetic `divide` with a nonliteral denominator and metric recipes
+that resolve to a ratio) computes the ratio of its windowed
+parts: `SUM(numerator) OVER w / NULLIF(SUM(denominator) OVER w, 0)`. Each part uses the
+same partition and frame, after the ordinary empty-group settlement; a zero denominator
+returns `NULL`. It does not sum each period's ratio.
+
+Inputs using `avg`, `min`, `max`, `median`, or `percentile`, stocks (semi-additive
+measures), distinct populations, distinct counts of non-key columns or individual
+components of composite keys, distributions,
+products of measures, nested windows, and ratios inside other arithmetic or inside
+another ratio refuse with `ROLLUP_UNSAFE`
+before SQL executes. Ask for a ratio of windowed additive parts, or query the measure's
+own aggregation without a summing window. This rule also applies through derived
+metrics, metric filters, and every execution transport. `prior_period` reads one
+period with `LAG` and keeps its existing input semantics.
+
+`period_to_date` currently supports only the default calendar. A non-default
+`time.calendar_id`, or a time role bound to a non-default calendar, refuses with
+`REWRITE_NOT_SUPPORTED`; it cannot silently reset on Gregorian periods. Query the
+authored calendar's period as exact start/end dates without `period_to_date` instead.
+Default-calendar resets are unchanged.
+
 Comparisons (`kind: "comparison"`) with a literal `null` on either side lower
 `=` / `IS` to `IS NULL` and `!=` / `<>` / `IS NOT` to `IS NOT NULL`. This applies
 inside CASE and aggregate-if conditions (including a metric predicate's input),
@@ -386,6 +415,25 @@ Different shape from `select`. The most common pattern is `kind: metric_predicat
 `scope_mode` is either `contextual` (default for query-time) or
 `entity_only`. `time_alignment` is one of `same_query_period`,
 `query_window`, or `rolling_window_in_period`.
+
+Ordinary `metric_filters` evaluate aggregated expressions at the grain the query
+returns, after grouping. A `metric_predicate` instead evaluates its input at its
+declared entity within that scope. A contextual predicate inherits the query's
+time and grouped context. When a grouped dimension belongs to the input's own
+row entity, the predicate groups by that dimension's values, including NULL,
+rather than by each row's entity key. A `where` filter is inherited before this
+aggregation; `entity_only` omits grouped context and compatible `where` filters.
+
+Comparison and other post-aggregation `metric_filters` beside a `distribution`
+refuse with `REWRITE_NOT_SUPPORTED`: branch lowering cannot apply them once at
+the returned group's grain. This includes distributions reached through derived
+metrics. Run the group-level filter without the distribution first. A contextual
+`metric_predicate` on an entity different from the distribution's per-entity
+grain refuses with `PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE`; use `entity_only` or
+a `where` filter. This refusal also covers predicates inside the distribution's
+input, including scoped aggregates and inputs reached through metric recipes.
+A distribution nested inside another expression also refuses
+with `REWRITE_NOT_SUPPORTED`; select the distribution separately.
 
 ## WhereFilter
 

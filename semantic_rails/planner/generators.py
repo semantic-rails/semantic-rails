@@ -769,8 +769,8 @@ def _intent_match_signal(
     if phrase_matches:
         longest = max(len(phrase) for phrase in phrase_matches)
         score += min(0.5, 0.25 + 0.02 * longest)
-    if object_id:
-        score += (hash(object_id) % 100) / 10000.0
+    # Both ranking callers break equal scores by discovery score and object id.
+    # A randomized hash here would reorder candidates before those stable ties.
     return max(0.0, min(1.0, score))
 
 
