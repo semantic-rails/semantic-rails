@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import faulthandler
 import os
 import sys
 import uuid
@@ -45,3 +46,15 @@ def duckdb_test_limits(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Non
             "PYTHONPATH", os.pathsep.join(filter(None, [str(startup), os.getenv("PYTHONPATH")]))
         )
         yield
+
+
+WORKER_EXIT_WATCHDOG_SECONDS = 120
+
+
+def pytest_sessionfinish(session: pytest.Session) -> None:
+    # pytest-timeout only watches tests: dump the stacks of an xdist worker that cannot exit
+    # after its last test (a non-daemon thread, a child it waits on), then end it.
+    if hasattr(session.config, "workerinput"):
+        faulthandler.dump_traceback_later(
+            WORKER_EXIT_WATCHDOG_SECONDS, exit=True, file=sys.__stderr__
+        )
