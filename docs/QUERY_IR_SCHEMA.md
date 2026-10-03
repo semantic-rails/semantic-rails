@@ -112,8 +112,12 @@ ignored).
   they make reachable, and its query patches keep the rows; a patch that would
   leave a row unused is unavailable with that refusal. Live `valid-values`
   checks rows before probing and reads through their routes using only the query's
-  measures, including those read by metrics. If none anchors the dimension, the
-  first anchor's refusal is returned unchanged; unrelated measures never supply values.
+  configured measures, including those read by metrics; mixed selections containing
+  `aggregate_if` are accepted, but synthetic measures never become anchors. Probing
+  keeps the executed query's filters and temporal role overrides, so a row read only
+  by a metric filter stays in use. If none anchors the dimension, the first anchor's
+  refusal is returned unchanged; unrelated measures never supply values. Without a
+  configured query measure, `NO_VALID_VALUES_SOURCE` asks for a measure or metric anchor.
 
 ## Common gotchas
 
@@ -257,7 +261,7 @@ functions must use their semantic expression forms instead of `call`.
 `INVALID_EXPRESSION_AST` with `details.allowed` equal to the warehouse's
 accepted set, including `CAST`.
 
-Common names: `ABS`, `CAST`, `CEIL`, `CEILING`, `COALESCE`, `CONCAT`, `EXP`,
+Common names: `ABS`, `CAST`, `CEIL`, `CEILING`, `COALESCE`, `CONCAT`, `DATE_DIFF`, `EXP`,
 `FLOOR`, `LENGTH`, `LN`, `LOG`, `LOWER`, `NULLIF`, `POWER`, `REPLACE`, `ROUND`,
 `SQRT`, `SUBSTR`, `SUBSTRING`, `TRIM`, `UPPER`.
 
@@ -274,6 +278,46 @@ Common names: `ABS`, `CAST`, `CEIL`, `CEILING`, `COALESCE`, `CONCAT`, `EXP`,
 Use each warehouse's scalar argument signatures. For example, Athena `LOG`
 takes a base and a value. Engine-generated SQL has a separate function list;
 it does not advertise functions that a client can call.
+
+Portable date differences use exactly three args:
+
+```json
+{"kind":"call","name":"DATE_DIFF","args":[
+  {"kind":"literal","value":"day"},
+  {"kind":"column","column":"opened_at","entity":"entity.order"},
+  {"kind":"column","column":"closed_at","entity":"entity.order"}
+]}
+```
+
+The first arg must be a string literal unit: `minute`, `hour`, `day`, `week`,
+`month`, `quarter` or `year` (case-insensitive). The result is end minus start,
+counting calendar unit boundaries rather than elapsed durations. The `week`
+exception is the calendar day difference divided by seven, truncated toward
+zero; it does not count Sunday or Monday week boundaries.
+
+BigQuery converts both endpoints to `DATETIME` before taking the difference.
+For `TIMESTAMP` endpoints, calendar boundaries are counted in UTC, so
+23:00 on January 1 to 01:00 on January 3 returns two days, preserving NULLs.
+
+| Warehouse | Supported units | Refused units |
+| --- | --- | --- |
+| DuckDB, MotherDuck, DuckLake, Postgres, Databricks | `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year` | None |
+| Snowflake, BigQuery, ClickHouse | `minute`, `hour`, `day`, `month`, `quarter`, `year` | `week` |
+| Athena | None | `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year` |
+
+Athena's native function counts complete elapsed units; Snowflake, BigQuery and
+ClickHouse count calendar week boundaries. Those calls return
+`INVALID_EXPRESSION_AST` with an unsupported-function message naming the
+warehouse and unit, including in `validate` mode and package loading.
+
+For supported calls, if either endpoint is NULL, the result is NULL and is
+excluded from averages, never replaced with zero. ClickHouse casts both endpoints
+to `Nullable(DateTime64(6))` so this holds even with `cast_keep_nullable=0`, while
+preserving pre-1970 dates: `1950-01-01` to `2024-01-01` is 74 years. The same
+shape works in query selects, package measure expressions and `aggregate_if`
+values. Wrong arity, non-literal units and unknown units return
+`INVALID_EXPRESSION_AST`, including in `validate` mode, with the required shape
+and recognized units.
 
 Numeric conversion uses exactly two args:
 
@@ -310,7 +354,7 @@ conditional aggregates and post-aggregation expressions.
 
 Scalar-call argument types and overload resolution are checked by the warehouse
 at execution, for query, package and relation-pipeline expressions alike.
-Compilation checks the allowed function name and CAST shape without inferring
+Compilation checks the allowed function name and CAST/DATE_DIFF shapes without inferring
 argument categories from literals, dimensions or nested calls. Use CAST when an
 explicit conversion is required. Warehouse execution failures use the stable
 `QUERY_EXECUTION_ERROR` code and remain redacted.
@@ -847,6 +891,27 @@ no extra query, and a clipped result (`truncated`) never gets it.
 ClickHouse fills an unmatched outer-join field with a type default (0 or an empty string)
 unless the join yields NULLs, so every ClickHouse statement ends with
 `SETTINGS join_use_nulls = 1`.
+
+## What an answer covers
+
+Some answers are right but easy to misread, so the response says what they cover. This never
+changes the SQL or the rows.
+
+**Facts on different clocks.** With no `time` block, selects that read measures of different
+entities or governed metrics with differing sets of real time roles, mixing at least two
+distinct roles, carry one `MIXED_TIME_ROLES` warning that names each measure's role: orders by
+order time and storefront
+sessions by session start, grouped by customer, each read a period on their own role's clock.
+Measure-level filters can bound those periods, even without a `time` block; the warning makes
+no claim about how much history is covered. Undated measures are ignored. A `time` block,
+including a role without bounds or a grain, suppresses this warning. `details.clocks` lists each
+dated measure's `subject` and `temporal_roles`.
+A dated measure inside an expression (`ratio`, arithmetic, `case`, `aggregate_if`) counts like
+a bare one; one inside a conversion or a metric predicate keeps that expression's own time rules. A
+metric counts as one clock, with every role it combines: alone it never warns, since the
+package defined it, and beside a dated measure or metric with a different role set it does.
+Measures that share a role, and bare measures of one entity, never warn. A governed metric
+is a distinct source even when its measures belong to that same entity.
 
 ## Dense fill (`time.fill`)
 
