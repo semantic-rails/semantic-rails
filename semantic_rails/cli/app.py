@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import os
 import sys
-from importlib import metadata
 from typing import Any
 
 from ..config import get_package_config, list_package_ids, load_package_config
@@ -33,14 +31,13 @@ from .commands.package import (
     cmd_export_contract,
     cmd_impact_report,
     cmd_import,
-    cmd_init_dispatch,
     cmd_parse_config,
     cmd_promote_package,
     cmd_run_examples,
     cmd_test_package,
     cmd_validate_config,
 )
-from .commands.project import add_developer_cli
+from .commands.project import add_developer_cli, cmd_init_project
 from .commands.query import (
     cmd_build_options,
     cmd_catalog,
@@ -770,26 +767,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_init = sub.add_parser(
         "init",
-        description=(
-            "Initialize a Semantic Rails package. `init <name>` creates a split-layout "
-            "developer package; the legacy `init --output ... --package-id ...` form "
-            "creates a single-file package."
-        ),
+        description="Initialize a split-layout Semantic Rails developer package.",
     )
     p_init.add_argument(
         "name",
         nargs="?",
-        help="Package id to create. When provided, init creates a split-layout package.",
-    )
-    p_init.add_argument(
-        "--output",
-        default="",
-        help="Target directory for the new package (created if it does not exist).",
+        help="Package id to create.",
     )
     p_init.add_argument(
         "--package-id",
         default="",
-        help="Package id to write into package.yml. Defaults to the package name/output directory.",
+        help="Package id to write into package.yml. Defaults to the package name.",
     )
     p_init.add_argument(
         "--namespace",
@@ -800,16 +788,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--force",
         action="store_true",
         help="Overwrite an existing non-empty output directory.",
-    )
-    p_init.add_argument(
-        "--split",
-        action="store_true",
-        help="Create the split-layout developer package even when using --output.",
-    )
-    p_init.add_argument(
-        "--single-file",
-        action="store_true",
-        help="Create the legacy single-file package.yml scaffold.",
     )
     p_init.add_argument(
         "--workspace-root",
@@ -858,7 +836,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Accept defaults and do not prompt for split-layout package fields.",
     )
     p_init.add_argument("--json", action="store_true", help="Print a JSON report.")
-    p_init.set_defaults(func=cmd_init_dispatch, human_cli=True)
+    p_init.set_defaults(func=cmd_init_project, human_cli=True)
 
     p_import = sub.add_parser(
         "import",
@@ -941,43 +919,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Port to bind (default: 8090).",
     )
     p_serve.set_defaults(func=cmd_serve)
-    _add_plugin_commands(sub)
     return parser
-
-
-def _add_plugin_commands(sub: argparse._SubParsersAction) -> None:
-    """Let other installed packages add top-level commands.
-
-    Each entry point in the ``semantic_rails.cli`` group names a callable that
-    receives the top-level subparsers, adds its commands and sets their
-    ``func`` (plus ``human_cli=True`` for plain-text errors)::
-
-        [project.entry-points."semantic_rails.cli"]
-        acme = "acme_semantic_rails.cli:add_commands"
-
-    It must not print: ``mcp stdio`` speaks its protocol on stdout. A plugin
-    that raises (for example by reusing a command name) is skipped: the
-    commands it added are removed, a warning goes to stderr and the rest of
-    the CLI still works. ``SEMANTIC_RAILS_CLI_PLUGINS=0`` skips every plugin.
-    """
-
-    switch = os.environ.get("SEMANTIC_RAILS_CLI_PLUGINS", "").strip().lower()
-    if switch in {"0", "false", "no", "off"}:
-        return
-    plugins = metadata.entry_points(group="semantic_rails.cli")
-    for entry_point in sorted(plugins, key=lambda ep: ep.name):
-        parsers, listed = dict(sub._name_parser_map), list(sub._choices_actions)
-        try:
-            entry_point.load()(sub)
-        except Exception as exc:  # noqa: BLE001 - a broken plugin must not break the CLI
-            # Leave no half-built command behind (argparse keeps these two in step).
-            sub._name_parser_map.clear()
-            sub._name_parser_map.update(parsers)
-            sub._choices_actions[:] = listed
-            _print_stderr(
-                f"semantic-rails: skipped CLI plugin {entry_point.name!r}: "
-                f"{type(exc).__name__}: {exc}"
-            )
 
 
 def main() -> None:

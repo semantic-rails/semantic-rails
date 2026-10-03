@@ -2476,11 +2476,8 @@ class Runtime:
         # will each compile and the last writer wins — duplicate work but no
         # correctness issue (the LRU cache already deep-copies on get and put,
         # see cache.py:33,37).
-        # A certification can be revoked between requests, so a package with a rollup that
-        # requires one compiles every request.
-        cacheable = not any(row.requires_certification for row in self._config.aggregate_relations)
         with self._cache_lock:
-            cached = self._compile_cache.get(key) if cacheable else None
+            cached = self._compile_cache.get(key)
         if cached is not None:
             stats = {
                 **dict(cached.compiled.get("compile_stats", {}) or {}),
@@ -2503,9 +2500,8 @@ class Runtime:
             "compile_stats": stats,
             "explain": replace(compiled["explain"], compile_stats=stats),
         }
-        if cacheable:
-            with self._cache_lock:
-                self._compile_cache.put(key, CachedCompilation(compiled=compiled))
+        with self._cache_lock:
+            self._compile_cache.put(key, CachedCompilation(compiled=compiled))
         return compiled
 
     @runtime_request_scope
