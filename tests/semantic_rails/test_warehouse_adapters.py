@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 import types
 from types import SimpleNamespace
 
+import duckdb
 import pytest
 
 from semantic_rails.db import (
@@ -67,25 +69,112 @@ def test_dbapi_cursor_fetch_is_bounded_and_reports_truncation():
     assert rows.truncated is True
 
 
-def test_duckdb_timeout_interrupts_the_active_connection(monkeypatch: pytest.MonkeyPatch):
-    interrupted = threading.Event()
+SLOW_DUCKDB_QUERY = "SELECT count(*) FROM range(100000000000) a"
+
+
+def _duckdb_file(tmp_path) -> str:
+    path = str(tmp_path / "timeout.duckdb")
+    duckdb.connect(path).close()
+    return path
+
+
+def _interrupt_in_chain(error: BaseException) -> bool:
+    cause: BaseException | None = error
+    while cause is not None:
+        if isinstance(cause, duckdb.InterruptException):
+            return True
+        cause = cause.__cause__ or cause.__context__
+    return False
+
+
+def _timed_query(adapter: DuckDBAdapter, timeout_ms: int) -> tuple[BaseException | None, float]:
+    started = time.monotonic()
+    try:
+        adapter.query(SLOW_DUCKDB_QUERY, limits={"statement_timeout_ms": timeout_ms})
+    except BaseException as error:  # noqa: BLE001 — handed back to the asserting thread
+        return error, time.monotonic() - started
+    return None, time.monotonic() - started
+
+
+@pytest.mark.timeout(30)
+def test_duckdb_statement_timeout_stops_the_running_query(tmp_path):
+    adapter = DuckDBAdapter(_duckdb_file(tmp_path))
+    try:
+        error, elapsed = _timed_query(adapter, 200)
+    finally:
+        adapter.close()
+
+    assert isinstance(error, SemanticLayerError)
+    assert error.code == "QUERY_EXECUTION_ERROR"
+    assert _interrupt_in_chain(error)
+    assert elapsed < 10
+
+
+@pytest.mark.timeout(30)
+def test_duckdb_statement_timeout_only_stops_its_own_query(tmp_path):
+    adapter = DuckDBAdapter(_duckdb_file(tmp_path))
+    results: dict[int, tuple[BaseException | None, float]] = {}
+
+    def run(timeout_ms: int) -> None:
+        results[timeout_ms] = _timed_query(adapter, timeout_ms)
+
+    threads = [threading.Thread(target=run, args=(ms,)) for ms in (5_000, 200)]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    finally:
+        adapter.close()
+
+    short_error, short_elapsed = results[200]
+    long_error, long_elapsed = results[5_000]
+    assert _interrupt_in_chain(short_error)
+    assert short_elapsed < 4
+    # The short query's watchdog left the long one running until its own timeout.
+    assert _interrupt_in_chain(long_error)
+    assert 5 <= long_elapsed < 15
+
+
+def test_duckdb_query_without_timeout_starts_no_watchdog(tmp_path, monkeypatch):
+    import semantic_rails.db as db_module
+
+    def no_timer(*_args, **_kwargs):
+        raise AssertionError("a query without statement_timeout_ms must not start a timer")
+
+    monkeypatch.setattr(db_module.threading, "Timer", no_timer)
+    adapter = DuckDBAdapter(_duckdb_file(tmp_path))
+    try:
+        assert adapter.query("SELECT 42 AS n") == [{"n": 42}]
+    finally:
+        adapter.close()
+
+
+def test_duckdb_timeout_interrupts_a_cursor_made_after_it_fired():
+    cursor_interrupted = threading.Event()
 
     class FakeConnection:
         def interrupt(self):
-            interrupted.set()
+            raise AssertionError("the timeout must interrupt the statement's cursor")
+
+    class FakeCursor:
+        def interrupt(self):
+            cursor_interrupted.set()
 
     class FakeDatabase:
         conn = FakeConnection()
 
-        def query(self, _sql, _params=None, *, max_rows=None):
-            assert interrupted.wait(timeout=1)
+        def query(self, _sql, _params=None, *, max_rows=None, on_cursor=None):
+            time.sleep(0.1)  # the 10 ms timeout fires before the cursor exists
+            on_cursor(FakeCursor())
+            assert cursor_interrupted.wait(timeout=5)
             return []
 
     adapter = DuckDBAdapter.__new__(DuckDBAdapter)
     adapter._db = FakeDatabase()
 
     assert adapter.query("select slow", limits={"statement_timeout_ms": 10}) == []
-    assert interrupted.is_set()
+    assert cursor_interrupted.is_set()
 
 
 def test_duckdb_watchdog_uses_true_millisecond_interval(monkeypatch: pytest.MonkeyPatch):
@@ -98,10 +187,9 @@ def test_duckdb_watchdog_uses_true_millisecond_interval(monkeypatch: pytest.Monk
 
         def __init__(self, interval, callback):
             intervals.append(interval)
-            self.callback = callback
 
         def start(self):
-            self.callback()
+            return None
 
         def cancel(self):
             return None
@@ -109,17 +197,8 @@ def test_duckdb_watchdog_uses_true_millisecond_interval(monkeypatch: pytest.Monk
         def join(self):
             return None
 
-    class FakeConnection:
-        def __init__(self):
-            self.interrupted = False
-
-        def interrupt(self):
-            self.interrupted = True
-
     class FakeDatabase:
-        conn = FakeConnection()
-
-        def query(self, _sql, _params=None, *, max_rows=None):
+        def query(self, _sql, _params=None, *, max_rows=None, on_cursor=None):
             return []
 
     monkeypatch.setattr(db_module.threading, "Timer", FakeTimer)
@@ -128,7 +207,6 @@ def test_duckdb_watchdog_uses_true_millisecond_interval(monkeypatch: pytest.Monk
 
     assert adapter.query("select slow", limits={"statement_timeout_ms": 25}) == []
     assert intervals == [0.025]
-    assert adapter._db.conn.interrupted is True
 
 
 def test_snowflake_cli_adapter_casts_nullif_ratio_guards_to_double(
