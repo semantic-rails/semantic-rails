@@ -183,25 +183,18 @@ def test_error_envelopes_are_minimal_by_default(runtime_factory, mode: str) -> N
         adapter.close()
 
 
-def test_plan_next_block_inherits_minimal_default(runtime_factory) -> None:
-    """plan's pre-baked `next.validate` args must not pin an explicit
-    verbosity — forwarding them verbatim should inherit the MCP
-    adapter's minimal default, keeping the planned loop cheap."""
+def test_plan_query_inherits_minimal_default(runtime_factory) -> None:
+    """Forward the canonical Query IR with the MCP adapter's minimal default."""
     runtime = runtime_factory("jaffle_shop")
     adapter = SemanticLayerMCPAdapter(runtime)
     try:
         plan = adapter.call_tool("plan", {"intent": "orders by store", "detail": "best"})
-        next_block = plan.get("next") or {}
-        validate_args = next_block.get("validate") or {}
-        assert "query" in validate_args, "plan.next.validate must pre-bake the query"
-        assert "verbosity" not in validate_args
-        assert "verbosity" not in (validate_args.get("query") or {})
-        forwarded = adapter.call_tool("execute", {**validate_args, "mode": "validate"})
+        assert "validate" not in plan["next"]
+        query = plan["best"]["query_ir"]
+        assert "verbosity" not in query
+        forwarded = adapter.call_tool("execute", {"query": query, "mode": "validate"})
         for key in (*_HEAVY_KEYS, "rendered_sql"):
-            assert key not in forwarded, (
-                f"forwarding plan.next.validate leaked {key} — the pre-baked "
-                "args must inherit the minimal MCP default"
-            )
+            assert key not in forwarded, f"forwarding best.query_ir leaked {key}"
     finally:
         adapter.close()
 

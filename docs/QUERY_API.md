@@ -1014,6 +1014,13 @@ compile cost and warms the runtime compile cache. Agents can forward
 `best.query_ir` to `compile` or `query`; call `validate` again only when
 they need the full diagnostics envelope or are editing the IR by hand.
 
+Validate or execute `best.query_ir` directly. `next` carries `ready_for` and optional
+`valid_values` calls, without duplicating the query. For `detail="best"`, fallback drift
+reasons use slot paths in `best.trace.intent_slots` and `why.details.fallback_slots`
+instead of repeating their values. Full/debug and query detail retain expanded diagnostics.
+Identical catalog rows in `intent_ir` and query fields in gap diagnostics use `$ref`
+objects pointing to their canonical value by a dot-separated response path.
+
 Every `best` entry may include a compact `trace` showing extracted intent slots, selected
 subjects/groupings/filters/paths, and whether a fallback was used. Treat it as diagnostic context,
 not as a separate workflow or server-side trace store.
