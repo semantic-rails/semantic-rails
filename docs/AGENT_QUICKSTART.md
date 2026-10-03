@@ -120,7 +120,8 @@ discover -> plan -> execute
 
 - `discover` maps business terms to governed semantic objects.
 - `inspect` (optional) opens an object card with usage, provenance, comparison metadata, and
-  starter patches.
+  starter patches. An entity with no declared `label_dimension` has a short `label_status`
+  naming the key that identifies it; use that key rather than searching for a guessed name.
 - `plan` returns the best Query IR draft for natural-language intents, with a `status` that says
   whether to run it. Use `detail="full"` only when you need alternatives or blocked drafts.
 - `build-options` returns legal next query choices for guided builders.

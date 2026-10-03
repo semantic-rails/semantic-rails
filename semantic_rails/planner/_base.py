@@ -1421,6 +1421,44 @@ def _term_matches_value_domain(config: Any, term: str) -> bool:
     return False
 
 
+def _group_dimensions_with_labels(config: Any, dimension_ids: Iterable[str]) -> list[str]:
+    """Keep entity identity ahead of its declared label in inferred grouping."""
+    from ..errors import SemanticLayerError
+    from ..metadata import _is_identifier_like_dimension
+
+    dimensions = {row.id: row for row in config.dimensions}
+    entities = {row.id: row for row in config.entities}
+    grouped: list[str] = []
+    for dimension_id in dimension_ids:
+        grouped.append(dimension_id)
+        dimension = dimensions.get(dimension_id)
+        if dimension is None or not _is_identifier_like_dimension(dimension):
+            continue
+        entity = entities[dimension.entity]
+        keys = entity.key or [entity.primary_key]
+        if not entity.label_dimension or dimension.column not in keys:
+            continue
+        # Every component of a composite key is needed to distinguish entities.
+        for column in keys:
+            key_dimension = next(
+                (
+                    row
+                    for row in config.dimensions
+                    if row.entity == entity.id and row.column == column
+                ),
+                None,
+            )
+            if key_dimension is None or not key_dimension.groupable:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"Entity '{entity.id}' needs a groupable key dimension for '{column}' "
+                    "to group with its declared label",
+                )
+            grouped.append(key_dimension.id)
+        grouped.append(entity.label_dimension)
+    return list(dict.fromkeys(grouped))
+
+
 def _maybe_group_by(
     config: Any, text: str, *, target_terms: Iterable[str] = (), clock: str = ""
 ) -> list[str]:
@@ -1468,7 +1506,7 @@ def _maybe_group_by(
         dim = _dimension(config, term_tokens)
         if dim is not None:
             group_by.append(dim.id)
-    return list(dict.fromkeys(group_by))
+    return _group_dimensions_with_labels(config, group_by)
 
 
 def _product_filter(config: Any, value: str) -> dict[str, Any] | None:

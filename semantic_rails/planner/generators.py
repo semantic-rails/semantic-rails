@@ -18,7 +18,7 @@ import json
 import re
 from typing import Any
 
-from ._base import RuntimeCompositionDraft
+from ._base import RuntimeCompositionDraft, _group_dimensions_with_labels
 
 _RANK_COUNT_RE = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)"
 
@@ -419,7 +419,7 @@ def _choose_group_dimensions(
     from ..metadata_parts.relevance import _tokenize  # noqa: WPS433
 
     if chosen_group_dim:
-        return [chosen_group_dim]
+        return _group_dimensions_with_labels(runtime._config, [chosen_group_dim])
     selection = _selection_context(runtime._config, query)
     group_dims: list[str] = []
     covered_terms: set[str] = set()
@@ -461,7 +461,7 @@ def _choose_group_dimensions(
             chosen = str(matched_rows[0]["id"])
         if chosen:
             group_dims.append(chosen)
-    return list(dict.fromkeys(group_dims))
+    return _group_dimensions_with_labels(runtime._config, group_dims)
 
 
 def _apply_time_from_text(

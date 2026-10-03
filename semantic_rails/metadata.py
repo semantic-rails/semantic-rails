@@ -1008,6 +1008,9 @@ def _object_card(
                 ][:20],
             }
         )
+        if not entity.label_dimension:
+            key = ", ".join(entity.key or [entity.primary_key])
+            base["label_status"] = f"no label declared; {key} identifies it"
     elif obj.kind == "relationship":
         base.update(_relationship_card_payload(config, object_id))
     elif obj.kind == "segment":

@@ -95,6 +95,7 @@ class EntityConfig:
     freshness_sla_seconds: int | None = None
     freshness_as_of: str = ""
     disallowed_names: list[str] = field(default_factory=list)
+    label_dimension: str = ""
 
 
 @dataclass(frozen=True)
@@ -424,3 +425,30 @@ class PackageConfig:
     relations: list[RelationConfig] = field(default_factory=list)
     operational_contract: dict[str, Any] = field(default_factory=dict)
     meta_contract: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        from .errors import SemanticLayerError
+
+        dimensions = {row.id: row for row in self.dimensions}
+        for entity in self.entities:
+            if not entity.label_dimension:
+                continue
+            dimension = dimensions.get(entity.label_dimension)
+            reason = ""
+            if dimension is None:
+                reason = "references an unknown dimension"
+            elif dimension.entity != entity.id:
+                reason = "must belong to the same entity"
+            elif (
+                dimension.semantic_kind == "id"
+                or dimension.data_type == "id"
+                or dimension.column in (entity.key or [entity.primary_key])
+            ):
+                reason = "must be a non-id dimension"
+            elif not dimension.groupable:
+                reason = "must be groupable"
+            if reason:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"Entity '{entity.id}' label_dimension '{entity.label_dimension}' {reason}",
+                )

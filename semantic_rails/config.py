@@ -1829,6 +1829,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 aliases=list(entity_spec.get("synonyms", []) or []),
                 name=entity_name,
                 label=entity_label,
+                label_dimension=str(entity_spec.get("label_dimension", "") or "").strip(),
                 description=str(entity_spec.get("description", entity_label)),
                 topics=_ensure_list(entity_spec.get("topics")),
                 calendar_id=str(model.get("calendar_id", "")),

@@ -115,6 +115,7 @@ _GRAPH_ENTITY_KEYS: frozenset[str] = frozenset(
         "as",
         "name",
         "label",
+        "label_dimension",
         "key",
         "kind",
         "model",
