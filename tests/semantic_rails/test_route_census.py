@@ -1,9 +1,9 @@
-"""The route census, the route changes impact reports, and Architect's kept routes.
+"""The route census, route changes impact reports, and Architect's decision guard.
 
 Which route a question means is a business definition (``test_route_resolution.py``). An author
 sees every entity pair that still needs one (``route_census``), a review sees every pair whose
 answer a change moves (``impact_report``'s ``route_changes``), and an Architect edit that would
-move an answer records the earlier route in the same change instead.
+move an answer refuses until the author records a decision.
 
 Fixture: the accounts, owners, regions, memberships and invoices package of
 ``test_route_resolution.py``, on DuckDB. Gold values come from plain SQL over its seed.
@@ -17,6 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import pytest
 import yaml
 
@@ -32,6 +33,19 @@ from semantic_rails.fanout import resolve_path
 from semantic_rails.package_tools import impact_report, promote_package_report
 from semantic_rails.route_census import census_pairs, route_census
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.test_role_paths import (
+    CODE,
+    DESTINATION,
+    ORIGIN,
+    ORPHAN_LEG,
+    _seats_query,
+)
+from tests.semantic_rails.test_role_paths import (
+    SEED_SQL as AIR_SEED_SQL,
+)
+from tests.semantic_rails.test_role_paths import (
+    _write_package as _write_air_package,
+)
 from tests.semantic_rails.test_route_resolution import (
     _RELATIONSHIPS,
     ACCOUNT,
@@ -274,7 +288,6 @@ MOVED = [
     (REGION, INVOICE),
     (REGION, OWNER),
 ]
-KEPT = [(OWNER, ACCOUNT), (REGION, ACCOUNT), (OWNER, REGION)]
 REGIONS_BY_BRANCH_ACCOUNT = (
     "SELECT a.account_kind, COUNT(DISTINCT r.region_id) FROM regions r "
     "JOIN accounts a ON a.branch_region_id = r.region_id GROUP BY 1"
@@ -355,7 +368,7 @@ def test_impact_lists_a_row_that_answers_a_pair_the_base_refused(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Architect keeps the earlier route
+# Architect requires an explicit decision
 # ---------------------------------------------------------------------------
 
 
@@ -399,57 +412,124 @@ def _with_home_region(project: ArchitectProject) -> dict[str, Any]:
         ),
     ],
 )
-def test_a_relationship_that_moves_an_answer_records_the_earlier_route(
+def test_a_relationship_that_moves_an_answer_requires_explicit_decisions(
     tmp_path, from_entity, columns, new_route
 ):
-    """The pin holds whichever way the resolver would have answered the new pair."""
     project = _architect(tmp_path)
+    revision, before = project.revision(), _files_and_receipts(project)
+    with pytest.raises(SemanticLayerError, match="record_route_decision") as raised:
+        project.upsert_relationship(from_entity=from_entity, to_entity="region", columns=columns)
+    assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
+    changes = {
+        (row["source_entity"], row["target_entity"]): row
+        for row in raised.value.details["route_changes"]
+    }
+    if from_entity == "invoice":
+        assert changes[(INVOICE, REGION)]["head"] == {"relationship_path": new_route}
+    else:
+        assert changes[(INVOICE, REGION)]["head"] == {"refused": "AMBIGUOUS_PATH"}
+    assert project.revision() == revision
+    assert _files_and_receipts(project) == before
+    assert _answers(project.project_path) == {name: _gold(sql) for name, sql in BASE_GOLD.items()}
+    for row in raised.value.details["rows"]:
+        assert project.record_route_decision(**row).report["ok"]
     report = project.upsert_relationship(
         from_entity=from_entity, to_entity="region", columns=columns
     ).report
     assert report["ok"] is True, report
-    added = dict(
-        zip(
-            _pairs([e["row"] for e in report["route_decisions_added"]]),
-            report["route_decisions_added"],
-            strict=True,
-        )
-    )
-    if from_entity == "invoice":
-        assert added[(INVOICE, REGION)] == {
-            "row": _pin(INVOICE, REGION, INVOICE_BRANCH),
-            "new_routes": [new_route],
-        }
-    else:
-        assert added[(OWNER, REGION)] == {
-            "row": _pin(OWNER, REGION, [OWNS, *BRANCH]),
-            "new_routes": [["relationship.owners_region"]],
-        }
-        assert (INVOICE, REGION) not in added  # inherits the shorter rows
-
-    # The rows are in the same change, and nothing answers differently.
-    assert "graph.yml" in report["changed_files"]
-    assert _graph(project)["graph"]["path_preferences"] == [
-        entry["row"] for entry in report["route_decisions_added"]
-    ]
+    assert report["route_decisions_added"] == []
     assert report["route_changes"] == []
     assert _answers(project.project_path) == {name: _gold(sql) for name, sql in BASE_GOLD.items()}
     assert _gold(AMOUNT_BY_BRANCH) != _gold(AMOUNT_BY_ISSUED)
 
 
-def test_rows_go_shortest_pair_first_and_a_dry_run_shows_them(tmp_path):
+def test_a_preview_refuses_unrecorded_decisions_without_generating_rows(tmp_path):
     project = _architect(tmp_path)
     revision = project.revision()
-    report = project.upsert_relationship(
-        from_entity="owner", to_entity="region", columns=["home_region_id"], dry_run=True
-    ).report
-    assert (report["status"], project.revision()) == ("preview", revision)
-    rows = [entry["row"] for entry in report["route_decisions_added"]]
-    assert _pairs(rows) == KEPT
-    assert [len(row["relationship_path"]) for row in rows] == [1, 1, 2]
-    (graph,) = [change for change in report["changes"] if change["path"] == "graph.yml"]
-    added = [line[1:] for line in graph["diff"].splitlines()[2:] if line.startswith("+")]
-    assert yaml.safe_load("\n".join(added)) == {"path_preferences": rows}
+    before = _files_and_receipts(project)
+    with pytest.raises(SemanticLayerError) as raised:
+        project.upsert_relationship(
+            from_entity="owner", to_entity="region", columns=["home_region_id"], dry_run=True
+        )
+    assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
+    assert _pairs(raised.value.details["route_changes"]) == MOVED
+    assert project.revision() == revision
+    assert _files_and_receipts(project) == before
+
+
+@pytest.mark.parametrize("dry_run", [False, True], ids=["write", "preview"])
+@pytest.mark.parametrize("grouped", [True, False], ids=["group-by-key", "filter-orphan-key"])
+@pytest.mark.parametrize("role", ["destination", "origin"], ids=["keep-route", "switch-route"])
+def test_adding_a_role_cannot_silently_change_an_unmatched_key(tmp_path, dry_run, grouped, role):
+    pkg = _write_air_package(tmp_path, explicit=("destination",), extra_seed=ORPHAN_LEG)
+    project = ArchitectProject(pkg, workspace_root=tmp_path)
+    query = _seats_query(
+        **(
+            {"group_by": [CODE]}
+            if grouped
+            else {"where": [{"field": CODE, "op": "=", "value": "SFO"}]}
+        )
+    )
+
+    def answer():
+        runtime = Runtime.from_path(str(pkg))
+        try:
+            columns = [CODE, "seats"] if grouped else ["seats"]
+            return {
+                tuple(row[column] for column in columns) for row in runtime.query(query)["rows"]
+            }
+        finally:
+            runtime.close()
+
+    with duckdb.connect(":memory:") as connection:
+        connection.execute(AIR_SEED_SQL + ORPHAN_LEG)
+        base_sql = (
+            "SELECT destination_code, SUM(seats) FROM legs GROUP BY destination_code"
+            if grouped
+            else "SELECT SUM(seats) FROM legs WHERE destination_code = 'SFO'"
+        )
+        base_gold = set(connection.execute(base_sql).fetchall())
+        assert (("SFO", 7) if grouped else (7,)) in base_gold
+        assert answer() == base_gold
+
+        graph = _graph(project)
+        graph["graph"]["relationships"]["legs_origin_airport"] = {
+            "id": ORIGIN,
+            "entities": ["leg", "airport"],
+            "cardinality": "many_to_one",
+            "via": ["origin_code"],
+            "target": ["airport_code"],
+        }
+        revision, before = project.revision(), _files_and_receipts(project)
+        with pytest.raises(SemanticLayerError, match="record_route_decision") as raised:
+            project.write_file(
+                relative_path="graph.yml", content=yaml.safe_dump(graph), dry_run=dry_run
+            )
+        assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
+        pair = ("entity.air_leg", "entity.air_airport")
+        assert pair in _pairs(raised.value.details["route_changes"])
+        assert _pin(*pair, [DESTINATION]) in raised.value.details["rows"]
+        assert project.revision() == revision
+        assert _files_and_receipts(project) == before
+        assert answer() == base_gold
+
+        # The author explicitly selects lookup semantics for the existing or new role.
+        graph["graph"]["path_preferences"] = [
+            _pin(*pair, [DESTINATION if role == "destination" else ORIGIN]),
+            _pin(*reversed(pair), [DESTINATION if role == "destination" else ORIGIN]),
+        ]
+        report = project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph)).report
+        assert report["ok"] is True, report
+        assert report["route_decisions_added"] == []
+        select = "a.airport_code, SUM(l.seats)" if grouped else "SUM(l.seats)"
+        tail = "GROUP BY a.airport_code" if grouped else "WHERE a.airport_code = 'SFO'"
+        gold = set(
+            connection.execute(
+                f"SELECT {select} FROM legs l LEFT JOIN airports a "
+                f"ON a.airport_code = l.{role}_code {tail}"
+            ).fetchall()
+        )
+        assert answer() == gold
 
 
 def test_a_change_that_moves_no_answer_records_nothing(tmp_path):
@@ -563,31 +643,30 @@ def test_record_route_decision_is_deliberate_and_reports_inherited_pairs(tmp_pat
     assert _rows(out, [REGION_NAME, "v"]) == _gold(AMOUNT_BY_HOME)
 
 
-def test_every_write_keeps_routes_and_a_row_that_does_not_take_effect_refuses(
-    tmp_path, monkeypatch
-):
-    """The rule lives in the transaction every write passes through: file updates handed to it
-    directly get the same rows, and a row that would not take effect refuses the change with
-    nothing written."""
+def test_raw_transactions_refuse_until_the_change_records_each_affected_pair(tmp_path):
+    """Direct file updates pass through the same guard as Architect operations."""
     project = _architect(tmp_path)
     update = ProjectFileUpdate(
         "graph.yml", yaml.safe_dump(_with_home_region(project), sort_keys=False).encode()
     )
     transaction = ProjectTransaction(project.project_path, workspace_root=tmp_path)
     revision = project.revision()
-    with monkeypatch.context() as patch:
-        patch.setattr(ProjectTransaction, "_route_rows_update", lambda self, updates, rows: update)
-        with pytest.raises(SemanticLayerError) as exc_info:
-            transaction.apply(
-                [update], expected_revision=revision, idempotency_key="raw-1", intent={"raw": 1}
-            )
+    before = _files_and_receipts(project)
+    with pytest.raises(SemanticLayerError) as exc_info:
+        transaction.apply(
+            [update], expected_revision=revision, idempotency_key="raw-1", intent={"raw": 1}
+        )
     assert exc_info.value.code == "ROUTE_DECISION_NOT_RECORDED"
     assert _pairs(exc_info.value.details["route_changes"]) == MOVED
     assert project.revision() == revision
+    assert _files_and_receipts(project) == before
+    graph = _with_home_region(project)
+    graph["graph"]["path_preferences"] = exc_info.value.details["rows"]
+    update = ProjectFileUpdate("graph.yml", yaml.safe_dump(graph).encode())
     outcome = transaction.apply(
         [update], expected_revision=revision, idempotency_key="raw-2", intent={"raw": 2}
     )
-    assert _pairs([entry["row"] for entry in outcome.report["route_decisions_added"]]) == KEPT
+    assert outcome.report["route_decisions_added"] == []
     assert _answers(project.project_path) == {name: _gold(sql) for name, sql in BASE_GOLD.items()}
 
 
@@ -648,7 +727,7 @@ def _small_package(tmp_path, entities, relationships, seed):
 
 
 @pytest.mark.parametrize("cardinality", ["one_to_many", "many_to_one"])
-def test_a_second_route_to_a_dimensionless_child_keeps_the_base_query_gold(tmp_path, cardinality):
+def test_a_second_route_to_a_dimensionless_child_requires_a_decision(tmp_path, cardinality):
     pkg = _small_package(
         tmp_path,
         ["a", "b", "c", "d"],
@@ -710,28 +789,32 @@ def test_a_second_route_to_a_dimensionless_child_keeps_the_base_query_gold(tmp_p
     changes = census_module.route_changes(base, head)
     census = route_census(head)
     # Directory lint requires graph keys; the loader accepts the model's key.
-    report = project.write_file(
-        relative_path="graph.yml",
-        content=content,
-        expected_revision=project.revision(),
-        idempotency_key="child-route",
-        validate_after=False,
-    ).report
-    assert report["ok"] is True, report
     pair = ("entity.small_a", "entity.small_c")
     row = _pin(*pair, ["relationship.ab", "relationship.bc"])
-    assert {"row": row, "new_routes": [["relationship.ac"]]} in report["route_decisions_added"]
     assert pair in _pairs(changes)
     assert pair in _pairs(
         census["undecided"] if cardinality == "one_to_many" else census["assumed"]
     )
-    # The write settles the staged impact and census by retaining the earlier route.
+    revision, before = project.revision(), _files_and_receipts(project)
+    with pytest.raises(SemanticLayerError) as raised:
+        project.write_file(relative_path="graph.yml", content=content, validate_after=False)
+    assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
+    assert row in raised.value.details["rows"]
+    assert project.revision() == revision
+    assert _files_and_receipts(project) == before
+    assert answer() == gold
+    graph["graph"]["path_preferences"] = raised.value.details["rows"]
+    report = project.write_file(
+        relative_path="graph.yml", content=yaml.safe_dump(graph), validate_after=False
+    ).report
+    assert report["ok"] is True, report
+    assert report["route_decisions_added"] == []
     assert report["route_changes"] == []
     assert pair not in _pairs(route_census(load_package_config(str(pkg)))["undecided"])
     assert answer() == gold
 
 
-def test_queries_without_authored_measures_keep_their_gold(tmp_path):
+def test_queries_without_authored_measures_require_explicit_decisions(tmp_path):
     pkg = _small_package(
         tmp_path,
         ["a", "b", "c"],
@@ -779,10 +862,18 @@ def test_queries_without_authored_measures_keep_their_gold(tmp_path):
 
     assert answers() == ([("B", "North")], [("North", 1)])
     project = ArchitectProject(pkg, workspace_root=tmp_path)
+    revision, before = project.revision(), _files_and_receipts(project)
+    with pytest.raises(SemanticLayerError) as raised:
+        project.upsert_relationship(from_entity="b", to_entity="c", columns=["c_id"])
+    assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
+    assert ("entity.small_b", "entity.small_c") in _pairs(raised.value.details["rows"])
+    assert project.revision() == revision
+    assert _files_and_receipts(project) == before
+    assert answers() == ([("B", "North")], [("North", 1)])
+    for row in raised.value.details["rows"]:
+        project.record_route_decision(**row)
     report = project.upsert_relationship(from_entity="b", to_entity="c", columns=["c_id"]).report
-    assert ("entity.small_b", "entity.small_c") in _pairs(
-        [entry["row"] for entry in report["route_decisions_added"]]
-    )
+    assert report["route_decisions_added"] == []
     assert report["route_changes"] == []
     assert answers() == ([("B", "North")], [("North", 1)])
 
@@ -1016,13 +1107,20 @@ def test_an_invalid_intermediate_write_cannot_erase_the_branch_region_baseline(t
 
     # Retrying only the repaired input still compares against the valid branch-region base.
     del relationships["unknown_entity"]
+    with pytest.raises(SemanticLayerError) as raised:
+        project.write_file(
+            relative_path="graph.yml", content=yaml.safe_dump(graph), validate_after=False
+        )
+    assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
+    assert project.revision() == revision
+    assert _files_and_receipts(project) == before
+    assert _invoice_amounts(project.project_path) == branch
+    graph["graph"]["path_preferences"] = raised.value.details["rows"]
     report = project.write_file(
         relative_path="graph.yml", content=yaml.safe_dump(graph), validate_after=False
     ).report
     assert report["ok"] is True, report
-    assert _pin(INVOICE, REGION, INVOICE_BRANCH) in [
-        entry["row"] for entry in report["route_decisions_added"]
-    ]
+    assert report["route_decisions_added"] == []
     assert report["route_changes"] == []
     assert _invoice_amounts(project.project_path) == branch
     assert branch != _gold(AMOUNT_BY_ISSUED)
@@ -1073,7 +1171,7 @@ def _loan_answers(project):
 
 
 @pytest.mark.parametrize("layout", ["top-level", "graph", "inline"])
-def test_one_shorter_row_keeps_both_answers_and_both_writers_follow_the_loader(tmp_path, layout):
+def test_an_explicit_shorter_row_keeps_both_answers_and_follows_the_loader(tmp_path, layout):
     pkg = _loan_package(tmp_path)
     package = yaml.safe_load((pkg / "package.yml").read_text())
     graph = yaml.safe_load((pkg / "graph.yml").read_text())
@@ -1086,6 +1184,9 @@ def test_one_shorter_row_keeps_both_answers_and_both_writers_follow_the_loader(t
     project = ArchitectProject(pkg, workspace_root=tmp_path)
     gold = {"account": [("North", 100)], "loan": [("North", 250)]}
     assert _loan_answers(project) == gold
+    project.record_route_decision(
+        **_pin(SMALL_ACCOUNT, DISTRICT, SMALL_BRANCH), validate_after=layout != "inline"
+    )
     relative = "package.yml" if layout == "inline" else "graph.yml"
     document = yaml.safe_load((pkg / relative).read_text())
     document["graph"]["relationships"]["owner_district"] = {
@@ -1103,9 +1204,7 @@ def test_one_shorter_row_keeps_both_answers_and_both_writers_follow_the_loader(t
         validate_after=layout != "inline",
     ).report
     assert report["ok"] is True
-    assert [entry["row"] for entry in report["route_decisions_added"]] == [
-        _pin(SMALL_ACCOUNT, DISTRICT, SMALL_BRANCH)
-    ]
+    assert report["route_decisions_added"] == []
     assert _pairs(report["route_changes"]) == [("entity.small_owner", DISTRICT)]
     assert report["route_changes"][0]["base"] == {"refused": "PATH_NOT_FOUND"}
     destination = "graph.yml" if layout == "graph" else "package.yml"
@@ -1114,8 +1213,6 @@ def test_one_shorter_row_keeps_both_answers_and_both_writers_follow_the_loader(t
         holder = holder["graph"]
     assert holder["path_preferences"] == [_pin(SMALL_ACCOUNT, DISTRICT, SMALL_BRANCH)]
     assert _loan_answers(project) == gold
-    if layout != "top-level":
-        assert "# authored comment" not in (pkg / destination).read_text()
     changed = project.record_route_decision(
         **_pin(SMALL_ACCOUNT, DISTRICT, SMALL_HOME), validate_after=layout != "inline"
     ).report
@@ -1125,45 +1222,29 @@ def test_one_shorter_row_keeps_both_answers_and_both_writers_follow_the_loader(t
     assert _loan_answers(project) == {"account": [("South", 100)], "loan": [("South", 250)]}
 
 
-def test_an_edited_row_that_moves_an_inherited_pair_refuses_a_disagreeing_keep_row(tmp_path):
+def test_an_edited_row_that_moves_an_inherited_pair_requires_its_own_decision(tmp_path):
     project = ArchitectProject(_loan_package(tmp_path), workspace_root=tmp_path)
-    project.upsert_relationship(from_entity="owner", to_entity="district", columns=["district_id"])
+    project.record_route_decision(**_pin(SMALL_ACCOUNT, DISTRICT, SMALL_BRANCH))
+    graph = _graph(project)
+    graph["graph"]["relationships"]["owner_district"] = {
+        "id": "relationship.owner_district",
+        "entities": ["owner", "district"],
+        "via": ["district_id"],
+        "target": ["id"],
+        "cardinality": "many_to_one",
+        "allowed_directions": ["forward"],
+    }
+    assert project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph)).report["ok"]
     revision, before = project.revision(), _files_and_receipts(project)
     graph = _graph(project)
     graph["graph"]["path_preferences"] = [_pin(SMALL_ACCOUNT, DISTRICT, SMALL_HOME)]
     with pytest.raises(SemanticLayerError) as raised:
         project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph))
     assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
-    assert raised.value.details["conflicts_with"] == [_pin(SMALL_ACCOUNT, DISTRICT, SMALL_HOME)]
-    assert raised.value.details["row"] == _pin(
-        LOAN, DISTRICT, ["relationship.loan_account", *SMALL_BRANCH]
-    )
-    assert project.revision() == revision
-    assert _files_and_receipts(project) == before
-
-
-def test_a_keep_row_reload_failure_refuses_before_writing(tmp_path, monkeypatch):
-    import semantic_rails.architect_transactions as transactions
-
-    project = _architect(tmp_path)
-    revision, before = project.revision(), _files_and_receipts(project)
-    load = transactions.load_package_snapshot
-    calls = 0
-
-    def fail_final(path):
-        nonlocal calls
-        calls += 1
-        if calls == 3:
-            raise SemanticLayerError("INVALID_CONFIG", "added rows fail to load")
-        return load(path)
-
-    monkeypatch.setattr(transactions, "load_package_snapshot", fail_final)
-    with pytest.raises(SemanticLayerError) as raised:
-        project.write_file(
-            relative_path="graph.yml", content=yaml.safe_dump(_with_home_region(project))
-        )
-    assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
-    assert "added rows fail to load" in str(raised.value)
+    assert _pairs(raised.value.details["route_changes"]) == [(LOAN, DISTRICT)]
+    assert raised.value.details["rows"] == [
+        _pin(LOAN, DISTRICT, ["relationship.loan_account", *SMALL_BRANCH])
+    ]
     assert project.revision() == revision
     assert _files_and_receipts(project) == before
 
@@ -1177,11 +1258,12 @@ def test_deleting_a_pairs_row_never_silently_switches_its_answer(tmp_path):
     )
     graph = _graph(project)
     del graph["graph"]["path_preferences"]
-    report = project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph)).report
-    assert report["ok"] is True
-    assert report["route_changes"] == []
-    assert _pin(OWNER, REGION, [OWNS, *BRANCH]) in [
-        entry["row"] for entry in report["route_decisions_added"]
-    ]
+    revision, before = project.revision(), _files_and_receipts(project)
+    with pytest.raises(SemanticLayerError) as raised:
+        project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph))
+    assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
+    assert _pin(OWNER, REGION, [OWNS, *BRANCH]) in raised.value.details["rows"]
+    assert project.revision() == revision
+    assert _files_and_receipts(project) == before
     config = load_package_config(str(project.project_path))
     assert resolve_path(config, start=OWNER, target=REGION)[0] == [OWNS, *BRANCH]

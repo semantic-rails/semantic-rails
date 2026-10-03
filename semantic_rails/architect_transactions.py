@@ -3,7 +3,7 @@
 Every Architect authoring mutation passes through this module. The transaction
 boundary owns deterministic project revisions, optimistic concurrency,
 idempotency receipts, per-project locks, atomic file replacement, parse-gated
-rollback, write-free previews, and keeping the join routes a change would move.
+rollback, write-free previews, and refusing unapproved join-route changes.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from .architect_scaffold import dump_project_yaml
 from .config_validation import PackageReference, parse_config_report
 from .errors import SemanticLayerError
 from .package_snapshot import load_package_snapshot
-from .route_census import keep_routes, route_changes, unkept_route_changes
+from .route_census import route_changes, unkept_route_changes
 from .yaml_loader import safe_load as yaml_safe_load
 
 ABSENT_PROJECT_REVISION = "absent"
@@ -368,16 +368,24 @@ def route_rows_update(
     return ProjectFileUpdate(relative, dump_project_yaml(document).encode("utf-8")), replaced
 
 
-def _routes_not_recorded(
-    added: list[dict[str, Any]], unkept: list[dict[str, Any]], reason: str
-) -> SemanticLayerError:
+def _routes_not_recorded(unkept: list[dict[str, Any]]) -> SemanticLayerError:
     return SemanticLayerError(
         "ROUTE_DECISION_NOT_RECORDED",
-        "This change moves the join route of entity pairs it does not decide, and the "
-        "graph.path_preferences rows that keep their current routes did not take effect"
-        + (f" ({reason})" if reason else "")
-        + "; nothing was written. Record each pair's route in the change itself.",
-        details={"rows": [entry["row"] for entry in added], "route_changes": unkept},
+        "This change moves the join route of entity pairs without an explicit decision; "
+        "nothing was written. Record each pair with record_route_decision or include its "
+        "graph.path_preferences row in the change itself.",
+        details={
+            "rows": [
+                change["keep_base"]
+                or {
+                    "source_entity": change["source_entity"],
+                    "target_entity": change["target_entity"],
+                    "relationship_path": change["head"]["relationship_path"],
+                }
+                for change in unkept
+            ],
+            "route_changes": unkept,
+        },
     )
 
 
@@ -500,14 +508,14 @@ class ProjectTransaction:
         prepare_updates: (
             Callable[[str], tuple[Iterable[ProjectFileUpdate], Mapping[str, bytes] | None]] | None
         ) = None,
-        routes: Literal["record", "report", "off"] = "record",
+        routes: Literal["guard", "report", "off"] = "guard",
     ) -> ProjectTransactionOutcome:
         """Apply a parse-gated optimistic transaction or return its preview.
 
         Preparation, when supplied, runs under this transaction's lock after
         receipt replay and the expected-revision check, before any file write.
-        ``routes`` (see :meth:`_keep_routes`): ``record`` keeps every join route
-        the change would move, ``report`` only lists deliberate route decisions,
+        ``routes`` (see :meth:`_guard_routes`): ``guard`` refuses unapproved join-route
+        changes, ``report`` only lists deliberate route decisions,
         and ``off`` skips both (an undo, or a new project).
         """
 
@@ -596,10 +604,9 @@ class ProjectTransaction:
                     )
             route_report: dict[str, Any] = {}
             if routes != "off":
-                normalized_updates, route_report = self._keep_routes(
+                route_report = self._guard_routes(
                     normalized_updates,
-                    record=routes == "record",
-                    allow_internal_paths=allow_internal_paths,
+                    guard=routes == "guard",
                     validate_after=validate_after,
                 )
 
@@ -848,29 +855,20 @@ class ProjectTransaction:
             parse, _ = parse_config_report(PackageReference(source_path=str(project)))
         return parse
 
-    def _keep_routes(
+    def _guard_routes(
         self,
         updates: tuple[ProjectFileUpdate, ...],
         *,
-        record: bool,
-        allow_internal_paths: bool,
+        guard: bool,
         validate_after: bool,
-    ) -> tuple[tuple[ProjectFileUpdate, ...], dict[str, Any]]:
-        """Keep the join routes the change would move; every Architect write passes here.
+    ) -> dict[str, Any]:
+        """Refuse unapproved route changes; every Architect write passes here.
 
         Invariant: a change never silently moves the route a question already answers by.
-        Each entity pair a question can need (``route_census``) that the current package
-        answers, and that the staged package answers by another route or refuses, gets its
-        current route recorded as a ``graph.path_preferences`` row in this same change
-        (``keep_routes``: fewest rows, shortest pair first). A removed route or one
-        beyond the new hop ceiling is never kept. Such a cut may refuse the pair; another
-        answer requires its own row. Only deliberate decisions use report mode.
-
-        The report names the rows (``route_decisions_added``, each with the change's new
-        routes) and every pair that resolves differently after
-        (``route_changes``). The guard reloads the package as it will be written: if any
-        pair is still moved without a row (``unkept_route_changes``), the change is refused
-        with ``ROUTE_DECISION_NOT_RECORDED`` before anything is written.
+        A pair the base answers that the staged package refuses or routes differently
+        requires an author-recorded decision. A removed route or one beyond the new hop
+        ceiling may leave the pair refused; switching to another answer still requires
+        its own row. Only deliberate decisions use report mode. No route row is generated.
         """
         try:
             base = load_package_snapshot(str(self.project_path)).config
@@ -883,7 +881,7 @@ class ProjectTransaction:
             KeyError,
         ):
             # Invalid base input answered nothing; the parse gate can accept its repair.
-            return updates, {}
+            return {}
         with self.virtual_project(updates) as staged:
             try:
                 head = load_package_snapshot(str(staged)).config
@@ -902,34 +900,13 @@ class ProjectTransaction:
                         "nothing was written.",
                     ) from exc
                 # The parse gate reports invalid staged input and restores the valid base.
-                return updates, {}
-        added = keep_routes(base, head) if record else []
-        final = head
-        if added:
-            updates = self._normalize_updates(
-                [*updates, self._route_rows_update(updates, [entry["row"] for entry in added])],
-                allow_internal_paths=allow_internal_paths,
-            )
-            try:
-                with self.virtual_project(updates) as staged:
-                    final = load_package_snapshot(str(staged)).config
-            except SemanticLayerError as exc:
-                raise _routes_not_recorded(added, [], str(exc)) from exc
-        if record and (unkept := unkept_route_changes(base, final)):
-            raise _routes_not_recorded(added, unkept, "")
-        changes = route_changes(base, final)
-        return updates, {
-            "route_decisions_added": added,
-            "route_changes": changes,
+                return {}
+        if guard and (unkept := unkept_route_changes(base, head)):
+            raise _routes_not_recorded(unkept)
+        return {
+            "route_decisions_added": [],
+            "route_changes": route_changes(base, head),
         }
-
-    def _route_rows_update(
-        self, updates: tuple[ProjectFileUpdate, ...], rows: list[dict[str, Any]]
-    ) -> ProjectFileUpdate:
-        """The staged file with ``rows`` appended where the loader reads route rows: a
-        top-level ``path_preferences`` block in package.yml, else graph.yml's ``graph``
-        block, else package.yml's."""
-        return route_rows_update(self.proposed_files(updates), rows)[0]
 
     def _cleanup_new_project(self) -> None:
         if not self.project_path.exists():

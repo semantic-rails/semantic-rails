@@ -13,14 +13,13 @@
   refusal code and the `keep_base` row that keeps the earlier route. Any entry makes the risk
   `high`, and the Markdown summary lists each one in entity labels. See
   [the route census](docs/PACKAGE_AUTHORING.md#route-census-and-route-changes).
-- Architect writes keep the answers a package already gives. When a change would refuse a pair,
-  or answer it by another route, the same change records the earlier route as the pair's
-  `graph.path_preferences` row, and the result lists it in `route_decisions_added` with the new
-  routes. Rows respect the new hop ceiling and the loader's agreement rules. A cut may refuse a pair,
-  but answering it by another route requires its own row; otherwise the change is refused
-  with `ROUTE_DECISION_NOT_RECORDED` and nothing is written. `record_route_decision` changes
-  the default deliberately and adds no keep rows. It and removals report every changed pair
-  in `route_changes`, including refused-to-answered and inherited changes. Removals use the
-  same preservation guard; record an alternative route before cutting an answered route.
-  Writes with `validate_after=False` refuse loader-invalid input when the current package
-  loads, preserving the route baseline through subsequent edits.
+- Architect writes and previews refuse unapproved changes to answered join routes with
+  `ROUTE_DECISION_NOT_RECORDED`, listing affected pairs and explicit `graph.path_preferences`
+  syntax. Authors record decisions with `record_route_decision` or include chosen rows in
+  the change; Architect generates no route rows and `route_decisions_added` stays empty.
+  An explicit route defines lookup semantics, including unmatched keys. Removals use the
+  same preservation guard: a cut may leave a pair refused, while another answer requires
+  its own decision. Deliberate decisions and removals report every changed pair in
+  `route_changes`, including refused-to-answered and inherited changes. Writes and previews
+  with `validate_after=False` refuse loader-invalid input when the current package loads,
+  preserving the route baseline through subsequent edits.

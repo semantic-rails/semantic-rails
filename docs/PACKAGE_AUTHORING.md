@@ -1752,34 +1752,37 @@ risk `high` and counts in `changed_behavior_count`, and the Markdown summary
 lists each one in entity labels ("Invoice to Region: was Invoice → Account →
 Region, now refused (AMBIGUOUS_PATH)").
 
-**Architect keeps the earlier route.** Every Architect write goes through one
-transaction, which compares the package before and after the change. Each pair
-the package answered, and that the change would refuse or answer by another
-route, gets its earlier route as its `graph.path_preferences` row in the same
-change: shortest route first, re-resolving after each row, so an inherited
-route needs no redundant row. The result lists each row in
-`route_decisions_added` with the change's `new_routes`, to name as an alternative
-or make the default later, and a dry run shows the rows in its diff. The rows
-go where the loader reads them (a top-level `path_preferences` block in
-`package.yml`, else `graph.yml`, else `package.yml`'s `graph` block). That file
-is rewritten as Architect YAML, dropping comments.
+**Architect requires explicit route decisions.** Every Architect write goes
+through one transaction, which compares the package before and after the
+change. A change that would refuse an answered pair whose route still exists,
+or answer it by another route, is refused with `ROUTE_DECISION_NOT_RECORDED`
+until the author records a decision. Previews use the same guard; nothing is
+written and no route rows are generated. The refusal lists affected pairs in
+`details.route_changes` and explicit `graph.path_preferences` syntax in
+`details.rows`: use `record_route_decision(**row)` before adding the relationship,
+or include the chosen rows in the authored change. An ordinary change that
+moves an inherited answer also needs that pair's own decision.
 
-No row is added for a pair whose own row the change writes, or whose earlier
-route is removed or exceeds the new `max_hops`. A cut may leave the pair
-refused; a change that answers it by another route without its own row is
-refused with `ROUTE_DECISION_NOT_RECORDED`. The same error refuses a keep row
-that disagrees with existing rows (`details.conflicts_with`) or fails to take
-effect; nothing is written. `record_route_decision` deliberately changes the
-default, adds no keep rows, and reports every moved pair, inherited pairs
-included. `remove_object` uses the same preservation guard: removing a route
-may leave the pair refused, but switching to another answer requires the
-author to record that route first. In every case `route_changes` lists every
-changed pair, including refused → answered. Hand edits get the same report
-from `impact-report`.
+An explicit route chooses a relationship path, not a promise that orphan keys
+keep their values. For example, after adding an origin role alongside a
+destination role, a decision for the destination path uses the airport lookup:
+a destination key with no airport row groups under `NULL` and does not match
+a filter on the airport key. Review the chosen route against reference SQL.
+
+`record_route_decision` writes where the loader reads route rows (a top-level
+`path_preferences` block in `package.yml`, else `graph.yml`, else `package.yml`'s
+`graph` block), rewriting that file as Architect YAML and dropping comments.
+It deliberately changes the default and reports every moved pair, inherited
+pairs included. `remove_object` uses the same preservation guard: a removed
+route or one beyond the new `max_hops` may leave a pair refused, but switching
+to another answer requires the author to record that route first. In every
+case `route_changes` lists every changed pair, including refused → answered,
+and `route_decisions_added` is empty. Hand edits get the same report from
+`impact-report`.
 
 With `validate_after=False`, a write from a loadable package to loader-invalid
-input is refused with `INVALID_CONFIG` before anything is written, so an
-invalid intermediate edit cannot erase the earlier route baseline. Ordinary
+input, including a preview, is refused with `INVALID_CONFIG` before anything
+is written, so an invalid intermediate edit cannot erase the earlier route baseline. Ordinary
 parse-gated rollback and writes that repair an already-invalid package retain
 their existing behavior.
 

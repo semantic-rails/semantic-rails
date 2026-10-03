@@ -141,7 +141,7 @@ def test_refusals_write_nothing(project, arguments, code):
 
 
 def _write_graph_relationships(project: ArchitectProject, relationships: dict) -> dict:
-    """graph.yml as written: a second role keeps the route queries answered by in a row."""
+    """Write the authored graph with any explicitly recorded decisions."""
     graph = _file(project, "graph.yml")
     graph["graph"]["relationships"] = relationships
     project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph, sort_keys=False))
@@ -183,6 +183,12 @@ def test_a_pair_that_may_have_several_roles_is_refused_not_rewritten(project, la
     with_foreign_key, relationships = ROLE_LAYOUTS[layout]
     if with_foreign_key:
         _relate(project, ["buyer_id"])
+        for source, target in [("event", "customer"), ("customer", "event")]:
+            project.record_route_decision(
+                source_entity=f"entity.shop_{source}",
+                target_entity=f"entity.shop_{target}",
+                relationship_path=["relationship.events_customer"],
+            )
     graph = _write_graph_relationships(project, relationships)
     model = (project.project_path / "models/core/events.yml").read_bytes()
     revision = project.revision()

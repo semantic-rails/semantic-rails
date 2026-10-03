@@ -9,30 +9,27 @@ other reachable entity as the target (child groups need no dimension on the chil
   (``undecided``) and multi-route pairs answered by the start's own key (``assumed``).
 * :func:`route_changes` lists the pairs whose resolution differs between two versions of a
   package, with the ``graph.path_preferences`` row that keeps the earlier route.
-* :func:`keep_routes` gives the fewest such rows that make a changed package answer every
-  pair it answered before, unless the change decides that pair itself;
-  :func:`unkept_route_changes` lists the pairs still moved without such a row.
+* :func:`unkept_route_changes` lists answered pairs a change moves without an explicit
+  decision. Architect refuses these changes rather than recording a decision for the author.
 """
 
 from __future__ import annotations
 
 from collections import deque
 from collections.abc import Iterable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any
 
 from .compiler_parts.indexes import get_package_analysis
-from .config_parts.route_rows import conflicting_rows
 from .errors import SemanticLayerError
 from .fanout import (
     _has_multiple_routes,
     package_hop_limit,
-    pair_routes,
     resolve_route,
     route_pin,
     route_reading,
 )
-from .schema import PackageConfig, PathPreferenceConfig
+from .schema import PackageConfig
 
 Pair = tuple[str, str]
 
@@ -192,63 +189,6 @@ def unkept_route_changes(base: PackageConfig, head: PackageConfig) -> list[dict[
     """Answered pairs still moved without their own row, including an unkeepable route swap.
     A deliberate cut may refuse a pair whose earlier route cannot be kept."""
     return [change.payload() for change in _unkept(base, head)]
-
-
-def keep_routes(base: PackageConfig, head: PackageConfig) -> list[dict[str, Any]]:
-    """The fewest rows that keep ``base``'s answers in ``head`` (see :func:`_unkept`).
-
-    Rows are added shortest base route first, re-resolving the rest after each, so a row that
-    also settles another pair is the only one added. Each entry is ``{"row": ...,
-    "new_routes": [...]}``: the routes ``head`` offers besides the base route, to name as
-    alternatives or make the default later.
-    """
-    pending = sorted(
-        (change for change in _unkept(base, head) if change.keep_base is not None),
-        key=lambda change: (len(change.base.path), change.pair),
-    )
-    added: list[dict[str, Any]] = []
-    kept = head
-    while pending:
-        change, *pending = pending
-        source, target = change.pair
-        row = PathPreferenceConfig(source, target, [*change.base.path])
-        conflicts = conflicting_rows(
-            get_package_analysis(kept).relationships, row, kept.path_preferences
-        )
-        if conflicts:
-            raise SemanticLayerError(
-                "ROUTE_DECISION_NOT_RECORDED",
-                "The row keeping the earlier route disagrees with existing route rows; "
-                "nothing was written. Record each moved pair's route in the change itself.",
-                details={
-                    "row": change.keep_base,
-                    "conflicts_with": [
-                        route_pin(item.source_entity, item.target_entity, item.relationship_path)
-                        for item in conflicts
-                    ],
-                    "route_changes": route_changes(base, head),
-                },
-            )
-        kept = replace(
-            kept,
-            path_preferences=[
-                *kept.path_preferences,
-                row,
-            ],
-        )
-        added.append(
-            {
-                "row": change.keep_base,
-                "new_routes": [
-                    [*route]
-                    for route in pair_routes(head, source, target)
-                    if tuple(route) != change.base.path
-                ],
-            }
-        )
-        outcomes = resolve_pairs(kept, [rest.pair for rest in pending])
-        pending = [rest for rest in pending if outcomes[rest.pair].shape() != rest.base.shape()]
-    return added
 
 
 def route_change_lines(

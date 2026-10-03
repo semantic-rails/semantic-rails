@@ -308,9 +308,10 @@ on. It loads a metric whose measure or input metric is gone, which fails only wh
 `remove_object` refuses a removal that leaves a metric naming a removed object and names those
 metrics. The report lists `removed`, and `impact` holds the `impact_project` summary of the change
 (`risk`, `impacted_metrics`, `changes`) plus `references`: authored files, such as examples and
-tests, that still name a removed id. A removed route can't be kept, so `route_changes` lists each
-entity pair that answered before the removal and is refused or routed differently after it (see
-[Join Routes](#join-routes)); no row is added.
+tests, that still name a removed id. Removals use the same preservation guard as other writes:
+a removed route may leave an answered pair refused, but switching it to another answer requires
+an explicit decision or the removal refuses with `ROUTE_DECISION_NOT_RECORDED`. The result's
+`route_changes` lists every pair whose resolution changes (see [Join Routes](#join-routes)).
 
 ## Join Routes
 
@@ -325,28 +326,29 @@ Which route between two entities a question means is a business definition (see
   starts with deciding them. `create_project` and `setup_project_dialog` say to decide them once
   entities are related.
 - `promotion_check` lists them under `advisories` (`ROUTES_UNDECIDED`), never as a blocker.
-- Every mutation keeps the answers the package already gives. Before writing, the transaction
-  compares the package with the change applied; each pair the package answered that the change
-  would refuse, or answer by another route, gets its current route as its
-  `graph.path_preferences` row in the same change (shortest route first, omitting rows settled by inheritance). The
-  result's `route_decisions_added` lists `{row, new_routes}` for each: the row, and the routes the
-  change added, to name as an alternative or make the default later. A dry run shows the rows in
-  its diff.
-- Keep rows and `record_route_decision` use the same loader location: top-level
+- Before writing, the transaction compares the package with the change applied. A change that
+  would refuse an answered pair whose route still exists, or answer it by another route, refuses
+  with `ROUTE_DECISION_NOT_RECORDED` until the author records an explicit decision. Previews use
+  the same guard. Nothing is written and no route rows are generated. The refusal's
+  `details.route_changes` lists affected pairs and `details.rows` supplies explicit
+  `graph.path_preferences` syntax: pass a row to `record_route_decision` before adding the
+  relationship, or include chosen rows in the authored change. An ordinary change that moves
+  an inherited answer needs that pair's own decision.
+- `record_route_decision` uses the loader location: top-level
   `package.yml` `path_preferences`, else the file holding `graph`. That file is rewritten as
   Architect YAML, dropping comments.
-- No row is added for a pair whose own row the change writes, or whose earlier route is removed
-  or exceeds the new hop ceiling. Such a cut may refuse the pair; answering it by another route
-  without its own row refuses the mutation with `ROUTE_DECISION_NOT_RECORDED`.
-- `record_route_decision` deliberately changes the default and adds no keep rows.
-  `remove_object` reports routes instead of keeping them. The result's `route_changes` lists
+- A removed route or one beyond the new hop ceiling may leave a pair refused; answering it by
+  another route without its own row refuses the mutation with `ROUTE_DECISION_NOT_RECORDED`.
+- `record_route_decision` deliberately changes the default.
+  `remove_object` uses the same preservation guard. The result's `route_changes` lists
   every pair that resolves differently, including refused → answered, as `impact_project`
   does. `base` and `head` hold the route or refusal code; `keep_base` holds the row that keeps
-  the base route, or `null` when it cannot be kept. `create_project` and undo keep nothing:
-  one starts a package, the other restores files exactly.
-- A keep row that disagrees with existing rows (`details.conflicts_with`), or fails to take
-  effect, refuses the mutation with `ROUTE_DECISION_NOT_RECORDED` before anything is written;
-  record each moved pair's route in the change itself.
+  the base route, or `null` when it cannot be kept. `route_decisions_added` is empty.
+  `create_project` and undo skip the guard: one starts a package, the other restores files exactly.
+- An explicit path records the route's meaning. It does not guarantee unchanged orphan-key
+  values when adding a second foreign-key role changes a source-key read to a lookup. See
+  [the authoring guide](PACKAGE_AUTHORING.md#route-census-and-route-changes) and compare the
+  chosen answer with reference SQL.
 
 ## Examples, Package Tests and Query Previews
 
