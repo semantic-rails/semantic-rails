@@ -16,7 +16,7 @@ import duckdb
 import pytest
 import yaml
 
-from semantic_rails.compiler import NonAdditiveRefusal, compile_query, plan_query
+from semantic_rails.compiler import NonAdditiveRefusal, bind_query, compile_query, plan_query
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
@@ -211,14 +211,19 @@ _TABLES = {
 }
 
 
-@pytest.fixture(scope="module")
-def package_dir(tmp_path_factory) -> Path:
-    root = _write(tmp_path_factory.mktemp("lookup") / NS, _models())
+def _seed(root: Path, renamed: dict[str, str] | None = None) -> None:
     (root / "data").mkdir()
     connection = duckdb.connect(str(root / "data" / f"{NS}.duckdb"))
     for table, (columns, rows) in _TABLES.items():
+        table = (renamed or {}).get(table, table)
         connection.execute(f"create table {table} as select * from (values {rows}) t({columns})")
     connection.close()
+
+
+@pytest.fixture(scope="module")
+def package_dir(tmp_path_factory) -> Path:
+    root = _write(tmp_path_factory.mktemp("lookup") / NS, _models())
+    _seed(root)
     return root
 
 
@@ -331,14 +336,32 @@ def test_the_lookup_equals_a_hand_written_view_join(runtime: Runtime, package_di
     with coverage_premium as (
         select coverage_id, sum(amount) as premium from premium group by coverage_id
     )
-    select claim.coverage_id, max(coverage_premium.premium)
-    from claim join coverage_premium using (coverage_id)
+    select claim.coverage_id,
+           max(case when claim.coverage_id is not null
+                    then coalesce(coverage_premium.premium, 0) end)
+    from claim left join coverage_premium using (coverage_id)
     group by claim.coverage_id
     """
     engine = _rows(runtime, _query(group_by=[COVERAGE_KEY]), key=COVERAGE_KEY)
-    assert {key: value for key, value in engine.items() if value} == {
-        key: value for key, value in _reference(package_dir, view).items() if value
-    }
+    assert engine == _reference(package_dir, view)
+    assert engine[None] is None and engine["C4"] == engine["C5"] == 0
+
+
+@pytest.mark.parametrize("model,table", [("claims", "claim"), ("premiums", "premium")])
+def test_a_physical_relation_can_be_named_lookup_source(
+    tmp_path: Path, model: str, table: str
+) -> None:
+    models = _models()
+    models[model]["relation"] = "lookup_source"
+    root = _write(tmp_path / NS, models)
+    _seed(root, {table: "lookup_source"})
+    reference = _PER_CLAIM.format(value="amount").replace(f"from {table}", "from lookup_source")
+    expected = _reference(root, reference.replace(f"{table}.", "lookup_source."))
+    engine = Runtime.from_path(str(root))
+    try:
+        assert _rows(engine, _query()) == expected
+    finally:
+        engine.close()
 
 
 # 2. Coarser than the coverage: refused, whatever the totals are.
@@ -361,8 +384,18 @@ def test_statistics_cannot_dodge_the_guard(runtime: Runtime, aggregation: str) -
 
 
 # 3. A claim's own child rows would repeat the total.
-def test_a_child_dimension_of_the_claim_is_refused(runtime: Runtime) -> None:
-    error = _refusal(runtime, _query(group_by=[CLAIM_KEY, LINE_TYPE]))
+@pytest.mark.parametrize(
+    "payload",
+    [
+        _query(group_by=[CLAIM_KEY, LINE_TYPE]),
+        _query(where=[{"field": LINE_TYPE, "value": "medical"}]),
+    ],
+    ids=["group", "filter"],
+)
+def test_a_child_dimension_of_the_claim_is_refused(
+    runtime: Runtime, payload: dict[str, Any]
+) -> None:
+    error = _refusal(runtime, payload)
     assert error.code == "MIXED_GRAIN_INVALID"
 
 
@@ -431,6 +464,43 @@ def test_access_to_the_source_measure_is_required(package_dir: Path) -> None:
     error = _refusal(engine, {**_query(), "policy_context": {"audience": "external"}})
     assert error.code == "POLICY_DENIED"
     assert engine.query({**_query("reserve"), "policy_context": {"audience": "external"}})["ok"]
+
+
+@pytest.mark.parametrize("action", ["deny", "redact"])
+@pytest.mark.parametrize("group_by", [[CLAIM_KEY], [COVERAGE_KEY]], ids=["child", "via"])
+def test_access_to_the_lookup_relationship_is_required(
+    package_dir: Path, monkeypatch, action: str, group_by: list[str]
+) -> None:
+    from semantic_rails import compiler
+
+    relationship = "relationship.claims_coverage"
+    config = load_package_config(str(package_dir))
+    query = _query(group_by=group_by, policy_context={"audience": "external"})
+    assert relationship in bind_query(config, None, query).object_ids
+    policy = SemanticPolicyConfig(
+        id="policy.test.no_coverage_link",
+        kind="object_access",
+        object_ids=[relationship],
+        audiences=["external"],
+        action=action,
+    )
+    engine = Runtime.from_config(
+        replace(config, semantic_policies=[policy]), source_path=str(package_dir)
+    )
+
+    def no_output(*args, **kwargs):
+        pytest.fail("rendering or adapter access before relationship authorization")
+
+    monkeypatch.setattr(compiler, "render_select_for_profile", no_output)
+    monkeypatch.setattr(engine, "_get_adapter", no_output)
+    try:
+        assert engine.validate(query)["errors"][0]["code"] == "POLICY_DENIED"
+        for operation in (engine.compile, engine.query):
+            with pytest.raises(SemanticLayerError) as raised:
+                operation(query)
+            assert raised.value.code == "POLICY_DENIED"
+    finally:
+        engine.close()
 
 
 # 5. The query's filters and time select claims; the carried total never changes.
@@ -584,6 +654,12 @@ def _second_coverage_key(models: dict[str, Any]) -> None:
     models["claims"]["joins"] = {"prior_coverage": {"to": "coverage", "via": ["prior_coverage_id"]}}
 
 
+def _second_source_coverage_key(models: dict[str, Any]) -> None:
+    models["premiums"]["joins"] = {
+        "prior_coverage": {"to": "coverage", "via": ["prior_coverage_id"]}
+    }
+
+
 def _timed_coverage_key(models: dict[str, Any]) -> None:
     models["claims"]["entities"] = {"claim": {}}
     models["claims"]["joins"] = {
@@ -598,11 +674,16 @@ def _timed_coverage_key(models: dict[str, Any]) -> None:
     }
 
 
-def _partial_coverage_key(models: dict[str, Any]) -> None:
-    models["claims"]["entities"] = {"claim": {}}
-    models["claims"]["joins"] = {
-        "coverage": {"to": "coverage", "via": ["coverage_id"], "target": ["coverage_id"]}
-    }
+def _composite_coverage_key(models: dict[str, Any]) -> None:
+    for model, entity in (("claims", "claim"), ("premiums", "premium")):
+        models[model]["entities"] = {entity: {}}
+        models[model]["joins"] = {
+            "coverage": {
+                "to": "coverage",
+                "via": ["coverage_id", "term"],
+                "target": ["coverage_id", "term"],
+            }
+        }
 
 
 # 6. Each load refusal names the key at fault.
@@ -626,6 +707,7 @@ def _partial_coverage_key(models: dict[str, Any]) -> None:
         (_lookup(**{"from": "premium_amount", "value_type": "number"}), "value_type"),
         (_lookup(**{"from": "premium_amount", "expr": "coverage_id"}), "expr"),
         (_second_coverage_key, "via"),
+        (_second_source_coverage_key, "via"),
         (_timed_coverage_key, "via"),
     ],
 )
@@ -640,9 +722,112 @@ def test_from_and_via_belong_to_lookups_only(tmp_path: Path) -> None:
     assert _bad_package(tmp_path, change).details["key"] == "via"
 
 
-def test_a_partly_covered_composite_key_is_refused(tmp_path: Path) -> None:
-    error = _bad_package(tmp_path, _partial_coverage_key, coverage_key=("coverage_id", "term"))
+def test_a_fully_covered_composite_via_key_is_refused(tmp_path: Path) -> None:
+    error = _bad_package(tmp_path, _composite_coverage_key, coverage_key=("coverage_id", "term"))
     assert error.details["key"] == "via"
+    assert "composite" in str(error) and "term" in str(error)
+
+
+def test_a_time_via_is_refused_at_load(tmp_path: Path) -> None:
+    root = _write(tmp_path / NS, _models())
+    graph_path = root / "graph.yml"
+    graph = yaml.safe_load(graph_path.read_text())
+    graph["graph"]["entities"]["coverage"]["kind"] = "time"
+    graph_path.write_text(yaml.safe_dump(graph))
+    with pytest.raises(SemanticLayerError) as raised:
+        load_package_config(str(root))
+    assert raised.value.code == "INVALID_CONFIG" and raised.value.details["key"] == "via"
+    assert "non-time" in str(raised.value)
+
+
+def _routed_package(root: Path, start: str, direct: bool = False) -> Path:
+    models = _models()
+    models["assignments"] = {
+        "relation": "assignment",
+        "entities": {"assignment": {}, "coverage": {}},
+    }
+    models[start]["entities"]["assignment"] = {}
+    _write(root, models)
+    graph_path = root / "graph.yml"
+    graph = yaml.safe_load(graph_path.read_text())
+    graph["graph"]["entities"]["assignment"] = {"key": ["assignment_id"], "model": "assignments"}
+    graph["graph"]["path_preferences"] = [
+        {
+            "source_entity": "claim" if start == "claims" else "premium",
+            "target_entity": "coverage",
+            "relationship_path": [f"relationship.{start}_coverage"]
+            if direct
+            else [f"relationship.{start}_assignment", "relationship.assignments_coverage"],
+        }
+    ]
+    graph_path.write_text(yaml.safe_dump(graph))
+    return root
+
+
+@pytest.mark.parametrize("start", ["claims", "premiums"], ids=["child", "source"])
+def test_a_recorded_route_conflicting_with_the_lookup_is_refused(
+    tmp_path: Path, start: str
+) -> None:
+    root = _routed_package(tmp_path / NS, start)
+    with pytest.raises(SemanticLayerError) as raised:
+        load_package_config(str(root))
+    assert raised.value.code == "INVALID_CONFIG" and raised.value.details["key"] == "via"
+    assert "graph.path_preferences" in str(raised.value)
+    assert f"relationship.{start}_assignment" in str(raised.value)
+    assert "relationship.assignments_coverage" in str(raised.value)
+
+
+@pytest.mark.parametrize("start", ["claims", "premiums"], ids=["child", "source"])
+def test_a_recorded_direct_route_is_allowed(tmp_path: Path, start: str) -> None:
+    root = _routed_package(tmp_path / NS, start, direct=True)
+    config = load_package_config(str(root))
+    assert compile_query(config, None, _query())["sql"]
+
+
+@pytest.mark.parametrize("start", ["claims", "premiums"], ids=["child", "source"])
+@pytest.mark.parametrize("group_by", [[CLAIM_KEY], [COVERAGE_KEY]], ids=["child-key", "via-key"])
+def test_a_route_conflict_bypassing_load_is_refused_by_the_guard(
+    tmp_path: Path, monkeypatch, start: str, group_by: list[str]
+) -> None:
+    from semantic_rails import config as config_module
+
+    # Bypass only the loader's recorded-route check, preserving all other lookup checks.
+    resolve = config_module.resolve_lookup_measures
+
+    def skip_recorded_routes(*args, **kwargs):
+        if "path_preferences" in kwargs:
+            kwargs["path_preferences"] = []
+        return resolve(*args, **kwargs)
+
+    monkeypatch.setattr(config_module, "resolve_lookup_measures", skip_recorded_routes)
+    root = _routed_package(tmp_path / NS, start)
+    _seed(root)
+    connection = duckdb.connect(str(root / "data" / f"{NS}.duckdb"))
+    try:
+        connection.execute("create table assignment as select 'A1' assignment_id, 'C2' coverage_id")
+        for table in ("claim", "premium"):
+            connection.execute(f"alter table {table} add column assignment_id varchar")
+            connection.execute(f"update {table} set assignment_id = 'A1' where coverage_id = 'C1'")
+        connection.execute("update premium set amount = 20 where coverage_id = 'C2'")
+    finally:
+        connection.close()
+    if start == "claims":
+        assert _reference(root, _PER_CLAIM.format(value="amount"))["K1"] == 7
+        routed_reference = """
+            with totals as (select coverage_id, sum(amount) total from premium group by coverage_id)
+            select claim_id, total from claim
+            join assignment using (assignment_id)
+            join totals on totals.coverage_id = assignment.coverage_id
+            where claim_id = 'K1'
+        """
+        # The route's parent differs from the direct foreign key's parent.
+        assert _reference(root, routed_reference) == {"K1": 20}
+    engine = Runtime.from_path(str(root))
+    try:
+        error = _refusal(engine, _query(group_by=group_by))
+        assert error.code == "ROLLUP_UNSAFE" and error.details["construct"] == "parent_lookup"
+    finally:
+        engine.close()
 
 
 def test_the_loader_derives_everything_but_from_and_via(runtime: Runtime) -> None:
