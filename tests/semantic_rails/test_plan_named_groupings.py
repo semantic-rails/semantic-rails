@@ -330,6 +330,9 @@ def test_declared_name_variants_only_add_holds_against_immediate_base(
         if group_by != [STORE, CUSTOMER_TYPE]:
             assert after["status"] == "low_confidence"
             assert "customer_type" in after["why"]["details"]["dropped_groupings"]
+            if before["best"]["query_ir"].get("group_by") == [STORE]:
+                assert before["status"] == "ok"
+                assert after["why"]["details"]["dropped_groupings"] == ["customer_type"]
         else:
             assert before["status"] == after["status"] == "ok"
             query = after["best"]["query_ir"]
@@ -380,6 +383,9 @@ def test_boundary_underscore_names_only_add_holds(
     if group_by != [STORE, CUSTOMER_TYPE]:
         assert after["status"] == "low_confidence"
         assert term in after["why"]["details"]["dropped_groupings"]
+        if before["best"]["query_ir"].get("group_by") == [STORE]:
+            assert before["status"] == "ok"
+            assert after["why"]["details"]["dropped_groupings"] == [term]
         assert "execute" not in after["next"].get("ready_for", [])
     else:
         assert before["status"] == after["status"] == "ok"
@@ -401,6 +407,98 @@ def test_boundary_underscore_names_only_add_holds(
         assert len(reference) == len(expected) == 4
         assert {(store, kind): value for store, kind, value in reference} == pytest.approx(expected)
         assert sorted(_in_memory_rows(jaffle, query, [STORE, CUSTOMER_TYPE])) == reference
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("group_by", [None, [STORE], [STORE, CUSTOMER_TYPE]])
+@pytest.mark.parametrize("alias", ["_new_type", "new_type", "new_type_", "new type"])
+def test_a_value_inside_a_declared_grouping_name_only_adds_a_hold(
+    jaffle: Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    group_by: list[str] | None,
+    alias: str,
+) -> None:
+    monkeypatch.setattr(
+        jaffle,
+        "_config",
+        replace(
+            jaffle._config,
+            dimensions=[
+                replace(row, aliases=[*(row.aliases or []), alias])
+                if row.id == CUSTOMER_TYPE
+                else row
+                for row in jaffle._config.dimensions
+            ],
+        ),
+    )
+    question = f"revenue at {alias} and store name level"
+    _force_fallback(jaffle, monkeypatch, question, path)
+    partial = {
+        "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "IN", "value": ["new", "repeat"]}],
+        **({"group_by": group_by} if group_by is not None else {}),
+    }
+    after = plan_payload(jaffle, intent=question, partial_query=partial)
+    with monkeypatch.context() as base:
+        # Keep both declared-name passes and every existing readiness check.
+        base.setattr(plan_module, "_grouping_filter_value_spans", lambda *args: [], raising=False)
+        before = plan_payload(jaffle, intent=question, partial_query=partial)
+    assert after["best"] == before["best"]
+    query = after["best"]["query_ir"]
+    assert {"field": CUSTOMER_TYPE, "op": "=", "value": "new"} in query["where"]
+    assert before["status"] == (
+        "low_confidence" if path == "fallback" and group_by is None else "ok"
+    )
+    assert before["status"] == "ok" or after["status"] == before["status"]
+    assert after["status"] == "low_confidence", after.get("why")
+    assert "execute" not in after["next"].get("ready_for", [])
+    if before["status"] == "ok":
+        assert after["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+        assert after["why"]["details"]["dropped_groupings"] == [alias]
+    # Even a caller-supplied complete grouping cannot authorize the narrowed answer.
+    assert alias in plan_module._level_groupings_unmet(jaffle._config, question, query)
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+def test_a_fully_grouped_alias_without_a_value_collision_matches_reference_sql(
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    monkeypatch.setattr(
+        jaffle,
+        "_config",
+        replace(
+            jaffle._config,
+            dimensions=[
+                replace(row, aliases=[*(row.aliases or []), "_customer_type"])
+                if row.id == CUSTOMER_TYPE
+                else row
+                for row in jaffle._config.dimensions
+            ],
+        ),
+    )
+    question = "revenue at _customer_type and store name level"
+    _force_fallback(jaffle, monkeypatch, question, path)
+    partial = {
+        "group_by": [STORE, CUSTOMER_TYPE],
+        "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "IN", "value": ["new", "repeat"]}],
+    }
+    before, after = _compare_declared_name_base(jaffle, monkeypatch, question, partial)
+    assert before["status"] == after["status"] == "ok", after.get("why")
+    assert "execute" in after["next"]["ready_for"]
+    reference = _in_memory_reference(
+        jaffle,
+        "SELECT s.store_name, c.customer_type, SUM(o.order_total_cents / 100.0) "
+        "FROM jaffle_order o JOIN jaffle_customer c USING (customer_id) "
+        "JOIN jaffle_store s USING (store_id) "
+        "WHERE s.store_name IN ('Brooklyn', 'Philadelphia') "
+        "AND c.customer_type IN ('new', 'repeat') GROUP BY 1, 2 ORDER BY 1, 2",
+    )
+    assert len(reference) == 4
+    assert [row[2] for row in reference] == pytest.approx([90.48, 259334.37, 6.36, 486461.82])
+    assert (
+        sorted(_in_memory_rows(jaffle, after["best"]["query_ir"], [STORE, CUSTOMER_TYPE]))
+        == reference
+    )
 
 
 @pytest.mark.parametrize("path", ["pattern", "fallback"])

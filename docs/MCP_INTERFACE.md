@@ -330,8 +330,11 @@ grouping.
 A name doesn't count inside a longer declared name ("customer type" is not
 also the entity Customer) or inside a phrase naming the query's clock ("order date"), and
 neither does a declared value or a dimension the draft's `where` pins to one value (`=`, or `IN`
-with one value). The word before each level word must end the name of a dimension, an entity
-or a clock: "revenue at region level" with no Region is not ready, nor is "revenue at the
+with one value). A declared filter value matched inside a grouping name (`new` in the alias
+`_new_type` or `new type`) never exempts that grouping: the unchanged draft is held even when
+it groups by the named dimension, since the inferred filter may narrow the answer. This
+rule applies to both name-reading passes. The word before each level word must end the name
+of a dimension, an entity or a clock: "revenue at region level" with no Region is not ready, nor is "revenue at the
 level". A declared "Severity level" dimension or "Stock level" measure triggers nothing. Some
 complete plans are held on purpose: in "revenue at store level for customer types new and
 repeat", "customer types" is no declared name, so the entity Customer must be grouped.

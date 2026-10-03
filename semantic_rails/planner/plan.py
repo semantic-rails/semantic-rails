@@ -877,6 +877,40 @@ def _level_groupings_unmet(config: Any, question: str, query: dict[str, Any]) ->
     )
 
 
+def _grouping_filter_value_spans(
+    config: Any, lowered: str, query: dict[str, Any]
+) -> list[tuple[int, int]]:
+    """Source spans of declared values carried by a positive draft filter.
+
+    Match the same literal, label and alias spellings as value inference. A match inside a
+    grouping name cannot authorize the filter or exempt that grouping, even when grouped.
+    """
+
+    filters = _where_filters(query)
+    spans: list[tuple[int, int]] = []
+    for domain in visible_value_domains(config):
+        for value in domain.values or []:
+            if not any(
+                row.get("field") in domain.dimensions
+                and (
+                    (row.get("op") == "=" and row.get("value") == value.value)
+                    or (
+                        str(row.get("op")).lower() == "in"
+                        and isinstance(row.get("value"), list)
+                        and value.value in row["value"]
+                    )
+                )
+                for row in filters
+            ):
+                continue
+            for name in [value.value, value.label, *(value.aliases or [])]:
+                phrase = str(name or "").strip().lower()
+                if phrase:
+                    pattern = rf"(?<![a-z0-9]){re.escape(phrase)}s?(?![a-z0-9])"
+                    spans.extend(match.span() for match in re.finditer(pattern, lowered))
+    return spans
+
+
 def _level_groupings_with_names(
     config: Any, question: str, query: dict[str, Any], *, underscores: bool
 ) -> list[str]:
@@ -892,8 +926,10 @@ def _level_groupings_with_names(
     ``where`` pins to one value (``=``, or ``IN`` with one value), and a name inside a clock
     phrase need nothing: a clock phrase ("week", or "order date" for the query's Order time)
     is the time block's. The clock phrase must be words joined by spaces only, never with a
-    level word. The word before each level word, past commas and connectors, must end the
-    name of a dimension, an entity or a clock; any other word ("region level" with no Region)
+    level word. A filter value matched inside a grouping name always holds the plan: it
+    never exempts that grouping, even when its dimension is grouped. The word before each
+    level word, past commas and connectors, must end the name of a dimension, an entity or a
+    clock; any other word ("region level" with no Region)
     is unmet as well. The check only holds a plan.
     """
 
@@ -940,11 +976,15 @@ def _level_groupings_with_names(
         )
     }
     grouped = set(query.get("group_by") or [])
+    filter_spans = _grouping_filter_value_spans(config, lowered, query)
     unmet: list[str] = []
     for (low, high), named in sorted(spans.items()):
         term = " ".join(lowered[low:high].split())
         dimensions = {row.id for kind, row in named if kind == "dimension"}
         entity = any(kind == "entity" for kind, _ in named)
+        if (dimensions or entity) and any(low <= a and b <= high for a, b in filter_spans):
+            unmet.append(term)
+            continue
         if (
             not (dimensions or entity)
             or any(a <= low and high <= b for a, b in clock_spans)
