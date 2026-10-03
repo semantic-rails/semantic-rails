@@ -3506,6 +3506,13 @@ def _distinct_value_path_selections(
 
 
 def _distinct_value_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelect:
+    if _query_metric_predicates(plan):
+        raise SemanticLayerError(
+            "PREDICATE_NOT_SUPPORTED",
+            "A metric_predicate filter requires a measure or conversion leaf; "
+            "add a select that reads a measure, or remove metric_filters.",
+            details={"path": "metric_filters", "reason": "distinct_values_without_leaf"},
+        )
     entities = _entity_index(config)
     dimensions = _dimension_index(config)
     temporal_roles = _temporal_role_index(config)

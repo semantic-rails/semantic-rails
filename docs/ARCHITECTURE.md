@@ -292,6 +292,11 @@ Core query rules:
   Internal branches, distribution inputs and contextual predicate sources receive
   no default ordering; explicit `order_by` still takes precedence
 - `metric_filters` are applied after projected expressions except for `metric_predicate`, which is planned semantically at entity plus contextual time/group scope
+- queries without `select` still apply aggregate `metric_filters` through their measure
+  leaves. A `metric_predicate` reaching distinct-value lowering without a measure or
+  conversion leaf is refused with `PREDICATE_NOT_SUPPORTED`; add a select that reads a
+  measure, or remove `metric_filters`. Ordinary `where`, `order_by` and `limit` still
+  apply to distinct-group queries
 - `temporal_role_overrides` must only reference declared temporal roles
 - when only some measures have the query's clock, each other measure is timed by its own
   clock; one with several clocks, none of them the query's, fails with
