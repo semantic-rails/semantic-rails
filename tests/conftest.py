@@ -18,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
 pytest_plugins = ["scripts.test_quarantine"]
 
 _call_connections = pytest.StashKey["weakref.WeakSet[duckdb.DuckDBPyConnection]"]()
+_fixture_connections: weakref.WeakSet[duckdb.DuckDBPyConnection] = weakref.WeakSet()
 # Per process: {node ID: connections its call phase opened and left open}.
 _duckdb_leaks: dict[str, int] = {}
 
@@ -52,9 +53,28 @@ def duckdb_test_limits(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Non
         yield
 
 
+class _FixtureConnections:
+    """A fixture may keep a connection across tests, even one a test body requested."""
+
+    @pytest.hookimpl(wrapper=True)
+    def pytest_fixture_setup(self) -> Generator[None, object, object]:
+        from tests.semantic_rails.duckdb_limits import open_connections
+
+        before = weakref.WeakSet(open_connections)
+        try:
+            return (yield)
+        finally:
+            _fixture_connections.update(c for c in open_connections if c not in before)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    # A plugin, not a conftest hook: a session fixture sets up on the session
+    # node, where this directory's conftest hooks don't apply.
+    config.pluginmanager.register(_FixtureConnections())
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_call(item: pytest.Item) -> Generator[None, None, None]:
-    # Only the call phase: a fixture may keep a connection across tests.
     from tests.semantic_rails.duckdb_limits import open_connections
 
     before = weakref.WeakSet(open_connections)
@@ -62,7 +82,7 @@ def pytest_runtest_call(item: pytest.Item) -> Generator[None, None, None]:
         return (yield)
     finally:
         item.stash[_call_connections] = weakref.WeakSet(
-            connection for connection in open_connections if connection not in before
+            c for c in open_connections if c not in before and c not in _fixture_connections
         )
 
 
