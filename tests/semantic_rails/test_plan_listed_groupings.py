@@ -284,7 +284,9 @@ def test_a_comma_lists_groupings_as_and_does(jaffle: Runtime) -> None:
 
 _UNITS = ("day", "week", "month", "quarter", "year")
 _GRAIN_PHRASES = [
-    (phrase.format(unit), unit) for phrase in ("{} level", "at {} grain", "at {} level") for unit in _UNITS
+    (phrase.format(unit), unit)
+    for phrase in ("{} level", "at {} grain", "at {} level")
+    for unit in _UNITS
 ]
 # Each measure's output name, and its reference SQL over jaffle_order.
 _REVENUE = ("revenue_usd", "SUM(o.order_total_cents / 100.0)")

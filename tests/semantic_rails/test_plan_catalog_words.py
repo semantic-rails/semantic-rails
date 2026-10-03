@@ -344,7 +344,9 @@ def _assert_monthly_store_revenue(runtime: Runtime, query: dict[str, Any], store
         ).fetchall()
     finally:
         connection.close()
-    expected = sorted((str(name), str(key), str(month), total) for name, key, month, total in reference)
+    expected = sorted(
+        (str(name), str(key), str(month), total) for name, key, month, total in reference
+    )
     assert rows
     assert [row[:3] for row in rows] == [row[:3] for row in expected]
     assert [float(row[3]) for row in rows] == pytest.approx([float(row[3]) for row in expected])
