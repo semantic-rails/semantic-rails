@@ -542,9 +542,28 @@ def build_hop_profile(
     }
 
 
+def enters_validity_window(rel: RelationshipConfig, near_table: str) -> bool:
+    """Whether a hop over ``rel`` from ``near_table`` joins the table holding its validity
+    window, whose rows are versions of the far row. A window on the near table itself means
+    each near row is one version already; any other window (or an unqualified one) counts."""
+    window = rel.temporal_validity or {}
+    refs = [str(window.get(key, "")).strip() for key in ("valid_from", "valid_to")]
+    tables = {ref.rpartition(".")[0] for ref in refs if "." in ref}
+    return bool(window) and tables != {near_table}
+
+
 def _directional_status(
-    rel: RelationshipConfig, *, current_entity: str, time_bound: bool = False
+    rel: RelationshipConfig, *, current_entity: str, time_bound: bool = False, near_table: str = ""
 ) -> str:
+    status = _cardinality_status(rel, current_entity=current_entity, time_bound=time_bound)
+    # A hop into a validity window reaches one version of the far row only at the instant the
+    # query's time gives each row; without one it reaches every version, so it is never safe.
+    if not time_bound and status == "safe" and enters_validity_window(rel, near_table):
+        return "unsafe"
+    return status
+
+
+def _cardinality_status(rel: RelationshipConfig, *, current_entity: str, time_bound: bool) -> str:
     card = rel.cardinality.upper()
     if ":" not in card:
         return rel.safety
@@ -561,24 +580,58 @@ def _directional_status(
     return rel.safety
 
 
+UNANCHORED_TIME_VALID_HOP = "time_valid_hop_without_query_time"
+
+
+def unanchored_time_valid_hop_error(
+    hops: list[tuple[str, str]], path: list[str]
+) -> SemanticLayerError:
+    """The refusal for (relationship, far entity) hops with temporal validity and no query time."""
+    named = ", ".join(f"relationship '{rel_id}' to '{entity}'" for rel_id, entity in hops)
+    return SemanticLayerError(
+        "FANOUT_UNSAFE",
+        f"The query crosses {named}, which holds versions valid over time, and has no time "
+        "to pick one by: each row would join every version and count once per version.",
+        details={
+            "relationships": [rel_id for rel_id, _ in hops],
+            "entities": [entity for _, entity in hops],
+            "path": list(path),
+            "reason": UNANCHORED_TIME_VALID_HOP,
+            "hint": "Add `time` to the query so each row reads the version valid at its time.",
+        },
+    )
+
+
 def analyze_fanout(
     config: PackageConfig,
     start_entity: str,
     path: list[str],
     *,
     time_bound_relationships: set[str] | None = None,
+    validity_windows: bool = True,
 ) -> dict[str, Any]:
-    rel_index = get_package_analysis(config).relationships
+    """``validity_windows=False`` rates a hop into a validity window by its cardinality alone,
+    for reachability metadata that has no query; compiling a query without a time refuses it."""
+    analysis = get_package_analysis(config)
+    rel_index = analysis.relationships
     temporal_overrides = time_bound_relationships or set()
     joins: list[dict[str, Any]] = []
     current_entity = start_entity
     unsafe: list[str] = []
+    unanchored: list[tuple[str, str]] = []
     rewrite_required: list[str] = []
     for rel_id in path:
         rel = rel_index[rel_id]
         traversal = "forward" if current_entity == rel.source_entity else "reverse"
-        status = _directional_status(
-            rel, current_entity=current_entity, time_bound=rel_id in temporal_overrides
+        next_entity = rel.target_entity if traversal == "forward" else rel.source_entity
+        near_table = getattr(analysis.entities.get(current_entity), "table", "")
+        time_bound = rel_id in temporal_overrides
+        status = (
+            _directional_status(
+                rel, current_entity=current_entity, time_bound=time_bound, near_table=near_table
+            )
+            if validity_windows
+            else _cardinality_status(rel, current_entity=current_entity, time_bound=time_bound)
         )
         row = asdict(rel)
         row["traversal"] = traversal
@@ -586,9 +639,14 @@ def analyze_fanout(
         joins.append(row)
         if status == "unsafe":
             unsafe.append(rel.id)
+            anchored = _directional_status(rel, current_entity=current_entity, time_bound=True)
+            if anchored == "safe":
+                unanchored.append((rel.id, next_entity))
         elif status == "requires_rewrite":
             rewrite_required.append(rel.id)
-        current_entity = rel.target_entity if traversal == "forward" else rel.source_entity
+        current_entity = next_entity
+    if unanchored and len(unanchored) == len(unsafe):
+        raise unanchored_time_valid_hop_error(unanchored, path)
     if unsafe:
         raise SemanticLayerError(
             "FANOUT_UNSAFE",

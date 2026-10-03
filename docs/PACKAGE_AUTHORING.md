@@ -815,13 +815,26 @@ graph:
       entities: [customer_history, customer]    # bidirectional pair
       cardinality: many_to_one                  # first→second (history is many; customer is one)
       safety: requires_rewrite
-      temporal_validity:
-        valid_from: effective_from
-        valid_to: effective_to
+      temporal_validity:                        # <model relation name>.<column>
+        valid_from: shop_customer_history.effective_from
+        valid_to: shop_customer_history.effective_to
       rollup_safe:
         forward: [sum, count]                   # aggregating customer_history → customer
         reverse: []                             # aggregating customer → customer_history
 ```
+
+A query that joins into the table holding the window needs a `time`, so each row reads the
+version valid at its time. Without one, a many-to-one hop into it is refused with
+`FANOUT_UNSAFE`, naming the relationship and the entity, because joining every version would
+count a row once per version. A hop out of that table (`customer_history → customer` here)
+reads one version per row and needs no time. A metric predicate is stricter: when the path from
+its input to its entity, context or filters crosses a time-valid relationship in either
+direction, it needs a time of its own (a contextual predicate takes the query's `time`).
+
+Qualify the validity columns with the model's full `relation` name, including its schema or
+catalog when present (for example, `analytics.shop_customer_history.effective_from`). The
+relationship's declared window determines which side holds versions; schema qualification
+does not make an outgoing lookup require a query time.
 
 ### `disallowed_names:` — explicit anti-pattern guard
 

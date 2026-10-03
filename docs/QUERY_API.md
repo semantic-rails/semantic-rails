@@ -806,6 +806,10 @@ History-backed cards can also expose:
 - `coverage_notes`
 - `null_bucket_meaning`
 
+A dimension that `discover`, `inspect` or `build-options` lists through a time-valid
+relationship may still need `time` at compile time: without one, the query is refused with
+`FANOUT_UNSAFE`, naming the relationship and asking for `time`.
+
 Packages that opt into `defaults.operational` can also expose a nested `operational` block on measure and metric cards.
 
 Useful card fields for measures:

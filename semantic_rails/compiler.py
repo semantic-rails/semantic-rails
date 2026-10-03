@@ -159,6 +159,7 @@ from .expressions import (
     validate_expression_shapes,
 )
 from .fanout import (
+    UNANCHORED_TIME_VALID_HOP,
     RouteChoice,
     analyze_fanout,
     filter_only_semijoin,
@@ -2654,6 +2655,9 @@ def _leaf_path_selections(
                 purpose="aggregate_if" if conditional else "measure_expr",
             )
         except SemanticLayerError as exc:
+            if conditional and exc.details.get("reason") == UNANCHORED_TIME_VALID_HOP:
+                # The aggregate_if's own rule refuses a hop valid over time, with or without one.
+                check_conditional_aggregate_path(measure, entity_id, exc.details["path"], config)
             if not conditional or exc.code not in {"AMBIGUOUS_PATH", "PATH_NOT_FOUND"}:
                 raise
             raise conditional_aggregate_route_refusal(measure, entity_id, exc) from exc
@@ -2957,12 +2961,39 @@ def _root_path_summary(
             raise
         selected_paths[target_entity] = list(chosen)
         candidate_paths[target_entity] = [list(path) for path in candidates]
-        analysis = analyze_fanout(
-            config,
-            root_entity,
-            chosen,
-            time_bound_relationships=_time_bound_relationship_ids(query, config),
-        )
+        try:
+            analysis = analyze_fanout(
+                config,
+                root_entity,
+                chosen,
+                time_bound_relationships=_time_bound_relationship_ids(query, config),
+            )
+        except SemanticLayerError as exc:
+            if exc.details.get("reason") != UNANCHORED_TIME_VALID_HOP:
+                raise
+            if purpose != "measure":
+                # Left to each leaf, as a rewrite is: one that joins this path refuses it, and
+                # one that reads the dimension from its own rows (a shared key) joins nothing.
+                continue
+            # No leaf joins the path to another measure's entity: each measure aggregates on
+            # its own and is reconciled on the grain keys, whose own paths still refuse.
+            measure = next(
+                row for row in bound_measures if measures[row.measure_id].entity == target_entity
+            )
+            analyses[target_entity] = {
+                "status": "rewrite_required",
+                "reason": exc.details["reason"],
+            }
+            rewrite_steps.append(
+                RewriteStep(
+                    kind="leaf_preaggregate_join",
+                    status="applied",
+                    measure_id=measure.measure_id,
+                    reason="Independent fact families compiled as separate leaf aggregates and reconciled on final grain keys",
+                    details={"target_entity": target_entity, "path": list(chosen)},
+                )
+            )
+            continue
         analyses[target_entity] = analysis
         if analysis.get("status") == "rewrite_required" and purpose == "measure":
             measure = next(
@@ -3091,7 +3122,11 @@ def _infer_root_entity_for_distinct_query(
 
     if not candidates:
         if failures:
-            raise failures[0]
+            # Prefer the refusal a query time would lift, so it names the hop and the fix.
+            raise next(
+                (exc for exc in failures if exc.details.get("reason") == UNANCHORED_TIME_VALID_HOP),
+                failures[0],
+            )
         raise SemanticLayerError(
             "PATH_NOT_FOUND",
             "No valid root entity found for distinct-values query",

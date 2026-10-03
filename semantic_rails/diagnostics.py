@@ -658,7 +658,10 @@ def recovery_hints_for_error(
         return [
             {
                 "kind": "change_breakdown",
-                "message": "Use a safer breakdown or add a pre-aggregation boundary before traversing this path.",
+                "message": str(
+                    details.get("hint")
+                    or "Use a safer breakdown or add a pre-aggregation boundary before traversing this path."
+                ),
                 "relationships": list(details.get("relationships", []) or []),
             }
         ]
