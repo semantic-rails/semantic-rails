@@ -13,6 +13,7 @@ from ..acceleration.routing import aggregate_routing_report, record_rollup_scan
 from ..acceleration.selection import recombine_aggregation
 from ..ast import (
     ChildGroup,
+    NormalizedQuery,
     child_groups,
     is_child_group,
     normalize_query,
@@ -54,6 +55,7 @@ from ..fanout import (
     resolve_path,
 )
 from ..ir import (
+    BoundMeasure,
     LogicalPlan,
     MeasurePlan,
     PathSelection,
@@ -89,7 +91,9 @@ from .bind import (
     _aggregation_expr,
     _bind_scoped_aggregate,
     _bound_filter_clauses,
+    _bound_metric_predicates,
     _collect_conversion_exprs,
+    _collect_measure_refs,
     _config_expr_to_sql,
     _expression_alias,
     _freeze_payload,
@@ -1196,6 +1200,21 @@ def _distribution_metric_filters(plan: LogicalPlan) -> list[dict[str, Any]]:
     return filters
 
 
+def _distribution_input_predicates(
+    expr: SemanticExpr, config: PackageConfig, query: NormalizedQuery
+) -> Iterator[MetricPredicateExpr]:
+    """Inspect the same recipe-expanded leaves that binding will put in the branch."""
+    bound_measures: list[BoundMeasure] = []
+    # Only inspect grain here; predicate sources bind their own clocks when lowered.
+    _collect_measure_refs(
+        expr, config, replace(query, time=None, temporal_role_overrides={}), bound_measures
+    )
+    for bound in bound_measures:
+        for predicate in _bound_metric_predicates(bound):
+            yield predicate
+            yield from _distribution_input_predicates(predicate.input, config, query)
+
+
 def _distribution_select(
     expr: DistributionExpr, *, alias: str, plan: LogicalPlan, config: PackageConfig
 ) -> SqlSelect:
@@ -1212,7 +1231,10 @@ def _distribution_select(
             "prior-period window: it would count entities in periods where they have no rows.",
         )
     _distribution_metric_filters(plan)
-    for predicate in _query_metric_predicates(plan):
+    for predicate in [
+        *_query_metric_predicates(plan),
+        *_distribution_input_predicates(expr.over.input, config, normalize_query(plan.query)),
+    ]:
         if predicate.scope_mode == "contextual" and predicate.entity != expr.over.entity:
             raise SemanticLayerError(
                 "PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE",

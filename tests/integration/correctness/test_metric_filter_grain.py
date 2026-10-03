@@ -66,7 +66,6 @@ def test_contextual_predicate_groups_by_fact_attributes(
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize("grain", ["", "month"])
-@pytest.mark.parametrize("median", ["none", "inline", "recipe"])
 @pytest.mark.parametrize(
     ("measure", "aggregate", "op", "threshold"),
     [
@@ -76,20 +75,12 @@ def test_contextual_predicate_groups_by_fact_attributes(
         (ORDERS, "COUNT(*)", ">=", 5),
     ],
 )
-def test_comparison_filter_beside_distribution_matches_having(
-    request, backend_name, grain, median, measure, aggregate, op, threshold
+def test_comparison_filter_matches_having(
+    request, backend_name, grain, measure, aggregate, op, threshold
 ):
     backend = _backend(request, backend_name)
     select = [_item(REVENUE, "revenue"), _item(ORDERS, "orders")]
     values = ["COALESCE(SUM(o.amount), 0)", "COUNT(*)"]
-    if median != "none":
-        select.append(
-            _distribution("median", "median")
-            if median == "inline"
-            else _item({"metric": "metric.shop.order_revenue_median"}, "median")
-        )
-        # The NULL amount's per-order sum settles to 0 because revenue has data in scope.
-        values.append(MEDIAN.replace("o.amount", "COALESCE(o.amount, 0)"))
     query = {
         "select": select,
         "group_by": [STORE],
@@ -118,17 +109,42 @@ def test_comparison_filter_beside_distribution_matches_having(
         + ", ".join(groups)
         + f" HAVING {aggregate} {op} {threshold}"
     )
-    expected = backend.reference(reference)
-    if median != "none":
-        with pytest.raises(SemanticLayerError, match="returned group's grain") as exc:
-            _answer(backend, Case("comparison_at_output_grain", "utc_authored", query, reference))
-        assert exc.value.code == "REWRITE_NOT_SUPPORTED"
-        return
     _assert_rows(
-        expected,
+        backend.reference(reference),
         _answer(backend, Case("comparison_at_output_grain", "utc_authored", query, reference)),
-        "comparison filters must retain whole groups and their unfiltered medians",
+        "comparison filters must retain whole groups",
     )
+
+
+@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
+@pytest.mark.parametrize("median", ["inline", "recipe"])
+def test_comparison_filter_beside_distribution_refuses_changed_grain(request, backend_name, median):
+    runtime = _backend(request, backend_name).runtimes["utc_authored"]
+    query = {
+        "select": [
+            _item(REVENUE, "revenue"),
+            _item(ORDERS, "orders"),
+            _distribution("median", "median")
+            if median == "inline"
+            else _item({"metric": "metric.shop.order_revenue_median"}, "median"),
+        ],
+        "group_by": [STORE],
+        "metric_filters": [
+            {
+                "expression": {
+                    "kind": "comparison",
+                    "op": "<",
+                    "left": REVENUE,
+                    "right": {"kind": "literal", "value": 30},
+                },
+                "op": "=",
+                "value": True,
+            }
+        ],
+    }
+    with pytest.raises(SemanticLayerError, match="returned group's grain") as exc:
+        runtime.query(query)
+    assert exc.value.code == "REWRITE_NOT_SUPPORTED"
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])

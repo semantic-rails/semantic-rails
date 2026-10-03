@@ -304,7 +304,9 @@ the returned group's grain. This includes distributions reached through derived
 metrics. Run the group-level filter without the distribution first. A contextual
 `metric_predicate` on an entity different from the distribution's per-entity
 grain refuses with `PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE`; use `entity_only` or
-a `where` filter. A distribution nested inside another expression also refuses
+a `where` filter. This refusal also covers predicates inside the distribution's
+input, including scoped aggregates and inputs reached through metric recipes.
+A distribution nested inside another expression also refuses
 with `REWRITE_NOT_SUPPORTED`; select the distribution separately.
 
 ## WhereFilter
