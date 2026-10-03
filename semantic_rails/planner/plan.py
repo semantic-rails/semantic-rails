@@ -1121,11 +1121,12 @@ def _ranking_why(
     The draft keeps the top N of its group_by rows, split by its grain when that can split
     them. Those rows are the entity the question ranks only when the noun it ranks
     (``_ranking_request``) is not a time unit and reads every group_by dimension, as
-    ``_unasked_grouping_why`` reads an asked grouping (an entity's key and its label). Else
-    the draft may keep the top N (store, customer type) pairs, or (month, store) rows, so
-    the plan is held with no runnable option. A ranking of the entity split by a grain asks
-    which ranking it means, with runnable options only when ``_ranking_options`` checks
-    them; without them it is held the same way.
+    ``_unasked_grouping_why`` reads an asked grouping (an entity's key and its label), or,
+    when the question ranks nothing, when the caller's ``partial_query`` states the ranking
+    over its own group_by. Else the draft may keep the top N (store, customer type) pairs, or
+    (month, store) rows, so the plan is held with no runnable option. A ranking of the entity
+    the question ranks, split by a grain, asks which ranking it means, with runnable options
+    only when ``_ranking_options`` checks them; without them it is held the same way.
     """
 
     config = runtime._config
@@ -1137,9 +1138,17 @@ def _ranking_why(
         and _singular(noun) not in _TIME_UNITS
         and all(_reads_grouping(noun, stand_ins, row) for row in grouped)
     )
-    if ranks_entity and not splits:
-        return None
     keys = [row.id for row in grouped]
+    # A question that ranks nothing leaves the ranking to a caller that states it: its limit,
+    # over its own group_by.
+    caller = partial_query or {}
+    callers = (
+        not noun
+        and caller.get("limit") is not None
+        and set(keys) <= set(caller.get("group_by") or [])
+    )
+    if not splits and (ranks_entity or callers):
+        return None
     entity = noun or " and ".join(str(row.label or row.id) for row in grouped)
     limit = int(query["limit"])
     grain = str(_time_of(query).get("grain") or "") if splits else ""

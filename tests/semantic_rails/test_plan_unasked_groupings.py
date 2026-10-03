@@ -317,6 +317,27 @@ def test_a_ranking_plan_cant_check_offers_no_runnable_option(
         assert "clarification" not in payload["why"]["details"]
 
 
+def test_a_ranking_the_question_never_states_is_the_callers(jaffle: Runtime) -> None:
+    question = "revenue by store and customer type"
+    query = {**_TOP_3_STORES, "group_by": [STORE, CUSTOMER_TYPE]}
+
+    why = plan_module._unasked_grouping_why(jaffle, question, query)
+
+    # The top 3 pairs trace to nothing the question says.
+    assert why is not None
+    assert why["code"] == RANKING
+    assert why["details"] == {"limit": 3, "ranked": [STORE, CUSTOMER_TYPE]}
+    assert "query_ir" not in json.dumps(why)
+    # The caller's partial_query states them: its limit, over its own group_by.
+    caller = {"group_by": [STORE, CUSTOMER_TYPE], "limit": 3}
+    assert plan_module._unasked_grouping_why(jaffle, question, query, caller) is None
+    # Its limit over a grouping it lacks states another ranking.
+    caller = {"group_by": [STORE], "limit": 3}
+    why = plan_module._unasked_grouping_why(jaffle, question, query, caller)
+    assert why is not None
+    assert why["code"] == RANKING
+
+
 @pytest.mark.parametrize(
     ("intent", "held"),
     [
