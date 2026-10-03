@@ -1050,7 +1050,9 @@ def _named_groupings_unmet(
             for (start, end), field, value in values
             if low <= start and end <= high
         ]
-        inside += [row for row in found if row not in inside]
+        for row in found:
+            if row not in inside:
+                inside.append(row)
         ids |= {row.id for row in visible_dimensions(config) if row.entity in ids}
         if found or not ids & settled:
             unmet.append(term)

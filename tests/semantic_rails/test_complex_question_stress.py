@@ -6,6 +6,7 @@ import pytest
 
 from semantic_rails.compiler import compile_query
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.planner import plan as plan_module
 from semantic_rails.planner import plan_payload
 from semantic_rails.registry import Registry
 from tests.plan_candidate_envelope import plan_candidate_envelope
@@ -444,11 +445,12 @@ def test_plan_composes_exact_complex_question_shapes(runtime_factory):
             detail="full",
             limit=1,
         )
+        adoption_intent = (
+            "Give me the 28D adoption funnel from signup to Send for stores that have an order "
+            "rate of over 90% grouped by month"
+        )
         adoption = plan_candidate_envelope(
-            runtime,
-            intent="Give me the 28D adoption funnel from signup to Send for stores that have an order rate of over 90% grouped by month",
-            limit=1,
-            verbosity="full",
+            runtime, intent=adoption_intent, limit=1, verbosity="full"
         )
 
         assert snapshot["best"]["pattern"] == "qualified_metric_rollup"
@@ -482,11 +484,16 @@ def test_plan_composes_exact_complex_question_shapes(runtime_factory):
         assert adoption["interpreted_intent"]["pattern"] == "filtered_adoption_funnel"
         # "For stores that have ..." qualifies the stores, and the draft also splits the funnel
         # by store, which the question never asks for: the drafted shape is held, not offered.
+        # The question also names Order, none of whose dimensions the draft uses, and that
+        # hold is reported first.
         assert not adoption["candidates"]
         [blocked] = adoption["blocked"]
-        assert blocked["why_blocked"]["code"] == "PLAN_UNASKED_GROUPING"
-        assert blocked["why_blocked"]["details"]["unasked_groupings"] == ["Store name"]
+        assert blocked["why_blocked"]["code"] == "PLAN_UNMATCHED_TERMS"
+        assert blocked["why_blocked"]["details"]["dropped_groupings"] == ["order"]
         adoption_query = blocked["candidate_ir"]
+        unasked = plan_module._unasked_grouping_why(runtime, adoption_intent, adoption_query)
+        assert unasked is not None
+        assert unasked["details"]["unasked_groupings"] == ["Store name"]
         adoption_filter = adoption_query["metric_filters"][0]
         assert blocked["validation"]["ok"] is True
         assert adoption_query["select"][0]["expression"] == {

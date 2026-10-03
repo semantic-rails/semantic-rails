@@ -568,10 +568,12 @@ _CASES = [
     # A store split the question never asks for.
     _moved("new store revenue by month", "Store name"),
     _moved("stores with more than 2000 orders in 2017", "Store name"),
-    _moved(
+    # The draft groups by none of Order's dimensions, so the named "order" holds it first.
+    _Case(
         "Give me the 28D adoption funnel from signup to Send for stores that have an order rate "
         "of over 90% grouped by month",
-        "Store name",
+        OK,
+        UNMATCHED,
     ),
     _moved("Store name", "Store name"),
     _moved("item revenue where store", "Store name"),
