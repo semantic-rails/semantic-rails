@@ -1050,6 +1050,14 @@ first): review the entries below, especially these changes to packages and embed
   catalog fallback, Intent IR and diagnostic hints in every response detail mode.
 - Refuse nonempty authored Snowflake tags on named-profile connections before
   connecting, removing manual tag SQL while preserving profile session settings.
+- Planning asks which visible dimension a grouping means when several entities
+  match and none owns the selected measure, adding discovery matches unless a strict
+  match names the whole dimension label or ID. For one unclear term, clarification
+  options include validated grouping, filter and sort fields. For several, they name
+  each term's draft grouping IDs to remove from `best.query_ir` grouping and sort
+  fields before adding the chosen ID, keeping grouping IDs sorted, then validating.
+  When two terms could replace the same grouping, plan offers no options; ask the user.
+  Drafts choosing another entity's match instead of a root-owned dimension are held.
 
 ## 0.3.2rc2 — 2026-09-26 — Embedding seams and zone-aware time buckets
 
