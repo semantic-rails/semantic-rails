@@ -35,8 +35,10 @@ from semantic_rails.planner.faithfulness import (
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.result_helpers import typed_rows
 
 STORE = "dimension.jaffle_store_name"
+ORDER_TIME = "temporal_role.jaffle_order_time"
 
 
 @pytest.fixture()
@@ -324,17 +326,70 @@ def test_light_verbs_do_not_hide_unknown_modifiers(jaffle: Runtime, verb: str) -
     )
 
 
-@pytest.mark.parametrize("name", ["period", "show", "date"])
+def _assert_monthly_store_revenue(runtime: Runtime, query: dict[str, Any], store_id: str) -> None:
+    """The query's rows equal monthly revenue by store name and ``store_id`` (a Store dimension
+    on the store_id column), from reference SQL over the seed."""
+
+    rows = sorted(
+        (str(row[STORE]), str(row[store_id]), str(row[f"{ORDER_TIME}__month"])[:10], row[alias])
+        for row in typed_rows(runtime.query(query))
+        for alias in [query["select"][0]["as"]]
+    )
+    connection = duckdb.connect(runtime.db_path, read_only=True)
+    try:
+        reference = connection.execute(
+            "SELECT s.store_name, s.store_id, CAST(DATE_TRUNC('month', o.ordered_at) AS DATE), "
+            "SUM(o.order_total_cents / 100.0) FROM jaffle_order o "
+            "JOIN jaffle_store s ON o.store_id = s.store_id GROUP BY ALL"
+        ).fetchall()
+    finally:
+        connection.close()
+    expected = sorted((str(name), str(key), str(month), total) for name, key, month, total in reference)
+    assert rows
+    assert [row[:3] for row in rows] == [row[:3] for row in expected]
+    assert [float(row[3]) for row in rows] == pytest.approx([float(row[3]) for row in expected])
+
+
+@pytest.mark.parametrize(
+    ("name", "code"),
+    [
+        ("period", None),
+        ("show", None),
+        # "Date" also names Calendar day; the draft that validates changes the grouping.
+        ("date", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+    ],
+)
 def test_a_cadence_or_request_word_never_consumes_a_dropped_catalog_name(
-    jaffle: Runtime, name: str
+    jaffle: Runtime, name: str, code: str | None
 ) -> None:
     # The same framing remains valid when it names no extra catalog object.
     assert plan_payload(jaffle, intent="show monthly revenue by store")["status"] == "ok"
     with _with_store_dimensions(jaffle, (name, name.title(), "store_id")) as runtime:
         assert plan_payload(runtime, intent="monthly revenue by store")["status"] == "ok"
-        payload = plan_payload(runtime, intent=f"monthly revenue by store, {name}")
-        _not_ready(payload, [name])
-        assert payload["best"]["query_ir"]["group_by"] == [STORE]
+        listed = f"monthly revenue by store, {name}"
+        payload = plan_payload(runtime, intent=listed)
+        # The comma lists the name as a second grouping.
+        if code is None:
+            assert payload["status"] == "ok", payload.get("why")
+            query = payload["best"]["query_ir"]
+            assert query["group_by"] == [STORE, f"dimension.{name}"]
+            assert query["time"] == {"temporal_role": ORDER_TIME, "grain": "month"}
+            _assert_monthly_store_revenue(runtime, query, f"dimension.{name}")
+        else:
+            _held(payload, code)
+        # A monthly draft grouped by store alone leaves the name over: "monthly" never reads it.
+        store_only = {
+            "version": 2,
+            "select": [
+                {
+                    "as": "revenue_usd",
+                    "expression": {"measure": "measure.jaffle.revenue_usd", "aggregation": "sum"},
+                }
+            ],
+            "group_by": [STORE],
+            "time": {"temporal_role": ORDER_TIME, "grain": "month"},
+        }
+        assert unconsumed_catalog_words(runtime, listed, store_only) == [name]
         for intent in (
             "revenue by store by order date",
             "monthly revenue by order date",

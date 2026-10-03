@@ -33,6 +33,7 @@ INCIDENT_ID = "dimension.upkeep_incident_incident_id"
 INCIDENT_NAME = "dimension.upkeep_incident_incident_name"
 STORE = "dimension.jaffle_store_name"
 CUSTOMER_TYPE = "dimension.jaffle_customer_type"
+ORDER_TIME = "temporal_role.jaffle_order_time"
 
 
 def _upkeep(path: Path, noun: str, measure: str) -> Runtime:
@@ -279,6 +280,92 @@ def test_a_comma_lists_groupings_as_and_does(jaffle: Runtime) -> None:
         connection.close()
     assert [row[:2] for row in rows] == [(str(store), str(kind)) for store, kind, _ in reference]
     assert [row[2] for row in rows] == pytest.approx([float(total) for *_, total in reference])
+
+
+_UNITS = ("day", "week", "month", "quarter", "year")
+_GRAIN_PHRASES = [
+    (phrase.format(unit), unit) for phrase in ("{} level", "at {} grain", "at {} level") for unit in _UNITS
+]
+# Each measure's output name, and its reference SQL over jaffle_order.
+_REVENUE = ("revenue_usd", "SUM(o.order_total_cents / 100.0)")
+_ORDERS = ("order_count", "COUNT(DISTINCT o.order_id)")
+_AOV = ("aov_usd", "SUM(o.order_total_cents / 100.0) / COUNT(DISTINCT o.order_id)")
+_YEAR_2017 = {"start": "2017-01-01", "end": "2018-01-01"}
+
+
+@pytest.mark.parametrize(
+    ("intent", "group_by", "measure", "grain", "window"),
+    [
+        *(
+            (shape.format(phrase), group_by, measure, unit, {})
+            for shape, group_by, measure in [
+                ("revenue by {}", [], _REVENUE),
+                ("order count by {}", [], _ORDERS),
+                ("average order value by {}", [], _AOV),
+                ("revenue by store and {}", [STORE], _REVENUE),
+                ("revenue by store, {}", [STORE], _REVENUE),
+                ("revenue by customer type and {}", [CUSTOMER_TYPE], _REVENUE),
+            ]
+            for phrase, unit in _GRAIN_PHRASES
+        ),
+        # "Order date" names the order clock, at the grain the phrase sets.
+        *(
+            (f"revenue by order date{joint}{phrase}", [], _REVENUE, unit, {})
+            for joint in (", ", " and ")
+            for phrase, unit in [
+                *((f"at {unit} grain", unit) for unit in _UNITS),
+                ("day level", "day"),
+                ("at day level", "day"),
+            ]
+        ),
+        ("revenue by month level for 2017", [], _REVENUE, "month", _YEAR_2017),
+        ("revenue in 2017 by month level", [], _REVENUE, "month", _YEAR_2017),
+        ("revenue by store by month level", [STORE], _REVENUE, "month", {}),
+        ("revenue by month level and store", [STORE], _REVENUE, "month", {}),
+        ("revenue by week level, store", [STORE], _REVENUE, "week", {}),
+    ],
+)
+def test_a_grain_phrase_is_the_clocks_grain(
+    jaffle: Runtime,
+    intent: str,
+    group_by: list[str],
+    measure: tuple[str, str],
+    grain: str,
+    window: dict[str, str],
+) -> None:
+    payload = plan_payload(jaffle, intent=intent)
+
+    # "At week grain" or "month level" names no grouping of its own: the time block buckets the
+    # measure's own clock, Order time, at that grain.
+    assert payload["status"] == "ok", payload.get("why")
+    assert "execute" in payload["next"]["ready_for"]
+    query = payload["best"]["query_ir"]
+    assert query.get("group_by", []) == group_by
+    assert query["time"] == {"temporal_role": ORDER_TIME, "grain": grain, **window}
+    alias, total = measure
+    assert [select["as"] for select in query["select"]] == [alias]
+    bucket = f"{ORDER_TIME}__{grain}"
+    rows = sorted(
+        (*(str(row[dim]) for dim in group_by), str(row[bucket])[:10], float(row[alias]))
+        for row in typed_rows(jaffle.query(query))
+    )
+    columns = [{STORE: "s.store_name", CUSTOMER_TYPE: "c.customer_type"}[dim] for dim in group_by]
+    where = "WHERE o.ordered_at >= ? AND o.ordered_at < ?" if window else ""
+    connection = duckdb.connect(jaffle.db_path, read_only=True)
+    try:
+        reference = connection.execute(
+            f"SELECT {''.join(f'{column}, ' for column in columns)}"
+            f"CAST(DATE_TRUNC('{grain}', o.ordered_at) AS DATE), {total} "
+            "FROM jaffle_order o LEFT JOIN jaffle_store s ON o.store_id = s.store_id "
+            f"LEFT JOIN jaffle_customer c ON o.customer_id = c.customer_id {where} GROUP BY ALL",
+            [window["start"], window["end"]] if window else [],
+        ).fetchall()
+    finally:
+        connection.close()
+    expected = sorted((*(str(key) for key in row[:-1]), float(row[-1])) for row in reference)
+    assert rows
+    assert [row[:-1] for row in rows] == [row[:-1] for row in expected]
+    assert [row[-1] for row in rows] == pytest.approx([row[-1] for row in expected])
 
 
 @pytest.mark.parametrize("parse", [_requested_grouping_terms, generators._requested_grouping_terms])
