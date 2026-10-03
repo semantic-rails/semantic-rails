@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+import yaml
+
 from .architect_scaffold import dump_project_yaml
 from .config_validation import PackageReference, parse_config_report
 from .errors import SemanticLayerError
@@ -870,12 +872,28 @@ class ProjectTransaction:
         """
         try:
             base = load_package_snapshot(str(self.project_path)).config
-        except SemanticLayerError:  # nothing answered before
+        except (
+            SemanticLayerError,
+            yaml.YAMLError,
+            TypeError,
+            ValueError,
+            AttributeError,
+            KeyError,
+        ):
+            # Invalid base input answered nothing; the parse gate can accept its repair.
             return updates, {}
         with self.virtual_project(updates) as staged:
             try:
                 head = load_package_snapshot(str(staged)).config
-            except SemanticLayerError:  # the parse gate reports invalid staged semantics
+            except (
+                SemanticLayerError,
+                yaml.YAMLError,
+                TypeError,
+                ValueError,
+                AttributeError,
+                KeyError,
+            ):
+                # The parse gate reports invalid staged input.
                 return updates, {}
         added = keep_routes(base, head) if record else []
         final = head

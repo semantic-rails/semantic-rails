@@ -162,20 +162,19 @@ def test_the_census_lists_each_refused_pair_with_the_refusal_its_query_raises(tm
     assert {(ACCOUNT, INVOICE), (INVOICE, ACCOUNT)} <= set(census_pairs(config)) - listed
 
 
-def test_census_pairs_start_at_every_entity_and_end_at_a_dimension(tmp_path):
+def test_census_pairs_start_and_end_at_every_reachable_entity(tmp_path):
     config = load_package_config(str(_write_package(tmp_path)))
     # An owner has no authored measure but may start a distinct-values or count query.
     with pytest.raises(SemanticLayerError) as exc_info:
         resolve_path(config, start=OWNER, target=INVOICE)
     assert exc_info.value.code == "AMBIGUOUS_PATH"
     assert {start for start, _ in census_pairs(config)} == {entity.id for entity in config.entities}
-    # Without a dimension the owner is no target either.
+    # A child group can target an owner even when its conditions read another entity.
     no_owner_fields = replace(
         config, dimensions=[row for row in config.dimensions if row.entity != OWNER]
     )
-    assert _pairs(route_census(no_owner_fields)["undecided"]) == [
-        pair for pair in DIAMOND_UNDECIDED if pair[1] != OWNER
-    ]
+    assert census_pairs(no_owner_fields) == census_pairs(config)
+    assert _pairs(route_census(no_owner_fields)["undecided"]) == DIAMOND_UNDECIDED
 
 
 def test_the_census_asks_the_resolver_once_per_multi_route_pair_and_reuses_its_cache(
@@ -587,6 +586,90 @@ def _small_package(tmp_path, entities, relationships, seed):
     return pkg
 
 
+@pytest.mark.parametrize("cardinality", ["one_to_many", "many_to_one"])
+def test_a_second_route_to_a_dimensionless_child_keeps_the_base_query_gold(tmp_path, cardinality):
+    pkg = _small_package(
+        tmp_path,
+        ["a", "b", "c", "d"],
+        {
+            "ab": ("a", "b", "id", "one_to_many", ["forward"]),
+            "bc": ("b", "c", "id", "one_to_many", ["forward"]),
+            "cd": ("c", "d", "d_id", "many_to_one", ["forward"]),
+        },
+        """
+        CREATE TABLE a(id INT, name VARCHAR, c_id INT, amount INT);
+        INSERT INTO a VALUES (1, 'A1', 2, 100), (2, 'A2', 1, 200);
+        CREATE TABLE b(id INT, name VARCHAR, a_id INT);
+        INSERT INTO b VALUES (10, 'B1', 1), (20, 'B2', 2);
+        CREATE TABLE c(id INT, b_id INT, a_id INT, d_id INT);
+        INSERT INTO c VALUES (1, 10, 2, 1), (2, 20, 1, 2);
+        CREATE TABLE d(id INT, name VARCHAR);
+        INSERT INTO d VALUES (1, 'yes'), (2, 'no');
+        """,
+    )
+    child_model = {"model": {"id": "c", "relation": "c", "keys": {"primary": ["id"]}}}
+    (pkg / "models/c.yml").write_text(yaml.safe_dump(child_model))
+    project = ArchitectProject(pkg, workspace_root=tmp_path)
+    graph = _graph(project)
+    del graph["graph"]["entities"]["c"]["key"]
+    graph["graph"]["relationships"]["ab"]["target"] = ["a_id"]
+    graph["graph"]["relationships"]["bc"]["target"] = ["b_id"]
+    (pkg / "graph.yml").write_text(yaml.safe_dump(graph))
+    base = load_package_config(str(pkg))
+    assert not any(dimension.entity == "entity.small_c" for dimension in base.dimensions)
+    query = _query(
+        "measure.small.a_amount",
+        where=[
+            {
+                "child": "entity.small_c",
+                "match": "any",
+                "where": [{"field": "dimension.small_d_name", "op": "=", "value": "yes"}],
+            }
+        ],
+    )
+
+    def answer():
+        return _rows(Runtime.from_path(str(pkg)).query(query), ["v"])
+
+    gold = answer()
+    assert gold == [(100,)]
+    relationship = {
+        "id": "relationship.ac",
+        "entities": ["a", "c"],
+        "cardinality": cardinality,
+        "allowed_directions": ["forward"],
+        "via": ["c_id"] if cardinality == "many_to_one" else ["id"],
+        "target": ["id"] if cardinality == "many_to_one" else ["a_id"],
+    }
+    graph["graph"]["relationships"]["ac"] = relationship
+    content = yaml.safe_dump(graph)
+    transaction = ProjectTransaction(pkg, workspace_root=tmp_path)
+    with transaction.virtual_project([ProjectFileUpdate("graph.yml", content.encode())]) as staged:
+        head = load_package_config(str(staged))
+    changes = census_module.route_changes(base, head)
+    census = route_census(head)
+    # Directory lint requires graph keys; the loader accepts the model's key.
+    report = project.write_file(
+        relative_path="graph.yml",
+        content=content,
+        expected_revision=project.revision(),
+        idempotency_key="child-route",
+        validate_after=False,
+    ).report
+    assert report["ok"] is True, report
+    pair = ("entity.small_a", "entity.small_c")
+    row = _pin(*pair, ["relationship.ab", "relationship.bc"])
+    assert {"row": row, "new_routes": [["relationship.ac"]]} in report["route_decisions_added"]
+    assert pair in _pairs(changes)
+    assert pair in _pairs(
+        census["undecided"] if cardinality == "one_to_many" else census["assumed"]
+    )
+    # The write settles the staged impact and census by retaining the earlier route.
+    assert report["route_changes"] == []
+    assert pair not in _pairs(route_census(load_package_config(str(pkg)))["undecided"])
+    assert answer() == gold
+
+
 def test_queries_without_authored_measures_keep_their_gold(tmp_path):
     pkg = _small_package(
         tmp_path,
@@ -760,6 +843,74 @@ def test_unexpected_staging_failures_write_no_files_revision_or_receipts(
             idempotency_key="failure",
             intent={"failure": failure},
         )
+    assert project.revision() == revision
+    assert _files_and_receipts(project) == before
+
+
+@pytest.mark.parametrize("load_number", [1, 2], ids=["base-load", "staged-load"])
+@pytest.mark.parametrize("error", [yaml.YAMLError, ValueError])
+def test_invalid_loader_input_reaches_the_parse_gate_and_rolls_back(
+    tmp_path, monkeypatch, load_number, error
+):
+    import semantic_rails.architect_transactions as transactions
+
+    project = _architect(tmp_path)
+    package = project.project_path / "package.yml"
+    assert project.write_file(
+        relative_path="package.yml", content=package.read_text() + "# previous write\n"
+    ).report["ok"]
+    revision, before = project.revision(), _files_and_receipts(project)
+    load = transactions.load_package_snapshot
+    calls = 0
+
+    def fail(path):
+        nonlocal calls
+        calls += 1
+        if calls == load_number:
+            raise error("invalid loader input")
+        return load(path)
+
+    monkeypatch.setattr(transactions, "load_package_snapshot", fail)
+    transaction = ProjectTransaction(project.project_path, workspace_root=tmp_path)
+    report = transaction.apply(
+        [ProjectFileUpdate("package.yml", b"schema_version: [\n")],
+        expected_revision=revision,
+        idempotency_key="invalid-input",
+        intent={"invalid": True},
+    ).report
+    assert (report["ok"], report["status"], report["rolled_back"]) == (
+        False,
+        "rolled_back_after_parse_error",
+        True,
+    )
+    assert report["parse"]["ok"] is False
+    assert report["errors"]
+    assert report["revision"] == project.revision() == revision
+    after = _files_and_receipts(project)
+    assert {path: after[path] for path in before} == before
+    # The parse gate preserves existing receipts and records only this failed attempt.
+    receipt = str(transaction._receipt_path("invalid-input").relative_to(tmp_path))
+    assert after.keys() - before.keys() == {receipt}
+    assert json.loads(after[receipt])["report"]["status"] == "rolled_back_after_parse_error"
+
+
+@pytest.mark.parametrize("repair", [False, True], ids=["preview", "repair-then-preview"])
+def test_an_architect_write_can_repair_invalid_yaml_and_preview_invalid_input(tmp_path, repair):
+    project = _architect(tmp_path)
+    package = project.project_path / "package.yml"
+    valid = package.read_text()
+    if repair:
+        package.write_text("schema_version: [\n")
+        report = project.write_file(relative_path="package.yml", content=valid).report
+        assert (report["ok"], report["status"]) == (True, "written")
+        assert package.read_text() == valid
+        load_package_config(str(project.project_path))
+    revision, before = project.revision(), _files_and_receipts(project)
+    preview = project.write_file(
+        relative_path="package.yml", content="schema_version: [\n", dry_run=True
+    ).report
+    assert (preview["ok"], preview["status"]) == (False, "preview_invalid")
+    assert preview["parse"]["ok"] is False
     assert project.revision() == revision
     assert _files_and_receipts(project) == before
 

@@ -2,8 +2,8 @@
 
 A route between two entities is a business definition, and ``fanout.resolve_route`` is the one
 place that applies the package's decisions. This module asks it about every pair a question
-can need: any entity as the start (distinct values and synthetic counts included), and an entity
-with a dimension, reachable from it, as the target.
+can need: any entity as the start (distinct values and synthetic counts included), and each
+other reachable entity as the target (child groups need no dimension on the child itself).
 
 * :func:`route_census` lists the pairs the resolver refuses until a decision is recorded
   (``undecided``) and multi-route pairs answered by the start's own key (``assumed``).
@@ -55,9 +55,8 @@ class RouteOutcome:
 
 def census_pairs(config: PackageConfig) -> list[Pair]:
     """Every (start, target) a question can need: ``start`` is any entity, and
-    ``target`` is another entity with a dimension that the relationships reach from it."""
+    ``target`` is each other entity that the relationships reach from it."""
     graph = get_package_analysis(config).graph
-    targets = {dimension.entity for dimension in config.dimensions}
     pairs: list[Pair] = []
     for start in sorted(entity.id for entity in config.entities):
         reached = {start}
@@ -67,7 +66,7 @@ def census_pairs(config: PackageConfig) -> list[Pair]:
                 if neighbor not in reached:
                     reached.add(neighbor)
                     pending.append(neighbor)
-        pairs.extend((start, target) for target in sorted(targets & reached) if target != start)
+        pairs.extend((start, target) for target in sorted(reached) if target != start)
     return pairs
 
 

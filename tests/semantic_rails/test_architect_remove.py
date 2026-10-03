@@ -334,13 +334,13 @@ def test_removing_the_signups_model_drops_an_id_form_pin_in_the_correctness_shop
     ]
     _dump(shop / "graph.yml", graph)
 
-    revision = project.revision()
-    before = (shop / "graph.yml").read_bytes()
-    # A malformed base row raises an unexpected loader error: staging stops before writing.
-    with pytest.raises(ValueError):
-        project.remove_object(kind="model", key="signups")
-    assert project.revision() == revision
-    assert (shop / "graph.yml").read_bytes() == before
+    report = project.remove_object(kind="model", key="signups").report
+
+    assert [row["key"] for row in report["removed"] if row["kind"] == "path_preferences"] == [
+        "entity.shop_order -> entity.shop_customer"
+    ]
+    # The row that isn't a mapping is left for the parse gate, which refuses it.
+    assert report["ok"] is False
     graph = yaml.safe_load((shop / "graph.yml").read_text(encoding="utf-8"))
     graph["graph"]["path_preferences"] = [
         {**ORDER_CUSTOMER_PINS["ids"], "relationship_path": ["relationship.orders_customer"]}

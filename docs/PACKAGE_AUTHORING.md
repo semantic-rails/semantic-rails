@@ -1705,7 +1705,7 @@ Four guard rails back this up:
 
 A route is a business definition, so a package needs one for every entity pair
 a question can need: every entity is a start, including distinct-values and
-synthetic-count queries, to each other entity with a reachable dimension. The
+synthetic-count queries, to each other reachable entity. The
 census resolves only pairs with two or more routes, once per pair; impact and
 keep reports resolve every pair, by the same route rule queries use.
 

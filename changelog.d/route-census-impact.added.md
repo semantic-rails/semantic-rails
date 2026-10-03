@@ -1,6 +1,6 @@
 - `semantic-rails check` and `validate` list the join routes a package still has to decide. The
   parse report's `route_census` names every entity pair a question can need (from any
-  entity to another entity with a dimension) that is refused with `AMBIGUOUS_PATH` until a
+  entity to each other reachable entity) that is refused with `AMBIGUOUS_PATH` until a
   `graph.path_preferences` row records its route (`undecided`, with the refusal's clarification
   options; pass an option's `decision` to `record_route_decision`), and
   the multi-route pairs answered by the start entity's own key (`assumed`, to confirm). One
