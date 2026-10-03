@@ -501,7 +501,7 @@ Three connection kinds are supported:
 - `snowflake_native` — direct connector via env-var indirection (account, user,
   password, etc. read from environment variables).
 
-Literal credentials in YAML are rejected.
+Literal secrets in YAML are rejected.
 
 For `snowflake_adbc`, driver names, shared-library paths and manifests belong to
 the runtime operator's environment; package options selecting them are rejected
@@ -511,9 +511,12 @@ with `QUERY_EXECUTION_ERROR`.
 Out-of-range timestamps such as `9999-12-31` refuse; cast those columns to
 `TIMESTAMP_*(6)` or `DATE` in the model.
 With `use_high_precision=true`, scale-0 `NUMBER` columns come back typed `decimal`.
-Package loading checks `account_env`, `user_env`, exactly one password or key
-source, and a key source when `private_key_passphrase_env` is authored, without
-reading credentials; `connection.name` is refused for this kind.
+Account and user may be literals (`account`, `user`) or env-indirected
+(`account_env`, `user_env`); the optional key passphrase may use
+`private_key_passphrase_env` or `private_key_passphrase_file`.
+Package loading checks both locators, exactly one password or key source, and a
+key source when a passphrase is authored, without reading credentials;
+`connection.name` is refused for this kind.
 
 ### Native adapter timeouts
 

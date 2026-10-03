@@ -24,6 +24,12 @@ from tests.semantic_rails.test_row_filters import OWN_ORDERS, _package
 
 SLOT = ParameterSlot("tenant", "string")
 OPTIONS = {"account_env": "TEST_ACCOUNT", "user_env": "TEST_USER", "password_env": "TEST_PASSWORD"}
+LOCATORS = [
+    {"account_env": "TEST_ACCOUNT", "user_env": "TEST_USER"},
+    {"account": "test-account", "user": "test-user"},
+    {"account": "test-account", "user_env": "TEST_USER"},
+    {"account_env": "TEST_ACCOUNT", "user": "test-user"},
+]
 
 
 class Cursor:
@@ -90,9 +96,14 @@ def driver(monkeypatch):
         {"password_file": "/not-read/password"},
         {"private_key_env": "TEST_KEY"},
         {"private_key_file": "/not-read/key", "private_key_passphrase_env": "TEST_PASSPHRASE"},
+        {
+            "private_key_file": "/not-read/key",
+            "private_key_passphrase_file": "/not-read/passphrase",
+        },
     ],
 )
-def test_snowflake_dispatch_and_package_loading_without_named_profile(tmp_path, auth):
+@pytest.mark.parametrize("locators", LOCATORS)
+def test_snowflake_dispatch_and_package_loading_without_named_profile(tmp_path, auth, locators):
     root = _package(tmp_path / "filtered", [OWN_ORDERS])
     path = root / "package.yml"
     payload = yaml.safe_load(path.read_text())
@@ -100,7 +111,7 @@ def test_snowflake_dispatch_and_package_loading_without_named_profile(tmp_path, 
         warehouse="snowflake",
         connection={
             "kind": "snowflake_adbc",
-            "options": {"account_env": "TEST_ACCOUNT", "user_env": "TEST_USER", **auth},
+            "options": {**locators, **auth},
         },
     )
     payload["package"].pop("default_db", None)
@@ -127,6 +138,10 @@ def test_snowflake_dispatch_and_package_loading_without_named_profile(tmp_path, 
         ),
         ({**OPTIONS, "private_key_env": "TEST_KEY"}, "", "exactly one"),
         ({**OPTIONS, "private_key_passphrase_env": "TEST_PASSPHRASE"}, "", "passphrase"),
+        ({**OPTIONS, "private_key_passphrase_file": "/not-read/passphrase"}, "", "passphrase"),
+        ({**OPTIONS, "password": "literal-secret-canary"}, "", "password"),
+        ({**OPTIONS, "private_key": "literal-secret-canary"}, "", "private_key"),
+        ({**OPTIONS, "private_key_passphrase": "literal-secret-canary"}, "", "passphrase"),
         (OPTIONS, "ignored-profile", "name"),
     ],
     ids=[
@@ -135,6 +150,10 @@ def test_snowflake_dispatch_and_package_loading_without_named_profile(tmp_path, 
         "auth-missing",
         "conflicting-auth",
         "passphrase-without-key",
+        "passphrase-file-without-key",
+        "literal-password",
+        "literal-key",
+        "literal-passphrase",
         "named-profile",
     ],
 )
@@ -170,6 +189,37 @@ def test_auth_structure_refused_at_load_report_and_guided_setup(tmp_path, option
     )
     assert dialog["ok"] is False
     assert dialog["recommended_next_tool"] == "setup_project_dialog"
+    package = PackageMeta(
+        package_id="test",
+        name="test",
+        description="test",
+        warehouse="snowflake",
+        connection=ConnectionSpec(kind="snowflake_adbc", name=name, options=options),
+    )
+    with pytest.raises(SemanticLayerError, match=error) as caught:
+        create_warehouse_adapter(package)._snowflake_connect_options()
+    assert caught.value.code == "INVALID_CONFIG"
+
+
+@pytest.mark.parametrize("source", ["env", "file"])
+def test_passphrase_requires_key_in_shared_validator(source):
+    from semantic_rails.dialects import snowflake_adbc_connect_errors
+
+    key = f"private_key_passphrase_{source}"
+    assert snowflake_adbc_connect_errors({**OPTIONS, key: "not-read"}) == (
+        f"snowflake_adbc {key} requires a key source",
+    )
+
+
+def test_embedding_exports_snowflake_adbc_options():
+    from semantic_rails import embedding
+    from semantic_rails.dialects import SNOWFLAKE_ADBC_CONNECTION_OPTIONS
+
+    assert "SNOWFLAKE_ADBC_CONNECTION_OPTIONS" in embedding.__all__
+    assert embedding.SNOWFLAKE_ADBC_CONNECTION_OPTIONS is SNOWFLAKE_ADBC_CONNECTION_OPTIONS
+    assert {"account", "user", "private_key_passphrase_file"} <= set(
+        embedding.SNOWFLAKE_ADBC_CONNECTION_OPTIONS
+    )
 
 
 def test_direct_adapter_cannot_ignore_named_profile():
@@ -186,9 +236,19 @@ def test_direct_adapter_cannot_ignore_named_profile():
 
 
 @pytest.mark.parametrize(
-    "auth", [{"password_env": "TEST_PASSWORD"}, {"private_key_env": "TEST_KEY"}]
+    "auth",
+    [
+        {"password_env": "TEST_PASSWORD"},
+        {"password_file": "/not-read/password"},
+        {"private_key_env": "TEST_KEY"},
+        {
+            "private_key_file": "/not-read/key",
+            "private_key_passphrase_file": "/not-read/passphrase",
+        },
+    ],
 )
-def test_config_report_and_guided_setup_accept_unnamed_snowflake_adbc(tmp_path, auth):
+@pytest.mark.parametrize("locators", LOCATORS)
+def test_config_report_and_guided_setup_accept_unnamed_snowflake_adbc(tmp_path, auth, locators):
     from semantic_rails.architect_mcp import create_architect_mcp_server
     from tests.semantic_rails.test_architect_create_project import _setup_dialog
     from tests.semantic_rails.test_config_validation import (
@@ -199,7 +259,7 @@ def test_config_report_and_guided_setup_accept_unnamed_snowflake_adbc(tmp_path, 
     root = tmp_path / "snowflake_adbc_demo"
     _write_minimal_snowflake_package(root)
     payload = yaml.safe_load((root / "package.yml").read_text())
-    options = {"account_env": "TEST_ACCOUNT", "user_env": "TEST_USER", **auth}
+    options = {**locators, **auth}
     payload["package"]["connection"] = {"kind": "snowflake_adbc", "options": options}
     _write_yaml(root / "package.yml", payload)
     report, _ = parse_config_report(resolve_package_reference(path=str(root)))
@@ -216,6 +276,55 @@ def test_config_report_and_guided_setup_accept_unnamed_snowflake_adbc(tmp_path, 
     )
     assert dialog["ok"] is True, dialog
     assert dialog["recommended_next_tool"] == "create_project"
+
+
+@pytest.mark.parametrize("auth", ["password", "private_key", "encrypted_private_key"])
+def test_literal_locators_and_file_secrets_without_environment(monkeypatch, tmp_path, auth):
+    for name in ("ACCOUNT", "USER", "PASSWORD", "KEY", "PASSPHRASE", "PRIVATE_KEY_PASSPHRASE"):
+        monkeypatch.delenv(f"TEST_{name}", raising=False)
+        monkeypatch.delenv(f"SR_SNOWFLAKE_{name}", raising=False)
+    secret = tmp_path / "secret"
+    secret.write_text("file-secret-canary\n")
+    key_pair = auth != "password"
+    options = {
+        "account": "literal-account",
+        "user": "literal-user",
+        "private_key_file" if key_pair else "password_file": str(secret),
+    }
+    if auth == "encrypted_private_key":
+        passphrase = tmp_path / "passphrase"
+        passphrase.write_text("file-passphrase-canary\n")
+        options["private_key_passphrase_file"] = str(passphrase)
+    package = PackageMeta(
+        package_id="test",
+        name="test",
+        description="test",
+        warehouse="snowflake",
+        connection=ConnectionSpec(kind="snowflake_adbc", options=options),
+    )
+    # Any environment lookup during construction or credential resolution fails.
+    with monkeypatch.context() as guarded:
+        guarded.setattr("semantic_rails.db_parts.common.os.environ", None)
+        adapter = create_warehouse_adapter(package)
+        assert isinstance(adapter, AdbcAdapter)
+        assert adapter.profile == SNOWFLAKE_PROFILE
+        connect_options = adapter._snowflake_connect_options()
+        adapter.close()
+    expected = {
+        "adbc.snowflake.sql.account": "literal-account",
+        "username": "literal-user",
+        "adbc.snowflake.sql.auth_type": "auth_jwt" if key_pair else "auth_snowflake",
+        "adbc.snowflake.sql.client_option.use_high_precision": "true",
+        "adbc.snowflake.sql.client_option.max_timestamp_precision": "nanoseconds_error_on_overflow",
+        "adbc.snowflake.sql.client_option.jwt_private_key_pkcs8_value"
+        if key_pair
+        else "password": ("file-secret-canary"),
+    }
+    if auth == "encrypted_private_key":
+        expected["adbc.snowflake.sql.client_option.jwt_private_key_pkcs8_password"] = (
+            "file-passphrase-canary"
+        )
+    assert connect_options == expected
 
 
 @pytest.mark.parametrize(
