@@ -2190,21 +2190,27 @@ def _parent_lookup_leaf_select(
     joins = [*joins, SqlJoin(join_type="LEFT", table=SqlTableRef(name=source), on=on)]
     value: Any = SqlIdentifier(parts=[source, "__lookup_value"])
     if resolves_to_zero("", source_measure):
-        # A parent with no source rows reads 0 only while the source holds a value in scope.
+        # The source settled each parent it holds. One it lacks (no source rows) reads 0 only
+        # while the source holds a value in scope, the test its own guard applied; a NULL key
+        # is no parent at all.
         require_settled_source(source_sql, {"lookup": measure.id})
         gate_cte, gate_join, gate_condition = absent_entities_gate(
             f"{source}_gate", source, "__lookup_value"
         )
         ctes.append(gate_cte)
         joins.append(gate_join)
-        has_parent: Any = gate_condition
+        found = SqlIdentifier(parts=[source, via_dims[keys[0][1]]])
+        absent: Any = gate_condition
         for column, _ in keys:
-            has_parent = SqlBinary(
-                SqlBinary(_column_ref(table, column), "IS NOT", SqlLiteral(None)),
-                "AND",
-                has_parent,
+            absent = SqlBinary(
+                SqlBinary(_column_ref(table, column), "IS NOT", SqlLiteral(None)), "AND", absent
             )
-        value = SqlCase([SqlCaseWhen(has_parent, SqlCall("COALESCE", [value, SqlLiteral(0)]))])
+        value = SqlCase(
+            [
+                SqlCaseWhen(SqlBinary(found, "IS NOT", SqlLiteral(None)), value),
+                SqlCaseWhen(absent, SqlLiteral(0)),
+            ]
+        )
     return SqlSelect(
         ctes=ctes,
         select=[*key_fields, SqlField(SqlCall("MAX", [value]), bound.alias)],

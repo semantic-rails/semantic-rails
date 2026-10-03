@@ -383,6 +383,15 @@ def test_null_and_zero(runtime: Runtime, package_dir: Path) -> None:
     assert set(counts.values()) == {1} and len(counts) == len(rows)
 
 
+def test_empty_groups_are_settled_in_one_place(runtime: Runtime) -> None:
+    from tests.semantic_rails.empty_groups_invariant import assert_settled_in_one_place
+
+    beside = {"expression": {"measure": _measure("claim_count")}, "as": "claims"}
+    for payload in (_query(), {**_query(), "select": [*_query()["select"], beside]}):
+        compiled = compile_query(runtime.config, None, payload)
+        assert_settled_in_one_place(compiled, runtime.config)
+
+
 def test_an_unobserved_source_reads_null_with_one_warning(runtime: Runtime) -> None:
     result = runtime.query(_query("waived_coverage_amount"))
     assert {row["v"] for row in result["rows"]} == {None}
