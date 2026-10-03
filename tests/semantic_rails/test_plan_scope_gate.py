@@ -23,6 +23,7 @@ from __future__ import annotations
 import pytest
 
 from semantic_rails.metadata import discover_payload
+from semantic_rails.planner import plan_payload
 from tests.plan_candidate_envelope import plan_candidate_envelope
 
 NONSENSE_INTENTS = [
@@ -100,6 +101,27 @@ def test_plan_lets_reasonable_intents_through(runtime_factory, intent):
     assert payload["candidates"], f"reasonable intent {intent!r} should still produce candidates"
     assert "out_of_scope" not in payload
     assert "low_relevance" not in payload
+
+
+def test_customer_ranking_uses_the_customer_key_and_matches_reference_sql(runtime_factory):
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(runtime, intent="top customers by revenue")
+        assert payload["status"] == "ok", payload.get("why")
+        assert payload["next"]["ready_for"] == ["execute"]
+        query = payload["best"]["query_ir"]
+        assert query["group_by"] == ["dimension.jaffle_customer_id"]
+        assert "time" not in query
+        rows = runtime.query(query)["rows"]
+        reference = runtime.adapter.query(
+            "SELECT customer_id, SUM(order_total_cents / 100.0) AS revenue"
+            " FROM jaffle_order GROUP BY customer_id ORDER BY revenue DESC LIMIT 5"
+        )
+        assert {row["dimension.jaffle_customer_id"]: float(row["revenue_usd"]) for row in rows} == (
+            pytest.approx({row["customer_id"]: float(row["revenue"]) for row in reference})
+        )
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize("intent", NONSENSE_INTENTS)

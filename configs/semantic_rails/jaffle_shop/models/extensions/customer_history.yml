@@ -18,6 +18,9 @@ model:
       kind: timestamp
       class: state_time
   dimensions:
+    customer_id:
+      label: Historical customer id
+      kind: id
     customer_segment:
       as: dimension.jaffle_customer_history_segment
       label: Customer segment

@@ -166,6 +166,7 @@ FILES = {
 HOP = "relationship.usage_account_segment"
 OUT_HOP = "relationship.account_segment_account"
 ACCOUNT = "entity.hist_account"
+ACCOUNT_KEY = "dimension.hist_account_id"
 HISTORY = "entity.hist_account_segment"
 SEGMENT = "dimension.hist_account_segment_segment"
 HISTORY_KEY = "dimension.hist_account_segment_account_id"
@@ -414,6 +415,21 @@ def test_a_hop_out_of_the_table_holding_the_window_needs_no_time(runtime, gold):
     assert by_region == gold(
         "SELECT (SELECT a.region FROM accounts AS a WHERE a.account_id = s.account_id),"
         " SUM(s.seats) FROM account_segments AS s GROUP BY 1"
+    )
+
+
+def test_a_hop_out_of_the_validity_window_keeps_the_source_key(runtime, package, gold):
+    query = _seats(group_by=[ACCOUNT_KEY])
+    config = load_package_config(str(package))
+    sql = compile_query(config, Registry(config), query)["sql"]
+
+    by_account = _rows(runtime, query, [ACCOUNT_KEY])
+
+    assert "account_segments.account_id AS g1" in sql
+    assert "JOIN accounts" not in sql
+    assert by_account == {("A1",): 7.0, ("A2",): 1.0}
+    assert by_account == gold(
+        "SELECT account_id, SUM(seats) FROM account_segments GROUP BY account_id"
     )
 
 

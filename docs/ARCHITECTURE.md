@@ -410,11 +410,13 @@ Important planner behaviors:
   leaves; routed leaves expose `aggregate_relation_id` and physical/performance
   plan metadata
 - historical joins use temporal-validity conditions anchored to the effective time axis
-- a key dimension reached through a relationship declaring `temporal_validity` uses that
+- a key dimension reached by a hop into the validity window uses that temporal
   join and validity rewrite, even when the source has a matching foreign-key column.
   Missing history versions group under NULL; without a query time, incoming history
-  lookups refuse with `FANOUT_UNSAFE`. Ordinary non-temporal co-located keys keep their
-  source-column shortcut
+  lookups refuse with `FANOUT_UNSAFE`. Co-located keys keep their source-column shortcut
+  for non-temporal hops and hops out of the table holding the window, where each source
+  row is already one version. Jaffle Shop labels its historical customer key distinctly
+  so all-time customer rankings use the ordinary customer key
 - a many-to-one or one-to-one hop never removes a measure's row: it is a left join in every
   leaf, whatever reads the looked-up dimension, so a row with a NULL or unmatched foreign key
   keeps its measure value under NULL. Only these reads keep an inner join: a time role
