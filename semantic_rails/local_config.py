@@ -7,15 +7,13 @@ developer can omit ``--path`` after opting into a profile.
 
 from __future__ import annotations
 
-import contextlib
-import os
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from .atomic_files import atomic_write_bytes
 from .config import LOCAL_CONFIG_DIRNAME as LOCAL_CONFIG_DIRNAME
 from .config import SEMANTIC_RAILS_HOME_ENV as SEMANTIC_RAILS_HOME_ENV
 from .config import semantic_rails_home as semantic_rails_home
@@ -186,9 +184,10 @@ def init_local_profile(
         "profiles": profiles,
     }
     profiles_path = existing.path
-    _atomic_write_text(
+    atomic_write_bytes(
         profiles_path,
-        yaml.safe_dump(data, sort_keys=False, allow_unicode=False),
+        (yaml.safe_dump(data, sort_keys=False, allow_unicode=False)).encode("utf-8"),
+        mode=0o600,
     )
     loaded = load_local_profiles(profiles_path)
     return local_profile_report(loaded)
@@ -236,24 +235,6 @@ def _require_package_target(config: LocalProfiles) -> None:
             "Public engine profiles support package targets only.",
             details={"path": str(config.path), "mode": mode},
         )
-
-
-def _atomic_write_text(path: Path, content: str) -> None:
-    """Replace local developer state without leaving a partial YAML file."""
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(temporary)
-        raise
 
 
 def _non_empty(value: str, field_name: str) -> str:

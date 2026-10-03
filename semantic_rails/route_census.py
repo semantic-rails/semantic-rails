@@ -25,6 +25,7 @@ from .compiler_parts.indexes import get_package_analysis
 from .errors import SemanticLayerError
 from .fanout import (
     _has_multiple_routes,
+    entity_label,
     package_hop_limit,
     package_route,
     route_reading,
@@ -193,10 +194,6 @@ def route_change_lines(
 ) -> list[str]:
     """``route_changes`` entries in business words, one Markdown bullet each."""
 
-    def label(config: PackageConfig, entity_id: str) -> str:
-        entity = get_package_analysis(config).entities.get(entity_id)
-        return (entity.label or entity.name) if entity is not None else entity_id
-
     def reads(config: PackageConfig, start: str, side: dict[str, Any]) -> str:
         if "refused" in side:
             return f"refused ({side['refused']})"
@@ -206,7 +203,7 @@ def route_change_lines(
     for change in changes:
         start, target = change["source_entity"], change["target_entity"]
         lines.append(
-            f"- {label(head, start)} to {label(head, target)}: was "
+            f"- {entity_label(head, start)} to {entity_label(head, target)}: was "
             f"{reads(base, start, change['base'])}, now {reads(head, start, change['head'])}"
         )
     return lines

@@ -58,15 +58,14 @@ from .commands.query import (
     cmd_validate,
 )
 from .common import (
-    _add_config_reference_args,
-    _add_optional_package_or_path_args,
+    _add_optional_reference_args,
     _add_package_or_path_args,
     _add_policy_context_args,
     _add_response_detail_args,
-    _package_ref_from_args,
     _policy_context_from_args,
     _print_stderr,
     _query_payload_from_args,
+    _ref_from_args,
 )
 from .output import _print_error_envelope
 
@@ -80,7 +79,7 @@ def _config_for_error_enrichment(args: argparse.Namespace) -> Any | None:
     enrichment must never mask the original error.
     """
     with contextlib.suppress(Exception):
-        ref = _package_ref_from_args(args)
+        ref = _ref_from_args(args)
         if ref.source_path:
             return load_package_config(ref.source_path)
         if ref.package_id:
@@ -250,7 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
         "parse-config",
         description="Parse a package config and return the normalized PackageConfig dataclass payload.",
     )
-    _add_config_reference_args(p_parse_config, package_choices)
+    _add_optional_reference_args(p_parse_config, package_choices, required=True)
     p_parse_config.set_defaults(func=cmd_parse_config)
 
     p_export_contract = sub.add_parser(
@@ -260,7 +259,7 @@ def build_parser() -> argparse.ArgumentParser:
             "for dbt, SQLMesh, and other binding packages."
         ),
     )
-    _add_config_reference_args(p_export_contract, package_choices)
+    _add_optional_reference_args(p_export_contract, package_choices, required=True)
     p_export_contract.add_argument(
         "--format",
         choices=["validation", "metrics"],
@@ -288,7 +287,7 @@ def build_parser() -> argparse.ArgumentParser:
             "won't enforce them. See docs/OSSIE.md."
         ),
     )
-    _add_config_reference_args(p_export, package_choices)
+    _add_optional_reference_args(p_export, package_choices, required=True)
     p_export.add_argument(
         "--format",
         required=True,
@@ -306,7 +305,7 @@ def build_parser() -> argparse.ArgumentParser:
         "validate-config",
         description="Validate a package config (entities, joins, measures, metrics) and report structural errors.",
     )
-    _add_config_reference_args(p_validate_config, package_choices)
+    _add_optional_reference_args(p_validate_config, package_choices, required=True)
     p_validate_config.add_argument(
         "--quiet",
         action="store_true",
@@ -323,7 +322,7 @@ def build_parser() -> argparse.ArgumentParser:
         "check",
         description="One-command package gate: parse + validate + run examples + run tests, optionally write a manifest-backed artifact.",
     )
-    _add_config_reference_args(p_check, package_choices)
+    _add_optional_reference_args(p_check, package_choices, required=True)
     p_check.add_argument(
         "--compare-path",
         default="",
@@ -350,7 +349,7 @@ def build_parser() -> argparse.ArgumentParser:
         "build-package",
         description="Build a manifest-backed deployable package artifact (.tar.gz) from a config.",
     )
-    _add_config_reference_args(p_build_package, package_choices)
+    _add_optional_reference_args(p_build_package, package_choices, required=True)
     p_build_package.add_argument(
         "--output",
         required=True,
@@ -372,21 +371,21 @@ def build_parser() -> argparse.ArgumentParser:
         "run-examples",
         description="Run the package-local example queries (declared in examples blocks) against the package.",
     )
-    _add_config_reference_args(p_run_examples, package_choices)
+    _add_optional_reference_args(p_run_examples, package_choices, required=True)
     p_run_examples.set_defaults(func=cmd_run_examples)
 
     p_test_package = sub.add_parser(
         "test-package",
         description="Run the package-local tests (declared in tests blocks) against the package.",
     )
-    _add_config_reference_args(p_test_package, package_choices)
+    _add_optional_reference_args(p_test_package, package_choices, required=True)
     p_test_package.set_defaults(func=cmd_test_package)
 
     p_diff_package = sub.add_parser(
         "diff-package",
         description="Diff a package config against a baseline (path or git ref) and report structural changes.",
     )
-    _add_config_reference_args(p_diff_package, package_choices)
+    _add_optional_reference_args(p_diff_package, package_choices, required=True)
     p_diff_package.add_argument(
         "--compare-path",
         default="",
@@ -403,7 +402,7 @@ def build_parser() -> argparse.ArgumentParser:
         "impact-report",
         description="Report the downstream impact of changes between a config and a baseline (path or git ref).",
     )
-    _add_config_reference_args(p_impact_report, package_choices)
+    _add_optional_reference_args(p_impact_report, package_choices, required=True)
     p_impact_report.add_argument(
         "--compare-path",
         default="",
@@ -420,7 +419,7 @@ def build_parser() -> argparse.ArgumentParser:
         "promote-package",
         description="Promote a package to a target environment (gates on validation + impact + tests).",
     )
-    _add_config_reference_args(p_promote_package, package_choices)
+    _add_optional_reference_args(p_promote_package, package_choices, required=True)
     p_promote_package.add_argument(
         "--environment",
         required=True,
@@ -663,7 +662,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Run an MCP package check and preview or install Claude/Codex MCP client config."
         ),
     )
-    _add_optional_package_or_path_args(p_mcp_setup, package_choices)
+    _add_optional_reference_args(p_mcp_setup, package_choices)
     p_mcp_setup.add_argument(
         "--client",
         choices=CLIENTS,
@@ -694,7 +693,7 @@ def build_parser() -> argparse.ArgumentParser:
         "start",
         description="Start a local managed MCP HTTP server in the background (POSIX only).",
     )
-    _add_optional_package_or_path_args(p_mcp_start, package_choices)
+    _add_optional_reference_args(p_mcp_start, package_choices)
     p_mcp_start.add_argument("--name", default="default", help="Local server name.")
     p_mcp_start.add_argument("--host", default=DEFAULT_MCP_HOST, help="Host to bind.")
     p_mcp_start.add_argument(
@@ -712,7 +711,7 @@ def build_parser() -> argparse.ArgumentParser:
             "by server name or package path (POSIX only)."
         ),
     )
-    _add_optional_package_or_path_args(p_mcp_stop, package_choices)
+    _add_optional_reference_args(p_mcp_stop, package_choices)
     p_mcp_stop.add_argument(
         "--name",
         default="default",
@@ -724,14 +723,14 @@ def build_parser() -> argparse.ArgumentParser:
         "status",
         description="Show managed local MCP HTTP servers and available MCP launch commands.",
     )
-    _add_optional_package_or_path_args(p_mcp_status, package_choices)
+    _add_optional_reference_args(p_mcp_status, package_choices)
     p_mcp_status.set_defaults(func=cmd_mcp_status)
 
     p_mcp_client_config = mcp_sub.add_parser(
         "client-config",
         description="Preview or install Claude/Codex MCP client configuration.",
     )
-    _add_optional_package_or_path_args(p_mcp_client_config, package_choices)
+    _add_optional_reference_args(p_mcp_client_config, package_choices)
     p_mcp_client_config.add_argument(
         "--client",
         choices=CLIENTS,
@@ -765,7 +764,7 @@ def build_parser() -> argparse.ArgumentParser:
         "doctor",
         description="Run a configuration doctor against a package: structural checks, common authoring pitfalls, fix hints.",
     )
-    _add_config_reference_args(p_doctor, package_choices)
+    _add_optional_reference_args(p_doctor, package_choices, required=True)
     p_doctor.set_defaults(func=cmd_doctor)
 
     p_init = sub.add_parser(

@@ -317,27 +317,44 @@ class SqlDialect:
         }
 
 
-@dataclass(frozen=True)
-class SnowflakeDialect(SqlDialect):
-    name: str = "snowflake"
-
-    def quote_string_literal(self, value: str) -> str:
-        return backslash_escaped_string_literal(value)
-
+class _OrderedSetPercentile:
     def percentile_cont(self, expr: Any, percentile: float) -> Any:
         return SqlWithinGroup(
             SqlCall("PERCENTILE_CONT", [SqlLiteral(percentile)]),
             order_by=[SqlOrderTerm(expr=expr, direction="ASC")],
         )
 
-    def first_value(self, expr: Any, order_expr: Any) -> Any:
-        return SqlCall("MIN_BY", [expr, order_expr])
 
+class _ConvertTimezone:
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
         # Native: CONVERT_TIMEZONE(sourceTz, targetTz, ts). This spelling
         # used to be the base-class default for every warehouse, which is
         # why the other dialects needed correcting rather than adding.
         return SqlCall("CONVERT_TIMEZONE", [SqlLiteral(source_tz), SqlLiteral(target_tz), ts_expr])
+
+
+class _NestedTimezone:
+    def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
+        # `timezone(tz, naive_ts)` reads the naive value as wall-clock in
+        # `tz` and yields an instant; `timezone(tz, instant)` renders an
+        # instant back to naive wall-clock in `tz`. Nesting them therefore
+        # reinterprets source -> target. Verified on DuckDB 1.5.3:
+        # 2024-01-15 12:00 UTC -> 2024-01-15 07:00 America/New_York.
+        return SqlCall(
+            "timezone",
+            [SqlLiteral(target_tz), SqlCall("timezone", [SqlLiteral(source_tz), ts_expr])],
+        )
+
+
+@dataclass(frozen=True)
+class SnowflakeDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
+    name: str = "snowflake"
+
+    def quote_string_literal(self, value: str) -> str:
+        return backslash_escaped_string_literal(value)
+
+    def first_value(self, expr: Any, order_expr: Any) -> Any:
+        return SqlCall("MIN_BY", [expr, order_expr])
 
     def last_value(self, expr: Any, order_expr: Any) -> Any:
         return SqlCall("MAX_BY", [expr, order_expr])
@@ -390,7 +407,7 @@ class SnowflakeDialect(SqlDialect):
 
 
 @dataclass(frozen=True)
-class DuckDbDialect(SqlDialect):
+class DuckDbDialect(_NestedTimezone, SqlDialect):
     name: str = "duckdb"
 
     def day_series(self, start: Any, end: Any, source: str) -> SqlSelect:
@@ -408,20 +425,9 @@ class DuckDbDialect(SqlDialect):
     def naive_date_clock(self, expr: Any) -> Any:
         return self.timestamp_cast(expr)
 
-    def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
-        # `timezone(tz, naive_ts)` reads the naive value as wall-clock in
-        # `tz` and yields an instant; `timezone(tz, instant)` renders an
-        # instant back to naive wall-clock in `tz`. Nesting them therefore
-        # reinterprets source -> target. Verified on DuckDB 1.5.3:
-        # 2024-01-15 12:00 UTC -> 2024-01-15 07:00 America/New_York.
-        return SqlCall(
-            "timezone",
-            [SqlLiteral(target_tz), SqlCall("timezone", [SqlLiteral(source_tz), ts_expr])],
-        )
-
 
 @dataclass(frozen=True)
-class PostgresDialect(SqlDialect):
+class PostgresDialect(_OrderedSetPercentile, _NestedTimezone, SqlDialect):
     """PostgreSQL (ADBC, ``postgres_native``).
 
     Quirks covered here (each verified against PostgreSQL 16):
@@ -459,17 +465,6 @@ class PostgresDialect(SqlDialect):
     def naive_date_clock(self, expr: Any) -> Any:
         return self.timestamp_cast(expr)
 
-    def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
-        # `timezone(tz, naive_ts)` reads the naive value as wall-clock in
-        # `tz` and yields an instant; `timezone(tz, instant)` renders an
-        # instant back to naive wall-clock in `tz`. Nesting them therefore
-        # reinterprets source -> target. Verified on DuckDB 1.5.3:
-        # 2024-01-15 12:00 UTC -> 2024-01-15 07:00 America/New_York.
-        return SqlCall(
-            "timezone",
-            [SqlLiteral(target_tz), SqlCall("timezone", [SqlLiteral(source_tz), ts_expr])],
-        )
-
     # Fixed-length units expressed as a timestamp difference (PG renders
     # no bare INTERVAL literal through this AST, but `ts2 - ts1` IS an
     # interval, so `value * (ts2 - ts1)` scales it exactly).
@@ -483,12 +478,6 @@ class PostgresDialect(SqlDialect):
     }
 
     _MONTHS_PER_UNIT = {"month": 1, "quarter": 3, "year": 12}
-
-    def percentile_cont(self, expr: Any, percentile: float) -> Any:
-        return SqlWithinGroup(
-            SqlCall("PERCENTILE_CONT", [SqlLiteral(percentile)]),
-            order_by=[SqlOrderTerm(expr=expr, direction="ASC")],
-        )
 
     def median(self, expr: Any) -> Any:
         # PG has no MEDIAN; PERCENTILE_CONT(0.5) is the exact equivalent.
@@ -881,7 +870,7 @@ class BigQueryDialect(SqlDialect):
 
 
 @dataclass(frozen=True)
-class DatabricksDialect(SqlDialect):
+class DatabricksDialect(_OrderedSetPercentile, _ConvertTimezone, SqlDialect):
     """Databricks / Spark SQL. Null-safe equality is ``<=>``.
 
     Parity notes (vs the DuckDB reference):
@@ -903,19 +892,8 @@ class DatabricksDialect(SqlDialect):
         # SEQUENCE over DATEs includes its end and steps one day by default.
         return _day_rows(SqlCall("EXPLODE", [SqlCall("SEQUENCE", [start, end])]), source)
 
-    def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
-        # Databricks SQL provides a Snowflake-compatible
-        # convert_timezone(sourceTz, targetTz, ts).
-        return SqlCall("CONVERT_TIMEZONE", [SqlLiteral(source_tz), SqlLiteral(target_tz), ts_expr])
-
     def quote_string_literal(self, value: str) -> str:
         return backslash_escaped_string_literal(value)
-
-    def percentile_cont(self, expr: Any, percentile: float) -> Any:
-        return SqlWithinGroup(
-            SqlCall("PERCENTILE_CONT", [SqlLiteral(percentile)]),
-            order_by=[SqlOrderTerm(expr=expr, direction="ASC")],
-        )
 
     def first_value(self, expr: Any, order_expr: Any) -> Any:
         return SqlCall("MIN_BY", [expr, order_expr])
