@@ -75,6 +75,7 @@ from .db import (
     seed_digest,
 )
 from .db_parts.base import query_with_limits, reject_parameters
+from .db_parts.duckdb_confinement import confinement_directory, require_inside
 from .diagnostics import (
     enrich_diagnostic_candidates,
     enrich_expression_ast_error,
@@ -1781,7 +1782,7 @@ def _is_repo_managed_source(path: str) -> bool:
 
 
 class Runtime:
-    def __init__(self, package_id: str):
+    def __init__(self, package_id: str, *, confine_to: str | os.PathLike[str] = ""):
         source_path = get_package_path(package_id)
         # Built-in packages (repo checkout or installed share dir) keep
         # their seeded assets under the project data/ root; anything else
@@ -1793,6 +1794,7 @@ class Runtime:
             package_id=package_id,
             source_path=source_path,
             prefer_package_root_assets=not project_managed_source(source_path),
+            confine_to=confine_to,
         )
 
     @classmethod
@@ -1825,6 +1827,7 @@ class Runtime:
         *,
         package_id: str = "",
         prefer_package_root_assets: bool | None = None,
+        confine_to: str | os.PathLike[str] = "",
     ) -> Runtime:
         source_path = snapshot.source_path
         if prefer_package_root_assets is None:
@@ -1839,6 +1842,7 @@ class Runtime:
             package_id=package_id,
             source_path=source_path,
             prefer_package_root_assets=prefer_assets,
+            confine_to=confine_to,
         )
         return runtime
 
@@ -1849,7 +1853,9 @@ class Runtime:
         package_id: str,
         source_path: str,
         prefer_package_root_assets: bool,
+        confine_to: str | os.PathLike[str] = "",
     ) -> None:
+        self._confine_to = confinement_directory(confine_to) if confine_to else ""
         self._snapshot = snapshot
         config = snapshot.config
         self.package_id = package_id or config.package.package_id
@@ -2001,6 +2007,8 @@ class Runtime:
         """
         if self.warehouse != "duckdb":
             return
+        if self._confine_to:
+            self.db_path = require_inside(self._confine_to, self.db_path, option="database path")
         seed = self._config.package.seed
         for _attempt in range(2):
             if os.path.islink(self.db_path) and not os.path.exists(self.db_path):
@@ -2012,6 +2020,12 @@ class Runtime:
                     details={"default_db": self.db_path, "reason": "default_db_broken_link"},
                 )
             if not os.path.exists(self.db_path):
+                if self._confine_to:
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        "A confined Runtime requires an existing database; build it first.",
+                        details={"reason": "duckdb_confined_default_db_missing"},
+                    )
                 if seed.kind == SEED_KIND_EXTERNAL:
                     raise SemanticLayerError(
                         "INVALID_CONFIG",
@@ -2215,7 +2229,9 @@ class Runtime:
             if self.adapter is None:
                 if self.warehouse == "duckdb":
                     self._ensure_db()
-                self.adapter = create_warehouse_adapter(self._config.package, db_path=self.db_path)
+                self.adapter = create_warehouse_adapter(
+                    self._config.package, db_path=self.db_path, confine_to=self._confine_to
+                )
                 self._seed_warnings = self._stale_seed_warnings()
             return self.adapter
 

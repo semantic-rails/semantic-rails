@@ -115,6 +115,8 @@ class DuckLakeAdapter(DbApiAdapter):
         value = option_or_env(self.options, option, missing_env)
         if not value:
             return ""
+        if self._confine_to:
+            return require_inside(self._confine_to, value, option=option, relative_to=repo_root())
         if not os.path.isabs(value):
             value = os.path.join(repo_root(), value)
         return os.path.abspath(value)
@@ -150,11 +152,6 @@ class DuckLakeAdapter(DbApiAdapter):
             connection_kind=self.connection_kind,
         )
         catalog_path, data_path = self._resolve_paths()
-        if self._confine_to:
-            # Before creating anything: a path outside the directory refuses.
-            require_inside(self._confine_to, catalog_path, option="catalog_path")
-            if data_path:
-                require_inside(self._confine_to, data_path, option="data_path")
         parent = os.path.dirname(catalog_path)
         if parent:
             os.makedirs(parent, exist_ok=True)

@@ -249,7 +249,7 @@ class DuckDBAdapter(WarehouseAdapter):
         """
         directory = confinement_directory(confine_to) if confine_to else ""
         if directory:
-            require_inside(directory, db_path, option="database path")
+            db_path = require_inside(directory, db_path, option="database path")
         self._db = Database.connect(db_path, read_only=True)
         if directory:
             try:

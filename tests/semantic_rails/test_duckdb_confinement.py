@@ -12,11 +12,19 @@ import _duckdb
 import duckdb
 import pytest
 
+from semantic_rails import config as config_module
+from semantic_rails.config import load_package_snapshot
 from semantic_rails.db import Database, DuckDBAdapter, create_warehouse_adapter
 from semantic_rails.db_parts.duckdb_confinement import confine_duckdb
 from semantic_rails.db_parts.ducklake import DuckLakeAdapter
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ConnectionSpec, PackageMeta
+from tests.semantic_rails.dbt_warehouse import (
+    ORDER_COUNT_QUERY,
+    build_dbt_warehouse,
+    write_orders_package,
+)
 
 FILE_ACCESS = "disabled by configuration"
 EXTENSION_LOAD = "disabled through configuration"
@@ -95,6 +103,98 @@ def confined(paths: SimpleNamespace):
     adapter = DuckDBAdapter(str(paths.db), confine_to=paths.inside)
     yield adapter
     adapter.close()
+
+
+@pytest.mark.parametrize("path", ["md:warehouse", "ducklake:catalog", "file:warehouse", ":memory:"])
+def test_confined_duckdb_requires_file_paths_before_connecting(
+    paths: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    monkeypatch.chdir(paths.inside)
+    monkeypatch.setattr(Database, "connect", lambda *a, **k: pytest.fail("connected"))
+    with pytest.raises(SemanticLayerError) as exc:
+        DuckDBAdapter(path, confine_to=paths.inside)
+    assert exc.value.code == "INVALID_CONFIG"
+    assert exc.value.details == {
+        "reason": "duckdb_path_not_file",
+        "option": "database path",
+    }
+
+
+@pytest.mark.parametrize("linked", [False, True], ids=["relative", "link_inside"])
+def test_confined_duckdb_connects_with_the_validated_real_path(
+    paths: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, linked: bool
+) -> None:
+    monkeypatch.chdir(paths.inside)
+    path = paths.db.name
+    if linked:
+        path = "linked.duckdb"
+        (paths.inside / path).symlink_to(paths.db)
+    connect = Database.connect
+    opened = []
+
+    def record(db_path: str, **kwargs: Any) -> Database:
+        opened.append(db_path)
+        return connect(db_path, **kwargs)
+
+    monkeypatch.setattr(Database, "connect", record)
+    adapter = DuckDBAdapter(path, confine_to=paths.inside)
+    try:
+        assert opened == [os.path.realpath(paths.db)]
+        assert adapter.query("SELECT count(*) AS n FROM orders") == [{"n": 3}]
+    finally:
+        adapter.close()
+
+
+@pytest.mark.parametrize("constructor", ["package_id", "snapshot"])
+def test_runtime_preserves_confinement_after_reload_and_close(
+    paths: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, constructor: str
+) -> None:
+    package = write_orders_package(paths.inside)
+    build_dbt_warehouse(package / "data" / "warehouse.duckdb")
+    if constructor == "package_id":
+        monkeypatch.setattr(config_module, "list_package_paths", lambda: {"shop": str(package)})
+        runtime = Runtime("shop", confine_to=paths.inside)
+    else:
+        runtime = Runtime.from_snapshot(
+            load_package_snapshot(str(package)), confine_to=paths.inside
+        )
+    try:
+        for reset in (None, runtime.reload, runtime.close):
+            if reset:
+                reset()
+            result = runtime.query(ORDER_COUNT_QUERY)
+            assert result["status"] == "ok"
+            assert runtime._get_adapter().query(  # noqa: SLF001
+                "SELECT current_setting('enable_external_access') AS enabled"
+            ) == [{"enabled": False}]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("constructor", ["package_id", "snapshot"])
+def test_confined_runtime_never_builds_a_missing_seed(
+    paths: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, constructor: str
+) -> None:
+    package = write_orders_package(paths.inside)
+    monkeypatch.setattr(Runtime, "_publish_seed", lambda *a: pytest.fail("built seed"))
+    if constructor == "package_id":
+        monkeypatch.setattr(config_module, "list_package_paths", lambda: {"shop": str(package)})
+        runtime = Runtime("shop", confine_to=paths.inside)
+    else:
+        runtime = Runtime.from_snapshot(
+            load_package_snapshot(str(package)), confine_to=paths.inside
+        )
+    before = sorted(package.rglob("*"))
+    try:
+        with pytest.raises(SemanticLayerError) as exc:
+            runtime._get_adapter()  # noqa: SLF001
+        assert exc.value.code == "INVALID_CONFIG"
+        assert exc.value.details == {"reason": "duckdb_confined_default_db_missing"}
+        assert runtime.adapter is None
+        assert not Path(runtime.db_path).exists()
+        assert sorted(package.rglob("*")) == before
+    finally:
+        runtime.close()
 
 
 def _assert_refused(adapter: Any, sql: str, reason: str) -> None:
@@ -382,6 +482,72 @@ def test_ducklake_refuses_paths_outside_the_directory_before_connecting(
     assert not (paths.outside / "lake").exists()
 
 
+@pytest.mark.parametrize("option", ["catalog_path", "data_path"])
+@pytest.mark.parametrize("path", ["md:warehouse", "ducklake:catalog", "file:warehouse", ":memory:"])
+def test_confined_ducklake_requires_file_paths_before_connecting(
+    paths: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, option: str, path: str
+) -> None:
+    monkeypatch.setattr("semantic_rails.db_parts.ducklake.repo_root", lambda: str(paths.inside))
+    connected = []
+
+    def execute(sql: str) -> None:
+        if sql.startswith("ATTACH"):
+            pytest.fail("attached")
+        assert sql in {"INSTALL ducklake", "LOAD ducklake"}
+
+    def connect() -> SimpleNamespace:
+        connected.append(True)
+        return SimpleNamespace(execute=execute, close=lambda: None)
+
+    monkeypatch.setattr(duckdb, "connect", connect)
+    adapter = DuckLakeAdapter(
+        {"catalog_path": str(paths.inside / "catalog.ducklake"), option: path},
+        confine_to=paths.inside,
+    )
+    with pytest.raises(SemanticLayerError) as exc:
+        adapter.query("SELECT 1")
+    assert exc.value.code == "INVALID_CONFIG"
+    assert exc.value.details == {"reason": "duckdb_path_not_file", "option": option}
+    assert not connected
+
+
+def test_confined_ducklake_resolves_relative_file_paths_and_links(
+    paths: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("semantic_rails.db_parts.ducklake.repo_root", lambda: str(paths.inside))
+    (paths.inside / "linked").symlink_to(paths.inside, target_is_directory=True)
+    adapter = DuckLakeAdapter(
+        {"catalog_path": "linked/catalog.ducklake", "data_path": "linked/data"},
+        confine_to=paths.inside,
+    )
+    assert adapter._resolve_paths() == (  # noqa: SLF001
+        str(paths.inside / "catalog.ducklake"),
+        str(paths.inside / "data"),
+    )
+
+
+@pytest.mark.parametrize("statement", ["INSTALL ducklake", "LOAD ducklake"])
+def test_ducklake_extension_is_required_in_ci(
+    paths: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+    statement: str,
+) -> None:
+    class Unavailable:
+        def execute(self, sql: str) -> None:
+            if sql == statement:
+                raise duckdb.Error("unavailable")
+            assert sql == "INSTALL ducklake"
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setenv("CI", "true")
+    monkeypatch.setattr(duckdb, "connect", lambda: Unavailable())
+    with pytest.raises(pytest.fail.Exception, match="required in CI"):
+        request.getfixturevalue("lake")
+
+
 @pytest.fixture
 def lake(paths: SimpleNamespace) -> SimpleNamespace:
     """A DuckLake catalog inside the directory, with one table stored as parquet."""
@@ -391,6 +557,8 @@ def lake(paths: SimpleNamespace) -> SimpleNamespace:
             conn.execute("INSTALL ducklake")
             conn.execute("LOAD ducklake")
         except duckdb.Error as exc:
+            if os.environ.get("CI"):
+                pytest.fail(f"the ducklake extension is required in CI: {type(exc).__name__}")
             pytest.skip(f"the ducklake extension is unavailable here: {type(exc).__name__}")
         catalog = paths.inside / "lake.ducklake"
         data = paths.inside / "lake_files"

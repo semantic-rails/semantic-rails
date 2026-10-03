@@ -111,11 +111,21 @@ several packages from one process passes `confine_to`, an existing absolute dire
 holds the package's database files (off by default):
 
 ```python
-from semantic_rails.embedding import DuckDBAdapter, create_warehouse_adapter
+from semantic_rails.embedding import DuckDBAdapter, Runtime, create_warehouse_adapter
 
+runtime = Runtime("my_package", confine_to="/srv/packages/p-123")
 adapter = DuckDBAdapter("/srv/packages/p-123/warehouse.duckdb", confine_to="/srv/packages/p-123")
 lake = create_warehouse_adapter(ducklake_package, confine_to="/srv/packages/p-123")
 ```
+
+`Runtime(package_id, *, confine_to="")` and `Runtime.from_snapshot(snapshot, *, confine_to="")`
+retain the option through `reload()` and `close()`, applying it whenever they create an
+adapter. A confined Runtime requires an existing database and refuses seed building with
+`INVALID_CONFIG`; build the database before opening it. Confined database, catalog and data
+paths must be filesystem paths, absolute or relative to their usual adapter base, that
+resolve inside the directory. Connection strings and in-memory database names refuse before
+anything is opened; drivers receive the validated absolute real paths. The host must keep
+the directory free of links that lead outside it.
 
 Once the database files are open (for DuckLake, once the extension loads and the catalog
 attaches), the adapter sets DuckDB's `allowed_directories` to the directory, turns off
@@ -130,6 +140,8 @@ inside, because DuckDB always allows its spill directory.
 Each refusal is `INVALID_CONFIG` with `details.reason`:
 
 - `duckdb_confinement_directory_invalid`: `confine_to` is not an existing absolute directory.
+- `duckdb_path_not_file`: a database, catalog or data path is a connection string or an
+  in-memory database name (`details.option`).
 - `duckdb_path_outside_confinement`: the database file, or DuckLake's `catalog_path` or
   `data_path` (`details.option`), resolves outside it, symlinks followed. Nothing is opened
   or created.
@@ -137,13 +149,16 @@ Each refusal is `INVALID_CONFIG` with `details.reason`:
   take effect.
 - `duckdb_confinement_unsupported`: `create_warehouse_adapter` got `confine_to` for a
   warehouse other than DuckDB or DuckLake.
+- `duckdb_confined_default_db_missing`: a confined Runtime's database is missing; it never
+  builds a seed.
 
 DuckDB shares one database instance between a process's connections to a file, and these
 settings belong to the instance. Confining one adapter confines every connection to that
 file; an adapter opened on a file already confined is checked, not changed, and holds only
 when the existing directory is its own or inside it. DuckDB refuses to open a shared file
 with a different `config`. Confinement covers file access only: CPU and memory limits stay
-with the host, and seed builds, which run the package's own SQL scripts, are not confined.
+with the host. Seed builds run the package's own SQL scripts and are available only when
+Runtime confinement is off.
 
 ## Serving MCP over HTTP
 
@@ -280,7 +295,7 @@ PackageReference(source_path, package_id=)
 PolicyContextResolver{resolve(self, headers, *, payload=, request_id=)}
 PreparedQuery(sql, column_mapping=, parameters=)
 RequestContext(request_id=, actor=, tenant=, project=, roles=, environment=, audience=, metric_allowlist=, dimension_allowlist=, attributes=)
-Runtime(package_id)
+Runtime(package_id, *, confine_to=)
 SNOWFLAKE_ADBC_CONNECTION_OPTIONS
 SNOWFLAKE_CLI_CONNECTION_OPTIONS
 SNOWFLAKE_NATIVE_CONNECTION_OPTIONS

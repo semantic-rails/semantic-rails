@@ -11,6 +11,7 @@ with ``INVALID_CONFIG``; the adapter never runs unconfined in its place.
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from typing import Any
 
@@ -54,14 +55,22 @@ def confinement_directory(directory: str | os.PathLike[str]) -> str:
     return os.path.realpath(path)
 
 
-def require_inside(directory: str, path: str, *, option: str) -> None:
-    """Refuse a database path that resolves outside the confinement directory."""
-    if not _inside(os.path.realpath(path), directory):
+def require_inside(directory: str, path: str, *, option: str, relative_to: str = "") -> str:
+    """Return an absolute real file path inside the directory, or refuse it."""
+    if path == ":memory:" or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", path):
+        raise _refusal(
+            "path_not_file",
+            f"The DuckDB {option} must be a filesystem path.",
+            option=option,
+        )
+    resolved = os.path.realpath(os.path.join(relative_to, path))
+    if not _inside(resolved, directory):
         raise _refusal(
             "path_outside_confinement",
             f"The DuckDB {option} is outside the confinement directory.",
             option=option,
         )
+    return resolved
 
 
 def _setting(conn: Any, name: str) -> Any:
