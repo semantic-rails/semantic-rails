@@ -48,7 +48,9 @@ def _run_cli_in(
     run_env = dict(os.environ)
     if env:
         run_env.update(env)
-    run_env["PYTHONPATH"] = str(REPO_ROOT)
+    run_env["PYTHONPATH"] = os.pathsep.join(
+        filter(None, [str(REPO_ROOT), run_env.get("PYTHONPATH")])
+    )
     return subprocess.run(
         [sys.executable, "-m", "semantic_rails", *args],
         cwd=str(cwd),
