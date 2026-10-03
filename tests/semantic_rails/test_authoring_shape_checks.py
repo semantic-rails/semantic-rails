@@ -25,6 +25,7 @@ from semantic_rails.config import load_package_config
 from semantic_rails.config_parts.package_loader import normalize_package
 from semantic_rails.config_validation import validate_runtime_package
 from semantic_rails.errors import SemanticLayerError
+from tests.semantic_rails.conftest import copy_package_config
 
 
 @pytest.fixture()
@@ -53,6 +54,157 @@ def test_unknown_measure_key_is_rejected(starter_package: Path) -> None:
     errors = _errors(path)
     assert any("unknown key 'agg'" in e for e in errors), errors
     assert any("default_agg" in e for e in errors), "must list the valid keys"
+
+
+@pytest.mark.parametrize("key", ["subject_entity", "aggregation_entity"])
+@pytest.mark.parametrize("location", ["measure", "defaults"])
+@pytest.mark.parametrize("layout", ["single_file", "directory"])
+def test_parent_rollup_measure_keys_are_unknown(
+    starter_package: Path, key: str, location: str, layout: str
+) -> None:
+    raw = yaml.safe_load(starter_package.read_text(encoding="utf-8"))
+    if location == "defaults":
+        raw.setdefault("defaults", {}).setdefault("measure", {})[key] = "self"
+    else:
+        measure = next(iter(raw["models"]["orders"]["measures"].values()))
+        measure[key] = "self"
+    if layout == "directory":
+        (starter_package.parent / "graph.yml").write_text(
+            yaml.safe_dump({"graph": raw.pop("graph")}, sort_keys=False), encoding="utf-8"
+        )
+        models_dir = starter_package.parent / "models"
+        models_dir.mkdir()
+        (models_dir / "models.yml").write_text(
+            yaml.safe_dump({"models": raw.pop("models")}, sort_keys=False), encoding="utf-8"
+        )
+    starter_package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    path = starter_package.parent if layout == "directory" else starter_package
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(path))
+    assert exc.value.code == "INVALID_CONFIG"
+    message = str(exc.value)
+    if location == "defaults":
+        assert message.count(f"defaults.measure.{key}") == 1
+        assert "delete this line; parent-rollup declarations were removed" in message
+        assert "measure '" not in message
+    else:
+        assert "unknown keys" in message and key in message
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        pytest.param("rollup_safe_aggregations", ["sum"], id="populated"),
+        pytest.param("rollup_safe_aggregations", None, id="null"),
+        pytest.param("rollup_safe", {"forward": ["sum", "count"]}, id="forward"),
+        pytest.param("rollup_safe", ["sum", "count"], id="list"),
+        pytest.param("rollup_safe", {"reverse": ["count_distinct"]}, id="reverse"),
+        pytest.param("rollup_safe", None, id="rollup-null"),
+    ],
+)
+@pytest.mark.parametrize("layout", ["single_file", "directory"])
+def test_removed_join_key_is_rejected_before_graph_override(
+    tmp_path: Path, key: str, value: object, layout: str
+) -> None:
+    package = copy_package_config(tmp_path, "jaffle_shop")
+    orders_path = package / "models" / "core" / "orders.yml"
+    raw = yaml.safe_load(orders_path.read_text(encoding="utf-8"))
+    raw["model"]["joins"] = {"customer": {key: value}}
+    orders_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    if layout == "single_file":
+        from semantic_rails.config import _load_package_source
+
+        raw = _load_package_source(str(package))
+        package = package / "package.yml"
+        package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(package))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert "models.orders.joins.customer" in str(exc.value)
+    assert key in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        pytest.param("rollup_safe", ["sum"], id="list"),
+        pytest.param("rollup_safe", {"forward": ["sum"]}, id="forward"),
+        pytest.param("rollup_safe", {"reverse": ["count_distinct"]}, id="reverse"),
+        pytest.param("rollup_safe", None, id="null"),
+        pytest.param("rollup_safe_aggregations", ["sum"], id="aggregations-populated"),
+        pytest.param("rollup_safe_aggregations", None, id="aggregations-null"),
+    ],
+)
+@pytest.mark.parametrize("layout", ["single_file", "directory"])
+@pytest.mark.parametrize("has_relationships", [True, False], ids=["with-joins", "without-joins"])
+def test_unconsumed_relationship_default_rollup_is_rejected(
+    starter_package: Path, key: str, value: object, layout: str, has_relationships: bool
+) -> None:
+    raw = yaml.safe_load(starter_package.read_text(encoding="utf-8"))
+    raw.setdefault("defaults", {}).setdefault("relationship", {})[key] = value
+    if not has_relationships:
+        # Defaults must be refused even when there is no join to inherit them.
+        raw["models"] = {"customers": raw["models"]["customers"]}
+        raw["graph"]["entities"] = {"customer": raw["graph"]["entities"]["customer"]}
+        raw["graph"]["relationships"] = {}
+        raw["metrics"] = {}
+    starter_package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    path = starter_package.parent if layout == "directory" else starter_package
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(path))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert f"defaults.relationship.{key}" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("location", "value"),
+    [
+        pytest.param("graph", {"forward": ["sum", "count"]}, id="forward"),
+        pytest.param("graph", ["sum", "count"], id="list"),
+        pytest.param("graph", [], id="empty-list"),
+        pytest.param("graph", None, id="null"),
+        pytest.param("graph", "sum", id="scalar"),
+        pytest.param("graph", {"reverse": [], "typo": []}, id="unknown-key"),
+        pytest.param("defaults", ["sum", "count"], id="relationship-defaults"),
+        pytest.param("join", ["sum", "count"], id="model-join"),
+    ],
+)
+@pytest.mark.parametrize("layout", ["single_file", "directory"])
+def test_removed_relationship_rollup_forms_fail_loading(
+    starter_package: Path, location: str, value: object, layout: str
+) -> None:
+    raw = yaml.safe_load(starter_package.read_text(encoding="utf-8"))
+    if location == "graph":
+        raw["graph"]["relationships"] = {
+            "orders_customer": {"entities": ["order", "customer"], "rollup_safe": value}
+        }
+    elif location == "defaults":
+        raw.setdefault("defaults", {}).setdefault("relationship", {})[
+            "rollup_safe_aggregations"
+        ] = value
+    else:
+        raw["models"]["orders"]["joins"] = {"customer": {"rollup_safe_aggregations": value}}
+    if layout == "directory":
+        (starter_package.parent / "graph.yml").write_text(
+            yaml.safe_dump({"graph": raw.pop("graph")}, sort_keys=False), encoding="utf-8"
+        )
+        models_dir = starter_package.parent / "models"
+        models_dir.mkdir()
+        (models_dir / "models.yml").write_text(
+            yaml.safe_dump({"models": raw.pop("models")}, sort_keys=False), encoding="utf-8"
+        )
+    starter_package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    path = starter_package.parent if layout == "directory" else starter_package
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(path))
+    assert exc.value.code == "INVALID_CONFIG"
+    relationship = {
+        "graph": "orders_customer",
+        "defaults": "defaults.relationship.rollup_safe_aggregations",
+        "join": "models.orders.joins.customer",
+    }[location]
+    assert relationship in str(exc.value)
+    assert "rollup_safe" in str(exc.value)
 
 
 def test_unknown_top_level_key_with_close_match_is_rejected(starter_package: Path) -> None:

@@ -1,0 +1,2 @@
+- Unknown measure keys now fail package loading with `INVALID_CONFIG`.
+- Relationship contract payloads no longer carry `rollup_safe_aggregations`.

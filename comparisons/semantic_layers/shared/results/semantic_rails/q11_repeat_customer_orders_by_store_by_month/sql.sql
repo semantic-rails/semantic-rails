@@ -31,7 +31,7 @@ SELECT
   DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,
   COUNT(DISTINCT comparison_orders.order_id) AS m1
 FROM comparison_orders
-INNER JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id
+LEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id
 INNER JOIN leaf_1__qualified_customers_by_lifetime_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_order_count_1."dimension.jaffle_customer_id"
 GROUP BY
   comparison_stores.store_name,
