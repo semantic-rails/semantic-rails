@@ -6,3 +6,6 @@
   chosen window clock is excluded by any measure inside the input, by its pin, an
   override or its declared clocks; for a conversion, its base measure (the period
   filters base events; converted events match each base event's window).
+- `temporal_role_overrides` do not apply inside a metric predicate input (they only
+  choose or check its window clock); an input that reads an overridden measure through
+  a conversion or a time window refuses with `INVALID_TEMPORAL_BINDING`.
