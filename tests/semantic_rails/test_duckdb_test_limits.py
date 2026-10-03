@@ -9,6 +9,7 @@ import duckdb
 import pytest
 
 from semantic_rails.db import Database
+from tests.semantic_rails.test_repl_backend import _journey
 
 SETTINGS = "SELECT current_setting('temp_directory'), current_setting('max_temp_directory_size'), current_setting('memory_limit')"
 
@@ -62,3 +63,16 @@ def test_exploding_cross_join_stops_at_temp_cap(monkeypatch, tmp_path_factory):
             )
         assert spill.is_relative_to(tmp_path_factory.getbasetemp())
         assert sum(path.stat().st_size for path in spill.rglob("*") if path.is_file()) <= 8_000_000
+
+
+def test_cli_subprocess_helper_preserves_limits(monkeypatch, tmp_path_factory):
+    monkeypatch.setenv("SR_TEST_DUCKDB_MAX_TEMP", "8MB")
+    monkeypatch.setenv("SR_TEST_DUCKDB_MEMORY", "64MB")
+    output = _journey(
+        "import duckdb,json; "
+        f"print(json.dumps(duckdb.connect().execute({SETTINGS!r}).fetchone())); "
+        "print('journey ok')"
+    )
+    spill, temp_cap, memory_cap = json.loads(output.splitlines()[0])
+    assert (temp_cap, memory_cap) == ("7.6 MiB", "61.0 MiB")
+    assert Path(spill).is_relative_to(tmp_path_factory.getbasetemp())
