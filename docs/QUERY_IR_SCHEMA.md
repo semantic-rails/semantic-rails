@@ -112,8 +112,12 @@ ignored).
   they make reachable, and its query patches keep the rows; a patch that would
   leave a row unused is unavailable with that refusal. Live `valid-values`
   checks rows before probing and reads through their routes using only the query's
-  measures, including those read by metrics. If none anchors the dimension, the
-  first anchor's refusal is returned unchanged; unrelated measures never supply values.
+  configured measures, including those read by metrics; mixed selections containing
+  `aggregate_if` are accepted, but synthetic measures never become anchors. Probing
+  keeps the executed query's filters and temporal role overrides, so a row read only
+  by a metric filter stays in use. If none anchors the dimension, the first anchor's
+  refusal is returned unchanged; unrelated measures never supply values. Without a
+  configured query measure, `NO_VALID_VALUES_SOURCE` asks for a measure or metric anchor.
 
 ## Common gotchas
 

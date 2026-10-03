@@ -98,19 +98,28 @@ def secret_value(
     engine: str = "",
     connection_kind: str = "",
     label: str = "",
+    strip_file_whitespace: bool = True,
 ) -> str:
     """Resolve a secret from env-var indirection, falling back to a file.
 
     The error path never includes the secret itself — only the option
-    name and engine metadata.
+    name and engine metadata. With ``strip_file_whitespace=False``, only
+    one trailing LF or CRLF is removed; all other whitespace is preserved.
     """
     value = env_value(env_name, missing_env)
     if value:
         return value
     if file_name:
         try:
-            with open(file_name, encoding="utf-8") as handle:
-                return handle.read().strip()
+            with open(
+                file_name, encoding="utf-8", newline=None if strip_file_whitespace else ""
+            ) as handle:
+                value = handle.read()
+            if strip_file_whitespace:
+                return value.strip()
+            return (
+                value.removesuffix("\r\n") if value.endswith("\r\n") else value.removesuffix("\n")
+            )
         except OSError as exc:
             raise SemanticLayerError(
                 "INVALID_CONFIG",

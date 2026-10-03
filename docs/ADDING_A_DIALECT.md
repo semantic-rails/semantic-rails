@@ -96,15 +96,19 @@ connection options cannot select a driver name, library or manifest; such option
 are refused at load with `INVALID_CONFIG`. `dbc` verifies
 the downloaded driver signature during installation; do not disable verification.
 
-Password authentication uses `account_env`, `user_env` and either `password_env`
+Account and user may be literals (`account`, `user`) or env-indirected
+(`account_env`, `user_env`); password authentication uses either `password_env`
 or `password_file`. Optional locators are `database`, `schema`, `warehouse` and
 `role`; a named Snowflake connector profile is not used. Key-pair authentication
 instead uses `private_key_env` or `private_key_file` containing PEM PKCS #8 text,
-with optional `private_key_passphrase_env`. Both encrypted and unencrypted keys
-are mapped to the driver's in-memory PKCS #8 options. Exactly one password or
+with optional `private_key_passphrase_env` or `private_key_passphrase_file`.
+Passphrase files preserve whitespace except for one optional trailing LF (`\n`)
+or CRLF (`\r\n`); other `*_file` secrets still strip surrounding whitespace.
+Both encrypted and unencrypted keys are mapped to the driver's in-memory PKCS #8
+options. Exactly one password or
 key source is required. Package loading, config reports and guided setup validate
 these source options without reading credentials; `connection.name` is refused.
-Literal credentials and other authentication modes are refused.
+Literal secrets and other authentication modes are refused.
 Key-pair mapping is covered with stubs; live key-pair authentication is unqualified.
 
 `use_high_precision` defaults to `"true"`: the driver returns NUMBER columns as
