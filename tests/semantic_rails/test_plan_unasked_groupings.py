@@ -224,7 +224,7 @@ def test_a_ranking_of_more_than_its_entity_offers_no_runnable_option(
         # Said as "top 3 stores by revenue by customer type", the draft drops the customer type
         # and is held for that, with no option either.
         payload = plan_payload(jaffle, intent="top 3 stores by revenue by customer type")
-        assert "clarification" not in _held(payload, UNMATCHED)
+        assert "clarification" not in _held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
 
 
 def test_a_ranking_of_a_time_axis_value_offers_no_runnable_option(jaffle: Runtime) -> None:
