@@ -108,6 +108,19 @@ package test and a `.gitignore` for build outputs.
    block would override the columns, and so is a pair that may have several roles
    (role-playing keys: several `graph.relationships` entries in either direction, or an entry
    with its own `via` beside the model's foreign key): edit those in `graph.yml`.
+   `record_route_decision(source_entity, target_entity, relationship_path, label="")` records
+   which route a question between two entities means, as the package default: it writes the
+   pair's row in the `path_preferences` list the loader reads (a top-level list in `package.yml`
+   wins over `graph.path_preferences`), replacing every row for exactly the pair however its
+   entities are spelled; a row for the reverse pair is never touched. Pass the `decision` of the
+   option a person chose from an `AMBIGUOUS_PATH` refusal's `details.clarification`. The row is
+   checked by the loader's rules (an unknown entity or relationship, a broken chain, a disallowed
+   direction, or a path that doesn't end at the target), then the changed package is loaded and
+   must resolve the pair to exactly that route: otherwise it is `INVALID_CONFIG` (a row it
+   disagrees with is named in `details.rows`) and nothing is written. The result adds `replaced`
+   (the row in effect before, or `null`) and `summary`, one plain sentence for the review ("For an Account,
+   'District' now means the District of the Account's Branch. Other meanings: the District of
+   the Account's Owner."). Preview it with `dry_run: true` like every other write.
 6. Run `validate_project` with `mode=parse` after structural edits and `mode=runtime` before
    trusting queries.
 7. Run `impact_project` with `compare_path` or `base_ref` before release review; use
@@ -370,6 +383,7 @@ tool list's size.
 - `upsert_segment`
 - `upsert_example`
 - `upsert_test`
+- `record_route_decision`
 - `preview_query`
 - `archive_project_file`
 - `remove_object`

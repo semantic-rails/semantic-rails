@@ -27,6 +27,7 @@ and the comparison fixtures: see
 | `limit` | `integer` (or `null`) | Optional row cap. |
 | `time` | `TimeBlock` (or `null`) | Query-level time anchor: temporal_role + grain + bounds. `start` is inclusive, `end` is exclusive. |
 | `temporal_role_overrides` | `object<measure_id, temporal_role_id>` | Per-measure clock bindings. |
+| `route_decisions` | `array` of `RouteDecision` | This query's own route for an entity pair: the `decision` of an `AMBIGUOUS_PATH` option. See [`route_decisions`](#route_decisions). |
 | `policy_context` | `object` | Caller-supplied access context (`environment`, `audience`, `roles`, `now`, ...). |
 | `limits` | `object` | Per-request `statement_timeout_ms`, `max_rows`. |
 | `verbosity` | `"summary"\|"minimal"\|"compact"\|"full"` | Response detail level (default `compact`). On `catalog`, `summary` returns counts + flat ID lists per kind (under 10KB) — recommended for cold-start orientation. |
@@ -53,14 +54,66 @@ public API. The key never changed an answer. A query that still sends it is
 refused with `INVALID_QUERY` and `details.unsupported_keys: ["path_policy"]`;
 delete it.
 
-A query can't choose a join route. The package records one with a
-`graph.path_preferences` row, which also decides every route that walks its
-pair. Without a row, a query whose routes can answer differently uses the
-start entity's one direct key or is refused with `AMBIGUOUS_PATH` (see
-[the route rule](PACKAGE_AUTHORING.md#the-route-rule)).
-Where the engine chose one of two or more routes, compact and full responses
-carry an info note, `ROUTE_COLOCATED_KEY` or `ROUTE_RECORDED`, with the chosen
-route in `details.route`.
+The package records a join route with a `graph.path_preferences` row, which
+also decides every route that walks its pair. Without a row, a query whose
+routes can answer differently uses the start entity's one direct key or is
+refused with `AMBIGUOUS_PATH` (see
+[the route rule](PACKAGE_AUTHORING.md#the-route-rule)), which asks which route
+the question means. Where the engine chose one of two or more routes, compact
+and full responses carry an info note, `ROUTE_COLOCATED_KEY` or
+`ROUTE_RECORDED`, with the chosen route in `details.route`.
+
+### `route_decisions`
+
+After an `AMBIGUOUS_PATH` refusal, the person's answer goes back in the query:
+one row per entity pair, the chosen option's `details.clarification`
+`decision`, shaped like a `graph.path_preferences` row (`label` is accepted and
+ignored).
+
+```jsonc
+{
+  "version": 1,
+  "select": [{"expression": {"measure": "measure.bank.balance"}, "as": "balance"}],
+  "group_by": ["dimension.bank_district_name"],
+  "route_decisions": [{
+    "source_entity": "entity.bank_account",
+    "target_entity": "entity.bank_district",
+    "relationship_path": ["relationship.accounts_owner", "relationship.owners_home_district"]
+  }]
+}
+```
+
+- **This query only.** A row is an exact-pair decision: it applies before the
+  package's row for the same pair (so it overrides a package default for this
+  query), never to other pairs, and is never cached as the package's route. It
+  is not a default: to make one, record the row in the package
+  (`record_route_decision`).
+- **One of the pair's routes.** The path must be one of the routes between the
+  pair within `graph.path_policy.max_hops`, the routes the engine itself
+  considers (no cycles, no longer chains); anything else is `INVALID_QUERY`
+  (`details.reason: route_not_offered`). An unknown entity (by id or name) or
+  relationship, a broken chain, a disallowed direction, or a path that doesn't
+  end at the target is `invalid_route_decision`; so are a malformed row
+  (`malformed_route_decision`), two rows for one pair
+  (`duplicate_route_decision`), and a row for a pair the query never walks
+  (`route_decision_unused`).
+- **Never under a row filter.** When a row filter in the caller's context reads
+  any entity on any of the pair's routes, the query is refused with
+  `POLICY_DENIED` (`details.reason: route_override_under_row_policy`, with
+  `path`, `policy_ids` and `hint`). A reviewed package row is the way to change
+  routes there.
+- **Disclosed.** Every response carries one `info` warning
+  `ROUTE_CHOSEN_BY_QUERY` per row, at every verbosity: `details.row` and
+  `details.replaced`, how the package resolves the pair without it (`decided`:
+  its own row; `colocated_key`: the start's own key; `inherited`: rows for pairs
+  its routes walk through; `only_route`; `undecided`: the package refuses it).
+  `hop_profile.targets[*].route_basis` is `query` for the pair.
+- `build-options` with a partial query that carries rows shows the dimensions
+  they make reachable, and its query patches keep the rows; a patch that would
+  leave a row unused is unavailable with that refusal. Live `valid-values`
+  checks rows before probing and reads through their routes using only the query's
+  measures, including those read by metrics. If none anchors the dimension, the
+  first anchor's refusal is returned unchanged; unrelated measures never supply values.
 
 ## Common gotchas
 

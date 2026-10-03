@@ -154,11 +154,13 @@ def test_resolve_path_refuses_a_tie_and_follows_its_pin():
     with pytest.raises(SemanticLayerError) as exc:
         resolve_path(replace(config, path_preferences=[]), start="A", target="D")
     assert exc.value.code == "AMBIGUOUS_PATH"
-    assert exc.value.details["candidates"] == [["A_B", "B_D"], ["A_C", "C_D"]]
-    assert exc.value.details["pins"][1] == {
+    options = exc.value.details["clarification"]["options"]
+    assert [option["relationship_path"] for option in options] == [["A_B", "B_D"], ["A_C", "C_D"]]
+    assert options[1]["decision"] == {
         "source_entity": "A",
         "target_entity": "D",
         "relationship_path": ["A_C", "C_D"],
+        "label": options[1]["meaning"],
     }
 
 

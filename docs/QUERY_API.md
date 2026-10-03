@@ -1174,13 +1174,18 @@ The response `warnings` array can carry these non-error signals:
   and `full` verbosity: the query reads an entity pair with two or more
   routes, and the engine used the start entity's own key or the package's
   `graph.path_preferences` rows. `details.route` is the chosen route; the
-  message reads it (`Order → Store (own key)`). On `ROUTE_COLOCATED_KEY`,
+  message reads it ("the Order's Store (own key)"). On `ROUTE_COLOCATED_KEY`,
   `details.alternatives` holds the row that would make each other route the
   default when that row would load beside the package's rows, and
   `details.conflicts_with` lists any other route with the rows its row would
   disagree with; on `ROUTE_RECORDED` for a route inherited from rows for the pairs
   it walks through, `details.rows` names them. See
   [the route rule](PACKAGE_AUTHORING.md#the-route-rule).
+- `ROUTE_CHOSEN_BY_QUERY` — severity `info`, at every verbosity: one per
+  `route_decisions` row the query applied. `details.row` is the row and
+  `details.replaced` what would have applied without it (`decided`,
+  `colocated_key`, `inherited`, `only_route` or `undecided`). See
+  [`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions).
 
 HTTP failures return:
 
@@ -1194,6 +1199,44 @@ HTTP failures return:
   }
 }
 ```
+
+`details` is returned whole on every surface (HTTP, MCP and CLI). An
+`AMBIGUOUS_PATH` refusal's `details` carry `reason: route_decision_required`,
+`start`, `target`, `hint` and `clarification`:
+
+```json
+{
+  "code": "AMBIGUOUS_PATH",
+  "details": {
+    "reason": "route_decision_required",
+    "start": "entity.bank_account",
+    "target": "entity.bank_district",
+    "clarification": {
+      "kind": "route",
+      "apply": ["query", "package"],
+      "question": "Which District does the question mean for an Account?",
+      "options": [
+        {
+          "id": "branch_district",
+          "meaning": "the District of the Account's Branch",
+          "relationship_path": ["relationship.accounts_branch", "relationship.branches_district"],
+          "decision": {
+            "source_entity": "entity.bank_account",
+            "target_entity": "entity.bank_district",
+            "relationship_path": ["relationship.accounts_branch", "relationship.branches_district"],
+            "label": "the District of the Account's Branch"
+          }
+        }
+      ]
+    },
+    "hint": "Which route is meant is a business definition. ..."
+  }
+}
+```
+
+Send an option's `decision` in the query's `route_decisions` to answer that
+query with it, or record it in the package with Architect
+`record_route_decision`.
 
 ## Real Example
 

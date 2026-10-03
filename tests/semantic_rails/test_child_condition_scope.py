@@ -1288,7 +1288,8 @@ def test_other_dialects_render_each_group_as_correlated_exists(package: Path) ->
 # ---- Routes ---------------------------------------------------------------------------
 
 
-def test_an_ambiguous_child_route_is_never_answered(package: Path) -> None:
+@pytest.mark.parametrize("decision_scope", ["package", "query"])
+def test_an_ambiguous_child_route_is_never_answered(package: Path, decision_scope: str) -> None:
     """Items reach orders through two relationships of one length: which items are meant?"""
     config = load_package_config(str(package))
     [items_order] = [rel for rel in config.relationships if rel.id == "relationship.items_order"]
@@ -1302,20 +1303,34 @@ def test_an_ambiguous_child_route_is_never_answered(package: Path) -> None:
     with pytest.raises(SemanticLayerError) as caught:
         compile_query(tied, Registry(tied), _query(SAME_ROW))
     assert caught.value.code == "AMBIGUOUS_PATH"
-    assert len(caught.value.details["candidates"]) == 2
-    pinned = replace(
-        tied,
-        path_preferences=[
-            PathPreferenceConfig(
-                source_entity="entity.scope_customer",
-                target_entity=ITEM,
-                relationship_path=["relationship.orders_customer", "relationship.items_order"],
-            )
-        ],
+    assert len(caught.value.details["clarification"]["options"]) == 2
+    decision = route_pin(
+        "entity.scope_customer",
+        ITEM,
+        ["relationship.orders_customer", "relationship.items_order"],
     )
-    compiled = compile_query(pinned, Registry(pinned), _query(SAME_ROW))
+    pinned = (
+        replace(tied, path_preferences=[PathPreferenceConfig(**decision)])
+        if decision_scope == "package"
+        else tied
+    )
+    extra = {"route_decisions": [decision]} if decision_scope == "query" else {}
+    compiled = compile_query(pinned, Registry(pinned), _query(SAME_ROW, **extra))
     with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
         assert _normal(conn.execute(compiled["sql"]).fetchall()) == [(2,)]
+
+    # The route decision also survives the guard that binds both child-scope readings.
+    query = _query([BEVERAGE, OVER_5], **extra)
+    with pytest.raises(SemanticLayerError) as caught:
+        compile_query(pinned, Registry(pinned), query)
+    assert caught.value.code == "AMBIGUOUS_CHILD_SCOPE"
+    options = _options({"details": caught.value.details})
+    for option, reference in [("same_row", SAME_ROW_SQL), ("separate_rows", SEPARATE_ROWS_SQL)]:
+        compiled = compile_query(pinned, Registry(pinned), {**query, "where": options[option]})
+        with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
+            assert _normal(conn.execute(compiled["sql"]).fetchall()) == _customers(
+                package, reference
+            )
 
 
 def test_a_lookup_first_route_beside_another_candidate_is_ambiguous(package: Path) -> None:
@@ -1333,7 +1348,7 @@ def test_a_lookup_first_route_beside_another_candidate_is_ambiguous(package: Pat
     with pytest.raises(SemanticLayerError) as caught:
         compile_query(longer, Registry(longer), _query(where, "order_count"))
     assert caught.value.code == "AMBIGUOUS_PATH"
-    assert len(caught.value.details["candidates"]) == 2
+    assert len(caught.value.details["clarification"]["options"]) == 2
     pinned = replace(
         longer,
         path_preferences=[

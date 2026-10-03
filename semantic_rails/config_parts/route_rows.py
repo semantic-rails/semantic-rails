@@ -1,5 +1,11 @@
 """Recorded routes (``graph.path_preferences`` rows) and the routes that agree with them.
 
+A row decides which route a question between two entities means. The loader's package rows, a
+query's ``route_decisions`` rows and Architect ``record_route_decision`` all check one row by
+``check_route_row``, naming its entities through ``entity_references``. A ``PackageConfig``
+keeps no authored entity key, so a query row names an entity by id or name, while the loader
+and Architect, which read the package files, also accept the key.
+
 A row records the route for its own pair, and every route that walks through that pair
 inherits it: walked from the row's source to its target, the part between them must be the
 row's path; walked the other way, it must be that path reversed, when every hop of the path
@@ -13,12 +19,101 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict
+from typing import Any
 
 from ..errors import SemanticLayerError
-from ..schema import PathPreferenceConfig, RelationshipConfig
+from ..schema import EntityConfig, PathPreferenceConfig, RelationshipConfig
 
 # A row's path, and the same path walked back (None when a hop does not allow that walk).
 RowPaths = tuple[tuple[str, ...], tuple[str, ...] | None]
+
+
+class RouteRowError(ValueError):
+    """A route row that breaks the loader's rules; the caller words the error code and where
+    the row came from."""
+
+
+def entity_references(
+    entities: Iterable[EntityConfig], keys: Mapping[str, str] | None = None
+) -> dict[str, str]:
+    """Each accepted reference to an entity, mapped to its id: its name, the references in
+    ``keys`` (the authored ``graph.entities`` keys, when the caller reads the package files)
+    and its id, which wins."""
+    entities = list(entities)
+    return {
+        **{entity.name: entity.id for entity in entities if entity.name},
+        **dict(keys or {}),
+        **{entity.id: entity.id for entity in entities},
+    }
+
+
+def check_route_row(
+    row: Mapping[str, Any],
+    *,
+    entities: Mapping[str, str],
+    relationships: Sequence[RelationshipConfig],
+) -> PathPreferenceConfig:
+    """Known entities (``entities`` is ``entity_references``) and relationships (by id, or its
+    id without the ``relationship.`` prefix), each hop connecting from where the last one
+    ended in an allowed direction, ending at the target."""
+    rel_lookup: dict[str, RelationshipConfig] = {}
+    for known_rel in relationships:
+        rel_lookup[known_rel.id] = known_rel
+        _, _, suffix = known_rel.id.partition(".")
+        if suffix:
+            rel_lookup.setdefault(suffix, known_rel)
+    source_ref = str(row.get("source_entity", "")).strip()
+    target_ref = str(row.get("target_entity", "")).strip()
+    for label, ref in (("source_entity", source_ref), ("target_entity", target_ref)):
+        if ref not in entities:
+            raise RouteRowError(f"row references unknown {label} '{ref}'")
+    source_entity = entities[source_ref]
+    target_entity = entities[target_ref]
+    preferred = row.get("preferred_paths")
+    if preferred is not None:
+        paths_raw = list(preferred or [])
+        if len(paths_raw) != 1:
+            raise RouteRowError(
+                f"for {source_ref} -> {target_ref} must declare exactly one preferred path "
+                f"(got {len(paths_raw)})"
+            )
+        rel_refs = [str(item) for item in list(paths_raw[0] or [])]
+    else:
+        rel_refs = [str(item) for item in list(row.get("relationship_path", []) or [])]
+    if not rel_refs:
+        raise RouteRowError(f"for {source_ref} -> {target_ref} declares an empty path")
+    resolved: list[str] = []
+    current = source_entity
+    for rel_ref in rel_refs:
+        rel = rel_lookup.get(rel_ref)
+        if rel is None:
+            raise RouteRowError(
+                f"for {source_ref} -> {target_ref} references unknown relationship '{rel_ref}'"
+            )
+        directions = {
+            str(item).strip().lower()
+            for item in list(rel.allowed_directions or ["forward", "reverse"])
+        }
+        if current == rel.source_entity and "forward" in directions:
+            current = rel.target_entity
+        elif current == rel.target_entity and "reverse" in directions:
+            current = rel.source_entity
+        else:
+            raise RouteRowError(
+                f"for {source_ref} -> {target_ref}: relationship '{rel.id}' does not connect "
+                f"from '{current}' (or traversal in that direction is not allowed)"
+            )
+        resolved.append(rel.id)
+    if current != target_entity:
+        raise RouteRowError(
+            f"path for {source_ref} -> {target_ref} ends at '{current}', not the declared target"
+        )
+    return PathPreferenceConfig(
+        source_entity=source_entity,
+        target_entity=target_entity,
+        relationship_path=resolved,
+        label=str(row.get("label", "") or "").strip(),
+    )
 
 
 def walk_entities(
@@ -111,6 +206,9 @@ def require_rows_agree(
     def described(item: PathPreferenceConfig) -> str:
         return f"{item.source_entity} -> {item.target_entity} ({', '.join(item.relationship_path)})"
 
+    def pinned(item: PathPreferenceConfig) -> dict[str, Any]:
+        return {key: value for key, value in asdict(item).items() if key != "label"}
+
     for index, row in enumerate(rows):
         conflicts = conflicting_rows(relationships, row, rows[:index])
         if not conflicts:
@@ -122,5 +220,5 @@ def require_rows_agree(
             f"rows for {'; '.join(map(described, conflicts))}: of each two, one walks the other's "
             "pair by another route than the other records. A row holds wherever a route walks "
             "its pair, so keep one definition of each pair: change or remove a row.",
-            details={"rows": [asdict(item) for item in (*conflicts, row)]},
+            details={"rows": [pinned(item) for item in (*conflicts, row)]},
         )
