@@ -4439,7 +4439,7 @@ def plan_query(
     # A query with a distribution lowers with the earlier settlement (``_lower_query_to_sql``),
     # so it routes with it too: its plan and explain are the same as before.
     distribution = any(
-        item.expression is not None and _expr_contains_distribution(item.expression)
+        item.expression is not None and _expr_contains_distribution(item.expression, config)
         for item in raw_query.select
     )
 
