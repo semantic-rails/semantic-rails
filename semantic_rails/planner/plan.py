@@ -826,17 +826,17 @@ def _declared_name_spans(
     entity Customer as well.
     """
 
-    dimensions = visible_dimensions(config) if underscores else config.dimensions
-    entities = config.entities
-    if underscores:
-        entity_ids = set(visible_object_ids(config, (row.id for row in entities)))
-        entities = [row for row in entities if row.id in entity_ids]
-    found: dict[tuple[int, int], list[Any]] = {}
-    for kind, rows in (
-        ("dimension", dimensions),
+    groups: tuple[tuple[str, list[Any]], ...] = (
+        ("dimension", config.dimensions),
         ("value", [*config.measures, *config.metric_recipes]),
-        ("entity", entities),
-    ):
+        ("entity", config.entities),
+    )
+    if underscores:
+        # Only the underscore reading is new, so only it reads just caller-visible objects.
+        visible = set(visible_object_ids(config, (row.id for _, rows in groups for row in rows)))
+        groups = tuple((kind, [row for row in rows if row.id in visible]) for kind, rows in groups)
+    found: dict[tuple[int, int], list[Any]] = {}
+    for kind, rows in groups:
         for row in rows:
             label = str(row.label or "")
             names = {label, re.sub(r"\s*\(.*?\)", "", label), _last_token(row.name)}
@@ -846,7 +846,7 @@ def _declared_name_spans(
                 if not words:
                     continue
                 patterns = {r"\b" + r"\s+".join(map(re.escape, words)) + r"\b"}
-                if underscores and kind != "value":
+                if underscores:
                     patterns = {
                         r"(?<![^\W_])" + body + r"(?![^\W_])"
                         for body in (re.escape(spelling), r"[\s_]+".join(map(re.escape, words)))
@@ -861,20 +861,105 @@ def _declared_name_spans(
     }
 
 
-def _level_groupings_unmet(config: Any, question: str, query: dict[str, Any]) -> list[str]:
-    """The groupings a level/grain question names that the draft doesn't group by, reading
-    declared names with spaces or underscores; see ``_level_groupings_with_names``.
-    """
+def _clock_spans(config: Any, lowered: str, query: dict[str, Any]) -> list[tuple[int, int]]:
+    """Where the question names a clock, which is the time block's: "week", or "order date"
+    for the query's Order time. A clock phrase is words joined by spaces only, never with a
+    level word."""
 
-    return list(
-        dict.fromkeys(
-            term
-            for underscores in (False, True)
-            for term in _level_groupings_with_names(
-                config, question, query, underscores=underscores
+    clocks = _query_clocks(config, query)
+    words = list(re.finditer(r"[^\W_]+", lowered))
+    spans: list[tuple[int, int]] = []
+    for index, first in enumerate(words):
+        for last in words[index:]:
+            text = lowered[first.start() : last.end()]
+            if _LEVEL_WORD_RE.search(text) or not re.fullmatch(r"[^\W_]+(?:\s+[^\W_]+)*", text):
+                break
+            if _is_temporal_grouping_term(text) or any(_names_time_axis(text, c) for c in clocks):
+                spans.append((first.start(), last.end()))
+    return spans
+
+
+def _pinned_fields(query: dict[str, Any]) -> set[str]:
+    """The fields the draft's ``where`` pins to one value (``=``, or ``IN`` with one value)."""
+
+    return {
+        str(row["field"])
+        for row in _where_filters(query)
+        if "field" in row
+        and (
+            (
+                row.get("op") == "="
+                and row.get("value") is not None
+                and not isinstance(row.get("value"), (list, tuple, dict))
+            )
+            or (
+                str(row.get("op")).lower() == "in"
+                and isinstance(row.get("value"), list)
+                and len(row["value"]) == 1
             )
         )
-    )
+    }
+
+
+def _level_groupings_unmet(config: Any, question: str, query: dict[str, Any]) -> list[str]:
+    """The groupings a question asking for a level or grain names that the draft doesn't
+    group by.
+
+    It reads which declared names the question holds (``_declared_name_spans``), never how
+    the phrase around them is built, so a plural, a repeated "at" or a separator changes
+    nothing. It runs only when "level", "levels", "grain" or "grains" stands outside every
+    declared name (a measure named Stock level triggers nothing). Then every dimension or
+    entity the question names must be grouped: a dimension by its own id, an entity by one of
+    its stand-ins (``_entity_grouping_dimensions``). A declared value, a dimension the draft's
+    ``where`` pins to one value (``_pinned_fields``), and a name inside a clock phrase
+    (``_clock_spans``) need nothing. The word before each level word, past commas and
+    connectors, must end the name of a dimension, an entity or a clock; any other word
+    ("region level" with no Region) is unmet as well. The check only holds a plan; every
+    caller-visible name, in any question, also has ``_named_groupings_unmet``'s obligation.
+    """
+
+    lowered = str(question or "").lower()
+    if not _LEVEL_WORD_RE.search(lowered):
+        return []
+    spans = _declared_name_spans(config, lowered)
+    triggers = [
+        match
+        for match in _LEVEL_WORD_RE.finditer(lowered)
+        if not any(low <= match.start() and match.end() <= high for low, high in spans)
+    ]
+    if not triggers:
+        return []
+    clock_spans = _clock_spans(config, lowered, query)
+    pinned = _pinned_fields(query)
+    grouped = set(query.get("group_by") or [])
+    unmet: list[str] = []
+    for (low, high), named in sorted(spans.items()):
+        term = " ".join(lowered[low:high].split())
+        dimensions = {row.id for kind, row in named if kind == "dimension"}
+        entity = any(kind == "entity" for kind, _ in named)
+        if (
+            not (dimensions or entity)
+            or any(a <= low and high <= b for a, b in clock_spans)
+            or _term_matches_value_domain(config, term)
+        ):
+            continue
+        stand_ins = (_entity_grouping_dimensions(config, term) or set()) if entity else set()
+        if not (dimensions & (grouped | pinned) or stand_ins & grouped):
+            unmet.append(term)
+    ends = {high for (_, high), named in spans.items() if any(kind != "value" for kind, _ in named)}
+    ends |= {high for _, high in clock_spans}
+    words = list(re.finditer(r"[^\W_]+", lowered))
+    for trigger in triggers:
+        before = [
+            word
+            for word in words
+            if word.end() <= trigger.start() and word.group() not in _NAME_CONNECTORS
+        ]
+        if not before:
+            unmet.append(trigger.group())
+        elif before[-1].end() not in ends:
+            unmet.append(before[-1].group())
+    return list(dict.fromkeys(unmet))
 
 
 def _grouping_filter_value_spans(
@@ -884,7 +969,7 @@ def _grouping_filter_value_spans(
     field and the value.
 
     Match the same literal, label and alias spellings as value inference. A match inside a
-    grouping name cannot authorize the filter (``_value_inside_grouping_name_terms``).
+    grouping name cannot authorize the filter (``_named_groupings_unmet``).
     """
 
     filters = _where_filters(query)
@@ -916,125 +1001,60 @@ def _grouping_filter_value_spans(
     return spans
 
 
-def _value_inside_grouping_name_terms(
+def _named_groupings_unmet(
     config: Any, question: str, query: dict[str, Any]
-) -> list[dict[str, str]]:
-    """Every dimension or entity name in the question, read with spaces or underscores
-    (``_declared_name_spans``), that holds a value a positive draft filter carries
-    (``_grouping_filter_value_spans``), as ``{"term", "field", "value"}``.
+) -> tuple[list[str], list[dict[str, str]]]:
+    """In any question, the caller-visible dimension and entity names the draft leaves without
+    their grouping, and the filters read from inside those names as ``{"term", "field",
+    "value"}``.
 
-    Whatever words surround the name, the question may name only the grouping, so the filter
-    the value brought in may narrow the answer: such a term holds the plan even when the
-    draft groups by it. The check only holds a plan; it never changes a draft.
+    Names are read with spaces, underscores and any case (``_declared_name_spans``): with an
+    alias ``_new_type`` for Customer type, "_new_type", "new_type" and "new type" name it.
+    Whatever words surround a name outside a clock phrase (``_clock_spans``), the draft must
+    group by or pin to one value (``_pinned_fields``, in ``where`` or in the ``all`` filter of a
+    metric it selects) the dimension it names, or for an entity one of the entity's
+    dimensions. A value word inside the name, or a word the selected
+    measure's name shares, never discharges it, and a positive filter whose value is read from
+    inside the name (``_grouping_filter_value_spans``) holds the plan even when the draft
+    groups by the name: the question may name only the grouping. Hidden objects are never
+    read. The check only holds a plan; it never changes a draft.
     """
 
     lowered = str(question or "").lower()
+    clock_spans = _clock_spans(config, lowered, query)
     values = _grouping_filter_value_spans(config, lowered, query)
-    found: list[dict[str, str]] = []
-    for underscores in (False, True):
-        spans = _declared_name_spans(config, lowered, underscores=underscores)
-        for (low, high), named in sorted(spans.items()):
-            if not any(kind in ("dimension", "entity") for kind, _ in named):
-                continue
-            term = " ".join(lowered[low:high].split())
-            for (start, end), field, value in values:
-                entry = {"term": term, "field": field, "value": value}
-                if low <= start and end <= high and entry not in found:
-                    found.append(entry)
-    return found
-
-
-def _level_groupings_with_names(
-    config: Any, question: str, query: dict[str, Any], *, underscores: bool
-) -> list[str]:
-    """The groupings a question asking for a level or grain names that the draft doesn't
-    group by.
-
-    It reads which declared names the question holds (``_declared_name_spans``), never how
-    the phrase around them is built, so a plural, a repeated "at" or a separator changes
-    nothing. It runs only when "level", "levels", "grain" or "grains" stands outside every
-    declared name (a measure named Stock level triggers nothing). Then every dimension or
-    entity the question names must be grouped: a dimension by its own id, an entity by one of
-    its stand-ins (``_entity_grouping_dimensions``). A declared value, a dimension the draft's
-    ``where`` pins to one value (``=``, or ``IN`` with one value), and a name inside a clock
-    phrase need nothing: a clock phrase ("week", or "order date" for the query's Order time)
-    is the time block's. The clock phrase must be words joined by spaces only, never with a
-    level word. (A filter value inside a grouping name holds any question, level or not:
-    ``_value_inside_grouping_name_terms``.) The word before each level word, past commas and
-    connectors, must end the name of a dimension, an entity or a clock; any other word
-    ("region level" with no Region) is unmet as well. The check only holds a plan.
-    """
-
-    lowered = str(question or "").lower()
-    if not _LEVEL_WORD_RE.search(lowered):
-        return []
-    spans = _declared_name_spans(config, lowered, underscores=underscores)
-    triggers = [
-        match
-        for match in _LEVEL_WORD_RE.finditer(lowered)
-        if not any(low <= match.start() and match.end() <= high for low, high in spans)
+    # A metric the draft selects pins a dimension with its own filter as a draft filter does.
+    subjects = [
+        _object_by_id(config.metric_recipes, str((item.get("expression") or {}).get("metric")))
+        for item in query.get("select") or []
+        if isinstance(item, dict)
     ]
-    if not triggers:
-        return []
-    clocks = _query_clocks(config, query)
-
-    def clock(term: str) -> bool:
-        return _is_temporal_grouping_term(term) or any(_names_time_axis(term, c) for c in clocks)
-
-    words = list(re.finditer(r"[^\W_]+", lowered))
-    clock_spans: list[tuple[int, int]] = []
-    for index, first in enumerate(words):
-        for last in words[index:]:
-            text = lowered[first.start() : last.end()]
-            if _LEVEL_WORD_RE.search(text) or not re.fullmatch(r"[^\W_]+(?:\s+[^\W_]+)*", text):
-                break
-            if clock(text):
-                clock_spans.append((first.start(), last.end()))
-    pinned = {
-        str(row["field"])
-        for row in _where_filters(query)
-        if "field" in row
-        and (
-            (
-                row.get("op") == "="
-                and row.get("value") is not None
-                and not isinstance(row.get("value"), (list, tuple, dict))
-            )
-            or (
-                str(row.get("op")).lower() == "in"
-                and isinstance(row.get("value"), list)
-                and len(row["value"]) == 1
-            )
-        )
-    }
-    grouped = set(query.get("group_by") or [])
+    own = [
+        clause
+        for row in subjects
+        if row is not None and isinstance(spec := getattr(row.expression, "filter", None), dict)
+        for clause in spec.get("all") or []
+    ]
+    where = {"where": [*(query.get("where") or []), *own]}
+    settled = set(query.get("group_by") or []) | _pinned_fields(where)
     unmet: list[str] = []
+    inside: list[dict[str, str]] = []
+    spans = _declared_name_spans(config, lowered, underscores=True)
     for (low, high), named in sorted(spans.items()):
-        term = " ".join(lowered[low:high].split())
-        dimensions = {row.id for kind, row in named if kind == "dimension"}
-        entity = any(kind == "entity" for kind, _ in named)
-        if (
-            not (dimensions or entity)
-            or any(a <= low and high <= b for a, b in clock_spans)
-            or _term_matches_value_domain(config, term)
-        ):
+        ids = {row.id for kind, row in named if kind != "value"}
+        if not ids or any(a <= low and high <= b for a, b in clock_spans):
             continue
-        stand_ins = (_entity_grouping_dimensions(config, term) or set()) if entity else set()
-        if not (dimensions & (grouped | pinned) or stand_ins & grouped):
-            unmet.append(term)
-    ends = {high for (_, high), named in spans.items() if any(kind != "value" for kind, _ in named)}
-    ends |= {high for _, high in clock_spans}
-    for trigger in triggers:
-        before = [
-            word
-            for word in words
-            if word.end() <= trigger.start() and word.group() not in _NAME_CONNECTORS
+        term = " ".join(lowered[low:high].split())
+        found = [
+            {"term": term, "field": field, "value": value}
+            for (start, end), field, value in values
+            if low <= start and end <= high
         ]
-        if not before:
-            unmet.append(trigger.group())
-        elif before[-1].end() not in ends:
-            unmet.append(before[-1].group())
-    return list(dict.fromkeys(unmet))
+        inside += [row for row in found if row not in inside]
+        ids |= {row.id for row in visible_dimensions(config) if row.entity in ids}
+        if found or not ids & settled:
+            unmet.append(term)
+    return list(dict.fromkeys(unmet)), inside
 
 
 def _dropped_grouping_why(
@@ -1050,10 +1070,11 @@ def _dropped_grouping_why(
     Any other listed grouping needs a dimension whose own words name it; a clock term ("by
     month", "by order date") is the time block's and a declared value is a filter, so neither
     needs one. One dimension satisfies one listed grouping. A question asking for a level or
-    grain must also have every grouping it names (``_level_groupings_unmet``). A grouping name
-    holding a value the draft filters on is never satisfied, in any question
-    (``_value_inside_grouping_name_terms``); ``details.filter_inside_grouping`` names each
-    such filter for the caller to confirm or remove.
+    grain must also have every grouping it names (``_level_groupings_unmet``). In any question,
+    every caller-visible dimension or entity name must be grouped or pinned, and a filter read
+    from inside one never stands (``_named_groupings_unmet``);
+    ``details.filter_inside_grouping`` names each such filter for the caller to confirm or
+    remove.
 
     A grouping whose dimensions belong to two or more entities, none of them the measure's own
     ("name" for an order count: Customer name, Store name and more), is ambiguous: plan holds
@@ -1139,11 +1160,11 @@ def _dropped_grouping_why(
         return False
 
     dropped = [term for index, term in enumerate(terms) if not assign(index, set())]
-    inside = _value_inside_grouping_name_terms(config, question, query)
+    named, inside = _named_groupings_unmet(config, question, query)
     held = list(dict.fromkeys(row["term"] for row in inside))
     dropped += [
         term
-        for term in dict.fromkeys([*_level_groupings_unmet(config, question, query), *held])
+        for term in dict.fromkeys([*_level_groupings_unmet(config, question, query), *named])
         if term not in dropped
     ]
     if not dropped:
