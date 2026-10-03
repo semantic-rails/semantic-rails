@@ -443,6 +443,17 @@ _GRANTED_WARNING_KEYS = {
     # runtime.py _withhold_values: fixed text, the warning's own object_ids,
     # and the caller's order alias; details repeats those objects and that alias.
     "VALUES_WITHHELD": frozenset({"code", "severity", "stage", "message", "object_ids", "details"}),
+    # runtime.py _filter_value_warnings: fixed text, caller literals, and filtered
+    # dimension IDs already granted by enforce_query; suggestions come only from
+    # reads under the caller's policy context.
+    "FILTER_VALUE_NOT_FOUND": frozenset(
+        {"code", "severity", "stage", "message", "object_ids", "details"}
+    ),
+    # runtime.py _filter_value_warnings: fixed text, caller literals, and filtered
+    # dimension IDs already granted by enforce_query; no suggestion on a failed read.
+    "FILTER_VALUE_UNVERIFIED": frozenset(
+        {"code", "severity", "stage", "message", "object_ids", "details"}
+    ),
 }
 
 

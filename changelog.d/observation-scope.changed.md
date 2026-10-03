@@ -17,3 +17,5 @@
   `FILTER_VALUE_UNVERIFIED`; suggestion failures omit only the suggestion. Under dataset
   observation, unknown amounts remain `NULL` without `NO_DATA_IN_SCOPE` when the measure
   has data elsewhere.
+- Resource-granted callers retain `FILTER_VALUE_NOT_FOUND` and `FILTER_VALUE_UNVERIFIED`
+  warnings for their granted filter dimensions, so an unverified filter value is not silent.

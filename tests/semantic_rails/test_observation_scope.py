@@ -49,6 +49,7 @@ SOLD = "temporal_role.obs_sale_sold_at"
 AS_OF = "temporal_role.obs_snapshot_as_of"
 QTY = {"measure": "measure.obs.qty"}
 SALES = {"measure": "measure.obs.sale_count"}
+QTY_METRIC = "metric.obs.qty"
 REGIONAL = RequestContext(actor="end-user", audience="regional", attributes={"region": "east"})
 
 
@@ -229,6 +230,48 @@ def test_a_misspelled_filter_value(runtime: Runtime, scope: str) -> None:
         {"dimension": PRODUCT, "value": "appel", "suggestion": "apple"}
     ]
     assert "'appel'" in typo["message"] and "did you mean 'apple'?" in typo["message"]
+
+
+@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+def test_a_granted_metric_keeps_the_unverified_filter_warning(
+    runtime: Runtime, verbosity: str
+) -> None:
+    context = RequestContext(metric_allowlist=(QTY_METRIC,), dimension_allowlist=(PRODUCT,))
+    response = _ask(
+        runtime,
+        None,
+        select=_select(qty={"metric": QTY_METRIC}),
+        where=_where(PRODUCT, "appel"),
+        policy_context=context.to_policy_context(),
+        verbosity=verbosity,
+    )
+    assert response["ok"]
+    if verbosity != "minimal":
+        assert response["status"] == "ok"
+    assert (
+        [tuple(row.values()) for row in response["rows"]]
+        == _gold(DATASET_QTY.format(where="product = 'appel'"))
+        == [(0,)]
+    )
+    (warning,) = response["warnings"]
+    # The dimension-only existence probe remains forbidden by the resource grant.
+    assert warning["code"] == "FILTER_VALUE_UNVERIFIED"
+    assert "'appel'" in warning["message"]
+    assert warning["object_ids"] == [PRODUCT]
+    assert warning["details"]["filters"] == [{"dimension": PRODUCT, "value": "appel"}]
+
+
+def test_a_granted_metric_still_refuses_an_ungranted_filter(runtime: Runtime) -> None:
+    context = RequestContext(metric_allowlist=(QTY_METRIC,), dimension_allowlist=(PRODUCT,))
+    with pytest.raises(SemanticLayerError) as exc:
+        _ask(
+            runtime,
+            None,
+            select=_select(qty={"metric": QTY_METRIC}),
+            where=_where(STORE, "s5"),
+            policy_context=context.to_policy_context(),
+        )
+    assert exc.value.code == "RESOURCE_ACCESS_DENIED"
 
 
 def test_one_warning_names_every_value_that_matched_nothing(runtime: Runtime) -> None:
