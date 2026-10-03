@@ -137,7 +137,7 @@ def test_minimal_retains_real_missing_segment_diagnostics(
     minimal = adapter.call_tool("segment", {**arguments, "verbosity": "minimal"})
     assert full["ok"] is minimal["ok"] is False
     assert minimal["errors"] == full["errors"]
-    assert minimal["recovery_hints"] == full["recovery_hints"]
+    assert minimal["errors"][0]["recovery_hints"] == full["errors"][0]["recovery_hints"]
     assert minimal["errors"][0]["code"]
 
 
@@ -172,7 +172,7 @@ def test_minimal_retains_real_policy_denial(runtime_factory: Any, action: str) -
         assert full["ok"] is minimal["ok"] is False
         assert minimal["errors"] == full["errors"]
         assert minimal["errors"][0]["code"] == "POLICY_DENIED"
-        assert minimal["recovery_hints"] == full["recovery_hints"]
+        assert minimal["errors"][0]["recovery_hints"] == full["errors"][0]["recovery_hints"]
     finally:
         mcp.close()
 
@@ -205,11 +205,12 @@ def test_minimal_retains_soft_failure_policy_and_recovery_fields(
         "status",
         "errors",
         "warnings",
-        "recovery_hints",
         "authoring_hints",
         "query_ir_hints",
         "policy_effects",
         "segment_policy_effects",
     ):
         assert minimal[key] == full[key], key
+    assert minimal["errors"][0]["recovery_hints"] == payload["recovery_hints"]
+    assert "recovery_hints" not in minimal and "recovery_hints" not in full
     assert "logical_plan" not in minimal

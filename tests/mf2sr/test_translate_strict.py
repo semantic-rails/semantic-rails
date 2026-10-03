@@ -177,6 +177,7 @@ def test_semantic_rails_import_takes_schema_strict(tmp_path: Path) -> None:
         capture_output=True,
         text=True,
         check=True,
+        timeout=120,
     )
 
     assert json.loads(result.stdout)["ok"] is True

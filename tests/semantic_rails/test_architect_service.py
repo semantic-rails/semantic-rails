@@ -63,7 +63,7 @@ def _cross_process_upsert(
     start,
     results,
 ) -> None:
-    start.wait()
+    assert start.wait(timeout=10), "the parent never signalled the writers to start"
     try:
         report = (
             ArchitectProject(project_path, workspace_root=workspace_root)
@@ -366,7 +366,8 @@ def test_in_process_project_lock_excludes_threads_across_collection(
     for thread in threads:
         thread.start()
     for thread in threads:
-        thread.join()
+        thread.join(timeout=60)
+        assert not thread.is_alive(), "a writer thread is still waiting for the project lock"
 
     assert len(seen) == 600 and max(seen) == 1
     assert locks.created > 1  # the entry was collected and recreated while threads contended

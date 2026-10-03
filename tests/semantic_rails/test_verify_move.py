@@ -115,10 +115,10 @@ def _repo(tmp_path: Path, head: dict[str, str], base: dict[str, str] = BASE) -> 
             path.write_text(text)
 
     git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t"]
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=120)
     write(base)
-    subprocess.run([*git, "add", "-A"], check=True)
-    subprocess.run([*git, "commit", "-qm", "base"], check=True)
+    subprocess.run([*git, "add", "-A"], check=True, timeout=120)
+    subprocess.run([*git, "commit", "-qm", "base"], check=True, timeout=120)
     write(head)
     return str(tmp_path)
 
@@ -386,9 +386,9 @@ def test_scoping_imports_and_exports(tmp_path, base, head, expected):
 def test_two_refs_read_the_head_ref_not_the_working_tree(tmp_path):
     repo = _repo(tmp_path, MOVED)
     git = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t"]
-    subprocess.run([*git, "checkout", "-qb", "moved"], check=True)
-    subprocess.run([*git, "add", "-A"], check=True)
-    subprocess.run([*git, "commit", "-qm", "move"], check=True)
+    subprocess.run([*git, "checkout", "-qb", "moved"], check=True, timeout=120)
+    subprocess.run([*git, "add", "-A"], check=True, timeout=120)
+    subprocess.run([*git, "commit", "-qm", "move"], check=True, timeout=120)
     (tmp_path / "tests" / "test_x.py").write_text(
         'from semantic_rails import a\n\n\ndef test(monkeypatch):\n    monkeypatch.setattr(a, "_key", str)\n'
     )

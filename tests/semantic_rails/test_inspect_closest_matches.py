@@ -32,7 +32,7 @@ def test_mcp_inspect_typo_returns_closest_matches(runtime_factory) -> None:
         assert "measure.jaffle.order_count" in closest
         # Hints must include the same suggestions so callers reading
         # `recovery_hints` alone can recover.
-        hints = list(result.get("recovery_hints", []) or [])
+        hints = list(result["errors"][0].get("recovery_hints", []) or [])
         assert hints, "expected non-empty recovery_hints"
         hint_closest = list(hints[0].get("closest_matches", []) or [])
         assert "measure.jaffle.order_count" in hint_closest
@@ -83,7 +83,7 @@ def test_mcp_inspect_unknown_id_with_no_near_neighbor_still_structured(runtime_f
         errors = list(result.get("errors", []) or [])
         assert errors
         assert errors[0]["code"] == "OBJECT_NOT_FOUND"
-        hints = list(result.get("recovery_hints", []) or [])
+        hints = list(result["errors"][0].get("recovery_hints", []) or [])
         assert hints, "recovery_hints must never be empty on OBJECT_NOT_FOUND"
     finally:
         runtime.close()

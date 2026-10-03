@@ -587,6 +587,7 @@ def test_retranslation_refuses_nonempty_destination_without_changing_files(
         ],
         capture_output=True,
         text=True,
+        timeout=120,
     )
     assert public_cli.returncode == 1
     error = json.loads(public_cli.stdout)

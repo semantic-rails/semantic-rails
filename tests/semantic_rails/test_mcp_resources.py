@@ -28,7 +28,8 @@ def test_legacy_capabilities_retains_full_tool_definitions(
     assert payload["tools"] == list_tool_definitions()
     first = payload["tools"][0]
     assert first["description"]
-    assert first["inputSchema"]["properties"]["request_id"]["type"] == "string"
+    assert "request_id" not in first["inputSchema"]["properties"]
+    assert "policy_context" not in first["inputSchema"]["properties"]
     assert first["outputSchema"]["type"] == "object"
     assert first["annotations"]["title"]
     assert [row["name"] for row in payload["prompts"]]

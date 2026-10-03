@@ -292,6 +292,11 @@ Core query rules:
   Internal branches, distribution inputs and contextual predicate sources receive
   no default ordering; explicit `order_by` still takes precedence
 - `metric_filters` are applied after projected expressions except for `metric_predicate`, which is planned semantically at entity plus contextual time/group scope
+- queries without `select` still apply aggregate `metric_filters` through their measure
+  leaves. A `metric_predicate` reaching distinct-value lowering without a measure or
+  conversion leaf is refused with `PREDICATE_NOT_SUPPORTED`; add a select that reads a
+  measure, or remove `metric_filters`. Ordinary `where`, `order_by` and `limit` still
+  apply to distinct-group queries
 - `temporal_role_overrides` must only reference declared temporal roles
 - when only some measures have the query's clock, each other measure is timed by its own
   clock; one with several clocks, none of them the query's, fails with
@@ -419,7 +424,8 @@ Important planner behaviors:
   a dialect without `outer_lookup_joins` (ClickHouse, whose unmatched outer-join columns read
   a type default, not NULL); a hop any of them walks is inner for every read. Hops that fan
   out are inner joins. `_joins_for_paths` (`compiler_parts/paths.py`) is the one place that
-  decides, and the only caller of the join-condition builder; leaves cannot opt out
+  decides, and the only caller of the join-condition builder; the `parent_lookup` leaf
+  described below is its named exception
 - an `entity_in_terms_of` count always requires a matching row of the counted entity,
   including when grouping only by the child's lookup without a parent dimension or time
   axis. The shortcut requires exactly one relationship between child and parent, on the
@@ -438,6 +444,19 @@ Important planner behaviors:
 - contextual `time_grain` overrides are limited to coarser deterministic ancestor buckets on the same calendar
 - supported conversion requests compile as event-pair matching subplans
 - unsupported conversion requests fail semantically rather than silently degrading into ratios
+
+The `parent_lookup` leaf compiles its source measure as an inner query grouped by the
+single-column `via` key under the same bindings, including access policies, and records
+the child's direct relationship in the owning leaf's dependencies. It applies the source's
+settlement gate, LEFT JOINs the settled source onto the child's direct foreign key, and
+uses MAX over values proved single per output row. `_validate_non_additive_sums`, through
+`_single_valued_columns`, is the one enforcement point for that proof: planning and the leaf
+both call it, and it refuses a different resolved route or unsafe grain with `ROLLUP_UNSAFE`.
+The loader refuses composite `via` keys and recorded routes that conflict with either
+direct relationship. This leaf's explicit LEFT JOIN to a compiled total is the named
+exception to the `_joins_for_paths` rule above. Its CTE allocator skips a source name
+when any occupied relation or CTE name contains it, ignoring case, so gate and nested
+names remain distinct from physical relations after namespacing.
 
 ### Loaded semantics and executable SQL
 
@@ -477,7 +496,18 @@ It denies other repeated reads, joins, other relations and rollups (routing is o
 a row filter). DuckDB binds `?` directly; Postgres preparation finalizes slots as
 `$1`, `$2`, … and ADBC validates them before connecting. Other adapters deny
 parameterized SQL. Empty-group settlement lives in `compiler_parts/empty_groups.py`: untimed
-observation determines whether zero is defined, and base time coverage bounds only zero
+observation determines whether zero is defined, each sum's leaf counts the rows it read so
+zero goes only to a group with none (never to rows whose amounts are all NULL; a leaf without
+the count is refused). A query with a distribution branch, and a metric predicate's source
+over several measures under a threshold 0 passes, keep the earlier settlement
+(`earlier_settlement` in `compiler_parts/bind.py`) and plan and lower exactly as before. A
+measure whose expression contains a CASE below its root also keeps the earlier settlement
+individually and refuses rollups; lowering refuses a plan that bypasses that routing rule.
+Each row count is named `m<i>_rows` beside its measure's `m<i>`, renamed until no output, key or
+package column has the name, so the alias registry never rewrites it. Source rollups also
+rename their internal value until it differs from every projected join column, group, time
+and row-count alias, using case-insensitive comparison. Base time coverage
+bounds only zero
 substitution on filled, dense or combined leaves. One predicate decides both coverage and
 rollup refusal, on DuckDB and Postgres only. Populated values pass through; routed
 queries keep the window test and never scan a shadow raw leaf.

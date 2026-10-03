@@ -26,8 +26,8 @@ model:
       value_type: currency}
     largest_order: {label: Largest order, kind: aggregate, expr: amount, default_agg: max,
       value_type: currency}
-    # Conditional counts, like COUNT(CASE WHEN ... THEN order_id END): 0 for a customer whose
-    # orders all fall short, never NULL. Two orders reach 10 and none reaches 1000.
+    # Conditional counts read 0 for an entity whose rows fall short when some row in scope
+    # meets the condition, and NULL when none does. Two orders reach 10 and none reaches 1000.
     large_order_count: {label: Large orders, kind: entity_count, accumulation: {kind: flow},
       expr: {kind: case, whens: [{when: {kind: comparison, op: '>=',
         left: {kind: column, column: amount}, right: {kind: literal, value: 10}},

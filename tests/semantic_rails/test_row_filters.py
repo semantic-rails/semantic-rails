@@ -654,6 +654,7 @@ def test_empty_tenant_coverage_and_observation_match_filtered_gold(package):
         select=[
             SqlField(dialect.timestamp_cast(SqlLiteral("2026-01-01")), "t"),
             SqlField(value, "v"),
+            SqlField(SqlCall("COUNT", [SqlLiteral(1)]), "v_rows"),
         ],
         from_table=SqlTableRef("order_fact"),
         where=[
@@ -677,7 +678,14 @@ def test_empty_tenant_coverage_and_observation_match_filtered_gold(package):
         ctes=[
             SqlCte("source", source),
             *guard_empty_groups(
-                "source", ["t"], ["v"], {"v": "sum"}, {"v": scope}, time_key="t", dialect=dialect
+                "source",
+                ["t"],
+                ["v"],
+                {"v": "sum"},
+                {"v": scope},
+                rows={"v": "v_rows"},
+                time_key="t",
+                dialect=dialect,
             ),
         ],
     )

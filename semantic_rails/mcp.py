@@ -37,6 +37,7 @@ from .metadata import (
     valid_values_payload,
 )
 from .planner import plan_payload
+from .policies import diagnostic_hidden_object_ids
 from .request_context import (
     RequestContext,
     context_from_policy_context,
@@ -57,6 +58,7 @@ from .request_payload import (
 from .resource_access import GRANT_DISCOVER_KINDS
 from .runtime import Runtime
 from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL, resolve_verbosity
+from .schema import PackageConfig
 
 __all__ = [
     "JSON_OBJECT_SCHEMA",
@@ -154,15 +156,15 @@ MCP_SERVER_INSTRUCTIONS = (
     " for several values), and time {temporal_role, grain, start, end}, where end is "
     "exclusive. A window without a grain returns one total, with no time column. The execute tool "
     "schema lists expression shapes.\n"
+    "No time/where: the query adds no time window or filter; "
+    "metric definitions and package policies still apply.\n"
     "\n"
     "segment(segment_id, action) validates, explains or previews a package-authored "
     "segment.\n"
     "\n"
     'Every tool returns its smallest response by default (verbosity "minimal", plan detail '
     '"query"); pass verbosity "compact" or "full", or detail "best", for more. Errors carry '
-    "recovery_hints and closest_matches; follow them before retrying. For local testing, "
-    "any tool accepts policy_context {environment, audience, roles}; hosted servers set it "
-    "for you."
+    "recovery_hints and closest_matches; follow them before retrying."
 )
 
 POLICY_CONTEXT_SCHEMA: dict[str, Any] = {
@@ -329,8 +331,17 @@ MCP_RESULT_SCHEMA: dict[str, Any] = {
         "package_id": {"type": "string"},
         "warnings": {"type": "array", "items": {"$ref": "#/$defs/issue"}},
         "errors": {"type": "array", "items": {"$ref": "#/$defs/issue"}},
-        "error": {"oneOf": [{"$ref": "#/$defs/issue"}, {"type": "null"}]},
-        "recovery_hints": {"type": "array", "items": {"type": "object"}},
+        "error": {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "required": ["code", "message"],
+                    "properties": {"code": {"type": "string"}, "message": {"type": "string"}},
+                    "additionalProperties": False,
+                },
+                {"type": "null"},
+            ]
+        },
         "request_context": {"type": "object"},
         "timing_ms": {"type": "number", "minimum": 0},
     },
@@ -393,14 +404,9 @@ def _schema(
     required: list[str] | None = None,
     additional_properties: bool = False,
 ) -> dict[str, Any]:
-    # These optional fields are part of the published tool schemas. Keep
-    # them advertised even though the workflow explains them only once.
-    schema_properties = copy.deepcopy(dict(properties))
-    schema_properties.setdefault("request_id", {"type": "string"})
-    schema_properties.setdefault("policy_context", copy.deepcopy(POLICY_CONTEXT_SCHEMA))
     schema: dict[str, Any] = {
         "type": "object",
-        "properties": schema_properties,
+        "properties": copy.deepcopy(dict(properties)),
         "additionalProperties": additional_properties,
     }
     if required:
@@ -609,10 +615,14 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "max_rows rows; a capped one reports truncated and total_row_count. "
             "mode='validate' only checks; mode='sql' adds rendered_sql; "
             "neither runs. 'query' is a JSON object; mode 'run' costs "
-            "warehouse time. IR: select[]={expression:{...},as}, group_by[]=[<dim>,...] (not in "
-            "select), where[]={field,op,value}, order_by[]={field,direction}. select.expression: "
+            "warehouse time. validate checks a query before it runs; a query that already ran "
+            "needs no validate. select may be empty: group_by alone lists rows. "
+            "IR: select[]={expression:{...},as}, group_by[]=[<dim>,...] (not in "
+            "select), where[]={field,op,value}, order_by[]={field,direction}. select.expression:\n"
             "{aggregation, measure} | {metric} | "
-            "{kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}."
+            "{kind: prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|arithmetic|...}\n"
+            "ratio: per-order sum / order count.\n"
+            "arithmetic adds measures; aggregate_if: conditional count."
         ),
         input_schema=_schema(
             {
@@ -796,8 +806,12 @@ MCP_RESOURCE_DEFINITIONS = tuple(definition.to_dict() for definition in RESOURCE
 MCP_PROMPT_DEFINITIONS = tuple(definition.to_dict() for definition in PROMPT_DEFINITIONS)
 
 
-def list_tool_definitions() -> list[dict[str, Any]]:
-    return [definition.to_dict() for definition in TOOL_DEFINITIONS]
+def list_tool_definitions(*, config: PackageConfig | None = None) -> list[dict[str, Any]]:
+    return [
+        definition.to_dict()
+        for definition in TOOL_DEFINITIONS
+        if definition.name != "segment" or config is None or config.segments
+    ]
 
 
 def list_resource_definitions() -> list[dict[str, Any]]:
@@ -836,8 +850,10 @@ def _argument_error(message: str, *, field: str, value: Any | None = None) -> Se
 _TOOL_SCHEMAS: Mapping[str, Mapping[str, Any]] = {
     definition.name: dict(definition.input_schema or {}) for definition in TOOL_DEFINITIONS
 }
+_TRANSPORT_ARGS = ("request_id", "policy_context")
 _KNOWN_ARGS: Mapping[str, frozenset[str]] = {
     name: frozenset(schema.get("properties") or {})
+    | frozenset(_TRANSPORT_ARGS)
     | (QUERY_INPUT_KEYS if name == "execute" else frozenset())
     for name, schema in _TOOL_SCHEMAS.items()
 }
@@ -853,9 +869,12 @@ _WARN_AND_IGNORE_TOOLS: frozenset[str] = frozenset(_UNKNOWN_ARG_WARNING_CODE)
 
 
 def _tool_required_properties(tool_name: str) -> tuple[list[str], list[str]]:
-    """Return (required, known) properties from the tool's input_schema."""
+    """Return required schema properties and known runtime arguments."""
     schema = _TOOL_SCHEMAS.get(tool_name, {})
-    return list(schema.get("required") or []), list(schema.get("properties") or {})
+    return list(schema.get("required") or []), [
+        *list(schema.get("properties") or {}),
+        *_TRANSPORT_ARGS,
+    ]
 
 
 _ROW_FORMATS: frozenset[str] = frozenset({"records", "columns"})
@@ -1665,7 +1684,7 @@ def _lean_discover(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _lean_issue(issue: Any) -> Any:
+def _lean_issue(issue: Any, *, verbosity: str = "compact") -> Any:
     """State an issue's facts once: drop empty optional fields and echoes of code or message."""
 
     if not isinstance(issue, dict):
@@ -1680,6 +1699,12 @@ def _lean_issue(issue: Any) -> Any:
     if isinstance(lean.get("recovery_hints"), list):
         # Hints must be actionable on their own (for example, valid_kinds on a retry).
         lean["recovery_hints"] = [_lean_issue(hint) for hint in lean["recovery_hints"]]
+    if verbosity == "minimal" and lean.get("code") in {"MIXED_GRAIN_INVALID", "REWRITE_APPLIED"}:
+        details = dict(lean.get("details") or {})
+        details.pop("analysis", None)
+        if lean["code"] == "REWRITE_APPLIED":
+            details.pop("path", None)
+        lean["details"] = details
     return lean
 
 
@@ -1719,7 +1744,6 @@ class SemanticLayerMCPAdapter:
 
         _reject_removed_interface(interface)
         self.interface = _INTERFACE
-        self.instructions = MCP_SERVER_INSTRUCTIONS
         self.runtime = runtime
         self.package_id = runtime.package_id
         self._tool_handlers: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
@@ -1730,6 +1754,17 @@ class SemanticLayerMCPAdapter:
             "execute": self._handle_execute_mode,
             "segment": self._handle_segment_action,
         }
+
+    @property
+    def instructions(self) -> str:
+        instructions = MCP_SERVER_INSTRUCTIONS
+        if not any(tool["name"] == "segment" for tool in self.list_tools()):
+            instructions = instructions.replace(
+                "segment(segment_id, action) validates, explains or previews a package-authored "
+                "segment.\n\n",
+                "",
+            )
+        return instructions
 
     @classmethod
     def from_package(
@@ -1748,7 +1783,7 @@ class SemanticLayerMCPAdapter:
     def replace_tool_handler(
         self, name: str, handler: Callable[[dict[str, Any]], dict[str, Any]]
     ) -> None:
-        """Serve the listed tool ``name`` with ``handler`` on this adapter only.
+        """Serve the tool ``name`` with ``handler`` when the current package lists it.
 
         ``call_tool`` still validates the arguments, merges the trusted request context and
         audits the call. Like the built-in tools, ``handler`` runs inside the adapter's
@@ -1762,13 +1797,18 @@ class SemanticLayerMCPAdapter:
         self.runtime.close()
 
     def list_tools(self) -> list[dict[str, Any]]:
-        return list_tool_definitions()
+        return list_tool_definitions(config=self.runtime.config)
 
     def list_resources(self) -> list[dict[str, Any]]:
         return list_resource_definitions()
 
     def list_prompts(self) -> list[dict[str, Any]]:
-        return list_prompt_definitions()
+        has_segment = any(tool["name"] == "segment" for tool in self.list_tools())
+        return [
+            prompt
+            for prompt in list_prompt_definitions()
+            if prompt["name"] != "semantic-rails-segment-workflow" or has_segment
+        ]
 
     def call_tool(
         self,
@@ -1836,8 +1876,9 @@ class SemanticLayerMCPAdapter:
             arguments, request_context, inject_policy_context=policy_aware
         )
         handler = self._tool_handlers.get(name)
-        if handler is None:
-            details: dict[str, Any] = {"tool": name, "available_tools": sorted(self._tool_handlers)}
+        available_tools = {tool["name"] for tool in self.list_tools()}
+        if handler is None or name not in available_tools:
+            details: dict[str, Any] = {"tool": name, "available_tools": sorted(available_tools)}
             message = f"Unknown MCP tool '{name}'"
             replacement = _REMOVED_TOOLS.get(name)
             if replacement:
@@ -1967,7 +2008,7 @@ class SemanticLayerMCPAdapter:
 
     def get_prompt(self, name: str, arguments: Mapping[str, Any] | None = None) -> dict[str, Any]:
         args = dict(arguments or {})
-        if name in _PROMPT_TEXT:
+        if name in {prompt["name"] for prompt in self.list_prompts()}:
             text = _PROMPT_TEXT[name].format(
                 intent=str(args.get("intent", "") or ""),
                 package_id=str(args.get("package_id", self.package_id) or self.package_id),
@@ -1986,13 +2027,12 @@ class SemanticLayerMCPAdapter:
                 ),
                 stage="mcp",
             )
-            return {
-                "ok": False,
-                "status": "error",
-                "error": issue,
-                "errors": [issue],
-                "messages": [],
-            }
+            return self._envelope(
+                {"ok": False, "errors": [issue], "messages": []},
+                request_id=_clean_request_id(args.get("request_id")),
+                started_at=time.perf_counter(),
+                arguments=args,
+            )
         return {
             "name": name,
             "description": next(
@@ -2010,7 +2050,12 @@ class SemanticLayerMCPAdapter:
         }
 
     def _envelope(
-        self, payload: Mapping[str, Any], *, request_id: str, started_at: float
+        self,
+        payload: Mapping[str, Any],
+        *,
+        request_id: str,
+        started_at: float,
+        arguments: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         out = dict(payload or {})
         out.setdefault("ok", not bool(out.get("errors")))
@@ -2027,32 +2072,34 @@ class SemanticLayerMCPAdapter:
                 out["errors"] = [_internal_issue(str(error))]
             else:
                 out["errors"] = []
-        # Surface errors[0] at the top-level `error` so agents that read
-        # the conventional MCP-envelope `if result.get("error"): ...`
-        # branch don't silently treat a soft-fail (execute mode validate,
-        # segment action validate) as success.
-        if not out.get("error"):
-            first = next(
-                (issue for issue in (out.get("errors") or []) if isinstance(issue, dict)),
-                None,
-            )
-            if first is not None:
-                out["error"] = first
+        arguments = arguments or {}
+        verbosity = MCP_DEFAULT_QUERY_VERBOSITY
+        # Use the handler's query shaping and runtime normalization. Invalid
+        # arguments still need an envelope even when no query can be built.
+        with contextlib.suppress(SemanticLayerError):
+            verbosity = resolve_verbosity(_query_payload_with_mcp_default_verbosity(arguments))
         for key in ("errors", "warnings"):
-            out[key] = [_lean_issue(issue) for issue in out[key] or []]
-        if isinstance(out.get("error"), dict):
-            out["error"] = _lean_issue(out["error"])
-        # The errors' hints, repeated at the top level: agents' loop-repair signal.
-        hints = out.pop("recovery_hints", None)
-        if hints is None:
-            hints = [
-                hint
-                for issue in out["errors"]
-                if isinstance(issue, dict)
-                for hint in issue.get("recovery_hints") or []
-            ]
-        if hints:
-            out["recovery_hints"] = [_lean_issue(hint) for hint in hints]
+            out[key] = [_lean_issue(issue, verbosity=verbosity) for issue in out[key] or []]
+        # Keep the conventional truthy error branch for validate soft-fails,
+        # while the complete issues and their hints live only in errors.
+        if out["errors"]:
+            first = out["errors"][0]
+            hints = [hint for issue in out["errors"] for hint in issue.get("recovery_hints", [])]
+            extra = [_lean_issue(hint) for hint in out.pop("recovery_hints", []) or []]
+            extra = [hint for hint in extra if hint not in hints]
+            if extra:
+                first["recovery_hints"] = list(first.get("recovery_hints", [])) + extra
+                hints += extra
+            if "query_ir_hints" in out:
+                out["query_ir_hints"] = [
+                    hint for hint in out["query_ir_hints"] if _lean_issue(hint) not in hints
+                ]
+            out["error"] = {key: first[key] for key in ("code", "message")}
+        elif out.get("recovery_hints"):
+            # Discovery next steps are independent of error recovery hints.
+            out["recovery_hints"] = [_lean_issue(hint) for hint in out["recovery_hints"]]
+        else:
+            out.pop("recovery_hints", None)
         out.setdefault("timing_ms", round((time.perf_counter() - started_at) * 1000, 3))
         return out
 
@@ -2075,6 +2122,7 @@ class SemanticLayerMCPAdapter:
             payload,
             request_id=_clean_request_id(arguments.get("request_id")),
             started_at=started_at,
+            arguments=arguments,
         )
         return self._with_request_context(out, arguments)
 
@@ -2091,12 +2139,21 @@ class SemanticLayerMCPAdapter:
         # but we defensively never want diagnostics enrichment to mask
         # the original error.
         with contextlib.suppress(Exception):
-            exc = enrich_object_not_found(exc, self.runtime._config)
+            config = self.runtime._config
+            exc = enrich_object_not_found(
+                exc,
+                config,
+                hidden_ids=diagnostic_hidden_object_ids(
+                    config,
+                    _resolved_tool_request_context(arguments).to_policy_context(),
+                ),
+            )
         issue = exception_issue(exc, stage="mcp")
         out = self._envelope(
             {"ok": False, "status": "error", "error": issue, "errors": [issue]},
             request_id=_clean_request_id(arguments.get("request_id")),
             started_at=started_at or time.perf_counter(),
+            arguments=arguments,
         )
         return self._with_request_context(out, arguments)
 

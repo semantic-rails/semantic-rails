@@ -55,6 +55,8 @@ from .compiler_parts.bind import (
     _scoped_predicate_expr_payload,
     check_conditional_aggregate_path,
     conditional_aggregate_route_refusal,
+    earlier_settlement,
+    earlier_settlement_applies,
     is_conditional_aggregate,
     lift_conditional_aggregates,
 )
@@ -110,6 +112,7 @@ from .compiler_parts.post_aggregation import (
 )
 from .compiler_parts.sql_lowering import (
     _count_key_expr,
+    _expr_contains_distribution,
     _last_token,
     _plan_requires_agent_dag_lowering,
     _refuse_converted_role,
@@ -131,6 +134,7 @@ from .compiler_parts.temporal import (
     _validate_query_temporal_bindings,
     _validate_restrictive_time_semantics,
 )
+from .config_parts.lookup_measures import lookup_links
 from .config_parts.route_rows import (
     RouteRowError,
     check_route_row,
@@ -573,6 +577,16 @@ def _single_valued_columns(
     measure's own ``date`` clock at ``grain: day``. Metric, measure and segment
     filters never count: they don't split the output rows.
     """
+    if measure.lookup_from:
+        child, source = lookup_links(measure, config)
+        for link in (child, source):
+            chosen, _ = resolve_path(config, start=link.source_entity, target=measure.lookup_via)
+            if chosen != [link.id]:
+                # A via key reached by another route cannot prove the leaf's direct FK fixed,
+                # even if the child's own key is grouped. Recheck configs that bypassed load.
+                _raise_non_additive_sum(
+                    measure, "parent_lookup", child.source_columns or [child.source_column], config
+                )
     dimensions = _dimension_index(config)
     pinned = set(query.group_by)
     for item in plain_filters(query.where):  # a child group pins no output row's value
@@ -635,6 +649,8 @@ def _validate_non_additive_sums(
     roots += [item.expression for item in query.metric_filters if item.expression is not None]
     for bound in bound_measures:
         roots.extend(_bound_metric_predicates(bound))
+    for bound in bound_measures:
+        _refuse_time_on_lookup(measures[bound.measure_id], bound, roots, config, query)
     wrapped = {
         measure_id: construct
         for root in roots
@@ -688,6 +704,14 @@ def _validate_non_additive_sums(
             continue
         aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
         key = list(measure.row_grain or []) or list(_entity_index(config)[measure.entity].key or [])
+        if measure.lookup_from:
+            # One carried total per output row: its via foreign key, or its own row, is fixed.
+            single_valued = _single_valued_columns(measure, bound, query, config)
+            via_key = lookup_links(measure, config)[0]
+            via_columns = via_key.source_columns or [via_key.source_column]
+            if not (set(via_columns) <= single_valued or set(key) <= single_valued):
+                _raise_non_additive_sum(measure, "parent_lookup", via_columns, config)
+            continue
         if aggregation not in {"sum", "last_value", "first_value"}:
             continue
         required = key
@@ -705,9 +729,8 @@ def _validate_non_additive_sums(
 class NonAdditiveRefusal(SemanticLayerError):
     """``ROLLUP_UNSAFE`` for an ``additive: false`` measure summed above its stored grain.
 
-    Its message and details point to the measure's key rather than list it; the key
-    columns and dimensions stay on the object for in-process callers, such as
-    ``project validate``'s probe.
+    Key columns and dimensions stay available to in-process callers. Public
+    diagnostics name dimensions only after checking the request's visibility.
     """
 
     def __init__(
@@ -726,7 +749,17 @@ def _raise_non_additive_sum(
         for dimension in config.dimensions
         if dimension.entity == measure.entity and dimension.column in missing
     ]
-    if missing:
+    if missing and measure.lookup_from:
+        dimensions = _entity_key_dimension_ids(measure.lookup_via, config)
+        hint = (
+            f"Group by, or filter with = to one value, the key of '{measure.lookup_via}' (the "
+            "lookup's via), or each column of the measure's own key."
+        )
+        message = (
+            f"Measure '{measure.id}' carries one total per '{measure.lookup_via}' onto each of "
+            f"its rows, and this query would add more than one of them into an output row. {hint}"
+        )
+    elif missing:
         key = "series key" if measure.measure_class == "semi_additive" else "key"
         statistics = [
             name for name in ("avg", "min", "max", "median") if name in measure.allowed_aggregations
@@ -757,6 +790,67 @@ def _raise_non_additive_sum(
         columns=missing,
         dimensions=dimensions,
     )
+
+
+# A lookup carries its source's all-time total, so no time axis may bucket, shift or add it.
+_LOOKUP_TIME_EXPRS = (
+    CumulativeExpr,
+    RollingExpr,
+    PeriodToDateExpr,
+    OffsetWindowExpr,
+    PriorPeriodExpr,
+    ConversionExpr,
+)
+
+
+def _refuse_time_on_lookup(
+    measure: MeasureConfig,
+    bound: BoundMeasure,
+    roots: list[Any],
+    config: PackageConfig,
+    query: NormalizedQuery,
+) -> None:
+    """A query's time selects a lookup's own rows by its own clock, and does nothing else."""
+    if not measure.lookup_from:
+        return
+    requested = query.time.temporal_role if query.time is not None else ""
+    reason = ""
+    if requested and _leaf_time_role(bound, query, config) != requested:
+        reason = f"time '{requested}' is not a clock of the measure's own rows"
+    elif measure.id in query.temporal_role_overrides:
+        reason = "a temporal role override would retime it"
+    elif any(measure.id in _measures_inside(root, _LOOKUP_TIME_EXPRS, config) for root in roots):
+        reason = "a window, prior period or conversion would bucket, shift or add it over time"
+    if reason:
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            f"Measure '{measure.id}' carries its source's all-time total per "
+            f"'{measure.lookup_via}'; {reason}. Filter or bucket by a clock of its own rows, "
+            "which selects the rows and leaves the carried total unchanged.",
+            details={"measure_id": measure.id, "unsupported_construct": "lookup_time"},
+        )
+
+
+def _measures_inside(
+    expr: Any, kinds: tuple[type, ...], config: PackageConfig, inside: bool = False
+) -> set[str]:
+    """Measures read anywhere under a construct of ``kinds``, recipes expanded."""
+    inside = inside or isinstance(expr, kinds)
+    found: set[str] = set()
+    if inside and isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
+        found.add(expr.measure)
+    if isinstance(expr, MetricRecipeRefExpr):
+        recipe = _recipe_index(config).get(expr.metric_recipe)
+        return found | (
+            _measures_inside(recipe.expression, kinds, config, inside) if recipe else set()
+        )
+    if is_dataclass(expr):
+        for item in fields(expr):
+            value = getattr(expr, item.name)
+            for child in value if isinstance(value, list) else [value]:
+                if is_dataclass(child):
+                    found |= _measures_inside(child, kinds, config, inside)
+    return found
 
 
 def _path_can_project_count_key_from_rewrite_anchor(
@@ -1361,7 +1455,28 @@ def _hop_steps(
     query: NormalizedQuery,
 ) -> list[RewriteStep]:
     """Disclose how a leaf crosses its one-to-many hops, so REWRITE_APPLIED reports it."""
-    entity = _measure_index(config)[bound.measure_id].entity
+    measure = _measure_index(config)[bound.measure_id]
+    entity = measure.entity
+    if measure.lookup_from:
+        child, source = lookup_links(measure, config)
+        return [
+            RewriteStep(
+                kind="parent_lookup",
+                status="applied",
+                measure_id=bound.measure_id,
+                reason=(
+                    f"'{measure.lookup_from}' is totalled per '{measure.lookup_via}' over all "
+                    f"time and repeated on each '{entity}' row of it, never added across two; "
+                    "the query's filters and time select those rows only."
+                ),
+                details={
+                    "from": measure.lookup_from,
+                    "via": measure.lookup_via,
+                    "path": [child.id],
+                    "source_path": [source.id],
+                },
+            )
+        ]
     crossed = {
         row.target_entity: list(row.chosen_path)
         for row in path_selections
@@ -1943,6 +2058,16 @@ def _predicate_includes_entities_without_rows(
     ) and _predicate_input_zero_on_missing(predicate.input, config)
 
 
+def _predicate_reads_one_measure(expr: SemanticExpr, config: PackageConfig) -> bool:
+    """Whether the predicate input is one measure, so a NULL value means that measure's amounts
+    are unknown for the entity. An add or subtract is NULL where any operand is, though the
+    others have data, which the absent-entity gate can't tell from no data at all."""
+    if isinstance(expr, MetricRecipeRefExpr):
+        recipe = _recipe_index(config).get(expr.metric_recipe)
+        return recipe is not None and _predicate_reads_one_measure(recipe.expression, config)
+    return isinstance(expr, MeasureRefExpr | AggregateExpr)
+
+
 def _inline_threshold_cte_and_where(
     *,
     predicate: Any,
@@ -2515,7 +2640,15 @@ def _predicate_ctes_and_join(
         mini_query["time"] = _public_time_spec(scope["time_spec"])
     with binding_cut():
         _entity_index(config)[predicate.entity]
-    predicate_sql = _compile_predicate_source_ast(config, mini_query)
+    without_rows = _predicate_includes_entities_without_rows(predicate, config)
+    # Over several measures an entity's value is NULL where one operand is unknown, though the
+    # others have data, and the gate below would read that as no data in scope. So that
+    # source keeps the earlier settlement, which reads an operand's unknown amounts as 0
+    # where its measure has data in scope; a source beside a distribution keeps it too.
+    several = without_rows and not _predicate_reads_one_measure(predicate.input, config)
+    with earlier_settlement(several):
+        earlier = earlier_settlement_applies()
+        predicate_sql = _compile_predicate_source_ast(config, mini_query)
     source_name, set_name = _predicate_sql_names(predicate, index, scope)
     source_cte = SqlCte(
         name=source_name, query=_namespace_sql_select(predicate_sql, f"{source_name}__")
@@ -2544,17 +2677,21 @@ def _predicate_ctes_and_join(
         source_name=source_name,
         config=config,
     )
-    without_rows = _predicate_includes_entities_without_rows(predicate, config)
     if without_rows:
-        # The set holds the entities that fail the threshold. Never coalesce the value: the
-        # source is settled like any query, so its values are non-NULL on every row or NULL on
-        # every row. In the second case no entity qualifies, and the gate below drops every row.
+        # The set holds the entities that fail the threshold, and, unless the source keeps the
+        # earlier settlement, those whose value is unknown (NULL: their rows have no values),
+        # which meets no threshold. Never coalesce the value: the source is settled like any
+        # query, so only an entity it doesn't list has no rows, and with no settled value at
+        # all the gate below drops every row.
+        value = SqlIdentifier(parts=["predicate_source", "__predicate_value"])
         where_condition = build_filter_condition(
-            SqlIdentifier(parts=["predicate_source", "__predicate_value"]),
+            value,
             _INVERSE_THRESHOLD_OPS[" ".join(str(predicate.op).upper().split())],
             predicate.value,
             path="metric_predicate",
         )
+        if not earlier:
+            where_condition = SqlBinary(where_condition, "OR", SqlIsNull(value))
     set_query = SqlSelect(
         select=select_fields,
         from_table=SqlTableRef(name=source_name, alias="predicate_source"),
@@ -4373,8 +4510,14 @@ def plan_query(
 ) -> LogicalPlan:
     validate_temporal_support(config, payload)
     raw_query = normalize_query(payload, config=config)
+    # A query with a distribution lowers with the earlier settlement (``_lower_query_to_sql``),
+    # so it routes with it too: its plan and explain are the same as before.
+    distribution = any(
+        item.expression is not None and _expr_contains_distribution(item.expression, config)
+        for item in raw_query.select
+    )
 
-    with candidate_planning():
+    with candidate_planning(), earlier_settlement(distribution):
         return _plan_query(
             config, registry, raw_query, collapse_window=collapse_window, top_level=True
         )
@@ -4502,6 +4645,8 @@ def _plan_query(
             )
             if crossing == "fanout_dedup":
                 rewrite_strategy = "fanout_dedup"
+            if measures[bound.measure_id].lookup_from:
+                rewrite_strategy = "parent_lookup"
             # Every leaf that crosses a one-to-many hop says how.
             rewrite_steps.extend(_hop_steps(crossing, bound, path_selections, config, query))
             aggregate_relation_id, aggregate_relation_rejections = _select_aggregate_relation(

@@ -26,6 +26,7 @@ def _run_cli(*args: str) -> dict:
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
+        timeout=120,
     )
     if not proc.stdout.strip():
         raise AssertionError(f"CLI produced no stdout. args={args!r} stderr={proc.stderr!r}")
@@ -78,6 +79,7 @@ def test_remaining_read_side_commands_accept_path() -> None:
         cwd=str(REPO_ROOT),
         capture_output=True,
         text=True,
+        timeout=120,
     )
     assert proc.returncode == 0
     for command in ("valid-values", "plan", "build-options", "catalog", "discover", "inspect"):
@@ -86,6 +88,7 @@ def test_remaining_read_side_commands_accept_path() -> None:
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,
+            timeout=120,
         )
         assert help_proc.returncode == 0, help_proc.stderr
         assert "--path" in help_proc.stdout, f"{command} must accept --path"

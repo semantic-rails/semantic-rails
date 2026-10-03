@@ -35,6 +35,7 @@ enrichment instead.
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from difflib import SequenceMatcher
 from typing import Any
@@ -89,6 +90,19 @@ def _object_tail(object_id: str) -> str:
 
 def _similarity(left: str, right: str) -> float:
     return SequenceMatcher(None, _object_tail(left), _object_tail(right)).ratio()
+
+
+def _naming_tokens(obj: MeasureConfig | DimensionConfig) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", f"{_object_tail(obj.id)} {obj.name} {obj.label}".lower()))
+
+
+def _replacement_rank(
+    candidate: MeasureConfig | DimensionConfig, anchor: MeasureConfig | DimensionConfig
+) -> tuple[int, float]:
+    return (
+        len(_naming_tokens(candidate) & _naming_tokens(anchor)),
+        _similarity(candidate.id, anchor.id),
+    )
 
 
 def _chosen_path(config: PackageConfig, *, start: str, target: str) -> list[str] | None:
@@ -244,9 +258,10 @@ def _compatible_measures(
     anchor_measure_id: str,
     time_bound_relationships: set[str],
 ) -> list[str]:
+    anchor = _measure_index(config)[anchor_measure_id]
     candidates = sorted(
         (m for m in config.measures if m.id not in requested_measure_ids),
-        key=lambda m: _similarity(m.id, anchor_measure_id),
+        key=lambda m: _replacement_rank(m, anchor),
         reverse=True,
     )
     compatible: list[str] = []
@@ -274,9 +289,10 @@ def _compatible_dimensions(
     anchor_dim_id: str,
     time_bound_relationships: set[str],
 ) -> list[str]:
+    anchor = _dimension_index(config).get(anchor_dim_id, anchor_measure)
     candidates = sorted(
         (d for d in config.dimensions if d.id not in offending_dim_ids and d.groupable),
-        key=lambda d: _similarity(d.id, anchor_dim_id),
+        key=lambda d: _replacement_rank(d, anchor),
         reverse=True,
     )
     compatible: list[str] = []

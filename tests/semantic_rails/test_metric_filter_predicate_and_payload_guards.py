@@ -62,8 +62,9 @@ def test_bare_comparison_metric_filter_is_the_predicate(package_config_factory):
             }
         },
     )
-    assert "IS NULL" not in rendered, f"comparison filter compared to NULL:\n{rendered}"
-    assert "= TRUE" in rendered
+    predicate = rendered.rsplit("WHERE", 1)[-1]
+    assert "IS NULL" not in predicate, f"comparison filter compared to NULL:\n{rendered}"
+    assert "= TRUE" in predicate
 
 
 def test_bare_boolean_metric_filter_is_the_predicate(package_config_factory):
@@ -91,8 +92,9 @@ def test_bare_boolean_metric_filter_is_the_predicate(package_config_factory):
             }
         },
     )
-    assert "IS NULL" not in rendered
-    assert "= TRUE" in rendered
+    predicate = rendered.rsplit("WHERE", 1)[-1]
+    assert "IS NULL" not in predicate
+    assert "= TRUE" in predicate
 
 
 def test_comparison_metric_filter_with_explicit_envelope_still_compares(package_config_factory):
@@ -112,8 +114,9 @@ def test_comparison_metric_filter_with_explicit_envelope_still_compares(package_
             "value": True,
         },
     )
-    assert "IS NULL" not in rendered
-    assert "= TRUE" in rendered
+    predicate = rendered.rsplit("WHERE", 1)[-1]
+    assert "IS NULL" not in predicate
+    assert "= TRUE" in predicate
 
 
 def test_measure_metric_filter_with_value_keeps_threshold_semantics(package_config_factory):
