@@ -68,7 +68,7 @@ def _read_json_response(resp) -> tuple[dict, object]:
 
 def _get_response(url: str, headers: dict | None = None) -> tuple[dict, object]:
     req = urllib.request.Request(url, headers=headers or {}, method="GET")
-    with urllib.request.urlopen(req) as resp:  # nosec - local test server only
+    with urllib.request.urlopen(req, timeout=30) as resp:  # nosec - local test server only
         return _read_json_response(resp)
 
 
@@ -94,7 +94,7 @@ def _post_response(url: str, payload: dict, headers: dict | None = None) -> tupl
         headers=request_headers,
         method="POST",
     )
-    with urllib.request.urlopen(req) as resp:  # nosec - local test server only
+    with urllib.request.urlopen(req, timeout=30) as resp:  # nosec - local test server only
         return _read_json_response(resp)
 
 
@@ -107,7 +107,7 @@ def _post_raw_response(url: str, raw: bytes, headers: dict | None = None) -> tup
         headers=request_headers,
         method="POST",
     )
-    with urllib.request.urlopen(req) as resp:  # nosec - local test server only
+    with urllib.request.urlopen(req, timeout=30) as resp:  # nosec - local test server only
         return _read_json_response(resp)
 
 
@@ -315,7 +315,7 @@ def test_api_options_and_auth_boundary_are_browser_safe(runtime_factory, monkeyp
     runtime = runtime_factory("jaffle_shop")
     with _serve_runtime(runtime) as base:
         req = urllib.request.Request(base + "/api/v1/query", method="OPTIONS")
-        with urllib.request.urlopen(req) as resp:  # nosec - local test server only
+        with urllib.request.urlopen(req, timeout=30) as resp:  # nosec - local test server only
             assert resp.status == 204
             assert resp.headers["Content-Length"] == "0"
             assert "X-Semantic-API-Key" in resp.headers["Access-Control-Allow-Headers"]
@@ -793,7 +793,7 @@ def test_query_route_returns_structured_error_on_unexpected_runtime_failure(
             method="POST",
         )
         try:
-            urllib.request.urlopen(req)  # nosec - local test server only
+            urllib.request.urlopen(req, timeout=30)  # nosec - local test server only
             raise AssertionError("expected HTTPError")
         except urllib.error.HTTPError as exc:  # nosec - local test server only
             payload = dict(json.loads(exc.read().decode("utf-8")) or {})

@@ -202,9 +202,11 @@ def test_cli_selects_portability_without_changing_default(portable, tmp_path):
         "--output",
         str(output),
     ]
-    subprocess.run([*base, "--format", "metrics"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [*base, "--format", "metrics"], check=True, capture_output=True, text=True, timeout=120
+    )
     assert json.loads(output.read_text()) == export_metric_portability(report.package_dir)
-    subprocess.run(base, check=True, capture_output=True, text=True)
+    subprocess.run(base, check=True, capture_output=True, text=True, timeout=120)
     assert json.loads(output.read_text()) == export_semantic_contract(report.package_dir)
 
 

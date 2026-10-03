@@ -198,6 +198,7 @@ dev = [
 tmp_path_retention_policy = "failed"
 testpaths = ["tests/semantic_rails", "tests/mf2sr"]
 timeout = 300
+faulthandler_timeout = 240
 timeout_method = "thread"
 markers = [
   "integration: cross-warehouse conformance suite in tests/integration (`make test-integration`)",

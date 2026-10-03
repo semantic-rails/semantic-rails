@@ -238,6 +238,10 @@ class MeasureConfig:
     # False for already-aggregated values (a vendor's distinct count, a ratio): the
     # engine never sums two of them.
     additive: bool = True
+    # ``kind: lookup``: the measure totalled per ``via`` entity and carried onto this
+    # measure's rows; ``expr`` is the foreign key to ``via``.
+    lookup_from: str = ""
+    lookup_via: str = ""
 
 
 @dataclass(frozen=True)
