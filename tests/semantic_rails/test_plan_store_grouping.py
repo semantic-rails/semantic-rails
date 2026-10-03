@@ -174,9 +174,7 @@ def test_store_attribute_matching_both_dimensions_is_not_ready(retail: Runtime, 
     retail._config = replace(
         retail._config,
         dimensions=[
-            replace(dim, aliases=[*(dim.aliases or []), term])
-            if dim.id == STORE_NAME
-            else dim
+            replace(dim, aliases=[*(dim.aliases or []), term]) if dim.id == STORE_NAME else dim
             for dim in retail._config.dimensions
         ],
     )
