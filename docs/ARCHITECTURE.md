@@ -405,18 +405,10 @@ The runtime compiles a request through these stages:
 
 Important planner behaviors:
 
-- natural-language store grouping requires a requested grouping clause. `by store id`,
-  `by store name` and `by store label` resolve the named attribute uniquely; bare
-  `by store`, `per store` and ranked stores retain the store-name default (or a sole
-  dimension named `Store`). `at the store dimension`, `at the store level` and
-  `at the store grain` also request grouping and may name a store attribute.
-  Grouping clauses accept arbitrary whitespace and remain recognized beyond the
-  time-window parser's input limit. Unknown, ambiguous or omitted attributes return
-  `PLAN_INTENT_COVERAGE_GAP` without execute readiness. Mentioning stores in a total,
-  such as "how many stores are open", does not add store grouping; a store filter
-  cannot stand in for a requested grouping. An explicit caller `group_by` must
-  include the requested store attribute. "Number of stores open by store" is a
-  count at the requested store grouping
+- store attributes use the same catalog dimension resolution as other requested
+  grouping terms. `by store id` keeps distinct stores separate even when names
+  repeat; `by store name` combines stores sharing a name. Mentioning stores in a
+  total does not automatically add store-name grouping
 - safe mixed-grain cases compile via leaf pre-aggregation rewrites
 - exact aggregate relations can be selected for compatible time-grain measure
   leaves; routed leaves expose `aggregate_relation_id` and physical/performance

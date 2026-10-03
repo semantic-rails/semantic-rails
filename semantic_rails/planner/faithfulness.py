@@ -42,8 +42,6 @@ from ._base import (
     _names_time_axis,
     _object_text,
     _requested_grouping_spans,
-    _requested_store_grouping_terms,
-    _store_grouping_dimension,
     _tied_top,
     _time_bounds_from_text,
     _time_window,
@@ -510,36 +508,6 @@ def intent_faithfulness_why(
         gaps.extend(_caller_window_gaps(runtime, text, query))
     else:
         gaps.extend(_time_window_gaps(runtime, text, query))
-    role_id = _time_block(query).get("temporal_role")
-    clock = next((row.label for row in runtime._config.temporal_roles if row.id == role_id), "")
-    caller_groups = (partial_query or {}).get("group_by")
-    for term in _requested_store_grouping_terms(text):
-        terms = set(_tokens(term))
-        if _names_time_axis(term, clock):
-            continue
-        dimension = _store_grouping_dimension(runtime._config, terms)
-        if (
-            dimension is None
-            or dimension.id not in (query.get("group_by") or [])
-            or caller_groups is not None
-            and dimension.id not in caller_groups
-        ):
-            gaps.append(
-                CoverageGap(
-                    kind="store_grouping_unrealized",
-                    clause=term,
-                    message="The draft must group by the uniquely named store attribute.",
-                    expected={"dimension": dimension.id if dimension is not None else None},
-                    actual={
-                        "group_by": list(query.get("group_by") or []),
-                        **({"caller_group_by": caller_groups} if caller_groups is not None else {}),
-                    },
-                    recovery_hint={
-                        "kind": "choose_store_dimension",
-                        "message": "Choose a store dimension with discover, set group_by, then validate.",
-                    },
-                )
-            )
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
     gaps.extend(_subject_window_gaps(runtime._config, query))
     gaps.extend(_ranking_gaps(runtime, text, query))
@@ -2412,24 +2380,10 @@ def _unconsumed_words(
             else:
                 reads.update({grain, "daily" if grain == "day" else f"{grain}ly"})
     reads.subtract(clock_units)
-    store_groups = {
-        dimension.id
-        for term in _requested_store_grouping_terms(text)
-        if (dimension := _store_grouping_dimension(runtime._config, _tokens(term))) is not None
-    }
-    store_count = any(
-        row.id in selected_ids and row.value_type == "count" and "store" in _own_words(row)
-        for row in runtime._config.measures
-    )
-    if count_valued and (
-        not query.get("group_by")
-        or store_count
-        and store_groups
-        and set(query["group_by"]) <= store_groups
-    ):
+    if count_valued and not query.get("group_by"):
         # Entity counts normalize to count_distinct; snapshot counts can use last_value.
-        # "Number of" reads a total or a store count at its explicitly requested store
-        # grouping. A clock grain can still carry a monthly count without a dimension.
+        # These read "number of" only when the draft has no group_by. A clock grain
+        # can still carry a monthly count without grouping by a catalog dimension.
         spans.extend(match.span() for match in re.finditer(r"\bnumber\s+of\b", lowered))
     named = names | {_singular(word) for word in names}
     consumed = used | {_singular(word) for word in used}
