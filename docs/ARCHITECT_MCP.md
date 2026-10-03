@@ -308,7 +308,49 @@ on. It loads a metric whose measure or input metric is gone, which fails only wh
 `remove_object` refuses a removal that leaves a metric naming a removed object and names those
 metrics. The report lists `removed`, and `impact` holds the `impact_project` summary of the change
 (`risk`, `impacted_metrics`, `changes`) plus `references`: authored files, such as examples and
-tests, that still name a removed id.
+tests, that still name a removed id. Removals use the same preservation guard as other writes:
+a removed route may leave an answered pair refused, but switching it to another answer requires
+an explicit decision or the removal refuses with `ROUTE_DECISION_NOT_RECORDED`. The result's
+`route_changes` lists every pair whose resolution changes (see [Join Routes](#join-routes)).
+
+## Join Routes
+
+Which route between two entities a question means is a business definition (see
+[the route census](PACKAGE_AUTHORING.md#route-census-and-route-changes)).
+
+- `project_status` returns `route_census` once, outside `parse`: `undecided` lists the
+  entity pairs a question can need that are refused until a `graph.path_preferences` row records
+  their route, each with the `AMBIGUOUS_PATH` refusal's `details.clarification.options`
+  (pass an option's `decision` to `record_route_decision`); `assumed` lists the multi-route pairs
+  answered by the start entity's own key, to confirm. While pairs are undecided, `next_actions`
+  starts with deciding them. `create_project` and `setup_project_dialog` say to decide them once
+  entities are related.
+- `promotion_check` lists them under `advisories` (`ROUTES_UNDECIDED`), never as a blocker.
+- Before writing, the transaction compares the package with the change applied. A change that
+  would refuse an answered pair whose route still exists, or answer it by another route, refuses
+  with `ROUTE_DECISION_NOT_RECORDED` until the author records an explicit decision. Previews use
+  the same guard. Nothing is written and no route rows are generated. The refusal's
+  `details.route_changes` lists affected pairs. The message names the explicit
+  `graph.path_preferences` fields (`source_entity`, `target_entity`, `relationship_path`),
+  without suggesting rows: choose a route and use `record_route_decision` before adding
+  the relationship, or include chosen rows in the authored change. Census and guard
+  comparisons use package decisions independently of active query route overrides. An ordinary
+  change that moves an inherited answer needs that pair's own decision.
+- `record_route_decision` uses the loader location: top-level
+  `package.yml` `path_preferences`, else the file holding `graph`. That file is rewritten as
+  Architect YAML, dropping comments.
+- A removed route or one beyond the new hop ceiling may leave a pair refused; answering it by
+  another route without its own row refuses the mutation with `ROUTE_DECISION_NOT_RECORDED`.
+- `record_route_decision` deliberately changes the default.
+  `remove_object` uses the same preservation guard. The result's `route_changes` lists
+  every pair that resolves differently, including refused → answered, as `impact_project`
+  does. `base` and `head` hold the route or refusal code, without suggested recovery rows.
+  `route_decisions_added` is empty.
+  `create_project` and undo skip the guard: one starts a package, the other restores files exactly.
+- An explicit path records the route's meaning. It does not guarantee unchanged orphan-key
+  values when adding a second foreign-key role changes a source-key read to a lookup. See
+  [the authoring guide](PACKAGE_AUTHORING.md#route-census-and-route-changes) and compare the
+  chosen answer with reference SQL.
 
 ## Examples, Package Tests and Query Previews
 
