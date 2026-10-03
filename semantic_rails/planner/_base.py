@@ -1453,16 +1453,17 @@ def _maybe_group_by(
         if dim is not None:
             group_by.append(dim.id)
     if "store" in terms:
+        grouping_text = lowered
+        for start, end in _time_window(text).spans:
+            grouping_text = grouping_text[:start] + " " * (end - start) + grouping_text[end:]
         requested = [
             set(_tokens(term))
-            for term in _requested_grouping_terms(text)
+            for term in _requested_grouping_terms(grouping_text)
             if "store" in _tokens(term)
-        ] or [{"store", "name"}]
+        ] or [{"store"}]
         matches: set[str] = set()
         for tokens in requested:
             tokens = {"id" if token in {"key", "number"} else token for token in tokens}
-            if tokens == {"store"}:
-                tokens.add("name")
             if {"id", "name"} <= tokens:
                 matches.clear()
                 break
@@ -1476,6 +1477,11 @@ def _maybe_group_by(
                 }
                 if tokens <= words and any({"store", role} <= words for role in ("id", "name")):
                     candidates.append(dim.id)
+            if tokens == {"store"} or not candidates and not tokens & {"id", "name"}:
+                # Preserve the existing bare-store draft; unknown words still
+                # go through the planner's word-coverage refusal.
+                dim = _dimension(config, ["store", "name"])
+                candidates = [dim.id] if dim is not None else []
             if len(candidates) != 1:
                 matches.clear()
                 break
