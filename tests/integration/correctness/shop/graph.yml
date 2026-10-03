@@ -6,6 +6,7 @@ graph:
       model: customer_history, allowed_as_root: false}
     refund: {label: Refund, key: [refund_id], model: refunds}
     clock_edge: {label: Clock edge, key: [id], model: clock_edges}
+    account_day: {label: Account day, key: [account_id, snapshot_day], model: account_days}
     default_calendar: {label: Calendar, kind: time, key: [date_day], model: default_calendar,
       allowed_as_root: false}
     fiscal_calendar: {label: Fiscal calendar, kind: time, key: [date_day],

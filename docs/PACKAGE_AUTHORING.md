@@ -1240,6 +1240,12 @@ surrogate such as `inventory_row_id` that is unique per snapshot row, and the se
 columns must not be unique per row themselves (`[inventory_row_id, date_day]` passes the
 check below but still sums). Give the snapshot time `class: as_of_time`.
 
+The snapshot is chosen per series per period before grouping. A grouped dimension stored
+on the snapshot rows, such as an account's plan that changes mid-week, is read from that
+snapshot, so the series counts once, under the value it holds that day, and the grouped
+rows add up to the ungrouped total. The stock's own clock and calendar dimensions instead
+split the period: grouped by the snapshot day, each day keeps its own snapshot.
+
 - A stock whose key doesn't contain its clock's column gets a
   `STOCK_SNAPSHOT_KEY_MISSING_CLOCK` parse warning: each key value counts as its own
   series, so two snapshots of one series in the same week are added together.

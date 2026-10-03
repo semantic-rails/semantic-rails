@@ -79,6 +79,24 @@ INSERT INTO refunds VALUES
   (5, 7, 'goods', 2.00, NULL, NULL),
   (6, 7, 'shipping', NULL, 1.00, NULL);
 
+-- Daily seats per account, a stock. In the week of 2024-01-01 account 1 is on plan builder
+-- Monday to Wednesday and pro from Thursday, account 2 is pro Monday and Tuesday and builder
+-- from Wednesday, and account 3's last snapshot is Friday's. Nobody is observed the next week.
+CREATE TABLE account_days (account_id INTEGER, snapshot_day DATE, plan VARCHAR(8), seats INTEGER);
+INSERT INTO account_days VALUES
+  (1, DATE '2024-01-01', 'builder', 10), (1, DATE '2024-01-02', 'builder', 11),
+  (1, DATE '2024-01-03', 'builder', 12), (1, DATE '2024-01-04', 'pro', 13),
+  (1, DATE '2024-01-05', 'pro', 14), (1, DATE '2024-01-06', 'pro', 15),
+  (1, DATE '2024-01-07', 'pro', 16),
+  (2, DATE '2024-01-01', 'pro', 1000), (2, DATE '2024-01-02', 'pro', 1001),
+  (2, DATE '2024-01-03', 'builder', 1002), (2, DATE '2024-01-04', 'builder', 1003),
+  (2, DATE '2024-01-05', 'builder', 1004), (2, DATE '2024-01-06', 'builder', 1005),
+  (2, DATE '2024-01-07', 'builder', 1006),
+  (3, DATE '2024-01-01', 'team', 100), (3, DATE '2024-01-02', 'team', 100),
+  (3, DATE '2024-01-03', 'team', 100), (3, DATE '2024-01-04', 'team', 100),
+  (3, DATE '2024-01-05', 'team', 100),
+  (1, DATE '2024-01-15', 'pro', 20), (3, DATE '2024-01-15', 'team', 200);
+
 -- A monthly rollup of orders by store, keyed by a DATE (the base table's key is a TIMESTAMP).
 CREATE TABLE orders_monthly AS
 SELECT CAST(date_trunc('month', ordered_at) AS DATE) AS month_start, store_id,
