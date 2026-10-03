@@ -892,6 +892,27 @@ ClickHouse fills an unmatched outer-join field with a type default (0 or an empt
 unless the join yields NULLs, so every ClickHouse statement ends with
 `SETTINGS join_use_nulls = 1`.
 
+## What an answer covers
+
+Some answers are right but easy to misread, so the response says what they cover. This never
+changes the SQL or the rows.
+
+**Facts on different clocks.** With no `time` block, selects that read measures of different
+entities or governed metrics with differing sets of real time roles, mixing at least two
+distinct roles, carry one `MIXED_TIME_ROLES` warning that names each measure's role: orders by
+order time and storefront
+sessions by session start, grouped by customer, each read a period on their own role's clock.
+Measure-level filters can bound those periods, even without a `time` block; the warning makes
+no claim about how much history is covered. Undated measures are ignored. A `time` block,
+including a role without bounds or a grain, suppresses this warning. `details.clocks` lists each
+dated measure's `subject` and `temporal_roles`.
+A dated measure inside an expression (`ratio`, arithmetic, `case`, `aggregate_if`) counts like
+a bare one; one inside a conversion or a metric predicate keeps that expression's own time rules. A
+metric counts as one clock, with every role it combines: alone it never warns, since the
+package defined it, and beside a dated measure or metric with a different role set it does.
+Measures that share a role, and bare measures of one entity, never warn. A governed metric
+is a distinct source even when its measures belong to that same entity.
+
 ## Dense fill (`time.fill`)
 
 `time.fill` toggles dense-row emission for a grained query. The
