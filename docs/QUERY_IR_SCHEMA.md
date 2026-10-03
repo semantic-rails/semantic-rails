@@ -108,6 +108,13 @@ ignored).
   `details.replaced`, how the package resolves the pair without it (`decided`:
   its own row; `colocated_key`: the start's own key; `inherited`: rows for pairs
   its routes walk through; `only_route`; `undecided`: the package refuses it).
+  For a pair with several routes, `details.meaning` names the meaning used,
+  and `details.route_alternatives` lists each other meaning and its ready
+  `decision` row from the route clarification options. State the meaning used
+  and offer the others as one-step switches: resend the query with the other
+  `decision` in `route_decisions`. No alternative is executed. The warning
+  mentions once that a reviewed package default using `details.row` would
+  remove the question; this advice is not repeated in `recovery_hints`.
   `hop_profile.targets[*].route_basis` is `query` for the pair.
 - `build-options` with a partial query that carries rows shows the dimensions
   they make reachable, and its query patches keep the rows; a patch that would

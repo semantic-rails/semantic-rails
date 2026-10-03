@@ -1280,7 +1280,14 @@ The response `warnings` array can carry these non-error signals:
 - `ROUTE_CHOSEN_BY_QUERY` — severity `info`, at every verbosity: one per
   `route_decisions` row the query applied. `details.row` is the row and
   `details.replaced` what would have applied without it (`decided`,
-  `colocated_key`, `inherited`, `only_route` or `undecided`). See
+  `colocated_key`, `inherited`, `only_route` or `undecided`). For a pair with
+  several routes, `details.meaning` names the meaning used and
+  `details.route_alternatives` carries each other `meaning` and its ready
+  `decision` row. State the chosen meaning and offer the others as one-step
+  query switches; alternatives are never executed. The warning mentions a
+  reviewed package default using `details.row` once, without a duplicate
+  recovery hint. Package decisions and own-key choices keep their existing
+  notes without `route_alternatives`. See
   [`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions).
 
 HTTP failures return:

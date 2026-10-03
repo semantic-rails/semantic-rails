@@ -371,7 +371,10 @@ The agent never picks one; it asks:
 3. Resend the same query with the chosen option's `decision` in
    [`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions). The answer is for this person and this
    query only, and carries an `info` note `ROUTE_CHOSEN_BY_QUERY` with the row and `replaced` (how
-   the package resolves the pair without it: `undecided` when it refuses).
+   the package resolves the pair without it: `undecided` when it refuses). State the meaning
+   used (`details.meaning`) and mention the other meanings in `details.route_alternatives`
+   as one-step switches: resend with the alternative's `decision` in `route_decisions`.
+   Those alternatives are metadata; the warehouse executes only the chosen route.
 4. To make it the default for everyone, a maintainer calls Architect
    [`record_route_decision`](ARCHITECT_MCP.md) with the same `decision`. That is a reviewed package
    change; from then on the question answers without asking. An option with `conflicts_with`

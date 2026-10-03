@@ -94,7 +94,9 @@ from .fanout import (
     build_hop_profile,
     entity_label,
     offered_rows,
+    pair_routes,
     query_route_decisions,
+    route_clarification,
     route_note,
     route_reading,
 )
@@ -420,23 +422,44 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
 
     A pair the query decided itself (``route_decisions``) gets ROUTE_CHOSEN_BY_QUERY instead,
     at every verbosity: the row and the basis it replaced, since the answer may differ from
-    the package's.
+    the package's. For a multi-route pair, the same clarification options name the meaning
+    used and offer the others as query switches; no alternative is executed.
     """
     notes: list[dict[str, Any]] = []
     decided: set[tuple[str, str]] = set()
     for row in compiled.get("route_decisions") or []:
         start, target, path = row["source_entity"], row["target_entity"], row["relationship_path"]
         decided.add((start, target))
+        details: dict[str, Any] = {
+            "row": {key: row[key] for key in _ROUTE_ROW_KEYS},
+            "replaced": row["replaced"],
+        }
+        message = f"{route_reading(config, start, path)} (chosen by this query)"
+        routes = pair_routes(config, start, target)
+        if len(routes) > 1:
+            options = route_clarification(config, start, target, routes)["options"]
+            chosen = next(option for option in options if option["relationship_path"] == path)
+            alternatives = [
+                {"meaning": option["meaning"], "decision": option["decision"]}
+                for option in options
+                if option["relationship_path"] != path
+            ]
+            details["meaning"] = chosen["meaning"]
+            details["route_alternatives"] = alternatives
+            message = (
+                f"State the meaning used: {chosen['meaning']} (chosen by this query). "
+                "Mention the other meaning(s) as a one-step switch: "
+                + "; ".join(option["meaning"] for option in alternatives)
+                + ". Resend with the alternative's decision in route_decisions. "
+                "A reviewed package default using details.row would remove the question."
+            )
         notes.append(
             semantic_issue(
                 code="ROUTE_CHOSEN_BY_QUERY",
-                message=f"{route_reading(config, start, path)} (chosen by this query)",
+                message=message,
                 severity="info",
                 stage="planning",
-                details={
-                    "row": {key: row[key] for key in _ROUTE_ROW_KEYS},
-                    "replaced": row["replaced"],
-                },
+                details=details,
                 object_ids=[start, target],
             )
         )
@@ -449,7 +472,7 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
         if resolution is None:
             continue
         route = list(resolution.routes[0])
-        details: dict[str, Any] = {"route": route}
+        details = {"route": route}
         if resolution.basis == "colocated_key":
             code, how = "ROUTE_COLOCATED_KEY", "own key"
             details["alternatives"], conflicts = offered_rows(

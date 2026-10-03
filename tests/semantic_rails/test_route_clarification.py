@@ -21,10 +21,12 @@ Fixture, on DuckDB, where every pair of routes disagrees on the data:
 from __future__ import annotations
 
 import asyncio
+import json
 import textwrap
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import duckdb
 import pytest
@@ -412,7 +414,8 @@ def test_a_query_row_overrides_the_package_default_for_that_query_only(tmp_path)
     }
     out = runtime.query({**BALANCE_BY_DISTRICT, "route_decisions": [owner_row]})
     assert _rows(out, columns) == _gold(BY_OWNER)
-    assert _chosen_by_query(out) == [{"row": owner_row, "replaced": "decided"}]
+    (chosen,) = _chosen_by_query(out)
+    assert (chosen["row"], chosen["replaced"]) == (owner_row, "decided")
     out = runtime.query(BALANCE_BY_DISTRICT)
     assert _rows(out, columns) == _gold(BY_BRANCH)
     assert _chosen_by_query(out) == []
@@ -502,7 +505,10 @@ def test_replaced_names_how_the_package_resolves_the_pair(tmp_path, basis):
     runtime = Runtime.from_path(str(_write_package(tmp_path, decisions=rows or None)))
     out = runtime.query({**query, "route_decisions": [row]})
     assert _rows(out, columns) == _gold(gold)
-    assert _chosen_by_query(out) == [{"row": row, "replaced": basis}]
+    (chosen,) = _chosen_by_query(out)
+    assert (chosen["row"], chosen["replaced"]) == (row, basis)
+    if basis == "only_route":
+        assert chosen == {"row": row, "replaced": basis}
 
 
 @pytest.mark.parametrize(
@@ -623,12 +629,77 @@ def test_every_entry_point_refuses_a_route_row_under_a_row_policy(tmp_path, monk
     assert OWNER not in message and "owner" not in message.lower()
 
 
-def test_a_query_row_is_disclosed_at_minimal_verbosity(tmp_path):
-    runtime = Runtime.from_path(str(_write_package(tmp_path)))
-    out = runtime.query(
-        {**BALANCE_BY_DISTRICT, "route_decisions": [DIAMOND_ROW], "verbosity": "minimal"}
+@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+@pytest.mark.parametrize("entry", ["query", "mcp_execute"])
+@pytest.mark.parametrize("option_index", [0, 1])
+def test_query_route_switches_are_disclosed_without_another_execution(
+    tmp_path, monkeypatch, verbosity, entry, option_index
+):
+    pkg = _write_package(tmp_path)
+    options = _refusal(pkg, BALANCE_BY_DISTRICT).details["clarification"]["options"]
+    chosen, other = options[option_index], options[1 - option_index]
+    runtime = Runtime.from_path(str(pkg))
+    warehouse = runtime._get_adapter()
+    execute = Mock(wraps=warehouse.query)
+    monkeypatch.setattr(warehouse, "query", execute)
+    query = {**BALANCE_BY_DISTRICT, "route_decisions": [chosen["decision"]], "verbosity": verbosity}
+    try:
+        if entry == "query":
+            out = runtime.query(query)
+        else:
+            adapter = SemanticLayerMCPAdapter(runtime)
+            try:
+                out = adapter.call_tool("execute", {"query": query, "verbosity": verbosity})
+            finally:
+                adapter.close()
+    finally:
+        runtime.close()
+    assert execute.call_count == 1
+    assert out["ok"] is True
+    assert _rows(out, ["dimension.bank_district_name", "v"]) == _gold(
+        BY_BRANCH if option_index == 0 else BY_OWNER
     )
-    assert _chosen_by_query(out) == [{"row": DIAMOND_ROW, "replaced": "undecided"}]
+    (warning,) = [w for w in out["warnings"] if w["code"] == "ROUTE_CHOSEN_BY_QUERY"]
+    assert warning["details"] == {
+        "row": {
+            key: chosen["decision"][key]
+            for key in ("source_entity", "target_entity", "relationship_path")
+        },
+        "replaced": "undecided",
+        "meaning": chosen["meaning"],
+        "route_alternatives": [{"meaning": other["meaning"], "decision": other["decision"]}],
+    }
+    assert chosen["meaning"] in warning["message"]
+    assert other["meaning"] in warning["message"]
+    assert "one-step switch" in warning["message"]
+    assert warning["message"].count("package default") == 1
+    assert not warning.get("recovery_hints") and not out.get("recovery_hints")
+    # Keep only meaning and the ready row per switch, without copying the full clarification.
+    assert len(json.dumps(warning)) < 1500
+
+
+@pytest.mark.parametrize("option_index", [0, 1])
+def test_package_route_decisions_have_no_query_switches(tmp_path, monkeypatch, option_index):
+    options = _refusal(_write_package(tmp_path / "refused"), BALANCE_BY_DISTRICT).details[
+        "clarification"
+    ]["options"]
+    runtime = Runtime.from_path(
+        str(_write_package(tmp_path / "recorded", decisions=[options[option_index]["decision"]]))
+    )
+    warehouse = runtime._get_adapter()
+    execute = Mock(wraps=warehouse.query)
+    monkeypatch.setattr(warehouse, "query", execute)
+    try:
+        out = runtime.query(BALANCE_BY_DISTRICT)
+    finally:
+        runtime.close()
+    assert execute.call_count == 1
+    assert _rows(out, ["dimension.bank_district_name", "v"]) == _gold(
+        BY_BRANCH if option_index == 0 else BY_OWNER
+    )
+    assert _chosen_by_query(out) == []
+    assert any(w["code"] == "ROUTE_RECORDED" for w in out["warnings"])
+    assert all("route_alternatives" not in w.get("details", {}) for w in out["warnings"])
 
 
 # --- record_route_decision ---------------------------------------------------------------
