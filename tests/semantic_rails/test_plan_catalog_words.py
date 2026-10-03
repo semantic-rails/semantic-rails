@@ -117,15 +117,32 @@ def _not_ready(payload: dict[str, Any], terms: list[str]) -> None:
     assert "ready_for" not in payload["next"]
 
 
-def test_a_dropped_grouping_is_not_ready(jaffle: Runtime) -> None:
-    payload = plan_payload(jaffle, intent="revenue by store, customer type and product type")
+def _first_grouping_only(query: dict[str, Any], grouping: str) -> dict[str, Any]:
+    """The draft's select grouped by ``grouping`` alone: a draft that dropped the rest."""
 
-    _not_ready(payload, ["customer", "type", "product"])
-    assert payload["best"]["query_ir"]["group_by"] == [STORE]
-    assert payload["why"]["details"]["dropped_groupings"] == ["customer type", "product type"]
-    assert payload["why"]["message"].startswith(
-        "The draft drops the grouping by customer type, product type"
-    )
+    return {"version": 2, "select": query["select"], "group_by": [grouping]}
+
+
+def _held(payload: dict[str, Any], code: str) -> None:
+    assert payload["status"] == "low_confidence", payload.get("why")
+    assert payload["why"]["code"] == code
+    assert "ready_for" not in payload["next"]
+
+
+def test_a_dropped_grouping_is_not_ready(jaffle: Runtime) -> None:
+    intent = "revenue by store, customer type and product type"
+    payload = plan_payload(jaffle, intent=intent)
+
+    # The draft groups by all three, which validation refuses; the alternative that validates
+    # changes the target and grouping.
+    _held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+    store_only = _first_grouping_only(payload["best"]["query_ir"], STORE)
+    words = unconsumed_catalog_words(jaffle, intent, store_only)
+    assert words == ["customer", "type", "product"]
+    why = plan_module._unconsumed_catalog_why(intent, words)
+    assert why is not None
+    assert why["details"]["dropped_groupings"] == ["customer type", "product type"]
+    assert why["message"].startswith("The draft drops the grouping by customer type, product type")
 
 
 @contextmanager
@@ -156,25 +173,40 @@ def _with_store_dimensions(jaffle: Runtime, *dimensions: tuple[str, str, str]) -
 
 
 @pytest.mark.parametrize(
-    ("dimensions", "intent", "grouping", "terms"),
+    ("dimensions", "intent", "code", "group_by", "terms"),
     [
-        # "status" (Membership status) is one typo from "states".
+        # "status" (Membership status) is one typo from "states". The draft groups by both, and
+        # validation refuses Membership status for revenue.
         (
             [("states", "States", "store_name")],
             "revenue by states, status",
-            "dimension.states",
+            "VALIDATION_FAILED",
+            ["dimension.states", "dimension.jaffle_membership_status"],
             ["status"],
         ),
         # "sales" is this dimension's whole name, and only a namespace elsewhere (metric.sales.*).
-        ([("sales", "", "store_name")], "revenue by store, sales", STORE, ["sales"]),
+        (
+            [("sales", "", "store_name")],
+            "revenue by store, sales",
+            None,
+            [STORE, "dimension.sales"],
+            ["sales"],
+        ),
         # The draft's own metric sits in that namespace: metric.sales.aov_usd, named
         # jaffle.sales_aov_usd.
-        ([("sales", "", "store_id")], "aov by store, sales", STORE, ["sales"]),
+        (
+            [("sales", "", "store_id")],
+            "aov by store, sales",
+            None,
+            [STORE, "dimension.sales"],
+            ["sales"],
+        ),
         # The planner reads "sent" as a synonym of "received"; here each names its own dimension.
         (
             [("received", "Received", "store_name"), ("sent", "Sent", "store_id")],
             "revenue by received, sent",
-            "dimension.received",
+            "PLAN_UNMATCHED_TERMS",
+            ["dimension.received"],
             ["sent"],
         ),
     ],
@@ -183,16 +215,26 @@ def test_one_catalog_name_never_consumes_another(
     jaffle: Runtime,
     dimensions: list[tuple[str, str, str]],
     intent: str,
-    grouping: str,
+    code: str | None,
+    group_by: list[str],
     terms: list[str],
 ) -> None:
     with _with_store_dimensions(jaffle, *dimensions) as runtime:
         payload = plan_payload(runtime, intent=intent)
+        query = payload["best"]["query_ir"]
 
-        _not_ready(payload, terms)
-        assert payload["best"]["query_ir"]["group_by"] == [grouping]
-        assert payload["why"]["details"]["dropped_groupings"] == terms
-        assert unconsumed_catalog_words(runtime, intent, payload["best"]["query_ir"]) == terms
+        if code is None:
+            assert payload["status"] == "ok", payload.get("why")
+            assert "execute" in payload["next"]["ready_for"]
+        else:
+            _held(payload, code)
+        assert query["group_by"] == group_by
+        # A draft that groups by the first term alone leaves the second's word over.
+        first_only = _first_grouping_only(query, group_by[0])
+        assert unconsumed_catalog_words(runtime, intent, first_only) == terms
+        if code == "PLAN_UNMATCHED_TERMS":
+            assert payload["why"]["details"]["terms"] == terms
+            assert payload["why"]["details"]["dropped_groupings"] == terms
 
 
 def test_spelling_a_selected_id_uses_its_namespace_only_there(jaffle: Runtime) -> None:
@@ -528,13 +570,9 @@ def test_a_count_reads_only_its_number_of(
         ("revenue with cumulative", ["cumulative"]),
         # Revenue isn't the customer count.
         ("how many customers ordered in 2017", ["customers"]),
-        # Revenue's Order entity isn't an object the draft selects, so it consumes no word: not a
-        # dropped grouping by order, nor "orders", which names the Orders measure.
-        ("revenue by store, order", ["order"]),
+        # "revenue from orders": "orders" names the Orders measure, and Revenue's Order entity
+        # isn't an object the draft selects, so it consumes no word.
         ("revenue from orders", ["orders"]),
-        # A framing word that names an object (Calendar day's "date", Order time) counts too: only
-        # a time grain the draft carries reads it, and these drafts carry none.
-        ("revenue by store, date", ["date"]),
         ("orders by store, time", ["time"]),
         # A plural the planner doesn't fold still names Membership status.
         ("revenue by store, statuses", ["statuses"]),
@@ -544,6 +582,29 @@ def test_a_word_naming_an_object_the_draft_does_not_use_is_not_ready(
     jaffle: Runtime, intent: str, terms: list[str]
 ) -> None:
     _not_ready(plan_payload(jaffle, intent=intent), terms)
+
+
+@pytest.mark.parametrize(
+    ("intent", "code", "terms"),
+    [
+        # The draft groups by store and a converted-order id, which validation refuses; the
+        # alternative that validates changes the target and grouping. Revenue's Order entity
+        # consumes no word, so "order" stays a grouping the store-only draft drops.
+        ("revenue by store, order", "PLAN_FALLBACK_SEMANTIC_DRIFT", ["order"]),
+        # A framing word that names an object (Calendar day's "date") counts too: the draft groups
+        # by Calendar day, which validation refuses for revenue.
+        ("revenue by store, date", "VALIDATION_FAILED", ["date"]),
+    ],
+)
+def test_a_second_listed_grouping_reaches_the_draft(
+    jaffle: Runtime, intent: str, code: str, terms: list[str]
+) -> None:
+    payload = plan_payload(jaffle, intent=intent)
+
+    _held(payload, code)
+    assert payload["best"]["query_ir"]["group_by"][0] == STORE
+    store_only = _first_grouping_only(payload["best"]["query_ir"], STORE)
+    assert unconsumed_catalog_words(jaffle, intent, store_only) == terms
 
 
 def test_a_description_that_negates_the_word_does_not_answer_it(billing: Runtime) -> None:
@@ -576,12 +637,14 @@ def test_an_unknown_word_only_a_description_holds_is_not_ready(billing: Runtime)
 def test_every_draft_goes_through_the_one_gate(
     jaffle: Runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Another pattern's draft.
-    comparison = plan_payload(
-        jaffle, intent="food revenue vs drink revenue by store, customer type"
-    )
+    # Another pattern's draft, which groups by both listed terms.
+    intent = "food revenue vs drink revenue by store, customer type"
+    comparison = plan_payload(jaffle, intent=intent)
     assert comparison["best"]["pattern"] == "inline_comparison"
-    _not_ready(comparison, ["customer", "type"])
+    assert comparison["status"] == "ok", comparison.get("why")
+    assert comparison["best"]["query_ir"]["group_by"] == [STORE, "dimension.jaffle_customer_type"]
+    store_only = {**comparison["best"]["query_ir"], "group_by": [STORE], "order_by": []}
+    assert unconsumed_catalog_words(jaffle, intent, store_only) == ["customer", "type"]
 
     # The catalog fallback's draft, for a question no pattern realizes.
     monkeypatch.setattr(

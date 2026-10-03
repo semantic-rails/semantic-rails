@@ -697,12 +697,13 @@ def _dropped_grouping_why(
     """
 
     config = runtime._config
-    time = query.get("time") if isinstance(query.get("time"), dict) else {}
+    raw_time = query.get("time")
+    time: dict[str, Any] = raw_time if isinstance(raw_time, dict) else {}
     # The time block's clock: its temporal role, and the calendar it buckets on.
     clocks = [
         str(row.label or "")
         for row in [
-            _object_by_id(config.temporal_roles, time.get("temporal_role")),
+            _object_by_id(config.temporal_roles, str(time.get("temporal_role") or "")),
             *(
                 row
                 for row in config.entities
