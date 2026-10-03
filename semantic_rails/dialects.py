@@ -107,7 +107,12 @@ class SqlDialect:
                 arg_count=len(args),
                 warehouse=self.name,
             )
-            return self.date_diff(unit, args[1], args[2])
+            start, end = args[1], args[2]
+            if self.name == "bigquery":
+                # Force calendar boundaries in UTC, including TIMESTAMP endpoints;
+                # unwrapped TIMESTAMPs select BigQuery's elapsed-duration overload.
+                start, end = SqlCall("DATETIME", [start]), SqlCall("DATETIME", [end])
+            return self.date_diff(unit, start, end)
         if name != "CAST":
             return SqlCall(name, args)
         value = args[1].value if len(args) == 2 and isinstance(args[1], SqlLiteral) else None

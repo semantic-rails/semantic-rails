@@ -238,6 +238,10 @@ counting calendar unit boundaries rather than elapsed durations. The `week`
 exception is the calendar day difference divided by seven, truncated toward
 zero; it does not count Sunday or Monday week boundaries.
 
+BigQuery converts both endpoints to `DATETIME` before taking the difference.
+For `TIMESTAMP` endpoints, calendar boundaries are counted in UTC, so
+23:00 on January 1 to 01:00 on January 3 returns two days, preserving NULLs.
+
 | Warehouse | Supported units | Refused units |
 | --- | --- | --- |
 | DuckDB, MotherDuck, DuckLake, Postgres, Databricks | `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year` | None |

@@ -845,11 +845,13 @@ def test_date_diff_calls_use_dialect_lowering(package, warehouse, unit, surface,
     if surface == "select":
         # Final SQL assigns short aliases to the two aggregate leaves.
         expected = render_expr(
-            original(
-                dialect,
-                unit,
-                SqlIdentifier(parts=["base", "m1"]),
-                SqlIdentifier(parts=["base", "m2"]),
+            dialect.scalar_call(
+                "DATE_DIFF",
+                [
+                    SqlLiteral(unit),
+                    SqlIdentifier(parts=["base", "m1"]),
+                    SqlIdentifier(parts=["base", "m2"]),
+                ],
             )
         )
         assert expected in sql
@@ -857,6 +859,42 @@ def test_date_diff_calls_use_dialect_lowering(package, warehouse, unit, surface,
         assert any(lowered in sql for lowered in lowered_calls)
     if warehouse in {"postgres", "snowflake", "bigquery", "databricks"}:
         assert "DATE_DIFF(" not in sql.upper()
+
+
+@pytest.mark.parametrize("surface", ["select", "package", "aggregate_if", "relation"])
+def test_bigquery_date_diff_column_endpoints_normalized_on_every_surface(package, surface):
+    expression = call("DATE_DIFF", literal("day"), column("opened_at"), column("closed_at"))
+    if surface == "package":
+        path = package / "models/rows.yml"
+        model = yaml.safe_load(path.read_text())
+        model["model"]["measures"]["amount"]["expr"] = expression
+        path.write_text(yaml.safe_dump(model))
+    config = load_package_config(str(package))
+    config = replace(config, package=replace(config.package, warehouse="bigquery"))
+    if surface == "select":
+        expression = call(
+            "DATE_DIFF", literal("day"), maximum(column("opened_at")), maximum(column("closed_at"))
+        )
+        expected = "DATETIME_DIFF(DATETIME(base.m2), DATETIME(base.m1), DAY)"
+    elif surface == "relation":
+        expected = "DATETIME_DIFF(DATETIME(base.closed_at), DATETIME(base.opened_at), DAY)"
+    else:
+        expected = "DATETIME_DIFF(DATETIME(numbers.closed_at), DATETIME(numbers.opened_at), DAY)"
+    if surface == "package":
+        expression = {"measure": "measure.numbers.amount", "aggregation": "avg"}
+    elif surface == "aggregate_if":
+        expression = maximum(expression)
+    if surface == "relation":
+        sql = render_expr(
+            _semantic_expr_to_sql(
+                parse_semantic_expression(expression, context="config"),
+                warehouse="bigquery",
+                default_alias="base",
+            )
+        )
+    else:
+        sql = compile_query(config, None, query(expression))["sql"]
+    assert expected in sql
 
 
 @pytest.mark.parametrize(
@@ -878,7 +916,7 @@ def test_date_diff_calls_use_dialect_lowering(package, warehouse, unit, surface,
             "snowflake",
             f"DATEDIFF('day', CAST('{START}' AS TIMESTAMP_NTZ), CAST('{END}' AS TIMESTAMP_NTZ))",
         ),
-        ("bigquery", f"DATETIME_DIFF('{END}', '{START}', DAY)"),
+        ("bigquery", f"DATETIME_DIFF(DATETIME('{END}'), DATETIME('{START}'), DAY)"),
         (
             "databricks",
             f"TIMESTAMPDIFF(DAY, DATE_TRUNC('day', CAST('{START}' AS TIMESTAMP)), DATE_TRUNC('day', CAST('{END}' AS TIMESTAMP)))",
