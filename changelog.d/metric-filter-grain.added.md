@@ -1,0 +1,1 @@
+- Derived metrics whose expression is a distribution can be selected.

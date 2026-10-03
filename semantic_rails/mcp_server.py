@@ -633,7 +633,9 @@ def serve_http(
     adapter: SemanticLayerMCPAdapter, *, host: str = "127.0.0.1", port: int = 8091
 ) -> None:
     handler = make_mcp_http_handler(adapter)
-    socket_fd = os.environ.get("SEMANTIC_RAILS_MCP_SOCKET_FD") if port == 0 else None
+    socket_fd = os.environ.pop("SEMANTIC_RAILS_MCP_SOCKET_FD", None)
+    if port != 0:
+        socket_fd = None
     with HTTPServer((host, port), handler, bind_and_activate=socket_fd is None) as httpd:
         if socket_fd is not None:
             httpd.socket.close()
