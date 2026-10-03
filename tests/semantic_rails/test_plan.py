@@ -212,7 +212,7 @@ def test_plan_rejects_a_partial_query_it_cannot_read(runtime_factory, partial, p
         mcp.close()
 
     assert response["ok"] is False
-    error = response["error"]
+    error = response["errors"][0]
     assert (error["code"], error["details"]["path"]) == ("INVALID_QUERY", path)
     assert error["recovery_hints"][0]["kind"] == "fix_query_shape"
 

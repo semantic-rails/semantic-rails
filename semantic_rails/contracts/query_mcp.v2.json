@@ -132,7 +132,20 @@
       "error": {
         "oneOf": [
           {
-            "$ref": "#/$defs/issue"
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "type": "object"
           },
           {
             "type": "null"
@@ -150,12 +163,6 @@
       },
       "package_id": {
         "type": "string"
-      },
-      "recovery_hints": {
-        "items": {
-          "type": "object"
-        },
-        "type": "array"
       },
       "request_context": {
         "type": "object"

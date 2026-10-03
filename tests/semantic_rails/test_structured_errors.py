@@ -113,12 +113,7 @@ def test_kinded_expression_with_only_valid_keys_passes_unknown_key_check():
 
 
 def _first_error(out: dict) -> dict:
-    """execute mode ``validate`` returns ``ok=False`` with the structured issue
-    in ``errors[0]``; mode ``sql`` raises (caught by the adapter and packed
-    into ``error`` at the top level). Return whichever shape is present.
-    """
-    if isinstance(out.get("error"), dict):
-        return out["error"]
+    """The full issue lives in errors[0] in every execute mode."""
     errors = list(out.get("errors", []) or [])
     return errors[0] if errors else {}
 
@@ -150,8 +145,8 @@ def test_mcp_validate_with_bad_order_by_returns_structured_envelope(runtime_fact
     assert out["ok"] is False
     issue = _first_error(out)
     assert issue.get("code") == "INVALID_EXPRESSION", out
-    assert out["recovery_hints"], "MCP envelope must carry recovery_hints"
-    kinds = {h.get("kind") for h in out["recovery_hints"]}
+    assert issue["recovery_hints"], "MCP envelope must carry recovery_hints"
+    kinds = {h.get("kind") for h in issue["recovery_hints"]}
     assert "fix_order_by_shape" in kinds
 
 
@@ -186,7 +181,7 @@ def test_mcp_compile_with_bad_order_by_returns_structured_envelope(runtime_facto
     assert out["ok"] is False
     issue = _first_error(out)
     assert issue.get("code") == "INVALID_EXPRESSION", out
-    assert out["recovery_hints"]
+    assert issue["recovery_hints"]
     # The whole point of the structured envelope — no bare KeyError.
     assert "field" in (issue.get("details", {}).get("missing_key", "") or "")
 
@@ -218,7 +213,7 @@ def test_mcp_validate_with_unknown_expression_key_returns_closest_matches(runtim
     assert out["ok"] is False
     issue = _first_error(out)
     assert issue.get("code") == "INVALID_EXPRESSION_KEY", out
-    hints = out["recovery_hints"]
+    hints = issue["recovery_hints"]
     assert hints
     closest = hints[0].get("closest_matches", [])
     assert "measure" in closest

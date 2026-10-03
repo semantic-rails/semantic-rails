@@ -489,10 +489,11 @@ def test_envelopes_state_each_fact_once(v2: SemanticLayerMCPAdapter) -> None:
     }
     failed = v2.call_tool("execute", {"query": bad})
     issue = failed["errors"][0]
-    assert failed["error"] == issue
+    assert failed["error"] == {key: issue[key] for key in ("code", "message")}
     assert issue["code"] == "INVALID_EXPRESSION_AST"
     assert "expression" in issue["message"] and "group_by" in issue["message"]
-    assert failed["recovery_hints"] == issue["recovery_hints"]
+    assert "recovery_hints" not in failed
+    assert issue["recovery_hints"]
     empty = [key for key, value in issue.items() if value in (None, "", [], {})]
     assert empty == [] and "why_invalid" not in issue and "unsupported_construct" not in issue
 
@@ -544,8 +545,91 @@ def test_lean_envelopes_preserve_distinct_issues_and_recovery(
     response = v2._envelope(payload, request_id="test", started_at=0)
     assert response[channel] == [issue]
     assert response["request_context"] == policy
-    assert response["recovery_hints"] == [hint]
     if channel == "errors":
-        assert response["error"] == issue and response["ok"] is False
+        assert "recovery_hints" not in response
+        assert response["error"] == {"code": "C", "message": "m"}
+        assert response["ok"] is False
     else:
+        assert response["recovery_hints"] == [hint]
         assert "error" not in response and response["ok"] is True
+
+
+@pytest.mark.parametrize("code", ["MIXED_GRAIN_INVALID", "REWRITE_APPLIED"])
+@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+def test_analysis_details_follow_requested_verbosity(v2, code, verbosity) -> None:
+    from copy import deepcopy
+
+    from semantic_rails.diagnostics import exception_issue, semantic_issue
+
+    details = {
+        "analysis": {"relationships": [{"id": "relationship.test"}]},
+        "path": ["relationship.test"],
+        "offending_dimensions": ["dimension.test.date"],
+        "compatible_measures": ["measure.test.count"],
+        "compatible_dimensions": ["dimension.test.store"],
+        "time_axis_recovery": {
+            "calendar_dimension": "dimension.test.date",
+            "temporal_role": "temporal_role.test.time",
+            "grain": "month",
+        },
+    }
+    if code == "MIXED_GRAIN_INVALID":
+        issue = exception_issue(
+            SemanticLayerError(code, "Invalid grain", details=details), stage="mcp"
+        )
+        channel = "errors"
+    else:
+        details = {
+            "analysis": details["analysis"],
+            "path": details["path"],
+            "rewrite_kind": "leaf_preaggregate_join",
+        }
+        issue = semantic_issue(
+            code=code,
+            message="Rewrite applied",
+            severity="warning",
+            stage="planning",
+            details=details,
+        )
+        channel = "warnings"
+    original = deepcopy(issue)
+    response = v2._envelope(
+        {channel: [issue]},
+        request_id="test",
+        started_at=0,
+        arguments={"query": {"verbosity": verbosity}},
+    )
+    result = response[channel][0]
+    expected = deepcopy(details)
+    if verbosity == "minimal":
+        expected.pop("analysis")
+        if code == "REWRITE_APPLIED":
+            expected.pop("path")
+    assert result["details"] == expected
+    assert result["code"] == issue["code"] and result["message"] == issue["message"]
+    assert result.get("recovery_hints", []) == issue["recovery_hints"]
+    assert issue == original
+
+
+@pytest.mark.parametrize("severity", ["error", "warning"])
+@pytest.mark.parametrize("duplicate", [True, False])
+def test_issue_builder_removes_only_duplicate_nested_hints(severity, duplicate) -> None:
+    from semantic_rails.diagnostics import semantic_issue
+
+    hint = {"kind": "retry", "message": "Retry with a valid dimension"}
+    nested = [hint] if duplicate else [{"kind": "inspect", "message": "Inspect the dimension"}]
+    details = {"recovery_hints": nested, "dimension": "dimension.test.store"}
+    issue = semantic_issue(
+        code="TEST_ERROR",
+        message="Invalid dimension",
+        severity=severity,
+        stage="binding",
+        details=details,
+        recovery_hints=[hint],
+    )
+    assert issue["recovery_hints"] == [hint]
+    if duplicate:
+        assert "recovery_hints" not in issue["details"]
+    else:
+        assert issue["details"]["recovery_hints"] == nested
+    assert details["recovery_hints"] == nested

@@ -328,8 +328,17 @@ MCP_RESULT_SCHEMA: dict[str, Any] = {
         "package_id": {"type": "string"},
         "warnings": {"type": "array", "items": {"$ref": "#/$defs/issue"}},
         "errors": {"type": "array", "items": {"$ref": "#/$defs/issue"}},
-        "error": {"oneOf": [{"$ref": "#/$defs/issue"}, {"type": "null"}]},
-        "recovery_hints": {"type": "array", "items": {"type": "object"}},
+        "error": {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "required": ["code", "message"],
+                    "properties": {"code": {"type": "string"}, "message": {"type": "string"}},
+                    "additionalProperties": False,
+                },
+                {"type": "null"},
+            ]
+        },
         "request_context": {"type": "object"},
         "timing_ms": {"type": "number", "minimum": 0},
     },
@@ -1633,7 +1642,7 @@ def _lean_discover(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _lean_issue(issue: Any) -> Any:
+def _lean_issue(issue: Any, *, verbosity: str = "compact") -> Any:
     """State an issue's facts once: drop empty optional fields and echoes of code or message."""
 
     if not isinstance(issue, dict):
@@ -1648,6 +1657,12 @@ def _lean_issue(issue: Any) -> Any:
     if isinstance(lean.get("recovery_hints"), list):
         # Hints must be actionable on their own (for example, valid_kinds on a retry).
         lean["recovery_hints"] = [_lean_issue(hint) for hint in lean["recovery_hints"]]
+    if verbosity == "minimal" and lean.get("code") in {"MIXED_GRAIN_INVALID", "REWRITE_APPLIED"}:
+        details = dict(lean.get("details") or {})
+        details.pop("analysis", None)
+        if lean["code"] == "REWRITE_APPLIED":
+            details.pop("path", None)
+        lean["details"] = details
     return lean
 
 
@@ -1954,13 +1969,12 @@ class SemanticLayerMCPAdapter:
                 ),
                 stage="mcp",
             )
-            return {
-                "ok": False,
-                "status": "error",
-                "error": issue,
-                "errors": [issue],
-                "messages": [],
-            }
+            return self._envelope(
+                {"ok": False, "errors": [issue], "messages": []},
+                request_id=_clean_request_id(args.get("request_id")),
+                started_at=time.perf_counter(),
+                arguments=args,
+            )
         return {
             "name": name,
             "description": next(
@@ -1978,7 +1992,12 @@ class SemanticLayerMCPAdapter:
         }
 
     def _envelope(
-        self, payload: Mapping[str, Any], *, request_id: str, started_at: float
+        self,
+        payload: Mapping[str, Any],
+        *,
+        request_id: str,
+        started_at: float,
+        arguments: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         out = dict(payload or {})
         out.setdefault("ok", not bool(out.get("errors")))
@@ -1995,32 +2014,34 @@ class SemanticLayerMCPAdapter:
                 out["errors"] = [_internal_issue(str(error))]
             else:
                 out["errors"] = []
-        # Surface errors[0] at the top-level `error` so agents that read
-        # the conventional MCP-envelope `if result.get("error"): ...`
-        # branch don't silently treat a soft-fail (execute mode validate,
-        # segment action validate) as success.
-        if not out.get("error"):
-            first = next(
-                (issue for issue in (out.get("errors") or []) if isinstance(issue, dict)),
-                None,
-            )
-            if first is not None:
-                out["error"] = first
+        arguments = arguments or {}
+        query = arguments.get("query")
+        query = query if isinstance(query, Mapping) else {}
+        verbosity = (
+            str(arguments.get("verbosity") or query.get("verbosity") or "minimal").strip().lower()
+        )
         for key in ("errors", "warnings"):
-            out[key] = [_lean_issue(issue) for issue in out[key] or []]
-        if isinstance(out.get("error"), dict):
-            out["error"] = _lean_issue(out["error"])
-        # The errors' hints, repeated at the top level: agents' loop-repair signal.
-        hints = out.pop("recovery_hints", None)
-        if hints is None:
-            hints = [
-                hint
-                for issue in out["errors"]
-                if isinstance(issue, dict)
-                for hint in issue.get("recovery_hints") or []
-            ]
-        if hints:
-            out["recovery_hints"] = [_lean_issue(hint) for hint in hints]
+            out[key] = [_lean_issue(issue, verbosity=verbosity) for issue in out[key] or []]
+        # Keep the conventional truthy error branch for validate soft-fails,
+        # while the complete issues and their hints live only in errors.
+        if out["errors"]:
+            first = out["errors"][0]
+            hints = [hint for issue in out["errors"] for hint in issue.get("recovery_hints", [])]
+            extra = [_lean_issue(hint) for hint in out.pop("recovery_hints", []) or []]
+            extra = [hint for hint in extra if hint not in hints]
+            if extra:
+                first["recovery_hints"] = list(first.get("recovery_hints", [])) + extra
+                hints += extra
+            if "query_ir_hints" in out:
+                out["query_ir_hints"] = [
+                    hint for hint in out["query_ir_hints"] if _lean_issue(hint) not in hints
+                ]
+            out["error"] = {key: first[key] for key in ("code", "message")}
+        elif out.get("recovery_hints"):
+            # Discovery next steps are independent of error recovery hints.
+            out["recovery_hints"] = [_lean_issue(hint) for hint in out["recovery_hints"]]
+        else:
+            out.pop("recovery_hints", None)
         out.setdefault("timing_ms", round((time.perf_counter() - started_at) * 1000, 3))
         return out
 
@@ -2043,6 +2064,7 @@ class SemanticLayerMCPAdapter:
             payload,
             request_id=_clean_request_id(arguments.get("request_id")),
             started_at=started_at,
+            arguments=arguments,
         )
         return self._with_request_context(out, arguments)
 
@@ -2065,6 +2087,7 @@ class SemanticLayerMCPAdapter:
             {"ok": False, "status": "error", "error": issue, "errors": [issue]},
             request_id=_clean_request_id(arguments.get("request_id")),
             started_at=started_at or time.perf_counter(),
+            arguments=arguments,
         )
         return self._with_request_context(out, arguments)
 
