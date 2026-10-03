@@ -787,14 +787,18 @@ between them.
 
 | Optional entity field | Meaning |
 |---|---|
-| `label_dimension: <dimension id>` | A groupable, non-id dimension of this entity. When `plan` chooses the entity's key for grouping, it keeps the key first and adds this label. It never groups by the declared label alone: entities can share a label. A question explicitly naming a non-id dimension keeps that grouping unchanged. |
+| `label_dimension: <dimension id>` | A groupable, non-id dimension of this entity. A question asking "by <entity>" groups by every key component, then this label, even when the label ranks first. Naming the label dimension itself groups by it alone. Choosing one of the entity's own key dimensions also includes the full key and label; foreign-key dimensions on other entities do not inherit this expansion. |
 
 For example, `label_dimension: dimension.shop_customer_name` declares the
 customer's display dimension. Composite keys retain every key component before
 the label. An unknown dimension, a dimension of another entity, an id dimension,
 or a non-groupable dimension fails loading with `INVALID_CONFIG` naming the entity
-and reason. Without a declaration, planning keeps its existing grouping behavior;
-the entity's inspect card says `no label declared; <key> identifies it`.
+and reason. Every key component must have a groupable dimension of this entity;
+otherwise loading fails with `INVALID_CONFIG` naming the entity and column. Omitted
+key dimensions are synthesized before validation. Without a label declaration,
+planning keeps its existing grouping behavior; a non-time entity's inspect card
+says `no label declared; <key> identifies it`. When a label is declared, the card
+includes `label_dimension`.
 
 Each graph entity must have a key, declared on the entity or through its own
 model's `keys.primary:` or `grain:`. An explicit graph model binding makes that

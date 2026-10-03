@@ -1421,40 +1421,42 @@ def _term_matches_value_domain(config: Any, term: str) -> bool:
     return False
 
 
-def _group_dimensions_with_labels(config: Any, dimension_ids: Iterable[str]) -> list[str]:
+def _group_dimensions_with_labels(config: Any, groupings: Iterable[tuple[str, str]]) -> list[str]:
     """Keep entity identity ahead of its declared label in inferred grouping."""
-    from ..errors import SemanticLayerError
-    from ..metadata import _is_identifier_like_dimension
+    from ..compiler_parts.paths import _entity_key_dimension_ids
 
     dimensions = {row.id: row for row in config.dimensions}
     entities = {row.id: row for row in config.entities}
     grouped: list[str] = []
-    for dimension_id in dimension_ids:
-        grouped.append(dimension_id)
+    for dimension_id, term in groupings:
         dimension = dimensions.get(dimension_id)
-        if dimension is None or not _is_identifier_like_dimension(dimension):
-            continue
-        entity = entities[dimension.entity]
-        keys = entity.key or [entity.primary_key]
-        if not entity.label_dimension or dimension.column not in keys:
+        term_tokens = _tokens(term)
+        named_entities = [
+            row
+            for row in config.entities
+            if row.label_dimension
+            and term_tokens
+            and any(term_tokens == _tokens(name) for name in [row.name, row.label, *row.aliases])
+        ]
+        entity = named_entities[0] if len(named_entities) == 1 else None
+        if entity is None and dimension is not None:
+            owner = entities[dimension.entity]
+            if owner.label_dimension and dimension.column in (owner.key or [owner.primary_key]):
+                entity = owner
+        if entity is None:
+            if dimension_id:
+                grouped.append(dimension_id)
             continue
         # Every component of a composite key is needed to distinguish entities.
-        for column in keys:
-            key_dimension = next(
-                (
-                    row
-                    for row in config.dimensions
-                    if row.entity == entity.id and row.column == column
-                ),
-                None,
+        grouped = [item for item in grouped if item != entity.label_dimension]
+        grouped.extend(
+            _entity_key_dimension_ids(
+                entity.id,
+                config,
+                groupable_only=True,
+                preferred_dimension_id=dimension_id,
             )
-            if key_dimension is None or not key_dimension.groupable:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"Entity '{entity.id}' needs a groupable key dimension for '{column}' "
-                    "to group with its declared label",
-                )
-            grouped.append(key_dimension.id)
+        )
         grouped.append(entity.label_dimension)
     return list(dict.fromkeys(grouped))
 
@@ -1465,19 +1467,19 @@ def _maybe_group_by(
     lowered = str(text or "").lower()
     terms = _runtime_composition_terms(text)
     target_set = {term for term in target_terms if term}
-    group_by: list[str] = []
+    group_by: list[tuple[str, str]] = []
     if terms & {"segment", "segments"} and ("customer" in terms or "historical" in terms):
         dim = _object_by_id(config.dimensions, "dimension.jaffle_customer_history_segment")
         if dim is not None:
-            group_by.append(dim.id)
+            group_by.append((dim.id, ""))
     if "store" in terms:
         dim = _dimension(config, ["store", "name"])
         if dim is not None:
-            group_by.append(dim.id)
+            group_by.append((dim.id, ""))
     if any(term in lowered for term in ("geo", "geography", "region", "parent")):
         dim = _dimension(config, ["geo"], prefer_parent="parent" in lowered)
         if dim is not None:
-            group_by.append(dim.id)
+            group_by.append((dim.id, ""))
     for term in _requested_grouping_terms(text):
         term_tokens = set(_tokens(term))
         if (
@@ -1504,8 +1506,7 @@ def _maybe_group_by(
             if content_tokens and not (content_tokens - target_set):
                 continue
         dim = _dimension(config, term_tokens)
-        if dim is not None:
-            group_by.append(dim.id)
+        group_by.append((dim.id if dim is not None else "", term))
     return _group_dimensions_with_labels(config, group_by)
 
 

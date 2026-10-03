@@ -224,15 +224,29 @@ def _direct_dimension_source_expr(
     return expr, dim.id
 
 
-def _entity_key_dimension_ids(entity_id: str, config: PackageConfig) -> list[str]:
+def _entity_key_dimension_ids(
+    entity_id: str,
+    config: PackageConfig,
+    *,
+    groupable_only: bool = False,
+    preferred_dimension_id: str = "",
+) -> list[str]:
     entity = _entity_index(config).get(entity_id)
     if entity is None:
         raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown entity '{entity_id}'")
     key_dims: list[str] = []
-    for key_col in entity.key:
+    key_columns = entity.key or ([entity.primary_key] if groupable_only else [])
+    for key_col in key_columns:
+        candidates = [
+            row
+            for row in config.dimensions
+            if row.entity == entity_id
+            and row.column == key_col
+            and (not groupable_only or row.groupable)
+        ]
         dim = next(
-            (row for row in config.dimensions if row.entity == entity_id and row.column == key_col),
-            None,
+            (row for row in candidates if row.id == preferred_dimension_id),
+            candidates[0] if candidates else None,
         )
         if dim is None:
             raise SemanticLayerError(

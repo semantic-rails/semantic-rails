@@ -427,6 +427,7 @@ class PackageConfig:
     meta_contract: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        """Validate here so programmatic configs cannot bypass label and key checks."""
         from .errors import SemanticLayerError
 
         dimensions = {row.id: row for row in self.dimensions}
@@ -452,3 +453,13 @@ class PackageConfig:
                     "INVALID_CONFIG",
                     f"Entity '{entity.id}' label_dimension '{entity.label_dimension}' {reason}",
                 )
+            for column in entity.key or [entity.primary_key]:
+                if not any(
+                    row.entity == entity.id and row.column == column and row.groupable
+                    for row in self.dimensions
+                ):
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        f"Entity '{entity.id}' needs a groupable key dimension for '{column}' "
+                        "to group with its declared label",
+                    )

@@ -1008,7 +1008,9 @@ def _object_card(
                 ][:20],
             }
         )
-        if not entity.label_dimension:
+        if entity.label_dimension:
+            base["label_dimension"] = entity.label_dimension
+        elif entity.kind != "time":
             key = ", ".join(entity.key or [entity.primary_key])
             base["label_status"] = f"no label declared; {key} identifies it"
     elif obj.kind == "relationship":

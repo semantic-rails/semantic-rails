@@ -408,9 +408,7 @@ def _term_matches_value_domain(config: Any, term: str) -> bool:
     return False
 
 
-def _choose_group_dimensions(
-    runtime: Any, query: dict[str, Any], text: str, chosen_group_dim: str = ""
-) -> list[str]:
+def _choose_group_dimensions(runtime: Any, query: dict[str, Any], text: str) -> list[str]:
     from ..metadata import (  # noqa: WPS433 - shared metadata helpers
         _availability_for_object,
         _selection_context,
@@ -418,10 +416,8 @@ def _choose_group_dimensions(
     )
     from ..metadata_parts.relevance import _tokenize  # noqa: WPS433
 
-    if chosen_group_dim:
-        return _group_dimensions_with_labels(runtime._config, [chosen_group_dim])
     selection = _selection_context(runtime._config, query)
-    group_dims: list[str] = []
+    group_dims: list[tuple[str, str]] = []
     covered_terms: set[str] = set()
     for dimension_terms in _requested_grouping_terms(text):
         if _is_temporal_grouping_term(dimension_terms) or _term_matches_value_domain(
@@ -459,8 +455,7 @@ def _choose_group_dimensions(
                 break
         if not chosen and matched_rows:
             chosen = str(matched_rows[0]["id"])
-        if chosen:
-            group_dims.append(chosen)
+        group_dims.append((chosen, dimension_terms))
     return _group_dimensions_with_labels(runtime._config, group_dims)
 
 

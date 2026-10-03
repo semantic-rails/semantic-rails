@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 
+import duckdb
 import pytest
 import yaml
 
@@ -12,7 +12,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.interop.package_writer import write_package
 from semantic_rails.metadata import inspect_payload
 from semantic_rails.planner import plan_payload
-from semantic_rails.planner._base import _maybe_group_by
+from semantic_rails.planner._base import _dimension, _group_dimensions_with_labels, _maybe_group_by
 from semantic_rails.planner.generators import _choose_group_dimensions
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.result_helpers import typed_rows
@@ -157,11 +157,9 @@ def test_planner_keeps_entity_identity_with_declared_label(
         runtime.close()
 
 
-def test_explicit_dimension_shortcut_and_pattern_use_same_label_expansion(tmp_path):
+def test_fallback_and_pattern_use_same_label_expansion(tmp_path):
     runtime = Runtime.from_path(str(_package(tmp_path)))
     try:
-        assert _choose_group_dimensions(runtime, {}, "", chosen_group_dim=KEY) == [KEY, LABEL]
-        assert _choose_group_dimensions(runtime, {}, "", chosen_group_dim=LABEL) == [LABEL]
         assert _choose_group_dimensions(runtime, {}, "repair cost by incident") == [KEY, LABEL]
         assert _maybe_group_by(runtime._config, "repair cost by incident") == [KEY, LABEL]
     finally:
@@ -171,17 +169,191 @@ def test_explicit_dimension_shortcut_and_pattern_use_same_label_expansion(tmp_pa
 @pytest.mark.parametrize("missing", [False, True])
 def test_label_expansion_refuses_missing_or_non_groupable_composite_key(tmp_path, missing):
     config = load_package_config(str(_package(tmp_path, composite=True)))
+    with pytest.raises(SemanticLayerError, match="groupable key dimension.*revision") as caught:
+        replace(
+            config,
+            dimensions=[
+                replace(row, groupable=False) if row.column == "revision" else row
+                for row in config.dimensions
+                if not (missing and row.column == "revision")
+            ],
+        )
+    assert caught.value.code == "INVALID_CONFIG"
+    assert "entity.shop_incident" in str(caught.value)
+
+
+def test_loader_refuses_non_groupable_composite_key(tmp_path):
+    path = _package(tmp_path, composite=True)
+    raw = yaml.safe_load(path.read_text())
+    raw["models"]["incidents"]["dimensions"]["revision"] = {"groupable": False}
+    path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    with pytest.raises(SemanticLayerError, match="groupable key dimension.*revision") as caught:
+        load_package_config(str(path))
+    assert caught.value.code == "INVALID_CONFIG"
+    assert "entity.shop_incident" in str(caught.value)
+
+
+def test_loader_validates_synthesized_composite_key_dimensions(tmp_path):
+    config = load_package_config(str(_package(tmp_path, composite=True)))
+    assert _maybe_group_by(config, "repair cost by incident") == [
+        KEY,
+        "dimension.shop_incident_revision",
+        LABEL,
+    ]
+
+
+@pytest.mark.parametrize("term", ["incident", "incident code"])
+def test_label_sorting_first_does_not_replace_entity_identity(tmp_path, term):
+    path = _package(tmp_path)
+    raw = yaml.safe_load(path.read_text())
+    raw["models"]["incidents"]["dimensions"]["name"]["label"] = "Incident code"
+    raw["models"]["incidents"]["dimensions"]["incident_id"] = {
+        "as": KEY,
+        "kind": "id",
+        "label": "Incident id",
+    }
+    path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    runtime = Runtime.from_path(str(path))
+    try:
+        intent = f"repair cost by {term}"
+        expected = [KEY, LABEL] if term == "incident" else [LABEL]
+        assert _dimension(runtime._config, ["incident"]).id == LABEL
+        assert _maybe_group_by(runtime._config, intent) == expected
+        assert _choose_group_dimensions(runtime, {}, intent) == expected
+        plan = plan_payload(runtime, intent=intent)
+        assert plan["status"] == "ok", plan.get("why")
+        query = plan["best"]["query_ir"]
+        assert query["group_by"] == expected
+        rows = typed_rows(runtime.query(query))
+        columns = "incident_id, incident_name" if term == "incident" else "incident_name"
+        with duckdb.connect(":memory:") as reference:
+            expected_rows = reference.execute(
+                f"SELECT {columns}, SUM(repair_cost) FROM read_csv_auto(?) GROUP BY {columns}",
+                [str(tmp_path / "data/incidents.csv")],
+            ).fetchall()
+        measure_alias = query["select"][0]["as"]
+        assert sorted(tuple(row[key] for key in [*expected, measure_alias]) for row in rows) == (
+            sorted(expected_rows)
+        )
+    finally:
+        runtime.close()
+
+
+def test_categorical_composite_key_keeps_distinct_entities(tmp_path):
+    path = _package(tmp_path, composite=True)
+    data = tmp_path / "data/incidents.csv"
+    data.write_text(data.read_text().replace("incident_id", "code"))
+    raw = yaml.safe_load(path.read_text())
+    raw["graph"]["entities"]["incident"]["key"] = ["code", "revision"]
+    raw["models"]["incidents"]["dimensions"]["code"] = {
+        "kind": "categorical",
+        "label": "Incident id",
+    }
+    path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    runtime = Runtime.from_path(str(path))
+    try:
+        expected = ["dimension.shop_incident_code", "dimension.shop_incident_revision", LABEL]
+        intent = "repair cost by incident"
+        assert _maybe_group_by(runtime._config, intent) == expected
+        assert _choose_group_dimensions(runtime, {}, intent) == expected
+        # A grouping without a term must also expand categorical key membership.
+        assert _group_dimensions_with_labels(runtime._config, [(expected[0], "")]) == expected
+        plan = plan_payload(runtime, intent=intent)
+        assert plan["status"] == "ok", plan.get("why")
+        query = plan["best"]["query_ir"]
+        assert query["group_by"] == expected
+        rows = typed_rows(runtime.query(query))
+        with duckdb.connect(":memory:") as reference:
+            expected_rows = reference.execute(
+                "SELECT code, revision, incident_name, SUM(repair_cost) "
+                "FROM read_csv_auto(?) GROUP BY code, revision, incident_name",
+                [str(data)],
+            ).fetchall()
+        measure_alias = query["select"][0]["as"]
+        assert sorted(tuple(row[key] for key in [*expected, measure_alias]) for row in rows) == (
+            sorted(expected_rows)
+        )
+        assert len(rows) == 2
+        assert sorted(row[measure_alias] for row in rows) == [10, 20]
+    finally:
+        runtime.close()
+
+
+def test_non_groupable_key_alias_does_not_hide_groupable_key(tmp_path):
+    path = _package(tmp_path)
+    raw = yaml.safe_load(path.read_text())
+    raw["models"]["incidents"]["dimensions"] = {
+        "filter_id": {"column": "incident_id", "kind": "id", "groupable": False},
+        "incident_id": {"as": KEY, "kind": "id", "label": "Incident id"},
+        **raw["models"]["incidents"]["dimensions"],
+    }
+    path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    runtime = Runtime.from_path(str(path))
+    try:
+        intent = "repair cost by incident id"
+        assert _maybe_group_by(runtime._config, intent) == [KEY, LABEL]
+        assert _choose_group_dimensions(runtime, {}, intent) == [KEY, LABEL]
+        plan = plan_payload(runtime, intent=intent)
+        assert plan["status"] == "ok", plan.get("why")
+        assert plan["best"]["query_ir"]["group_by"] == [KEY, LABEL]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("field", ["name", "label", "aliases"])
+def test_exact_entity_names_override_selected_label_dimension(tmp_path, field):
+    config = load_package_config(str(_package(tmp_path)))
+    name = ["repair subject"] if field == "aliases" else "repair subject"
+    config = replace(config, entities=[replace(config.entities[0], **{field: name})])
+    assert _group_dimensions_with_labels(config, [(LABEL, "repair subject")]) == [KEY, LABEL]
+    assert _group_dimensions_with_labels(config, [(LABEL, "other repair subject")]) == [LABEL]
+    assert _maybe_group_by(config, "repair cost by repair subject") == [KEY, LABEL]
+
+
+def test_entity_grouping_places_key_before_previously_named_label(tmp_path):
+    runtime = Runtime.from_path(str(_package(tmp_path)))
+    try:
+        intent = "repair cost by incident name and incident"
+        assert _maybe_group_by(runtime._config, intent) == [KEY, LABEL]
+        assert _choose_group_dimensions(runtime, {}, intent) == [KEY, LABEL]
+        plan = plan_payload(runtime, intent=intent)
+        assert plan["status"] == "ok", plan.get("why")
+        assert plan["best"]["query_ir"]["group_by"] == [KEY, LABEL]
+    finally:
+        runtime.close()
+
+
+def test_ambiguous_entity_term_keeps_selected_label_dimension(tmp_path):
+    config = load_package_config(str(_package(tmp_path)))
+    other = replace(config.entities[0], id="entity.shop_other", label_dimension="dimension.other")
+    label = next(row for row in config.dimensions if row.id == LABEL)
+    key = next(row for row in config.dimensions if row.id == KEY)
     config = replace(
         config,
+        entities=[*config.entities, other],
         dimensions=[
-            replace(row, groupable=False) if row.column == "revision" else row
-            for row in config.dimensions
-            if not (missing and row.column == "revision")
+            *config.dimensions,
+            replace(label, id="dimension.other", entity=other.id),
+            replace(key, id="dimension.other_id", entity=other.id),
         ],
     )
-    with pytest.raises(SemanticLayerError, match="groupable key dimension.*revision") as caught:
-        _choose_group_dimensions(SimpleNamespace(_config=config), {}, "", chosen_group_dim=KEY)
-    assert caught.value.code == "INVALID_CONFIG"
+    assert _group_dimensions_with_labels(config, [(LABEL, "incident")]) == [LABEL]
+
+
+@pytest.mark.parametrize("chosen_column", ["incident_id", "revision"])
+def test_expansion_preserves_selected_key_dimension_in_canonical_order(tmp_path, chosen_column):
+    config = load_package_config(str(_package(tmp_path, composite=True)))
+    keys = [row for row in config.dimensions if row.column in ("incident_id", "revision")]
+    alternatives = [replace(row, id=f"{row.id}_alternate") for row in keys]
+    config = replace(config, dimensions=[*alternatives, *config.dimensions])
+    chosen = next(row.id for row in keys if row.column == chosen_column)
+    expected = [
+        next(row.id for row in keys if row.column == column)
+        if column == chosen_column
+        else next(row.id for row in alternatives if row.column == column)
+        for column in ("incident_id", "revision")
+    ]
+    assert _group_dimensions_with_labels(config, [(chosen, "")]) == [*expected, LABEL]
 
 
 @pytest.mark.parametrize("verbosity", ["full", "minimal"])
@@ -196,8 +368,25 @@ def test_inspect_explains_undeclared_entity_label(tmp_path, verbosity):
         runtime.close()
 
 
-def test_inspect_does_not_report_declared_label_as_missing(tmp_path):
+@pytest.mark.parametrize("verbosity", ["full", "minimal"])
+def test_inspect_does_not_report_declared_label_as_missing(tmp_path, verbosity):
     runtime = Runtime.from_path(str(_package(tmp_path)))
+    try:
+        card = inspect_payload(runtime, object_id="entity.shop_incident", verbosity=verbosity)[
+            "card"
+        ]
+        assert "label_status" not in card
+        assert card["label_dimension"] == LABEL
+    finally:
+        runtime.close()
+
+
+def test_inspect_time_entity_has_no_label_status(tmp_path):
+    path = _package(tmp_path, label="")
+    raw = yaml.safe_load(path.read_text())
+    raw["graph"]["entities"]["incident"]["kind"] = "time"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    runtime = Runtime.from_path(str(path))
     try:
         card = inspect_payload(runtime, object_id="entity.shop_incident")["card"]
         assert "label_status" not in card
