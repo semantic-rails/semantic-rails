@@ -20,6 +20,7 @@ import yaml
 
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
+from semantic_rails.dialects import _WAREHOUSE_CONNECTORS
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_config_expression
 from semantic_rails.registry import Registry
@@ -147,6 +148,28 @@ def test_apples_at_a_store_that_sold_none(runtime: Runtime, scope: str | None) -
     assert _gold(sql) == ([(None, None)] if scope == "query" else [(0, 0)])
     assert ("NO_DATA_IN_SCOPE" in _codes(response)) is (scope == "query")
     assert "FILTER_VALUE_NOT_FOUND" not in _codes(response)
+
+
+@pytest.mark.parametrize("scope", ["dataset", "query"])
+def test_apples_whose_quantity_is_unknown_stay_unknown(runtime: Runtime, scope: str) -> None:
+    """Store s4's one apple sale has no quantity: rows exist, so its sum is unknown (NULL) in
+    either scope, never 0, and its count counts the row."""
+    where = "product = 'apple' AND store_id = 's4'"
+    sql = f"SELECT SUM(qty), COUNT(*) FROM sales WHERE {where}"
+    where_items = [*_where(PRODUCT, "apple"), *_where(STORE, "s4")]
+    response = _ask(runtime, scope, select=_select(qty=QTY, sales=SALES), where=where_items)
+    assert [tuple(row.values()) for row in response["rows"]] == _gold(sql) == [(None, 1)]
+
+
+@pytest.mark.parametrize("warehouse", sorted(_WAREHOUSE_CONNECTORS))
+def test_every_warehouse_probes_with_plain_ctes(package: Path, warehouse: str) -> None:
+    """The probe is a first-row CTE counted and cross-joined, which every warehouse runs."""
+    config = load_package_config(str(package))
+    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    query = {"version": 1, "select": _select(qty=QTY), "where": APPLES_AT_S5}
+    sql = compile_query(config, Registry(config), query)["sql"]
+    assert "observed_1_rows AS" in sql and "LIMIT 1" in sql and "CROSS JOIN observed_1" in sql
+    assert "EXISTS" not in sql
 
 
 @pytest.mark.parametrize("scope", ["dataset", "query"])

@@ -1016,8 +1016,9 @@ are internal: they settle inside their own scope in both modes.
   does not bound those reads.
   Coverage and the outside-window check run only on DuckDB (with MotherDuck and DuckLake)
   and Postgres, whose execution is tested. On Snowflake, BigQuery, Databricks, Athena and
-  ClickHouse an empty bucket reads `0` only while the measure has data inside the window,
-  and rollups route as they would without coverage.
+  ClickHouse an empty bucket reads `0` only while the measure has data inside the window
+  (a `dataset` query with a `where` filter probes untimed there too), and rollups route as
+  they would without coverage.
 - **An ungrouped distinct-population count over nothing reads `0`, with no warning.** That is a
   known limitation: a count of distinct customers under a `where` that matches no rows returns
   `0`, not `NULL` with `NO_DATA_IN_SCOPE` as the rule says. An empty group of a grouped answer
