@@ -405,7 +405,7 @@ def test_list_on_a_numeric_dimension_gets_the_in_hint_not_a_type_error(runtime_f
         assert report["ok"] is False
         error = report["errors"][0]
         assert error["code"] == "INVALID_QUERY"
-        hints = error["details"]["recovery_hints"]
+        hints = error["recovery_hints"]
         assert [hint["code"] for hint in hints] == ["USE_IN_FOR_LIST_VALUE"]
     finally:
         runtime.close()

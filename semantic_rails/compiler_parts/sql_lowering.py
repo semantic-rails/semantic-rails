@@ -558,19 +558,61 @@ def _refuse_varying_time_key(plan: LogicalPlan, leaf: Any) -> None:
         )
 
 
+def _role_conversion(role: Any) -> tuple[str, str] | None:
+    """The role's ``(column_timezone, timezone)`` when they differ, else ``None``."""
+    column_tz = str(getattr(role, "column_timezone", "") or "").strip()
+    target_tz = str(getattr(role, "timezone", "") or "").strip()
+    if not column_tz or not target_tz or column_tz == target_tz:
+        return None
+    return column_tz, target_tz
+
+
 def _apply_role_timezone(raw_expr: Any, role: Any, config: PackageConfig) -> Any:
     """Wrap a temporal role's raw column expression with a timezone conversion
     when the role's ``column_timezone`` is set and differs from ``timezone``.
 
     The wrap is applied to ``raw_expr`` before any ``date_trunc`` and before
     use in WHERE filter comparisons, so truncation and filtering happen in
-    the target zone.
+    the target zone. A DATE clock enters through the dialect's
+    ``naive_date_clock``. A path that reads a role's raw column without this
+    wrap calls ``_refuse_converted_role`` first.
     """
-    column_tz = str(getattr(role, "column_timezone", "") or "").strip()
-    target_tz = str(getattr(role, "timezone", "") or "").strip()
-    if not column_tz or not target_tz or column_tz == target_tz:
+    zones = _role_conversion(role)
+    if zones is None:
         return raw_expr
-    return _dialect(config).convert_timezone(column_tz, target_tz, raw_expr)
+    dialect = _dialect(config)
+    if _dimension_index(config)[role.dimension].data_type == "date":
+        raw_expr = dialect.naive_date_clock(raw_expr)
+    return dialect.convert_timezone(*zones, raw_expr)
+
+
+_CONVERTED_ROLE_PATHS = {
+    "entity_only_predicate_window": "Entity-only predicate time windows",
+    "predicate_period_join": "Metric predicates joined on the query's time period",
+    "conversion_metric": "Conversion metrics",
+}
+
+
+def _refuse_converted_role(role: Any, path: str) -> None:
+    """Refuse a path that reads ``role``'s raw stored column when the role converts.
+
+    Such a path would compare or bucket stored values against role-local ones.
+    """
+    zones = _role_conversion(role)
+    if zones is None:
+        return
+    column_tz, target_tz = zones
+    raise SemanticLayerError(
+        "WINDOWED_TIME_FILTER_UNSUPPORTED",
+        f"{_CONVERTED_ROLE_PATHS[path]} do not support timezone conversion for temporal "
+        f"role '{role.id}' ({column_tz} to {target_tz}); use an unconverted role.",
+        details={
+            "temporal_role": role.id,
+            "column_timezone": column_tz,
+            "timezone": target_tz,
+            "path": path,
+        },
+    )
 
 
 def _metric_filter_alias(index: int) -> str:
@@ -922,9 +964,9 @@ def _time_alias_for_plan(plan: LogicalPlan) -> str:
 
 def _measure_time_components(
     plan: LogicalPlan, measure_plan: MeasurePlan, config: PackageConfig
-) -> tuple[Any | None, Any | None, str, bool]:
+) -> tuple[Any | None, Any | None, str, bool, str]:
     if not plan.time:
-        return None, None, "", True
+        return None, None, "", True, ""
     entities = _entity_index(config)
     dimensions = _dimension_index(config)
     temporal_roles = _temporal_role_index(config)
@@ -948,7 +990,7 @@ def _measure_time_components(
     )
     raw_expr = _apply_role_timezone(raw_expr, role, config)
     time_expr = _time_bucket_expr(plan.time, raw_expr, config)
-    return raw_expr, time_expr, _time_alias_for_plan(plan), time_source_local
+    return raw_expr, time_expr, _time_alias_for_plan(plan), time_source_local, leaf_time_role
 
 
 def _matching_measure_plan(
@@ -1024,7 +1066,7 @@ def _anchored_entity_set_plan(
     if not safe_anchor_shape:
         return None
 
-    raw_time_expr, _, _, time_source_local = _measure_time_components(
+    raw_time_expr, _, _, time_source_local, _ = _measure_time_components(
         plan, denominator_plan, config
     )
     if plan.time and (raw_time_expr is None or not time_source_local):
@@ -1140,11 +1182,9 @@ def _aggregate_relation_leaf_select(
     for item in refuse_child_groups(plan.query.get("where"), "on a rollup"):
         where_clauses.append(_aggregate_relation_filter_expr(aggregate, dict(item)))
     if raw_time_expr is not None and plan.time:
-        time = dict(plan.time)
-        if time.get("start") is not None:
-            where_clauses.append(SqlBinary(raw_time_expr, ">=", SqlLiteral(time["start"])))
-        if time.get("end") is not None:
-            where_clauses.append(SqlBinary(raw_time_expr, "<", SqlLiteral(time["end"])))
+        where_clauses.extend(
+            _source_time_window(raw_time_expr, plan.time, config, role_id=aggregate.temporal_role)
+        )
 
     for measure_plan in measure_plans:
         measure_id = measure_plan.bound_measure.measure_id
@@ -2054,10 +2094,7 @@ def _entity_in_terms_of_leaf_select(
         )
         select_fields.append(SqlField(time_expr, time_alias))
         group_fields.append(time_expr)
-        if time.get("start") is not None:
-            where_clauses.append(SqlBinary(raw_expr, ">=", SqlLiteral(time["start"])))
-        if time.get("end") is not None:
-            where_clauses.append(SqlBinary(raw_expr, "<", SqlLiteral(time["end"])))
+        where_clauses.extend(_source_time_window(raw_expr, time, config, role_id=role.id))
     for item in refuse_child_groups(plan.query.get("where"), "in a child-grain count"):
         expr, _ = _direct_dimension_source_expr(
             anchor_entity, str(item["field"]), config
@@ -2732,11 +2769,9 @@ def _measure_leaf_select(
         target.append(_value_filter_condition(expr, item))
     untimed = list(where_clauses)
     if plan.time:
-        time = dict(plan.time)
-        if time.get("start") is not None:
-            where_clauses.append(SqlBinary(raw_expr, ">=", SqlLiteral(time["start"])))
-        if time.get("end") is not None:
-            where_clauses.append(SqlBinary(raw_expr, "<", SqlLiteral(time["end"])))
+        where_clauses.extend(
+            _source_time_window(raw_expr, plan.time, config, role_id=leaf_time_role)
+        )
     where_clauses.extend(predicate_row_conditions)
 
     order_expr = None
@@ -2973,15 +3008,15 @@ def _snapshot_select_fields(
     plan: LogicalPlan,
     anchored: AnchoredEntitySetPlan,
     config: PackageConfig,
-) -> tuple[list[SqlField], list[Any], Any, Any, str, list[str]]:
+) -> tuple[list[SqlField], list[Any], Any, Any, str, list[str], str]:
     entities = _entity_index(config)
     dimensions = _dimension_index(config)
     temporal_roles = _temporal_role_index(config)
     measure_plan = anchored.denominator_measure_plan
     measure = _measure_index(config)[measure_plan.bound_measure.measure_id]
     source_table = _measure_owned_relation(measure, entities)
-    raw_time_expr, time_expr, time_alias, time_source_local = _measure_time_components(
-        plan, measure_plan, config
+    raw_time_expr, time_expr, time_alias, time_source_local, leaf_time_role = (
+        _measure_time_components(plan, measure_plan, config)
     )
     if plan.time and (raw_time_expr is None or time_expr is None or not time_source_local):
         raise SemanticLayerError(
@@ -3035,7 +3070,15 @@ def _snapshot_select_fields(
         *([time_alias] if time_alias else []),
         *[f"__row_key_{_slug(column)}" for column in row_grain_columns],
     ]
-    return fields, partition_exprs, order_expr, raw_time_expr, time_alias, partition_aliases
+    return (
+        fields,
+        partition_exprs,
+        order_expr,
+        raw_time_expr,
+        time_alias,
+        partition_aliases,
+        leaf_time_role,
+    )
 
 
 def _anchored_snapshot_ctes(
@@ -3046,9 +3089,15 @@ def _anchored_snapshot_ctes(
     entities = _entity_index(config)
     measure = _measure_index(config)[anchored.denominator_measure_plan.bound_measure.measure_id]
     source_table = _measure_owned_relation(measure, entities)
-    fields, partition_exprs, order_expr, raw_time_expr, time_alias, partition_aliases = (
-        _snapshot_select_fields(plan, anchored, config)
-    )
+    (
+        fields,
+        partition_exprs,
+        order_expr,
+        raw_time_expr,
+        time_alias,
+        partition_aliases,
+        leaf_time_role,
+    ) = _snapshot_select_fields(plan, anchored, config)
     where_clauses: list[Any] = []
     source_filters = _source_local_filter_conditions(
         measure.entity,
@@ -3063,10 +3112,9 @@ def _anchored_snapshot_ctes(
     where_clauses.extend(source_filters or [])
     where_clauses.extend(bound_filters or [])
     if plan.time and raw_time_expr is not None:
-        if plan.time.get("start") is not None:
-            where_clauses.append(SqlBinary(raw_time_expr, ">=", SqlLiteral(plan.time["start"])))
-        if plan.time.get("end") is not None:
-            where_clauses.append(SqlBinary(raw_time_expr, "<", SqlLiteral(plan.time["end"])))
+        where_clauses.extend(
+            _source_time_window(raw_time_expr, plan.time, config, role_id=leaf_time_role)
+        )
 
     snapshot_name = f"latest_{_slug(_last_token(measure.entity).replace('entity_', ''), fallback='entity')}_snapshot"
     window_choice = anchored.denominator_measure_plan.bound_measure.aggregation
@@ -3424,10 +3472,7 @@ def _distinct_value_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelec
         dim = dimensions[role.dimension]
         raw_expr = _column_ref(entities[dim.entity].table, dim.column)
         raw_expr = _apply_role_timezone(raw_expr, role, config)
-        if time.get("start") is not None:
-            where_clauses.append(SqlBinary(raw_expr, ">=", SqlLiteral(time["start"])))
-        if time.get("end") is not None:
-            where_clauses.append(SqlBinary(raw_expr, "<", SqlLiteral(time["end"])))
+        where_clauses.extend(_source_time_window(raw_expr, time, config))
 
     joins = list(
         _joins_for_paths(
@@ -4663,11 +4708,9 @@ def _measure_group_leaf_select(
         where_clauses.append(_value_filter_condition(expr, item))
     untimed = list(where_clauses)
     if plan.time:
-        time = dict(plan.time)
-        if time.get("start") is not None:
-            where_clauses.append(SqlBinary(raw_expr, ">=", SqlLiteral(time["start"])))
-        if time.get("end") is not None:
-            where_clauses.append(SqlBinary(raw_expr, "<", SqlLiteral(time["end"])))
+        where_clauses.extend(
+            _source_time_window(raw_expr, plan.time, config, role_id=leaf_time_role)
+        )
 
     for measure_plan in measure_plans:
         measure = measures[measure_plan.bound_measure.measure_id]
@@ -5100,7 +5143,7 @@ def _whole_day_window(day: Any, time: dict[str, Any], config: PackageConfig) -> 
     role = _temporal_role_index(config).get(str(time.get("temporal_role") or ""))
     zone_name = str(getattr(role, "timezone", "UTC") or "UTC")
     zone = UTC if zone_name == "UTC" else ZoneInfo(zone_name)
-    moments = {key: _calendar_bound(time[key]) for key in ("start", "end")}
+    moments = {key: _calendar_bound(time.get(key)) for key in ("start", "end")}
     start, end = moments["start"], moments["end"]
     if (
         start is not None
@@ -5110,7 +5153,9 @@ def _whole_day_window(day: Any, time: dict[str, Any], config: PackageConfig) -> 
         return [SqlBinary(SqlLiteral(1), "=", SqlLiteral(0))]
     bounds = []
     for key, operator in (("start", ">="), ("end", "<")):
-        value = time[key]
+        value = time.get(key)
+        if value is None:
+            continue
         moment = moments[key]
         if moment is not None and len(str(value).strip()) > 10:
             ordinal, after_midnight = _calendar_day(moment, value, zone)
@@ -5124,6 +5169,42 @@ def _whole_day_window(day: Any, time: dict[str, Any], config: PackageConfig) -> 
             value = day_value.date().isoformat()
         bounds.append(SqlBinary(day, operator, SqlLiteral(value)))
     return bounds
+
+
+def _source_time_window(
+    column: Any, time: dict[str, Any], config: PackageConfig, *, role_id: str = ""
+) -> list[Any]:
+    """Every source scan uses the clock's day rule, also used by the calendar spine."""
+    role_id = role_id or str(time.get("temporal_role") or "")
+    role = _temporal_role_index(config).get(role_id)
+    if role is None:
+        raise SemanticLayerError("INVALID_TEMPORAL_ROLE", f"Unknown temporal role '{role_id}'")
+    dimension = _dimension_index(config)[role.dimension]
+    if dimension.data_type == "date":
+        for key in ("start", "end"):
+            if time.get(key) is not None and _calendar_bound(time[key]) is None:
+                raise SemanticLayerError(
+                    "INVALID_QUERY",
+                    f"time.{key} must be an ISO date or timestamp for a DATE clock",
+                    details={"path": f"time.{key}"},
+                )
+        # A converted DATE is a timestamp; compare its role-local day. Logical
+        # field identifiers remain intact for _predicate_window_filters.
+        column_tz = str(role.column_timezone or "").strip()
+        target_tz = str(role.timezone or "").strip()
+        if (
+            column_tz
+            and target_tz
+            and column_tz != target_tz
+            and column != SqlIdentifier(parts=[role.dimension])
+        ):
+            column = SqlCast(column, "DATE")
+        return _whole_day_window(column, {**time, "temporal_role": role_id}, config)
+    return [
+        SqlBinary(column, operator, SqlLiteral(time[key]))
+        for key, operator in (("start", ">="), ("end", "<"))
+        if time.get(key) is not None
+    ]
 
 
 def _bounded_calendar_window(

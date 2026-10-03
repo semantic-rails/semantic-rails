@@ -39,6 +39,7 @@ from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import package_release_labels
 from .renderer import _quote_ident
 from .result_values import result_rows
+from .route_census import route_change_lines, route_changes
 from .runtime import Runtime, _time_zone
 from .runtime_parts.responses import output_columns
 from .yaml_loader import safe_load as yaml_safe_load
@@ -777,6 +778,7 @@ def check_package_report(
         if (compare_path or base_ref) and parse_report["ok"]
         else {
             "changes": [],
+            "route_changes": [],
             "impact": {
                 "impacted_metrics": [],
                 "reviewer_teams": [],
@@ -903,6 +905,19 @@ def diff_package_report(
     base_ref: str = "",
     snapshot: LoadedPackageSnapshot | None = None,
 ) -> dict[str, Any]:
+    return _diff_against_baseline(
+        ref, compare_path=compare_path, base_ref=base_ref, snapshot=snapshot
+    )[0]
+
+
+def _diff_against_baseline(
+    ref: PackageReference,
+    *,
+    compare_path: str,
+    base_ref: str,
+    snapshot: LoadedPackageSnapshot | None,
+) -> tuple[dict[str, Any], LoadedPackageSnapshot]:
+    """The diff report, and the baseline package it compares against."""
     snapshot = snapshot or load_package_snapshot(ref.source_path)
     current_config = snapshot.config
     current_snapshot = _package_snapshot(snapshot)
@@ -914,7 +929,7 @@ def diff_package_report(
         previous = load_package_snapshot(other_path)
         previous_snapshot = _package_snapshot(previous)
     diff = _diff_snapshots(previous_snapshot, current_snapshot)
-    return {
+    report = {
         "ok": True,
         "package": {"id": current_config.package.package_id, "source_path": ref.source_path},
         "comparison": {
@@ -926,6 +941,7 @@ def diff_package_report(
         "package_hash": snapshot.source_fingerprint,
         **diff,
     }
+    return report, previous
 
 
 def impact_report(
@@ -935,9 +951,15 @@ def impact_report(
     base_ref: str = "",
     snapshot: LoadedPackageSnapshot | None = None,
 ) -> dict[str, Any]:
+    """The diff plus its review impact. ``route_changes`` lists every entity pair a question
+    can need (``route_census``) that the package change resolves differently, ignoring query
+    overrides and suggesting no recovery rows; any entry makes the risk high."""
     snapshot = snapshot or load_package_snapshot(ref.source_path)
-    diff = diff_package_report(ref, compare_path=compare_path, base_ref=base_ref, snapshot=snapshot)
+    diff, previous = _diff_against_baseline(
+        ref, compare_path=compare_path, base_ref=base_ref, snapshot=snapshot
+    )
     current_config = snapshot.config
+    routes = route_changes(previous.config, current_config)
     impacted_metrics = _impacted_metric_ids(current_config, diff["changes"])
     reviewer_teams = sorted(
         {
@@ -949,19 +971,23 @@ def impact_report(
             if str(meta.get("owner_team", "") or "").strip()
         }
     )
-    risk = "high" if any(change["behavior_change"] for change in diff["changes"]) else "low"
+    behavior_changes = sum(1 for change in diff["changes"] if change["behavior_change"])
+    risk = "high" if behavior_changes or routes else "low"
     return {
         **diff,
+        "route_changes": routes,
         "impact": {
             "impacted_metrics": impacted_metrics,
             "reviewer_teams": reviewer_teams,
             "risk": risk,
-            "changed_behavior_count": sum(
-                1 for change in diff["changes"] if change["behavior_change"]
-            ),
+            "changed_behavior_count": behavior_changes + len(routes),
         },
         "markdown_summary": _impact_markdown(
-            diff["changes"], impacted_metrics, reviewer_teams, risk
+            diff["changes"],
+            impacted_metrics,
+            reviewer_teams,
+            risk,
+            route_change_lines(previous.config, current_config, routes),
         ),
     }
 
@@ -986,6 +1012,7 @@ def promote_package_report(
         if (compare_path or base_ref)
         else {
             "changes": [],
+            "route_changes": [],
             "impact": {
                 "impacted_metrics": [],
                 "reviewer_teams": [],
@@ -1020,6 +1047,12 @@ def promote_package_report(
         "release_labels": package_release_labels(config),
         "promotion_checks": checks,
         "blockers": blockers,
+        # Never a blocker: an undecided route refuses only the queries that need it.
+        "advisories": [
+            dict(warning)
+            for warning in parse_report["warnings"]
+            if warning.get("code") == "ROUTES_UNDECIDED"
+        ],
         "artifacts": {
             "parse": parse_report,
             "validate": validate_report,
@@ -1337,7 +1370,11 @@ def _impacted_metric_ids(config, changes: list[dict[str, Any]]) -> list[str]:
 
 
 def _impact_markdown(
-    changes: list[dict[str, Any]], impacted_metrics: list[str], reviewer_teams: list[str], risk: str
+    changes: list[dict[str, Any]],
+    impacted_metrics: list[str],
+    reviewer_teams: list[str],
+    risk: str,
+    route_lines: list[str],
 ) -> str:
     lines = [
         "# Semantic Impact Report",
@@ -1353,6 +1390,8 @@ def _impact_markdown(
         lines.append(
             f"- `{change['change_type']}` `{change['kind']}` `{change['object_id']}` fields={', '.join(change['changed_fields'])}"
         )
+    if route_lines:
+        lines.extend(["", "## Route Changes", *route_lines])
     if impacted_metrics:
         lines.extend(["", "## Impacted Metrics"])
         lines.extend([f"- `{metric_id}`" for metric_id in impacted_metrics[:20]])

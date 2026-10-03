@@ -100,6 +100,8 @@ def semantic_issue(
 ) -> dict[str, Any]:
     detail_payload = dict(details or {})
     hint_payloads = list(recovery_hints or [])
+    if detail_payload.get("recovery_hints") == hint_payloads:
+        detail_payload.pop("recovery_hints")
     closest_valid_query = dict(detail_payload.get("closest_valid_query", {}) or {})
     if not closest_valid_query:
         for hint in hint_payloads:

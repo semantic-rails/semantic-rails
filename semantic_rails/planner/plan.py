@@ -755,7 +755,9 @@ def _merge_partial_query(
     additive list fields we append generated entries after existing
     caller entries. For scalar/dict fields the caller wins, with ``time``
     merged shallowly so generated temporal roles can still fill missing
-    fields.
+    fields. The question's values on one field form one generated filter
+    for one total or combined ranking, without adding grouping. Caller
+    rows stay as written, with only string predicate fields stripped.
     """
 
     partial = dict(partial_query or {})
@@ -771,6 +773,13 @@ def _merge_partial_query(
     for key, value in partial.items():
         if value in (None, "", [], {}):
             continue
+        if key == "where":
+            value = [
+                {**row, "field": row["field"].strip()}
+                if isinstance(row, dict) and isinstance(row.get("field"), str)
+                else row
+                for row in list(value or [])
+            ]
         if key in {"select", "where", "metric_filters", "order_by"}:
             merged[key] = _append_unique_dicts(list(value or []), list(merged.get(key, []) or []))
         elif key == "group_by":

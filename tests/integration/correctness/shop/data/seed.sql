@@ -24,6 +24,13 @@ INSERT INTO orders VALUES
 ALTER TABLE orders ADD COLUMN ordered_at_tz TIMESTAMP WITH TIME ZONE;
 UPDATE orders SET ordered_at_tz = ordered_at AT TIME ZONE 'UTC';
 
+-- DATE and timestamp clocks straddle different window edges; converted dates
+-- read as June 30 and July 1 in New York.
+CREATE TABLE clock_edges (id INTEGER, source_day DATE, source_time TIMESTAMP, amount INTEGER);
+INSERT INTO clock_edges VALUES
+  (1, DATE '2024-07-01', TIMESTAMP '2024-07-01 13:00:00', 10),
+  (2, DATE '2024-07-02', TIMESTAMP '2024-07-02 01:00:00', 20);
+
 -- Three closed orders take 2, 5 and 1 calendar days. Every other endpoint is NULL.
 -- Order 3 closes less than 24 hours later but crosses a day boundary.
 ALTER TABLE orders ADD COLUMN closed_at TIMESTAMP;

@@ -17,6 +17,8 @@ from typing import Any
 from .ast import every_filter, normalize_query, plain_filters
 from .compiler import BoundQuery, bind_query
 from .errors import SemanticLayerError
+from .policy_rules import policy_action as _policy_action
+from .policy_rules import policy_config as _policy_config
 from .request_context import context_from_policy_context
 from .row_filters import RowFilter, is_row_filter, row_filter
 from .schema import PackageConfig, SemanticPolicyConfig
@@ -186,7 +188,9 @@ def row_filters_for_context(
     context = context_from_policy_context(policy_context)
     filters = []
     for policy in config.semantic_policies:
-        if not is_row_filter(policy):
+        row_policy = is_row_filter(policy)
+        _policy_action(policy)  # guard direct configs before binding or cache lookup
+        if not row_policy:
             continue
         row = row_filter(config, policy)  # checked first: an unenforceable one is never skipped
         if _policy_matches(
@@ -246,36 +250,6 @@ def _policy_matches(
     if not context_scope_matches(policy.audiences, audience):
         return False
     return role_scope_matches(policy.roles, roles)
-
-
-def _policy_action(policy: SemanticPolicyConfig) -> str:
-    policy_config = _policy_config(policy)
-    action = (
-        str(policy.action or policy_config.get("action", "") or policy_config.get("visibility", ""))
-        .strip()
-        .lower()
-    )
-    if policy.kind == "object_visibility" and action in {"hidden", "visible"}:
-        return action
-    if policy.kind == "object_access" and action in {"deny", "redact"}:
-        return action
-    if policy.kind == "protected_object":
-        return "protected"
-    if policy.kind == "package_release":
-        return "label"
-    if policy.kind == "metric_constraint":
-        return "constrain"
-    return action
-
-
-def _policy_config(policy: SemanticPolicyConfig) -> dict[str, Any]:
-    """Return top-level policy config with legacy nested ``config:`` flattened."""
-    out: dict[str, Any] = {}
-    nested = policy.config.get("config") if isinstance(policy.config, dict) else None
-    if isinstance(nested, Mapping):
-        out.update(dict(nested))
-    out.update({key: value for key, value in dict(policy.config or {}).items() if key != "config"})
-    return out
 
 
 def _policy_rationale(policy: SemanticPolicyConfig) -> str:

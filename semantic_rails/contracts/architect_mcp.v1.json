@@ -372,6 +372,20 @@
           "revision": {
             "type": "string"
           },
+          "route_changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "route_decisions_added": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
           "status": {
             "type": "string"
           },
@@ -699,6 +713,20 @@
           },
           "revision": {
             "type": "string"
+          },
+          "route_changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "route_decisions_added": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
           },
           "status": {
             "type": "string"
@@ -1028,6 +1056,20 @@
           "revision": {
             "type": "string"
           },
+          "route_changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "route_decisions_added": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
           "status": {
             "type": "string"
           },
@@ -1277,6 +1319,20 @@
           "revision": {
             "type": "string"
           },
+          "route_changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "route_decisions_added": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
           "status": {
             "type": "string"
           },
@@ -1525,6 +1581,20 @@
           },
           "revision": {
             "type": "string"
+          },
+          "route_changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "route_decisions_added": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
           },
           "status": {
             "type": "string"
@@ -1777,6 +1847,20 @@
           "revision": {
             "type": "string"
           },
+          "route_changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "route_decisions_added": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
           "status": {
             "type": "string"
           },
@@ -2024,6 +2108,20 @@
           "revision": {
             "type": "string"
           },
+          "route_changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "route_decisions_added": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
           "status": {
             "type": "string"
           },
@@ -2267,6 +2365,20 @@
           "revision": {
             "type": "string"
           },
+          "route_changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "route_decisions_added": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
           "status": {
             "type": "string"
           },
@@ -2509,6 +2621,20 @@
           },
           "revision": {
             "type": "string"
+          },
+          "route_changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "route_decisions_added": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
           },
           "status": {
             "type": "string"
@@ -2793,6 +2919,20 @@
           "revision": {
             "type": "string"
           },
+          "route_changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "route_decisions_added": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
           "status": {
             "type": "string"
           },
@@ -3030,6 +3170,20 @@
           },
           "revision": {
             "type": "string"
+          },
+          "route_changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "route_decisions_added": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
           },
           "status": {
             "type": "string"
@@ -3485,6 +3639,20 @@
           },
           "revision": {
             "type": "string"
+          },
+          "route_changes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "route_decisions_added": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
           },
           "status": {
             "type": "string"

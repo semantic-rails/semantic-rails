@@ -28,6 +28,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from . import architect_introspection as introspection
 from . import dbt_artifacts
 from .architect_service import (
+    DECIDE_ROUTES_ACTION,
+    NEW_PROJECT_ROUTES_ACTION,
     ArchitectProject,
     FirstModel,
     ProjectSpec,
@@ -149,6 +151,8 @@ class ArchitectMutationResult(BaseModel):
     changed_files: list[str]
     changes: list[ArchitectFileChange]
     parse: dict[str, Any] | None = None
+    route_decisions_added: list[dict[str, Any]] = Field(default_factory=list)
+    route_changes: list[dict[str, Any]] = Field(default_factory=list)
     error: ArchitectMutationIssue | None = None
     errors: list[ArchitectMutationIssue] = Field(default_factory=list)
 
@@ -449,6 +453,7 @@ def _setup_dialog(package_id: str = "", project_path: str = "", goal: str = "") 
         "questions": questions,
         "recommended_next_tool": "create_project",
         "draft_arguments": _draft_arguments(package_slug, project_path, defaults),
+        "next_actions": [NEW_PROJECT_ROUTES_ACTION],
     }
 
 
@@ -852,6 +857,7 @@ def create_architect_mcp_server(
             "mode": "elicitation",
             "recommended_next_tool": "create_project",
             "draft_arguments": draft,
+            "next_actions": [NEW_PROJECT_ROUTES_ACTION],
         }
 
     @mcp.tool(
@@ -943,6 +949,8 @@ def create_architect_mcp_server(
         try:
             project = _resolve_project_path(project_path, workspace_root=root)
             parse = _parse_report(project)
+            census = parse.pop("route_census", None)
+            undecided = len(census["undecided"]) if census else 0
             out: dict[str, Any] = {
                 "ok": bool(parse.get("ok")),
                 "project_path": str(project),
@@ -950,9 +958,18 @@ def create_architect_mcp_server(
                 "revision": project_revision(project),
                 "files": _project_files(project),
                 "parse": parse,
+                "route_census": census,
                 "next_actions": ["Fix parse errors first."]
                 if not parse.get("ok")
                 else [
+                    *(
+                        [
+                            f"Decide the {undecided} undecided join routes in "
+                            f"route_census.undecided. {DECIDE_ROUTES_ACTION}"
+                        ]
+                        if undecided
+                        else []
+                    ),
                     "Run validate_project with mode=runtime before release.",
                     "For release review, run impact_project with compare_path or base_ref.",
                 ],
