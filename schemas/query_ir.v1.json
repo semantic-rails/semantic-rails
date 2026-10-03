@@ -57,6 +57,11 @@
       "description": "This query's own route between two entities, one row per (source_entity, target_entity) pair, shaped like a graph.path_preferences row: the decision of the AMBIGUOUS_PATH clarification option the person chose. It applies to this query only, before the package's row for the same pair, and is not a default. A row the package rejects, two rows for one pair, or a row for a pair the query never walks is INVALID_QUERY; under a row filter on any entity of the pair's routes it is POLICY_DENIED. Each applied row is disclosed as a ROUTE_CHOSEN_BY_QUERY warning.",
       "items": { "$ref": "#/$defs/RouteDecision" }
     },
+    "observation_scope": {
+      "type": "string",
+      "enum": ["dataset", "query"],
+      "description": "Where a sum or count is judged to have data, so that a group with no rows reads 0 rather than NULL. 'dataset' (the default, or the package's defaults.observation_scope): the measure has a row anywhere the caller can read, after its own authored conditions, whatever this query's where filters and time window keep; a string = or IN where value that matches no row gets a FILTER_VALUE_NOT_FOUND warning. 'query': only inside this query's where filters, so a filter that matches nothing reads NULL with NO_DATA_IN_SCOPE."
+    },
     "policy_context": { "$ref": "#/$defs/PolicyContext" },
     "limits": { "$ref": "#/$defs/Limits" },
     "verbosity": {

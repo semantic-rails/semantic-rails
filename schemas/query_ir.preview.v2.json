@@ -83,6 +83,14 @@
         "$ref": "#/$defs/RouteDecision"
       }
     },
+    "observation_scope": {
+      "type": "string",
+      "enum": [
+        "dataset",
+        "query"
+      ],
+      "description": "Where a sum or count is judged to have data, so that a group with no rows reads 0 rather than NULL. 'dataset' (the default, or the package's defaults.observation_scope): the measure has a row anywhere the caller can read, after its own authored conditions, whatever this query's where filters and time window keep; a string = or IN where value that matches no row gets a FILTER_VALUE_NOT_FOUND warning. 'query': only inside this query's where filters, so a filter that matches nothing reads NULL with NO_DATA_IN_SCOPE."
+    },
     "policy_context": {
       "$ref": "#/$defs/PolicyContext"
     },

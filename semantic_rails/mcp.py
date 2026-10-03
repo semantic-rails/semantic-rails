@@ -247,7 +247,7 @@ QUERY_SCHEMA: dict[str, Any] = {
                 "fill": {
                     "type": "boolean",
                     "default": False,
-                    "description": "Dense calendar spine for grain buckets (an empty bucket reads 0 where the measure has data in scope, else NULL). Requires grain; otherwise fails as INVALID_QUERY.",
+                    "description": "Dense calendar spine for grain buckets. Requires grain; otherwise fails as INVALID_QUERY.",
                 },
                 "calendar_id": {
                     "type": "string",
@@ -622,7 +622,8 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "{aggregation, measure} | {metric} | "
             "{kind: prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|arithmetic|...}\n"
             "ratio: per-order sum / order count.\n"
-            "arithmetic adds measures; aggregate_if: conditional count."
+            "arithmetic adds measures; aggregate_if: conditional count.\n"
+            "Empty groups: 0 if data exists (observation_scope=query: in filters)."
         ),
         input_schema=_schema(
             {
