@@ -65,6 +65,11 @@ Start here when changing query planning, path selection, fanout rules, rewrites,
 - SQL rendering: `semantic_rails/renderer.py`
 - Runtime execution and warehouse adapters: `semantic_rails/runtime.py` and `semantic_rails/db.py`
 
+A change to what a query returns cites or adds a canonical case in
+`tests/integration/correctness/shop/tests/answers.yml` and runs `make answers`.
+Each frozen answer cites its declaration and is checked against independent
+reference SQL; questions without a declared standard expect a clarification.
+
 ### Fixture and seed data
 
 Start here when changing real runnable demo data.
