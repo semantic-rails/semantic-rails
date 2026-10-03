@@ -2337,6 +2337,10 @@ def _validate_predicate_metric_clocks(
                 )
             validate(recipe.expression)
             return
+        if isinstance(expr, ConversionExpr):
+            # The period filters base events; converted events match each base event's window.
+            validate(expr.base)
+            return
         if is_dataclass(expr):
             for item in fields(expr):
                 value = getattr(expr, item.name)
