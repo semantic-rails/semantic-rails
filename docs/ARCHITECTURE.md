@@ -333,7 +333,9 @@ Runtime validate/compile/query and restricted resource grants enforce the same
 bound object set. Supporting metadata uses the same compiler ownership records
 for dimensions and roles. Temporal recipe metadata binds a valid default time
 invocation using the compiler-selected role and a supported grain; a missing
-caller time axis does not hide an otherwise valid granted metric. Actual queries
+caller time axis does not hide an otherwise valid granted metric. When all window
+leaves resolve to one clock, metadata uses that clock ahead of the advertised
+compatible list; otherwise it retains the advertised default. Actual queries
 always bind and authorize their own time context. Rendering reuses the authorized plan and SQL AST. Every request
 is authorized before consulting the compiled-result cache; policy contexts remain
 in cache keys. Segment preview and membership/count query preparations use the

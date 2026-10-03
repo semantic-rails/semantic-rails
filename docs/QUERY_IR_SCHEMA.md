@@ -26,7 +26,7 @@ and the comparison fixtures: see
 | `order_by` | `array` of `OrderBy` | Final-select ordering. Uses `{field, direction}` — not a select-style expression. |
 | `limit` | `integer` (or `null`) | Optional row cap. |
 | `time` | `TimeBlock` (or `null`) | Query-level time anchor: temporal_role + grain + bounds. `start` is inclusive, `end` is exclusive. |
-| `temporal_role_overrides` | `object<measure_id, temporal_role_id>` | Per-measure clock bindings. They do not apply inside a metric predicate input (they only choose or check its window clock); an input that reads an overridden measure through a conversion, a time window or a nested predicate refuses with `INVALID_TEMPORAL_BINDING` at every nesting depth. |
+| `temporal_role_overrides` | `object<measure_id, temporal_role_id>` | Per-measure clock bindings. They do not apply inside a metric predicate input (they only choose or check its window clock); an input that reads an overridden measure through a conversion, a time window or a nested predicate refuses with `INVALID_TEMPORAL_BINDING` at every nesting depth, including predicates in scoped aggregates and aggregate filters. Filter values remain data. |
 | `route_decisions` | `array` of `RouteDecision` | This query's own route for an entity pair: the `decision` of an `AMBIGUOUS_PATH` option. See [`route_decisions`](#route_decisions). |
 | `observation_scope` | `"dataset"\|"query"` | Whether a sum or count with no rows in a group reads 0 when its measure has data anywhere (`dataset`, the default) or only inside the query's filters (`query`). See "Empty groups" below. |
 | `policy_context` | `object` | Caller-supplied access context (`environment`, `audience`, `roles`, `now`, ...). |

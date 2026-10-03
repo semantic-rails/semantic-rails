@@ -12,6 +12,46 @@ tests:
     query:
       select: [{expression: {metric: metric.shop.closed_orders}, as: orders}]
       time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2023-11-01', end: '2023-12-01'}
+  shop/aggregate-filter-predicate-refuses-a-dropped-clock-override:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: INVALID_TEMPORAL_BINDING
+    why: A nested conversion predicate in an aggregate filter cannot silently drop the order-clock override.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    tags: [time-window, clock, refusal]
+    query:
+      select: [{expression: {measure: measure.shop.signup_count}, as: signups}]
+      time: {temporal_role: temporal_role.shop_customer_signed_up_at, start: '2023-11-01', end: '2023-12-01'}
+      temporal_role_overrides: {measure.shop.window_order_count: temporal_role.shop_order_ordered_at}
+      metric_filters:
+        - expression:
+            kind: metric_predicate
+            entity: entity.shop_customer
+            scope_mode: entity_only
+            time_alignment: query_window
+            input:
+              kind: aggregate
+              measure: measure.shop.signup_count
+              aggregation: count_distinct
+              filter:
+                all:
+                  - expression:
+                      kind: metric_predicate
+                      entity: entity.shop_customer
+                      scope_mode: entity_only
+                      input:
+                        kind: conversion
+                        entity: entity.shop_customer
+                        window: {unit: day, value: 7}
+                        matching_mode: first_converted_after_base
+                        base: {kind: aggregate, measure: measure.shop.signup_count}
+                        converted: {kind: aggregate, measure: measure.shop.window_order_count, temporal_role: temporal_role.shop_order_closed_at}
+                      op: '>'
+                      value: 0.5
+            op: '>='
+            value: 1
+          op: '='
+          value: true
   shop/pinned-output-on-its-bound-clock:
     kind: query_matches_snapshot
     expect: answer

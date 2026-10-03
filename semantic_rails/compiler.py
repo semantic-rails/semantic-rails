@@ -464,11 +464,19 @@ def _object_default_query_temporal_role(config: PackageConfig, object_id: str) -
         raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown semantic object '{object_id}'")
     if recipe.temporal_role:
         return recipe.temporal_role
-    if recipe.compatible_temporal_roles:
-        return recipe.compatible_temporal_roles[0]
     query = normalize_query(
         {"version": 1, "select": [{"expression": {"metric": object_id}, "as": recipe.label}]}
     )
+    leaf_roles = [
+        _expr_compatible_temporal_roles(leaf, config, query)
+        for leaf in _window_measure_exprs(recipe.expression, config)
+    ]
+    if leaf_roles and all(len(roles) == 1 for roles in leaf_roles):
+        bound_roles = set.union(*leaf_roles)
+        if len(bound_roles) == 1:
+            return next(iter(bound_roles))
+    if recipe.compatible_temporal_roles:
+        return recipe.compatible_temporal_roles[0]
     compatible = sorted(_expr_compatible_temporal_roles(recipe.expression, config, query))
     return compatible[0] if compatible else ""
 
@@ -846,10 +854,6 @@ def _measures_inside(
         return found | (
             _measures_inside(recipe.expression, kinds, config, inside) if recipe else set()
         )
-    if isinstance(expr, ScopedAggregateExpr):
-        for predicate in expr.predicates:
-            child = _parse_public_expr(_scoped_predicate_expr_payload(predicate))
-            found |= _measures_inside(child, kinds, config, inside)
     if is_dataclass(expr):
         for item in fields(expr):
             value = getattr(expr, item.name)
@@ -2341,9 +2345,45 @@ def _refuse_overridden_predicate_input(
     overridden measure on its own clock, and the input refuses. A pinned leaf refuses too when
     overridden, though its pin would win: conservative, and never a wrong number.
     """
-    overridden = set(query.temporal_role_overrides) & _measures_inside(
-        predicate.input, (*_LOOKUP_TIME_EXPRS, MetricPredicateExpr), config
-    )
+    if not query.temporal_role_overrides:
+        return
+
+    def filter_expressions(spec: Any) -> Iterable[SemanticExpr]:
+        # Only expression clauses and boolean containers are expression positions.
+        # A field clause's value, even a reference-shaped mapping, stays data.
+        if isinstance(spec, list):
+            for clause in spec:
+                yield from filter_expressions(clause)
+        elif isinstance(spec, dict):
+            if isinstance(spec.get("expression"), dict):
+                yield _parse_public_expr(spec["expression"])
+            for key in ("all", "any", "not"):
+                yield from filter_expressions(spec.get(key))
+
+    def input_measures(expr: Any, inside: bool = False) -> Iterable[str]:
+        inside = inside or isinstance(expr, (*_LOOKUP_TIME_EXPRS, MetricPredicateExpr))
+        if inside and isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
+            yield expr.measure
+        if isinstance(expr, MetricRecipeRefExpr):
+            recipe = _recipe_index(config).get(expr.metric_recipe)
+            if recipe is not None:
+                yield from input_measures(recipe.expression, inside)
+        elif isinstance(expr, ScopedAggregateExpr):
+            for raw in expr.predicates:
+                yield from input_measures(
+                    _parse_public_expr(_scoped_predicate_expr_payload(raw)), inside
+                )
+        elif isinstance(expr, AggregateExpr):
+            for child in filter_expressions(expr.filter):
+                yield from input_measures(child, inside)
+        if is_dataclass(expr):
+            for item in fields(expr):
+                value = getattr(expr, item.name)
+                for child in value if isinstance(value, list) else [value]:
+                    if is_dataclass(child):
+                        yield from input_measures(child, inside)
+
+    overridden = set(query.temporal_role_overrides) & set(input_measures(predicate.input))
     if not overridden:
         return
     measures = sorted(overridden)

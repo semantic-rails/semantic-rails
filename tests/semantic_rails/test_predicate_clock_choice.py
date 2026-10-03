@@ -7,10 +7,22 @@ import duckdb
 import pytest
 import yaml
 
-from semantic_rails.compiler import _compile_query_sql_ast, compile_query, lower_to_sql, plan_query
+from semantic_rails.ast import normalize_query
+from semantic_rails.compiler import (
+    _compile_query_sql_ast,
+    _object_default_query_temporal_role,
+    _refuse_overridden_predicate_input,
+    bind_metadata_objects,
+    compile_query,
+    lower_to_sql,
+    plan_query,
+)
 from semantic_rails.compiler_parts import sql_lowering
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.expressions import AggregateExpr, parse_semantic_expression
+from semantic_rails.request_context import RequestContext
+from semantic_rails.resource_access import ResourceAccess
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
 
@@ -892,3 +904,143 @@ def test_nested_scoped_predicate_still_refuses_an_ambiguous_window_clock(warehou
         compile_query(config, None, query)
     assert raised.value.code == "INVALID_TEMPORAL_BINDING"
     assert raised.value.details["compatible"] == [ORDERED, SHIPPED]
+
+
+NESTED_AGGREGATES = [
+    ("aggregate",),
+    ("aggregate", "aggregate"),
+    ("aggregate", "scoped_aggregate"),
+    ("scoped_aggregate", "aggregate"),
+    ("aggregate", "scoped_aggregate", "aggregate"),
+]
+
+
+def _aggregate_nested_query(nesting, override):
+    query = _nested_query("query_window", override=override)
+    outer = query["metric_filters"][0]["expression"]
+    predicate = outer["input"]["predicates"][0]
+    for kind in reversed(nesting):
+        aggregate = {
+            "kind": kind,
+            "measure": "measure.clocks.customers",
+            "aggregation": "count_distinct",
+        }
+        if kind == "aggregate":
+            aggregate["filter"] = {
+                "all": [{"expression": {"kind": "metric_predicate", **predicate}}]
+            }
+        else:
+            aggregate["predicates"] = [predicate]
+        predicate = {**predicate, "input": aggregate, "op": ">=", "value": 1}
+    outer["input"] = aggregate
+    return query
+
+
+@pytest.mark.parametrize("nesting", NESTED_AGGREGATES)
+@pytest.mark.parametrize("entrypoint", ["validate", "compile", "lower"])
+def test_aggregate_filter_predicates_refuse_an_override_their_input_would_drop(
+    warehouse, tmp_path, nesting, entrypoint
+):
+    config, conn = warehouse
+    assert _conversion_reference(conn, "ordered_at") == [(1, datetime(2025, 1, 5), 1)]
+    assert _conversion_reference(conn, "shipped_at") == [(2, datetime(2025, 1, 6), 1)]
+    query = _aggregate_nested_query(nesting, override=True)
+    if entrypoint == "lower":
+        plan = plan_query(config, None, _aggregate_nested_query(nesting, override=False))
+        with pytest.raises(SemanticLayerError) as raised:
+            lower_to_sql(replace(plan, query=query), config)
+        _assert_override_refusal(raised.value)
+        return
+    runtime = _runtime(tmp_path, conn)
+    try:
+        if entrypoint == "validate":
+            report = runtime.validate(query)
+            assert not report["ok"], report
+            assert report["errors"][0]["code"] == "INVALID_TEMPORAL_BINDING"
+            assert report["errors"][0]["details"]["measures"] == ["measure.clocks.orders"]
+        else:
+            with pytest.raises(SemanticLayerError) as raised:
+                runtime.compile(query)
+            _assert_override_refusal(raised.value)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("nesting", NESTED_AGGREGATES)
+def test_aggregate_filter_predicates_without_override_keep_the_reference_answer(warehouse, nesting):
+    config, conn = warehouse
+    query = _aggregate_nested_query(nesting, override=False)
+    assert conn.execute(compile_query(config, None, query)["sql"]).fetchall() == (
+        _conversion_reference(conn, "shipped_at")
+    )
+
+
+@pytest.mark.parametrize("connective", ["all", "any", "not", "mixed"])
+def test_typed_predicate_guard_walks_only_filter_expression_positions(warehouse, connective):
+    config, _conn = warehouse
+    query = _nested_query("query_window", override=True)
+    outer = query["metric_filters"][0]["expression"]
+    inner = {"kind": "metric_predicate", **outer["input"]["predicates"][0]}
+    clause = {"expression": inner}
+    filter_spec = (
+        {"all": [{"not": {"any": [clause]}}]}
+        if connective == "mixed"
+        else {connective: clause if connective == "not" else [clause]}
+    )
+    # Public parsing still refuses unsupported connectives. A typed input must
+    # not let those expression positions bypass the temporal override guard.
+    predicate = parse_semantic_expression(outer, context="query")
+    predicate = replace(
+        predicate,
+        input=AggregateExpr(measure="measure.clocks.customers", filter=filter_spec),
+    )
+    with pytest.raises(SemanticLayerError) as raised:
+        _refuse_overridden_predicate_input(predicate, normalize_query(query), config)
+    _assert_override_refusal(raised.value)
+    data_filter = {
+        "all": [{"field": "dimension.clocks_customer_customer_id", "value": filter_spec}]
+    }
+    predicate = replace(predicate, input=replace(predicate.input, filter=data_filter))
+    _refuse_overridden_predicate_input(predicate, normalize_query(query), config)
+
+
+@pytest.mark.parametrize("entrypoint", ["binding", "metadata"])
+def test_pinned_rolling_metric_metadata_uses_its_second_advertised_clock(entrypoint):
+    config = load_package_config("tests/integration/correctness/shop")
+    metric_id = "metric.shop.closed_orders"
+    recipe = next(recipe for recipe in config.metric_recipes if recipe.id == metric_id)
+    config.metric_recipes[:] = [
+        replace(
+            recipe,
+            expression=parse_semantic_expression(
+                {
+                    "kind": "rolling",
+                    "input": {
+                        "measure": "measure.shop.window_order_count",
+                        "temporal_role": "temporal_role.shop_order_closed_at",
+                    },
+                    "window": {"unit": "day", "value": 7},
+                },
+                context="query",
+            ),
+        )
+        if item.id == metric_id
+        else item
+        for item in config.metric_recipes
+    ]
+    if entrypoint == "binding":
+        references = bind_metadata_objects(config, [metric_id])
+        assert {
+            metric_id,
+            "measure.shop.window_order_count",
+            "temporal_role.shop_order_closed_at",
+        } <= references
+    else:
+        access = ResourceAccess(config, RequestContext(metric_allowlist=(metric_id,)))
+        assert metric_id in {row["id"] for row in access.visible_rows()}
+
+
+@pytest.mark.parametrize("metric", ["mixed_sum", "unpinned_orders"])
+def test_metadata_clock_keeps_advertised_default_without_one_common_leaf_clock(warehouse, metric):
+    config, _conn = warehouse
+    assert _object_default_query_temporal_role(config, f"metric.clocks.{metric}") == ORDERED
