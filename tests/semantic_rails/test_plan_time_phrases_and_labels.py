@@ -264,7 +264,8 @@ def test_a_number_or_time_word_that_is_not_an_hour_is_never_read_as_one(
     assert why.get("code") != "TIME_WINDOW_UNRESOLVED", why
     unknown = {
         "average delivery time by month": ["delivery"],
-        "orders in 2017 for the west region": ["west"],
+        # The intent parse records "region" as "geo", which nothing resolves.
+        "orders in 2017 for the west region": ["west", "region"],
         "orders by day in Central": ["central"],
         "orders on 15 March 2017 local time": ["local"],
     }
