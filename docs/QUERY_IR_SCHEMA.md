@@ -108,6 +108,19 @@ ignored).
   `details.replaced`, how the package resolves the pair without it (`decided`:
   its own row; `colocated_key`: the start's own key; `inherited`: rows for pairs
   its routes walk through; `only_route`; `undecided`: the package refuses it).
+  Only an `undecided` pair gets `details.meaning` and
+  `details.route_alternatives`, using the package's own refusal options when they
+  include the chosen route. Alternatives are at most three ready decision rows;
+  each row's `label` is its meaning. Routes through hidden entities or
+  relationships are excluded under the query's policy context, including from
+  messages and counts. Unknown visibility under an `object_visibility` policy
+  withholds alternatives. `details.more_alternatives` counts any remaining
+  visible alternatives; validating the query without `route_decisions` returns
+  every clarification option without a warehouse query. State the meaning used
+  and offer the listed rows as one-step switches: resend the query with an
+  alternative row in `route_decisions`. No alternative is executed. The warning
+  mentions once that a reviewed package default using `details.row` would
+  remove the question; this advice is not repeated in `recovery_hints`.
   `hop_profile.targets[*].route_basis` is `query` for the pair.
 - `build-options` with a partial query that carries rows shows the dimensions
   they make reachable, and its query patches keep the rows; a patch that would
@@ -659,6 +672,23 @@ Plain filters on a child:
 
 The runtime rejects any `field` that does not resolve, with
 `INVALID_ORDER_BY` and a list of available aliases.
+
+With `limit`, the engine preserves these sort terms and appends every remaining
+output column in output order, ascending with NULLs last. Identical output rows
+are interchangeable. Ordering without `limit` is unchanged.
+
+Execution fetches at most `limit + 1` rows in the same warehouse statement and
+returns only `limit` rows. If the boundary row shares all requested sort keys
+with the last returned row, `TIES_AT_LIMIT` reports `details.tie_count`, the
+number of observed rows sharing that key, and `tie_count_is_lower_bound: true`.
+The full tie group may be larger than this bounded sample. Compile SQL retains
+the requested limit; the internal execution probe uses one extra row. A
+`limits.max_rows` fence at or below `limit` takes precedence: no extra row is
+fetched and cutoff ties cannot be reported.
+
+Cutoff comparisons use the returned row's exact column key when present;
+otherwise they require one case-insensitive match, supporting warehouse alias
+case folding. Missing or ambiguous matches fail with `QUERY_EXECUTION_ERROR`.
 
 ## TimeBlock
 

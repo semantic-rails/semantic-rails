@@ -750,7 +750,7 @@ def test_grant_responses_drop_unlisted_warnings(granted_runtime, monkeypatch, op
     import semantic_rails.runtime as runtime_module
 
     unknown = {"code": "UNLISTED_NOTICE", "message": CUSTOMERS, "object_ids": [CUSTOMERS]}
-    monkeypatch.setattr(runtime_module, "_compiled_warnings", lambda *args: [unknown])
+    monkeypatch.setattr(runtime_module, "_compiled_warnings", lambda *args, **kwargs: [unknown])
     result = _granted_response(granted_runtime, operation, verbosity)
     assert result["warnings"] == []
     assert [row["semantic_id"] for row in result["output_columns"]] == [CUSTOMERS]
@@ -774,7 +774,9 @@ def test_grant_responses_project_listed_warnings(
     monkeypatch.setattr(
         runtime_module,
         "_compiled_warnings",
-        lambda *args: [{**listed, "future_metadata": {"object_id": "ungranted_metadata"}}],
+        lambda *args, **kwargs: [
+            {**listed, "future_metadata": {"object_id": "ungranted_metadata"}}
+        ],
     )
     result = _granted_response(granted_runtime, operation)
     assert result["warnings"] == ([listed] if object_ids == [CUSTOMERS] else [])
@@ -801,7 +803,7 @@ def test_grant_responses_project_filter_guard_warnings(
     monkeypatch.setattr(
         runtime_module,
         "_compiled_warnings",
-        lambda *args: [{**listed, "future_metadata": {"object_id": SECRET_DIMENSION}}],
+        lambda *args, **kwargs: [{**listed, "future_metadata": {"object_id": SECRET_DIMENSION}}],
     )
     result = granted_runtime.query(query(verbosity="full"))
     assert result["warnings"] == ([listed] if object_ids == [DIMENSION] else [])

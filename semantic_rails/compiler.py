@@ -4977,9 +4977,12 @@ def _compile_query_sql_ast(
     config = resolve_compile_config(plan, config)
     with plan_bindings(plan, project_cut=project_cut) as leaves:
         _record_bound_plan(plan, config, leaves.leaves)
-        return attach_relation_ctes(
+        from .top_n import limit_order
+
+        select = attach_relation_ctes(
             config, lower_to_sql(plan, config, guard_empty=guard_empty, default_order=False)
         )
+        return limit_order(select)[0]
 
 
 def _compile_predicate_source_ast(config: PackageConfig, payload: dict[str, Any]) -> SqlSelect:
@@ -5313,7 +5316,7 @@ def _bind_query(
     # policy_context carries caller metadata and is never read as expressions;
     # every other request key, including unrecognized ones, is shape-checked.
     validate_expression_shapes(
-        {key: value for key, value in payload.items() if key != "policy_context"}
+        {key: value for key, value in payload.items() if key != "policy_context"}, path="query"
     )
     plan = plan_query(config, registry, payload)
     config = resolve_compile_config(plan, config)
@@ -5370,7 +5373,10 @@ def compile_query(
         if binding is not None
         else bind_query(config, registry, payload, row_filters=row_filters)
     )
-    plan, config, sql_ast = bound.plan, bound.config, bound.sql_ast
+    plan, config = bound.plan, bound.config
+    from .top_n import limit_order
+
+    sql_ast, limit_order_keys = limit_order(bound.sql_ast)
     dialect = dialect_for_warehouse(config.package.warehouse)
     rendered = render_select_for_profile(
         sql_ast,
@@ -5379,6 +5385,17 @@ def compile_query(
     )
     prepared = replace(dialect.prepare_query(rendered), parameters=bound.parameters)
     prepared = finalize_parameters(prepared, config.package.connection.kind)
+    limit_probe = None
+    if limit_order_keys and sql_ast.limit is not None and sql_ast.limit > 0:
+        probe_sql = render_select_for_profile(
+            replace(sql_ast, limit=sql_ast.limit + 1),
+            str(payload.get("sql_profile", payload.get("render_profile", "audit")) or "audit"),
+            dialect=dialect,
+        )
+        limit_probe = finalize_parameters(
+            replace(dialect.prepare_query(probe_sql), parameters=bound.parameters),
+            config.package.connection.kind,
+        )
     rendered = prepared.sql
     from .compiler_parts.sql_lowering import build_performance_plan, build_physical_plan
 
@@ -5427,6 +5444,8 @@ def compile_query(
         "sql_ast": sql_ast,
         "sql": rendered,
         "prepared_query": prepared,
+        "limit_probe": limit_probe,
+        "limit_order_keys": limit_order_keys,
         "explain": explain,
         "physical_plan": physical_plan,
         "performance_plan": performance_plan,

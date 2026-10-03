@@ -77,16 +77,11 @@ def _stable(response: dict[str, Any]) -> dict[str, Any]:
 
 @pytest.mark.parametrize("nested", [False, True])
 @pytest.mark.parametrize("verbosity", ["compact", " Compact ", "bogus"])
-@pytest.mark.parametrize(
-    ("explain_size", "sql_size", "omitted"),
-    [(4000, 10, ["explain"]), (4000, 4000, ["explain", "sql_plan"])],
-)
-def test_compact_execute_sizes_the_result_before_transport_additions(
+@pytest.mark.parametrize("sql_size", [10, 4000])
+def test_execute_budget_applies_after_the_final_envelope(
     v2: SemanticLayerMCPAdapter,
     monkeypatch: pytest.MonkeyPatch,
-    explain_size: int,
     sql_size: int,
-    omitted: list[str],
     nested: bool,
     verbosity: str,
 ) -> None:
@@ -95,7 +90,7 @@ def test_compact_execute_sizes_the_result_before_transport_additions(
         "ok": True,
         "row_count": 1,
         "rows": [{"value": "x" * 100}],
-        "explain": "e" * explain_size,
+        "explain": "e" * 4000,
         "sql_plan": "s" * sql_size,
     }
     monkeypatch.setattr(v2.runtime, "query", lambda _query: payload.copy())
@@ -104,26 +99,20 @@ def test_compact_execute_sizes_the_result_before_transport_additions(
         if nested
         else {"query": QUERY, "verbosity": verbosity}
     )
-    result = v2.call_tool("execute", arguments)
-    assert result["ok"] and result["rows"] == payload["rows"]
-    assert len(json.dumps(result, default=str, separators=(",", ":"))) <= 2000
-    assert all(field not in result for field in omitted)
-    if "sql_plan" not in omitted:
-        assert result["sql_plan"] == payload["sql_plan"]
-    notes = [w for w in result["warnings"] if w["code"] == "EXECUTE_DETAILS_OMITTED"]
-    assert len(notes) == 1
-    assert notes[0]["severity"] == "warning"
-    assert ", ".join(omitted) in notes[0]["message"]
-    assert "mode='sql'" in notes[0]["message"]
-    assert "verbosity='full'" not in notes[0]["message"]
-    full = v2.call_tool("execute", {"query": QUERY, "verbosity": "full"})
-    assert full["explain"] == payload["explain"] and full["sql_plan"] == payload["sql_plan"]
+    for args in (arguments, {"query": QUERY, "verbosity": "full"}):
+        result = v2.call_tool("execute", args)
+        assert result["ok"] and result["rows"] == payload["rows"]
+        assert len(json.dumps(result, default=str, separators=(",", ":"))) <= 2000
+        assert "explain" not in result
+        assert "explain" in result["omitted_fields"]
+    compact = v2.call_tool("execute", arguments)
+    assert "sql_plan" not in compact
+    assert {"explain", "sql_plan"} <= set(compact["omitted_fields"])
 
 
-def test_compact_execute_under_limit_is_byte_identical(
+def test_compact_execute_omits_plans_even_under_budget(
     v2: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    args = {"query": QUERY, "verbosity": "compact"}
     payload = {
         "ok": True,
         "row_count": 1,
@@ -132,10 +121,10 @@ def test_compact_execute_under_limit_is_byte_identical(
         "sql_plan": {"sql": "SELECT 12.5 AS revenue"},
     }
     monkeypatch.setattr(v2.runtime, "query", lambda _query: payload.copy())
-    monkeypatch.setenv("SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS", "10000000")
-    expected = json.dumps(_stable(v2.call_tool("execute", args)), default=str)
-    monkeypatch.delenv("SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS")
-    assert json.dumps(_stable(v2.call_tool("execute", args)), default=str) == expected
+    response = v2.call_tool("execute", {"query": QUERY, "verbosity": "compact"})
+    assert response["rows"] == payload["rows"]
+    assert {"explain", "sql_plan"} <= set(response["omitted_fields"])
+    assert not {"explain", "sql_plan"} & response.keys()
 
 
 def test_compact_execute_refuses_an_envelope_that_cannot_fit(

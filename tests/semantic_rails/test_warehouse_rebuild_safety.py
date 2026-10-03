@@ -353,7 +353,9 @@ def test_close_during_validation_does_not_lose_a_writer_commit(tmp_path: Path, m
     serving = duckdb.connect(str(db_path), read_only=True)
     original_probe = runtime_module.missing_duckdb_relations
 
-    def close_and_write(path: str, relations: set[str]) -> list[str]:
+    def close_and_write(
+        path: str, relations: set[str], *, confine_to: str | None = None
+    ) -> list[str]:
         serving.close()  # the same-process POSIX-lock transition from the Sol review
         writer = subprocess.run(
             [
@@ -368,7 +370,7 @@ def test_close_during_validation_does_not_lose_a_writer_commit(tmp_path: Path, m
             timeout=60,
         )
         assert writer.returncode == 0, writer.stderr
-        return original_probe(path, relations)
+        return original_probe(path, relations, confine_to=confine_to)
 
     monkeypatch.setattr(runtime_module, "missing_duckdb_relations", close_and_write)
     with pytest.raises(SemanticLayerError) as excinfo:

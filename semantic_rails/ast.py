@@ -1194,7 +1194,9 @@ def normalize_query(
     select: list[QuerySelect] = []
     group_by = _normalize_group_by_list(payload.get("group_by", []))
     for idx, row in enumerate(list(payload.get("select", []) or [])):
-        expression = parse_semantic_expression(row.get("expression", {}) or {}, context="query")
+        expression = parse_semantic_expression(
+            row.get("expression", {}) or {}, context="query", path=f"query.select[{idx}].expression"
+        )
         _validate_query_expr(expression)
         if isinstance(expression, MetricPredicateExpr):
             raise SemanticLayerError(
@@ -1241,7 +1243,9 @@ def normalize_query(
         metric_filters.append(
             MetricFilter(
                 expression=parse_semantic_expression(
-                    item.get("expression", {}) or {}, context="query"
+                    item.get("expression", {}) or {},
+                    context="query",
+                    path=f"query.metric_filters[{mf_idx}].expression",
                 ),
                 op=str(item.get("op", "=")),
                 value=mf_value,
@@ -1370,7 +1374,13 @@ def normalize_partial_query(
         if not isinstance(row, dict):
             raise SemanticLayerError("INVALID_QUERY", f"select[{idx}] must be an object")
         raw_expr = row.get("expression", {}) or {}
-        expression = parse_semantic_expression(raw_expr, context="query") if raw_expr else None
+        expression = (
+            parse_semantic_expression(
+                raw_expr, context="query", path=f"query.select[{idx}].expression"
+            )
+            if raw_expr
+            else None
+        )
         if expression:
             _validate_query_expr(expression)
             if isinstance(expression, MetricPredicateExpr):
@@ -1390,7 +1400,9 @@ def normalize_partial_query(
         metric_filters.append(
             MetricFilter(
                 expression=parse_semantic_expression(
-                    item.get("expression", {}) or {}, context="query"
+                    item.get("expression", {}) or {},
+                    context="query",
+                    path=f"query.metric_filters[{mf_idx}].expression",
                 )
                 if item.get("expression")
                 else None,
