@@ -2171,7 +2171,7 @@ def _parent_lookup_leaf_select(
     # The inner query's settled values are internal: no NO_DATA_IN_SCOPE output of their own.
     with measure_objects(measure.id), recording_zero_outputs():
         source_sql = _compile_query_sql_ast(config, payload, project_cut=project_is_cut())
-    source = f"{measure_plan.cte_name}_lookup_source"
+    source = "lookup_source"  # the leaf is namespaced by its CTE name
     table = _measure_source_relation(measure, _entity_index(config)[measure.entity])
     keys = list(
         zip(
