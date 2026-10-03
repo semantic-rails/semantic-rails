@@ -4,7 +4,7 @@ Query-error recovery hints tell authors to "call discover or catalog",
 but those subcommands historically accepted only the registered
 ``--package`` ids, so authors of ``--path`` packages had no discovery
 surface at all. These tests drive the real argparse wiring (via
-``python -m semantic_rails``) against a freshly init'd package to pin
+``python -m semantic_rails``) against an authored single-file package to pin
 ``--path`` support on the read-side commands.
 """
 
@@ -16,6 +16,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+from tests.semantic_rails.conftest import write_single_file_package
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -36,9 +38,7 @@ def _run_cli(*args: str) -> dict:
 @pytest.fixture(scope="module")
 def init_package_yml(tmp_path_factory: pytest.TempPathFactory) -> Path:
     target = tmp_path_factory.mktemp("path_discovery") / "my_shop"
-    payload = _run_cli("init", "--output", str(target), "--package-id", "my_shop")
-    assert payload["ok"] is True, payload
-    return target / "package.yml"
+    return write_single_file_package(target, namespace="my_shop")
 
 
 def test_catalog_supports_path(init_package_yml: Path) -> None:
@@ -47,7 +47,7 @@ def test_catalog_supports_path(init_package_yml: Path) -> None:
     catalog = payload["catalog"]
     blob = json.dumps(catalog)
     assert "metric.my_shop.revenue_usd" in blob, (
-        "catalog --path must surface the init'd package's own objects"
+        "catalog --path must surface the package's own objects"
     )
 
 
@@ -58,7 +58,7 @@ def test_discover_supports_path(init_package_yml: Path) -> None:
         str(entry.get("id", "")) for entry in payload.get("measures", [])
     ]
     assert any("my_shop" in object_id and "revenue" in object_id for object_id in ids), (
-        f"discover --path must rank the init'd package's objects; got: {ids}"
+        f"discover --path must rank the package's objects; got: {ids}"
     )
 
 

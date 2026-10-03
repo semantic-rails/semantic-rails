@@ -1342,10 +1342,11 @@ def test_cli_init_creates_runnable_starter(
         [
             "semantic-rails",
             "init",
-            "--output",
-            str(target),
-            "--package-id",
             "starter_pkg",
+            "--workspace-root",
+            str(tmp_path),
+            "--json",
+            "--yes",
             "--namespace",
             "starter",
         ],
@@ -1357,10 +1358,8 @@ def test_cli_init_creates_runnable_starter(
 
     assert payload["ok"] is True
     assert (target / "package.yml").exists()
-    assert (target / "data" / "seed_example.sql").exists()
-    report, config = parse_config_report(
-        resolve_package_reference(path=str(target / "package.yml"))
-    )
+    assert (target / "graph.yml").exists()
+    report, config = parse_config_report(resolve_package_reference(path=str(target)))
     assert report["ok"] is True
     assert config is not None
     assert config.package.package_id == "starter_pkg"
