@@ -1,6 +1,7 @@
 """A bounded entity predicate needs an unambiguous clock for its window."""
 
 from dataclasses import replace
+from datetime import datetime
 
 import duckdb
 import pytest
@@ -13,6 +14,10 @@ from semantic_rails.errors import SemanticLayerError
 ORDERED = "temporal_role.clocks_order_ordered_at"
 SHIPPED = "temporal_role.clocks_order_shipped_at"
 SIGNED_UP = "temporal_role.clocks_customer_signed_up_at"
+
+
+def _orders_on(role):
+    return {"measure": "measure.clocks.orders", "temporal_role": role}
 
 
 @pytest.fixture()
@@ -83,12 +88,30 @@ def warehouse(tmp_path):
                 name: {
                     "kind": "derived",
                     "compatible_temporal_roles": [ORDERED, SHIPPED],
-                    "expression": {
-                        "measure": "measure.clocks.orders",
-                        **({"temporal_role": SHIPPED} if name == "pinned_orders" else {}),
-                    },
+                    "expression": expression,
                 }
-                for name in ["pinned_orders", "unpinned_orders"]
+                for name, expression in {
+                    "pinned_orders": _orders_on(SHIPPED),
+                    "unpinned_orders": {"measure": "measure.clocks.orders"},
+                    # Each operand is pinned to its own clock; the metric still advertises both.
+                    "mixed_sum": {
+                        "kind": "arithmetic",
+                        "op": "+",
+                        "left": _orders_on(ORDERED),
+                        "right": _orders_on(SHIPPED),
+                    },
+                    "mixed_difference": {
+                        "kind": "arithmetic",
+                        "op": "-",
+                        "left": _orders_on(ORDERED),
+                        "right": _orders_on(SHIPPED),
+                    },
+                    "mixed_ratio": {
+                        "kind": "ratio",
+                        "numerator": _orders_on(ORDERED),
+                        "denominator": _orders_on(SHIPPED),
+                    },
+                }.items()
             }
         },
     }
@@ -168,6 +191,44 @@ def _metric_order_query(binding, alignment, role):
     if binding == "override":
         query["temporal_role_overrides"] = {"measure.clocks.orders": SHIPPED}
     return query
+
+
+def _mixed_query(name, threshold, alignment):
+    query = _metric_order_query("input", alignment, ORDERED)
+    query["metric_filters"][0]["expression"]["input"] = {"metric": f"metric.clocks.{name}"}
+    query["metric_filters"][0]["expression"]["value"] = threshold
+    return query
+
+
+def _mixed_reference(conn, combined, threshold):
+    """January orders on ORDERED, for customers whose input counts each operand on its own clock."""
+    counts = {
+        clock: f"COUNT(*) FILTER (WHERE p.{clock}_at >= TIMESTAMP '2025-01-01' "
+        f"AND p.{clock}_at < TIMESTAMP '2025-02-01')"
+        for clock in ["ordered", "shipped"]
+    }
+    return conn.execute(
+        "SELECT o.customer_id, o.ordered_at, COUNT(*) FROM orders o "
+        "WHERE o.ordered_at >= TIMESTAMP '2025-01-01' "
+        "AND o.ordered_at < TIMESTAMP '2025-02-01' "
+        "AND o.customer_id IN (SELECT p.customer_id FROM orders p GROUP BY 1 "
+        f"HAVING {combined.format(**counts)} >= {threshold}) "
+        "GROUP BY 1, 2 ORDER BY 1"
+    ).fetchall()
+
+
+# The thresholds and reference answers at which filtering both operands on ORDERED differs.
+MIXED_CASES = [
+    pytest.param("mixed_sum", 2, "{ordered} + {shipped}", [], id="sum"),
+    pytest.param(
+        "mixed_difference",
+        1,
+        "{ordered} - {shipped}",
+        [(1, datetime(2025, 1, 10), 1)],
+        id="difference",
+    ),
+    pytest.param("mixed_ratio", 1, "{ordered} / NULLIF({shipped}, 0)", [], id="ratio"),
+]
 
 
 @pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
@@ -272,6 +333,44 @@ def test_metric_bound_clock_conflicting_with_window_clock_refuses(
     assert "omit time_alignment" in hint["message"]
 
 
+@pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
+@pytest.mark.parametrize("name,threshold,combined,expected", MIXED_CASES)
+@pytest.mark.parametrize("entrypoint", [compile_query, _compile_query_sql_ast])
+def test_window_clock_excluded_by_any_measure_in_metric_refuses(
+    warehouse, alignment, name, threshold, combined, expected, entrypoint
+):
+    config, conn = warehouse
+    assert _mixed_reference(conn, combined, threshold) == expected
+    query = _mixed_query(name, threshold, alignment)
+    with pytest.raises(SemanticLayerError) as raised:
+        if entrypoint is compile_query:
+            entrypoint(config, None, query)
+        else:
+            entrypoint(config, query)
+    error = raised.value
+    assert error.code == "INVALID_TEMPORAL_BINDING"
+    assert error.details["requested"] == ORDERED
+    assert error.details["compatible"] == [SHIPPED]
+    hint = error.details["recovery_hints"][0]
+    assert hint["code"] == "CHOOSE_PREDICATE_CLOCK"
+    assert hint["message"] == (
+        f"The input is bound to {SHIPPED}; set query.time.temporal_role to one of them, "
+        "or omit time_alignment to apply the predicate over all time."
+    )
+
+
+def test_contextual_window_clock_excluded_by_any_measure_in_metric_refuses(warehouse):
+    config, conn = warehouse
+    assert _mixed_reference(conn, "{ordered} + {shipped}", 2) == []
+    query = _mixed_query("mixed_sum", 2, "same_query_period")
+    query["metric_filters"][0]["expression"]["scope_mode"] = "contextual"
+    with pytest.raises(SemanticLayerError) as raised:
+        compile_query(config, None, query)
+    assert raised.value.code == "INVALID_TEMPORAL_BINDING"
+    assert raised.value.details["requested"] == ORDERED
+    assert raised.value.details["compatible"] == [SHIPPED]
+
+
 def test_contextual_metric_bound_clock_conflict_refuses(warehouse):
     config, conn = warehouse
     assert _order_reference(conn, "ordered_at", "shipped_at") == []
@@ -302,6 +401,16 @@ def test_direct_lowering_cannot_bypass_metric_bound_clock_refusal(warehouse):
     unsafe = _metric_order_query("input", "query_window", ORDERED)
     with pytest.raises(SemanticLayerError) as raised:
         lower_to_sql(replace(plan, query=unsafe), config)
+    assert raised.value.code == "INVALID_TEMPORAL_BINDING"
+    assert raised.value.details["requested"] == ORDERED
+    assert raised.value.details["compatible"] == [SHIPPED]
+
+
+def test_direct_lowering_cannot_bypass_any_measure_bound_clock_refusal(warehouse):
+    config, _conn = warehouse
+    plan = plan_query(config, None, _metric_order_query("input", "query_window", SHIPPED))
+    with pytest.raises(SemanticLayerError) as raised:
+        lower_to_sql(replace(plan, query=_mixed_query("mixed_sum", 2, "query_window")), config)
     assert raised.value.code == "INVALID_TEMPORAL_BINDING"
     assert raised.value.details["requested"] == ORDERED
     assert raised.value.details["compatible"] == [SHIPPED]
