@@ -950,20 +950,7 @@ def test_fallback_plural_in_the_planner_word_table_is_not_execute_ready(
     assert "execute" not in payload["next"].get("ready_for", [])
 
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        "primary",
-        pytest.param(
-            "fallback",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="Fallback discovery reads a plural as its singular and keeps the first "
-                "available match.",
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("path", ["primary", "fallback"])
 @pytest.mark.parametrize(
     "intent",
     [
@@ -985,9 +972,15 @@ def test_plural_grouping_matching_several_dimensions_is_not_execute_ready(
         runtime.close()
     assert payload["status"] == "low_confidence", payload.get("why")
     assert "execute" not in payload["next"].get("ready_for", [])
+    assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
     if path == "primary":
-        assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
         assert payload["why"]["details"]["terms"] == ["districts"]
+    else:
+        # Fallback discovery reads a plural as its singular and keeps the first available
+        # match, Customer district. Plan holds that pick: the district may as well be the
+        # store's, and "their districts" or "each districts" isn't any dimension's own words.
+        assert payload["best"]["query_ir"]["group_by"] == [CUSTOMER_DISTRICT]
+        assert payload["why"]["details"]["terms"] == [intent.split(" by ", 1)[1]]
 
 
 @pytest.mark.parametrize("path", ["primary", "fallback"])

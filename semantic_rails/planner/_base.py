@@ -1354,6 +1354,51 @@ def _strip_leading_rank_count(raw: str) -> str:
     return re.sub(rf"^\s*(?:\d+|{rank_words})\s+", "", raw, count=1).strip()
 
 
+def _name_forms(words: Iterable[str]) -> set[str]:
+    """The words with their regular plurals, which name the same object; synonyms do not."""
+
+    words = set(words)
+    return (
+        words
+        | {word + "s" for word in words}
+        | {word[:-1] + "ies" for word in words if word.endswith("y")}
+        | {
+            word + "es"
+            for word in words
+            if len(word) > 2 and word.endswith(("s", "x", "z", "ch", "sh"))
+        }
+    )
+
+
+def _grouping_matches(term: str, row: Any, *, entity: bool = False) -> bool:
+    """Match content words to declared names, never substring scores or synonyms.
+
+    A dimension's own words are its label, its aliases and the last part of its name; the
+    namespace, model and entity prefix in its id are not its words.
+    """
+
+    names = (
+        [row.name, row.label]
+        if entity
+        else [_last_token(row.name), row.label, *(row.aliases or [])]
+    )
+    words = _name_forms(re.findall(r"[^\W_]+", " ".join(names).lower()))
+    content = set(re.findall(r"[^\W_]+", term.lower())) - _NAME_CONNECTORS
+    return bool(content and content <= words)
+
+
+def _names_whole_entity(term: str, entity: Any) -> bool:
+    """Whether a grouping term names an entity by every word of its label: "customer" names
+    Customer, but not Customer history or Customer segment membership."""
+
+    content = set(re.findall(r"[^\W_]+", term.lower())) - _NAME_CONNECTORS
+    label = str(entity.label or _last_token(entity.name)).lower()
+    return _grouping_matches(term, entity, entity=True) and all(
+        _name_forms({word}) & content
+        for word in set(re.findall(r"[^\W_]+", label)) - _NAME_CONNECTORS
+    )
+
+
 def _requested_grouping_terms(text: str) -> list[str]:
     lowered = str(text or "").lower()
     return [lowered[start:end] for start, end in _requested_grouping_spans(text)]
@@ -1392,6 +1437,64 @@ def _requested_grouping_spans(text: str) -> list[tuple[int, int]]:
             spans.append((offset + low, offset + low + len(term.strip())))
         start = next_start
     return spans
+
+
+def _listed_grouping_terms(text: str, config: Any) -> list[str]:
+    """Every grouping the question lists, read only to decide whether a draft is ready.
+
+    A draft reads its groupings with ``_requested_grouping_terms``, where a comma ends the
+    list. Here the piece after a comma continues it when it names a clock, a dimension or an
+    entity ("by incident name, incident" lists two), and a window the question states ends it
+    ("by store, last month" lists one). A listed grouping the draft lacks holds the plan, so
+    reading more of the question can hold more plans but never makes one ready.
+    """
+
+    lowered = str(text or "").lower()
+    match = re.search(
+        r"^\s*(?:the\s+)?top\s+([a-z0-9 _,-]+?)\s+by\s+[a-z0-9 _-]+?(?:[.?!,;]|$)", lowered
+    )
+    if match:
+        raw_terms = _strip_leading_rank_count(match.group(1).strip())
+    else:
+        match = re.search(
+            r"\bby ([a-z0-9 _,-]+?)(?:\s+(?:where|for|from|in|with|during|over|having|who|that)\b|[.?!;]|$)",
+            lowered,
+        )
+        raw_terms = match.group(1).strip() if match else ""
+    if not match or not raw_terms:
+        return []
+    # A recorded window is a clause boundary, not part of the grouping's name.
+    offset = match.start(1) + match.group(1).find(raw_terms)
+    end = min(
+        (
+            start
+            for start, _end in _time_window(text).spans
+            if offset <= start < offset + len(raw_terms)
+        ),
+        default=offset + len(raw_terms),
+    )
+    pieces = re.split(r"(\s*(?:,\s*and |,| and | & | by )\s*)", raw_terms[: end - offset])
+    terms: list[str] = []
+    for index in range(0, len(pieces), 2):
+        term = pieces[index].strip()
+        if not term:
+            continue
+        if (
+            index
+            and "," in pieces[index - 1]
+            and not (
+                _is_temporal_grouping_term(term)
+                or any(_names_time_axis(term, row.label) for row in config.temporal_roles)
+                or any(
+                    row.calendar_id and _names_time_axis(term, row.label) for row in config.entities
+                )
+                or any(_grouping_matches(term, row) for row in config.dimensions)
+                or any(_grouping_matches(term, row, entity=True) for row in config.entities)
+            )
+        ):
+            break
+        terms.append(term)
+    return terms
 
 
 # Words that make a grouping term name a clock ("order date", "order month at month grain").

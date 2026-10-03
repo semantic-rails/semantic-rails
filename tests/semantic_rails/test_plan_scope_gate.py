@@ -41,7 +41,6 @@ CLASSIFIER_ROUTED_INTENTS = [
 
 REASONABLE_INTENTS = [
     "average order value by month",
-    "top customers by revenue",
     "revenue trend over time",
     "orders per store",
 ]
@@ -100,6 +99,20 @@ def test_plan_lets_reasonable_intents_through(runtime_factory, intent):
     assert payload["candidates"], f"reasonable intent {intent!r} should still produce candidates"
     assert "out_of_scope" not in payload
     assert "low_relevance" not in payload
+
+
+def test_a_customer_ranking_passes_the_scope_gate_but_is_held_for_its_grouping(runtime_factory):
+    # The draft groups by customer history's customer id, which is not the Customer key, so plan
+    # holds it for the "customers" grouping; neither scope gate refuses it.
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_candidate_envelope(runtime, intent="top customers by revenue")
+    finally:
+        runtime.close()
+    assert "out_of_scope" not in payload
+    assert "low_relevance" not in payload
+    assert payload["blocked"]
+    assert payload["blocked"][0]["why_blocked"]["code"] == "PLAN_UNMATCHED_TERMS"
 
 
 @pytest.mark.parametrize("intent", NONSENSE_INTENTS)

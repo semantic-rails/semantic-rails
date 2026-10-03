@@ -29,8 +29,15 @@ from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
 from ._base import (
+    _grouping_matches,
+    _is_temporal_grouping_term,
+    _listed_grouping_terms,
+    _names_time_axis,
+    _names_whole_entity,
+    _object_by_id,
     _requested_grouping_terms,
     _runtime_composition_terms,
+    _term_matches_value_domain,
     _time_window,
     _with_fiscal_calendar,
 )
@@ -317,7 +324,9 @@ def plan_payload(
     unmatched = unmatched_intent_terms(runtime, intent_str, best_draft.query) if best_ok else []
     # The readiness invariants: every numeral and clock word in the question, and every word
     # that names a catalog object, is consumed by something the draft carries. Otherwise an
-    # hour, a range, a threshold, a grouping or the asked-for subject was dropped.
+    # hour, a range, a threshold, a grouping or the asked-for subject was dropped. Last, every
+    # grouping the question lists, apart from clock terms and declared values, has its own
+    # group_by dimension; that check only holds a draft, it never changes one.
     value_why = (
         (
             _unconsumed_terms_why(unconsumed_terms(runtime, intent_str, best_draft.query))
@@ -328,6 +337,7 @@ def plan_payload(
                 unconsumed_unknown_words(runtime, intent_str, best_draft.query),
                 set(intent_ir.unresolved),
             )
+            or _dropped_grouping_why(runtime, intent_str, best_draft.query, partial_query)
         )
         if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
         else None
@@ -694,6 +704,180 @@ def _unconsumed_catalog_why(question: str, words: list[str]) -> dict[str, Any] |
                     "Find what these words name with discover, add it to best.query_ir (a "
                     "group_by for a grouping, the select for a measure), then validate; or ask "
                     "again without those words."
+                ),
+            }
+        ],
+    }
+
+
+def _entity_grouping_dimensions(config: Any, term: str) -> set[str] | None:
+    """The dimensions that may stand for a listed grouping naming an entity, or None when the
+    term names no entity.
+
+    Only an entity the term names by its whole label, with a one-column key, has any: its key
+    dimension, and its one declared dimension whose own words name the term when no other
+    does. A clock the entity declares is not one of them. Another entity's dimension never
+    stands in, and a composite key has none, so the grouping stays unmatched.
+    """
+
+    entities = [row for row in config.entities if _grouping_matches(term, row, entity=True)]
+    if not entities:
+        return None
+    clocks = {row.dimension for row in config.temporal_roles}
+    allowed: set[str] = set()
+    for entity in entities:
+        if len(entity.key) != 1 or not _names_whole_entity(term, entity):
+            continue
+        owned = [row for row in config.dimensions if row.entity == entity.id]
+        allowed |= {row.id for row in owned if row.column == entity.key[0]}
+        named = [
+            row.id
+            for row in owned
+            if row.column != entity.key[0] and row.id not in clocks and _grouping_matches(term, row)
+        ]
+        if len(named) == 1:
+            allowed |= set(named)
+    return allowed
+
+
+def _dropped_grouping_why(
+    runtime: Any,
+    question: str,
+    query: dict[str, Any],
+    partial_query: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """A listed grouping that names an entity is satisfied only by that entity's own key
+    dimension, or by the single declared dimension of that entity whose own words name it.
+    An entity with a composite key is never satisfied by the guard, so the plan is not ready.
+
+    Any other listed grouping needs a dimension whose own words name it; a clock term ("by
+    month", "by order date") is the time block's and a declared value is a filter, so neither
+    needs one. One dimension satisfies one listed grouping.
+
+    A grouping whose dimensions belong to two or more entities, none of them the measure's own
+    ("name" for an order count: Customer name, Store name and more), is ambiguous: plan holds
+    instead of picking one. Only the caller's ``partial_query`` group_by settles it, when the
+    draft adds no other dimension that may be it.
+    """
+
+    from ..metadata import _selection_context  # noqa: WPS433 - shared metadata helper
+
+    config = runtime._config
+    try:
+        root = _selection_context(config, query)["root_entity"]
+    except SemanticLayerError:
+        root = ""
+    raw_time = query.get("time")
+    time: dict[str, Any] = raw_time if isinstance(raw_time, dict) else {}
+    # The time block's clock: its temporal role, and the calendar it buckets on.
+    clocks = [
+        str(row.label or "")
+        for row in [
+            _object_by_id(config.temporal_roles, str(time.get("temporal_role") or "")),
+            *(
+                row
+                for row in config.entities
+                if row.calendar_id and row.calendar_id == time.get("calendar_id")
+            ),
+        ]
+        if row is not None
+    ]
+    terms = [
+        term
+        for term in _listed_grouping_terms(question, config)
+        if not (
+            _is_temporal_grouping_term(term)
+            or any(_names_time_axis(term, clock) for clock in clocks)
+            or _term_matches_value_domain(config, term)
+        )
+    ]
+    grouped = [
+        row
+        for item in dict.fromkeys(query.get("group_by") or [])
+        if (row := _object_by_id(config.dimensions, item)) is not None
+    ]
+    stand_ins = [_entity_grouping_dimensions(config, term) for term in terms]
+
+    def reads(term: str, ids: set[str] | None, row: Any) -> bool:
+        return _grouping_matches(term, row) if ids is None else row.id in ids
+
+    chosen = set((partial_query or {}).get("group_by") or [])
+
+    def unsettled(term: str, ids: set[str] | None) -> bool:
+        """Dimensions of two or more entities, none the measure's own, may be the grouping, and
+        the caller's group_by doesn't say which: it names none, or the draft added one."""
+
+        entities = {
+            row.entity for row in config.dimensions if row.groupable and reads(term, ids, row)
+        }
+        picked = {row.id for row in grouped if reads(term, ids, row)}
+        return len(entities) > 1 and root not in entities and not (picked and picked <= chosen)
+
+    ambiguous = [term for term, ids in zip(terms, stand_ins, strict=True) if unsettled(term, ids)]
+    candidates = [
+        [
+            index
+            for index, dimension in enumerate(grouped)
+            if term not in ambiguous and reads(term, ids, dimension)
+        ]
+        for term, ids in zip(terms, stand_ins, strict=True)
+    ]
+    assigned: dict[int, int] = {}
+
+    def assign(term_index: int, seen: set[int]) -> bool:
+        for dimension_index in candidates[term_index]:
+            if dimension_index in seen:
+                continue
+            seen.add(dimension_index)
+            if dimension_index not in assigned or assign(assigned[dimension_index], seen):
+                assigned[dimension_index] = term_index
+                return True
+        return False
+
+    dropped = [term for index, term in enumerate(terms) if not assign(index, set())]
+    if not dropped:
+        return None
+    unclear = [term for term in dropped if term in ambiguous]
+    missing = [term for term in dropped if term not in ambiguous]
+    messages = [
+        *(
+            [
+                f"The draft drops the grouping by {', '.join(missing)} that the question asks "
+                "for: each listed grouping needs its own matching dimension, so plan doesn't "
+                "call it ready."
+            ]
+            if missing
+            else []
+        ),
+        *(
+            [
+                f"The grouping by {', '.join(unclear)} may be a dimension of any of several "
+                "entities, none of them the measure's own, so plan doesn't pick one or call the "
+                "draft ready."
+            ]
+            if unclear
+            else []
+        ),
+    ]
+    return {
+        "code": "PLAN_UNMATCHED_TERMS",
+        "message": " ".join(messages),
+        "details": {
+            "terms": dropped,
+            "dropped_groupings": missing,
+            **({"ambiguous_groupings": unclear} if unclear else {}),
+        },
+        "recovery_hints": [
+            {
+                "kind": "use_named_objects",
+                "message": (
+                    "Find a dimension for each grouping with discover, add the missing ones to "
+                    "best.query_ir group_by, then validate; or ask again without those groupings."
+                    + (
+                        ' Name the entity of an ambiguous one ("customer name", not "name").'
+                        if unclear
+                        else ""
+                    )
                 ),
             }
         ],
