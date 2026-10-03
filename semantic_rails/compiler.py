@@ -112,6 +112,7 @@ from .compiler_parts.sql_lowering import (
     _count_key_expr,
     _last_token,
     _plan_requires_agent_dag_lowering,
+    _refuse_converted_role,
     _slug,
     child_group_route,
     recording_stock_key_gaps,
@@ -2322,6 +2323,7 @@ def _predicate_time_join_expr(
         raise SemanticLayerError(
             "PREDICATE_GRAIN_UNSAFE", f"Unknown predicate temporal role '{role_id}'"
         )
+    _refuse_converted_role(role, "predicate_period_join")
     dim = dimensions[role.dimension]
     raw_expr = _column_ref(entities[dim.entity].table, dim.column)
     return (
@@ -2500,19 +2502,7 @@ def _predicate_window_filters(time: dict[str, Any], config: PackageConfig) -> li
     from .compiler_parts.sql_lowering import _source_time_window
 
     role = _temporal_role_index(config)[str(time["temporal_role"])]
-    column_tz = str(role.column_timezone or "").strip()
-    target_tz = str(role.timezone or "").strip()
-    if column_tz and target_tz and column_tz != target_tz:
-        raise SemanticLayerError(
-            "WINDOWED_TIME_FILTER_UNSUPPORTED",
-            f"Entity-only predicate time windows do not support timezone conversion for "
-            f"temporal role '{role.id}'; use an unconverted role.",
-            details={
-                "temporal_role": role.id,
-                "column_timezone": column_tz,
-                "timezone": target_tz,
-            },
-        )
+    _refuse_converted_role(role, "entity_only_predicate_window")
     column = SqlIdentifier(parts=[role.dimension])
     filters = []
     for bound in _source_time_window(column, time, config):
@@ -3938,6 +3928,7 @@ def _conversion_leaf_cte(
                     "dim_entity": binding_dim_entity,
                 },
             )
+        _refuse_converted_role(query_role, "conversion_metric")
         raw_expr = _column_ref(entities[query_dim.entity].table, query_dim.column)
         group_time_alias = (
             str(plan.time["temporal_role"])

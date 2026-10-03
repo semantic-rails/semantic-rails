@@ -691,13 +691,26 @@ A clock declared as `kind: date` applies the calendar spine's whole-day rule
 to its source rows too: `start` includes its local day, and an exclusive `end`
 after midnight includes its local day. An end at exact midnight excludes that
 day. Offset-bearing bounds use the role's zone. An empty or reversed interval
-includes no days. A DATE clock enters `column_timezone` conversion as a naive
-midnight timestamp in that storage zone, independent of the session zone. The
-comparison then uses the converted local date, including an anchored population
-or snapshot on a different query time axis. Entity-only predicate windows on roles
-requiring timezone conversion are refused with `WINDOWED_TIME_FILTER_UNSUPPORTED`;
-use an unconverted role for those predicates. Timestamp clocks retain precise
-half-open bounds.
+includes no days. On DuckDB, MotherDuck, DuckLake and Postgres, a DATE clock
+enters `column_timezone` conversion as a naive midnight timestamp in that
+storage zone, independent of the session zone; these are the warehouses whose
+converted DATE clocks are tested. Other warehouses pass the DATE to their own
+conversion function unchanged. The comparison then uses the converted local
+date, including an anchored population or snapshot on a different query time
+axis. Timestamp clocks retain precise half-open bounds.
+
+A role requiring timezone conversion (`column_timezone` set and different from
+`timezone`) is converted before its bounds and buckets. Shapes that would read
+its stored values instead are refused with `WINDOWED_TIME_FILTER_UNSUPPORTED`,
+and `details.path` names the shape:
+
+- `entity_only_predicate_window`: an entity-only metric predicate aligned to the
+  query window;
+- `predicate_period_join`: a contextual metric predicate in a query with `time`,
+  which joins on the query's time period;
+- `conversion_metric`: a conversion metric whose query time role converts.
+
+Use an unconverted role for those queries.
 
 ## PolicyContext
 

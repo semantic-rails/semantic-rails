@@ -551,23 +551,61 @@ def _refuse_varying_time_key(plan: LogicalPlan, leaf: Any) -> None:
         )
 
 
+def _role_conversion(role: Any) -> tuple[str, str] | None:
+    """The role's ``(column_timezone, timezone)`` when they differ, else ``None``."""
+    column_tz = str(getattr(role, "column_timezone", "") or "").strip()
+    target_tz = str(getattr(role, "timezone", "") or "").strip()
+    if not column_tz or not target_tz or column_tz == target_tz:
+        return None
+    return column_tz, target_tz
+
+
 def _apply_role_timezone(raw_expr: Any, role: Any, config: PackageConfig) -> Any:
     """Wrap a temporal role's raw column expression with a timezone conversion
     when the role's ``column_timezone`` is set and differs from ``timezone``.
 
     The wrap is applied to ``raw_expr`` before any ``date_trunc`` and before
     use in WHERE filter comparisons, so truncation and filtering happen in
-    the target zone. DATE clocks enter the conversion as naive midnight
-    timestamps so warehouse overloads cannot read them as session-zone instants.
+    the target zone. A DATE clock enters through the dialect's
+    ``naive_date_clock``. A path that reads a role's raw column without this
+    wrap calls ``_refuse_converted_role`` first.
     """
-    column_tz = str(getattr(role, "column_timezone", "") or "").strip()
-    target_tz = str(getattr(role, "timezone", "") or "").strip()
-    if not column_tz or not target_tz or column_tz == target_tz:
+    zones = _role_conversion(role)
+    if zones is None:
         return raw_expr
     dialect = _dialect(config)
     if _dimension_index(config)[role.dimension].data_type == "date":
-        raw_expr = dialect.timestamp_cast(raw_expr)
-    return dialect.convert_timezone(column_tz, target_tz, raw_expr)
+        raw_expr = dialect.naive_date_clock(raw_expr)
+    return dialect.convert_timezone(*zones, raw_expr)
+
+
+_CONVERTED_ROLE_PATHS = {
+    "entity_only_predicate_window": "Entity-only predicate time windows",
+    "predicate_period_join": "Metric predicates joined on the query's time period",
+    "conversion_metric": "Conversion metrics",
+}
+
+
+def _refuse_converted_role(role: Any, path: str) -> None:
+    """Refuse a path that reads ``role``'s raw stored column when the role converts.
+
+    Such a path would compare or bucket stored values against role-local ones.
+    """
+    zones = _role_conversion(role)
+    if zones is None:
+        return
+    column_tz, target_tz = zones
+    raise SemanticLayerError(
+        "WINDOWED_TIME_FILTER_UNSUPPORTED",
+        f"{_CONVERTED_ROLE_PATHS[path]} do not support timezone conversion for temporal "
+        f"role '{role.id}' ({column_tz} to {target_tz}); use an unconverted role.",
+        details={
+            "temporal_role": role.id,
+            "column_timezone": column_tz,
+            "timezone": target_tz,
+            "path": path,
+        },
+    )
 
 
 def _metric_filter_alias(index: int) -> str:
