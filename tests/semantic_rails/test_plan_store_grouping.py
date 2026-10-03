@@ -11,6 +11,8 @@ import pytest
 import yaml
 
 from semantic_rails.planner import plan_payload
+from semantic_rails.planner.intent_ir import parse_intent
+from semantic_rails.planner.plan import _qualifying_entity_why
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.result_helpers import typed_rows
@@ -64,7 +66,12 @@ def retail(tmp_path: Path) -> Iterator[Runtime]:
                     "reported_at": {"column": "reported_at", "kind": "timestamp", "default": True}
                 },
                 "dimensions": {
-                    "store_id": {"as": STORE_ID, "column": "store_id", "label": "Store id"},
+                    "store_id": {
+                        "as": STORE_ID,
+                        "column": "store_id",
+                        "label": "Store id",
+                        "synonyms": ["Store code", "Store key", "Store number"],
+                    },
                     "store_name": {"as": STORE_NAME, "column": "store_name", "label": "Store name"},
                     "store_label": {
                         "as": STORE_LABEL,
@@ -100,6 +107,9 @@ def retail(tmp_path: Path) -> Iterator[Runtime]:
     [
         ("revenue by store id", [STORE_ID], []),
         ("revenue by store id", [STORE_ID], [ID_FILTER]),
+        ("revenue by store code", [STORE_ID], []),
+        ("revenue by store key", [STORE_ID], []),
+        ("revenue by store number", [STORE_ID], []),
         ("revenue by store name", [STORE_NAME], [NAME_FILTER]),
         (
             "revenue by store label",
@@ -236,7 +246,10 @@ def test_filtered_store_name_matches_reference_sql_or_withholds_execution(
 
 # A question that lists stores is answered one row per store, never as one total.
 @pytest.mark.parametrize("path", ["primary", "fallback"])
-@pytest.mark.parametrize("intent", ["stores with more than 2000 orders in 2017"])
+@pytest.mark.parametrize(
+    "intent",
+    ["stores with more than 2000 orders in 2017", "customers with more than 3 orders in 2017"],
+)
 def test_store_list_is_grouped_by_store_or_withholds_execution(
     runtime_factory: Any, monkeypatch: pytest.MonkeyPatch, path: str, intent: str
 ) -> None:
@@ -244,9 +257,13 @@ def test_store_list_is_grouped_by_store_or_withholds_execution(
     try:
         _force_fallback(runtime, monkeypatch, intent, path)
         payload = plan_payload(runtime, intent=intent)
-        if payload["status"] == "ok" and "execute" in payload["next"].get("ready_for", []):
-            group_by = payload["best"]["query_ir"].get("group_by") or []
-            assert any(field.startswith("dimension.jaffle_store") for field in group_by), payload
+        assert payload["status"] == "low_confidence", payload
+        assert "execute" not in payload["next"].get("ready_for", []), payload
+        assert payload["why"]["code"] in {
+            "PLAN_INTENT_COVERAGE_GAP",
+            "PLAN_UNASKED_GROUPING",
+            "PLAN_UNMATCHED_TERMS",
+        }, payload
     finally:
         runtime.close()
 
@@ -285,5 +302,165 @@ def test_store_ranking_with_shared_name_matches_reference_sql_or_withholds_execu
                 ).fetchall()
             ]
         assert actual == pytest.approx(expected), payload
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+def test_preferred_store_draft_is_never_execute_ready(runtime_factory, monkeypatch, path) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        _force_fallback(runtime, monkeypatch, "revenue by store", path)
+        payload = plan_payload(runtime, intent="revenue by store")
+        assert payload["best"]["query_ir"]["group_by"] == [
+            "dimension.jaffle_customer_history_preferred_store_id"
+        ]
+        assert payload["status"] == "low_confidence"
+        assert payload["why"]["code"] == "PLAN_FALLBACK_SEMANTIC_DRIFT"
+        assert "execute" not in payload["next"].get("ready_for", [])
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("question", "groups", "measure", "aggregation", "held"),
+    [
+        ("stores with more than 2000 orders", [], "order_count", "count_distinct", True),
+        (
+            "stores with more than 2000 orders",
+            ["store_name"],
+            "order_count",
+            "count_distinct",
+            True,
+        ),
+        ("stores with more than 2000 orders", ["store_id"], "order_count", "count_distinct", False),
+        ("customers with more than 3 orders", [], "order_count", "count_distinct", True),
+        (
+            "customers with more than 3 orders",
+            ["customer_name"],
+            "order_count",
+            "count_distinct",
+            True,
+        ),
+        (
+            "customers with more than 3 orders",
+            ["customer_id"],
+            "order_count",
+            "count_distinct",
+            False,
+        ),
+        (
+            "how many customers with more than 3 orders",
+            [],
+            "customer_count",
+            "count_distinct",
+            False,
+        ),
+        ("how many customers with more than 3 orders", [], "customer_count", "sum", True),
+        ("number of stores open", [], "open_store_count_eop", "last_value", False),
+    ],
+)
+def test_qualification_requires_entity_keys_or_a_selected_key_count(
+    runtime_factory, question, groups, measure, aggregation, held
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        intent = parse_intent(runtime, question)
+        query = {
+            "group_by": [f"dimension.jaffle_{group}" for group in groups],
+            "select": [
+                {"expression": {"measure": f"measure.jaffle.{measure}", "aggregation": aggregation}}
+            ],
+        }
+        why = _qualifying_entity_why(runtime, intent, query)
+        assert bool(why) is held
+        if held:
+            assert why["code"] == "PLAN_INTENT_COVERAGE_GAP"
+        # A count in a qualification predicate never stands in for a selected count.
+        if measure == "order_count" and not groups:
+            query["select"][0]["expression"]["predicates"] = [
+                {"measure": "measure.jaffle.customer_count", "aggregation": "count_distinct"}
+            ]
+            assert _qualifying_entity_why(runtime, intent, query) is not None
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("grain", [None, "month", "year"])
+def test_number_of_open_stores_matches_end_of_period_reference(
+    runtime_factory, monkeypatch, path, grain
+) -> None:
+    question = "number of stores open" + (f" by {grain}" if grain else "")
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        _force_fallback(runtime, monkeypatch, question, path)
+        payload = plan_payload(runtime, intent=question)
+        if path == "primary":
+            assert payload["status"] == "ok", payload
+        if payload["status"] != "ok":
+            assert "execute" not in payload["next"].get("ready_for", [])
+            return
+        assert "execute" in payload["next"].get("ready_for", [])
+        query = payload["best"]["query_ir"]
+        alias = query["select"][0]["as"]
+        assert not query.get("group_by")
+        assert query["select"][0]["expression"]["measure"] == "measure.jaffle.open_store_count_eop"
+        actual = typed_rows(runtime.query(query))
+        runtime.close()
+        bucket = f"date_trunc('{grain}', date_day)" if grain else "1"
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            rows = connection.execute(
+                f"WITH latest AS (SELECT {bucket} AS period, store_id, open_store_count, "
+                f"row_number() OVER (PARTITION BY {bucket}, store_id ORDER BY date_day DESC) AS n "
+                "FROM jaffle_store_inventory_snapshot) "
+                "SELECT period, SUM(open_store_count) FROM latest WHERE n = 1 GROUP BY period"
+            ).fetchall()
+        if grain:
+            time_column = f"temporal_role.jaffle_inventory_day__{grain}"
+            expected = [
+                {time_column: period, alias: value} for period, value in rows
+            ]
+        else:
+            expected = [{alias: value} for _, value in rows]
+        assert sorted(actual, key=str) == sorted(expected, key=str)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("names", [["Brooklyn", "Philadelphia"], ["Brooklyn"]])
+def test_named_store_revenue_is_one_combined_monthly_series(
+    runtime_factory, monkeypatch, path, names
+) -> None:
+    question = (
+        "revenue for Brooklyn and Philadelphia stores by month"
+        if len(names) == 2
+        else "revenue for Brooklyn store by month"
+    )
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        _force_fallback(runtime, monkeypatch, question, path)
+        payload = plan_payload(runtime, intent=question)
+        assert payload["status"] == "ok", payload
+        assert "execute" in payload["next"].get("ready_for", [])
+        query = payload["best"]["query_ir"]
+        assert not query.get("group_by")
+        actual = typed_rows(runtime.query(query))
+        alias = query["select"][0]["as"]
+        runtime.close()
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            expected = dict(
+                connection.execute(
+                    "SELECT date_trunc('month', o.ordered_at), SUM(o.order_total_cents / 100.0) "
+                    "FROM jaffle_order o JOIN jaffle_store s USING (store_id) "
+                    "WHERE s.store_name IN (" + ",".join("?" for _ in names) + ") GROUP BY 1",
+                    names,
+                ).fetchall()
+            )
+        assert len(actual) == len(expected)
+        assert {
+            row["temporal_role.jaffle_order_time__month"]: row[alias] for row in actual
+        } == pytest.approx(expected)
     finally:
         runtime.close()
