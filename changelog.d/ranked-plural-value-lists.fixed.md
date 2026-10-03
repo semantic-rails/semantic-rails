@@ -2,6 +2,7 @@
   retain each named value in a compound filter phrase.
 - Preserve distinct requested groupings in catalog fallback, deduplicating
   only identical dimension IDs and retaining the user's discovery terms.
-- Ask for clarification when a grouping phrase matches both a caller dimension
-  and a newly inferred dimension with a different ID, including discovery
-  matches on compact and plural dimension names.
+- Ask for clarification whenever the caller passes `group_by` and the draft
+  adds a grouping dimension the caller didn't pass: the plan keeps both
+  groupings and returns `low_confidence` until `group_by` names every intended
+  dimension ID.
