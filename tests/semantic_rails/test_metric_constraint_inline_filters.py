@@ -103,12 +103,15 @@ def _select(expression, **query):
     return {"select": [{"expression": expression, "as": "value"}], **query}
 
 
-# Each places a filter on customer type inside an expression that reads revenue.
+# Each places a filter on customer type inside an expression that reads the governed
+# measure: revenue, or order count for a conversion operand.
 INLINE_SHAPES = {
     "aggregate": _select(FILTERED_REVENUE),
     "semi_additive": _select({**FILTERED_REVENUE, "kind": "semi_additive"}),
     "scoped_where": _select({"kind": "scoped_aggregate", "measure": REVENUE, "where": [RETURNING]}),
-    "nested": _select({"kind": "ratio", "numerator": FILTERED_REVENUE, "denominator": {"measure": REVENUE}}),
+    "nested": _select(
+        {"kind": "ratio", "numerator": FILTERED_REVENUE, "denominator": {"measure": REVENUE}}
+    ),
     "window_input": _select(
         {"kind": "cumulative", "input": FILTERED_REVENUE},
         time={"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
@@ -122,6 +125,16 @@ INLINE_SHAPES = {
             "kind": "scoped_aggregate",
             "measure": ORDERS,
             "predicates": [{"entity": CUSTOMER, "input": FILTERED_REVENUE, "op": ">", "value": 0}],
+        }
+    ),
+    "conversion_operand": _select(
+        {
+            "kind": "conversion",
+            "base": {"measure": "measure.jaffle.session_starts"},
+            "converted": {"kind": "aggregate", "measure": ORDERS, "filter": {"all": [RETURNING]}},
+            "entity": CUSTOMER,
+            "window": {"unit": "day", "value": 28},
+            "matching_mode": "first_converted_after_base",
         }
     ),
 }
@@ -145,7 +158,7 @@ def test_constraint_keys_govern_inline_filters(config, monkeypatch, shape, key):
     query = INLINE_SHAPES[shape]
     assert compiler.compile_query(config, None, query)["sql"]
     constraint, kind = CONSTRAINTS[key]
-    engine = _constrained(config, constraint, REVENUE)
+    engine = _constrained(config, constraint, ORDERS if shape == "conversion_operand" else REVENUE)
     try:
         violations = _assert_denied_before_output(engine, monkeypatch, query)
     finally:
@@ -192,7 +205,11 @@ def test_every_inline_filter_is_a_metric_filter_cut(config, monkeypatch):
     finally:
         engine.close()
     assert violations == [
-        {"kind": "metric_filters_not_allowed", "metric_filter_refs": {}, "source": "inline_expression"}
+        {
+            "kind": "metric_filters_not_allowed",
+            "metric_filter_refs": {},
+            "source": "inline_expression",
+        }
     ]
 
 
@@ -208,9 +225,7 @@ CONDITIONAL = {
 
 
 @pytest.mark.parametrize("governed", [None, REVENUE])
-def test_a_conditional_aggregate_condition_is_never_an_allowed_field(
-    config, monkeypatch, governed
-):
+def test_a_conditional_aggregate_condition_is_never_an_allowed_field(config, monkeypatch, governed):
     """Its condition reads columns, not fields: refused when it filters a governed leaf.
 
     Only a package-wide constraint governs its synthetic measure; a constraint on another

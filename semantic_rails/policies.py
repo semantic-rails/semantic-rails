@@ -586,13 +586,10 @@ def _metric_constraint_violations(
     # rows, so it never meets one. Every condition, a group's included, must be allowed.
     # A filter inside an expression cuts only its own leaf, so it never meets one either; it
     # must be allowed when it cuts the governed object.
-    inline_filters = _inline_filters(query)
     inline = cache(
         lambda: _governed_inline_fields(
-            inline_filters, bound(), object_id, package_wide=not policy.object_ids
+            _inline_filters(query), bound, object_id, package_wide=not policy.object_ids
         )
-        if inline_filters
-        else []
     )
     where_rows = [
         {"field": item.field, "op": item.op, "value": item.value}
@@ -736,7 +733,9 @@ def _inline_filters(query: NormalizedQuery) -> list[tuple[str, str]]:
         elif isinstance(expr, ScopedAggregateExpr):
             found.extend((expr.measure, str(item.get("field", ""))) for item in expr.where)
             nested.extend(
-                dict(item["input"]) for item in expr.predicates if isinstance(item.get("input"), dict)
+                dict(item["input"])
+                for item in expr.predicates
+                if isinstance(item.get("input"), dict)
             )
         elif isinstance(expr, ConditionalAggregateExpr):
             found.append(("", INLINE_CONDITION))
@@ -748,13 +747,19 @@ def _inline_filters(query: NormalizedQuery) -> list[tuple[str, str]]:
                 if is_dataclass(child):
                     visit(child)
 
-    for row in [*query.select, *query.metric_filters]:
+    for row in query.select:
         visit(row.expression)
+    for metric_filter in query.metric_filters:
+        visit(metric_filter.expression)
     return found
 
 
 def _governed_inline_fields(
-    filters: list[tuple[str, str]], binding: BoundQuery, object_id: str, *, package_wide: bool
+    filters: list[tuple[str, str]],
+    bound: Callable[[], BoundQuery],
+    object_id: str,
+    *,
+    package_wide: bool,
 ) -> list[str]:
     """The fields of the inline filters that cut ``object_id``.
 
@@ -762,15 +767,16 @@ def _governed_inline_fields(
     that attributes the compiler's own cuts (:meth:`BoundQuery.cut_counts`). A filter on the
     governed measure itself, or under a package-wide constraint, always counts.
     """
+
+    def owners(measure: str) -> frozenset[str]:
+        return frozenset(
+            row.alias for row in bound().plan.bound_measures if row.measure_id == measure
+        )
+
     out = [
         field
         for measure, field in filters
-        if package_wide
-        or measure == object_id
-        or binding.cut_counts(
-            object_id,
-            frozenset(row.alias for row in binding.plan.bound_measures if row.measure_id == measure),
-        )
+        if package_wide or measure == object_id or bound().cut_counts(object_id, owners(measure))
     ]
     return list(dict.fromkeys(out))
 
