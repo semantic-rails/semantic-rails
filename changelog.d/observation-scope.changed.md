@@ -7,7 +7,8 @@
   a misspelling isn't read as a confident `0`. A measure whose authored condition never
   matched still reads `NULL`. Send `observation_scope: "query"`, or set
   `defaults.observation_scope: query` in the package, to judge inside the query's filters as
-  before. Under the new default, a filtered query beside a `distribution`, or over a measure
-  whose condition reads a fan-out, a metric predicate or a `CASE` below its top level, is
-  refused with `EMPTY_GROUPS_UNSETTLED` and asks for `observation_scope: "query"`.
+  before. A metric predicate still selects the population measured, in either scope. Under
+  the new default, a query with a `where` filter beside a metric predicate or a
+  `distribution`, or over a measure whose condition reads a fan-out or has a `CASE` below its
+  top level, is refused with `EMPTY_GROUPS_UNSETTLED` and asks for `observation_scope: "query"`.
   See [Query IR schema](docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0).

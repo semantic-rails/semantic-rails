@@ -458,7 +458,8 @@ def test_a_conditional_count_with_no_match_in_scope_is_unobserved_for_a_customer
 
     Nothing matched anywhere in scope, so that 0 is no data. Customer 2 reads NULL, so
     `= 0` selects nobody, and the query says so instead of answering with a confident 0.
-    Under the dataset scope the count of nobody's orders is 0, as the raw count is.
+    Under the dataset scope a where filter beside a metric predicate can't be judged apart
+    from it, so the query is refused and asks for the query scope.
     """
     (kept,) = _gold(
         "select count(*) from orders o where o.status = 'returned' and o.customer_id in ("
@@ -478,8 +479,10 @@ def test_a_conditional_count_with_no_match_in_scope_is_unobserved_for_a_customer
     (warning,) = _no_data_warnings(response)
     assert warning["details"]["outputs"] == ["n"]
     assert warning["object_ids"] == ["measure.pred.order_count"]
-    dataset = runtime.query(query)
-    assert dataset["rows"] == [{"n": kept}] and not _no_data_warnings(dataset)
+    with pytest.raises(SemanticLayerError) as raised:
+        runtime.query(query)
+    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
+    assert raised.value.details["observation_scope"] == "dataset"
 
 
 @HUGE_ORDER_COUNTS
@@ -509,7 +512,6 @@ def test_a_conditional_count_with_no_match_in_scope_is_unobserved_for_a_member_w
 
     Members 2 to 4 would have 4 activities between them if an entity with no rows counted as
     0 while the measure had no data anywhere, which is what one rule for every entity rules out.
-    Under the dataset scope the count of nobody's activities is 0, as the raw count is.
     """
     (kept,) = _gold(
         "select count(*) from activities a where a.member_id in (select m.member_id from members m "
@@ -517,17 +519,16 @@ def test_a_conditional_count_with_no_match_in_scope_is_unobserved_for_a_member_w
         "from tickets u where u.member_id = m.member_id and u.ticket_id >= 100) = 0)"
     )[0]
     assert kept == 0
-    query = {
-        "version": 1,
-        "select": [{"as": "n", "expression": {"measure": "measure.pred.activity_count"}}],
-        "metric_filters": [_predicate(MEMBER, late, op, value)],
-    }
-    response = runtime.query({**query, "observation_scope": "query"})
+    response = runtime.query(
+        {
+            "version": 1,
+            "select": [{"as": "n", "expression": {"measure": "measure.pred.activity_count"}}],
+            "metric_filters": [_predicate(MEMBER, late, op, value)],
+        }
+    )
     assert response["rows"] == [{"n": None}]
     (warning,) = _no_data_warnings(response)
     assert warning["details"]["outputs"] == ["n"]
-    dataset = runtime.query(query)
-    assert dataset["rows"] == [{"n": kept}] and not _no_data_warnings(dataset)
 
 
 @LARGE_ORDER_COUNTS

@@ -518,8 +518,7 @@ def _absent_entity_cases() -> Iterator[Case]:
 
     def reference(floor: int, count: str) -> str:
         # The rule: with some order at or above the floor, a customer with none reads 0 (the
-        # ones with no orders at all too); with none anywhere, every customer reads NULL, so
-        # none is kept, and the signups of no customer count 0, as signups have data.
+        # ones with no orders at all too); with none anywhere, every customer reads NULL.
         return f"""
             SELECT {count} FROM signups AS s
             WHERE EXISTS (SELECT 1 FROM orders WHERE amount >= {floor})
@@ -533,7 +532,7 @@ def _absent_entity_cases() -> Iterator[Case]:
     ):
         for name, predicate_input, floor, count in (
             ("one_match_keeps_every_other_customer", floor_10_input, 10, "COUNT(*)"),
-            ("no_match_keeps_no_customer", floor_1000_input, 1000, "COUNT(*)"),
+            ("no_match_keeps_no_customer", floor_1000_input, 1000, "NULLIF(COUNT(*), 0)"),
         ):
             predicate = _predicate("entity.shop_customer", "entity_only", predicate_input, "=", 0)
             yield Case(

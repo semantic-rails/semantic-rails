@@ -42,6 +42,8 @@ def test_contextual_predicate_groups_by_fact_attributes(
     where = "o.store_id = 'a'" if where_store else "TRUE"
     if where_store:
         query["where"] = [{"field": STORE, "op": "=", "value": "a"}]
+        # A where filter beside a metric predicate is judged inside the filters only.
+        query["observation_scope"] = "query"
     if grain:
         query["time"] = {"temporal_role": ROLE, "grain": grain}
         groups.append(f"date_trunc('{grain}', o.ordered_at)")
@@ -177,9 +179,6 @@ def test_distribution_predicate_retains_declared_grain(request, backend_name, sc
         "metric_filters": [
             _predicate(entity, scope, ORDERS if customer else REVENUE, ">=", 2 if customer else 7)
         ],
-        # Beside a distribution, the dataset scope refuses a filtered query (it can't judge
-        # the combined outputs outside the filters); this checks the distribution's grain.
-        "observation_scope": "query",
     }
     if customer and scope == "contextual":
         with pytest.raises(SemanticLayerError, match="entity_only") as exc:

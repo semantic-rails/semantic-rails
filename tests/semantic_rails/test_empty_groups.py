@@ -1378,6 +1378,8 @@ def test_a_threshold_zero_passes_on_a_sum_of_measures_keeps_entities_without_row
             "group_by": [SHOP_ORDER],
             "where": [{"field": SHOP_ORDER, "op": "!=", "value": 7}],
             "metric_filters": [{"expression": no_refund, "op": "=", "value": True}],
+            # A where filter beside a metric predicate is judged inside the filters only.
+            "observation_scope": "query",
         }
     )
     got = sorted(row[SHOP_ORDER] for row in typed_rows(response))

@@ -473,7 +473,11 @@ def test_adding_a_role_cannot_silently_change_an_unmatched_key(tmp_path, dry_run
         **(
             {"group_by": [CODE]}
             if grouped
-            else {"where": [{"field": CODE, "op": "=", "value": "SFO"}]}
+            # A plain-SQL reference, where a sum of no rows is NULL: the query scope.
+            else {
+                "where": [{"field": CODE, "op": "=", "value": "SFO"}],
+                "observation_scope": "query",
+            }
         )
     )
 

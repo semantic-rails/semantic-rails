@@ -5608,8 +5608,10 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     row_counts = _row_count_names(plan, taken)
     refuse_shared_names(row_counts.values(), taken)
     conversion_exprs = _conversion_exprs_for_plan(plan, config)
-    # Under the dataset scope, each measure's own rows, which the query's filters never cut.
+    # Under the dataset scope, each measure's own rows, which the query's where filters never
+    # cut. A query metric predicate selects the rows measured, which no such probe reads.
     observed: dict[str, LeafScope] = {}
+    probing = guard_empty and observes_dataset() and not _query_metric_predicates(plan)
     if plan.measure_plans or conversion_exprs:
         leaf_ctes: list[SqlCte] = []
         measure_groups = _measure_plan_groups(plan, config)
@@ -5620,7 +5622,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 # A folded group shares one scan, so its filters cut every leaf in it.
                 with cut_owners(*(row.bound_measure.alias for row in measure_group)):
                     leaf_select = _measure_group_leaf_select(plan, measure_group, config)
-                    for row in measure_group if guard_empty and observes_dataset() else ():
+                    for row in measure_group if probing else ():
                         if (scope := _dataset_scope(row, config)) is not None:
                             observed[row.bound_measure.alias] = scope
                 emitted = {field.alias for field in leaf_select.select}

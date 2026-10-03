@@ -1223,7 +1223,8 @@ def _clickhouse(package: Path) -> Any:
 
 def test_clickhouse_answers_any_with_its_distinct_parent_leaf(package: Path) -> None:
     config = _clickhouse(package)
-    sql = compile_query(config, Registry(config), _query(SAME_ROW))["sql"]
+    query = {**_query(SAME_ROW), "observation_scope": "query"}  # the leaf, without a probe
+    sql = compile_query(config, Registry(config), query)["sql"]
     assert sql == CLICKHOUSE_SQL
     duckdb_sql = sql.removesuffix("\nSETTINGS join_use_nulls = 1")
     assert _reference(package, duckdb_sql) == _customers(package, SAME_ROW_SQL) == [(2,)]

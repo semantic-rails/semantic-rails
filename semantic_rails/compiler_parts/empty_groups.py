@@ -25,7 +25,6 @@ from ..expressions import (
     ArithmeticExpr,
     CaseExpr,
     MeasureRefExpr,
-    MetricPredicateExpr,
     MetricRecipeRefExpr,
     SemanticExpr,
 )
@@ -200,17 +199,10 @@ def observation_scope(query: Mapping[str, Any], config: PackageConfig) -> str:
 
 
 def observed_outside_filters(query: Mapping[str, Any], config: PackageConfig) -> bool:
-    """Whether observation looks outside the query's own filters: under ``dataset``, when a
-    where filter or a metric predicate could hide a measure's rows. A time window is judged
-    the same way in either scope."""
-    return observation_scope(query, config) == "dataset" and (
-        bool(query.get("where"))
-        or any(
-            isinstance(_parse_public_expr(dict(item["expression"])), MetricPredicateExpr)
-            for item in query.get("metric_filters") or []
-            if item.get("expression")
-        )
-    )
+    """Whether observation looks outside the query's own ``where`` filters: under ``dataset``,
+    when it has one. A metric predicate selects the population measured and a time window is
+    judged as before, in either scope."""
+    return observation_scope(query, config) == "dataset" and bool(query.get("where"))
 
 
 _dataset_observation: ContextVar[bool] = ContextVar("dataset_observation", default=False)
@@ -455,10 +447,10 @@ def refuse_shared_names(row_counts: Iterable[str], taken: Collection[str]) -> No
 def _unobserved_error(aliases: list[str]) -> SemanticLayerError:
     return SemanticLayerError(
         "EMPTY_GROUPS_UNSETTLED",
-        f"Can't tell whether {', '.join(aliases)} has data outside this query's filters (an "
-        "authored condition reads another table, or this query shape settles its groups "
-        "apart), so its empty groups can't read 0 or NULL. Resend with observation_scope "
-        "'query' to judge them inside the filters.",
+        f"Can't tell whether {', '.join(aliases)} has data outside this query's where filters "
+        "(a metric predicate or an authored condition the probe can't read, or a query shape "
+        "that settles its groups apart), so its empty groups can't read 0 or NULL. Resend "
+        "with observation_scope 'query' to judge them inside the filters.",
         details={"measures": aliases, "observation_scope": "dataset"},
     )
 
