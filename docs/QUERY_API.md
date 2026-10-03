@@ -1090,6 +1090,8 @@ Response keys:
 - `recovery_hints`
 - `assumptions`
 - `time_shape` (only `"window_total"`, when the window was one total)
+- `withheld` (only for a rank by values a `withhold_values` policy withholds: the withheld
+  objects, whose column `rows` leave out)
 - `policy_effects`
 - `provenance_summary`
 
