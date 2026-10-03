@@ -855,8 +855,9 @@ def _process_identity(pid: int, *, kernel_start: bool = True) -> dict[str, str]:
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=5,
             )
-        except OSError:
+        except (OSError, subprocess.TimeoutExpired):  # unverifiable, never a match
             return {}
         value = result.stdout.strip() if result.returncode == 0 else ""
         if not value:

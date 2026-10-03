@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import socket
+import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -25,6 +26,19 @@ from semantic_rails.mcp_manager import (
     start_mcp_http_server,
     stop_mcp_http_server,
 )
+
+
+@pytest.fixture
+def requires_process_identity() -> None:
+    """Skip where the host hides process identity (a sandbox denying ps); never in CI."""
+
+    import semantic_rails.mcp_manager as manager
+
+    if manager.managed_mcp_lifecycle_report()["supported"]:
+        return
+    if os.environ.get("CI"):
+        pytest.fail("process identity is unavailable on this CI host")
+    pytest.skip("this host can't observe process identity (ps or /proc denied)")
 
 
 def test_stop_mcp_http_server_can_stop_by_package_path(tmp_path: Path, monkeypatch) -> None:
@@ -349,7 +363,7 @@ def test_available_servers_uses_foreground_http_when_managed_lifecycle_is_unsupp
     assert http["foreground"] is True
 
 
-@pytest.mark.skipif(shutil.which("ps") is None, reason="process identity requires ps")
+@pytest.mark.usefixtures("requires_process_identity")
 def test_concurrent_managed_servers_do_not_verify_each_others_identity(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -487,7 +501,7 @@ def test_start_holds_an_ephemeral_listener_through_spawn(
             child.close()
 
 
-@pytest.mark.skipif(shutil.which("ps") is None, reason="process identity requires ps")
+@pytest.mark.usefixtures("requires_process_identity")
 def test_managed_mcp_server_lifecycle_waits_for_health_and_verifies_identity(
     tmp_path: Path,
     monkeypatch,
@@ -555,6 +569,7 @@ def _no_proc(_pid: int) -> bytes:
         (lambda _pid: b"42 (python) S 1", "started", False),  # unreadable stat: ps, fail closed
     ],
 )
+@pytest.mark.usefixtures("requires_process_identity")
 def test_process_identity_prefers_the_kernel_start_tick(
     monkeypatch, proc_stat, key: str, matches: bool
 ) -> None:
@@ -578,6 +593,7 @@ def test_process_identity_prefers_the_kernel_start_tick(
     assert manager._record_process_matches(record) is matches
 
 
+@pytest.mark.usefixtures("requires_process_identity")
 def test_a_record_from_an_earlier_version_still_matches(monkeypatch) -> None:
     import semantic_rails.mcp_manager as manager
 
@@ -585,6 +601,52 @@ def test_a_record_from_an_earlier_version_still_matches(monkeypatch) -> None:
     legacy = manager._process_identity(os.getpid(), kernel_start=False)
     assert set(legacy) == {"started", "command"}
     assert manager._record_process_matches({"pid": os.getpid(), "process_identity": legacy})
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        PermissionError("ps denied"),
+        subprocess.TimeoutExpired(["ps"], 5),  # a stuck ps must not hang start, status or stop
+    ],
+)
+def test_an_unobservable_process_is_never_signaled(
+    tmp_path: Path, monkeypatch, error: Exception
+) -> None:
+    import semantic_rails.mcp_manager as manager
+
+    monkeypatch.setenv("SEMANTIC_RAILS_HOME", str(tmp_path / "home"))
+    timeouts: list[float | None] = []
+
+    def run(cmd, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+        raise error
+
+    monkeypatch.setattr(manager.subprocess, "run", run)
+    monkeypatch.setattr(manager, "_proc_stat", _no_proc)
+    assert manager._process_identity(os.getpid()) == {}
+    assert timeouts == [5]
+
+    save_mcp_registry(
+        {
+            "version": 1,
+            "servers": {
+                "live": {
+                    "pid": os.getpid(),
+                    "name": "live",
+                    "process_identity": {"started": "now", "command": "python"},
+                }
+            },
+        }
+    )
+    signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(manager, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(manager.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+
+    report = stop_mcp_http_server("live")
+
+    assert report["status"] == "identity_mismatch"
+    assert signals == []
 
 
 @pytest.mark.parametrize("name", [b"python", b"a) b (c", b"two words", b"\xe2\x82"])
