@@ -2,6 +2,7 @@ metrics:
   shop.order_revenue_median:
     as: metric.shop.order_revenue_median
     label: Median order revenue
+    value_type: currency
     kind: derived
     expression:
       kind: distribution
