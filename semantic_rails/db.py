@@ -49,6 +49,7 @@ from .db_parts.base import (
     restore_column_names,
 )
 from .db_parts.common import materialized_duckdb_result, session_time_zone, set_duckdb_time_zone
+from .db_parts.duckdb_confinement import confine_duckdb, confinement_directory, require_inside
 from .db_parts.duckdb_setup import configure_duckdb_connection
 from .db_parts.snowflake import (
     SnowflakeCliAdapter,
@@ -247,8 +248,22 @@ class DuckDBAdapter(WarehouseAdapter):
     supports_statement_timeout = True
     supports_parameters = True
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, *, confine_to: str | os.PathLike[str] = ""):
+        """Open ``db_path`` read-only; ``confine_to`` limits file access to that directory.
+
+        See :mod:`semantic_rails.db_parts.duckdb_confinement`. A database file
+        outside the directory, or a setting DuckDB does not apply, refuses.
+        """
+        directory = confinement_directory(confine_to) if confine_to else ""
+        if directory:
+            db_path = require_inside(directory, db_path, option="database path")
         self._db = Database.connect(db_path, read_only=True)
+        if directory:
+            try:
+                confine_duckdb(self._db.conn, directory)
+            except BaseException:
+                self._db.close()
+                raise
 
     def query_prepared(
         self,
@@ -315,14 +330,18 @@ class DuckDBAdapter(WarehouseAdapter):
         self._db.close()
 
 
-def create_duckdb_adapter(package: PackageMeta, *, db_path: str = "") -> WarehouseAdapter:
+def create_duckdb_adapter(
+    package: PackageMeta, *, db_path: str = "", confine_to: str | os.PathLike[str] = ""
+) -> WarehouseAdapter:
     """Registry entry point for the duckdb warehouse (see dialects.py)."""
     if not db_path:
         raise SemanticLayerError("INVALID_CONFIG", "DuckDB adapter requires a database path")
-    return DuckDBAdapter(db_path)
+    return DuckDBAdapter(db_path, confine_to=confine_to)
 
 
-def create_warehouse_adapter(package: PackageMeta, *, db_path: str = "") -> WarehouseAdapter:
+def create_warehouse_adapter(
+    package: PackageMeta, *, db_path: str = "", confine_to: str | os.PathLike[str] = ""
+) -> WarehouseAdapter:
     """Build the execution adapter for a package's warehouse.
 
     Fully registry-driven: each :class:`~semantic_rails.dialects.WarehouseConnectorSpec`
@@ -330,6 +349,9 @@ def create_warehouse_adapter(package: PackageMeta, *, db_path: str = "") -> Ware
     resolved lazily here so optional drivers are only imported for the
     warehouse actually in use. Adding a new warehouse requires no edit
     to this function — see docs/ADDING_A_DIALECT.md.
+
+    ``confine_to`` reaches only a factory that takes it (DuckDB and DuckLake);
+    for any other warehouse it refuses rather than build an unconfined adapter.
     """
     warehouse = str(package.warehouse or "duckdb").strip().lower() or "duckdb"
     connector = warehouse_connector(warehouse)
@@ -351,6 +373,14 @@ def create_warehouse_adapter(package: PackageMeta, *, db_path: str = "") -> Ware
             "INVALID_CONFIG",
             f"Warehouse '{warehouse}' adapter entry point '{connector.adapter}' could not be resolved: {exc}",
         ) from exc
+    if confine_to:
+        if "confine_to" not in inspect.signature(factory).parameters:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"Warehouse '{warehouse}' does not support confining DuckDB file access",
+                details={"reason": "duckdb_confinement_unsupported", "warehouse": warehouse},
+            )
+        return factory(package, db_path=db_path, confine_to=confine_to)
     return factory(package, db_path=db_path)
 
 

@@ -1596,6 +1596,7 @@ def _and_conditions(conditions: list[Any]) -> Any:
 def _semi_additive_leaf_select(
     *,
     key_fields: list[SqlField],
+    period_aliases: list[str],
     row_grain_exprs: list[Any],
     order_expr: Any,
     value_expr: Any,
@@ -1622,6 +1623,12 @@ def _semi_additive_leaf_select(
         row_grain_exprs = [order_expr]
     row_key_aliases = [f"__snapshot_key_{index + 1}" for index in range(len(row_grain_exprs))]
     key_aliases = [field.alias for field in key_fields]
+    # Each series' snapshot is chosen per period first (`period_aliases` name the key
+    # fields that split time), and the other grouping dimensions are read from that
+    # row. Choosing it per group too would count a series whose attribute changes
+    # within the period once under each value it held.
+    period_fields = [field for field in key_fields if field.alias in period_aliases]
+    partition_aliases = [*[field.alias for field in period_fields], *row_key_aliases]
     order_function = "MIN" if window_choice == "first_value" else "MAX"
 
     base_fields = [
@@ -1636,7 +1643,7 @@ def _semi_additive_leaf_select(
     complete_fields = [
         *[
             SqlField(SqlIdentifier(parts=["snapshot_base", alias]), alias)
-            for alias in [*key_aliases, *row_key_aliases]
+            for alias in partition_aliases
         ],
         SqlField(
             SqlCall(order_function, [SqlIdentifier(parts=["snapshot_base", "__snapshot_order"])]),
@@ -1644,7 +1651,7 @@ def _semi_additive_leaf_select(
         ),
     ]
     complete_group_by: list[SqlExpr] = [
-        SqlIdentifier(parts=["snapshot_base", alias]) for alias in [*key_aliases, *row_key_aliases]
+        SqlIdentifier(parts=["snapshot_base", alias]) for alias in partition_aliases
     ]
 
     dialect = dialect_for_warehouse(warehouse)
@@ -1653,7 +1660,7 @@ def _semi_additive_leaf_select(
         snapshot_name = "snapshot_rows"
         row_number = SqlWindow(
             function=SqlCall("ROW_NUMBER", []),
-            partition_by=[field.expression for field in key_fields] + list(row_grain_exprs),
+            partition_by=[field.expression for field in period_fields] + list(row_grain_exprs),
             order_by=[SqlOrderTerm(expr=order_expr, direction=direction)],
         )
         snapshot_value = SqlIdentifier(parts=[snapshot_name, "__snapshot_value"])
@@ -1697,7 +1704,7 @@ def _semi_additive_leaf_select(
             SqlIdentifier(parts=["snapshot_base", alias]),
             SqlIdentifier(parts=["snapshot_complete", alias]),
         )
-        for alias in [*key_aliases, *row_key_aliases]
+        for alias in partition_aliases
     ]
     join_conditions.append(
         SqlBinary(
@@ -3034,8 +3041,36 @@ def _measure_leaf_select(
                 if measure.accumulation.snapshot == "start_of_period"
                 else "last_value"
             )
+        # The query's time bucket, the stock's own clock and calendar dimensions split a
+        # series into periods; any other grouped dimension is an attribute of the snapshot.
+        clock = temporal_roles[measure_plan.bound_measure.temporal_role].dimension
+        period_aliases = [
+            field.alias
+            for field in select_fields
+            if field.alias in {time_alias, clock}
+            or field.expression == order_expr
+            or (
+                field.alias in dimensions
+                and entities[dimensions[field.alias].entity].kind == "time"
+            )
+        ]
+        for dim_id in plan.group_by:
+            if dim_id not in period_aliases and dimensions[dim_id].data_type in {
+                "date",
+                "timestamp",
+            }:
+                raise SemanticLayerError(
+                    "REWRITE_NOT_SUPPORTED",
+                    "Grouping a stock by a date or timestamp attribute is ambiguous. "
+                    "Group by the stock's clock or a calendar dimension instead.",
+                    details={
+                        "reason": "stock_grouped_by_date_attribute",
+                        "dimension": dim_id,
+                    },
+                )
         return _semi_additive_leaf_select(
             key_fields=list(select_fields),
+            period_aliases=period_aliases,
             row_grain_exprs=row_grain_exprs,
             order_expr=order_expr,
             value_expr=leaf_value_expr,

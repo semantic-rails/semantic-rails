@@ -42,6 +42,10 @@ GOODS = {"measure": "measure.shop.goods_refunded"}
 SHIPPING = {"measure": "measure.shop.shipping_refunded"}
 TAX = {"measure": "measure.shop.tax_refunded"}
 REFUND_TYPE = "dimension.shop_refund_refund_type"
+SEATS = {"measure": "measure.shop.seats"}
+SEAT_ROLE = "temporal_role.shop_account_day_snapshot_day"
+SEAT_DAY = "dimension.shop_account_day_snapshot_day"
+PLAN = "dimension.shop_account_day_plan"
 # Plain measures by alias: the query input, and the SQL the reference computes for it. Every
 # group here has rows, so a sum is SQL's: NULL where its amounts are all NULL (order 7's).
 PLAIN = {
@@ -1003,6 +1007,38 @@ def _cases() -> Iterator[Case]:
         LEFT JOIN r ON r.b = g.b
         """,
     )
+
+    # A stock takes each account's last snapshot in the week, under the plan it has that day,
+    # so an account whose plan changes mid-week counts once. Grouped by its own day, each day
+    # is a period of its own.
+    seats = _item(SEATS, "seats")
+    yield Case(
+        "stock_by_changing_plan",
+        "utc_authored",
+        _ask("week", seats, role=SEAT_ROLE, group_by=[PLAN]),
+        _closing_seats(head="a.plan, "),
+    )
+    yield Case(
+        "stock_by_week", "utc_authored", _ask("week", seats, role=SEAT_ROLE), _closing_seats()
+    )
+    yield Case(
+        "stock_by_snapshot_day",
+        "utc_authored",
+        {"select": [seats], "group_by": [SEAT_DAY]},
+        "SELECT a.snapshot_day, SUM(a.seats) FROM account_days AS a GROUP BY 1",
+    )
+
+
+def _closing_seats(*, head: str = "") -> str:
+    """Seats per week (and ``head``): each account's last snapshot of the week."""
+    week = "date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP))"
+    return f"""
+        SELECT {head}a.b, SUM(a.seats) FROM (
+          SELECT a.*, {week} AS b, ROW_NUMBER() OVER (
+            PARTITION BY a.account_id, {week} ORDER BY a.snapshot_day DESC) AS n
+          FROM account_days AS a
+        ) AS a WHERE a.n = 1 GROUP BY {"1, 2" if head else "1"}
+    """
 
 
 CASES = list(_cases())
