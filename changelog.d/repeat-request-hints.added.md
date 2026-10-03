@@ -1,0 +1,1 @@
+- Query MCP sessions point repeated requests to their first response and flag validation or SQL requests for queries already run successfully.

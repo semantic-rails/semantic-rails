@@ -62,6 +62,26 @@ MCP issues leave out empty optional fields and a
 `why_invalid` or `unsupported_construct` that only repeats its `message` or `code`, and
 `request_context` appears only when a transport or `policy_context` set one.
 
+Within a stdio query MCP session, repeated calls still run normally and add
+`same_as`, the first matching response's `request_id`. Matching uses the tool name
+and arguments with JSON object keys sorted, ignoring `max_rows`, `verbosity` and
+`request_id` at the argument and query envelopes. Array order, filters, query
+limits and policy context still distinguish requests. The session retains the
+64 most recently used request fingerprints; evicted calls are forgotten.
+
+After a successful `execute` in run mode, `execute` in `validate` or `sql` mode
+for the same query and policy context also adds
+`already_ran: {"request_id": "...", "row_count": 12}`. This refers to the earlier
+successful run and its returned row count, including any response cap. It is a
+historical hint, not a cached answer or a guarantee that warehouse data is unchanged.
+The first call has no added fields. Stateless HTTP and calls without a session
+retain their existing responses; REST, SDK and CLI query responses are unchanged.
+
+In-process MCP hosts can create `MCPQuerySession` from
+`semantic_rails.mcp_session` and pass it as `session=` to `adapter.call_tool` or
+`handle_jsonrpc_message`. Use a separate instance for each client session. The
+optional MCP SDK stdio facade also owns a session for its connection.
+
 Every `tools/list` definition publishes an `outputSchema` for this envelope and
 MCP-standard annotations (`readOnlyHint`, `destructiveHint`,
 `idempotentHint`, and `openWorldHint`). The complete generated contract is packaged as
