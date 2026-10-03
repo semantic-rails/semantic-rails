@@ -13,23 +13,26 @@ from semantic_rails.planner import generators, plan_payload
 from semantic_rails.planner import plan as plan_module
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
-from tests.semantic_rails.test_plan_value_lists import _force_fallback
+from tests.semantic_rails.test_plan_value_lists import _force_fallback, _with_districts
 
 CUSTOMER = "dimension.customer_district"
 STORE = "dimension.store_district"
 ITEM_NAME = "dimension.item_name"
 CUSTOMER_NAME = "dimension.customer_name"
+JAFFLE_STORE = "dimension.jaffle_store_name"
+PRODUCT_TYPE = "dimension.jaffle_product_type"
 
 
 @pytest.fixture()
-def shop(tmp_path):
+def shop(tmp_path, request):
+    store_district = "districts" if getattr(request, "param", "") == "plural_store" else "district"
     (tmp_path / "models").mkdir()
     (tmp_path / "data").mkdir()
     for entity, csv in {
         "item": "item_id,customer_id,store_id,sold_at,name,revenue\n"
         "1,1,1,2026-01-01,Tea,1\n2,1,2,2026-01-01,Tea,2\n3,2,2,2026-01-01,Cake,3\n",
         "customer": "customer_id,name,district\n1,Pat,north\n2,Pat,south\n",
-        "store": "store_id,district\n1,north\n2,south\n",
+        "store": f"store_id,{store_district}\n1,north\n2,south\n",
     }.items():
         (tmp_path / "data" / f"{entity}.csv").write_text(csv)
     files = {
@@ -62,9 +65,10 @@ def shop(tmp_path):
                 "kind": "categorical",
             }
         if entity != "item":
-            dimensions["district"] = {
+            column = store_district if entity == "store" else "district"
+            dimensions[column] = {
                 "as": f"dimension.{entity}_district",
-                "label": f"{entity.title()} district",
+                "label": f"{entity.title()} {column}",
                 "kind": "categorical",
             }
         model = {
@@ -149,6 +153,96 @@ def test_shared_grouping_offers_each_visible_meaning_with_reference_rows(
             "order_by": option["order_by"],
         }
         _rows_match_reference(shop, query, option["id"], *REFERENCES[option["id"]])
+
+
+@pytest.mark.parametrize("shop", ["plural_store"], indirect=True)
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("detail", ["query", "best", "full", "debug"])
+def test_strict_match_does_not_hide_a_discovered_meaning(shop, monkeypatch, path, detail):
+    intent = "item revenue by district"
+    _force_fallback(shop, monkeypatch, intent, path)
+    payload = plan_payload(shop, intent=intent, detail=detail)
+    assert payload["status"] == "low_confidence", payload.get("why")
+    assert "execute" not in payload.get("next", {}).get("ready_for", [])
+    assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+    assert payload["why"]["details"]["ambiguous_groupings"] == ["district"]
+    options = payload["why"]["details"]["clarification"]["options"]
+    assert [option["id"] for option in options] == [CUSTOMER, STORE]
+    assert [option["label"] for option in options] == ["Customer district", "Store districts"]
+    for option in options:
+        query = {
+            **payload["best"]["query_ir"],
+            **{field: option[field] for field in ("group_by", "where", "order_by")},
+        }
+        reference, expected = REFERENCES[option["id"]]
+        if option["id"] == STORE:
+            reference = reference.replace("s.district", "s.districts")
+        _rows_match_reference(shop, query, option["id"], reference, expected)
+
+
+@pytest.mark.parametrize("shop", ["plural_store"], indirect=True)
+def test_discovery_only_match_does_not_satisfy_an_explicit_grouping(shop):
+    query = {
+        "version": 2,
+        "select": [{"as": "revenue", "expression": {"measure": "measure.shop.item_revenue"}}],
+        "group_by": [STORE],
+    }
+    why = plan_module._dropped_grouping_why(
+        shop, "item revenue by district", query, {"group_by": [STORE]}
+    )
+    assert why is not None
+    assert why["code"] == "PLAN_UNMATCHED_TERMS"
+    assert why["details"]["terms"] == ["district"]
+
+
+@pytest.mark.parametrize("term", ["product type", "district"])
+def test_multiple_ambiguous_groupings_offer_ids_for_replanning(runtime_factory, monkeypatch, term):
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        if term == "district":
+            _with_districts(runtime, monkeypatch)
+        payload = plan_payload(runtime, intent=f"order count by name and {term}")
+        assert payload["status"] == "low_confidence", payload.get("why")
+        assert "execute" not in payload["next"].get("ready_for", [])
+        assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+        details = payload["why"]["details"]
+        assert details["ambiguous_groupings"] == ["name", term]
+        options = details["clarification"]["options"]
+        assert {option["term"] for option in options} == {"name", term}
+        assert all(set(option) == {"id", "label", "term"} for option in options)
+        assert "partial_query.group_by" in payload["why"]["message"]
+        assert "partial_query.group_by" in payload["why"]["recovery_hints"][0]["message"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("group_by", [[JAFFLE_STORE, PRODUCT_TYPE], [PRODUCT_TYPE, JAFFLE_STORE]])
+def test_all_explicit_grouping_choices_preserve_reference_rows(runtime_factory, group_by):
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(
+            runtime,
+            intent="order count by name and product type",
+            partial_query={"group_by": group_by},
+        )
+        query = payload["best"]["query_ir"]
+        assert query["group_by"] == group_by
+        assert runtime.validate(query)["ok"]
+        rows = runtime.query(query)["rows"]
+        alias = query["select"][0]["as"]
+        actual = sorted((row[JAFFLE_STORE], row[PRODUCT_TYPE], row[alias]) for row in rows)
+        runtime.close()
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            expected = connection.execute(
+                "SELECT s.store_name, p.product_type, COUNT(DISTINCT o.order_id) "
+                "FROM jaffle_order o JOIN jaffle_store s ON o.store_id = s.store_id "
+                "JOIN jaffle_item i ON o.order_id = i.order_id "
+                "JOIN jaffle_product p ON i.product_id = p.product_id GROUP BY 1, 2 ORDER BY 1, 2"
+            ).fetchall()
+        assert actual
+        assert actual == expected
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize("path", ["primary", "fallback"])

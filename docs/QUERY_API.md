@@ -1030,14 +1030,19 @@ an absent dimension; a draft that bypasses the visibility check is refused with
 When a grouping word names available dimensions on several entities and none
 belongs to the selected measure's root entity, planning holds the draft with
 `low_confidence` and `PLAN_UNMATCHED_TERMS`. This applies to primary planning
-and catalog fallback, including fallback's plural matches. The reason lists
+and catalog fallback, combining strict matches with discovery's additional
+matches, including plurals. Discovery evidence can add a hold or an option;
+only strict matches satisfy a grouping. The reason lists
 `ambiguous_groupings` and `details.clarification.options`, with one validated
 option per visible candidate dimension. Each option names its `id`, `label`
-and grouping `term`, and carries `group_by`, `where` and `order_by`. Apply
-those three fields to `best.query_ir`, then validate or execute the chosen
-reading. Filters and unrelated groupings are preserved; dimension sort fields
-follow the chosen grouping. For example, "item revenue by district" asks
-whether Store district or Customer district is intended.
+and grouping `term`. With exactly one unclear term, it also carries
+`group_by`, `where` and `order_by`: apply those three fields to `best.query_ir`,
+then validate or execute the chosen reading. Filters and unrelated groupings
+are preserved; dimension sort fields follow the chosen grouping. With two or
+more unclear terms, options carry only `id`, `label` and `term`; plan again with
+`partial_query.group_by` naming one chosen ID per ambiguous term. For example,
+"item revenue by district" asks whether Store district or Customer district
+is intended.
 
 A root-owned matching dimension takes precedence: a draft using another
 entity's match instead is held with `PLAN_UNMATCHED_TERMS`. Planning keeps

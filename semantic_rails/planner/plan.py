@@ -821,11 +821,12 @@ def _dropped_grouping_why(
     matches: list[list[Any]] = []
     for term, ids in zip(terms, stand_ins, strict=True):
         named = [row for row in visible if row.groupable and reads(term, ids, row)]
-        if not named and ids is None:
+        if ids is None:
             # Discovery recognizes additional words/plurals. They may establish an
             # ambiguity, but never satisfy a grouping the strict guard cannot read.
             discovered = set(_grouping_term_matches(runtime, query, term, limit=len(visible)) or [])
-            named = [row for row in visible if row.groupable and row.id in discovered]
+            matched_ids = {row.id for row in named} | discovered
+            named = [row for row in visible if row.groupable and row.id in matched_ids]
         matches.append(named)
 
     def unsettled(term: str, ids: set[str] | None, named: list[Any]) -> bool:
@@ -888,7 +889,14 @@ def _dropped_grouping_why(
                     ],
                 }
                 if _validate_query(runtime, {**query, **patch}, partial_query).get("ok"):
-                    options.append({"id": row.id, "label": row.label, "term": term, **patch})
+                    options.append(
+                        {
+                            "id": row.id,
+                            "label": row.label,
+                            "term": term,
+                            **(patch if len(unclear) == 1 else {}),
+                        }
+                    )
         clarification = {
             "clarification": {
                 "question": "Which dimension does each ambiguous grouping mean?",
@@ -910,6 +918,11 @@ def _dropped_grouping_why(
                 f"The grouping by {', '.join(unclear)} may be a dimension of any of several "
                 "entities, none of them the measure's own, so plan doesn't pick one or call the "
                 "draft ready."
+                + (
+                    " Plan again with partial_query.group_by naming one chosen id per ambiguous term."
+                    if len(unclear) > 1
+                    else ""
+                )
             ]
             if unclear
             else []
@@ -931,7 +944,9 @@ def _dropped_grouping_why(
                     "Find a dimension for each grouping with discover, add the missing ones to "
                     "best.query_ir group_by, then validate; or ask again without those groupings."
                     + (
-                        " Apply an option's group_by, where and order_by to best.query_ir, then validate."
+                        " Plan again with partial_query.group_by naming one chosen id per ambiguous term."
+                        if len(unclear) > 1
+                        else " Apply an option's group_by, where and order_by to best.query_ir, then validate."
                         if unclear
                         else ""
                     )
