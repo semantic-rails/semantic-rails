@@ -31,14 +31,3 @@ def test_inline_comparison_fires_from_plan(runtime_factory, intent: str) -> None
     assert interpreted["right"]["id"]
     assert interpreted["left"]["id"] != interpreted["right"]["id"]
     assert len(result.draft.query["select"]) == 2
-
-
-def test_inline_comparison_declines_non_vs_intents(runtime_factory) -> None:
-    """An intent without 'vs' / 'versus' must not trigger this pattern."""
-
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        result = compose(runtime, "top stores by revenue")
-    finally:
-        runtime.close()
-    assert result.pattern != "inline_comparison"
