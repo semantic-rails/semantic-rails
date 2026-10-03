@@ -2,6 +2,26 @@ fixture:
   tables: [orders, refunds, signups, dim_fiscal, customer_history, account_days]
   data_sha256: 9c846589d4cc8d72b7e3f7bd19ea9d9a21ef246a87d6de79fe4727ea578223e5
 tests:
+  shop/distribution-value-filter-refuses-a-dimension:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: INVALID_QUERY
+    why: A field condition must not be applied to the computed per-order value.
+    cites:
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
+      - docs/QUERY_IR_SCHEMA.md#per-entity-value-filters
+    tags: [refusal]
+    query:
+      select:
+        - as: average
+          expression:
+            kind: distribution
+            function: avg
+            over:
+              kind: entity_value
+              entity: entity.shop_order
+              input: {measure: measure.shop.revenue}
+              where: [{field: dimension.shop_order_store_id, op: '=', value: a}]
   shop/top-stores-with-cutoff-ties:
     kind: query_matches_snapshot
     expect: answer
