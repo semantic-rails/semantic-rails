@@ -1201,14 +1201,6 @@ def _distribution_select(
 ) -> SqlSelect:
     from ..compiler import _compile_query_sql_ast
 
-    _distribution_metric_filters(plan)
-    for predicate in _query_metric_predicates(plan):
-        if predicate.scope_mode == "contextual" and predicate.entity != expr.over.entity:
-            raise SemanticLayerError(
-                "PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE",
-                "A distribution's per-entity grouping cannot inherit this contextual predicate. "
-                "Use scope_mode: 'entity_only' or a where filter.",
-            )
     # A dense per-entity series holds every entity in every period, so an entity with no rows
     # in a period (not yet created, or long gone) would enter that period's distribution.
     if _expr_requires_dense_series(expr.over.input, config) or _metric_filters_require_dense_series(
@@ -1219,6 +1211,14 @@ def _distribution_select(
             "A distribution is not supported when its input or a metric filter has a rolling or "
             "prior-period window: it would count entities in periods where they have no rows.",
         )
+    _distribution_metric_filters(plan)
+    for predicate in _query_metric_predicates(plan):
+        if predicate.scope_mode == "contextual" and predicate.entity != expr.over.entity:
+            raise SemanticLayerError(
+                "PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE",
+                "A distribution's per-entity grouping cannot inherit this contextual predicate. "
+                "Use scope_mode: 'entity_only' or a where filter.",
+            )
     # The per-entity grain belongs to this expression, not the outer query.
     with binding_cut() if project_is_cut() or bool(expr.over.where) else nullcontext():
         entity_key_dims = _entity_key_dimension_ids(expr.over.entity, config)
@@ -1311,7 +1311,6 @@ def _single_expression_branch_select(
 def _lower_agent_dag_to_sql(
     plan: LogicalPlan, config: PackageConfig, guard_empty: bool = True
 ) -> SqlSelect:
-    _distribution_metric_filters(plan)
     # Filling a distribution's per-entity values put every entity in every period as a 0.
     if plan.time and plan.time.get("fill"):
         raise SemanticLayerError(
