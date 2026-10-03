@@ -15,7 +15,7 @@ from functools import cache
 from typing import Any
 
 from .ast import every_filter, normalize_query, plain_filters
-from .compiler import BoundQuery, bind_query
+from .compiler import BoundQuery, bind_metadata_objects, bind_query
 from .errors import SemanticLayerError
 from .policy_rules import MAX_RANK, withheld_max_rank
 from .policy_rules import policy_action as _policy_action
@@ -156,6 +156,7 @@ def enforce_query_policies(
     query: Mapping[str, Any] | None = None,
     binding: BoundQuery | None = None,
 ) -> list[dict[str, Any]]:
+    object_ids = list(object_ids)  # read twice: the effects, then the withheld objects
     effects = query_policy_effects(
         config,
         object_ids,
@@ -222,6 +223,28 @@ def withheld_object_ids(
     return ranks
 
 
+def withheld_measure_ids(
+    config: PackageConfig,
+    *,
+    environment: str = "",
+    audience: str = "",
+    roles: Iterable[str] | None = None,
+) -> set[str]:
+    """Measures whose values are withheld from this caller, directly or as a withheld
+    metric's input."""
+    measures = {row.id for row in config.measures}
+    withheld = withheld_object_ids(
+        config,
+        [*measures, *(row.id for row in config.metric_recipes)],
+        environment=environment,
+        audience=audience,
+        roles=roles,
+    )
+    recipes = set(withheld) - measures
+    reads = set(withheld) | (bind_metadata_objects(config, recipes) if recipes else frozenset())
+    return reads & measures
+
+
 def withheld_shape(
     config: PackageConfig, binding: BoundQuery | None, withheld: Mapping[str, int]
 ) -> SemanticLayerError | None:
@@ -230,9 +253,9 @@ def withheld_shape(
     Accepted: a grouped query whose first ``order_by`` field is a select item naming one
     withheld metric or measure directly, ordered then by every group key in the same direction,
     with a ``limit`` of at most ``max_rank``, no ``export``, and no other part of the query
-    reading a withheld object. Dependencies come from binding the query without that item, so
-    a filter, segment, derived metric or comparison reading it is caught as the compiler sees
-    it. Anything else is a ``POLICY_DENIED`` refusal.
+    reading a withheld object. Dependencies come from the compiler: the cuts the binding
+    records, then a binding of the query without that item, so a filter, threshold, segment,
+    derived metric or comparison reading it is caught. Anything else is ``POLICY_DENIED``.
     """
 
     def refuse(reason: str, message: str) -> SemanticLayerError:
@@ -275,6 +298,14 @@ def withheld_shape(
     limit = query.get("limit")
     if limit is None or limit > max_rank:
         return refuse("withheld_rank_limit", f"limit must be at most {max_rank}.")
+    filtered = set().union(*binding.cuts) & set(withheld)
+    if filtered:
+        return refuse(
+            "withheld_value_dependency",
+            f"{', '.join(sorted(filtered))} is read by a filter or threshold.",
+        )
+    # Without the ranked item; a query selecting nothing ignores metric filters, which the
+    # cuts above have covered.
     witness = {
         **query,
         "select": [item for item in query["select"] if item is not ranked],

@@ -16,7 +16,7 @@ from ..compiler import (
 from ..compiler_parts.bind import lift_conditional_aggregates
 from ..compiler_parts.grain_recovery import _query_measure_ids
 from ..errors import SemanticLayerError
-from ..policies import hidden_object_ids, row_filters_for_context
+from ..policies import hidden_object_ids, row_filters_for_context, withheld_measure_ids
 from ..request_context import context_from_policy_context
 from ..runtime import Runtime, runtime_request_scope
 from ..schema import MeasureConfig, PackageConfig
@@ -123,6 +123,15 @@ def _anchor_measure_id(
     )
     if probe.get("route_decisions"):
         measures = [row for row in measures if row.id in own]
+    # An anchor's values would show beside each listed value, so a withheld one never anchors.
+    context = _policy_context(probe)
+    withheld = withheld_measure_ids(
+        runtime._config,
+        environment=str(context.get("environment", "")),
+        audience=str(context.get("audience", "")),
+        roles=context.get("roles", []),
+    )
+    measures = [row for row in measures if row.id not in withheld]
     reasons: list[dict[str, Any]] = []
     first_refusal: SemanticLayerError | None = None
     for measure in measures:
