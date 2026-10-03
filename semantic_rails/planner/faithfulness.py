@@ -2321,11 +2321,18 @@ def _unconsumed_words(
         if match.group(1) == time.get("grain"):
             spans.append(match.span())
     if clock and time.get("grain") == _explicit_grain(text, clock):
-        for start, end in _requested_grouping_spans(text):
-            term = lowered[start:end]
-            units = [_singular(match.group(0)) for match in _TERM_RE.finditer(term)]
+        clock_spans = [
+            (start, end)
+            for start, end in _requested_grouping_spans(text)
+            if _names_time_axis(lowered[start:end], clock)
+        ]
+        # The time block carries one clock grouping. With a second ("by order month and order
+        # date"), the draft drops one of them, so neither is consumed.
+        if len(clock_spans) == 1:
+            [(start, end)] = clock_spans
+            units = [_singular(match.group(0)) for match in _TERM_RE.finditer(lowered[start:end])]
             units = [unit for unit in units if unit in _TIME_UNITS]
-            if _names_time_axis(term, clock) and all(unit == time.get("grain") for unit in units):
+            if all(unit == time.get("grain") for unit in units):
                 spans.append((start, end))
                 clock_units.update(units)
     names: set[str] = set()
@@ -2373,9 +2380,10 @@ def _unconsumed_words(
             else:
                 reads.update({grain, "daily" if grain == "day" else f"{grain}ly"})
     reads.subtract(clock_units)
-    if count_valued:
+    if count_valued and (not query.get("group_by") or _requested_grouping_spans(text)):
         # Entity counts normalize to count_distinct; snapshot counts can use last_value.
-        # Either reads "number of", as an explicit counting aggregation does.
+        # Either reads "number of", as an explicit counting aggregation does. A count the
+        # question doesn't ask to group ("number of stores open" by store) isn't one number.
         spans.extend(match.span() for match in re.finditer(r"\bnumber\s+of\b", lowered))
     named = names | {_singular(word) for word in names}
     consumed = used | {_singular(word) for word in used}

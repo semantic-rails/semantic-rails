@@ -28,7 +28,12 @@ from ..ast import every_filter, is_child_group, rewrite_select_shorthand
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
-from ._base import _requested_grouping_terms, _time_window, _with_fiscal_calendar
+from ._base import (
+    _requested_grouping_terms,
+    _runtime_composition_terms,
+    _time_window,
+    _with_fiscal_calendar,
+)
 from .faithfulness import (
     intent_faithfulness_why,
     intent_subject_why,
@@ -675,9 +680,13 @@ def _unconsumed_catalog_why(question: str, words: list[str]) -> dict[str, Any] |
 
 
 def _dropped_value_why(unconsumed: list[str], unresolved: set[str]) -> dict[str, Any] | None:
-    """Unknown words left unresolved by the intent parse make the draft not ready."""
+    """Unknown words left unresolved by the intent parse make the draft not ready.
 
-    unknown = [term for term in unconsumed if term in unresolved]
+    The parse records a word as it normalizes it ("messages" as "message", "sent" as
+    "received"), so membership compares that form; the message names the question's spelling.
+    """
+
+    unknown = [term for term in unconsumed if _runtime_composition_terms(term) & unresolved]
     if not unknown:
         return None
     return {

@@ -242,6 +242,10 @@ def test_a_time_grain_reads_its_unit_once(jaffle: Runtime) -> None:
     [
         ("revenue by order month and order year", ["year"]),
         ("revenue by order month, month", ["month"]),
+        # The time block carries one clock grouping; a second one is never consumed.
+        ("revenue by order month and order date", ["date"]),
+        ("revenue by order year and order date", ["date"]),
+        ("revenue by order date and order month", ["date", "month"]),
     ],
 )
 def test_a_clock_grouping_consumes_only_its_grain_once(
@@ -463,6 +467,9 @@ def test_a_declared_filter_value_matches_reference_sql(jaffle: Runtime) -> None:
     [
         ("revenue decile by store", ["decile"]),
         ("What is completed revenue by month?", ["completed"]),
+        # The intent parse records these as "received", "message" and "account".
+        ("revenue from sent messages", ["sent", "messages"]),
+        ("revenue for accounts", ["accounts"]),
     ],
 )
 def test_an_unknown_modifier_is_not_ready(jaffle: Runtime, intent: str, terms: list[str]) -> None:

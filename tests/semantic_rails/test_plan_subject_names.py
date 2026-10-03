@@ -167,11 +167,12 @@ CUSTOMERS = "measure.jaffle.customer_count"
             None,
             ["items"],
         ),
+        # The draft groups by store, which the question doesn't ask for: not one number.
         (
             "number of stores open",
             "measure.jaffle.open_store_count_eop",
             ["dimension.jaffle_store_name"],
-            [],
+            ["number"],
         ),
     ],
 )
@@ -189,6 +190,7 @@ def test_counting_words_name_the_count_measure(
         runtime.close()
 
     assert plan["status"] == ("low_confidence" if unconsumed else "ok"), plan.get("why")
+    assert ("ready_for" in plan["next"]) is not bool(unconsumed)
     assert (plan.get("why") or {}).get("details", {}).get("terms", []) == unconsumed
     query = plan["best"]["query_ir"]
     [select] = query["select"]
