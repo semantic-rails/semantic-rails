@@ -29,7 +29,7 @@ from semantic_rails.request_context import (
     set_policy_context_resolver,
 )
 from semantic_rails.runtime import Runtime
-from semantic_rails.schema import SemanticPolicyConfig
+from semantic_rails.schema import SemanticCaveatConfig, SemanticPolicyConfig
 
 CUSTOMERS = "metric.sales.customer_count"
 AOV = "metric.sales.aov_usd"
@@ -687,37 +687,97 @@ def test_restricted_empty_columnar_result_retains_schema(granted_runtime, monkey
     assert result["output_columns"][0]["semantic_id"] == CUSTOMERS
 
 
-@pytest.mark.parametrize("operation", ["validate", "compile", "query"])
+def _granted_response(runtime, operation, verbosity="full"):
+    ctx = context(dimensions=())
+    payload = query(ctx=ctx, verbosity=verbosity, sql_profile="off")
+    if operation == "mcp":
+        return SemanticLayerMCPAdapter(runtime).call_tool(
+            "execute",
+            {"query": payload, "verbosity": verbosity, "sql_profile": "off"},
+            request_context=ctx,
+        )
+    return getattr(runtime, operation)(payload)
+
+
+@pytest.mark.parametrize("operation", ["validate", "compile", "query", "mcp"])
+@pytest.mark.parametrize("caveat_id", ["caveat.private.café", "caveat.private.cafe"])
+def test_grant_responses_omit_caveat_metadata(granted_runtime, request, operation, caveat_id):
+    caveat = SemanticCaveatConfig(
+        id=caveat_id,
+        kind="business_event",
+        object_ids=[CUSTOMERS],
+        message="Private customer interpretation.",
+        owner="private_analytics",
+        references=[{"url": "https://example.com/private-caveat"}],
+    )
+    config = replace(granted_runtime.config, semantic_caveats=[caveat])
+    runtime = _replace_test_config(granted_runtime, config, request)
+    legacy = runtime.validate(query(ctx=RequestContext(), verbosity="full"))
+    assert any(row["code"] == "SEMANTIC_CAVEAT_APPLIED" for row in legacy["warnings"])
+    result = _granted_response(runtime, operation)
+    assert result["ok"]
+    serialized = json.dumps(result, ensure_ascii=False)
+    for hidden in (caveat.id, caveat.message, caveat.owner, caveat.references[0]["url"]):
+        assert hidden not in serialized
+
+
+@pytest.mark.parametrize("operation", ["validate", "compile", "query", "mcp"])
+@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+def test_grant_responses_omit_caveat_counts(granted_runtime, request, operation, verbosity):
+    caveats = [
+        SemanticCaveatConfig(
+            id=f"caveat.private.customer_{i}",
+            kind="business_event",
+            object_ids=[CUSTOMERS],
+            message=f"Private customer interpretation {i}.",
+        )
+        for i in range(6)
+    ]
+    config = replace(granted_runtime.config, semantic_caveats=caveats)
+    runtime = _replace_test_config(granted_runtime, config, request)
+    legacy = runtime.validate(query(ctx=RequestContext(), verbosity="compact"))
+    assert any(row["code"] == "SEMANTIC_CAVEATS_TRUNCATED" for row in legacy["warnings"])
+    result = _granted_response(runtime, operation, verbosity)
+    assert result["ok"]
+    serialized = json.dumps(result)
+    for hidden in ("SEMANTIC_CAVEATS_TRUNCATED", "matched_count", "omitted_count"):
+        assert hidden not in serialized
+
+
+@pytest.mark.parametrize("operation", ["validate", "compile", "query", "mcp"])
 @pytest.mark.parametrize("verbosity", ["minimal", "full"])
-def test_grant_warnings_name_only_granted_objects(
-    granted_runtime, monkeypatch, operation, verbosity
-):
+def test_grant_responses_drop_unlisted_warnings(granted_runtime, monkeypatch, operation, verbosity):
     import semantic_rails.runtime as runtime_module
 
-    public = {"code": "PUBLIC_NOTICE", "message": CUSTOMERS, "object_ids": [CUSTOMERS]}
-    hidden = [
-        {**public, "object_ids": [AOV]},
-        {**public, "message": AOV},
-        {**public, "message": f"{AOV}: unavailable"},
-        {**public, "message": f"Unavailable for {AOV}."},
-        {**public, "details": {"related_objects": [SECRET_DIMENSION]}},
-        {**public, "recovery_hints": [{"object_id": "measure.jaffle.revenue_usd"}]},
-        {**public, "object_ids": ["metric.unknown"]},
-    ]
-    monkeypatch.setattr(runtime_module, "_compiled_warnings", lambda *args: [public, *hidden])
-    result = getattr(granted_runtime, operation)(query(verbosity=verbosity))
-    assert result["warnings"] == [public]
+    unknown = {"code": "UNLISTED_NOTICE", "message": CUSTOMERS, "object_ids": [CUSTOMERS]}
+    monkeypatch.setattr(runtime_module, "_compiled_warnings", lambda *args: [unknown])
+    result = _granted_response(granted_runtime, operation, verbosity)
+    assert result["warnings"] == []
     assert [row["semantic_id"] for row in result["output_columns"]] == [CUSTOMERS]
 
 
-def test_granted_warning_keeps_an_id_with_an_ungranted_prefix(granted_runtime, monkeypatch):
+@pytest.mark.parametrize("operation", ["validate", "compile", "query", "mcp"])
+@pytest.mark.parametrize("object_ids", [[CUSTOMERS], [CUSTOMERS, AOV], ["metric.unknown"]])
+def test_grant_responses_project_listed_warnings(
+    granted_runtime, monkeypatch, operation, object_ids
+):
     import semantic_rails.runtime as runtime_module
 
-    source = next(row for row in granted_runtime._config.metric_recipes if row.id == CUSTOMERS)
-    granted_runtime._config.metric_recipes.append(replace(source, id="metric.sales.customer"))
-    public = {"code": "PUBLIC_NOTICE", "message": CUSTOMERS, "object_ids": [CUSTOMERS]}
-    monkeypatch.setattr(runtime_module, "_compiled_warnings", lambda *args: [public])
-    assert granted_runtime.validate(query())["warnings"] == [public]
+    listed = {
+        "code": "NO_DATA_IN_SCOPE",
+        "message": "No data in scope for value.",
+        "severity": "warning",
+        "stage": "execution",
+        "object_ids": object_ids,
+        "details": {"outputs": ["value"]},
+    }
+    monkeypatch.setattr(
+        runtime_module,
+        "_compiled_warnings",
+        lambda *args: [{**listed, "future_metadata": {"object_id": "ungranted_metadata"}}],
+    )
+    result = _granted_response(granted_runtime, operation)
+    assert result["warnings"] == ([listed] if object_ids == [CUSTOMERS] else [])
 
 
 def test_restricted_catalog_reuses_compact_limit_full_and_filter_contract(granted_runtime, request):
