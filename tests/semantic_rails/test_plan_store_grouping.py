@@ -335,7 +335,7 @@ def test_preferred_store_draft_is_never_execute_ready(runtime_factory, monkeypat
             "count_distinct",
             True,
         ),
-        ("stores with more than 2000 orders", ["store_id"], "order_count", "count_distinct", False),
+        ("stores with more than 2000 orders", ["store_id"], "order_count", "count_distinct", True),
         ("customers with more than 3 orders", [], "order_count", "count_distinct", True),
         (
             "customers with more than 3 orders",
@@ -349,14 +349,14 @@ def test_preferred_store_draft_is_never_execute_ready(runtime_factory, monkeypat
             ["customer_id"],
             "order_count",
             "count_distinct",
-            False,
+            True,
         ),
         (
             "how many customers with more than 3 orders",
             [],
             "customer_count",
             "count_distinct",
-            False,
+            True,
         ),
         ("how many customers with more than 3 orders", [], "customer_count", "sum", True),
         ("number of stores open", [], "open_store_count_eop", "last_value", False),
@@ -529,5 +529,100 @@ def test_qualification_check_only_downgrades_scalar_cohort_answers(
         assert after["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
         assert "execute" not in after["next"].get("ready_for", [])
         assert after["best"]["query_ir"] == before["best"]["query_ir"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+def test_selected_customer_count_does_not_prove_qualification_scope(
+    runtime_factory, monkeypatch, path
+) -> None:
+    import semantic_rails.planner.plan as module
+
+    question = "how many customers with more than 3 orders in 2017"
+    partial_query = {
+        "select": [
+            {
+                "as": "qualified_customers",
+                "expression": {
+                    "measure": "measure.jaffle.customer_count",
+                    "aggregation": "count_distinct",
+                },
+            }
+        ]
+    }
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        result = compose(runtime, question)
+        assert result.draft is not None
+        if path == "fallback":
+            monkeypatch.setattr(
+                module, "compose", lambda *args, **kwargs: replace(result, draft=None)
+            )
+            monkeypatch.setattr(
+                module,
+                "_distinct_fallback_drafts",
+                lambda *args, **kwargs: [(result.draft, result.pattern)],
+            )
+        payload = plan_payload(runtime, intent=question, partial_query=partial_query)
+        assert payload["status"] == "low_confidence", payload
+        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+        assert "execute" not in payload["next"].get("ready_for", [])
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("omit_threshold", [False, True])
+def test_grouped_customer_qualification_matches_reference_or_holds(
+    runtime_factory, monkeypatch, path, omit_threshold
+) -> None:
+    import semantic_rails.planner.plan as module
+
+    question = "customers with more than 3 orders in 2017"
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        result = compose(runtime, question)
+        assert result.draft is not None
+        query = {**result.draft.query, "group_by": ["dimension.jaffle_customer_id"]}
+        if omit_threshold:
+            query.pop("metric_filters", None)
+            query.pop("having", None)
+        assert runtime.validate(query)["ok"]
+        draft = replace(result.draft, query=query)
+        monkeypatch.setattr(
+            module,
+            "compose",
+            lambda *args, **kwargs: replace(result, draft=draft if path == "primary" else None),
+        )
+        if path == "fallback":
+            monkeypatch.setattr(
+                module,
+                "_distinct_fallback_drafts",
+                lambda *args, **kwargs: [(draft, result.pattern)],
+            )
+        payload = plan_payload(
+            runtime, intent=question, partial_query={"group_by": ["dimension.jaffle_customer_id"]}
+        )
+        if omit_threshold or payload["status"] != "ok":
+            assert payload["status"] == "low_confidence", payload
+            assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+            assert "execute" not in payload["next"].get("ready_for", [])
+        else:
+            actual = typed_rows(runtime.query(payload["best"]["query_ir"]))
+            with duckdb.connect(runtime.db_path, read_only=True) as connection:
+                expected = {
+                    row[0]
+                    for row in connection.execute(
+                        "WITH qualified AS ("
+                        "SELECT customer_id FROM jaffle_order "
+                        "WHERE ordered_at >= '2017-01-01' AND ordered_at < '2018-01-01' "
+                        "GROUP BY customer_id HAVING COUNT(DISTINCT order_id) > 3) "
+                        "SELECT DISTINCT c.customer_id FROM jaffle_customer c "
+                        "JOIN qualified USING (customer_id)"
+                    ).fetchall()
+                }
+            assert len(expected) == 912
+            assert {row["dimension.jaffle_customer_id"] for row in actual} == expected
     finally:
         runtime.close()

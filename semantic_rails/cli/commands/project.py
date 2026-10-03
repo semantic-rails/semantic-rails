@@ -393,7 +393,7 @@ def cmd_ask(args: argparse.Namespace) -> None:
     if not question:
         raise SemanticLayerError(
             "INVALID_QUERY",
-            "Provide a question, for example: semantic-rails ask 'monthly revenue by store'",
+            "Provide a question, for example: semantic-rails ask 'monthly revenue by store name'",
             details={"path": "question"},
         )
     report = ask_report(

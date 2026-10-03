@@ -27,7 +27,6 @@ from typing import Any
 
 from ..ast import every_filter, is_child_group, rewrite_select_shorthand
 from ..errors import SemanticLayerError
-from ..expressions import ColumnRefExpr
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
 from ._base import (
@@ -1160,39 +1159,16 @@ def _dropped_grouping_why(
 def _qualifying_entity_why(
     runtime: Any, intent_ir: IntentIR, query: dict[str, Any]
 ) -> dict[str, Any] | None:
-    """A qualification must return the qualified entity's keys or count those keys."""
+    """Parsed qualifications remain held until their cohort and scope are proven."""
     # Entity discovery also fills this slot for ordinary entity mentions.
     # A cohort obligation needs a parsed qualification, not just that hint.
     if intent_ir.qualifying_entity is None or not (
         intent_ir.qualification_phrase or intent_ir.threshold is not None
     ):
         return None
-    config = runtime._config
-    entity = _object_by_id(config.entities, intent_ir.qualifying_entity.id)
-    if entity is not None and entity.key:
-        grouped_columns = {
-            row.column
-            for row in config.dimensions
-            if row.entity == entity.id and row.id in (query.get("group_by") or [])
-        }
-        if set(entity.key) <= grouped_columns:
-            return None
-        for item in query.get("select") or []:
-            expression = item.get("expression") or {}
-            measure = _object_by_id(config.measures, str(expression.get("measure") or ""))
-            if (
-                measure is not None
-                and measure.entity == entity.id
-                and len(entity.key) == 1
-                and isinstance(measure.expr, ColumnRefExpr)
-                and measure.expr.column == entity.key[0]
-                and expression.get("aggregation", measure.default_aggregation)
-                in {"count", "count_distinct"}
-            ):
-                return None
     return {
         "code": "PLAN_INTENT_COVERAGE_GAP",
-        "message": "The draft neither groups by the qualifying entity's key nor counts that key.",
+        "message": "The draft does not prove the qualifying cohort and its time scope.",
         "details": {"qualifying_entity": intent_ir.qualifying_entity.id},
     }
 

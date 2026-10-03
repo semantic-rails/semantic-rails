@@ -991,3 +991,29 @@ def test_plan_top_n_without_time_cue_ranks_whole_dimension(runtime_factory) -> N
     assert ranked_query["order_by"][0]["direction"] == "DESC"
     # An explicit grain cue keeps the time bucket.
     assert bucketed["best"]["query_ir"]["time"]["grain"] == "month"
+
+
+@pytest.mark.parametrize(
+    ("name", "code"),
+    [
+        ("top_stores_by_revenue", "PLAN_INTENT_COVERAGE_GAP"),
+        ("inventory_levels_by_store", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        ("active_menu_snapshot_for_high_activity_stores", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        ("adversarial_fake_ids_route_to_real_revenue", "VALIDATION_FAILED"),
+        ("orders_by_store_without_time_bucket", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+    ],
+)
+def test_benchmark_store_questions_require_clarification(runtime_factory, name, code) -> None:
+    from scripts.benchmark_plan import _load_cases
+
+    case = next(row for row in _load_cases() if row["name"] == name)
+    assert case["expected"] == "clarify"
+    assert case["expected_status"] == "low_confidence"
+    assert case["forbid_ready_for_execute"] is True
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(runtime, intent=case["intent"])
+        assert payload["status"] == "low_confidence"
+        assert_plan_held(payload, code)
+    finally:
+        runtime.close()
