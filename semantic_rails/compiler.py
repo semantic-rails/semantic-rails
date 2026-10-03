@@ -112,6 +112,7 @@ from .compiler_parts.sql_lowering import (
     _count_key_expr,
     _last_token,
     _plan_requires_agent_dag_lowering,
+    _refuse_converted_role,
     _slug,
     child_group_route,
     recording_stock_key_gaps,
@@ -2282,6 +2283,7 @@ def _predicate_time_join_expr(
         raise SemanticLayerError(
             "PREDICATE_GRAIN_UNSAFE", f"Unknown predicate temporal role '{role_id}'"
         )
+    _refuse_converted_role(role, "predicate_period_join")
     dim = dimensions[role.dimension]
     raw_expr = _column_ref(entities[dim.entity].table, dim.column)
     return (
@@ -2455,6 +2457,21 @@ def _predicate_scope(
     }
 
 
+def _predicate_window_filters(time: dict[str, Any], config: PackageConfig) -> list[dict[str, Any]]:
+    """Build raw-column window filters only for roles without timezone conversion."""
+    from .compiler_parts.sql_lowering import _source_time_window
+
+    role = _temporal_role_index(config)[str(time["temporal_role"])]
+    _refuse_converted_role(role, "entity_only_predicate_window")
+    column = SqlIdentifier(parts=[role.dimension])
+    filters = []
+    for bound in _source_time_window(column, time, config):
+        if bound.left != column:
+            return [{"field": role.dimension, "op": "IN", "value": []}]
+        filters.append({"field": role.dimension, "op": bound.op, "value": bound.right.value})
+    return filters
+
+
 def _predicate_ctes_and_join(
     predicate: MetricPredicateExpr,
     *,
@@ -2490,15 +2507,7 @@ def _predicate_ctes_and_join(
     }
     predicate_where_items = [asdict(item) for item in scope["filter_items"]]
     if scope["time_spec"] is not None and scope["time_spec"].get("entity_only_window"):
-        role = _temporal_role_index(config)[str(scope["time_spec"]["temporal_role"])]
-        if scope["time_spec"].get("start") is not None:
-            predicate_where_items.append(
-                {"dimension": role.dimension, "op": ">=", "value": scope["time_spec"]["start"]}
-            )
-        if scope["time_spec"].get("end") is not None:
-            predicate_where_items.append(
-                {"dimension": role.dimension, "op": "<", "value": scope["time_spec"]["end"]}
-            )
+        predicate_where_items.extend(_predicate_window_filters(scope["time_spec"], config))
     if scope["filter_items"] or predicate_where_items:
         mini_query["where"] = predicate_where_items
     if scope["time_spec"] is not None and not scope["time_spec"].get("entity_only_window"):
@@ -3602,15 +3611,7 @@ def _conversion_predicate_set_ctes(
     }
     predicate_where_items = [asdict(item) for item in scope["filter_items"]]
     if scope["time_spec"] is not None and scope["time_spec"].get("entity_only_window"):
-        role = _temporal_role_index(config)[str(scope["time_spec"]["temporal_role"])]
-        if scope["time_spec"].get("start") is not None:
-            predicate_where_items.append(
-                {"dimension": role.dimension, "op": ">=", "value": scope["time_spec"]["start"]}
-            )
-        if scope["time_spec"].get("end") is not None:
-            predicate_where_items.append(
-                {"dimension": role.dimension, "op": "<", "value": scope["time_spec"]["end"]}
-            )
+        predicate_where_items.extend(_predicate_window_filters(scope["time_spec"], config))
     if predicate_where_items:
         mini_query["where"] = predicate_where_items
     if scope["time_spec"] is not None and not scope["time_spec"].get("entity_only_window"):
@@ -3887,6 +3888,7 @@ def _conversion_leaf_cte(
                     "dim_entity": binding_dim_entity,
                 },
             )
+        _refuse_converted_role(query_role, "conversion_metric")
         raw_expr = _column_ref(entities[query_dim.entity].table, query_dim.column)
         group_time_alias = (
             str(plan.time["temporal_role"])
@@ -3896,10 +3898,9 @@ def _conversion_leaf_cte(
         group_time_expr = (
             dialect.date_trunc(plan.time["grain"], raw_expr) if plan.time.get("grain") else raw_expr
         )
-        if plan.time.get("start") is not None:
-            base_group_where.append(SqlBinary(raw_expr, ">=", SqlLiteral(plan.time["start"])))
-        if plan.time.get("end") is not None:
-            base_group_where.append(SqlBinary(raw_expr, "<", SqlLiteral(plan.time["end"])))
+        from .compiler_parts.sql_lowering import _source_time_window
+
+        base_group_where.extend(_source_time_window(raw_expr, plan.time, config))
 
     for item in refuse_child_groups(query.where, "in a conversion metric"):
         where_target = (
@@ -4370,7 +4371,7 @@ def plan_query(
     collapse_window: bool = True,
 ) -> LogicalPlan:
     validate_temporal_support(config, payload)
-    raw_query = normalize_query(payload)
+    raw_query = normalize_query(payload, config=config)
 
     with candidate_planning():
         return _plan_query(
@@ -4677,7 +4678,9 @@ def _compile_query_sql_ast(
     """Compile a nested query; ``guard_empty=False`` for a distribution's per-entity values."""
     validate_temporal_support(config, payload)
     with candidate_planning():
-        plan = _plan_query(config, None, normalize_query(payload), collapse_window=False)
+        plan = _plan_query(
+            config, None, normalize_query(payload, config=config), collapse_window=False
+        )
     config = resolve_compile_config(plan, config)
     with plan_bindings(plan, project_cut=project_cut) as leaves:
         _record_bound_plan(plan, config, leaves.leaves)

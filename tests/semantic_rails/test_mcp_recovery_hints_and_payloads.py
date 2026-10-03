@@ -977,3 +977,62 @@ def test_where_uses_field_key_and_rejects_legacy_dimension_key(runtime_factory):
         assert errors[0]["details"]["path"] == "where[0].field"
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize("outer_verbosity", [None, "minimal", "compact"])
+def test_cross_fact_rewrite_analysis_is_opt_in(runtime_factory, outer_verbosity):
+    from semantic_rails.mcp import SemanticLayerMCPAdapter
+
+    runtime = runtime_factory("jaffle_shop")
+    adapter = SemanticLayerMCPAdapter(runtime)
+    query = {
+        "select": [
+            {
+                "expression": {
+                    "measure": "measure.jaffle.order_count",
+                    "aggregation": "count_distinct",
+                },
+                "as": "orders",
+            },
+            {
+                "expression": {
+                    "measure": "measure.jaffle.item_count",
+                    "aggregation": "count_distinct",
+                },
+                "as": "items",
+            },
+        ],
+        "group_by": ["dimension.jaffle_store_name"],
+        "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+    }
+    try:
+        responses = [
+            adapter.call_tool(
+                "execute",
+                {
+                    "query": {**query, "verbosity": verbosity},
+                    "mode": "run",
+                    "verbosity": outer_verbosity or verbosity,
+                },
+            )
+            for verbosity in ("minimal", "compact", "full")
+        ]
+        minimal, compact, full = responses
+        assert all(r["ok"] for r in responses)
+        assert all("recovery_hints" not in r for r in responses)
+        assert minimal["rows"] == compact["rows"] == full["rows"]
+        rewrites = [[w for w in r["warnings"] if w["code"] == "REWRITE_APPLIED"] for r in responses]
+        assert rewrites[0]
+        assert rewrites[1] == rewrites[2]
+        for small, verbose in zip(rewrites[0], rewrites[1], strict=True):
+            assert verbose["details"]["analysis"]
+            assert verbose["details"]["path"]
+            assert small["code"] == verbose["code"] and small["message"] == verbose["message"]
+            assert small["details"] == {
+                key: value
+                for key, value in verbose["details"].items()
+                if key not in {"analysis", "path"}
+            }
+            assert "rewrite_kind" in small["details"]
+    finally:
+        adapter.close()

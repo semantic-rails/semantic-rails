@@ -412,7 +412,7 @@ def test_mcp_execute_rejects_invalid_row_format(runtime_factory):
     assert envelope["ok"] is False
     assert envelope["error"]["code"] == "INVALID_MCP_ARGUMENTS"
     assert envelope["errors"][0]["code"] == "INVALID_MCP_ARGUMENTS"
-    assert envelope["error"]["details"]["field"] == "row_format"
+    assert envelope["errors"][0]["details"]["field"] == "row_format"
 
 
 def test_mcp_execute_top_level_ir_row_format_does_not_leak_to_runtime(runtime_factory):

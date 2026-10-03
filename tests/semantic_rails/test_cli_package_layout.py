@@ -28,7 +28,11 @@ def _modules() -> list[str]:
 @pytest.mark.parametrize("module", _modules())
 def test_each_module_imports_first_in_a_fresh_interpreter(module: str) -> None:
     proc = subprocess.run(
-        [sys.executable, "-c", f"import {module}"], capture_output=True, text=True, check=False
+        [sys.executable, "-c", f"import {module}"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
     )
 
     assert proc.returncode == 0, proc.stderr

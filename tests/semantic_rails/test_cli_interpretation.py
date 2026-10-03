@@ -499,6 +499,7 @@ def test_ask_prints_what_the_query_computes(tmp_path: Path) -> None:
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
+            timeout=120,
         )
         assert proc.returncode == 0, proc.stderr
         return proc.stdout

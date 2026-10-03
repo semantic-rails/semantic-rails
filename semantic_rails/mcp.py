@@ -29,6 +29,7 @@ from .diagnostics import enrich_object_not_found, exception_issue, semantic_issu
 from .errors import SemanticLayerError
 from .mcp_session import MCPQuerySession
 from .metadata import (
+    _slim_discover_minimal,
     build_options_payload,
     catalog_payload,
     discover_payload,
@@ -56,7 +57,7 @@ from .request_payload import (
 )
 from .resource_access import GRANT_DISCOVER_KINDS
 from .runtime import Runtime
-from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL
+from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL, resolve_verbosity
 
 __all__ = [
     "JSON_OBJECT_SCHEMA",
@@ -329,8 +330,17 @@ MCP_RESULT_SCHEMA: dict[str, Any] = {
         "package_id": {"type": "string"},
         "warnings": {"type": "array", "items": {"$ref": "#/$defs/issue"}},
         "errors": {"type": "array", "items": {"$ref": "#/$defs/issue"}},
-        "error": {"oneOf": [{"$ref": "#/$defs/issue"}, {"type": "null"}]},
-        "recovery_hints": {"type": "array", "items": {"type": "object"}},
+        "error": {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "required": ["code", "message"],
+                    "properties": {"code": {"type": "string"}, "message": {"type": "string"}},
+                    "additionalProperties": False,
+                },
+                {"type": "null"},
+            ]
+        },
         "request_context": {"type": "object"},
         "timing_ms": {"type": "number", "minimum": 0},
     },
@@ -482,7 +492,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "Returns measures, metrics, dimensions, and entities, up to 'limit' per kind; "
             f"empty terms list ids per kind instead, {_DISCOVER_ID_PAGE} at a time "
             "(limit, offset). Default: slim cards (id, label, "
-            "description, score); verbosity='compact' adds match_reasons and starter patches. "
+            "description); verbosity='compact' adds match_reasons and starter patches. "
             "Gotcha: nonsense terms return 'out_of_scope' or 'low_relevance' with empty "
             "buckets; branch before using a candidate."
         ),
@@ -1551,6 +1561,37 @@ def _columnar_rows(result: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _compact_execute(result: dict[str, Any], *, limit: int) -> dict[str, Any]:
+    """Size the execute result before transport warnings and session annotations."""
+
+    omitted = []
+    warnings = list(result.get("warnings") or [])
+    for field in ("explain", "sql_plan"):
+        if len(json_text(result)) <= limit:
+            return result
+        if field not in result:
+            continue
+        result = {key: value for key, value in result.items() if key != field}
+        omitted.append(field)
+        result["warnings"] = [
+            *warnings,
+            {
+                "code": "EXECUTE_DETAILS_OMITTED",
+                "severity": "warning",
+                "message": f"Omitted {', '.join(omitted)} to fit the response limit. "
+                "Use execute mode='sql' for the complete plan.",
+            },
+        ]
+    if len(json_text(result)) > limit:
+        raise SemanticLayerError(
+            "RESULT_TOO_LARGE",
+            "The compact response exceeds the response limit even without plan details. "
+            "Narrow the query or select fewer columns.",
+            details={"max_result_chars": limit},
+        )
+    return result
+
+
 _DISCOVER_SCREENED_KEYS = ("low_relevance", "out_of_scope")
 
 
@@ -1634,7 +1675,7 @@ def _lean_discover(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-def _lean_issue(issue: Any) -> Any:
+def _lean_issue(issue: Any, *, verbosity: str = "compact") -> Any:
     """State an issue's facts once: drop empty optional fields and echoes of code or message."""
 
     if not isinstance(issue, dict):
@@ -1649,6 +1690,12 @@ def _lean_issue(issue: Any) -> Any:
     if isinstance(lean.get("recovery_hints"), list):
         # Hints must be actionable on their own (for example, valid_kinds on a retry).
         lean["recovery_hints"] = [_lean_issue(hint) for hint in lean["recovery_hints"]]
+    if verbosity == "minimal" and lean.get("code") in {"MIXED_GRAIN_INVALID", "REWRITE_APPLIED"}:
+        details = dict(lean.get("details") or {})
+        details.pop("analysis", None)
+        if lean["code"] == "REWRITE_APPLIED":
+            details.pop("path", None)
+        lean["details"] = details
     return lean
 
 
@@ -1955,13 +2002,12 @@ class SemanticLayerMCPAdapter:
                 ),
                 stage="mcp",
             )
-            return {
-                "ok": False,
-                "status": "error",
-                "error": issue,
-                "errors": [issue],
-                "messages": [],
-            }
+            return self._envelope(
+                {"ok": False, "errors": [issue], "messages": []},
+                request_id=_clean_request_id(args.get("request_id")),
+                started_at=time.perf_counter(),
+                arguments=args,
+            )
         return {
             "name": name,
             "description": next(
@@ -1979,7 +2025,12 @@ class SemanticLayerMCPAdapter:
         }
 
     def _envelope(
-        self, payload: Mapping[str, Any], *, request_id: str, started_at: float
+        self,
+        payload: Mapping[str, Any],
+        *,
+        request_id: str,
+        started_at: float,
+        arguments: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         out = dict(payload or {})
         out.setdefault("ok", not bool(out.get("errors")))
@@ -1996,32 +2047,34 @@ class SemanticLayerMCPAdapter:
                 out["errors"] = [_internal_issue(str(error))]
             else:
                 out["errors"] = []
-        # Surface errors[0] at the top-level `error` so agents that read
-        # the conventional MCP-envelope `if result.get("error"): ...`
-        # branch don't silently treat a soft-fail (execute mode validate,
-        # segment action validate) as success.
-        if not out.get("error"):
-            first = next(
-                (issue for issue in (out.get("errors") or []) if isinstance(issue, dict)),
-                None,
-            )
-            if first is not None:
-                out["error"] = first
+        arguments = arguments or {}
+        verbosity = MCP_DEFAULT_QUERY_VERBOSITY
+        # Use the handler's query shaping and runtime normalization. Invalid
+        # arguments still need an envelope even when no query can be built.
+        with contextlib.suppress(SemanticLayerError):
+            verbosity = resolve_verbosity(_query_payload_with_mcp_default_verbosity(arguments))
         for key in ("errors", "warnings"):
-            out[key] = [_lean_issue(issue) for issue in out[key] or []]
-        if isinstance(out.get("error"), dict):
-            out["error"] = _lean_issue(out["error"])
-        # The errors' hints, repeated at the top level: agents' loop-repair signal.
-        hints = out.pop("recovery_hints", None)
-        if hints is None:
-            hints = [
-                hint
-                for issue in out["errors"]
-                if isinstance(issue, dict)
-                for hint in issue.get("recovery_hints") or []
-            ]
-        if hints:
-            out["recovery_hints"] = [_lean_issue(hint) for hint in hints]
+            out[key] = [_lean_issue(issue, verbosity=verbosity) for issue in out[key] or []]
+        # Keep the conventional truthy error branch for validate soft-fails,
+        # while the complete issues and their hints live only in errors.
+        if out["errors"]:
+            first = out["errors"][0]
+            hints = [hint for issue in out["errors"] for hint in issue.get("recovery_hints", [])]
+            extra = [_lean_issue(hint) for hint in out.pop("recovery_hints", []) or []]
+            extra = [hint for hint in extra if hint not in hints]
+            if extra:
+                first["recovery_hints"] = list(first.get("recovery_hints", [])) + extra
+                hints += extra
+            if "query_ir_hints" in out:
+                out["query_ir_hints"] = [
+                    hint for hint in out["query_ir_hints"] if _lean_issue(hint) not in hints
+                ]
+            out["error"] = {key: first[key] for key in ("code", "message")}
+        elif out.get("recovery_hints"):
+            # Discovery next steps are independent of error recovery hints.
+            out["recovery_hints"] = [_lean_issue(hint) for hint in out["recovery_hints"]]
+        else:
+            out.pop("recovery_hints", None)
         out.setdefault("timing_ms", round((time.perf_counter() - started_at) * 1000, 3))
         return out
 
@@ -2044,6 +2097,7 @@ class SemanticLayerMCPAdapter:
             payload,
             request_id=_clean_request_id(arguments.get("request_id")),
             started_at=started_at,
+            arguments=arguments,
         )
         return self._with_request_context(out, arguments)
 
@@ -2074,6 +2128,7 @@ class SemanticLayerMCPAdapter:
             {"ok": False, "status": "error", "error": issue, "errors": [issue]},
             request_id=_clean_request_id(arguments.get("request_id")),
             started_at=started_at or time.perf_counter(),
+            arguments=arguments,
         )
         return self._with_request_context(out, arguments)
 
@@ -2209,6 +2264,7 @@ class SemanticLayerMCPAdapter:
                         }
                     )
                 return {"catalog": page, "warnings": terms_warnings}
+            verbosity = str(args.get("verbosity") or "minimal")
             payload = discover_payload(
                 self.runtime,
                 terms=terms_str,
@@ -2217,7 +2273,7 @@ class SemanticLayerMCPAdapter:
                 if args.get("query") or args.get("policy_context")
                 else None,
                 stage=str(args.get("stage", "")),
-                verbosity=str(args.get("verbosity") or "minimal"),
+                verbosity="compact" if verbosity == "minimal" else verbosity,
                 limit=_coerce_int(args.get("limit"), 10, field="limit", minimum=1),
                 enforce_scope=True,
             )
@@ -2275,6 +2331,9 @@ class SemanticLayerMCPAdapter:
                     {"kind": "browse_catalog_or_capabilities", "message": browse_message}
                 )
                 payload["recovery_hints"] = existing_hints
+            if verbosity == "minimal" and "verbosity" in payload:
+                payload["verbosity"] = verbosity
+                payload = _slim_discover_minimal(payload, self.runtime._config)
             return _lean_discover(payload)
 
         return self._guarded(arguments, _build)
@@ -2338,12 +2397,16 @@ class SemanticLayerMCPAdapter:
         return self._guarded(arguments, _run)
 
     def _handle_execute(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        compact = False
+
         def _run(args: dict[str, Any]) -> dict[str, Any]:
+            nonlocal compact
             row_format = _row_format_arg(args)
             requested_cap = _max_rows_arg(args.get("max_rows")) or MCP_DEFAULT_MAX_ROWS
             query_payload = _query_payload_with_mcp_default_verbosity(
                 _strip_execute_transport_args(args)
             )
+            compact = resolve_verbosity(query_payload) == "compact"
             cap, fetch, fence_binds = _execute_row_limits(query_payload, requested_cap)
             limits = query_payload.get("limits")
             query_payload["limits"] = {
@@ -2397,7 +2460,13 @@ class SemanticLayerMCPAdapter:
                 _refuse_oversized(result, query_payload, limit=_max_result_chars(), fetched=fetch)
             return result
 
-        return self._guarded(arguments, _run)
+        result = self._guarded(arguments, _run)
+        if result.get("ok") and compact:
+            try:
+                return _compact_execute(result, limit=_max_result_chars())
+            except SemanticLayerError as exc:
+                return self._error_response(exc, arguments)
+        return result
 
     def _handle_execute_mode(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """``execute``: mode ``run``, ``validate`` or ``sql`` runs, validates or

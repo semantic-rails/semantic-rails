@@ -441,14 +441,16 @@ def test_refusal_names_keys_only_when_all_are_visible(
                 "measure_id": f"measure.{NS}.daily_visitors",
                 "unsupported_construct": "non_additive_sum",
                 "construct": "sum",
-                "recovery_hints": [
-                    {
-                        "kind": "stay_at_stored_grain",
-                        "message": "Group by, or filter with = to one value, each column of the measure's "
-                        "key, or use aggregation avg / min / max / median.",
-                    }
-                ],
             }
+            assert issue["recovery_hints"] == [
+                {
+                    "kind": "stay_at_stored_grain",
+                    "message": "Group by, or filter with = to one value, each column of the measure's "
+                    "key, or use aggregation avg / min / max / median.",
+                }
+            ]
+            assert "recovery_hints" not in response
+            assert response["error"] == {key: issue[key] for key in ("code", "message")}
             assert all(name not in json.dumps(response) for name in names)
         else:
             assert issue["details"]["key_dimensions"] == names

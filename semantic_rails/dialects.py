@@ -176,6 +176,15 @@ class SqlDialect:
     def timestamp_cast(self, expr: Any) -> Any:
         return SqlCast(expr, self.timestamp_type_name())
 
+    def naive_date_clock(self, expr: Any) -> Any:
+        """A DATE clock as the input :meth:`convert_timezone` reads as storage-zone midnight.
+
+        DuckDB and Postgres can resolve ``timezone(zone, DATE)`` through the session zone,
+        so they cast to a naive timestamp first. Only those executions are tested; every
+        other warehouse passes the DATE to its conversion unchanged.
+        """
+        return expr
+
     @property
     def has_time_coverage(self) -> bool:
         """Whether an empty time bucket reads 0 only inside the base's loaded range.
@@ -396,6 +405,9 @@ class DuckDbDialect(SqlDialect):
         day = SqlCast(SqlIdentifier(parts=["day_series", "series_day"]), "DATE")
         return _day_rows(day, source, series)
 
+    def naive_date_clock(self, expr: Any) -> Any:
+        return self.timestamp_cast(expr)
+
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
         # `timezone(tz, naive_ts)` reads the naive value as wall-clock in
         # `tz` and yields an instant; `timezone(tz, instant)` renders an
@@ -443,6 +455,9 @@ class PostgresDialect(SqlDialect):
         )
         day = SqlBinary(start, "+", SqlIdentifier(parts=["day_series", "day_offset"]))
         return _day_rows(day, source, series)
+
+    def naive_date_clock(self, expr: Any) -> Any:
+        return self.timestamp_cast(expr)
 
     def convert_timezone(self, source_tz: str, target_tz: str, ts_expr: Any) -> Any:
         # `timezone(tz, naive_ts)` reads the naive value as wall-clock in

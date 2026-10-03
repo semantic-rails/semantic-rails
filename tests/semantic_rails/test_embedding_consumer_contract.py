@@ -111,8 +111,8 @@ def test_scan_follows_imports_instances_and_patches(tmp_path: Path) -> None:
     for name, source in CONSUMER.items():
         (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / name).write_text(source, encoding="utf-8")
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=120)
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True, timeout=120)
 
     kept, failing = scan(tmp_path)
 
