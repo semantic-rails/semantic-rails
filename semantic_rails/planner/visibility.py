@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from functools import wraps
+from types import EllipsisType
 from typing import Any, ParamSpec, TypeVar
 
 from .. import policies
@@ -59,20 +60,33 @@ def with_dimension_visibility(operation: Callable[_P, _R]) -> Callable[_P, _R]:
     return wrapped
 
 
+def visible_object_ids(
+    config: Any,
+    object_ids: Iterable[str],
+    *,
+    hidden_ids: frozenset[str] | None | EllipsisType = ...,
+) -> list[str]:
+    """Filter candidates before ranking or text; explicit uncertainty withholds all."""
+
+    if isinstance(hidden_ids, EllipsisType):
+        current = _visibility.get()
+        hidden_ids = (
+            current.hidden_ids
+            if current is not None and current.config is config
+            else policies.diagnostic_hidden_object_ids(config, {})
+        )
+    return [
+        object_id
+        for object_id in object_ids
+        if hidden_ids is not None and object_id not in hidden_ids
+    ]
+
+
 def visible_dimensions(config: Any) -> list[Any]:
     """Filter before any score, selection, candidate count or diagnostic text."""
 
-    current = _visibility.get()
-    hidden = (
-        current.hidden_ids
-        if current is not None and current.config is config
-        else policies.diagnostic_hidden_object_ids(config, {})
-    )
-    return [
-        row
-        for row in getattr(config, "dimensions", [])
-        if hidden is not None and row.id not in hidden
-    ]
+    visible_ids = set(visible_object_ids(config, (row.id for row in config.dimensions)))
+    return [row for row in getattr(config, "dimensions", []) if row.id in visible_ids]
 
 
 def discovery_query(query: dict[str, Any]) -> dict[str, Any]:

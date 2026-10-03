@@ -25,7 +25,12 @@ from typing import Any
 from .ast import QUERY_INPUT_KEYS, rewrite_select_shorthand
 from .audit import emit_audit_event
 from .catalog_service import resolve_catalog
-from .diagnostics import enrich_object_not_found, exception_issue, semantic_issue
+from .diagnostics import (
+    enrich_diagnostic_candidates,
+    enrich_object_not_found,
+    exception_issue,
+    semantic_issue,
+)
 from .errors import SemanticLayerError
 from .mcp_session import MCPQuerySession
 from .metadata import (
@@ -2142,13 +2147,14 @@ class SemanticLayerMCPAdapter:
         # the original error.
         with contextlib.suppress(Exception):
             config = self.runtime._config
+            hidden_ids = diagnostic_hidden_object_ids(
+                config, _resolved_tool_request_context(arguments).to_policy_context()
+            )
+            exc = enrich_diagnostic_candidates(exc, config, hidden_ids=hidden_ids)
             exc = enrich_object_not_found(
                 exc,
                 config,
-                hidden_ids=diagnostic_hidden_object_ids(
-                    config,
-                    _resolved_tool_request_context(arguments).to_policy_context(),
-                ),
+                hidden_ids=hidden_ids,
             )
         issue = exception_issue(exc, stage="mcp")
         out = self._envelope(

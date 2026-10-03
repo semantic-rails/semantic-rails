@@ -15,6 +15,7 @@ import re
 from collections.abc import Iterable
 from datetime import date, timedelta
 from difflib import get_close_matches
+from types import EllipsisType
 from typing import Any
 
 from .errors import SemanticLayerError
@@ -1130,6 +1131,52 @@ def recovery_hints_for_error(
     return []
 
 
+def _visible_candidate_ids(
+    config: PackageConfig,
+    ids: Iterable[str],
+    hidden_ids: frozenset[str] | None | EllipsisType,
+) -> list[str]:
+    # The planner imports compiler code that also imports diagnostics.
+    from .planner.visibility import visible_object_ids
+
+    return visible_object_ids(config, ids, hidden_ids=hidden_ids)
+
+
+def enrich_diagnostic_candidates(
+    exc: SemanticLayerError,
+    config: PackageConfig,
+    *,
+    hidden_ids: frozenset[str] | None,
+) -> SemanticLayerError:
+    """Filter compiler-supplied catalog alternatives before hints become text."""
+    details = dict(exc.details or {})
+    for key in (
+        "compatible_dimensions",
+        "compatible_group_by_dimensions",
+        "compatible_measures",
+        "compatible",
+        "available_temporal_roles",
+        "allowed_temporal_roles",
+        "reachable_targets",
+    ):
+        if key in details:
+            details[key] = _visible_candidate_ids(config, details[key], hidden_ids)
+    for key in ("closest_compatible_measure", "anchor_temporal_role"):
+        if key in details:
+            matches = _visible_candidate_ids(config, [details[key]], hidden_ids)
+            details[key] = matches[0] if matches else ""
+    time_axis = details.get("time_axis_recovery")
+    if (
+        time_axis
+        and time_axis.get("temporal_role")
+        and not _visible_candidate_ids(config, [time_axis["temporal_role"]], hidden_ids)
+    ):
+        details.pop("time_axis_recovery")
+    return (
+        exc if details == exc.details else SemanticLayerError(exc.code, str(exc), details=details)
+    )
+
+
 def _object_catalog_ids(config: PackageConfig) -> list[str]:
     ids: list[str] = []
     for collection in (
@@ -1170,7 +1217,7 @@ def object_id_suggestions(
     missing_id: str,
     *,
     limit: int = 3,
-    hidden_ids: frozenset[str] | None = None,
+    hidden_ids: frozenset[str] | None | EllipsisType = ...,
 ) -> list[str]:
     """Suggest near-matching object ids for a missing reference.
 
@@ -1192,9 +1239,7 @@ def object_id_suggestions(
     missing = str(missing_id or "").strip()
     if not missing:
         return []
-    candidates = _object_catalog_ids(config)
-    if hidden_ids is not None:
-        candidates = [item for item in candidates if item not in hidden_ids]
+    candidates = _visible_candidate_ids(config, _object_catalog_ids(config), hidden_ids)
     if not candidates:
         return []
     lowered = {item.lower(): item for item in candidates}
@@ -1317,7 +1362,10 @@ def _authored_prior_period_metrics(config: PackageConfig, target_measure_id: str
 
 
 def enrich_expression_ast_error(
-    exc: SemanticLayerError, config: PackageConfig
+    exc: SemanticLayerError,
+    config: PackageConfig,
+    *,
+    hidden_ids: frozenset[str] | None | EllipsisType = ...,
 ) -> SemanticLayerError:
     """Attach ``closest_matches`` to ``INVALID_EXPRESSION_AST`` errors.
 
@@ -1334,21 +1382,33 @@ def enrich_expression_ast_error(
     if kind != "prior_period":
         return exc
     if details.get("closest_matches"):
-        return exc
+        details["closest_matches"] = _visible_candidate_ids(
+            config, details["closest_matches"], hidden_ids
+        )
+        exc = SemanticLayerError(exc.code, str(exc), details=details)
+        if details["closest_matches"]:
+            return exc
     received = dict(details.get("received", {}) or {})
     measure_id = str(received.get("measure", "") or "")
     if not measure_id:
         inner = received.get("input")
         if isinstance(inner, dict):
             measure_id = str(inner.get("measure", "") or "")
-    matches = _authored_prior_period_metrics(config, measure_id)
+    matches = _visible_candidate_ids(
+        config, _authored_prior_period_metrics(config, measure_id), hidden_ids
+    )
     if not matches:
         return exc
     details["closest_matches"] = matches[:5]
     return SemanticLayerError(exc.code, str(exc), details=details)
 
 
-def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> SemanticLayerError:
+def enrich_path_not_found(
+    exc: SemanticLayerError,
+    config: PackageConfig,
+    *,
+    hidden_ids: frozenset[str] | None | EllipsisType = ...,
+) -> SemanticLayerError:
     """Attach reachable-target context to ``PATH_NOT_FOUND``.
 
     Shared path eligibility approves alternatives: relationship
@@ -1368,7 +1428,9 @@ def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> Sem
         return exc
     from .fanout import eligible_path_targets
 
-    reachable_sorted = eligible_path_targets(config, start=start)
+    reachable_sorted = _visible_candidate_ids(
+        config, eligible_path_targets(config, start=start), hidden_ids
+    )
     # Walk the dimension index for concrete ``dimension.<id>`` values
     # whose owning entity is ``start`` or any reachable entity. Listing
     # 15 ids keeps the envelope small; agents that need more browse
@@ -1376,7 +1438,11 @@ def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> Sem
     # sees the cheapest alternatives at the top.
     compatible_dimensions: list[str] = []
     eligible_entities = {start, *reachable_sorted}
-    for dim in getattr(config, "dimensions", []) or []:
+    visible_ids = set(
+        _visible_candidate_ids(config, (dim.id for dim in config.dimensions), hidden_ids)
+    )
+    dimensions = [dim for dim in config.dimensions if dim.id in visible_ids]
+    for dim in dimensions:
         dim_id = str(getattr(dim, "id", "") or "")
         dim_entity = str(getattr(dim, "entity", "") or "")
         if not dim_id or dim_entity not in eligible_entities:
@@ -1389,14 +1455,14 @@ def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> Sem
         for d in compatible_dimensions
         if any(
             getattr(dim, "id", "") == d and getattr(dim, "entity", "") == start
-            for dim in getattr(config, "dimensions", []) or []
+            for dim in dimensions
         )
     ) + sorted(
         d
         for d in compatible_dimensions
         if any(
             getattr(dim, "id", "") == d and getattr(dim, "entity", "") != start
-            for dim in getattr(config, "dimensions", []) or []
+            for dim in dimensions
         )
     )
     details["start"] = start
@@ -1410,7 +1476,7 @@ def enrich_object_not_found(
     exc: SemanticLayerError,
     config: PackageConfig,
     *,
-    hidden_ids: frozenset[str] | None = None,
+    hidden_ids: frozenset[str] | None | EllipsisType = ...,
 ) -> SemanticLayerError:
     # OBJECT_NOT_FOUND is the canonical "unknown ID" code, but
     # INVALID_TEMPORAL_ROLE is raised with the same shape when an unknown
@@ -1420,10 +1486,10 @@ def enrich_object_not_found(
     if exc.code not in {"OBJECT_NOT_FOUND", "INVALID_TEMPORAL_ROLE"}:
         return exc
     details = dict(exc.details or {})
-    if details.get("closest_matches") and hidden_ids is not None:
-        details["closest_matches"] = [
-            item for item in details["closest_matches"] if item not in hidden_ids
-        ]
+    if details.get("closest_matches"):
+        details["closest_matches"] = _visible_candidate_ids(
+            config, details["closest_matches"], hidden_ids
+        )
         exc = SemanticLayerError(exc.code, str(exc), details=details)
     if details.get("closest_matches"):
         return exc

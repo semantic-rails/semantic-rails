@@ -24,6 +24,7 @@ from typing import Any
 from .api_keys import api_key_auth_result
 from .catalog_service import resolve_catalog
 from .diagnostics import (
+    enrich_diagnostic_candidates,
     enrich_expression_ast_error,
     enrich_object_not_found,
     enrich_path_not_found,
@@ -217,16 +218,17 @@ class SemanticHTTPService:
             return self.invalid_request_payload(str(exc)), 400
         if isinstance(exc, SemanticLayerError):
             config = self.runtime._config
+            hidden_ids = diagnostic_hidden_object_ids(
+                config, context.to_policy_context() if context is not None else None
+            )
+            exc = enrich_diagnostic_candidates(exc, config, hidden_ids=hidden_ids)
             enriched = enrich_object_not_found(
                 exc,
                 config,
-                hidden_ids=diagnostic_hidden_object_ids(
-                    config,
-                    context.to_policy_context() if context is not None else None,
-                ),
+                hidden_ids=hidden_ids,
             )
-            enriched = enrich_expression_ast_error(enriched, config)
-            enriched = enrich_path_not_found(enriched, config)
+            enriched = enrich_expression_ast_error(enriched, config, hidden_ids=hidden_ids)
+            enriched = enrich_path_not_found(enriched, config, hidden_ids=hidden_ids)
             error_issue = exception_issue(enriched, stage=stage)
             return {
                 "ok": False,

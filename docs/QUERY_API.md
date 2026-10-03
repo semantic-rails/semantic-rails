@@ -1027,6 +1027,10 @@ dimensions are withheld. Naming a hidden dimension has the same outcome as namin
 an absent dimension; a draft that bypasses the visibility check is refused with
 `OBJECT_NOT_FOUND` without naming the dimension.
 
+Catalog candidate lists added during validation and error enrichment apply the
+same visibility check before producing recovery hints or near-match suggestions.
+Hidden candidates are omitted, and an unresolved policy context withholds alternatives.
+
 Validate or execute `best.query_ir` directly. `next` carries `ready_for` and optional
 `valid_values` calls, without duplicating the query. For `detail="best"`, fallback drift
 reasons use slot paths in `best.trace.intent_slots` and `why.details.fallback_slots`
