@@ -449,6 +449,7 @@ Important planner behaviors:
 - contextual predicates inherit outer time and compatible grouped context entities, and inherit compatible filters without widening the join key; a dimension on the input's own row entity contributes its values, joined null-safely, instead of that entity's key
 - distribution branches refuse post-aggregation metric filters rather than evaluating them at the per-entity grain; contextual predicates on a different entity also refuse because branch grouping cannot preserve the outer context, including predicates bound inside the input through scoped aggregates or metric recipes
 - contextual `time_grain` overrides are limited to coarser deterministic ancestor buckets on the same calendar
+- entity-only window predicates use the compatible query clock or a sole compatible input clock; an incompatible query clock with multiple input clocks refuses centrally in `_predicate_time_spec` with `INVALID_TEMPORAL_BINDING`, including during direct SQL lowering
 - supported conversion requests compile as event-pair matching subplans
 - unsupported conversion requests fail semantically rather than silently degrading into ratios
 

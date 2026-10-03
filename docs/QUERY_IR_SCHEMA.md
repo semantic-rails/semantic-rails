@@ -416,6 +416,10 @@ Different shape from `select`. The most common pattern is `kind: metric_predicat
 `scope_mode` is either `contextual` (default for query-time) or
 `entity_only`. `time_alignment` is one of `same_query_period`,
 `query_window`, or `rolling_window_in_period`.
+For either entity-only window alignment, an incompatible query clock requires
+exactly one compatible input clock. Multiple candidates refuse with
+`INVALID_TEMPORAL_BINDING`; choose an input `temporal_role` or use
+`temporal_role_overrides` for its measures. A compatible query clock is retained.
 
 Ordinary `metric_filters` evaluate aggregated expressions at the grain the query
 returns, after grouping. A `metric_predicate` instead evaluates its input at its

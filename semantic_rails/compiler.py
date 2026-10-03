@@ -2316,6 +2316,28 @@ def _predicate_time_spec(
             compatible_roles = _expr_compatible_temporal_roles(predicate.input, config, query)
             predicate_temporal_role = query.time.temporal_role
             if query.time.temporal_role not in compatible_roles:
+                if len(compatible_roles) > 1:
+                    clocks = sorted(compatible_roles)
+                    raise SemanticLayerError(
+                        "INVALID_TEMPORAL_BINDING",
+                        "entity_only metric_predicate query-window alignment needs one "
+                        f"input clock; choose from {', '.join(clocks)}",
+                        details={
+                            "requested": query.time.temporal_role,
+                            "compatible": clocks,
+                            "predicate": expr_to_dict(predicate),
+                            "recovery_hints": [
+                                {
+                                    "code": "CHOOSE_PREDICATE_CLOCK",
+                                    "message": (
+                                        "Set the predicate input's temporal_role to a candidate "
+                                        "clock, or set temporal_role_overrides for its measures. "
+                                        "Omit time_alignment to apply the predicate over all time."
+                                    ),
+                                }
+                            ],
+                        },
+                    )
                 predicate_temporal_role = next(iter(sorted(compatible_roles)), "")
                 if not predicate_temporal_role:
                     raise SemanticLayerError(

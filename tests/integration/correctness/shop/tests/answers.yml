@@ -2,6 +2,43 @@ fixture:
   tables: [orders, refunds, signups, dim_fiscal, customer_history]
   data_sha256: 7239197c610505a820d1181968800157664fe222bce85e1c1f51dcd7d406d7d8
 tests:
+  shop/window-predicate-needs-an-input-clock:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: INVALID_TEMPORAL_BINDING
+    why: Signup time cannot choose whether the order threshold uses order time or close time.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    tags: [time-window, clock, refusal]
+    query: &window_predicate
+      select: [{expression: {measure: measure.shop.signup_count}, as: signups}]
+      time: {temporal_role: temporal_role.shop_customer_signed_up_at, grain: month, start: '2023-11-01', end: '2023-12-01'}
+      metric_filters:
+        - expression:
+            kind: metric_predicate
+            entity: entity.shop_customer
+            scope_mode: entity_only
+            time_alignment: query_window
+            input: {measure: measure.shop.window_order_count}
+            op: '>='
+            value: 1
+          op: '='
+          value: true
+  shop/window-predicate-follows-a-pinned-close-clock:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Customer 102 signed up and closed an order in November; the threshold explicitly uses close time.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, tests/integration/correctness/shop/models/orders.yml#model.times.closed_at, tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    tags: [time-window, clock]
+    query:
+      <<: *window_predicate
+      temporal_role_overrides: {measure.shop.window_order_count: temporal_role.shop_order_closed_at}
+    expected_rows: [{temporal_role.shop_customer_signed_up_at__month: '2023-11-01T00:00:00', signups: 1}]
+    reference_sql: |
+      SELECT date_trunc('month', s.signed_up_at), COUNT(*) FROM signups s
+      WHERE s.signed_up_at >= TIMESTAMP '2023-11-01' AND s.signed_up_at < TIMESTAMP '2023-12-01'
+        AND EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = s.customer_id
+          AND o.closed_at >= TIMESTAMP '2023-11-01' AND o.closed_at < TIMESTAMP '2023-12-01')
+      GROUP BY 1
   shop/history-key-groups-use-the-version-valid-at-order-time:
     kind: query_matches_snapshot
     expect: answer
