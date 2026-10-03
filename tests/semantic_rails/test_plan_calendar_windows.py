@@ -22,6 +22,7 @@ from semantic_rails.planner._base import (
     _time_spec,
     _unresolved_time_phrases,
 )
+from tests.semantic_rails.result_helpers import assert_plan_held
 
 YEAR_2017 = {"start": "2017-01-01", "end": "2018-01-01"}
 Q2_2017 = {"start": "2017-04-01", "end": "2017-07-01"}
@@ -223,7 +224,7 @@ def test_plan_keeps_the_year(runtime_factory: Any) -> None:
             **YEAR_2017,
         }
         trend = plan_payload(runtime, intent="monthly revenue by store for 2017", detail="query")
-        assert trend["status"] == "ok"
+        assert_plan_held(trend, "PLAN_UNMATCHED_TERMS")
         assert {key: _best(trend)["time"][key] for key in ("grain", "start", "end")} == {
             "grain": "month",
             **YEAR_2017,

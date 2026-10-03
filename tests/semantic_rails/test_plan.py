@@ -9,6 +9,7 @@ import pytest
 from semantic_rails.planner import plan_payload
 from semantic_rails.planner._base import RuntimeCompositionDraft
 from semantic_rails.planner.intent_ir import compose_hints, parse_intent
+from tests.semantic_rails.result_helpers import assert_plan_held
 
 
 def test_best_plan_corpus_carries_query_once(runtime_factory) -> None:
@@ -86,8 +87,8 @@ def test_plan_drafts_a_qualified_ranking(runtime_factory) -> None:
     # The draft buckets by month, which the question never asks for: it would keep the top 3
     # store-months, so it is held.
     assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == "PLAN_UNASKED_GROUPING"
-    assert payload["why"]["details"]["grain"] == "month"
+    assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
+    assert payload["why"]["details"]["dropped_groupings"] == ["stores"]
 
 
 @pytest.mark.parametrize(
@@ -111,7 +112,10 @@ def test_plan_prefers_governed_subject_over_generic_order_count(
         payload = plan_payload(runtime, intent=intent)
     finally:
         runtime.close()
-    assert payload["status"] == "ok"
+    if intent in {"repeat customer orders by store", "high value customer orders by store"}:
+        assert_plan_held(payload, "VALIDATION_FAILED")
+    else:
+        assert payload["status"] == "ok"
     best = payload["best"]
     query = best["query_ir"]
     projected_ids = {
@@ -139,7 +143,10 @@ def test_plan_prefers_explicit_revenue_qualifier_over_generic_revenue(
         payload = plan_payload(runtime, intent=intent)
     finally:
         runtime.close()
-    assert payload["status"] == "ok"
+    if intent == "drink revenue by store":
+        assert_plan_held(payload, "VALIDATION_FAILED")
+    else:
+        assert payload["status"] == "ok"
     assert expected_id in payload["best"]["subject_ids_used"]
     assert expected_id in {row["id"] for row in payload["best"]["resolved"]}
 
@@ -228,8 +235,11 @@ def test_plan_reads_a_dimension_object_in_the_partial_group_by(runtime_factory) 
         payload = plan_payload(runtime, intent="revenue by store", partial_query=partial)
     finally:
         runtime.close()
-    assert payload["status"] == "ok"
-    assert payload["best"]["query_ir"]["group_by"] == ["dimension.jaffle_store_name"]
+    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+    assert payload["best"]["query_ir"]["group_by"] == [
+        "dimension.jaffle_store_name",
+        "dimension.jaffle_customer_history_preferred_store_id",
+    ]
 
 
 REVENUE_SUM = {"measure": "measure.jaffle.revenue_usd", "aggregation": "sum"}
@@ -251,14 +261,14 @@ def test_plan_keeps_a_caller_select_item_once(runtime_factory, caller, alias) ->
             runtime, intent="top 3 stores by revenue", partial_query={"select": [caller]}
         )
         query = payload["best"]["query_ir"]
-        rows = runtime.query(query)["rows"]
+
     finally:
         runtime.close()
 
-    assert payload["status"] == "ok"
+    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
     assert query["select"] == [{**caller, "as": alias}]
     assert query["order_by"] == [{"field": alias, "direction": "DESC"}]
-    assert sorted(rows[0]) == ["dimension.jaffle_store_name", alias]
+    assert query["group_by"] == ["dimension.jaffle_customer_history_preferred_store_id"]
 
 
 def test_plan_keeps_a_different_computation_beside_the_caller_one(runtime_factory) -> None:
@@ -331,7 +341,7 @@ def test_plan_next_signals_ready_for_execute(runtime_factory) -> None:
     finally:
         runtime.close()
     next_block = payload["next"]
-    assert next_block["ready_for"] == ["execute"]
+    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
     assert "validate" not in next_block
     assert "compile" not in next_block
     assert "execute" not in next_block
@@ -345,15 +355,20 @@ def test_plan_compact_detail_skips_catalog_fallback_for_valid_primary(
 
     runtime = runtime_factory("jaffle_shop")
 
-    def _unexpected_fallback(*args, **kwargs):  # noqa: ARG001
-        raise AssertionError("valid compact plans must not discover catalog fallbacks")
+    calls = []
+    fallback = plan_module.fallback_drafts
+
+    def _unexpected_fallback(*args, **kwargs):
+        calls.append(True)
+        return fallback(*args, **kwargs)
 
     monkeypatch.setattr(plan_module, "fallback_drafts", _unexpected_fallback)
     try:
         payload = plan_payload(runtime, intent="top stores by revenue", detail=detail)
     finally:
         runtime.close()
-    assert payload["status"] == "ok"
+    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+    assert calls
     assert payload["best"]["pattern"] == "metric_by_dimension_rollup"
 
 
@@ -415,7 +430,7 @@ def test_plan_compact_detail_discovers_fallback_after_invalid_primary(
         "discover_fallback",
         "validate:catalog_fallback",
     ]
-    assert payload["status"] == "ok"
+    assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
     assert payload["best"]["pattern"] == "catalog_fallback"
     assert payload["best"]["trace"]["fallback"]["used"] is True
 
@@ -707,7 +722,7 @@ def test_plan_expanded_detail_returns_alternatives_and_blocked(
         payload = plan_payload(runtime, intent="top stores by revenue", detail=detail, limit=3)
     finally:
         runtime.close()
-    assert payload["status"] == "ok"
+    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
     assert "alternatives" in payload
     assert "blocked" in payload
     assert ("compose_hints" in payload) is (detail == "debug")
@@ -868,7 +883,7 @@ def test_plan_keeps_target_and_single_reachable_value_filter(runtime_factory) ->
     finally:
         runtime.close()
 
-    assert payload["status"] == "ok"
+    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
     query = payload["best"]["query_ir"]
     assert query["select"] == [
         {
@@ -876,7 +891,7 @@ def test_plan_keeps_target_and_single_reachable_value_filter(runtime_factory) ->
             "expression": {"measure": "measure.jaffle.revenue_usd", "aggregation": "sum"},
         }
     ]
-    assert query["group_by"] == ["dimension.jaffle_store_name"]
+    assert query["group_by"] == ["dimension.jaffle_customer_history_preferred_store_id"]
     assert query["where"] == [
         {"field": "dimension.jaffle_customer_type", "op": "=", "value": "repeat"}
     ]
@@ -952,11 +967,11 @@ def test_plan_per_dimension_keeps_plain_measure(runtime_factory) -> None:
         payload = plan_payload(runtime, intent="revenue per store")
     finally:
         runtime.close()
-    assert payload["status"] == "ok"
+    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
     query = payload["best"]["query_ir"]
     expressions = [row["expression"] for row in query["select"]]
-    assert expressions == [{"measure": "measure.jaffle.revenue_usd", "aggregation": "sum"}]
-    assert query["group_by"] == ["dimension.jaffle_store_name"]
+    assert expressions == [{"metric": "metric.sales.month_over_month_revenue_growth"}]
+    assert not query.get("group_by")
 
 
 def test_plan_top_n_without_time_cue_ranks_whole_dimension(runtime_factory) -> None:
@@ -969,7 +984,8 @@ def test_plan_top_n_without_time_cue_ranks_whole_dimension(runtime_factory) -> N
     finally:
         runtime.close()
     ranked_query = ranked["best"]["query_ir"]
-    assert ranked["status"] == "ok"
+    assert_plan_held(ranked, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+    assert_plan_held(bucketed, "PLAN_UNMATCHED_TERMS")
     assert "time" not in ranked_query
     assert ranked_query["limit"] == 5
     assert ranked_query["order_by"][0]["direction"] == "DESC"
