@@ -372,6 +372,99 @@ def test_a_window_inside_the_list_never_drops_a_later_grouping(
     assert payload["best"]["query_ir"]["group_by"] == [STORE]
 
 
+@pytest.mark.parametrize("intent", ["order count by month, name", "order count by month and name"])
+def test_a_grouping_naming_dimensions_of_other_entities_is_never_a_pick(
+    jaffle: Runtime, intent: str
+) -> None:
+    payload = plan_payload(jaffle, intent=intent)
+
+    # "Name" is Customer name, Store name, Product name and more, none of them the order's own.
+    # Each is a defensible reading with its own rows, so plan holds rather than picking one.
+    assert payload["status"] == "low_confidence"
+    assert "execute" not in payload["next"].get("ready_for", [])
+    assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+    assert payload["why"]["details"]["terms"] == ["name"]
+    assert payload["why"]["details"]["ambiguous_groupings"] == ["name"]
+
+
+@pytest.mark.parametrize(
+    ("measure", "term", "dimension", "ambiguous"),
+    [
+        # Item product type is the item's own, so an item count by product type reads it.
+        ("item_count", "product type", "dimension.jaffle_item_product_type", False),
+        # For an order count, Item product type and Product type are two other entities'.
+        ("order_count", "product type", "dimension.jaffle_item_product_type", True),
+        ("order_count", "product type", "dimension.jaffle_product_type", True),
+        ("order_count", "name", "dimension.jaffle_customer_name", True),
+        ("order_count", "name", STORE, True),
+        # Named with its entity, a grouping has one reading.
+        ("order_count", "customer name", "dimension.jaffle_customer_name", False),
+        ("order_count", "store name", STORE, False),
+    ],
+)
+def test_only_the_measures_own_entity_settles_a_grouping_other_entities_share(
+    jaffle: Runtime, measure: str, term: str, dimension: str, ambiguous: bool
+) -> None:
+    query = {
+        "version": 2,
+        "select": [{"as": measure, "expression": {"measure": f"measure.jaffle.{measure}"}}],
+        "group_by": [dimension],
+    }
+    why = plan_module._dropped_grouping_why(jaffle, f"{measure} by {term}", query)
+    assert (why is not None) is ambiguous
+    if why:
+        assert why["code"] == "PLAN_UNMATCHED_TERMS"
+        assert why["details"] == {
+            "terms": [term],
+            "dropped_groupings": [],
+            "ambiguous_groupings": [term],
+        }
+
+
+@pytest.mark.parametrize(
+    ("intent", "dimension", "column", "join"),
+    [
+        (
+            "order count by month, customer name",
+            "dimension.jaffle_customer_name",
+            "c.customer_name",
+            "LEFT JOIN jaffle_customer c ON o.customer_id = c.customer_id",
+        ),
+        (
+            "order count by month, store name",
+            STORE,
+            "s.store_name",
+            "LEFT JOIN jaffle_store s ON o.store_id = s.store_id",
+        ),
+    ],
+)
+def test_a_qualified_name_grouping_stays_ready(
+    jaffle: Runtime, intent: str, dimension: str, column: str, join: str
+) -> None:
+    payload = plan_payload(jaffle, intent=intent)
+
+    assert payload["status"] == "ok", payload.get("why")
+    assert "execute" in payload["next"]["ready_for"]
+    query = payload["best"]["query_ir"]
+    assert query["group_by"] == [dimension]
+    assert query["time"] == {"temporal_role": ORDER_TIME, "grain": "month"}
+    bucket = f"{ORDER_TIME}__month"
+    rows = sorted(
+        (str(row[dimension]), str(row[bucket])[:10], int(row["order_count"]))
+        for row in typed_rows(jaffle.query(query))
+    )
+    connection = duckdb.connect(jaffle.db_path, read_only=True)
+    try:
+        reference = connection.execute(
+            f"SELECT {column}, CAST(DATE_TRUNC('month', o.ordered_at) AS DATE), "
+            f"COUNT(DISTINCT o.order_id) FROM jaffle_order o {join} GROUP BY ALL"
+        ).fetchall()
+    finally:
+        connection.close()
+    assert rows
+    assert rows == sorted((str(name), str(month), int(count)) for name, month, count in reference)
+
+
 @pytest.mark.parametrize(
     ("term", "group_by", "matched"),
     [

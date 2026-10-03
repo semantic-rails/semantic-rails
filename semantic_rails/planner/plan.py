@@ -723,9 +723,19 @@ def _dropped_grouping_why(
     Any other listed grouping needs a dimension whose own words name it; a clock term ("by
     month", "by order date") is the time block's and a declared value is a filter, so neither
     needs one. One dimension satisfies one listed grouping.
+
+    A grouping whose dimensions belong to two or more entities, none of them the measure's own
+    ("name" for an order count: Customer name, Store name and more), is ambiguous: no dimension
+    satisfies it, so plan holds instead of picking one.
     """
 
+    from ..metadata import _selection_context  # noqa: WPS433 - shared metadata helper
+
     config = runtime._config
+    try:
+        root = _selection_context(config, query)["root_entity"]
+    except SemanticLayerError:
+        root = ""
     raw_time = query.get("time")
     time: dict[str, Any] = raw_time if isinstance(raw_time, dict) else {}
     # The time block's clock: its temporal role, and the calendar it buckets on.
@@ -756,11 +766,25 @@ def _dropped_grouping_why(
         if (row := _object_by_id(config.dimensions, item)) is not None
     ]
     stand_ins = [_entity_grouping_dimensions(config, term) for term in terms]
+    readings = [
+        {
+            row.entity
+            for row in config.dimensions
+            if row.groupable and (_grouping_matches(term, row) if ids is None else row.id in ids)
+        }
+        for term, ids in zip(terms, stand_ins, strict=True)
+    ]
+    ambiguous = [
+        term
+        for term, entities in zip(terms, readings, strict=True)
+        if len(entities) > 1 and root not in entities
+    ]
     candidates = [
         [
             index
             for index, dimension in enumerate(grouped)
-            if (_grouping_matches(term, dimension) if ids is None else dimension.id in ids)
+            if term not in ambiguous
+            and (_grouping_matches(term, dimension) if ids is None else dimension.id in ids)
         ]
         for term, ids in zip(terms, stand_ins, strict=True)
     ]
@@ -779,19 +803,47 @@ def _dropped_grouping_why(
     dropped = [term for index, term in enumerate(terms) if not assign(index, set())]
     if not dropped:
         return None
+    unclear = [term for term in dropped if term in ambiguous]
+    missing = [term for term in dropped if term not in ambiguous]
+    messages = [
+        *(
+            [
+                f"The draft drops the grouping by {', '.join(missing)} that the question asks "
+                "for: each listed grouping needs its own matching dimension, so plan doesn't "
+                "call it ready."
+            ]
+            if missing
+            else []
+        ),
+        *(
+            [
+                f"The grouping by {', '.join(unclear)} may be a dimension of any of several "
+                "entities, none of them the measure's own, so plan doesn't pick one or call the "
+                "draft ready."
+            ]
+            if unclear
+            else []
+        ),
+    ]
     return {
         "code": "PLAN_UNMATCHED_TERMS",
-        "message": (
-            f"The draft drops the grouping by {', '.join(dropped)} that the question asks for: "
-            "each listed grouping needs its own matching dimension, so plan doesn't call it ready."
-        ),
-        "details": {"terms": dropped, "dropped_groupings": dropped},
+        "message": " ".join(messages),
+        "details": {
+            "terms": dropped,
+            "dropped_groupings": missing,
+            **({"ambiguous_groupings": unclear} if unclear else {}),
+        },
         "recovery_hints": [
             {
                 "kind": "use_named_objects",
                 "message": (
                     "Find a dimension for each grouping with discover, add the missing ones to "
                     "best.query_ir group_by, then validate; or ask again without those groupings."
+                    + (
+                        ' Name the entity of an ambiguous one ("customer name", not "name").'
+                        if unclear
+                        else ""
+                    )
                 ),
             }
         ],
