@@ -1060,3 +1060,117 @@ def test_live_valid_values_read_through_the_query_rows_route(
     assert sorted((v["value"],) for v in fallback["values"]) == _gold(
         "SELECT DISTINCT a.city FROM flights f JOIN airports a ON a.airport_id = f.origin_airport_id"
     )
+
+
+@pytest.mark.parametrize("package_rows", [[], [BRANCH_BY_KEY]], ids=["undecided", "decided"])
+@pytest.mark.parametrize("route", [BRANCH_ROUTE, OWNER_ROUTE], ids=["branch", "owner"])
+def test_live_valid_values_keeps_routes_read_only_by_metric_filters(tmp_path, package_rows, route):
+    runtime = Runtime.from_path(str(_write_package(tmp_path, decisions=package_rows)))
+    row = {**DIAMOND_ROW, "relationship_path": route}
+    dimension = "dimension.bank_account_kind"
+    query = _query(
+        "measure.bank.balance",
+        group_by=[dimension],
+        route_decisions=[row],
+        metric_filters=[
+            {
+                "expression": {
+                    "kind": "metric_predicate",
+                    "entity": DISTRICT,
+                    "input": {"measure": "measure.bank.budget"},
+                    "scope_mode": "entity_only",
+                    "op": ">=",
+                    "value": 200,
+                },
+                "op": "=",
+                "value": True,
+            }
+        ],
+    )
+    via = (
+        "JOIN branches b USING (branch_id) JOIN districts d USING (district_id)"
+        if route == BRANCH_ROUTE
+        else "JOIN owners o USING (owner_id) JOIN districts d ON d.district_id = o.home_district_id"
+    )
+    gold = _gold(
+        f"SELECT a.kind, SUM(a.balance) FROM accounts a {via} WHERE d.budget >= 200 GROUP BY 1"
+    )
+    assert runtime.validate(query)["ok"] is True
+    assert _rows(runtime.query(query), [dimension, "v"]) == gold
+    out = valid_values_payload(
+        runtime,
+        dimension_id=dimension,
+        query={**query, "order_by": [{"field": "v", "direction": "DESC"}], "limit": 1},
+        allow_live_query=True,
+        include_counts=True,
+    )
+    assert sorted((v["value"], v["count"]) for v in out["values"]) == gold
+    assert out["anchor_measure"] == "measure.bank.balance"
+    assert out["query_state"]["route_decisions"] == [row]
+    assert out["query_state"]["metric_filters"] == query["metric_filters"]
+
+
+@pytest.mark.parametrize("route", [BRANCH_ROUTE, OWNER_ROUTE], ids=["branch", "owner"])
+@pytest.mark.parametrize(
+    "conditional_first", [False, True], ids=["conditional-last", "conditional-first"]
+)
+def test_live_valid_values_accepts_conditional_aggregates(tmp_path, route, conditional_first):
+    runtime = Runtime.from_path(str(_write_package(tmp_path, decisions=[BRANCH_BY_KEY])))
+    conditional = {
+        "expression": {
+            "kind": "aggregate_if",
+            "aggregation": "sum",
+            "value": {"kind": "column", "entity": ACCOUNT, "column": "balance"},
+            "condition": {
+                "kind": "comparison",
+                "op": "=",
+                "left": {"kind": "column", "entity": ACCOUNT, "column": "kind"},
+                "right": {"kind": "literal", "value": "savings"},
+            },
+        },
+        "as": "conditional",
+    }
+    select = [*BALANCE_BY_DISTRICT["select"], conditional]
+    row = {**DIAMOND_ROW, "relationship_path": route}
+    query = {
+        **BALANCE_BY_DISTRICT,
+        "select": list(reversed(select)) if conditional_first else select,
+        "route_decisions": [row],
+    }
+    gold_sql = BY_BRANCH if route == BRANCH_ROUTE else BY_OWNER
+    mixed_sql = gold_sql.replace(
+        "SUM(a.balance)",
+        "SUM(a.balance), SUM(CASE WHEN a.kind = 'savings' THEN a.balance ELSE 0 END)",
+    )
+    assert runtime.validate(query)["ok"] is True
+    assert _rows(
+        runtime.query(query), ["dimension.bank_district_name", "v", "conditional"]
+    ) == _gold(mixed_sql)
+    out = valid_values_payload(
+        runtime,
+        dimension_id="dimension.bank_district_name",
+        query=query,
+        allow_live_query=True,
+        include_counts=True,
+    )
+    assert sorted((v["value"], v["count"]) for v in out["values"]) == _gold(gold_sql)
+    assert out["anchor_measure"] == "measure.bank.balance"
+    assert out["query_state"]["route_decisions"] == [row]
+
+
+def test_live_valid_values_without_a_query_measure_explains_the_missing_anchor(
+    tmp_path, monkeypatch
+):
+    runtime = Runtime.from_path(str(_write_package(tmp_path)))
+    monkeypatch.setattr(
+        runtime, "_get_adapter", lambda: pytest.fail("missing anchor must not run SQL")
+    )
+    with pytest.raises(SemanticLayerError, match="select a measure or metric") as refused:
+        valid_values_payload(
+            runtime,
+            dimension_id="dimension.bank_district_name",
+            query={"group_by": ["dimension.bank_district_name"], "route_decisions": [DIAMOND_ROW]},
+            allow_live_query=True,
+        )
+    assert refused.value.code == "NO_VALID_VALUES_SOURCE"
+    assert refused.value.details == {"attempts": []}
