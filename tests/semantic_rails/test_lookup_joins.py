@@ -35,6 +35,7 @@ from semantic_rails.dialects import _WAREHOUSE_CONNECTORS
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import AggregateRelationConfig
+from tests.semantic_rails.conftest import opened
 
 SEED_SQL = """
 CREATE TABLE airports (airport_code VARCHAR, city VARCHAR);
@@ -240,7 +241,7 @@ def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
 @pytest.fixture(scope="module")
 def runtime(package: Path):
     runtime = Runtime.from_path(str(package))
-    yield runtime
+    yield opened(runtime)
     runtime.close()
 
 
@@ -264,7 +265,7 @@ def null_city_runtime(tmp_path_factory: pytest.TempPathFactory):
     runtime = Runtime.from_path(
         str(_write_package(tmp_path_factory.mktemp("null_city"), NULL_CITY_SEED))
     )
-    yield runtime
+    yield opened(runtime)
     runtime.close()
 
 
@@ -290,7 +291,7 @@ def orphan_leg_runtime(tmp_path_factory: pytest.TempPathFactory):
     runtime = Runtime.from_path(
         str(_write_package(tmp_path_factory.mktemp("orphan_leg"), ORPHAN_LEG_SEED))
     )
-    yield runtime
+    yield opened(runtime)
     runtime.close()
 
 
@@ -501,12 +502,13 @@ def test_a_semi_additive_measure_keeps_the_rows_with_no_match(tmp_path):
         pytest.param("=", "operating", "= 'operating'", 3, id="equals"),
         # A row with no roster match has no role: like a NULL role, it isn't "not operating".
         pytest.param("!=", "operating", "<> 'operating'", 1, id="not-equals"),
-        # No row matches, so there is nothing to count: NULL, where raw SQL counts 0.
+        # No row matches, but boardings have data elsewhere: the count of nothing is 0, as
+        # raw SQL counts.
         pytest.param(
             "NOT IN",
             ["operating", "deadhead"],
             "NOT IN ('operating', 'deadhead')",
-            None,
+            0,
             id="not-in",
         ),
     ],
@@ -520,7 +522,7 @@ def test_filters_on_a_looked_up_column_follow_sql_null_rules(
 
     assert got == expected
     reference = gold(f"SELECT NULL, COUNT(*) FROM boardings AS b WHERE {SQL_ROLE} {sql}")
-    assert got == (reference[None] or None)
+    assert got == reference[None]
 
 
 # Check-ins that lead to a boarding by the same person within a day. Check-ins 2 (no person)
@@ -658,6 +660,7 @@ def test_the_dialect_decides_the_lookup_join_type(package, warehouse):
         "select": [{"as": "value", "expression": {"measure": "measure.crew.boarding_count"}}],
         "group_by": [CITY],
         "where": [{"field": ROLE, "op": "IS NULL"}],
+        "observation_scope": "query",  # the leaf's joins alone, without a dataset probe's
     }
 
     sql = " ".join(compile_query(config, Registry(config), query)["sql"].split())

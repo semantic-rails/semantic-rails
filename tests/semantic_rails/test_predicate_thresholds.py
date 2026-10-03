@@ -22,6 +22,7 @@ from semantic_rails.compiler import compile_query
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import opened
 
 SEED_SQL = """
 CREATE TABLE customers (customer_id INTEGER, signed_up_at TIMESTAMP);
@@ -95,7 +96,7 @@ def runtime(tmp_path_factory):
     _write_models(root / "models")
     runtime = Runtime.from_path(str(root))
     try:
-        yield runtime
+        yield opened(runtime)
     finally:
         runtime.close()
 
@@ -458,6 +459,8 @@ def test_a_conditional_count_with_no_match_in_scope_is_unobserved_for_a_customer
 
     Nothing matched anywhere in scope, so that 0 is no data. Customer 2 reads NULL, so
     `= 0` selects nobody, and the query says so instead of answering with a confident 0.
+    Under the dataset scope a where filter beside a metric predicate can't be judged apart
+    from it, so the query is refused and asks for the query scope.
     """
     (kept,) = _gold(
         "select count(*) from orders o where o.status = 'returned' and o.customer_id in ("
@@ -466,18 +469,21 @@ def test_a_conditional_count_with_no_match_in_scope_is_unobserved_for_a_customer
         "where y.customer_id = c.customer_id and y.status = 'returned' and y.amount >= 100) = 0)"
     )[0]
     assert kept == 0
-    response = runtime.query(
-        {
-            "version": 1,
-            "select": [{"as": "n", "expression": {"measure": "measure.pred.order_count"}}],
-            "where": [{"field": "dimension.pred_status", "op": "=", "value": "returned"}],
-            "metric_filters": [_predicate(CUSTOMER, large, op, value, scope_mode="contextual")],
-        }
-    )
+    query = {
+        "version": 1,
+        "select": [{"as": "n", "expression": {"measure": "measure.pred.order_count"}}],
+        "where": [{"field": "dimension.pred_status", "op": "=", "value": "returned"}],
+        "metric_filters": [_predicate(CUSTOMER, large, op, value, scope_mode="contextual")],
+    }
+    response = runtime.query({**query, "observation_scope": "query"})
     assert response["rows"] == [{"n": None}]
     (warning,) = _no_data_warnings(response)
     assert warning["details"]["outputs"] == ["n"]
     assert warning["object_ids"] == ["measure.pred.order_count"]
+    with pytest.raises(SemanticLayerError) as raised:
+        runtime.query(query)
+    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
+    assert raised.value.details["observation_scope"] == "dataset"
 
 
 @HUGE_ORDER_COUNTS

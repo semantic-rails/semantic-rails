@@ -398,6 +398,15 @@ defaults:
 `schema_strict: true` turns on strict v1 validation (see the
 [Validation profile](#validation-profile) section). Recommended for new packages.
 
+`defaults.observation_scope` sets where a sum or count is judged to have data, so that a
+group with no rows reads `0` rather than `NULL`. `dataset` (the default) judges it across the
+measure's own rows under its authored conditions and the caller's row filters: if store 5 sold
+no apples, "apples at store 5" reads `0`, as in a breakdown by store. `query` judges it inside
+each query's filters, so the same question reads `NULL` with `NO_DATA_IN_SCOPE`; experiments
+that must not mistake a filtered-out population for zero want it. A query's own
+`observation_scope` overrides it, and any other value is `INVALID_CONFIG`. See
+[Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
+
 ### DuckDB seeds and externally built databases
 
 `seed.kind` says who builds the file at `default_db`:

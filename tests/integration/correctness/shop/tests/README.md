@@ -21,6 +21,31 @@ a defect. Cite Markdown heading slugs, YAML dotted key paths, or Python top-leve
 names as `repo-relative-file#anchor`. Tags use the closed list in `answer_ledger.py`.
 An explicit `order_by` requires row order; otherwise comparisons preserve the
 multiset, including duplicates. Decimal comparisons retain exact values.
+The harness reads frozen decimal literals as `Decimal`, preserving all digits
+before result encoding; query parsing still uses the product package-test loader.
+
+Every case built by `test_correctness.py` also has frozen rows here, with the same
+query, variant and reference SQL. A coverage check prevents those declarations
+from drifting apart. The existing differential, routing and compiler assertions
+remain in place. Fiscal references also fingerprint `dim_fiscal`, so changing its
+bucket boundaries requires checking the frozen fiscal answers.
+
+Ratio references explicitly divide by `DOUBLE PRECISION`, matching the runtime's
+floating division on both backends. Decimal amounts remain exact. Native averages
+can differ in representation: New York's November average is 22/3, a floating
+value on DuckDB and a longer `NUMERIC` value on Postgres. That case separately
+freezes Postgres's exact rows under `expected_rows_by_backend.postgres`. Both the
+engine check and the unwaivable reference self-check select those rows; neither
+rounds nor uses a tolerance.
+
+Planner cases use `intent` and an optional `partial_query` supplied to `plan`.
+An `answer` must be execute-ready and return the frozen rows. A `clarify` must
+withhold execution, explain the unresolved choice, and fail validation with the
+declared first error code. Its `clarify.options` lists exact option IDs in order;
+the question must be nonempty and every option's replacement `where` must validate.
+A `refuse` must withhold execution and report the declared first error code;
+a supplied draft must fail validation with that code too. Merely returning low
+confidence cannot satisfy either expectation.
 
 `known_wrong` allows only `engine` and `planner`, each with a nonempty reason.
 It marks only that check as a strict expected failure; reference SQL and hygiene

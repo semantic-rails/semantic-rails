@@ -15,7 +15,6 @@ import time
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, fields, is_dataclass
-from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +45,7 @@ from .config_parts.shape_checks import (
     _check_typed_field_enums,
     add_error,
 )
-from .diagnostics import object_id_suggestions, recovery_hints_for_error
+from .diagnostics import filter_value_miss, object_id_suggestions, recovery_hints_for_error
 from .dialects import (
     connection_option_errors,
     snowflake_adbc_connect_errors,
@@ -1745,18 +1744,14 @@ def _filter_value_warnings(runtime: Runtime) -> list[dict[str, Any]]:
         values = data_values[dimension_id]
         if not values or literal in values:
             continue
-        folded = {value.casefold(): value for value in values}
-        close = get_close_matches(literal.casefold(), list(folded), n=1)
-        suggestion = folded[close[0]] if close else None
+        message, suggestion = filter_value_miss(
+            f"Metric {metric_id}", dimension_id, literal, values
+        )
         warnings.append(
             {
                 "code": "FILTER_VALUE_NOT_FOUND",
                 "severity": "warning",
-                "message": (
-                    f"Metric {metric_id} filters {dimension_id} on {literal!r}, "
-                    "which matches no value in the data"
-                    + (f"; did you mean {suggestion!r}?" if suggestion else "")
-                ),
+                "message": message,
                 "details": {
                     "object_id": metric_id,
                     "dimension": dimension_id,

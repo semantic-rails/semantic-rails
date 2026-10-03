@@ -44,7 +44,7 @@ from .expressions import (
     expression_field,
     parse_semantic_expression,
 )
-from .schema import PackageConfig
+from .schema import OBSERVATION_SCOPES, PackageConfig
 
 
 @dataclass(frozen=True)
@@ -235,17 +235,20 @@ class NormalizedQuery:
     explain: bool = False
     export: bool = False
     route_decisions: list[RouteDecision] = field(default_factory=list)
+    observation_scope: str = ""  # "" defers to the package's defaults.observation_scope
 
     def to_dict(self) -> dict[str, Any]:
-        # Only a query that decides a route carries the key, so other queries' normalized
-        # forms (and compile-cache keys) are unchanged.
+        # Only a query that decides a route or a scope carries the key, so other queries'
+        # normalized forms (and compile-cache keys) are unchanged.
         decisions = (
             {"route_decisions": [asdict(row) for row in self.route_decisions]}
             if self.route_decisions
             else {}
         )
+        scope = {"observation_scope": self.observation_scope} if self.observation_scope else {}
         return {
             **decisions,
+            **scope,
             "version": self.version,
             "select": [
                 {
@@ -874,6 +877,7 @@ QUERY_INPUT_KEYS: frozenset[str] = frozenset(
         "time",
         "temporal_role_overrides",
         "route_decisions",
+        "observation_scope",
         "debug",
         "explain",
         "export",
@@ -1336,6 +1340,18 @@ def normalize_query(
         explain=bool(payload.get("explain", False)),
         export=bool(payload.get("export", False)),
         route_decisions=route_decisions_from_payload(payload),
+        observation_scope=_observation_scope(payload),
+    )
+
+
+def _observation_scope(payload: dict[str, Any]) -> str:
+    raw = payload.get("observation_scope")
+    if raw is None or raw in OBSERVATION_SCOPES:
+        return raw or ""
+    raise SemanticLayerError(
+        "INVALID_QUERY",
+        f"observation_scope must be one of {list(OBSERVATION_SCOPES)}, got {raw!r}",
+        details={"path": "observation_scope", "allowed": list(OBSERVATION_SCOPES)},
     )
 
 

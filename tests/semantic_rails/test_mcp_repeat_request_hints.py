@@ -14,6 +14,7 @@ from scripts.mcp_context import V2_PROBES, normalize_volatile
 from semantic_rails.mcp import MCP_DEFAULT_MAX_ROWS, SemanticLayerMCPAdapter, json_text
 from semantic_rails.mcp_server import serve_stdio
 from semantic_rails.mcp_session import MCPQuerySession
+from semantic_rails.mcp_streamable_http import handle_streamable_http_request
 
 QUERY = {
     "version": 2,
@@ -30,6 +31,7 @@ def adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
 
 def _no_hints(response: dict[str, Any]) -> None:
     assert "same_as" not in response and "already_ran" not in response
+    assert not isinstance(response.get("next"), str)
 
 
 def test_repeat_executes_again_and_points_to_first_response(
@@ -60,17 +62,125 @@ def test_repeat_executes_again_and_points_to_first_response(
 @pytest.mark.parametrize("mode", ["validate", "sql"])
 def test_dry_run_points_to_successful_run(adapter: SemanticLayerMCPAdapter, mode: str) -> None:
     session = MCPQuerySession()
-    ran = adapter.call_tool("execute", {"query": QUERY, "row_format": "columns"}, session=session)
-    dry_run = adapter.call_tool("execute", {"query": QUERY, "mode": mode}, session=session)
+    query = {**QUERY, "group_by": ["dimension.jaffle_store_name"], "limits": {"max_rows": 2}}
+    ran = adapter.call_tool("execute", {"query": query, "row_format": "columns"}, session=session)
+    assert ran["row_count"] == 2
+    args = {"query": query, "mode": mode, "request_id": "dry-run"}
+    dry_run = adapter.call_tool("execute", args, session=session)
     assert dry_run["ok"] is True
     assert "same_as" not in dry_run
     assert dry_run["already_ran"] == {
         "request_id": ran["request_id"],
         "row_count": ran["row_count"],
     }
-    repeated = adapter.call_tool("execute", {"query": QUERY, "mode": mode}, session=session)
+    assert dry_run["next"] == (
+        "This query already ran in this session. Revalidating changes nothing; "
+        "answer from that result, or change the query."
+    )
+    repeated = adapter.call_tool("execute", args, session=session)
     assert repeated["same_as"] == dry_run["request_id"]
     assert repeated["already_ran"] == dry_run["already_ran"]
+    if mode == "validate":
+        assert repeated["next"] == (
+            "Stop validating this unchanged query. Answer from the prior result, "
+            "or change the query."
+        )
+    else:
+        assert repeated["next"] == dry_run["next"]
+    third = adapter.call_tool("execute", args, session=session)
+    assert third["next"] == repeated["next"]
+    assert len(dry_run["next"]) < 160 and len(repeated["next"]) < 160
+    # All validation/SQL output is identical to a normal call, apart from hints.
+    without = adapter.call_tool("execute", args)
+    for response in (dry_run, repeated, third):
+        assert "rows" not in response
+        unchanged = {
+            k: v for k, v in response.items() if k not in {"same_as", "already_ran", "next"}
+        }
+        assert normalize_volatile(json_text(unchanged)) == normalize_volatile(json_text(without))
+
+
+@pytest.mark.parametrize("mode", ["validate", "sql"])
+def test_dry_runs_before_execution_have_no_guidance(
+    adapter: SemanticLayerMCPAdapter, mode: str
+) -> None:
+    session = MCPQuerySession()
+    first = adapter.call_tool("execute", {"query": QUERY, "mode": mode}, session=session)
+    _no_hints(first)
+    repeated = adapter.call_tool("execute", {"query": QUERY, "mode": mode}, session=session)
+    assert repeated["same_as"] == first["request_id"]
+    assert "already_ran" not in repeated and "next" not in repeated
+
+
+@pytest.mark.parametrize(
+    "tool,arguments",
+    [
+        ("discover", {"terms": "orders"}),
+        ("execute", {"query": QUERY}),
+        ("execute", {"query": QUERY, "mode": "sql"}),
+        ("execute", {"query": QUERY, "mode": "validate", "sql_profile": "compact"}),
+        ("execute", {"query": {**QUERY, "limits": {"max_rows": 2}}, "mode": "validate"}),
+        ("execute", {"query": QUERY, "mode": "validate", "policy_context": {"audience": "other"}}),
+        ("execute", {"query": {"select": "invalid"}, "mode": "validate"}),
+    ],
+)
+def test_intervening_calls_reset_validate_guidance(
+    adapter: SemanticLayerMCPAdapter, tool: str, arguments: dict[str, Any]
+) -> None:
+    session = MCPQuerySession()
+    adapter.call_tool("execute", {"query": QUERY}, session=session)
+    args = {"query": QUERY, "mode": "validate"}
+    first = adapter.call_tool("execute", args, session=session)
+    adapter.call_tool(tool, arguments, session=session)
+    after = adapter.call_tool("execute", args, session=session)
+    assert after["next"] == first["next"]
+
+
+def test_response_options_do_not_reset_validate_guidance(adapter: SemanticLayerMCPAdapter) -> None:
+    session = MCPQuerySession()
+    adapter.call_tool("execute", {"query": QUERY}, session=session)
+    adapter.call_tool("execute", {"query": QUERY, "mode": "validate"}, session=session)
+    reordered = {key: QUERY[key] for key in reversed(QUERY)}
+    repeated = adapter.call_tool(
+        "execute",
+        {"query": reordered, "mode": "validate", "verbosity": "full", "request_id": "repeat"},
+        session=session,
+    )
+    assert repeated["next"].startswith("Stop validating")
+
+
+@pytest.mark.parametrize("transport", ["in-process", "http"])
+def test_stateless_dry_runs_never_get_session_guidance(
+    adapter: SemanticLayerMCPAdapter, transport: str
+) -> None:
+    def call(mode: str) -> dict[str, Any]:
+        arguments = {"query": QUERY, "mode": mode}
+        if transport == "in-process":
+            return adapter.call_tool("execute", arguments)
+        response = handle_streamable_http_request(
+            adapter,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "MCP-Protocol-Version": "2025-11-25",
+            },
+            body=json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {"name": "execute", "arguments": arguments},
+                }
+            ).encode(),
+        )
+        assert response.status == 200 and response.payload is not None
+        return response.payload["result"]["structuredContent"]
+
+    for mode in ("run", "validate", "validate", "sql"):
+        result = call(mode)
+        assert result["ok"] is True
+        _no_hints(result)
 
 
 @pytest.mark.parametrize(

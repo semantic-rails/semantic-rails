@@ -49,6 +49,10 @@ class PlannerConfig:
     disabled_patterns: list[str] = field(default_factory=list)
 
 
+# Where a sum or count is judged to have data, so its empty groups read 0 (see empty_groups).
+OBSERVATION_SCOPES = ("dataset", "query")
+
+
 @dataclass(frozen=True)
 class PackageMeta:
     package_id: str
@@ -61,6 +65,7 @@ class PackageMeta:
     environments: list[str] = field(default_factory=list)
     schema_strict: bool = False
     planner: PlannerConfig = field(default_factory=PlannerConfig)
+    observation_scope: str = OBSERVATION_SCOPES[0]  # defaults.observation_scope
 
 
 ENTITY_KIND_REGULAR = "regular"

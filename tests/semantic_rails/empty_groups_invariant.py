@@ -3,7 +3,8 @@
 Every sum, count and distinct count a projection reads comes from ``guarded_base``, and no
 other ``COALESCE(<measure>, 0)`` turns a NULL into 0. Each sum there also reads the count of
 the rows it read in the group, so it fills 0 only where there were none, except beside a
-distribution, which keeps the earlier settlement. Shared by the unit
+distribution, which keeps the earlier settlement. Under the dataset scope, a filtered query's
+measures are each observed by a probe of their own rows. Shared by the unit
 tests and the differential correctness corpus, so both hold every query they compile to it.
 """
 
@@ -12,10 +13,13 @@ from __future__ import annotations
 from typing import Any
 
 from semantic_rails.compiler import resolve_compile_config
+from semantic_rails.compiler_parts.aliasing import AliasRegistry
+from semantic_rails.compiler_parts.bind import _bound_filter_clauses
 from semantic_rails.compiler_parts.empty_groups import (
     GUARDED_BASE,
     base_reads,
     has_nested_case,
+    observed_outside_filters,
     sql_nodes,
     zero_aliases,
     zero_outputs,
@@ -23,6 +27,8 @@ from semantic_rails.compiler_parts.empty_groups import (
 from semantic_rails.compiler_parts.sql_lowering import (
     _anchored_entity_set_select,
     _plan_requires_agent_dag_lowering,
+    _resolve_dimension_expr,
+    _value_filter_condition,
 )
 from semantic_rails.schema import PackageConfig
 from semantic_rails.sql_ast import SqlCall, SqlCase, SqlCte, SqlIdentifier, SqlLiteral, SqlSelect
@@ -104,3 +110,41 @@ def assert_settled_in_one_place(compiled: dict[str, Any], config: PackageConfig)
             f"{GUARDED_BASE} reads a row count for {len(counted)} measures, "
             f"expected one for each of its {len(sums)} sums"
         )
+        # Judged across the dataset, each one is observed by a probe of its own measure's
+        # rows: the first row of a scan apart from the query's leaves.
+        if observed_outside_filters(plan.query, config):
+            probes = {cte.name: cte.query for cte in select.ctes}
+            aliases = AliasRegistry.for_plan(
+                plan, measure_aliases=[row.bound_measure.alias for row in plan.measure_plans]
+            )
+            for field in settled:
+                (probe,) = {
+                    node.parts[0]
+                    for node in sql_nodes(field.expression)
+                    if isinstance(node, SqlIdentifier) and node.parts[0].startswith("observed_")
+                }
+                rows = probes[f"{probe}_rows"]
+                assert isinstance(rows, SqlSelect) and rows.limit == 1 and rows.observation_scan
+                for measure_plan in plan.measure_plans:
+                    bound = measure_plan.bound_measure
+                    if aliases.internal(bound.alias) != field.alias:
+                        continue
+                    # Compare with the condition the leaf actually emits, not a call to
+                    # the dataset-scope builder whose omissions this assertion detects.
+                    leaf_nodes = [
+                        node
+                        for cte in select.ctes
+                        if cte.name != GUARDED_BASE
+                        and any(f.alias == field.alias for f in getattr(cte.query, "select", ()))
+                        for node in sql_nodes(cte.query)
+                    ]
+                    for clause in _bound_filter_clauses(bound, config):
+                        condition = _value_filter_condition(
+                            _resolve_dimension_expr(clause["field"], config)[0], clause
+                        )
+                        assert condition in leaf_nodes, (
+                            f"authored condition missing from leaf: {clause}"
+                        )
+                        assert condition in list(sql_nodes(rows.where)), (
+                            f"dataset probe lost an authored leaf condition: {clause}"
+                        )

@@ -69,6 +69,15 @@ def copy_package_config(
     return target
 
 
+def opened(runtime: Runtime) -> Runtime:
+    """Open `runtime`'s connection now, so the fixture sharing it across tests owns it.
+
+    A connection opened in a test body is closed at that test's teardown.
+    """
+    runtime._get_adapter()
+    return runtime
+
+
 @pytest.fixture()
 def package_config_factory(tmp_path: Path) -> Callable[[str], tuple[object, Path]]:
     def _build(package_id: str) -> tuple[object, Path]:

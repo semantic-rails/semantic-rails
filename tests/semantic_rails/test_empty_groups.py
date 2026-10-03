@@ -29,7 +29,7 @@ from semantic_rails.runtime import Runtime, _no_data_in_scope_warnings
 from semantic_rails.schema import MetricConfig
 from semantic_rails.sql_ast import SqlCte
 from tests.integration.correctness.conftest import _write_variant
-from tests.semantic_rails.conftest import copy_package_config
+from tests.semantic_rails.conftest import copy_package_config, opened
 from tests.semantic_rails.empty_groups_invariant import assert_settled_in_one_place
 from tests.semantic_rails.result_helpers import typed_rows
 from tests.semantic_rails.test_rendered_sql_snapshots import SNAPSHOT_CASES
@@ -54,7 +54,7 @@ def runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
     package = load_package_config(str(package_dir))
     rt = Runtime.from_config(package, source_path=str(package_dir), package_id="jaffle_shop")
     try:
-        yield rt
+        yield opened(rt)
     finally:
         rt.close()
 
@@ -158,10 +158,13 @@ def test_a_limit_and_a_metric_filter_cannot_change_what_the_guard_sees(runtime: 
 
 
 def test_a_filter_that_matches_nothing_reads_null_and_says_so(runtime: Runtime) -> None:
+    """Under the query scope; the dataset scope reads 0, as the raw count does, and names the
+    value that matched nothing (test_observation_scope)."""
     query = {
         "version": 2,
         "select": _select(revenue=REVENUE, orders=ORDERS),
         "where": NO_SUCH_STORE,
+        "observation_scope": "query",
     }
     response = runtime.query(query)
     raw = _gold(
@@ -174,6 +177,14 @@ def test_a_filter_that_matches_nothing_reads_null_and_says_so(runtime: Runtime) 
     (warning,) = _warnings(response)
     assert warning["details"]["outputs"] == ["revenue", "orders"]
     assert warning["severity"] == "warning"
+    assert not _warnings(response, "FILTER_VALUE_NOT_FOUND")
+    dataset = runtime.query({**query, "observation_scope": "dataset"})
+    assert dataset["rows"] == [{"revenue": 0, "orders": raw[0]["orders"]}]
+    assert not _warnings(dataset)
+    (typo,) = _warnings(dataset, "FILTER_VALUE_NOT_FOUND")
+    assert typo["details"]["filters"] == [
+        {"dimension": STORE, "value": "No such store", "suggestion": None}
+    ]
 
 
 def test_only_the_input_with_no_data_reads_null_beside_one_that_has_data(runtime: Runtime) -> None:
@@ -209,10 +220,16 @@ def test_no_rows_and_no_time_window_says_nothing_matched(runtime: Runtime) -> No
         "select": _select(revenue=REVENUE),
         "group_by": [STORE],
         "where": NO_SUCH_STORE,
+        "observation_scope": "query",
     }
     response = runtime.query(query)
     assert response["rows"] == []
     assert [item["details"]["outputs"] for item in _warnings(response)] == [["revenue"]]
+    # Judged across the dataset, no rows is the filter's: revenue has data elsewhere.
+    dataset = runtime.query({**query, "observation_scope": "dataset"})
+    assert dataset["rows"] == []
+    assert not _warnings(dataset)
+    assert _warnings(dataset, "FILTER_VALUE_NOT_FOUND")
     windowed = runtime.query(
         {**query, "time": {"temporal_role": ORDER_TIME, "start": "2017-04-01", "end": "2017-05-01"}}
     )
@@ -251,11 +268,17 @@ def test_a_metric_filter_that_removes_every_group_is_not_missing_data(runtime: R
     assert not _warnings(response)
 
 
-def test_the_query_mcp_carries_the_warning_at_its_default_verbosity(runtime: Runtime) -> None:
+@pytest.mark.parametrize(
+    ("scope", "code"), [("query", "NO_DATA_IN_SCOPE"), ("dataset", "FILTER_VALUE_NOT_FOUND")]
+)
+def test_the_query_mcp_carries_the_warning_at_its_default_verbosity(
+    runtime: Runtime, scope: str, code: str
+) -> None:
     query = {"version": 2, "select": _select(revenue=REVENUE), "where": NO_SUCH_STORE}
+    query["observation_scope"] = scope
     response = SemanticLayerMCPAdapter(runtime).call_tool("execute", {"query": query})
     assert response["ok"], response["errors"]
-    assert [item["code"] for item in _warnings(response)] == ["NO_DATA_IN_SCOPE"]
+    assert [item["code"] for item in _warnings(response, code)] == [code]
 
 
 @pytest.mark.parametrize("truncated", [False, True])
@@ -291,6 +314,12 @@ SHAPES = {
         "time": {"temporal_role": ORDER_TIME, "grain": "month"},
     },
     "distribution_alone": {"select": _select(median=DISTRIBUTION)},
+    "filtered_by_store": {
+        "select": _select(revenue=REVENUE, orders=ORDERS, items=ITEMS),
+        "group_by": [ORDER_ID],
+        "where": [{"field": STORE, "op": "=", "value": "Philadelphia"}],
+        "time": {"temporal_role": ORDER_TIME, "start": "2017-04-01", "end": "2017-04-08"},
+    },
     "window_total": {
         "select": _select(revenue=REVENUE, orders=ORDERS),
         "time": {"temporal_role": ORDER_TIME, "start": "2017-04-01", "end": "2017-05-01"},
@@ -360,6 +389,24 @@ def test_every_sum_and_count_a_projection_reads_comes_from_the_guard(
 ) -> None:
     compiled = compile_query(config, Registry(config), {"version": 2, **SHAPES[shape]})
     assert_settled_in_one_place(compiled, config)
+
+
+@pytest.mark.parametrize(
+    ("patched", "value"), [("_dataset_scope", None), ("observes_dataset", False)]
+)
+def test_a_settle_path_that_skips_the_observation_scope_is_refused(
+    config: Any, monkeypatch: pytest.MonkeyPatch, patched: str, value: Any
+) -> None:
+    """Force the bypass: lowering probes no measure's own rows, or never asks for the scope,
+    while the guard reads it. The filtered query is refused, never judged inside its filters."""
+    query = {"version": 2, **SHAPES["filtered_by_store"]}
+    compile_query(config, Registry(config), {**query, "observation_scope": "query"})
+    monkeypatch.setattr(sql_lowering, patched, lambda *args: value)
+    with pytest.raises(SemanticLayerError) as raised:
+        compile_query(config, Registry(config), query)
+    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
+    assert raised.value.details["observation_scope"] == "dataset"
+    assert "observation_scope 'query'" in str(raised.value)
 
 
 @pytest.mark.parametrize(
@@ -443,7 +490,7 @@ def shop_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def shop(shop_package: Path) -> Iterator[Runtime]:
     rt = Runtime.from_path(str(shop_package))
     try:
-        yield rt
+        yield opened(rt)
     finally:
         rt.close()
 
@@ -513,6 +560,8 @@ REFUNDS_BESIDE_A_MEDIAN = {
     "group_by": [SHOP_STORE],
     "time": SHOP_MONTH,
     "where": [{"field": SHOP_ORDER, "op": "!=", "value": 7}],
+    # Beside a distribution the dataset scope refuses a where filter (test_observation_scope).
+    "observation_scope": "query",
 }
 
 
@@ -903,7 +952,16 @@ def test_a_case_under_arithmetic_keeps_the_base_settlement(
             "select": _select(revenue=SHOP_REVENUE, raw={"measure": "measure.shop.raw_revenue"}),
             "group_by": [SHOP_STORE],
             "time": SHOP_MONTH,
-            **({"where": [{"field": SHOP_ORDER, "op": "=", "value": 7}]} if unknown_only else {}),
+            # A nested CASE can't tell unknown amounts from no rows, so the dataset scope
+            # refuses its filtered query (test_observation_scope); the query scope is the base's.
+            **(
+                {
+                    "where": [{"field": SHOP_ORDER, "op": "=", "value": 7}],
+                    "observation_scope": "query",
+                }
+                if unknown_only
+                else {}
+            ),
         }
         response = rt.query(query)
         month = f"{SHOP_MONTH['temporal_role']}__month"
@@ -1175,7 +1233,7 @@ def shop_with_net(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]
     )
     rt = Runtime.from_config(config, source_path=str(package))
     try:
-        yield rt
+        yield opened(rt)
     finally:
         rt.close()
 
@@ -1320,6 +1378,8 @@ def test_a_threshold_zero_passes_on_a_sum_of_measures_keeps_entities_without_row
             "group_by": [SHOP_ORDER],
             "where": [{"field": SHOP_ORDER, "op": "!=", "value": 7}],
             "metric_filters": [{"expression": no_refund, "op": "=", "value": True}],
+            # A where filter beside a metric predicate is judged inside the filters only.
+            "observation_scope": "query",
         }
     )
     got = sorted(row[SHOP_ORDER] for row in typed_rows(response))

@@ -65,6 +65,7 @@ class MCPQuerySession:
 
     def __init__(self) -> None:
         self._requests: OrderedDict[tuple[object, str, str], _Request] = OrderedDict()
+        self._last_validate: tuple[object, str, str] | None = None
         self._lock = Lock()
 
     def annotate(
@@ -79,6 +80,8 @@ class MCPQuerySession:
         fingerprint = _fingerprint(arguments)
         request_id = response.get("request_id")
         if fingerprint is None or not isinstance(request_id, str) or not request_id:
+            with self._lock:
+                self._last_validate = None
             return
         key = (adapter, tool, fingerprint)
         query_key = _fingerprint(query) if query is not None else None
@@ -89,8 +92,12 @@ class MCPQuerySession:
             else None
         )
         if response.get("truncated") is True and summary is None:
+            with self._lock:
+                self._last_validate = None
             return
         with self._lock:
+            last_validate = self._last_validate
+            self._last_validate = None
             previous = self._requests.get(key)
             if previous is not None:
                 reference = previous.reference
@@ -107,6 +114,17 @@ class MCPQuerySession:
                 for (owner, _, _), entry in self._requests.items():
                     if owner is adapter and entry.ran is not None and entry.ran[0] == query_key:
                         response["already_ran"] = dict(entry.ran[1])
+                        response["next"] = (
+                            "This query already ran in this session. Revalidating changes nothing; "
+                            "answer from that result, or change the query."
+                        )
+                        if mode == "validate":
+                            self._last_validate = key
+                            if last_validate == key:
+                                response["next"] = (
+                                    "Stop validating this unchanged query. Answer from the prior "
+                                    "result, or change the query."
+                                )
                         break
             elif summary is not None:
                 # Exactly one retained success per query; LRU touches and failed

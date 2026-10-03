@@ -24,6 +24,7 @@ from semantic_rails.sql_ast import (
     SqlLiteral,
     build_comparison_condition,
 )
+from tests.semantic_rails.conftest import opened
 
 ENTITY = "entity.nulls_record"
 KEY = "dimension.nulls_record_id"
@@ -142,7 +143,7 @@ def runtime(tmp_path_factory):
     )
     runtime = Runtime.from_path(str(root))
     try:
-        yield runtime
+        yield opened(runtime)
     finally:
         runtime.close()
 

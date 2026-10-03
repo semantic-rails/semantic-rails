@@ -5,6 +5,14 @@ runtime that serves `/api/v1/*`. The canonical implementation remains the in-pro
 `SemanticLayerMCPAdapter`. The ASGI app serves stateless MCP Streamable HTTP at `/mcp`, while the
 CLI retains packaged stdio and legacy HTTP/SSE transports for local compatibility.
 
+For `semantic-rails mcp stdio`, stdout contains only newline-delimited JSON-RPC messages;
+startup diagnostics go to stderr. If the selected package cannot load, `initialize`
+returns a JSON-RPC error with the engine's message, stable code in `error.data.code`,
+and selected package directory or YAML file in `error.data.details.config_path`.
+Existing engine details (such as the relationship and suggested fix) are preserved.
+The server answers requests with that refusal until the client disconnects, then
+exits with status 1. Fix the package and restart the server before querying it.
+
 ## Streamable HTTP Endpoint
 
 A self-hosted ASGI process exposes:
@@ -83,6 +91,14 @@ retained successful run and its returned row count. A capped run also carries
 `truncated: true` and the effective `max_rows` cap in `already_ran`; a later
 successful run replaces this history even when its cap or row format differs. It is a
 historical hint, not a cached answer or a guarantee that warehouse data is unchanged.
+These dry runs also add a short `next` string telling the agent to answer from
+that result or change the query. On the second consecutive identical `validate`
+of an already-run query, `next` directly tells the agent to stop validating it;
+further consecutive validates keep that guidance. An intervening tool call,
+changed arguments (other than response options), or a call without `already_ran`
+resets the streak. SQL dry runs get the ordinary guidance and reset the streak.
+This advice contains no result rows and never changes validation or refuses a call.
+Unlike `plan`'s structured `next` object, `execute`'s `next` is a string.
 The first call has no added fields. Stateless HTTP and calls without a session
 retain their existing responses; REST, SDK and CLI query responses are unchanged.
 
@@ -503,7 +519,8 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
 | `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain and no `start`/`end` window, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
-| `NO_DATA_IN_SCOPE` | `execute` | A sum, count or distinct count (or a sum or difference of them) read `NULL` on every returned row (or nothing came back and neither a `start`/`end` window nor a metric filter explains it): its measure has no data in this query's scope, so it is `NULL`, not `0`. `details.outputs` names them; check the filter values. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
+| `NO_DATA_IN_SCOPE` | `execute` | A sum, count or distinct count (or a sum or difference of them) read `NULL` on every returned row (or nothing came back and neither a `start`/`end` window nor a metric filter explains it): its measure has no data in this query's scope, so it is `NULL`, not `0`. `details.outputs` names them; check the filter values. Under `observation_scope: "dataset"` an empty answer to a filtered query never gets it. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
+| `FILTER_VALUE_NOT_FOUND` | `execute` | Under `observation_scope: "dataset"` (the default): a string `=` or `IN` `where` value matches no row of its dimension that the caller can read, so its 0 may be a misspelling. One warning; `details.filters` lists each `dimension`, `value` and closest `suggestion`. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
 | `MIXED_TIME_ROLES` | `execute` | With no `time` block, the selects read measures of different entities or governed metrics with differing sets of real time roles, mixing at least two distinct roles. Undated measures are ignored; a governed metric counts as one clock. Each period is read on its own role's clock, and measure-level filters can bound those periods. The message names the roles, and `details.clocks` lists them. See [What an answer covers](QUERY_IR_SCHEMA.md#what-an-answer-covers) |
 | `QUERY_SHORTHAND_NORMALIZED` | `execute` | A select item was accepted as shorthand and rewritten; `details.canonical` is the form to send next time (`plan` accepts the same shorthand but returns the canonical form in `best.query_ir` instead of a warning) |
 | `SEMANTIC_CAVEAT_APPLIED` | `execute` | Package-authored advisory context matched the query; interpret affected results with that context |

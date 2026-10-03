@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+from contextlib import redirect_stdout
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from ...errors import SemanticLayerError
 from ...mcp import SemanticLayerMCPAdapter
@@ -23,6 +27,7 @@ from ..common import (
     _confirm,
     _is_bundled_ref,
     _optional_ref_from_args,
+    _package_ref_from_args,
     _print,
     _required_ref_from_args,
     _runtime_from_package_or_path,
@@ -56,15 +61,38 @@ def _mcp_tool_check(runtime: Runtime) -> dict[str, Any]:
 
 
 def cmd_mcp_stdio(args: argparse.Namespace) -> None:
-    runtime = _runtime_from_package_or_path(args)
+    runtime: Runtime | None = None
+    source_path = str(getattr(args, "path", "") or "").strip()
+    if source_path:
+        source_path = str(Path(source_path).absolute())
     try:
-        adapter = SemanticLayerMCPAdapter(runtime)
-    except SemanticLayerError as exc:  # e.g. SEMANTIC_RAILS_MCP_INTERFACE=v1
-        runtime.close()
-        refuse_stdio(exc)
+        # Only protocol replies belong on stdout, including during package loading.
+        with redirect_stdout(sys.stderr):
+            ref = _package_ref_from_args(args)
+            source_path = ref.source_path
+            try:
+                runtime = _runtime_from_ref(ref)
+            except (OSError, yaml.YAMLError, TypeError, ValueError) as exc:
+                raise SemanticLayerError("INVALID_CONFIG", str(exc)) from exc
+            adapter = SemanticLayerMCPAdapter(runtime)
+            adapter.list_tools()
+    except Exception as exc:
+        error = (
+            exc
+            if isinstance(exc, SemanticLayerError)
+            else SemanticLayerError(
+                "INTERNAL_ERROR",
+                str(exc),
+                details={"exception_type": type(exc).__name__, "exception_message": str(exc)},
+            )
+        )
+        if runtime is not None:
+            runtime.close()
+        if source_path:
+            error.details.setdefault("config_path", source_path)
+        refuse_stdio(error)
         raise SystemExit(1) from exc
     try:
-        adapter.list_tools()
         serve_mcp_stdio(adapter)
     finally:
         adapter.close()

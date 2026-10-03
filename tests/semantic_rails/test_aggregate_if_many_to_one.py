@@ -38,6 +38,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
+from tests.semantic_rails.conftest import opened
 
 SEED_SQL = """
 CREATE TABLE customers (customer_id VARCHAR, currency VARCHAR, segment VARCHAR);
@@ -376,7 +377,7 @@ def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
 @pytest.fixture(scope="module")
 def runtime(package: Path):
     runtime = Runtime.from_path(str(package))
-    yield runtime
+    yield opened(runtime)
     runtime.close()
 
 
@@ -516,7 +517,7 @@ MARCH_ROW = "INSERT INTO consumption VALUES (10, 'C9', 8, '2026-03');\n"
 def march_runtime(tmp_path_factory: pytest.TempPathFactory):
     package = _write_package(tmp_path_factory.mktemp("march"), seed=SEED_SQL + MARCH_ROW)
     runtime = Runtime.from_path(str(package))
-    yield runtime
+    yield opened(runtime)
     runtime.close()
 
 

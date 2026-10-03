@@ -247,7 +247,7 @@ QUERY_SCHEMA: dict[str, Any] = {
                 "fill": {
                     "type": "boolean",
                     "default": False,
-                    "description": "Dense calendar spine for grain buckets (an empty bucket reads 0 where the measure has data in scope, else NULL). Requires grain; otherwise fails as INVALID_QUERY.",
+                    "description": "Dense calendar spine for grain buckets. Requires grain; otherwise fails as INVALID_QUERY.",
                 },
                 "calendar_id": {
                     "type": "string",
@@ -344,6 +344,7 @@ MCP_RESULT_SCHEMA: dict[str, Any] = {
         },
         "request_context": {"type": "object"},
         "timing_ms": {"type": "number", "minimum": 0},
+        "next": {"type": ["object", "string"]},
     },
     "additionalProperties": True,
     "$defs": {
@@ -610,19 +611,20 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="execute",
         description=(
-            "Validate, compile and run Query IR: plan's best.query_ir (call plan first) or your "
+            "Run Query IR: plan's best.query_ir (call plan first) or your "
             "fix of it. time.end is exclusive. Returns at most "
             "max_rows rows; a capped one reports truncated and total_row_count. "
-            "mode='validate' only checks; mode='sql' adds rendered_sql; "
-            "neither runs. 'query' is a JSON object; mode 'run' costs "
+            "'validate' checks; 'sql' adds rendered_sql; "
+            "neither runs. 'query' is a JSON object; 'run' costs "
             "warehouse time. validate checks a query before it runs; a query that already ran "
             "needs no validate. select may be empty: group_by alone lists rows. "
-            "IR: select[]={expression:{...},as}, group_by[]=[<dim>,...] (not in "
-            "select), where[]={field,op,value}, order_by[]={field,direction}. select.expression:\n"
+            "IR: select[]={expression:{...},as}, group_by[]=[<dim>,...], "
+            "where[]={field,op,value}, order_by[]={field,direction}. select.expression:\n"
             "{aggregation, measure} | {metric} | "
             "{kind: prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|arithmetic|...}\n"
             "ratio: per-order sum / order count.\n"
-            "arithmetic adds measures; aggregate_if: conditional count."
+            "arithmetic adds measures; aggregate_if: conditional count.\n"
+            "Empty groups: 0 if data exists (observation_scope=query: in filters)."
         ),
         input_schema=_schema(
             {

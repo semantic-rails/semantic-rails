@@ -511,6 +511,7 @@ def intent_faithfulness_why(
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
     gaps.extend(_subject_window_gaps(runtime._config, query))
     gaps.extend(_ranking_gaps(runtime, text, query))
+    gaps.extend(_ambiguous_grouping_gaps(text, query, partial_query or {}))
     gaps.extend(_where_clause_gaps(runtime, text, query))
     contradictions = _contradictory_filter_gaps(query)
     if contradictions:
@@ -521,6 +522,36 @@ def intent_faithfulness_why(
         gaps.extend(_filter_value_gaps(runtime, text, query))
 
     return _coverage_why(gaps)
+
+
+def _ambiguous_grouping_gaps(
+    text: str, query: dict[str, Any], partial_query: dict[str, Any]
+) -> list[CoverageGap]:
+    """Refuse when the draft adds a grouping beside the caller's ``group_by``.
+
+    Whether the question's grouping phrase restates a caller dimension or asks
+    for another one is not decided by matching names: the caller confirms by
+    passing every intended dimension ID in ``group_by``.
+    """
+
+    from .generators import _requested_grouping_terms  # noqa: WPS433
+
+    authored = set(partial_query.get("group_by") or [])
+    added = set(query.get("group_by") or []) - authored
+    if not authored or not added:
+        return []
+    return [
+        CoverageGap(
+            kind="ambiguous_grouping",
+            clause=", ".join(_requested_grouping_terms(text)) or text,
+            message="The draft adds a grouping dimension the caller's group_by does not include.",
+            actual={"dimension_ids": sorted(authored | added)},
+            recovery_hint={
+                "kind": "clarify_grouping",
+                "message": "Pass every intended grouping dimension ID in group_by.",
+            },
+        )
+    ]
 
 
 def _coverage_why(gaps: list[CoverageGap]) -> dict[str, Any] | None:

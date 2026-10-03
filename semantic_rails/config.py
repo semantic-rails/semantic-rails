@@ -54,6 +54,7 @@ from .row_filters import validate_row_filters
 from .schema import (
     DEFAULT_PATH_HOP_LIMIT,
     MAX_PATH_HOP_LIMIT,
+    OBSERVATION_SCOPES,
     AccumulationConfig,
     AggregateRelationConfig,
     ConnectionSpec,
@@ -1144,7 +1145,9 @@ def _parse_connection_spec(raw: dict[str, Any]) -> ConnectionSpec:
     )
 
 
-def _parse_package_meta(package_raw: dict[str, Any], *, path: str) -> PackageMeta:
+def _parse_package_meta(
+    package_raw: dict[str, Any], *, path: str, defaults: dict[str, Any] | None = None
+) -> PackageMeta:
     package = dict(package_raw or {})
     package_id = str(package.get("id", "")).strip()
     if not package_id:
@@ -1249,6 +1252,13 @@ def _parse_package_meta(package_raw: dict[str, Any], *, path: str) -> PackageMet
             f"{path}: {warehouse} packages do not support package.connection options",
         )
 
+    observation_scope = (defaults or {}).get("observation_scope", OBSERVATION_SCOPES[0])
+    if observation_scope not in OBSERVATION_SCOPES:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"{path}: defaults.observation_scope must be one of {list(OBSERVATION_SCOPES)}, "
+            f"not {observation_scope!r}",
+        )
     planner_raw = package.get("planner")
     planner_cfg = PlannerConfig(
         disabled_patterns=_ensure_list(
@@ -1266,6 +1276,7 @@ def _parse_package_meta(package_raw: dict[str, Any], *, path: str) -> PackageMet
         environments=_ensure_list(package.get("environments")),
         schema_strict=bool(package.get("schema_strict", False)),
         planner=planner_cfg,
+        observation_scope=observation_scope,
     )
 
 
@@ -3085,7 +3096,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
 
     config = PackageConfig(
         version=1,
-        package=_parse_package_meta(package_raw, path=path),
+        package=_parse_package_meta(package_raw, path=path, defaults=defaults),
         entities=entities,
         dimensions=dimensions,
         temporal_roles=temporal_roles,

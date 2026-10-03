@@ -199,8 +199,8 @@ valid-value lookups are unavailable for restricted grants. Plans contain portabl
 IR; each subsequent request must independently resolve its trusted grants. Restricted
 compile/query results retain SQL and result rows but omit package-wide diagnostics,
 dependency descriptions, and related-object suggestions. Grant responses carry only
-listed engine diagnostics (`NO_DATA_IN_SCOPE` and `VALUES_WITHHELD`) whose named objects
-are all granted. Requests cannot replace the
+listed engine diagnostics (`NO_DATA_IN_SCOPE`, `VALUES_WITHHELD`, `FILTER_VALUE_NOT_FOUND`,
+and `FILTER_VALUE_UNVERIFIED`) whose named objects are all granted. Requests cannot replace the
 resolved grants with top-level or nested `policy_context` claims over HTTP or hosted MCP.
 
 Restricted responses reuse the ordinary catalog formatter and output-column builder.
@@ -1040,6 +1040,19 @@ filter: `=` for one value and `in` for several. This yields one total or one
 combined ranking; no grouping is added for those values. A per-value breakdown
 needs an explicit grouping in the question (for example, "by store") or the
 caller's `group_by`.
+For example, "top 3 product type by item revenue for Brooklyn and
+Philadelphia" groups by product type and uses both stores in one membership
+filter. Catalog fallback resolves each requested grouping before deduplicating
+by dimension ID.
+When the caller passes `group_by` and the draft adds a grouping dimension the
+caller didn't pass, the plan is not ready to execute: the plan keeps both
+groupings in `group_by` and returns `low_confidence` with an
+`ambiguous_grouping` gap in `PLAN_INTENT_COVERAGE_GAP` and a `clarify_grouping`
+hint. The planner doesn't guess whether the question's grouping phrase restates
+a caller dimension or asks for another one. For example, "item revenue by store"
+with `group_by: ["dimension.jaffle_item_product_type"]` keeps both the product
+type and store groupings. To execute, pass every intended grouping dimension ID
+in `group_by`, here both IDs.
 Caller filter rows stay as written, in their original order, with only string
 field IDs stripped of surrounding whitespace. Their operators and values are
 preserved, and generated rows are appended unless identical rows already exist.
@@ -1170,7 +1183,13 @@ The response `warnings` array can carry these non-error signals:
   `start`/`end` window nor a metric filter explains it. Such a
   measure reads `0` in an empty group only where it has data in scope; here it has none, so it
   is `NULL`. `details.outputs` names the outputs. It never fires on a clipped (`truncated`)
-  result. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
+  result, nor, under `observation_scope: "dataset"`, on an empty answer to a filtered query.
+  See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
+- `FILTER_VALUE_NOT_FOUND` — fires on `execute` under `observation_scope: "dataset"` (the
+  default) when a string `=` or `IN` `where` value matches no row of its dimension that the
+  caller can read: there a sum reads `0`, which a misspelled value shouldn't produce silently.
+  One warning per query; `details.filters` lists each `dimension`, `value` and the closest
+  `suggestion`.
 - `MIXED_TIME_ROLES` — fires on `validate`, `compile` and `execute` when a query with no
   `time` block selects measures of different entities or governed metrics with differing
   sets of real time roles, mixing at least two distinct roles. Undated measures are ignored;
