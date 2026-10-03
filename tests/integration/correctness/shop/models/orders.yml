@@ -3,7 +3,7 @@ model:
   label: Orders
   relation: orders
   default_variant: tx
-  entities: {order: {}, customer: {}}
+  entities: {order: {}, customer: {}, customer_history: {expr: customer_id}}
   times:
     ordered_at: {label: Order time, column: ordered_at, kind: timestamp, class: event_time,
       supported_grains: [day, week, month, quarter, year], default: true}
@@ -42,7 +42,7 @@ model:
       relation: orders_monthly
       grain: {time: month, entities: [order]}
       time: {role: ordered_at, column: month_start}
-      excludes: {entities: [order, customer]}
+      excludes: {entities: [order, customer, customer_history]}
       columns: {store_id: store_id, revenue: revenue, order_count: order_count}
       eligible_time_grains: [month, quarter, year]
       equivalence: {kind: exact}

@@ -1,0 +1,7 @@
+model:
+  id: customer_history
+  relation: customer_history
+  entities: {customer_history: {}}
+  times:
+    valid_from: {label: Valid from, column: valid_from, kind: timestamp, class: state_time}
+    valid_to: {label: Valid to, column: valid_to, kind: timestamp, class: state_time}

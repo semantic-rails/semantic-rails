@@ -344,7 +344,7 @@ def test_a_non_key_order_dimension_cannot_stand_in_for_order(
 def test_a_customer_history_grouping_needs_its_whole_key(jaffle: Runtime) -> None:
     payload = plan_payload(jaffle, intent="order count by customer history, month")
     # Customer history's key is (customer_id, valid_from). The reference keeps that identity and
-    # the declared validity join; the draft groups by customer id alone.
+    # the declared validity join; the draft groups by valid_from alone.
     connection = duckdb.connect(jaffle.db_path, read_only=True)
     try:
         reference = connection.execute(
@@ -361,10 +361,20 @@ def test_a_customer_history_grouping_needs_its_whole_key(jaffle: Runtime) -> Non
     assert "execute" not in payload["next"].get("ready_for", [])
     assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
     assert payload["why"]["details"]["dropped_groupings"] == ["customer history"]
-    assert payload["best"]["query_ir"]["group_by"] == [
-        "dimension.jaffle_customer_history_customer_id"
-    ]
-    assert len(typed_rows(jaffle.query(payload["best"]["query_ir"]))) == 5_782
+    query = payload["best"]["query_ir"]
+    dimension = "dimension.jaffle_customer_history_valid_from"
+    assert query["group_by"] == [dimension]
+    assert query["time"] == {"temporal_role": ORDER_TIME, "grain": "month"}
+    # Even a held draft reads the validity join; compare its incomplete grouping to the
+    # reference collapsed over customer id, while keeping the whole-identity hold above.
+    expected = {}
+    for _, valid_from, month, count in reference:
+        key = (valid_from, month)
+        expected[key] = expected.get(key, 0) + count
+    assert {
+        (row[dimension], row[f"{ORDER_TIME}__month"]): row["order_count"]
+        for row in typed_rows(jaffle.query(query))
+    } == expected
 
 
 def test_a_composite_key_entity_grouping_is_never_ready(
@@ -842,8 +852,8 @@ _BEFORE = [
     _Before("the top 5 stores by revenue", OK),
     _Before("revenue by customer segment", INVALID),
     _Before("order count by month, name", UNMATCHED),
-    _Before("top customers by revenue", OK, held=True),
-    _Before("top 10 customers by revenue in Q1 2017", OK, held=True),
+    _Before("top customers by revenue", OK),
+    _Before("top 10 customers by revenue in Q1 2017", OK),
     _Before("revenue by item in 2017", OK, held=True),
     _Before("order count by month, customer id", UNMATCHED),
     _Before("item revenue by month, name", UNMATCHED),
@@ -907,7 +917,7 @@ _BEFORE = [
     _Before("revenue by type", OK, held=True),
     _Before("revenue by store and type", OK, held=True),
     _Before("revenue by order", DRIFT),
-    _Before("revenue by customer", OK, held=True),
+    _Before("revenue by customer", OK),
     _Before("revenue by stores", OK),
     _Before("revenue by supply", INVALID),
     _Before("revenue by item", OK, held=True),

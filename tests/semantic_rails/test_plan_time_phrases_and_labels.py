@@ -773,14 +773,13 @@ def test_a_question_with_a_day_or_coarser_window_is_still_ok(
     assert payload["next"]["ready_for"] == ["execute"]
 
 
-def test_a_customer_ranking_keeps_its_window_but_is_held_for_its_grouping(
+def test_a_customer_ranking_keeps_its_window_and_ordinary_customer_key(
     runtime_factory: Any,
 ) -> None:
     payload = _plan(runtime_factory, "top 10 customers by revenue in Q1 2017")
-    # The window resolves; the draft's customer history customer id is not the Customer key.
-    assert payload["status"] == "low_confidence"
-    assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
-    assert payload["why"]["details"]["dropped_groupings"] == ["customers"]
+    assert payload["status"] == "ok", payload.get("why")
+    assert payload["next"]["ready_for"] == ["execute"]
+    assert payload["best"]["query_ir"]["group_by"] == ["dimension.jaffle_customer_id"]
     time = payload["best"]["query_ir"]["time"]
     assert (time["start"], time["end"]) == ("2017-01-01", "2017-04-01")
 
