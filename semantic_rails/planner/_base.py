@@ -1495,6 +1495,89 @@ def _listed_grouping_terms(text: str, config: Any) -> list[str]:
     return terms
 
 
+def _named_grouping_spans(text: str, config: Any) -> list[tuple[int, int]]:
+    """Grouping clauses read only by the dropped-grouping guard, with source spans.
+
+    Keep this separate from planning and from the unasked-grouping guard: recognizing
+    another obligation may hold a draft, but must never authorize one previously held.
+    """
+
+    lowered = str(text or "").lower()
+    for start, end in _time_window(text).spans:
+        lowered = lowered[:start] + "," + " " * (end - start - 1) + lowered[end:]
+
+    def named(term: str) -> bool:
+        return (
+            _is_temporal_grouping_term(term)
+            or any(_names_time_axis(term, row.label) for row in config.temporal_roles)
+            or any(row.calendar_id and _names_time_axis(term, row.label) for row in config.entities)
+            or any(_grouping_matches(term, row) for row in config.dimensions)
+            or any(_grouping_matches(term, row, entity=True) for row in config.entities)
+        )
+
+    spans: list[tuple[int, int]] = []
+    # A grouping marker inside a declared value name ("Sends per account")
+    # belongs to that name, not to an additional grouping clause.
+    value_spans = [
+        match.span()
+        for row in [*config.measures, *config.metric_recipes]
+        for name in [row.label, _last_token(row.name), *(row.aliases or [])]
+        if (words := re.findall(r"[^\W_]+", name.lower()))
+        for match in re.finditer(r"\b" + r"\s+".join(map(re.escape, words)) + r"\b", lowered)
+    ]
+    # Rankings put the grouping before "by"; ordinary clauses put it after their
+    # introducer. Whitespace and commas don't erase the obligation.
+    clauses = re.finditer(
+        r"^\s*(?:the\s+)?(?:top|highest|lowest)\s+(?P<ranked>[a-z0-9\s_,&-]+?)\s+by\b"
+        r"|\b(?:by|per|(?:for\s+)?each|every)(?:\s+|\s*,\s*)(?P<listed>[a-z0-9\s_,&-]+?)"
+        r"(?=\s+(?:by|per|each|every|at|where|for|from|in|with|during|over|having|who|that|"
+        r"last|this|current|next|prior|sorted)\b|[.?!;]|$)",
+        lowered,
+    )
+    for match in clauses:
+        group = "ranked" if match.group("ranked") is not None else "listed"
+        start, end = match.span(group)
+        if group == "listed" and any(
+            low <= match.start() and end <= high for low, high in value_spans
+        ):
+            continue
+        if group == "ranked":
+            raw = match.group(group)
+            stripped = _strip_leading_rank_count(raw)
+            start += raw.find(stripped)
+        cursor = start
+        after_comma = False
+        for separator in [
+            *re.finditer(r",\s*(?:and\b)?|\band\b|&", lowered[start:end]),
+            None,
+        ]:
+            stop = start + separator.start() if separator else end
+            piece = lowered[cursor:stop]
+            low = cursor + len(piece) - len(piece.lstrip())
+            high = cursor + len(piece.rstrip())
+            if low < high and set(re.findall(r"[^\W_]+", lowered[low:high])) - _NAME_CONNECTORS:
+                if after_comma and not named(lowered[low:high]):
+                    break
+                spans.append((low, high))
+            if separator:
+                cursor = start + separator.end()
+                after_comma = "," in separator.group()
+    return sorted(set(spans))
+
+
+def _named_grouping_terms(text: str, config: Any) -> list[str]:
+    """Add obligations to the legacy list without removing any of its holds."""
+
+    terms = _listed_grouping_terms(text, config)
+    legacy = {" ".join(item.split()) for item in terms}
+    lowered = str(text or "").lower()
+    for start, end in _named_grouping_spans(text, config):
+        term = " ".join(lowered[start:end].split())
+        if term not in legacy:
+            terms.append(term)
+    return terms
+
+
 # Words that make a grouping term name a clock ("order date", "order month at month grain").
 _TIME_AXIS_WORDS = frozenset({"date", "dates", *_TIME_UNITS})
 _GRAIN_WORDS = frozenset({"at", "grain", "level"})
