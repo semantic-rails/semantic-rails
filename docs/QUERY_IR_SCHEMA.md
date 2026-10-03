@@ -26,7 +26,7 @@ and the comparison fixtures: see
 | `order_by` | `array` of `OrderBy` | Final-select ordering. Uses `{field, direction}` — not a select-style expression. |
 | `limit` | `integer` (or `null`) | Optional row cap. |
 | `time` | `TimeBlock` (or `null`) | Query-level time anchor: temporal_role + grain + bounds. `start` is inclusive, `end` is exclusive. |
-| `temporal_role_overrides` | `object<measure_id, temporal_role_id>` | Per-measure clock bindings. |
+| `temporal_role_overrides` | `object<measure_id, temporal_role_id>` | Per-measure clock bindings. They do not apply inside a metric predicate input (they only choose or check its window clock); an input that reads an overridden measure through a conversion or a time window refuses with `INVALID_TEMPORAL_BINDING`. |
 | `route_decisions` | `array` of `RouteDecision` | This query's own route for an entity pair: the `decision` of an `AMBIGUOUS_PATH` option. See [`route_decisions`](#route_decisions). |
 | `observation_scope` | `"dataset"\|"query"` | Whether a sum or count with no rows in a group reads 0 when its measure has data anywhere (`dataset`, the default) or only inside the query's filters (`query`). See "Empty groups" below. |
 | `policy_context` | `object` | Caller-supplied access context (`environment`, `audience`, `roles`, `now`, ...). |
@@ -416,6 +416,20 @@ Different shape from `select`. The most common pattern is `kind: metric_predicat
 `scope_mode` is either `contextual` (default for query-time) or
 `entity_only`. `time_alignment` is one of `same_query_period`,
 `query_window`, or `rolling_window_in_period`.
+For either entity-only window alignment, an incompatible query clock requires
+exactly one compatible input clock. Multiple candidates refuse with
+`INVALID_TEMPORAL_BINDING`, listing the clocks. A measure's `default_temporal_role`
+does not choose among them. For a direct measure input, pin its `temporal_role` or
+set `temporal_role_overrides` for the measure. For a metric input advertising several
+`compatible_temporal_roles`, pins and measure overrides inside it do not narrow
+those clocks; set `query.time.temporal_role` to one of the listed clocks. For either
+input, omit `time_alignment` to apply the predicate over all time. A compatible
+query clock is retained. A model's default time supplies the clock only when the
+measure does not declare its own `times` list.
+A window-aligned metric predicate refuses with `INVALID_TEMPORAL_BINDING` if the
+chosen window clock is excluded by any measure inside the input, by its pin, an
+override or its declared clocks; for a conversion, its base measure (the period
+filters base events; converted events match each base event's window).
 
 Ordinary `metric_filters` evaluate aggregated expressions at the grain the query
 returns, after grouping. A `metric_predicate` instead evaluates its input at its

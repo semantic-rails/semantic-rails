@@ -18,6 +18,10 @@ ENTRIES = load_entries()
 FIXTURE = yaml.safe_load(LEDGER.read_text(encoding="utf-8"))["fixture"]
 
 
+def answer_template():
+    return next((case_id, spec) for case_id, spec in ENTRIES if spec["expect"] == "answer")
+
+
 def parameters(check):
     for case_id, spec in ENTRIES:
         if check == "reference" and spec["expect"] != "answer":
@@ -107,7 +111,7 @@ def test_correctness_builders_have_frozen_answers(case):
     ],
 )
 def test_hygiene_accepts_definition_or_decision(duckdb_backend, citation):
-    case_id, spec = ENTRIES[0]
+    case_id, spec = answer_template()
     assert not messages(
         [(case_id, {**spec, "cites": [citation]})],
         FIXTURE,
@@ -166,7 +170,7 @@ def test_hygiene_accepts_definition_or_decision(duckdb_backend, citation):
     ],
 )
 def test_hygiene_rejects_bad_entries(duckdb_backend, changes, fixture_changes, error):
-    case_id, spec = ENTRIES[0]
+    case_id, spec = answer_template()
     errors = messages(
         [(case_id, {**spec, **changes})],
         {**FIXTURE, **fixture_changes},
@@ -307,13 +311,15 @@ def test_native_backend_representation_is_selected_exactly(backend, expected):
 
 
 def test_reference_checks_cannot_be_waived(monkeypatch):
-    _, spec = ENTRIES[0]
+    _, spec = answer_template()
     monkeypatch.setitem(
         globals(),
         "ENTRIES",
         [("unwaivable", {**spec, "known_wrong": {"engine": "wrong", "reference": "wrong"}})],
     )
-    assert all(not param.marks for param in parameters("reference"))
+    references = list(parameters("reference"))
+    assert references
+    assert all(not param.marks for param in references)
 
 
 @pytest.mark.parametrize(
