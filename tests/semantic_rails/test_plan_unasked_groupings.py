@@ -5,13 +5,16 @@ dimension traces to a grouping the question asks for ("by store", "top 3 stores"
 "for each store"), to the caller's group_by, or to a filter keeping only values the question
 names. The time block's grain traces to words outside the question's windows ("by month",
 "monthly", "over time"), to the caller's grain, or can't split the rows because the window fits in
-one bucket. A ranking split by a period it names asks which ranking it means: the top N overall
-or in each period, never the top N of (entity, period). The check only holds a plan: it never
-changes a draft, nor readies one.
+one bucket. A ranking keeps the top N of the entity it ranks, never of (entity, period) or
+(entity, another dimension). A ranking of the entity split by a period it names asks which
+ranking it means, the top N overall or in each period, with Query IR for each only when the
+select sums to one total over a window and each query validates; any other ranking is held with
+no runnable option. The check only holds a plan: it never changes a draft, nor readies one.
 """
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -220,6 +223,132 @@ def test_a_ranking_split_by_a_period_asks_which_ranking_it_means(
         assert [row[:2] for row in draft] == [("Brooklyn", "2017-08-01")]
 
 
+@pytest.mark.parametrize(
+    ("intent", "grain"),
+    [
+        ("which 3 stores have the highest monthly revenue by customer type", {"grain": "month"}),
+        ("which 3 stores have the highest revenue by customer type", {}),
+    ],
+)
+def test_a_ranking_of_more_than_its_entity_offers_no_runnable_option(
+    jaffle: Runtime, intent: str, grain: dict[str, str]
+) -> None:
+    payload = plan_payload(jaffle, intent=intent)
+
+    assert _held(payload, RANKING) == {"limit": 3, "ranked": [STORE, CUSTOMER_TYPE], **grain}
+    assert "query_ir" not in json.dumps(payload["why"])
+    # Run anyway, the draft keeps the top 3 (store, customer type) rows, not the top 3 stores.
+    query = payload["best"]["query_ir"]
+    assert query["group_by"] == [STORE, CUSTOMER_TYPE]
+    stores = [row[STORE] for row in typed_rows(jaffle.query(query))]
+    assert stores != [
+        store
+        for store, _ in _reference(
+            jaffle,
+            f"SELECT store, SUM(revenue) AS revenue FROM ({_STORE_MONTHS}) GROUP BY 1 "
+            "ORDER BY revenue DESC LIMIT 3",
+        )
+    ]
+    assert len(set(stores)) < len(stores)
+    if not grain:
+        # Said as "top 3 stores by revenue by customer type", the draft drops the customer type
+        # and is held for that, with no option either.
+        payload = plan_payload(jaffle, intent="top 3 stores by revenue by customer type")
+        assert "clarification" not in _held(payload, UNMATCHED)
+
+
+def test_a_ranking_of_a_time_axis_value_offers_no_runnable_option(jaffle: Runtime) -> None:
+    payload = plan_payload(jaffle, intent="top 3 stores by cumulative revenue by month")
+
+    assert _held(payload, RANKING) == {"limit": 3, "ranked": [STORE], "grain": "month"}
+    assert "query_ir" not in json.dumps(payload["why"])
+    # A running total needs its time axis: the draft without its grain doesn't validate.
+    query = payload["best"]["query_ir"]
+    assert query["select"][0]["expression"] == {"metric": "metric.sales.cumulative_revenue"}
+    totals = {key: value for key, value in query.items() if key not in {"time", "order_by"}}
+    assert jaffle.validate(totals)["ok"] is False
+
+
+# The top 3 stores by revenue, as a draft before its time block.
+_TOP_3_STORES = {
+    "version": 2,
+    "select": [{"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}],
+    "group_by": [STORE],
+    "order_by": [{"field": "revenue_usd", "direction": "DESC"}],
+    "limit": 3,
+}
+
+
+@pytest.mark.parametrize(
+    ("question", "time"),
+    [
+        # The noun it ranks is the period.
+        ("which 3 months had the highest revenue by store", {"grain": "month"}),
+        # Fiscal buckets of the order time need fill, which a total over the window can't
+        # have, so the top 3 overall doesn't validate.
+        (
+            "top 3 stores by monthly revenue",
+            {
+                "grain": "month",
+                "start": "2017-01-01",
+                "end": "2017-07-01",
+                "calendar_id": "fiscal",
+                "fill": True,
+            },
+        ),
+    ],
+)
+def test_a_ranking_plan_cant_check_offers_no_runnable_option(
+    jaffle: Runtime, question: str, time: dict[str, Any]
+) -> None:
+    query = {**_TOP_3_STORES, "time": {"temporal_role": ORDER_TIME, **time}}
+    assert jaffle.validate(query)["ok"] is True
+
+    why = plan_module._unasked_grouping_why(jaffle, question, query)
+
+    assert why is not None
+    assert why["code"] == RANKING
+    assert why["details"] == {"limit": 3, "ranked": [STORE], "grain": "month"}
+    assert "query_ir" not in json.dumps(why)
+    if "months" in question:
+        # As planned, "top 3 months by revenue by store" is held with no option too.
+        payload = plan_payload(jaffle, intent="top 3 months by revenue by store")
+        assert _outcome(payload) != OK
+        assert "clarification" not in payload["why"]["details"]
+
+
+@pytest.mark.parametrize(
+    ("intent", "held"),
+    [
+        ("revenue by store from January 1 2016 to December 31 2017", True),
+        (
+            "food revenue vs drink revenue by store and customer type from January 1 2016 to "
+            "December 31 2017",
+            True,
+        ),
+        # The question asks for the years.
+        ("revenue by store from January 1 2016 to December 31 2017 by year", False),
+    ],
+)
+def test_a_window_of_whole_years_never_splits_by_a_year_the_question_never_asks_for(
+    jaffle: Runtime, intent: str, held: bool
+) -> None:
+    payload = plan_payload(jaffle, intent=intent)
+
+    time = payload["best"]["query_ir"]["time"]
+    assert time == {
+        "temporal_role": ORDER_TIME,
+        "grain": "year",
+        "start": "2016-01-01",
+        "end": "2018-01-01",
+    }
+    if held:
+        assert _held(payload, UNASKED) == {"unasked_groupings": ["year"], "grain": "year"}
+    else:
+        assert payload["status"] == "ok", payload.get("why")
+        assert "execute" in payload["next"]["ready_for"]
+
+
 @pytest.mark.parametrize("window", ["last month", "January 2026"])
 def test_a_window_inside_the_list_never_hides_a_later_grouping(
     incident: Runtime, window: str
@@ -395,7 +524,7 @@ _CASES = [
     _Case("revenue in Q1 2017 by store", OK),
     _Case("revenue last month by store", OK),
     _Case("revenue yesterday", OK),
-    _Case("revenue in 2016 and 2017", OK),
+    _Case("revenue by store from January 1 2016 to December 31 2017 by year", OK),
     _Case("revenue in 2017", OK),
     _Case("top 5 stores by revenue in 2017", OK),
     _Case("new customer orders over time", OK),
@@ -426,6 +555,10 @@ _CASES = [
     _ranking("top 3 stores by monthly revenue"),
     _ranking("top 3 stores by revenue by month"),
     _ranking("top stores by revenue by month"),
+    _ranking("top 3 stores by cumulative revenue by month"),
+    # A ranking of more than the entity it ranks.
+    _ranking("which 3 stores have the highest monthly revenue by customer type"),
+    _ranking("which 3 stores have the highest revenue by customer type"),
     # A month plan picks for a comparison, a year-over-year shift or a qualified ranking.
     _moved("food revenue vs drink revenue by store and customer type", "month"),
     _moved("food revenue share vs drink revenue share by store", "month"),
@@ -459,6 +592,9 @@ _CASES = [
     _moved("orders past 2 weeks", "week"),
     _moved("orders last three quarters", "quarter"),
     _moved("orders from December 30, 2016 to January 2, 2017", "month"),
+    _moved("revenue in 2016 and 2017", "year"),
+    _moved("revenue between 2016 and 2017", "year"),
+    _moved("revenue by store from January 1 2016 to December 31 2017", "year"),
     # A store split the question never asks for.
     _moved("new store revenue by month", "Store name"),
     _moved("stores with more than 2000 orders in 2017", "Store name"),
@@ -518,26 +654,16 @@ def test_a_grain_the_caller_sets_is_asked_for(jaffle: Runtime) -> None:
 
 
 def test_a_ranking_clarification_keeps_the_window(jaffle: Runtime) -> None:
-    query = {
-        "version": 2,
-        "select": [{"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}],
-        "time": {
-            "temporal_role": ORDER_TIME,
-            "grain": "month",
-            "start": "2017-01-01",
-            "end": "2017-07-01",
-        },
-        "group_by": [STORE],
-        "order_by": [{"field": "revenue_usd", "direction": "DESC"}],
-        "limit": 1,
-    }
-    why = plan_module._unasked_grouping_why(jaffle, "top store by monthly revenue", query)
+    window = {"start": "2017-01-01", "end": "2017-07-01"}
+    clock = {"temporal_role": ORDER_TIME, "calendar_id": "default"}
+    query = {**_TOP_3_STORES, "time": {**clock, "grain": "month", **window}}
+    why = plan_module._unasked_grouping_why(jaffle, "top 3 stores by monthly revenue", query)
 
     assert why is not None
     overall, per_period = why["details"]["clarification"]["options"]
-    window = {"start": "2017-01-01", "end": "2017-07-01"}
-    assert overall["query_ir"]["time"] == {"temporal_role": ORDER_TIME, **window}
-    assert overall["query_ir"]["limit"] == 1
+    # The window and the calendar stay; only the grain goes.
+    assert overall["query_ir"]["time"] == {**clock, **window}
+    assert overall["query_ir"]["limit"] == 3
     assert per_period["query_ir"]["time"] == query["time"]
     assert "limit" not in per_period["query_ir"]
     assert per_period["query_ir"]["order_by"] == [
@@ -545,5 +671,17 @@ def test_a_ranking_clarification_keeps_the_window(jaffle: Runtime) -> None:
         {"field": "revenue_usd", "direction": "DESC"},
         {"field": STORE, "direction": "ASC"},
     ]
-    # Philadelphia, over the first half of 2017.
-    assert [row[STORE] for row in typed_rows(jaffle.query(overall["query_ir"]))] == ["Philadelphia"]
+    # The top 3 stores on their total over the first half of 2017.
+    assert [
+        (row[STORE], round(float(row["revenue_usd"]), 2))
+        for row in typed_rows(jaffle.query(overall["query_ir"]))
+    ] == [
+        (store, round(float(revenue), 2))
+        for store, revenue in _reference(
+            jaffle,
+            "SELECT s.store_name, SUM(o.order_total_cents / 100.0) AS revenue "
+            "FROM jaffle_order o JOIN jaffle_store s ON o.store_id = s.store_id "
+            "WHERE o.ordered_at >= '2017-01-01' AND o.ordered_at < '2017-07-01' "
+            "GROUP BY 1 ORDER BY revenue DESC, 1 LIMIT 3",
+        )
+    ]
