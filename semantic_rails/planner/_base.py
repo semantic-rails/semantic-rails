@@ -475,8 +475,10 @@ def _dimension_words(row: Any) -> tuple[str, ...]:
 def _dimension_terms(config: Any, terms: Iterable[str]) -> tuple[str, ...]:
     """Fold regular plurals only when their singular is authored by a dimension.
 
-    A folded grouping is execute-ready only when it resolves to one dimension
-    (``faithfulness._folded_grouping_gaps``).
+    A word in the planner's word table (``_TERM_SYNONYMS``, such as "orders") is
+    never folded: each path already reads it as before, so primary and fallback fold
+    the same words. A folded grouping is execute-ready only when it resolves to one
+    dimension (``faithfulness._folded_grouping_gaps``).
     """
 
     vocabulary = {token for row in config.dimensions for token in _dimension_words(row)}
@@ -490,9 +492,8 @@ def _dimension_terms(config: Any, terms: Iterable[str]) -> tuple[str, ...]:
         if term.endswith("s") and not term.endswith("ss"):
             forms.add(term[:-1])
         authored = forms & vocabulary
-        normalized.append(
-            next(iter(authored)) if term not in vocabulary and len(authored) == 1 else term
-        )
+        kept = term in vocabulary or term in _TERM_SYNONYMS or len(authored) != 1
+        normalized.append(term if kept else next(iter(authored)))
     return tuple(normalized)
 
 

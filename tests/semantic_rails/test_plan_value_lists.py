@@ -10,6 +10,7 @@ import duckdb
 import pytest
 
 from semantic_rails.planner import compose, plan_payload
+from semantic_rails.planner._base import _dimension_terms
 from semantic_rails.planner.faithfulness import _folded_grouping_gaps
 from semantic_rails.planner.generators import (
     _draft_for_choice,
@@ -993,3 +994,23 @@ def test_folded_grouping_trusts_only_the_root_entity_or_the_caller(
     finally:
         runtime.close()
     assert [gap.kind for gap in gaps] == (["ambiguous_grouping"] if held else [])
+
+
+@pytest.mark.parametrize("intent", ["item revenue by orders", "item revenue by customers"])
+def test_fallback_never_folds_a_plural_in_the_planner_word_table(
+    runtime_factory, monkeypatch, intent
+) -> None:
+    # Folded, "orders" picked one of several order dimensions by discovery order.
+    runtime = runtime_factory("jaffle_shop")
+    _force_fallback(runtime, monkeypatch, intent, "fallback")
+    try:
+        assert _dimension_terms(runtime._config, ("orders", "customers", "types")) == (
+            "orders",
+            "customers",
+            "type",
+        )
+        payload = plan_payload(runtime, intent=intent)
+    finally:
+        runtime.close()
+    assert payload["status"] == "low_confidence", payload.get("why")
+    assert "execute" not in payload["next"].get("ready_for", [])
