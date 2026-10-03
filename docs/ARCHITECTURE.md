@@ -485,7 +485,9 @@ over several measures under a threshold 0 passes, keep the earlier settlement
 measure whose expression contains a CASE below its root also keeps the earlier settlement
 individually and refuses rollups; lowering refuses a plan that bypasses that routing rule.
 Each row count is named `m<i>_rows` beside its measure's `m<i>`, renamed until no output, key or
-package column has the name, so the alias registry never rewrites it. Base time coverage
+package column has the name, so the alias registry never rewrites it. Source rollups also
+rename their internal value until it differs from every projected join column, group, time
+and row-count alias, using case-insensitive comparison. Base time coverage
 bounds only zero
 substitution on filled, dense or combined leaves. One predicate decides both coverage and
 rollup refusal, on DuckDB and Postgres only. Populated values pass through; routed

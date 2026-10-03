@@ -976,17 +976,19 @@ def test_a_nested_case_forced_onto_a_rollup_is_refused(
     assert raised.value.details["measures"] == [SHOP_REVENUE["measure"]]
 
 
-@pytest.mark.parametrize("composite", [False, True])
+@pytest.mark.parametrize("join_column", ["__source_rows", "m1_rows", "__source_value"])
 def test_a_source_rollup_count_never_shadows_a_physical_join_column(
-    tmp_path: Path, composite: bool
+    tmp_path: Path, join_column: str
 ) -> None:
-    """Refunds reach the customer channel through orders; the intermediate count must not
-    read a physical join column as a count of matching refunds."""
+    """Refunds reach the customer channel through orders; intermediate counts and values
+    must not read a physical join column as an aggregate."""
+    composite = join_column != "__source_rows"
+    value_collision = join_column == "__source_value"
     package = _write_variant(tmp_path, "utc_authored")
     seed = package / "data" / "seed.sql"
     extra = (
-        "ALTER TABLE refunds ADD COLUMN m1_rows INTEGER;\n"
-        "UPDATE refunds SET m1_rows = 1;\n"
+        f"ALTER TABLE refunds ADD COLUMN {join_column} INTEGER;\n"
+        f"UPDATE refunds SET {join_column} = 1;\n"
         "ALTER TABLE orders ADD COLUMN pair_key INTEGER;\n"
         "UPDATE orders SET pair_key = 1;\n"
         if composite
@@ -1031,7 +1033,7 @@ def test_a_source_rollup_count_never_shadows_a_physical_join_column(
                 row,
                 source_column="" if composite else "__source_rows",
                 target_column="" if composite else row.target_column,
-                source_columns=["order_id", "m1_rows"] if composite else ["__source_rows"],
+                source_columns=["order_id", join_column] if composite else ["__source_rows"],
                 target_columns=["order_id", "pair_key"] if composite else row.target_columns,
             )
             if row.source_entity == "entity.shop_refund" and row.source_column == "order_id"
@@ -1039,7 +1041,9 @@ def test_a_source_rollup_count_never_shadows_a_physical_join_column(
             for row in config.relationships
         ],
         measures=[
-            replace(row, expr=expr) if row.id == SHOP_GOODS["measure"] else row
+            replace(row, expr=expr)
+            if row.id == SHOP_GOODS["measure"] and not value_collision
+            else row
             for row in config.measures
         ],
     )
@@ -1050,19 +1054,27 @@ def test_a_source_rollup_count_never_shadows_a_physical_join_column(
         response = rt.query(query)
         got = {(row[channel], row["goods"]) for row in typed_rows(response)}
         join = (
-            "r.order_id = o.order_id AND r.m1_rows = o.pair_key"
+            f"r.order_id = o.order_id AND r.{join_column} = o.pair_key"
             if composite
             else "r.__source_rows = o.order_id"
         )
+        reference_value = (
+            "SUM(r.goods_amount)"
+            if value_collision
+            else "CASE WHEN COUNT(CASE WHEN r.refund_type = 'goods' THEN 1 END) = 0 "
+            "THEN 0 ELSE SUM(CASE WHEN r.refund_type = 'goods' THEN r.goods_amount END) END"
+        )
         gold = _gold(
             rt,
-            "SELECT s.channel, CASE WHEN COUNT(CASE WHEN r.refund_type = 'goods' THEN 1 END) = 0 "
-            "THEN 0 ELSE SUM(CASE WHEN r.refund_type = 'goods' THEN r.goods_amount END) END AS goods "
+            f"SELECT s.channel, {reference_value} AS goods "
             f"FROM refunds r LEFT JOIN orders o ON {join} "
             "LEFT JOIN signups s ON o.customer_id = s.customer_id GROUP BY 1",
         )
         assert got == {(row["channel"], row["goods"]) for row in gold}
-        assert ("web", 0) in got
+        if value_collision:
+            assert got == {("store", 10), ("web", None), (None, 2)}
+        else:
+            assert ("web", 0) in got
         assert "_source_rollup AS" in response["rendered_sql"]
         compiled = compile_query(config, Registry(config), query)
         source_rollups = [
@@ -1074,8 +1086,10 @@ def test_a_source_rollup_count_never_shadows_a_physical_join_column(
         for cte in source_rollups:
             names = [field.alias.casefold() for field in cte.query.select]
             assert len(names) == len(set(names))
-            if composite:
+            if join_column == "m1_rows":
                 assert "m1_rows_2" in names
+            elif value_collision:
+                assert "__source_value_2" in names
         assert_settled_in_one_place(compiled, config)
     finally:
         rt.close()

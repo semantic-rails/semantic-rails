@@ -2524,6 +2524,13 @@ def _source_rollup_leaf_select(
     if time_alias and time_expr is not None:
         preagg_fields[time_alias] = time_expr
 
+    markers = _row_markers(measure_plan, measure, leaf_value_expr)
+    taken = {alias.casefold() for alias in preagg_fields}
+    taken.update(alias.casefold() for _, alias in markers)
+    value_alias, suffix = "__source_value", 2
+    while value_alias.casefold() in taken:
+        value_alias, suffix = f"__source_value_{suffix}", suffix + 1
+
     preagg_select_fields = [SqlField(expr, alias) for alias, expr in preagg_fields.items()]
     preagg_select_fields.append(
         SqlField(
@@ -2533,10 +2540,9 @@ def _source_rollup_leaf_select(
                 parameters=measure_plan.bound_measure.aggregation_params,
                 dialect=dialect_for_warehouse(config.package.warehouse),
             ),
-            "__source_value",
+            value_alias,
         )
     )
-    markers = _row_markers(measure_plan, measure, leaf_value_expr)
     preagg_select_fields.extend(
         SqlField(SqlCall("COUNT", [marker]), alias) for marker, alias in markers
     )
@@ -2558,7 +2564,7 @@ def _source_rollup_leaf_select(
         final_select_fields.append(SqlField(expr, time_alias))
         final_group_fields.append(expr)
     final_select_fields.append(
-        SqlField(SqlCall("SUM", [SqlIdentifier(parts=[rollup_name, "__source_value"])]), leaf_alias)
+        SqlField(SqlCall("SUM", [SqlIdentifier(parts=[rollup_name, value_alias])]), leaf_alias)
     )
     final_select_fields.extend(
         SqlField(SqlCall("SUM", [SqlIdentifier(parts=[rollup_name, alias])]), alias)

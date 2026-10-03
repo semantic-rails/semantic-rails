@@ -26,3 +26,5 @@
   no-match groups read `0` where an amount is known elsewhere in scope; matched-unknown
   groups also read `0` there and stay `NULL` only when no amount is known in scope.
   See [Query IR schema](docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
+- Source rollups preserve aggregate amounts when a physical join column is named
+  `__source_value`, including unknown amounts that must remain `NULL`.
