@@ -418,8 +418,14 @@ Different shape from `select`. The most common pattern is `kind: metric_predicat
 `query_window`, or `rolling_window_in_period`.
 For either entity-only window alignment, an incompatible query clock requires
 exactly one compatible input clock. Multiple candidates refuse with
-`INVALID_TEMPORAL_BINDING`; choose an input `temporal_role` or use
-`temporal_role_overrides` for its measures. A compatible query clock is retained.
+`INVALID_TEMPORAL_BINDING`, listing the clocks. A measure's `default_temporal_role`
+does not choose among them. For a direct measure input, pin its `temporal_role` or
+set `temporal_role_overrides` for the measure. For a metric input advertising several
+`compatible_temporal_roles`, pins and measure overrides inside it do not narrow
+those clocks; set `query.time.temporal_role` to one of the listed clocks. For either
+input, omit `time_alignment` to apply the predicate over all time. A compatible
+query clock is retained. A model's default time supplies the clock only when the
+measure does not declare its own `times` list.
 
 Ordinary `metric_filters` evaluate aggregated expressions at the grain the query
 returns, after grouping. A `metric_predicate` instead evaluates its input at its

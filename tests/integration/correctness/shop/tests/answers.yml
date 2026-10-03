@@ -26,18 +26,19 @@ tests:
   shop/window-predicate-follows-a-pinned-close-clock:
     kind: query_matches_snapshot
     expect: answer
-    why: Customer 102 signed up and closed an order in November; the threshold explicitly uses close time.
+    why: Customer 102 signed up and ordered within the window but closed the order after it; the pinned close clock keeps no signups.
     cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, tests/integration/correctness/shop/models/orders.yml#model.times.closed_at, tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
     tags: [time-window, clock]
     query:
       <<: *window_predicate
+      time: {temporal_role: temporal_role.shop_customer_signed_up_at, grain: day, start: '2023-11-13', end: '2023-11-21'}
       temporal_role_overrides: {measure.shop.window_order_count: temporal_role.shop_order_closed_at}
-    expected_rows: [{temporal_role.shop_customer_signed_up_at__month: '2023-11-01T00:00:00', signups: 1}]
+    expected_rows: []
     reference_sql: |
-      SELECT date_trunc('month', s.signed_up_at), COUNT(*) FROM signups s
-      WHERE s.signed_up_at >= TIMESTAMP '2023-11-01' AND s.signed_up_at < TIMESTAMP '2023-12-01'
+      SELECT date_trunc('day', s.signed_up_at), COUNT(*) FROM signups s
+      WHERE s.signed_up_at >= TIMESTAMP '2023-11-13' AND s.signed_up_at < TIMESTAMP '2023-11-21'
         AND EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = s.customer_id
-          AND o.closed_at >= TIMESTAMP '2023-11-01' AND o.closed_at < TIMESTAMP '2023-12-01')
+          AND o.closed_at >= TIMESTAMP '2023-11-13' AND o.closed_at < TIMESTAMP '2023-11-21')
       GROUP BY 1
   shop/history-key-groups-use-the-version-valid-at-order-time:
     kind: query_matches_snapshot

@@ -2330,9 +2330,13 @@ def _predicate_time_spec(
                                 {
                                     "code": "CHOOSE_PREDICATE_CLOCK",
                                     "message": (
-                                        "Set the predicate input's temporal_role to a candidate "
-                                        "clock, or set temporal_role_overrides for its measures. "
-                                        "Omit time_alignment to apply the predicate over all time."
+                                        (
+                                            "Set query.time.temporal_role to one of the listed clocks. "
+                                            if isinstance(predicate.input, MetricRecipeRefExpr)
+                                            else "Set the predicate input's temporal_role to a candidate "
+                                            "clock, or set temporal_role_overrides for its measures. "
+                                        )
+                                        + "Omit time_alignment to apply the predicate over all time."
                                     ),
                                 }
                             ],

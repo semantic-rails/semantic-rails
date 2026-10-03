@@ -18,6 +18,7 @@ SIGNED_UP = "temporal_role.clocks_customer_signed_up_at"
 @pytest.fixture()
 def warehouse(tmp_path):
     (tmp_path / "models").mkdir()
+    (tmp_path / "metrics").mkdir()
     files = {
         "package.yml": {
             "schema_version": 1,
@@ -63,12 +64,31 @@ def warehouse(tmp_path):
                         "times": ["shipped_at", "ordered_at"],
                     },
                     "default_orders": {"kind": "entity_count", "entity_key": "order_id"},
+                    "authored_default_orders": {
+                        "kind": "entity_count",
+                        "entity_key": "order_id",
+                        "times": ["ordered_at", "shipped_at"],
+                        "default_temporal_role": SHIPPED,
+                    },
                     "ordered_orders": {
                         "kind": "entity_count",
                         "entity_key": "order_id",
                         "times": ["ordered_at"],
                     },
                 },
+            }
+        },
+        "metrics/orders.yml": {
+            "metrics": {
+                name: {
+                    "kind": "derived",
+                    "compatible_temporal_roles": [ORDERED, SHIPPED],
+                    "expression": {
+                        "measure": "measure.clocks.orders",
+                        **({"temporal_role": SHIPPED} if name == "pinned_orders" else {}),
+                    },
+                }
+                for name in ["pinned_orders", "unpinned_orders"]
             }
         },
     }
@@ -144,7 +164,61 @@ def test_ambiguous_window_clock_refuses_with_candidates(warehouse, alignment, en
     assert all(clock in str(error) for clock in [ORDERED, SHIPPED])
     hint = error.details["recovery_hints"][0]
     assert hint["code"] == "CHOOSE_PREDICATE_CLOCK"
-    assert "temporal_role" in hint["message"]
+    assert hint["message"] == (
+        "Set the predicate input's temporal_role to a candidate "
+        "clock, or set temporal_role_overrides for its measures. "
+        "Omit time_alignment to apply the predicate over all time."
+    )
+
+
+@pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
+@pytest.mark.parametrize("entrypoint", [compile_query, _compile_query_sql_ast])
+def test_measure_default_does_not_choose_an_ambiguous_window_clock(
+    warehouse, alignment, entrypoint
+):
+    config, _conn = warehouse
+    measure = next(m for m in config.measures if m.id == "measure.clocks.authored_default_orders")
+    assert measure.compatible_temporal_roles == [ORDERED, SHIPPED]
+    assert measure.default_temporal_role == SHIPPED
+    query = _query({"measure": measure.id}, alignment)
+    with pytest.raises(SemanticLayerError) as raised:
+        if entrypoint is compile_query:
+            entrypoint(config, None, query)
+        else:
+            entrypoint(config, query)
+    assert raised.value.code == "INVALID_TEMPORAL_BINDING"
+    assert raised.value.details["requested"] == SIGNED_UP
+    assert raised.value.details["compatible"] == [ORDERED, SHIPPED]
+    assert all(clock in str(raised.value) for clock in [ORDERED, SHIPPED])
+
+
+@pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
+@pytest.mark.parametrize("binding", ["input", "override"])
+@pytest.mark.parametrize("entrypoint", [compile_query, _compile_query_sql_ast])
+def test_metric_advertised_clocks_refuse_despite_measure_binding(
+    warehouse, alignment, binding, entrypoint
+):
+    config, _conn = warehouse
+    name = "pinned_orders" if binding == "input" else "unpinned_orders"
+    query = _query({"metric": f"metric.clocks.{name}"}, alignment)
+    if binding == "override":
+        query["temporal_role_overrides"] = {"measure.clocks.orders": SHIPPED}
+    with pytest.raises(SemanticLayerError) as raised:
+        if entrypoint is compile_query:
+            entrypoint(config, None, query)
+        else:
+            entrypoint(config, query)
+    error = raised.value
+    assert error.code == "INVALID_TEMPORAL_BINDING"
+    assert error.details["requested"] == SIGNED_UP
+    assert error.details["compatible"] == [ORDERED, SHIPPED]
+    assert all(clock in str(error) for clock in [ORDERED, SHIPPED])
+    hint = error.details["recovery_hints"][0]
+    assert hint["code"] == "CHOOSE_PREDICATE_CLOCK"
+    assert hint["message"] == (
+        "Set query.time.temporal_role to one of the listed clocks. "
+        "Omit time_alignment to apply the predicate over all time."
+    )
 
 
 @pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
@@ -166,7 +240,9 @@ def test_explicit_window_clock_matches_reference(warehouse, alignment, clock, ro
 @pytest.mark.parametrize(
     "measure,clock", [("ordered_orders", "ordered_at"), ("default_orders", "shipped_at")]
 )
-def test_single_or_model_default_clock_matches_reference(warehouse, alignment, measure, clock):
+def test_single_clock_declared_or_inherited_from_model_default_time_matches_reference(
+    warehouse, alignment, measure, clock
+):
     config, conn = warehouse
     query = _query({"measure": f"measure.clocks.{measure}"}, alignment)
     assert conn.execute(compile_query(config, None, query)["sql"]).fetchall() == _reference(
