@@ -330,17 +330,23 @@ grouping.
 A name doesn't count inside a longer declared name ("customer type" is not
 also the entity Customer) or inside a phrase naming the query's clock ("order date"), and
 neither does a declared value or a dimension the draft's `where` pins to one value (`=`, or `IN`
-with one value). A declared filter value matched inside a grouping name (`new` in the alias
-`_new_type` or `new type`) never exempts that grouping: the unchanged draft is held even when
-it groups by the named dimension, since the inferred filter may narrow the answer. This
-rule applies to both name-reading passes. The word before each level word must end the name
-of a dimension, an entity or a clock: "revenue at region level" with no Region is not ready, nor is "revenue at the
+with one value). The word before each level word must end the name of a dimension, an entity
+or a clock: "revenue at region level" with no Region is not ready, nor is "revenue at the
 level". A declared "Severity level" dimension or "Stock level" measure triggers nothing. Some
 complete plans are held on purpose: in "revenue at store level for customer types new and
 repeat", "customer types" is no declared name, so the entity Customer must be grouped.
 These readers add obligations only to the dropped-grouping check; planning and the checks that
 authorize a draft's groupings retain their existing readers. The check only holds a plan; it
 never changes a draft or makes one ready.
+In any question, with a level word or not, a dimension or entity name the question holds (read
+with spaces and with underscores, as above) that contains a value a draft filter keeps (`=`
+that value, or `IN` with it) holds the plan, whatever words surround the name and even when
+the draft groups by it, since the filter may narrow the answer: with an alias `_new_type` or
+`new type` for Customer type, "revenue by _new_type and store name" is not ready.
+`why.details.filter_inside_grouping` lists each such filter as `{"term", "field", "value"}`,
+`dropped_groupings` keeps the term, and the recovery hint asks the caller to confirm the value
+with the user or remove it from that field's filters in `best.query_ir.where`. The draft and
+its filter are unchanged.
 A listed grouping that names an entity is satisfied only by that entity's own key
 dimension, or by the single declared dimension of that entity whose own words name it, and an
 entity with a composite key is never satisfied. A term names an entity only with every word of

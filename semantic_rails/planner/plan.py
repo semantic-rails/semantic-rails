@@ -879,19 +879,22 @@ def _level_groupings_unmet(config: Any, question: str, query: dict[str, Any]) ->
 
 def _grouping_filter_value_spans(
     config: Any, lowered: str, query: dict[str, Any]
-) -> list[tuple[int, int]]:
-    """Source spans of declared values carried by a positive draft filter.
+) -> list[tuple[tuple[int, int], str, str]]:
+    """Source spans of declared values carried by a positive draft filter, with the filter's
+    field and the value.
 
     Match the same literal, label and alias spellings as value inference. A match inside a
-    grouping name cannot authorize the filter or exempt that grouping, even when grouped.
+    grouping name cannot authorize the filter (``_value_inside_grouping_name_terms``).
     """
 
     filters = _where_filters(query)
-    spans: list[tuple[int, int]] = []
+    spans: list[tuple[tuple[int, int], str, str]] = []
     for domain in visible_value_domains(config):
         for value in domain.values or []:
-            if not any(
-                row.get("field") in domain.dimensions
+            fields = [
+                str(row["field"])
+                for row in filters
+                if row.get("field") in domain.dimensions
                 and (
                     (row.get("op") == "=" and row.get("value") == value.value)
                     or (
@@ -900,15 +903,45 @@ def _grouping_filter_value_spans(
                         and value.value in row["value"]
                     )
                 )
-                for row in filters
-            ):
-                continue
+            ]
             for name in [value.value, value.label, *(value.aliases or [])]:
                 phrase = str(name or "").strip().lower()
-                if phrase:
+                if phrase and fields:
                     pattern = rf"(?<![a-z0-9]){re.escape(phrase)}s?(?![a-z0-9])"
-                    spans.extend(match.span() for match in re.finditer(pattern, lowered))
+                    spans.extend(
+                        (match.span(), field, str(value.value))
+                        for match in re.finditer(pattern, lowered)
+                        for field in dict.fromkeys(fields)
+                    )
     return spans
+
+
+def _value_inside_grouping_name_terms(
+    config: Any, question: str, query: dict[str, Any]
+) -> list[dict[str, str]]:
+    """Every dimension or entity name in the question, read with spaces or underscores
+    (``_declared_name_spans``), that holds a value a positive draft filter carries
+    (``_grouping_filter_value_spans``), as ``{"term", "field", "value"}``.
+
+    Whatever words surround the name, the question may name only the grouping, so the filter
+    the value brought in may narrow the answer: such a term holds the plan even when the
+    draft groups by it. The check only holds a plan; it never changes a draft.
+    """
+
+    lowered = str(question or "").lower()
+    values = _grouping_filter_value_spans(config, lowered, query)
+    found: list[dict[str, str]] = []
+    for underscores in (False, True):
+        spans = _declared_name_spans(config, lowered, underscores=underscores)
+        for (low, high), named in sorted(spans.items()):
+            if not any(kind in ("dimension", "entity") for kind, _ in named):
+                continue
+            term = " ".join(lowered[low:high].split())
+            for (start, end), field, value in values:
+                entry = {"term": term, "field": field, "value": value}
+                if low <= start and end <= high and entry not in found:
+                    found.append(entry)
+    return found
 
 
 def _level_groupings_with_names(
@@ -926,11 +959,10 @@ def _level_groupings_with_names(
     ``where`` pins to one value (``=``, or ``IN`` with one value), and a name inside a clock
     phrase need nothing: a clock phrase ("week", or "order date" for the query's Order time)
     is the time block's. The clock phrase must be words joined by spaces only, never with a
-    level word. A filter value matched inside a grouping name always holds the plan: it
-    never exempts that grouping, even when its dimension is grouped. The word before each
-    level word, past commas and connectors, must end the name of a dimension, an entity or a
-    clock; any other word ("region level" with no Region)
-    is unmet as well. The check only holds a plan.
+    level word. (A filter value inside a grouping name holds any question, level or not:
+    ``_value_inside_grouping_name_terms``.) The word before each level word, past commas and
+    connectors, must end the name of a dimension, an entity or a clock; any other word
+    ("region level" with no Region) is unmet as well. The check only holds a plan.
     """
 
     lowered = str(question or "").lower()
@@ -976,15 +1008,11 @@ def _level_groupings_with_names(
         )
     }
     grouped = set(query.get("group_by") or [])
-    filter_spans = _grouping_filter_value_spans(config, lowered, query)
     unmet: list[str] = []
     for (low, high), named in sorted(spans.items()):
         term = " ".join(lowered[low:high].split())
         dimensions = {row.id for kind, row in named if kind == "dimension"}
         entity = any(kind == "entity" for kind, _ in named)
-        if (dimensions or entity) and any(low <= a and b <= high for a, b in filter_spans):
-            unmet.append(term)
-            continue
         if (
             not (dimensions or entity)
             or any(a <= low and high <= b for a, b in clock_spans)
@@ -1022,7 +1050,10 @@ def _dropped_grouping_why(
     Any other listed grouping needs a dimension whose own words name it; a clock term ("by
     month", "by order date") is the time block's and a declared value is a filter, so neither
     needs one. One dimension satisfies one listed grouping. A question asking for a level or
-    grain must also have every grouping it names (``_level_groupings_unmet``).
+    grain must also have every grouping it names (``_level_groupings_unmet``). A grouping name
+    holding a value the draft filters on is never satisfied, in any question
+    (``_value_inside_grouping_name_terms``); ``details.filter_inside_grouping`` names each
+    such filter for the caller to confirm or remove.
 
     A grouping whose dimensions belong to two or more entities, none of them the measure's own
     ("name" for an order count: Customer name, Store name and more), is ambiguous: plan holds
@@ -1108,13 +1139,18 @@ def _dropped_grouping_why(
         return False
 
     dropped = [term for index, term in enumerate(terms) if not assign(index, set())]
+    inside = _value_inside_grouping_name_terms(config, question, query)
+    held = list(dict.fromkeys(row["term"] for row in inside))
     dropped += [
-        term for term in _level_groupings_unmet(config, question, query) if term not in dropped
+        term
+        for term in dict.fromkeys([*_level_groupings_unmet(config, question, query), *held])
+        if term not in dropped
     ]
     if not dropped:
         return None
     unclear = [term for term in dropped if term in ambiguous]
     missing = [term for term in dropped if term not in ambiguous]
+    lost = [term for term in missing if term not in held]
     # An option removes every draft grouping its term matches. When that could remove a
     # grouping another term needs, options would overwrite each other, so offer none.
     removals = [
@@ -1178,11 +1214,25 @@ def _dropped_grouping_why(
     messages = [
         *(
             [
-                f"The draft drops the grouping by {', '.join(missing)} that the question asks "
+                f"The draft drops the grouping by {', '.join(lost)} that the question asks "
                 "for: each listed grouping needs its own matching dimension, so plan doesn't "
                 "call it ready."
             ]
-            if missing
+            if lost
+            else []
+        ),
+        *(
+            [
+                "The draft filters on a value read from inside a grouping name the question "
+                "asks for ("
+                + "; ".join(
+                    f"{row['value']!r} of {row['field']} inside {row['term']!r}" for row in inside
+                )
+                + "): the question may name only the grouping, and best.query_ir as is "
+                "returns only the filtered rows, so plan doesn't call it ready, even when the "
+                "draft groups by that name."
+            ]
+            if inside
             else []
         ),
         *(
@@ -1202,14 +1252,19 @@ def _dropped_grouping_why(
             "terms": dropped,
             "dropped_groupings": missing,
             **({"ambiguous_groupings": unclear} if unclear else {}),
+            **({"filter_inside_grouping": inside} if inside else {}),
             **clarification,
         },
         "recovery_hints": [
             {
                 "kind": "clarify_grouping" if unclear else "use_named_objects",
                 "message": (
-                    "Find a dimension for each grouping with discover, add the missing ones to "
-                    "best.query_ir group_by, then validate; or ask again without those groupings."
+                    (
+                        "Find a dimension for each grouping with discover, add the missing ones to "
+                        "best.query_ir group_by, then validate; or ask again without those groupings."
+                        if lost or unclear
+                        else ""
+                    )
                     + (
                         " Two groupings could replace the same draft dimension, so plan offers "
                         "no options: ask the user which dimension each grouping the question "
@@ -1222,7 +1277,15 @@ def _dropped_grouping_why(
                         if unclear
                         else ""
                     )
-                ),
+                    + (
+                        " For each details.filter_inside_grouping entry, confirm with the user that "
+                        "the question asks for that value, or remove the value from that field's "
+                        "filters in best.query_ir where; make sure group_by has the grouping the "
+                        "term names, then validate."
+                        if inside
+                        else ""
+                    )
+                ).strip(),
             }
         ],
     }
