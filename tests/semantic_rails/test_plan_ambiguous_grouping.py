@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import replace
 
 import duckdb
@@ -13,6 +14,7 @@ from semantic_rails.planner import generators, plan_payload
 from semantic_rails.planner import plan as plan_module
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
+from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.test_plan_value_lists import _force_fallback, _with_districts
 
 CUSTOMER = "dimension.customer_district"
@@ -196,12 +198,34 @@ def test_discovery_only_match_does_not_satisfy_an_explicit_grouping(shop):
 
 
 @pytest.mark.parametrize("term", ["product type", "district"])
-def test_multiple_ambiguous_groupings_offer_ids_for_replanning(runtime_factory, monkeypatch, term):
-    runtime = runtime_factory("jaffle_shop")
+def test_multiple_ambiguous_grouping_options_compose(runtime_factory, tmp_path, monkeypatch, term):
+    if term == "district":
+        package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
+        with duckdb.connect(str(package / "jaffle_shop.duckdb")) as connection:
+            connection.execute("ALTER TABLE jaffle_store ADD COLUMN district VARCHAR")
+            connection.execute(
+                "UPDATE jaffle_store SET district = "
+                "CASE WHEN store_name IN ('Brooklyn', 'Philadelphia') THEN 'east' ELSE 'west' END"
+            )
+        runtime = Runtime.from_path(str(package))
+    else:
+        runtime = runtime_factory("jaffle_shop")
     try:
         if term == "district":
             _with_districts(runtime, monkeypatch)
-        payload = plan_payload(runtime, intent=f"order count by name and {term}")
+        where = [{"field": JAFFLE_STORE, "op": "in", "value": ["Brooklyn", "Philadelphia"]}]
+        kept_sort = {"field": "order_count", "direction": "desc"}
+        payload = plan_payload(
+            runtime,
+            intent=f"order count by name and {term}",
+            partial_query={
+                "where": where,
+                "order_by": [
+                    {"field": "dimension.jaffle_customer_name", "direction": "asc"},
+                    kept_sort,
+                ],
+            },
+        )
         assert payload["status"] == "low_confidence", payload.get("why")
         assert "execute" not in payload["next"].get("ready_for", [])
         assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
@@ -209,40 +233,92 @@ def test_multiple_ambiguous_groupings_offer_ids_for_replanning(runtime_factory, 
         assert details["ambiguous_groupings"] == ["name", term]
         options = details["clarification"]["options"]
         assert {option["term"] for option in options} == {"name", term}
-        assert all(set(option) == {"id", "label", "term"} for option in options)
-        assert "partial_query.group_by" in payload["why"]["message"]
-        assert "partial_query.group_by" in payload["why"]["recovery_hints"][0]["message"]
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize("group_by", [[JAFFLE_STORE, PRODUCT_TYPE], [PRODUCT_TYPE, JAFFLE_STORE]])
-def test_all_explicit_grouping_choices_preserve_reference_rows(runtime_factory, group_by):
-    runtime = runtime_factory("jaffle_shop")
-    try:
-        payload = plan_payload(
-            runtime,
-            intent="order count by name and product type",
-            partial_query={"group_by": group_by},
-        )
-        query = payload["best"]["query_ir"]
-        assert query["group_by"] == group_by
-        assert runtime.validate(query)["ok"]
+        draft = payload["best"]["query_ir"]
+        for option in options:
+            assert set(option) == {"id", "label", "term", "replaces"}
+            assert option["term"] in details["ambiguous_groupings"]
+            meanings = {other["id"] for other in options if other["term"] == option["term"]}
+            assert option["replaces"] == [item for item in draft["group_by"] if item in meanings]
+        for message in (payload["why"]["message"], payload["why"]["recovery_hints"][0]["message"]):
+            for field in ("best.query_ir", "replaces", "group_by", "order_by", "id", "validate"):
+                assert field in message
+            assert "partial_query.group_by" not in message
+        chosen_ids = [JAFFLE_STORE, PRODUCT_TYPE if term == "product type" else STORE]
+        chosen = [next(option for option in options if option["id"] == item) for item in chosen_ids]
+        queries = []
+        for choices in (chosen, chosen[::-1]):
+            query = deepcopy(draft)
+            for option in choices:
+                replaced = set(option["replaces"])
+                query["group_by"] = sorted((set(query["group_by"]) - replaced) | {option["id"]})
+                query["order_by"] = [
+                    item for item in query.get("order_by", []) if item["field"] not in replaced
+                ]
+            assert runtime.validate(query)["ok"]
+            queries.append(query)
+        assert queries[0] == queries[1]
+        assert queries[0]["group_by"] == sorted(chosen_ids)
+        assert queries[0]["where"] == draft["where"] == where
+        assert queries[0]["order_by"] == [kept_sort]
+        query = queries[0]
         rows = runtime.query(query)["rows"]
         alias = query["select"][0]["as"]
-        actual = sorted((row[JAFFLE_STORE], row[PRODUCT_TYPE], row[alias]) for row in rows)
+        actual = sorted((row[chosen_ids[0]], row[chosen_ids[1]], row[alias]) for row in rows)
         runtime.close()
         with duckdb.connect(runtime.db_path, read_only=True) as connection:
-            expected = connection.execute(
+            reference = (
                 "SELECT s.store_name, p.product_type, COUNT(DISTINCT o.order_id) "
                 "FROM jaffle_order o JOIN jaffle_store s ON o.store_id = s.store_id "
                 "JOIN jaffle_item i ON o.order_id = i.order_id "
-                "JOIN jaffle_product p ON i.product_id = p.product_id GROUP BY 1, 2 ORDER BY 1, 2"
-            ).fetchall()
+                "JOIN jaffle_product p ON i.sku = p.sku "
+                "WHERE s.store_name IN ('Brooklyn', 'Philadelphia') GROUP BY 1, 2 ORDER BY 1, 2"
+                if term == "product type"
+                else "SELECT s.store_name, s.district, COUNT(DISTINCT o.order_id) "
+                "FROM jaffle_order o JOIN jaffle_store s ON o.store_id = s.store_id "
+                "WHERE s.store_name IN ('Brooklyn', 'Philadelphia') GROUP BY 1, 2 ORDER BY 1, 2"
+            )
+            expected = connection.execute(reference).fetchall()
         assert actual
         assert actual == expected
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize("shop", ["plural_store"], indirect=True)
+@pytest.mark.parametrize(
+    ("term", "changes", "ambiguous"),
+    [
+        ("district", {"label": "District"}, False),
+        ("district", {"id": "dimension.district"}, False),
+        ("customer_district", {"label": "Customer District"}, False),
+        ("customer district", {"label": "Customer districts"}, False),
+        ("district", {}, True),
+    ],
+    ids=["whole-label", "whole-id", "underscored-term", "underscored-id", "column-only"],
+)
+def test_discovery_cannot_widen_a_whole_dimension_name(shop, monkeypatch, term, changes, ambiguous):
+    customer = next(row for row in shop._config.dimensions if row.id == CUSTOMER)
+    customer = replace(customer, **changes)
+    monkeypatch.setattr(
+        shop,
+        "_config",
+        replace(
+            shop._config,
+            dimensions=[customer, *[row for row in shop._config.dimensions if row.id != CUSTOMER]],
+        ),
+    )
+    monkeypatch.setattr(plan_module, "_grouping_term_matches", lambda *args, **kwargs: [STORE])
+    query = {
+        "version": 2,
+        "select": [{"as": "revenue", "expression": {"measure": "measure.shop.item_revenue"}}],
+        "group_by": [customer.id],
+    }
+    why = plan_module._dropped_grouping_why(shop, f"item revenue by {term}", query)
+    if ambiguous:
+        assert why["code"] == "PLAN_UNMATCHED_TERMS"
+        assert why["details"]["ambiguous_groupings"] == [term]
+    else:
+        assert why is None
 
 
 @pytest.mark.parametrize("path", ["primary", "fallback"])

@@ -821,9 +821,17 @@ def _dropped_grouping_why(
     matches: list[list[Any]] = []
     for term, ids in zip(terms, stand_ins, strict=True):
         named = [row for row in visible if row.groupable and reads(term, ids, row)]
-        if ids is None:
+        if ids is None and not any(
+            term.lower().replace("_", " ")
+            in {
+                str(row.label or "").lower().replace("_", " "),
+                row.id.removeprefix("dimension.").lower().replace("_", " "),
+            }
+            for row in named
+        ):
             # Discovery recognizes additional words/plurals. They may establish an
-            # ambiguity, but never satisfy a grouping the strict guard cannot read.
+            # ambiguity unless the term names a whole strict label/ID. They never
+            # satisfy a grouping the strict guard cannot read; columns don't settle it.
             discovered = set(_grouping_term_matches(runtime, query, term, limit=len(visible)) or [])
             matched_ids = {row.id for row in named} | discovered
             named = [row for row in visible if row.groupable and row.id in matched_ids]
@@ -894,7 +902,17 @@ def _dropped_grouping_why(
                             "id": row.id,
                             "label": row.label,
                             "term": term,
-                            **(patch if len(unclear) == 1 else {}),
+                            **(
+                                patch
+                                if len(unclear) == 1
+                                else {
+                                    "replaces": [
+                                        item
+                                        for item in query.get("group_by", [])
+                                        if item in matching_ids
+                                    ]
+                                }
+                            ),
                         }
                     )
         clarification = {
@@ -903,6 +921,11 @@ def _dropped_grouping_why(
                 "options": options,
             }
         }
+    multiple_recovery = (
+        " In best.query_ir, for each ambiguous term remove its option's replaces ids from "
+        "group_by and their entries from order_by, add the chosen id to group_by, keep group_by ids sorted, "
+        "then validate."
+    )
     messages = [
         *(
             [
@@ -917,12 +940,7 @@ def _dropped_grouping_why(
             [
                 f"The grouping by {', '.join(unclear)} may be a dimension of any of several "
                 "entities, none of them the measure's own, so plan doesn't pick one or call the "
-                "draft ready."
-                + (
-                    " Plan again with partial_query.group_by naming one chosen id per ambiguous term."
-                    if len(unclear) > 1
-                    else ""
-                )
+                "draft ready." + (multiple_recovery if len(unclear) > 1 else "")
             ]
             if unclear
             else []
@@ -944,7 +962,7 @@ def _dropped_grouping_why(
                     "Find a dimension for each grouping with discover, add the missing ones to "
                     "best.query_ir group_by, then validate; or ask again without those groupings."
                     + (
-                        " Plan again with partial_query.group_by naming one chosen id per ambiguous term."
+                        multiple_recovery
                         if len(unclear) > 1
                         else " Apply an option's group_by, where and order_by to best.query_ir, then validate."
                         if unclear

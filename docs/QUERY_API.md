@@ -1030,8 +1030,9 @@ an absent dimension; a draft that bypasses the visibility check is refused with
 When a grouping word names available dimensions on several entities and none
 belongs to the selected measure's root entity, planning holds the draft with
 `low_confidence` and `PLAN_UNMATCHED_TERMS`. This applies to primary planning
-and catalog fallback, combining strict matches with discovery's additional
-matches, including plurals. Discovery evidence can add a hold or an option;
+and catalog fallback, adding discovery's additional matches, including plurals,
+unless a strict match names the whole term by label or dimension ID (underscores
+read as spaces). A column name alone does not settle it. Discovery evidence can add a hold or an option;
 only strict matches satisfy a grouping. The reason lists
 `ambiguous_groupings` and `details.clarification.options`, with one validated
 option per visible candidate dimension. Each option names its `id`, `label`
@@ -1039,8 +1040,11 @@ and grouping `term`. With exactly one unclear term, it also carries
 `group_by`, `where` and `order_by`: apply those three fields to `best.query_ir`,
 then validate or execute the chosen reading. Filters and unrelated groupings
 are preserved; dimension sort fields follow the chosen grouping. With two or
-more unclear terms, options carry only `id`, `label` and `term`; plan again with
-`partial_query.group_by` naming one chosen ID per ambiguous term. For example,
+more unclear terms, options carry `id`, `label`, `term` and `replaces`, the draft
+`group_by` IDs matching that term. In `best.query_ir`, for each ambiguous term,
+remove its chosen option's `replaces` IDs from `group_by` and the corresponding
+`order_by` entries, add the chosen `id` to `group_by`, keep `group_by` IDs sorted
+so choices compose in any order, then validate. For example,
 "item revenue by district" asks whether Store district or Customer district
 is intended.
 
