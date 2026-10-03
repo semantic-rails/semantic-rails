@@ -288,6 +288,12 @@ def test_setup_without_registered_package_points_to_init(
     assert "semantic-rails init my_package --yes" in report["next_actions"]
 
 
+def test_mcp_start_help_explains_os_assigned_ports() -> None:
+    proc = _run_cli("mcp", "start", "--help")
+    assert proc.returncode == 0
+    assert "Port to bind (0 = OS-assigned; see `mcp status`)." in " ".join(proc.stdout.split())
+
+
 def test_mcp_doctor_loads_path_package_and_lists_tools(tmp_path: Path) -> None:
     _run_json(
         "init",

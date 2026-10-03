@@ -543,6 +543,7 @@ def _serve_mcp_http(adapter):
         thread.join(timeout=5)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="socket fd inheritance requires POSIX")
 def test_mcp_http_adopts_the_managers_listener_without_rebinding(monkeypatch, capsys):
     import semantic_rails.mcp_server as server
 
@@ -561,9 +562,26 @@ def test_mcp_http_adopts_the_managers_listener_without_rebinding(monkeypatch, ca
                 assert resp.status == 200
                 assert json.load(resp)["package_id"] == "host-package"
             serving.result(timeout=3)
+        assert os.getenv("SEMANTIC_RAILS_MCP_SOCKET_FD") is None
         with pytest.raises(OSError):
             os.fstat(inherited_fd)
     assert f"http://127.0.0.1:{port}/mcp" in capsys.readouterr().out
+
+
+def test_mcp_http_discards_inherited_socket_fd_for_an_explicit_port(monkeypatch):
+    import semantic_rails.mcp_server as server
+
+    monkeypatch.setenv("SEMANTIC_RAILS_MCP_SOCKET_FD", "stale-inherited-fd")
+
+    @contextmanager
+    def http_server(address, handler, *, bind_and_activate):
+        assert address == ("127.0.0.1", 8091)
+        assert bind_and_activate is True
+        assert os.getenv("SEMANTIC_RAILS_MCP_SOCKET_FD") is None
+        yield types.SimpleNamespace(server_address=address, serve_forever=lambda: None)
+
+    monkeypatch.setattr(server, "HTTPServer", http_server)
+    server.serve_http(_HostAdapter(), port=8091)
 
 
 def test_mcp_http_and_sse_transport_smoke(runtime_factory):

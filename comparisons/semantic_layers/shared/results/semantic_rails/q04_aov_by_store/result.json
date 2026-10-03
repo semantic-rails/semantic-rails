@@ -93,7 +93,6 @@
             "join_semantics": "many_to_one",
             "proof_class": "fk_to_pk",
             "relationship_id": "relationship.orders_store",
-            "rollup_safe_aggregations": [],
             "safety": "safe",
             "source_key_role": "foreign",
             "target_key_role": "primary",
@@ -108,8 +107,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 0.97,
-      "compile_ms": 0.236,
+      "cache_lookup_ms": 1.17,
+      "compile_ms": 0.286,
       "dialect": "duckdb",
       "physical_plan_nodes": 4
     },
@@ -135,7 +134,6 @@
                   "join_semantics": "",
                   "label": "Order to Store",
                   "name": "jaffle.Order_TO_jaffle.Store",
-                  "rollup_safe_aggregations": [],
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
                   "source_column": "store_id",
@@ -243,7 +241,6 @@
                   "join_semantics": "",
                   "label": "Order to Store",
                   "name": "jaffle.Order_TO_jaffle.Store",
-                  "rollup_safe_aggregations": [],
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
                   "source_column": "store_id",
@@ -351,7 +348,6 @@
               "join_semantics": "",
               "label": "Order to Store",
               "name": "jaffle.Order_TO_jaffle.Store",
-              "rollup_safe_aggregations": [],
               "rollup_safe_aggregations_reverse": [],
               "safety": "safe",
               "source_column": "store_id",
@@ -499,7 +495,6 @@
                     "join_semantics": "",
                     "label": "Order to Store",
                     "name": "jaffle.Order_TO_jaffle.Store",
-                    "rollup_safe_aggregations": [],
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
                     "source_column": "store_id",
@@ -607,7 +602,6 @@
                     "join_semantics": "",
                     "label": "Order to Store",
                     "name": "jaffle.Order_TO_jaffle.Store",
-                    "rollup_safe_aggregations": [],
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
                     "source_column": "store_id",
@@ -715,7 +709,6 @@
                 "join_semantics": "",
                 "label": "Order to Store",
                 "name": "jaffle.Order_TO_jaffle.Store",
-                "rollup_safe_aggregations": [],
                 "rollup_safe_aggregations_reverse": [],
                 "safety": "safe",
                 "source_column": "store_id",
@@ -799,7 +792,6 @@
                     "join_semantics": "",
                     "label": "Order to Store",
                     "name": "jaffle.Order_TO_jaffle.Store",
-                    "rollup_safe_aggregations": [],
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
                     "source_column": "store_id",
@@ -930,7 +922,6 @@
                     "join_semantics": "",
                     "label": "Order to Store",
                     "name": "jaffle.Order_TO_jaffle.Store",
-                    "rollup_safe_aggregations": [],
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
                     "source_column": "store_id",
@@ -1281,7 +1272,6 @@
                     "join_semantics": "",
                     "label": "Order to Store",
                     "name": "jaffle.Order_TO_jaffle.Store",
-                    "rollup_safe_aggregations": [],
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "safe",
                     "source_column": "store_id",
@@ -1458,7 +1448,6 @@
                       "join_semantics": "",
                       "label": "Order to Store",
                       "name": "jaffle.Order_TO_jaffle.Store",
-                      "rollup_safe_aggregations": [],
                       "rollup_safe_aggregations_reverse": [],
                       "safety": "safe",
                       "source_column": "store_id",
@@ -2030,7 +2019,8 @@
         ],
         "path": [
           "relationship.orders_store"
-        ]
+        ],
+        "route_basis": "colocated_key"
       }
     }
   },
@@ -2138,7 +2128,6 @@
                   "join_semantics": "",
                   "label": "Order to Store",
                   "name": "jaffle.Order_TO_jaffle.Store",
-                  "rollup_safe_aggregations": [],
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
                   "source_column": "store_id",
@@ -2246,7 +2235,6 @@
                   "join_semantics": "",
                   "label": "Order to Store",
                   "name": "jaffle.Order_TO_jaffle.Store",
-                  "rollup_safe_aggregations": [],
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
                   "source_column": "store_id",
@@ -2354,7 +2342,6 @@
               "join_semantics": "",
               "label": "Order to Store",
               "name": "jaffle.Order_TO_jaffle.Store",
-              "rollup_safe_aggregations": [],
               "rollup_safe_aggregations_reverse": [],
               "safety": "safe",
               "source_column": "store_id",
@@ -2438,7 +2425,6 @@
                   "join_semantics": "",
                   "label": "Order to Store",
                   "name": "jaffle.Order_TO_jaffle.Store",
-                  "rollup_safe_aggregations": [],
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
                   "source_column": "store_id",
@@ -2569,7 +2555,6 @@
                   "join_semantics": "",
                   "label": "Order to Store",
                   "name": "jaffle.Order_TO_jaffle.Store",
-                  "rollup_safe_aggregations": [],
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "safe",
                   "source_column": "store_id",
@@ -2872,7 +2857,6 @@
             "join_semantics": "many_to_one",
             "proof_class": "fk_to_pk",
             "relationship_id": "relationship.orders_store",
-            "rollup_safe_aggregations": [],
             "safety": "safe",
             "source_key_role": "foreign",
             "target_key_role": "primary",
@@ -2914,16 +2898,16 @@
   "row_count": 2,
   "rows": [
     {
-      "aov_usd": 12.739104407255178,
+      "aov_usd": 12.739104407255265,
       "dimension.jaffle_store_name": "Philadelphia"
     },
     {
-      "aov_usd": 12.085946890286547,
+      "aov_usd": 12.085946890286651,
       "dimension.jaffle_store_name": "Brooklyn"
     }
   ],
-  "semantic_fingerprint": "sha256:79e8f3f1f2233be41cfae49254c973c3ff64984ddb66ff349015cf6033769ee7",
-  "source_fingerprint": "3a04595d59e97537227dfd70f6e62ae026eef579da73543884aae311262f0e28",
+  "semantic_fingerprint": "sha256:738a3e0d5ee52d27dd5b0d9ef53e670cc3a541c155a7a5a1f20888a94e619e87",
+  "source_fingerprint": "3be89439f14f4fbad2d7b21c52678ca261ead872cf6db820220d6a0bfa6ab055",
   "sql_plan": {
     "ctes": [
       {
@@ -3263,11 +3247,187 @@
     {
       "code": "ROUTE_COLOCATED_KEY",
       "details": {
+        "alternatives": [],
+        "conflicts_with": [
+          {
+            "relationship_path": [
+              "relationship.order_lifecycle_order",
+              "relationship.order_lifecycle_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.storefront_sessions_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.order_to_customer_history",
+              "relationship.order_lifecycle_to_customer_history",
+              "relationship.order_lifecycle_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.orders_customer",
+              "relationship.order_lifecycle_customer",
+              "relationship.order_lifecycle_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.orders_customer",
+              "relationship.storefront_sessions_customer",
+              "relationship.storefront_sessions_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.order_lifecycle_order",
+              "relationship.order_lifecycle_customer",
+              "relationship.storefront_sessions_customer",
+              "relationship.storefront_sessions_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.order_to_customer_history",
+              "relationship.customer_history_customer",
+              "relationship.order_lifecycle_customer",
+              "relationship.order_lifecycle_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.order_to_customer_history",
+              "relationship.customer_history_customer",
+              "relationship.storefront_sessions_customer",
+              "relationship.storefront_sessions_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.orders_customer",
+              "relationship.customer_history_customer",
+              "relationship.order_lifecycle_to_customer_history",
+              "relationship.order_lifecycle_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.storefront_sessions_customer",
+              "relationship.order_lifecycle_customer",
+              "relationship.order_lifecycle_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          }
+        ],
         "route": [
           "relationship.orders_store"
         ]
       },
-      "message": "Order \u2192 Store (own key)",
+      "message": "the Order's Store (own key)",
       "object_ids": [
         "entity.jaffle_order",
         "entity.jaffle_store"

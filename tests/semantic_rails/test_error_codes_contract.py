@@ -5,8 +5,8 @@ Catches:
 - Dead codes (declared but never raised) — this kept happening pre-launch.
 - Typos in raise statements (referenced code not in the set).
 
-Walks `semantic_rails/` source files and grep-matches the canonical
-`raise SemanticLayerError("CODE", ...)` shape via AST.
+Walks `semantic_rails/` source files and matches error constructions and
+subclass initialization via AST.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ def _collect_raised_codes() -> dict[str, list[str]]:
     construction site. Counts both `raise SemanticLayerError(...)` and
     `return SemanticLayerError(...)` patterns — the latter is the deferred-raise
     idiom (e.g., runtime.py:124 returns an error for the caller to raise).
+    Also counts `super().__init__("CODE", ...)` in SemanticLayerError subclasses.
     """
     raised: dict[str, list[str]] = {}
     for py_file in SOURCE_ROOT.rglob("*.py"):
@@ -34,6 +35,25 @@ def _collect_raised_codes() -> dict[str, list[str]]:
             tree = ast.parse(py_file.read_text())
         except SyntaxError:
             continue
+        subclass_initializers: set[ast.Call] = set()
+        for cls in ast.walk(tree):
+            if not isinstance(cls, ast.ClassDef) or not any(
+                isinstance(base, ast.Name) and base.id == "SemanticLayerError" for base in cls.bases
+            ):
+                continue
+            for member in cls.body:
+                if not isinstance(member, ast.FunctionDef) or member.name != "__init__":
+                    continue
+                for call in ast.walk(member):
+                    if (
+                        isinstance(call, ast.Call)
+                        and isinstance(call.func, ast.Attribute)
+                        and call.func.attr == "__init__"
+                        and isinstance(call.func.value, ast.Call)
+                        and isinstance(call.func.value.func, ast.Name)
+                        and call.func.value.func.id == "super"
+                    ):
+                        subclass_initializers.add(call)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -45,7 +65,7 @@ def _collect_raised_codes() -> dict[str, list[str]]:
                 if isinstance(func, ast.Attribute)
                 else None
             )
-            if name != "SemanticLayerError":
+            if name != "SemanticLayerError" and node not in subclass_initializers:
                 continue
             if not node.args or not isinstance(node.args[0], ast.Constant):
                 continue
@@ -78,3 +98,10 @@ def test_every_raise_site_uses_a_declared_code(raised_codes):
             f"Raise statements use codes not declared in ERROR_CODES: {typos}. "
             f"Sample sites: {sample_sites}. Add to ERROR_CODES or fix the typo."
         )
+
+
+def test_rollup_unsafe_has_a_compiler_raise_site(raised_codes):
+    assert any(
+        site.startswith("semantic_rails/compiler.py:")
+        for site in raised_codes.get("ROLLUP_UNSAFE", [])
+    )

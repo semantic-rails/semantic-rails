@@ -393,7 +393,6 @@ __all__ = [
     "_validate_metric_predicate_filter_envelope",
     "_validate_query_temporal_bindings",
     "_validate_restrictive_time_semantics",
-    "_validate_rollup_safety",
     "_validate_where_value_type",
     "analyze_fanout",
     "attach_relation_ctes",
@@ -477,43 +476,6 @@ def _can_project_entity_key_from_source(
         _direct_entity_key_source_expr(source_entity, target_entity, key_col, config) is not None
         for key_col in list(target.key or [target.primary_key])
     )
-
-
-def _validate_rollup_safety(bound_measures: Iterable[BoundMeasure], config: PackageConfig) -> None:
-    measures = _measure_index(config)
-    unsafe_aggregations = {"avg", "median", "percentile", "count_distinct"}
-    # Relationships between one pair (role-playing keys) may each list rollup-safe
-    # aggregations; only what every one of them allows is allowed, whatever the order.
-    rollup_hints_by_pair: dict[tuple[str, str], set[str]] = {}
-    for rel in config.relationships:
-        if not rel.rollup_safe_aggregations:
-            continue
-        hints = {str(item).lower() for item in rel.rollup_safe_aggregations}
-        pair = (rel.source_entity, rel.target_entity)
-        rollup_hints_by_pair[pair] = rollup_hints_by_pair.get(pair, hints) & hints
-    for bound in bound_measures:
-        measure = measures[bound.measure_id]
-        if not measure.aggregation_entity or measure.aggregation_entity == measure.entity:
-            continue
-        aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
-        allowed = rollup_hints_by_pair.get((measure.entity, measure.aggregation_entity))
-        sketch_safe = bool(measure.meta.get("rollup_sketch") or measure.meta.get("sketch"))
-        if (aggregation in unsafe_aggregations and not sketch_safe) or (
-            allowed is not None and aggregation not in allowed and not sketch_safe
-        ):
-            raise SemanticLayerError(
-                "ROLLUP_UNSAFE",
-                f"Measure '{measure.id}' cannot be rolled from '{measure.entity}' to '{measure.aggregation_entity}' with aggregation '{aggregation}'",
-                details={
-                    "measure_id": measure.id,
-                    "source_entity": measure.entity,
-                    "aggregation_entity": measure.aggregation_entity,
-                    "aggregation": aggregation,
-                    "unsupported_construct": "non_additive_parent_rollup",
-                    "why_invalid": "Non-additive aggregations cannot be safely re-aggregated across parent entities without sketch or rollup metadata.",
-                    "missing_metadata_or_capability": "rollup_sketch or additive primitive",
-                },
-            )
 
 
 # A window adds periods and a per-entity rollup adds an entity's rows before comparing
@@ -994,7 +956,6 @@ def _fanout_dedup_refusal(
         measure.additive
         and measure.measure_class not in {"semi_additive", "snapshot"}
         and _measure_has_source_row_key(measure, entity)
-        and measure.aggregation_entity in {"", measure.entity}
         and (entity.key or entity.primary_key)
     ):
         return (
@@ -2108,10 +2069,11 @@ def _predicate_context_entity_candidates(
     predicate: MetricPredicateExpr, query: NormalizedQuery, config: PackageConfig
 ) -> list[str]:
     dimensions = _dimension_index(config)
+    input_root = _predicate_input_root_entity(predicate, config)
     candidates: list[str] = []
     for dim_id in list(query.group_by or []):
         dim = dimensions[dim_id]
-        if dim.entity == predicate.entity or dim.entity in candidates:
+        if dim.entity in {predicate.entity, input_root} or dim.entity in candidates:
             continue
         candidates.append(dim.entity)
     return candidates
@@ -2379,7 +2341,15 @@ def _predicate_scope(
                 },
             )
     context_entities = []
+    context_dimensions = []
     if predicate.scope_mode == "contextual":
+        # A fact attribute describes the returned group, not one fact row per entity key.
+        context_dimensions = [
+            dim_id
+            for dim_id in query.group_by
+            if _dimension_index(config)[dim_id].entity == input_root
+            and input_root != predicate.entity
+        ]
         candidate_entities = _predicate_context_entity_candidates(predicate, query, config)
         context_entities = _reduced_context_entities(
             config=config,
@@ -2457,6 +2427,7 @@ def _predicate_scope(
     group_by_dims = [*_entity_key_dimension_ids(predicate.entity, config)]
     for entity_id in context_entities:
         group_by_dims.extend(_entity_key_dimension_ids(entity_id, config))
+    group_by_dims.extend(context_dimensions)
     group_by_dims = list(dict.fromkeys(group_by_dims))
     time_alias = (
         ""
@@ -2477,6 +2448,7 @@ def _predicate_scope(
         "input_root": input_root,
         "group_by_dims": group_by_dims,
         "context_entities": context_entities,
+        "context_dimensions": context_dimensions,
         "time_spec": time_spec,
         "time_alias": time_alias,
         "source_time_alias": source_time_alias,
@@ -2641,6 +2613,16 @@ def _predicate_ctes_and_join(
                 "AND",
                 SqlBinary(context_key_expr, "=", SqlIdentifier(parts=[set_name, dim_id])),
             )
+    for dim_id in scope["context_dimensions"]:
+        dim = _dimension_index(config)[dim_id]
+        join_condition = SqlBinary(
+            join_condition,
+            "AND",
+            dialect_for_warehouse(config.package.warehouse).null_safe_eq(
+                _column_ref(_entity_index(config)[dim.entity].table, dim.column),
+                SqlIdentifier(parts=[set_name, dim_id]),
+            ),
+        )
     if scope["time_spec"] is not None and scope["time_alias"]:
         query = normalize_query(plan.query)
         outer_temporal_role = _leaf_time_role(measure_plan.bound_measure, query, config)
@@ -4471,7 +4453,6 @@ def _plan_query(
     }
     bound_measures = list(dedup_measures.values())
     _validate_measure_validity_windows(bound_measures, config, query)
-    _validate_rollup_safety(bound_measures, config)
     _validate_non_additive_sums(bound_measures, config, query)
     measure_plans: list[MeasurePlan] = []
     leaf_strategies: list[str] = []  # each leaf's strategy before rollup routing
@@ -4615,14 +4596,17 @@ def _plan_query(
         semantic_dag=_semantic_dag_for_query(query, config),
         synthetic_measures=dict(synthetic_measures),
     )
-    _require_child_group_leaves(plan, query, conversion_exprs)
+    _require_child_group_leaves(plan, query, conversion_exprs, config)
     from .compiler_parts.sql_lowering import coverage_base_plan
 
     return coverage_base_plan(plan, config, leaf_strategies)
 
 
 def _require_child_group_leaves(
-    plan: LogicalPlan, query: NormalizedQuery, conversion_exprs: list[ConversionExpr]
+    plan: LogicalPlan,
+    query: NormalizedQuery,
+    conversion_exprs: list[ConversionExpr],
+    config: PackageConfig,
 ) -> None:
     """Refuse a plan whose child groups some lowering would not apply.
 
@@ -4636,7 +4620,7 @@ def _require_child_group_leaves(
         return
     if conversion_exprs:
         refuse_child_groups(query.where, "in a conversion metric")
-    if _plan_requires_agent_dag_lowering(plan):
+    if _plan_requires_agent_dag_lowering(plan, config):
         refuse_child_groups(query.where, "beside a distribution")
     children = {group.child for group in groups}
     for measure_plan in plan.measure_plans:

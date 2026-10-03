@@ -18,13 +18,14 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from .config_parts.package_loader import normalize_package
+from .config_parts.package_loader import _JOIN_KEYS, normalize_package
 from .config_parts.route_rows import (
     RouteRowError,
     check_route_row,
     entity_references,
     require_rows_agree,
 )
+from .config_parts.shape_checks import _MEASURE_KEYS
 from .dialects import (
     connection_option_errors,
     snowflake_adbc_connect_errors,
@@ -1866,6 +1867,15 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     dim_defaults = dict(defaults.get("dimension", {}) or {})
     time_defaults = dict(defaults.get("time", {}) or {})
     measure_defaults = dict(defaults.get("measure", {}) or {})
+    removed_measure_defaults = sorted(
+        set(measure_defaults) & {"subject_entity", "aggregation_entity"}
+    )
+    if removed_measure_defaults:
+        locations = ", ".join(f"defaults.measure.{key}" for key in removed_measure_defaults)
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"{path}: {locations}: delete this line; parent-rollup declarations were removed",
+        )
     relationship_defaults = dict(defaults.get("relationship", {}) or {})
     operational_contract = load_operational_contract(defaults, path=path)
     meta_contract = load_meta_contract(defaults, path=path)
@@ -2071,6 +2081,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     "INVALID_CONFIG",
                     f"{path}: measure '{measure_key}' uses 'primitive:' shorthand which has been removed; expand to explicit 'kind' / 'accumulation' / 'value_type' fields",
                 )
+            _check_binding_keys(
+                measure_spec, _MEASURE_KEYS, label=f"{path}: measure '{measure_key}'"
+            )
             measure_id = str(
                 measure_spec.get("id", f"measure.{_slug(entity_cfg.name)}_{_slug(measure_key)}")
             )
@@ -2171,17 +2184,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             measure = MeasureConfig(
                 id=measure_id,
                 entity=entity_id,
-                subject_entity=entity_id
-                if str(measure_spec.get("subject_entity", "self")) == "self"
-                else entity_lookup.get(
-                    str(measure_spec.get("subject_entity")), str(measure_spec.get("subject_entity"))
-                ),
-                aggregation_entity=entity_id
-                if str(measure_spec.get("aggregation_entity", "self")) == "self"
-                else entity_lookup.get(
-                    str(measure_spec.get("aggregation_entity")),
-                    str(measure_spec.get("aggregation_entity")),
-                ),
                 row_grain=list(row_grain),
                 source_relation=fact_source_relation,
                 expr=parse_config_expression(expr_raw),
@@ -2297,6 +2299,11 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     "relationship_path).",
                     details={"relationship": rel_id, "fix": "graph.path_preferences"},
                 )
+            _check_binding_keys(
+                join_spec,
+                _JOIN_KEYS,
+                label=f"{path}: relationship '{rel_id}' (join '{model_id}.{edge_key}')",
+            )
             relationships.append(
                 RelationshipConfig(
                     id=rel_id,
@@ -2322,9 +2329,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     },
                     target_key_type=str(join_spec.get("target_key_type", "primary") or "primary"),
                     join_semantics=str(join_spec.get("join_semantics", "")),
-                    rollup_safe_aggregations=_ensure_list(
-                        join_spec.get("rollup_safe_aggregations")
-                    ),
                     rollup_safe_aggregations_reverse=_ensure_list(
                         join_spec.get("rollup_safe_aggregations_reverse")
                     ),
