@@ -262,9 +262,22 @@ def test_a_number_or_time_word_that_is_not_an_hour_is_never_read_as_one(
     payload = _plan(runtime_factory, text)
     why = payload.get("why") or {}
     assert why.get("code") != "TIME_WINDOW_UNRESOLVED", why
+    unknown = {
+        "average delivery time by month": ["delivery"],
+        # The intent parse records "region" as "geo", which nothing resolves.
+        "orders in 2017 for the west region": ["west", "region"],
+        "orders by day in Central": ["central"],
+        "orders on 15 March 2017 local time": ["local"],
+    }
+    if text in unknown:
+        assert payload["status"] == "low_confidence"
+        assert "ready_for" not in payload["next"]
+        assert why["details"] == {"terms": unknown[text], "kind": "filter_values_unrealized"}
     if why.get("code") == "PLAN_UNMATCHED_TERMS":
         terms = why["details"]["terms"]
-        if why["recovery_hints"][0]["kind"] == "use_named_objects":
+        if why["details"].get("kind") == "filter_values_unrealized":
+            assert not set(terms) & {"hour", "hours", "clock"}, why
+        elif why["recovery_hints"][0]["kind"] == "use_named_objects":
             # A word naming a catalog object the draft doesn't use ("median", "customers").
             assert "time" not in terms, why
         else:
@@ -286,6 +299,14 @@ def test_a_question_whose_numbers_and_time_words_are_all_consumed_is_ok(
     runtime_factory: Any, text: str
 ) -> None:
     payload = _plan(runtime_factory, text)
+    if "delivery" in text:
+        assert payload["status"] == "low_confidence", payload.get("why")
+        assert payload["why"]["details"] == {
+            "terms": ["delivery"],
+            "kind": "filter_values_unrealized",
+        }
+        assert "ready_for" not in payload["next"]
+        return
     assert payload["status"] == "ok", payload.get("why")
     assert payload["next"]["ready_for"] == ["execute"]
 

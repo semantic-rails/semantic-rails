@@ -88,7 +88,10 @@ def test_the_named_measure_wins_a_tie(
     finally:
         runtime.close()
 
-    assert plan["status"] == "ok", plan.get("why")
+    assert plan["status"] == ("low_confidence" if unmatched else "ok"), plan.get("why")
+    if unmatched:
+        assert plan["why"]["details"] == {"terms": unmatched, "kind": "filter_values_unrealized"}
+        assert "ready_for" not in plan["next"]
     [select] = plan["best"]["query_ir"]["select"]
     # A package's measures come with same-named metrics; either answers.
     assert (select["expression"].get("measure") or select["expression"]["metric"]).endswith(
@@ -154,18 +157,36 @@ CUSTOMERS = "measure.jaffle.customer_count"
         ("number of customers", CUSTOMERS, None, []),
         ("how many customers", CUSTOMERS, None, []),
         ("customers", CUSTOMERS, None, []),
-        ("number of customers by store", CUSTOMERS, ["dimension.jaffle_store_name"], []),
+        ("number of customers by month", CUSTOMERS, None, []),
+        ("number of customers by store", CUSTOMERS, ["dimension.jaffle_store_name"], ["number"]),
         # The measures whose descriptions start "Number of …" still answer their own questions.
-        # Only the description holds "items", though, and it names the Item objects. Their
-        # drafts take the last value of a count, not a count, so nothing reads "number of",
-        # which names Customer order number: plan keeps them but doesn't call them ready.
+        # Only the description holds "items", though, and it names the Item objects.
+        # Snapshot measures still count things even though their aggregation is last_value.
         (
             "number of active menu items",
             "measure.jaffle.active_menu_count_eop",
             None,
-            ["number", "items"],
+            ["items"],
         ),
-        ("number of stores open", "measure.jaffle.open_store_count_eop", ..., ["number"]),
+        # The draft groups by store, which the question doesn't ask for: not one number.
+        (
+            "number of stores open",
+            "measure.jaffle.open_store_count_eop",
+            ["dimension.jaffle_store_name"],
+            ["number"],
+        ),
+        (
+            "number of stores open by month",
+            "measure.jaffle.open_store_count_eop",
+            ["dimension.jaffle_store_name"],
+            ["number"],
+        ),
+        (
+            "number of stores open by year",
+            "measure.jaffle.open_store_count_eop",
+            ["dimension.jaffle_store_name"],
+            ["number"],
+        ),
     ],
 )
 def test_counting_words_name_the_count_measure(
@@ -182,12 +203,16 @@ def test_counting_words_name_the_count_measure(
         runtime.close()
 
     assert plan["status"] == ("low_confidence" if unconsumed else "ok"), plan.get("why")
+    assert ("ready_for" in plan["next"]) is not bool(unconsumed)
+    if unconsumed:
+        assert plan["why"]["code"] == "PLAN_UNMATCHED_TERMS"
     assert (plan.get("why") or {}).get("details", {}).get("terms", []) == unconsumed
     query = plan["best"]["query_ir"]
+    if question.endswith(("month", "year")):
+        assert query["time"]["grain"] == question.rsplit(" ", 1)[-1]
     [select] = query["select"]
     assert select["expression"]["measure"] == measure
-    if group_by is not ...:
-        assert query.get("group_by") == group_by
+    assert query.get("group_by") == group_by
 
 
 def test_a_whole_name_beats_one_that_adds_count(tmp_path: Path) -> None:

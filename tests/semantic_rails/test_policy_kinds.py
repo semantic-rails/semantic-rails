@@ -33,6 +33,7 @@ INVALID_POLICIES = [
 VALID_POLICIES = [
     ("object_access", "deny"),
     ("object_access", "redact"),
+    ("object_access", "withhold_values"),
     ("object_visibility", "hidden"),
     ("object_visibility", "visible"),
     ("package_release", ""),
