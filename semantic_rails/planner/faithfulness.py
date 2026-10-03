@@ -508,7 +508,7 @@ def intent_faithfulness_why(
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
     gaps.extend(_subject_window_gaps(runtime._config, query))
     gaps.extend(_ranking_gaps(runtime, text, query))
-    gaps.extend(_ambiguous_grouping_gaps(runtime._config, text, query, partial_query or {}))
+    gaps.extend(_ambiguous_grouping_gaps(runtime, text, query, partial_query or {}))
     gaps.extend(_where_clause_gaps(runtime, text, query))
     contradictions = _contradictory_filter_gaps(query)
     if contradictions:
@@ -522,30 +522,20 @@ def intent_faithfulness_why(
 
 
 def _ambiguous_grouping_gaps(
-    config: Any, text: str, query: dict[str, Any], partial_query: dict[str, Any]
+    runtime: Any, text: str, query: dict[str, Any], partial_query: dict[str, Any]
 ) -> list[CoverageGap]:
     """Refuse when one grouping phrase names both a caller and an added dimension."""
 
-    from ..metadata_parts.relevance import _tokenize  # noqa: WPS433
-    from ._base import _dimension_terms  # noqa: WPS433
-    from .generators import _requested_grouping_terms  # noqa: WPS433
+    from .generators import _grouping_term_matches, _requested_grouping_terms  # noqa: WPS433
 
     authored = set(partial_query.get("group_by") or [])
     added = set(query.get("group_by") or []) - authored
     if not authored or not added:
         return []
+    base_query = {**query, "group_by": list(partial_query.get("group_by") or [])}
     gaps = []
     for term in _requested_grouping_terms(text):
-        phrase = " ".join(_dimension_terms(config, _tokenize(term)))
-        matches = {
-            dim.id
-            for dim in config.dimensions
-            if dim.id in authored | added
-            and any(
-                f" {phrase} " in f" {' '.join(_tokenize(name))} "
-                for name in (dim.name, dim.label, *list(dim.aliases or []))
-            )
-        }
+        matches = set(_grouping_term_matches(runtime, base_query, term) or []) & (authored | added)
         if matches & authored and matches & added:
             gaps.append(
                 CoverageGap(

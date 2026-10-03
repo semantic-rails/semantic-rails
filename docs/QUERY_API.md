@@ -1045,6 +1045,8 @@ id" adds the order-ID grouping even when the caller already groups by customer
 ID. If the same grouping phrase matches both a caller dimension and a newly
 added, distinct dimension, the plan retains both IDs and returns
 `low_confidence` with `PLAN_INTENT_COVERAGE_GAP` and a `clarify_grouping` hint.
+This ambiguity check uses the same discovery matches as fallback grouping
+selection, including compact and plural dimension names.
 Fallback discovery uses the user's words, folding regular plurals without
 substituting planner synonyms (for example, "region" stays "region").
 Caller filter rows stay as written, in their original order, with only string

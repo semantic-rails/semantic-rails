@@ -664,8 +664,14 @@ def test_fallback_resolves_distinct_groupings_before_deduplicating(
         query = payload["best"]["query_ir"]
         assert partial == before
         assert query["group_by"] == [existing, requested]
-        assert payload["status"] == "ok", payload.get("why")
-        assert "execute" in payload["next"].get("ready_for", [])
+        assert payload["status"] == "low_confidence", payload.get("why")
+        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+        gap = payload["why"]["details"]["gaps"][0]
+        assert gap["kind"] == "ambiguous_grouping"
+        assert gap["actual"]["dimension_ids"] == sorted([existing, requested])
+        assert payload["why"]["recovery_hints"][0]["kind"] == "clarify_grouping"
+        assert "execute" not in payload["next"].get("ready_for", [])
+        # Execute only the diagnostic IR to retain the independent SQL comparison.
         rows = runtime.query(query)["rows"]
         measure = query["select"][0]["as"]
         actual = sorted((row[existing], row[requested], row[measure]) for row in rows)
@@ -729,14 +735,34 @@ def test_fallback_preserves_authored_groups_and_deduplicates_resolved_ids(
 
 
 @pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize(
+    ("label", "name"),
+    [
+        ("Item product type", "jaffle.Item.product_type"),
+        ("ItemProductType", "jaffle.Item.productType"),
+        ("Item product types", "jaffle.Item.product_types"),
+    ],
+)
 def test_ambiguous_added_grouping_cannot_bypass_readiness_guard(
-    runtime_factory, monkeypatch, path
+    runtime_factory, monkeypatch, path, label, name
 ) -> None:
     import semantic_rails.planner.plan as module
 
     runtime = runtime_factory("jaffle_shop")
     intent = "item revenue by product type"
     partial = {"group_by": [PRODUCT_TYPE]}
+    before = deepcopy(partial)
+    monkeypatch.setattr(
+        runtime,
+        "_config",
+        replace(
+            runtime._config,
+            dimensions=[
+                replace(dim, label=label, name=name, aliases=[]) if dim.id == PRODUCT_TYPE else dim
+                for dim in runtime._config.dimensions
+            ],
+        ),
+    )
     result = compose(runtime, intent)
     if path == "primary":
         draft = replace(
@@ -752,13 +778,19 @@ def test_ambiguous_added_grouping_cannot_bypass_readiness_guard(
     monkeypatch.setattr(module, "compose", lambda *args, **kwargs: result)
     try:
         payload = plan_payload(runtime, intent=intent, partial_query=partial)
+        assert partial == before
         assert payload["best"]["query_ir"]["group_by"] == [
             PRODUCT_TYPE,
             "dimension.jaffle_product_type",
         ]
         assert payload["status"] == "low_confidence", payload.get("why")
         assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-        assert payload["why"]["details"]["gaps"][0]["kind"] == "ambiguous_grouping"
+        gap = payload["why"]["details"]["gaps"][0]
+        assert gap["kind"] == "ambiguous_grouping"
+        assert gap["clause"] == "product type"
+        assert gap["actual"]["dimension_ids"] == sorted(
+            [PRODUCT_TYPE, "dimension.jaffle_product_type"]
+        )
         assert payload["why"]["recovery_hints"][0]["kind"] == "clarify_grouping"
         assert "product type" in payload["why"]["recovery_hints"][0]["message"]
         assert "execute" not in payload["next"].get("ready_for", [])

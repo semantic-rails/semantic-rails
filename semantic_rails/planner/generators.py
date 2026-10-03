@@ -449,55 +449,62 @@ def _term_matches_value_domain(config: Any, term: str) -> bool:
     return False
 
 
+def _grouping_term_matches(runtime: Any, query: dict[str, Any], term: str) -> list[str] | None:
+    """Return discovery's matched dimension IDs, or None for a skipped grouping term."""
+
+    from ..metadata import discover_payload  # noqa: WPS433 - shared metadata helper
+    from ..metadata_parts.relevance import _tokenize  # noqa: WPS433
+    from ._base import _dimension_terms  # noqa: WPS433
+
+    if _is_temporal_grouping_term(term) or _term_matches_value_domain(runtime._config, term):
+        return None
+    dimension_terms = " ".join(_dimension_terms(runtime._config, _tokenize(term)))
+    dim_discovery = discover_payload(
+        runtime,
+        terms=dimension_terms,
+        partial_query=query,
+        kinds=["dimension"],
+        stage="post_measure",
+        limit=5,
+    )
+    return [
+        str(row["id"])
+        for row in dim_discovery["dimensions"]
+        if any(
+            "label/name matched" in reason
+            or "search term matched" in reason
+            or "exact name match" in reason
+            for reason in row["match_reasons"]
+        )
+    ]
+
+
 def _choose_group_dimensions(
     runtime: Any, query: dict[str, Any], text: str, chosen_group_dim: str = ""
 ) -> list[str]:
     from ..metadata import (  # noqa: WPS433 - shared metadata helpers
         _availability_for_object,
         _selection_context,
-        discover_payload,
     )
-    from ..metadata_parts.relevance import _tokenize  # noqa: WPS433
-    from ._base import _dimension_terms  # noqa: WPS433
 
     if chosen_group_dim:
         return [chosen_group_dim]
     selection = _selection_context(runtime._config, query)
     group_dims: list[str] = []
-    for dimension_terms in _requested_grouping_terms(text):
-        if _is_temporal_grouping_term(dimension_terms) or _term_matches_value_domain(
-            runtime._config, dimension_terms
-        ):
+    for term in _requested_grouping_terms(text):
+        matched_ids = _grouping_term_matches(runtime, query, term)
+        if matched_ids is None:
             continue
-        dimension_terms = " ".join(_dimension_terms(runtime._config, _tokenize(dimension_terms)))
-        dim_discovery = discover_payload(
-            runtime,
-            terms=dimension_terms,
-            partial_query=query,
-            kinds=["dimension"],
-            stage="post_measure",
-            limit=5,
-        )
-        matched_rows = [
-            row
-            for row in dim_discovery["dimensions"]
-            if any(
-                "label/name matched" in reason
-                or "search term matched" in reason
-                or "exact name match" in reason
-                for reason in row["match_reasons"]
-            )
-        ]
         chosen = ""
-        for row in matched_rows:
+        for dimension_id in matched_ids:
             availability = _availability_for_object(
-                runtime._config, selection["root_entity"], str(row["id"]), "dimension"
+                runtime._config, selection["root_entity"], dimension_id, "dimension"
             )
             if availability["available"]:
-                chosen = str(row["id"])
+                chosen = dimension_id
                 break
-        if not chosen and matched_rows:
-            chosen = str(matched_rows[0]["id"])
+        if not chosen and matched_ids:
+            chosen = matched_ids[0]
         if chosen:
             group_dims.append(chosen)
     return list(dict.fromkeys(group_dims))
