@@ -70,11 +70,9 @@ class PackageMeta:
 
 ENTITY_KIND_REGULAR = "regular"
 ENTITY_KIND_TIME = "time"
-VALID_ENTITY_KINDS = frozenset({ENTITY_KIND_REGULAR, ENTITY_KIND_TIME})
 
 MODEL_KIND_MODEL = "model"
 MODEL_KIND_FACT = "fact"
-VALID_MODEL_KINDS = frozenset({MODEL_KIND_MODEL, MODEL_KIND_FACT})
 
 
 @dataclass(frozen=True)
