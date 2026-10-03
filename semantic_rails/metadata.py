@@ -116,10 +116,10 @@ def _query_ir(query: dict[str, Any] | None) -> dict[str, Any]:
     return {key: source[key] for key in _QUERY_IR_KEYS if key in source}
 
 
-def _query_state(query: dict[str, Any]) -> dict[str, Any]:
+def _query_state(query: dict[str, Any], config: PackageConfig) -> dict[str, Any]:
     state = _query_ir(query)
     with contextlib.suppress(SemanticLayerError):
-        state["normalized_query"] = normalize_query(dict(query)).to_dict()
+        state["normalized_query"] = normalize_query(dict(query), config=config).to_dict()
     return state
 
 
@@ -839,7 +839,8 @@ def _predicate_metadata(
                     "where": list(partial_query.get("where", []) or []),
                     "metric_filters": list(partial_query.get("metric_filters", []) or []),
                     "time": dict(partial_query.get("time", {}) or {}) or None,
-                }
+                },
+                config=config,
             )
             # PartialQueryState shares the attributes (group_by, time, etc.) that
             # these helpers access; safe to pass at runtime.
@@ -2029,7 +2030,7 @@ def discover_payload(
                 "terms": terms,
                 "stage": stage,
                 "verbosity": verbosity,
-                "query_state": _query_state(partial_query),
+                "query_state": _query_state(partial_query, runtime._config),
                 "selection_context": {
                     "root_entity": "",
                     "selected_measure_ids": [],
@@ -2052,7 +2053,7 @@ def discover_payload(
                 "terms": terms,
                 "stage": stage,
                 "verbosity": verbosity,
-                "query_state": _query_state(partial_query),
+                "query_state": _query_state(partial_query, runtime._config),
                 "selection_context": {
                     "root_entity": "",
                     "selected_measure_ids": [],
@@ -2542,7 +2543,7 @@ def discover_payload(
         "terms": terms,
         "stage": stage,
         "verbosity": verbosity,
-        "query_state": _query_state(partial_query),
+        "query_state": _query_state(partial_query, runtime._config),
         "selection_context": {
             "root_entity": root_entity,
             "selected_measure_ids": selection["selected_measure_ids"],
@@ -2685,7 +2686,7 @@ def inspect_payload(
     payload: dict[str, Any] = {
         "object_id": object_id,
         "verbosity": verbosity,
-        "query_state": _query_state(partial_query),
+        "query_state": _query_state(partial_query, runtime._config),
         "card": _object_card(runtime, object_id, partial_query),
     }
     if verbosity == "minimal":
@@ -2839,7 +2840,7 @@ def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[st
     ]
     return {
         "root_entity": root_entity,
-        "query_state": _query_state(dict(partial_query)),
+        "query_state": _query_state(dict(partial_query), runtime._config),
         "selection": {
             "selected_measure_ids": selection["selected_measure_ids"],
             "selected_metric_recipe_ids": selection["selected_metric_recipe_ids"],

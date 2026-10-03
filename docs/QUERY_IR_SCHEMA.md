@@ -586,6 +586,21 @@ recovery hint. `unit` must be one of `day`, `week`, `month`, `quarter`,
 `year` (sub-day relative ranges are not supported); `value` must be a
 positive integer.
 
+`range.last` selects the last complete periods before **today in the temporal
+role's local zone**. An offset-bearing `policy_context.now` is an instant: it
+is converted to that zone before taking its date. Equivalent UTC and offset
+spellings produce the same bounds. Without `now`, the current instant is used;
+an ISO date or a datetime without an offset is read as local wall time.
+For a non-default calendar, `range.last` supports only `unit: "day"`.
+Coarser units are refused with `INVALID_QUERY`; supply exact `start` and `end`
+dates for that calendar's periods.
+
+A clock declared as `kind: date` applies the calendar spine's whole-day rule
+to its source rows too: `start` includes its local day, and an exclusive `end`
+after midnight includes its local day. An end at exact midnight excludes that
+day. Offset-bearing bounds use the role's zone. An empty or reversed interval
+includes no days. Timestamp clocks retain precise half-open bounds.
+
 ## PolicyContext
 
 ```jsonc
