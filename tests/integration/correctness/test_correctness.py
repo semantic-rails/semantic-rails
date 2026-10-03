@@ -284,7 +284,7 @@ CONVERSION = """
     )
     SELECT date_trunc('{grain}', signed_up_at) AS b,
       1.0 * SUM(CASE WHEN converted_at < signed_up_at + INTERVAL '7 day' THEN 1 ELSE 0 END)
-        / COUNT(*) AS rate
+        / CAST(COUNT(*) AS DOUBLE PRECISION) AS rate
     FROM c GROUP BY 1
 """
 
@@ -634,8 +634,9 @@ def _child_filter_cases() -> Iterator[Case]:
         },
         f"""
         SELECT {ORDER_CHANNEL},
-          1.0 * COUNT(DISTINCT CASE WHEN o.amount >= 5 THEN o.order_id END) / COUNT(*),
-          {_sum_if("o.store_id = 'a'")} / NULLIF(SUM(o.amount), 0)
+          1.0 * COUNT(DISTINCT CASE WHEN o.amount >= 5 THEN o.order_id END)
+            / CAST(COUNT(*) AS DOUBLE PRECISION),
+          {_sum_if("o.store_id = 'a'")} / CAST(NULLIF(SUM(o.amount), 0) AS DOUBLE PRECISION)
         FROM orders AS o WHERE {has_refund("goods")} GROUP BY 1
         """,
     )

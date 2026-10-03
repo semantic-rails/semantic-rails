@@ -16,20 +16,23 @@ import yaml
 from semantic_rails import package_tools, result_values
 from semantic_rails.runtime import _time_zone
 from semantic_rails.runtime_parts.responses import output_columns
+from semantic_rails.yaml_loader import Yaml12SafeLoader
 
 from .conftest import SHOP, VARIANTS, _rows, _runtime, _write_variant
 
 ROOT = SHOP.parents[3]
 LEDGER = SHOP / "tests" / "answers.yml"
-KEYS = {"kind", "query", "expected_rows", "code", "expect", "why", "cites", "tags", "variant", "reference_sql", "clarify", "intent", "known_wrong"}  # fmt: skip
+KEYS = {"kind", "query", "expected_rows", "expected_rows_by_backend", "code", "expect", "why", "cites", "tags", "variant", "reference_sql", "clarify", "intent", "partial_query", "known_wrong"}  # fmt: skip
 TAGS = {"null-vs-zero", "list-vs-conjunction", "second-fact", "time-window", "clock", "child-scope", "refusal", "planner", "empty-result"}  # fmt: skip
-TABLES = ["orders", "refunds", "signups"]
+TABLES = ["orders", "refunds", "signups", "dim_fiscal"]
 DEFINITIONS = str(SHOP.relative_to(ROOT)) + "/models/"
 DECISIONS = {
     "docs/QUERY_IR_SCHEMA.md#wherefilter",
     "docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0",
     "docs/QUERY_IR_SCHEMA.md#timeblock",
     "docs/QUERY_IR_SCHEMA.md#child-groups",
+    "docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union",
+    "docs/QUERY_IR_SCHEMA.md#metricfilter-expressions",
 }
 KINDS = {
     "answer": "query_matches_snapshot",
@@ -42,10 +45,42 @@ def text(value):
     return isinstance(value, str) and bool(value.strip())
 
 
+class DecimalLoader(Yaml12SafeLoader):
+    """Read frozen numeric literals without a binary-float intermediate."""
+
+
+DecimalLoader.add_constructor(
+    "tag:yaml.org,2002:float",
+    lambda loader, node: Decimal(loader.construct_scalar(node).replace("_", "")),
+)
+
+
 def load_entries():
-    return package_tools._load_named_entries(
+    entries = package_tools._load_named_entries(
         SHOP / "tests", plural_key="tests", singular_key="test"
     )
+    # Keep the product loader and its query parsing; only frozen rows need exact literals.
+    frozen = yaml.load(LEDGER.read_text(encoding="utf-8"), Loader=DecimalLoader)["tests"]
+    return [
+        (
+            case_id,
+            {
+                **spec,
+                **{
+                    key: frozen[case_id][key]
+                    for key in ("expected_rows", "expected_rows_by_backend")
+                    if key in spec
+                },
+            },
+        )
+        for case_id, spec in entries
+    ]
+
+
+def for_backend(spec, backend):
+    """Select an explicitly frozen native representation, never a rounded comparison."""
+    rows = spec.get("expected_rows_by_backend", {})
+    return {**spec, "expected_rows": rows[backend]} if backend in rows else spec
 
 
 def resolves(citation):
@@ -116,6 +151,9 @@ def messages(entries, fixture, runtime):
         valid_known = isinstance(known, dict) and set(known) <= {"engine", "planner"}
         valid_known = valid_known and ("planner" not in known or text(spec.get("intent")))
         kind = KINDS.get(spec.get("expect"))
+        clarification = spec.get("clarify", {})
+        options = clarification.get("options", []) if isinstance(clarification, dict) else []
+        backend_rows = spec.get("expected_rows_by_backend", {})
         checks = {
             "unknown keys": bool(set(spec) - KEYS),
             "unknown tags": not isinstance(tags, list)
@@ -127,6 +165,20 @@ def messages(entries, fixture, runtime):
             "invalid known_wrong": not valid_known or not all(text(r) for r in known.values()),
             "invalid variant": spec.get("variant", "utc_authored") not in VARIANTS,
             "invalid expectation": answer and not isinstance(spec.get("expected_rows"), list),
+            "invalid backend expectation": not isinstance(backend_rows, dict)
+            or bool(set(backend_rows) - {"duckdb", "postgres"})
+            or any(not isinstance(rows, list) for rows in backend_rows.values())
+            or (bool(backend_rows) and not answer),
+            "missing refusal code": not answer and not text(spec.get("code")),
+            "invalid clarification options": spec.get("expect") == "clarify"
+            and (
+                not isinstance(options, list)
+                or not options
+                or any(not text(option) for option in options)
+                or len(set(options)) != len(options)
+            ),
+            "invalid partial_query": "partial_query" in spec
+            and (not text(spec.get("intent")) or not isinstance(spec["partial_query"], dict)),
         }
         errors.extend(f"{case_id}: {rule}" for rule, failed in checks.items() if failed)
     if set(fixture) != {"tables", "data_sha256"} or fixture.get("tables") != TABLES:
