@@ -37,6 +37,11 @@ ITEM_REVENUE_BY_ORDER = (
     '{"kind":"ratio","numerator":{"kind":"aggregate","measure":"measure.jaffle.item_revenue_usd",'
     '"aggregation":"sum"},"denominator":{"kind":"aggregate","measure":"measure.jaffle.order_count"}}'
 )
+REVENUE_BY_CUSTOMER = (
+    '{"kind":"ratio","numerator":{"kind":"aggregate","measure":"measure.jaffle.revenue_usd",'
+    '"aggregation":"sum"},"denominator":{"kind":"aggregate",'
+    '"measure":"measure.jaffle.customer_count"}}'
+)
 
 
 @pytest.fixture(scope="module")
@@ -255,6 +260,38 @@ def test_the_hinted_ratio_is_the_per_order_average(runtime):
 )
 def test_averaging_grain(runtime, selects, group_by, assumptions):
     assert runtime.query(_query(*selects, group_by=group_by))["assumptions"] == assumptions
+
+
+@pytest.mark.parametrize(
+    ("time", "assumptions"),
+    [
+        # With no query time, every customer counts.
+        (
+            {},
+            [
+                "avg(measure.jaffle.revenue_usd) averages over Order rows; for a per-Customer "
+                f"average select {REVENUE_BY_CUSTOMER}."
+            ],
+        ),
+        # Customers are counted by their first order, not by the order time this query reads.
+        (
+            {
+                "time": {
+                    "temporal_role": ORDER_TIME,
+                    "grain": "year",
+                    "start": "2017-01-01",
+                    "end": "2018-01-01",
+                }
+            },
+            ["avg(measure.jaffle.revenue_usd) averages over Order rows."],
+        ),
+    ],
+    ids=["no-time", "order-time"],
+)
+def test_a_per_parent_ratio_counts_parents_on_the_querys_time_role(runtime, time, assumptions):
+    out = runtime.query(_query(_agg("revenue_usd", "avg"), group_by=[], **time))
+
+    assert out["assumptions"] == assumptions
 
 
 def test_disclosures_never_change_the_answer(runtime, monkeypatch):

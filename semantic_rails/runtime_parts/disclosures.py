@@ -11,8 +11,9 @@ Both disclosures read the compiled plan's select expressions; neither changes th
   measure whose rows have a parent the output doesn't group by: an entity strictly between the
   measure's rows and a ``group_by`` dimension's entity, or, with no ``group_by``, any declared
   many-to-one parent. For an ``avg`` it adds the per-parent average, as a ratio over the count
-  measure of that parent's key, when the package has one. A governed metric is the package's
-  definition, so this disclosure doesn't look inside one.
+  measure of that parent's key, when the package has one on the query's time role (any, with
+  none). A governed metric is the package's definition, so this disclosure doesn't look inside
+  one.
 
 Measures inside conversions and metric predicates follow their own time and grain rules, so
 neither disclosure reads them.
@@ -217,26 +218,32 @@ def _grouped_parents(config: PackageConfig, plan: LogicalPlan, measure: MeasureC
     return list(dict.fromkeys(parents))
 
 
-def _count_measure(config: PackageConfig, entity: str) -> str:
-    """The id of a measure that counts ``entity``'s single-column key, or ""."""
+def _count_measure(config: PackageConfig, entity: str, time_role: str) -> str:
+    """The id of a measure that counts ``entity``'s single-column key on the query's clock."""
     return next(
         (
             row.id
             for row in sorted(config.measures, key=lambda row: row.id)
-            if row.entity == entity and len(_measure_count_distinct_key_columns(row, config)) == 1
+            if row.entity == entity
+            and len(_measure_count_distinct_key_columns(row, config)) == 1
+            and (not time_role or time_role in row.compatible_temporal_roles)
         ),
         "",
     )
 
 
 def _per_parent_hint(
-    config: PackageConfig, leaf: MeasureLeaf, measure: MeasureConfig, parent: str
+    config: PackageConfig, plan: LogicalPlan, leaf: MeasureLeaf, measure: MeasureConfig, parent: str
 ) -> str:
-    """The ratio IR of the per-``parent`` average, when the package counts ``parent``."""
+    """The ratio IR of the per-``parent`` average, when the package counts ``parent``.
+
+    Under a query time role the count must be on it, or the ratio would divide by parents
+    counted on another clock (or be refused).
+    """
     plain = isinstance(leaf, MeasureRefExpr) or (
         isinstance(leaf, AggregateExpr) and not (leaf.filter or leaf.window)
     )
-    count = _count_measure(config, parent)
+    count = _count_measure(config, parent, str(plan.time.get("temporal_role") or ""))
     if not (
         plain
         and count
@@ -291,7 +298,7 @@ def averaging_grain_assumptions(config: PackageConfig, plan: LogicalPlan) -> lis
                 [
                     hint
                     for parent in dict.fromkeys(parents)
-                    if (hint := _per_parent_hint(config, leaf, measure, parent))
+                    if (hint := _per_parent_hint(config, plan, leaf, measure, parent))
                 ]
                 if aggregation == "avg" and measure.id not in plan.synthetic_measures
                 else []
