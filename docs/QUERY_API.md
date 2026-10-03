@@ -198,7 +198,9 @@ explicit granted dimensions. General pattern composition, segment operations, an
 valid-value lookups are unavailable for restricted grants. Plans contain portable Query
 IR; each subsequent request must independently resolve its trusted grants. Restricted
 compile/query results retain SQL and result rows but omit package-wide diagnostics,
-dependency descriptions, and related-object suggestions. Requests cannot replace the
+dependency descriptions, and related-object suggestions. Grant responses carry only
+listed engine diagnostics (`NO_DATA_IN_SCOPE` and `VALUES_WITHHELD`) whose named objects
+are all granted. Requests cannot replace the
 resolved grants with top-level or nested `policy_context` claims over HTTP or hosted MCP.
 
 Restricted responses reuse the ordinary catalog formatter and output-column builder.
@@ -1092,6 +1094,9 @@ Response keys:
 - `recovery_hints`
 - `assumptions`
 - `time_shape` (only `"window_total"`, when the window was one total)
+- `withheld` (only for a rank by values a `withhold_values` policy withholds: the withheld
+  objects, whose column `rows`, `column_types` and `output_columns` leave out; retained at
+  minimal verbosity and under resource grants)
 - `policy_effects`
 - `provenance_summary`
 
