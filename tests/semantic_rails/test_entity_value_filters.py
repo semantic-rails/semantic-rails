@@ -125,6 +125,15 @@ def test_unsupported_value_filter_items_are_refused(engine, item):
     assert "entity_value.where[0]" in issue["message"]
 
 
+@pytest.mark.parametrize("where", [{}, False, "", {"op": ">", "value": 1}])
+def test_value_filters_require_a_list(engine, where):
+    response = engine.validate(_query(where))
+    assert not response["ok"]
+    issue = response["errors"][0]
+    assert issue["code"] == "INVALID_QUERY"
+    assert "entity_value.where must be a list" in issue["message"]
+
+
 @pytest.mark.parametrize("tagged", [False, True])
 @pytest.mark.parametrize("dimension_filter", [False, True])
 def test_valid_value_filter_matches_reference_sql(engine, tagged, dimension_filter):
