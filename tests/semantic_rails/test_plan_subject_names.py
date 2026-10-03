@@ -88,7 +88,10 @@ def test_the_named_measure_wins_a_tie(
     finally:
         runtime.close()
 
-    assert plan["status"] == "ok", plan.get("why")
+    assert plan["status"] == ("low_confidence" if unmatched else "ok"), plan.get("why")
+    if unmatched:
+        assert plan["why"]["details"] == {"terms": unmatched, "kind": "filter_values_unrealized"}
+        assert "ready_for" not in plan["next"]
     [select] = plan["best"]["query_ir"]["select"]
     # A package's measures come with same-named metrics; either answers.
     assert (select["expression"].get("measure") or select["expression"]["metric"]).endswith(
@@ -164,7 +167,12 @@ CUSTOMERS = "measure.jaffle.customer_count"
             None,
             ["items"],
         ),
-        ("number of stores open", "measure.jaffle.open_store_count_eop", ..., []),
+        (
+            "number of stores open",
+            "measure.jaffle.open_store_count_eop",
+            ["dimension.jaffle_store_name"],
+            [],
+        ),
     ],
 )
 def test_counting_words_name_the_count_measure(
@@ -185,8 +193,7 @@ def test_counting_words_name_the_count_measure(
     query = plan["best"]["query_ir"]
     [select] = query["select"]
     assert select["expression"]["measure"] == measure
-    if group_by is not ...:
-        assert query.get("group_by") == group_by
+    assert query.get("group_by") == group_by
 
 
 def test_a_whole_name_beats_one_that_adds_count(tmp_path: Path) -> None:

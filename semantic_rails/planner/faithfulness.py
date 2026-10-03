@@ -2205,7 +2205,7 @@ def _used_ids(config: Any, query: dict[str, Any]) -> set[str]:
 
 def _honored_clause_spans(runtime: Any, text: str, query: dict[str, Any]) -> list[tuple[int, int]]:
     """The clauses another check owns, when the draft honors them: a fiscal calendar ("fiscal
-    revenue on April 3, 2017") and a prior-period comparison ("revenue vs prior year")."""
+    revenue on April 3, 2017"), a prior-period comparison, or an included/excluded value."""
 
     lowered = text.lower()
     spans: list[tuple[int, int]] = []
@@ -2213,6 +2213,24 @@ def _honored_clause_spans(runtime: Any, text: str, query: dict[str, Any]) -> lis
         spans.extend(match.span() for match in _FISCAL_RE.finditer(lowered))
     if _query_contains_prior_period(runtime, query):
         spans.extend(match.span() for match in _PRIOR_PERIOD_RE.finditer(lowered))
+    for marker in re.finditer(r"\b(?:including|include)\s+", lowered):
+        negative = any(start <= marker.start() < end for start, end in _excluded_value_spans(text))
+        predicates = _field_predicates(query)
+        for phrase, rows in _value_phrases(runtime._config).items():
+            pattern = re.escape(phrase).replace(r"\ ", r"[\s_-]+") + r"\b"
+            value = re.match(pattern, lowered[marker.end() :])
+            honored = (
+                any(
+                    predicates[dimension].drops(row.value)
+                    for domain, row in rows
+                    for dimension in domain.dimensions
+                    if dimension in predicates
+                )
+                if negative
+                else bool(_positive_filter_evidence(runtime, query, phrase))
+            )
+            if value and honored:
+                spans.append((marker.start(), marker.end() + value.end()))
     return spans
 
 
@@ -2242,20 +2260,49 @@ def unconsumed_catalog_words(runtime: Any, question: str, query: dict[str, Any])
     Every word is read.
     """
 
+    return _unconsumed_words(runtime, question, query)[0]
+
+
+def unconsumed_unknown_words(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
+    """Unconsumed words that name no catalog object, in question order."""
+
+    return _unconsumed_words(runtime, question, query)[1]
+
+
+def _unconsumed_words(
+    runtime: Any, question: str, query: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    """One consumption pass classifies leftover catalog names and unknown words."""
+
     from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
 
     text = str(question or "")
     lowered = text.lower()
     spans = [*_time_window(text).spans, *_honored_clause_spans(runtime, text, query)]
     referenced = set(_referenced_ids(query))
+    selected = {"expressions": [item.get("expression") for item in query.get("select", [])]}
+    selected_ids = set(_referenced_ids(selected))
+    measures = {row.id: row for row in runtime._config.measures}
+    distinct_words = {
+        word
+        for node in _dict_nodes(query)
+        if (row := measures.get(node.get("measure"))) is not None
+        and node.get("aggregation", row.default_aggregation) == "count_distinct"
+        for word in _own_words(row)
+    }
+    for match in re.finditer(r"\bdistinct\s+([^\W_]+)\b", lowered):
+        if _singular(match.group(1)) in distinct_words:
+            spans.append(match.span())
     count_valued = any(
-        row.id in referenced
+        row.id in selected_ids
         and (
             row.default_aggregation in ("count", "count_distinct")
             or row.value_type == "count"
             or "count" in _own_words(row)
         )
         for row in runtime._config.measures
+    ) or any(
+        node.get("aggregation") in ("count", "count_distinct") for node in _dict_nodes(selected)
     )
     calendar_id = str(_time_block(query).get("calendar_id") or "default")
     time = _time_block(query)
@@ -2267,12 +2314,18 @@ def unconsumed_catalog_words(runtime: Any, question: str, query: dict[str, Any])
         ),
         "",
     )
+    clock_units: Counter[str] = Counter()
+    for match in re.finditer(r"\bat\s+(day|week|month|quarter|year)\s+grain\b", lowered):
+        if match.group(1) == time.get("grain"):
+            spans.append(match.span())
     if clock and time.get("grain") == _explicit_grain(text, clock):
-        spans.extend(
-            (start, end)
-            for start, end in _requested_grouping_spans(text)
-            if _names_time_axis(lowered[start:end], clock)
-        )
+        for start, end in _requested_grouping_spans(text):
+            term = lowered[start:end]
+            units = [_singular(match.group(0)) for match in _TERM_RE.finditer(term)]
+            units = [unit for unit in units if unit in _TIME_UNITS]
+            if _names_time_axis(term, clock) and all(unit == time.get("grain") for unit in units):
+                spans.append((start, end))
+                clock_units.update(units)
     names: set[str] = set()
     exact_names: set[str] = set()
     used: set[str] = set()
@@ -2317,8 +2370,7 @@ def unconsumed_catalog_words(runtime: Any, question: str, query: dict[str, Any])
                     spans.extend(match.span() for match in found)
             else:
                 reads.update({grain, "daily" if grain == "day" else f"{grain}ly"})
-        if node.get("aggregation") in ("count", "count_distinct"):
-            count_valued = True
+    reads.subtract(clock_units)
     if count_valued:
         # Entity counts normalize to count_distinct; snapshot counts can use last_value.
         # Either reads "number of", as an explicit counting aggregation does.
@@ -2326,7 +2378,11 @@ def unconsumed_catalog_words(runtime: Any, question: str, query: dict[str, Any])
     named = names | {_singular(word) for word in names}
     consumed = used | {_singular(word) for word in used}
     skipped = _INTENT_STOPWORDS | set(_NUMBER_WORDS)
+    unknown_skipped = (
+        skipped | _FRAMING_WORDS | {"make", "made", "earn", "earned", "generate", "generated"}
+    )
     out: list[str] = []
+    unknown: list[str] = []
     for match in _TERM_RE.finditer(lowered):
         word, (start, end), key = match.group(0), match.span(), _singular(match.group(0))
         forms = {word, key}
@@ -2336,9 +2392,7 @@ def unconsumed_catalog_words(runtime: Any, question: str, query: dict[str, Any])
         if word.endswith("es") and len(stem) > 2 and stem.endswith(("s", "x", "z", "ch", "sh")):
             forms.add(stem)
         if (
-            # A name in any form ("statuses" for Status), consumed only as a plain plural.
-            not forms & named
-            or forms & consumed
+            forms & consumed
             or (word in skipped and word not in exact_names)
             # A number is unconsumed_terms' to check, by where the draft reads it.
             or any(char.isdigit() for char in word)
@@ -2347,9 +2401,14 @@ def unconsumed_catalog_words(runtime: Any, question: str, query: dict[str, Any])
             continue
         if reads[key] > 0:
             reads[key] -= 1
-        elif word not in out:
-            out.append(word)
-    return out
+        elif not forms & named and word in unknown_skipped:
+            continue
+        else:
+            # Classify only after every regular plural form is known.
+            remaining = out if forms & named else unknown
+            if word not in remaining:
+                remaining.append(word)
+    return out, unknown
 
 
 def _own_words(row: Any) -> set[str]:
@@ -2823,5 +2882,6 @@ __all__ = [
     "intent_faithfulness_why",
     "unconsumed_catalog_words",
     "unconsumed_terms",
+    "unconsumed_unknown_words",
     "unmatched_intent_terms",
 ]

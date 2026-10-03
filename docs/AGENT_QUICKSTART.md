@@ -171,10 +171,15 @@ Statuses are:
   phrase, never a synonym, a typo or a framing word. `warnings` can still name other question
   words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
   Request words such as "show" still count when they are exact catalog names. A time grain
-  consumes its own unit; other time words must occur inside a recorded time phrase, and a
-  prior-period shift consumes only its comparison phrase. Regular plurals are recognized
+  consumes its own unit and its "-ly" form; a grouping that names the query's clock at the
+  planned grain ("by order date") is consumed. Other time words must occur inside a recorded
+  time phrase, and a prior-period shift consumes only its comparison phrase. Regular plurals are recognized
   and consumed using the same forms. "Number of" is consumed by a selected count-valued
   measure, including a snapshot count whose aggregation is `last_value`.
+  An unknown word left in `intent_ir.unresolved` also blocks readiness when no object, filter
+  value, grain or recorded span consumes it and it isn't a stopword or number word. The
+  `PLAN_UNMATCHED_TERMS` reason names it with `kind="filter_values_unrealized"`; use
+  `valid_values` to find the value, add the filter and validate, or ask again without the word.
 - `low_confidence`: a draft exists, but validation failed, the draft leaves out part of the
   question (`why` names it, for example `PLAN_INTENT_COVERAGE_GAP`, or `TIME_WINDOW_UNRESOLVED`,
   which returns no `query_ir`: pass the window, temporal role and grain in `query.time` and
