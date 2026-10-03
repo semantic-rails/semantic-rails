@@ -100,6 +100,7 @@ from .request_context import (
     without_trusted_attributes,
 )
 from .result_values import result_rows
+from .runtime_parts.disclosures import mixed_time_role_warnings
 from .runtime_parts.responses import (
     TIME_SHAPE_WINDOW_TOTAL,
     WINDOW_TOTAL_ASSUMPTION,
@@ -803,6 +804,7 @@ def _compiled_warnings(
         *_stock_key_gap_warnings(compiled),
         *_route_notes(config, compiled, payload),
         *_time_zone_warnings(config, compiled),
+        *mixed_time_role_warnings(config, compiled["logical_plan"]),
     ]
     if payload is not None:
         # Every check reads the canonical query the compiler saw, not the caller's shorthand.

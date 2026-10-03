@@ -227,8 +227,8 @@ A draft that validates can still leave out part of the question. `plan` returns
   (`fiscal_calendar_unrealized`). When the package has one calendar whose name says fiscal,
   `plan` buckets the draft on it itself (`time.calendar_id` with `time.fill: true`) only when
   the question's fiscal words ask for buckets of the draft's grain ("by fiscal quarter",
-  "fiscal quarterly") and no to-date or rolling value (period-to-date resets on Gregorian
-  periods). Any other fiscal period ("the first fiscal quarter", "vs prior fiscal year") is
+  "fiscal quarterly") and no to-date or rolling value (`period_to_date` refuses non-default
+  calendars). Any other fiscal period ("the first fiscal quarter", "vs prior fiscal year") is
   reported, and its recovery hint asks for the period as exact dates; without such a calendar
   the hint names the package's calendars;
 - picked its subject from several that match the question equally well, when neither the
@@ -431,6 +431,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain and no `start`/`end` window, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
 | `NO_DATA_IN_SCOPE` | `execute` | A sum, count or distinct count (or a sum or difference of them) read `NULL` on every returned row (or nothing came back and neither a `start`/`end` window nor a metric filter explains it): its measure has no data in this query's scope, so it is `NULL`, not `0`. `details.outputs` names them; check the filter values. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
+| `MIXED_TIME_ROLES` | `execute` | With no `time` block, the selects read measures of different entities or governed metrics with differing sets of real time roles, mixing at least two distinct roles. Undated measures are ignored; a governed metric counts as one clock. Each period is read on its own role's clock, and measure-level filters can bound those periods. The message names the roles, and `details.clocks` lists them. See [What an answer covers](QUERY_IR_SCHEMA.md#what-an-answer-covers) |
 | `QUERY_SHORTHAND_NORMALIZED` | `execute` | A select item was accepted as shorthand and rewritten; `details.canonical` is the form to send next time (`plan` accepts the same shorthand but returns the canonical form in `best.query_ir` instead of a warning) |
 | `SEMANTIC_CAVEAT_APPLIED` | `execute` | Package-authored advisory context matched the query; interpret affected results with that context |
 | `SEMANTIC_CAVEATS_TRUNCATED` | `execute` | More caveats matched than this verbosity returned; increase verbosity to inspect the rest |
