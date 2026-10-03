@@ -11,6 +11,65 @@ from semantic_rails.planner._base import RuntimeCompositionDraft
 from semantic_rails.planner.intent_ir import compose_hints, parse_intent
 
 
+def test_best_plan_corpus_carries_query_once(runtime_factory) -> None:
+    from scripts.benchmark_plan import _load_cases
+
+    def occurrences(value, query):
+        count = int(value == query)
+        if isinstance(value, dict):
+            count += sum(occurrences(child, query) for child in value.values())
+        elif isinstance(value, list):
+            count += sum(occurrences(child, query) for child in value)
+        return count
+
+    def dereference(value, payload):
+        if isinstance(value, dict):
+            if "$ref" in value:
+                target = payload
+                for key in value["$ref"].split("."):
+                    target = target[int(key)] if isinstance(target, list) else target[key]
+                return target
+            return {key: dereference(child, payload) for key, child in value.items()}
+        if isinstance(value, list):
+            return [dereference(child, payload) for child in value]
+        return value
+
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        for case in _load_cases():
+            payload = plan_payload(runtime, intent=case["intent"], detail="best")
+            best = payload.get("best") or {}
+            full = plan_payload(runtime, intent=case["intent"], detail="full")
+            assert dereference(payload["intent_ir"], payload) == full["intent_ir"]
+            if query := best.get("query_ir"):
+                assert occurrences(payload, query) == 1, case["intent"]
+                resolved = [json.dumps(row, sort_keys=True) for row in best["resolved"]]
+                assert len(resolved) == len(set(resolved)), case["intent"]
+                for row in best["resolved"]:
+                    assert occurrences(payload, row) == 1, case["intent"]
+            for gap in payload.get("why", {}).get("details", {}).get("gaps", []):
+                if isinstance(gap.get("actual"), dict):
+                    expanded_gap = next(
+                        row for row in full["why"]["details"]["gaps"] if row["kind"] == gap["kind"]
+                    )
+                    assert dereference(gap["actual"], payload) == expanded_gap["actual"]
+            if (payload.get("why") or {}).get("code") == "PLAN_FALLBACK_SEMANTIC_DRIFT":
+                details = payload["why"]["details"]
+                assert "primary_slots" not in details
+                expanded = full["why"]["details"]
+                assert expanded["primary_slots"] == best["trace"]["intent_slots"]
+                for reason, long_reason in zip(
+                    details["reasons"], expanded["reasons"], strict=True
+                ):
+                    for field in ("expected", "actual"):
+                        value = payload
+                        for key in reason[field].split("."):
+                            value = value[key]
+                        assert value == long_reason[field]
+    finally:
+        runtime.close()
+
+
 def test_plan_returns_status_ok_for_realizable_intent(runtime_factory) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
@@ -269,7 +328,7 @@ def test_plan_next_signals_ready_for_execute(runtime_factory) -> None:
         runtime.close()
     next_block = payload["next"]
     assert next_block["ready_for"] == ["execute"]
-    assert next_block["validate"]["query"] == payload["best"]["query_ir"]
+    assert "validate" not in next_block
     assert "compile" not in next_block
     assert "execute" not in next_block
 

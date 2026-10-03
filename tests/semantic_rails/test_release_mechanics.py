@@ -251,6 +251,12 @@ def test_release_readiness_workflow_collects_agentic_governance_scorecard():
     assert "dist/agentic-governance-scorecard.*" in upload_path
 
 
+def test_pull_request_ci_gates_plan_payload_size():
+    workflow = yaml.safe_load(CI_WORKFLOW.read_text(encoding="utf-8"))
+    commands = [step.get("run", "") for step in workflow["jobs"]["lint"]["steps"]]
+    assert "uv run python scripts/benchmark_plan.py --gate" in commands
+
+
 def test_publish_runs_complete_gate_and_checks_tag_version():
     text = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
     for command in (

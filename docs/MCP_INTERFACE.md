@@ -161,6 +161,14 @@ honor; `detail="best"` adds `intent_ir`, `best.trace` and `next`. Forward `best.
 already paid validation cost, so run `execute` with `mode="validate"` only when you are editing
 the IR or need full diagnostics.
 
+Validate or execute `best.query_ir`; `next` carries only `ready_for` and optional
+`valid_values` calls, without another copy of the query. In `detail="best"`, fallback
+drift reasons point to slot paths in `best.trace.intent_slots` and
+`why.details.fallback_slots`. Full/debug detail keeps the expanded slot diagnostics;
+query detail keeps them self-contained because it omits the trace.
+Other exact repeats use `{"$ref": "best.resolved.0"}` or a `best.query_ir` field path;
+follow the dot-separated path from the response root (numbers index arrays).
+
 A draft that validates can still leave out part of the question. `plan` returns
 `low_confidence` with `why.code="PLAN_INTENT_COVERAGE_GAP"` when the draft:
 
