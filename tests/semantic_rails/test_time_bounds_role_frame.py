@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime
 import pytest
 
 from semantic_rails import ast
-from semantic_rails.compiler import _compile_query_sql_ast
+from semantic_rails.compiler import _compile_query_sql_ast, _predicate_window_filters
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.metadata import _query_state
@@ -163,3 +163,22 @@ def test_role_bound_to_nondefault_calendar_cannot_bypass_the_period_guard(config
         ast.normalize_query(_query(), config=config)
     assert caught.value.code == "INVALID_QUERY"
     assert caught.value.details["calendar_id"] == "fiscal"
+
+
+def test_converted_date_predicate_window_preserves_logical_field_filters(config):
+    role = next(r for r in config.temporal_roles if r.id == ROLE)
+    config = replace(
+        config,
+        dimensions=[
+            replace(d, data_type="date") if d.id == role.dimension else d for d in config.dimensions
+        ],
+        temporal_roles=[
+            replace(r, column_timezone="UTC") if r.id == ROLE else r for r in config.temporal_roles
+        ],
+    )
+    assert _predicate_window_filters(
+        {"temporal_role": ROLE, "start": "2024-06-30", "end": "2024-07-01T23:00:00"}, config
+    ) == [
+        {"field": role.dimension, "op": ">=", "value": "2024-06-30"},
+        {"field": role.dimension, "op": "<=", "value": "2024-07-01"},
+    ]

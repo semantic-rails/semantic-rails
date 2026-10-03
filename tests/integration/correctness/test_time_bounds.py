@@ -218,7 +218,7 @@ def test_date_predicate_window_uses_the_source_day_rule(request, backend_name, v
         }
     )
     reference = backend.reference(
-        "SELECT date_trunc('month', order_date), SUM(amount) FROM orders "
+        "SELECT date_trunc('month', CAST(order_date AS TIMESTAMP)), SUM(amount) FROM orders "
         "WHERE CAST(order_date AS TIMESTAMP) >= TIMESTAMP '2024-06-01' AND CAST(order_date AS TIMESTAMP) < TIMESTAMP '2024-07-01 03:00:00' GROUP BY 1"
     )
     _assert_rows(reference, [tuple(r.values()) for r in typed_rows(result)], scope)
@@ -252,7 +252,7 @@ def test_date_bounds_touch_whole_days_including_open_windows(
         }
     )
     reference = backend.reference(
-        f"SELECT date_trunc('month', order_date), SUM(amount) FROM orders WHERE {day_predicate} GROUP BY 1"
+        f"SELECT date_trunc('month', CAST(order_date AS TIMESTAMP)), SUM(amount) FROM orders WHERE {day_predicate} GROUP BY 1"
     )
     _assert_rows(reference, [tuple(r.values()) for r in typed_rows(result)], "whole days")
 
@@ -266,3 +266,77 @@ def test_invalid_date_bound_is_refused_before_a_source_scan(request, backend_nam
         )
     assert caught.value.code == "INVALID_QUERY"
     assert caught.value.details["path"] == "time.end"
+
+
+@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
+@pytest.mark.parametrize("leaf,query_clock", [("day", "time"), ("time", "day")])
+def test_anchored_population_bounds_use_the_leaf_clock(request, backend_name, leaf, query_clock):
+    backend = _backend(request, backend_name)
+    population = {
+        "kind": "scoped_aggregate",
+        "measure": f"measure.shop.{leaf}_population",
+        "aggregation": "count_distinct",
+    }
+    predicate = {
+        "entity": "entity.shop_clock_edge",
+        "measure": f"measure.shop.{query_clock}_amount",
+        "op": "=",
+        "value": 10,
+        "time_alignment": "same_query_period",
+    }
+    result = backend.runtimes["utc_implicit"].query(
+        {
+            "select": [
+                _item(
+                    {
+                        "kind": "ratio",
+                        "numerator": {**population, "predicates": [predicate]},
+                        "denominator": population,
+                    },
+                    "v",
+                )
+            ],
+            "time": {
+                "temporal_role": f"temporal_role.shop_clock_edge_source_{query_clock}",
+                "grain": "month",
+                "start": "2024-07-01T12:00:00",
+                "end": "2024-07-02T03:00:00",
+            },
+        }
+    )
+    assert "latest_shop_clock_edge_snapshot" in result["rendered_sql"]
+    expected = backend.reference(
+        "SELECT TIMESTAMP '2024-07-01', "
+        "COUNT(DISTINCT CASE WHEN amount = 10 THEN id END) * 1.0 / COUNT(DISTINCT id) "
+        "FROM clock_edges"
+    )
+    assert expected[0][1] == 0.5
+    _assert_rows(expected, [tuple(r.values()) for r in typed_rows(result)], leaf)
+
+
+@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
+@pytest.mark.parametrize("variant", ["utc_authored", "utc_implicit"])
+@pytest.mark.parametrize("shape", ["sparse", "filled", "total"])
+def test_converted_date_bounds_include_both_local_days(request, backend_name, variant, shape):
+    backend = _backend(request, backend_name)
+    amount = {"measure": "measure.shop.local_amount"}
+    query = {
+        "select": [_item(amount, "v")],
+        "time": {
+            "temporal_role": "temporal_role.shop_clock_edge_local_day",
+            "grain": "" if shape == "total" else "day",
+            "fill": shape == "filled",
+            "start": "2024-06-30",
+            "end": "2024-07-01T23:00:00",
+        },
+    }
+    result = backend.runtimes[variant].query(query)
+    source = "((CAST(source_day AS TIMESTAMP) AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York')"
+    reference = (
+        "SELECT SUM(amount) FROM clock_edges"
+        if shape == "total"
+        else f"SELECT date_trunc('day', {source}), SUM(amount) FROM clock_edges GROUP BY 1"
+    )
+    expected = backend.reference(reference)
+    assert sorted(row[-1] for row in expected) == ([30] if shape == "total" else [10, 20])
+    _assert_rows(expected, [tuple(r.values()) for r in typed_rows(result)], shape)

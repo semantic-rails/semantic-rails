@@ -905,9 +905,9 @@ def _time_alias_for_plan(plan: LogicalPlan) -> str:
 
 def _measure_time_components(
     plan: LogicalPlan, measure_plan: MeasurePlan, config: PackageConfig
-) -> tuple[Any | None, Any | None, str, bool]:
+) -> tuple[Any | None, Any | None, str, bool, str]:
     if not plan.time:
-        return None, None, "", True
+        return None, None, "", True, ""
     entities = _entity_index(config)
     dimensions = _dimension_index(config)
     temporal_roles = _temporal_role_index(config)
@@ -931,7 +931,7 @@ def _measure_time_components(
     )
     raw_expr = _apply_role_timezone(raw_expr, role, config)
     time_expr = _time_bucket_expr(plan.time, raw_expr, config)
-    return raw_expr, time_expr, _time_alias_for_plan(plan), time_source_local
+    return raw_expr, time_expr, _time_alias_for_plan(plan), time_source_local, leaf_time_role
 
 
 def _matching_measure_plan(
@@ -1007,7 +1007,7 @@ def _anchored_entity_set_plan(
     if not safe_anchor_shape:
         return None
 
-    raw_time_expr, _, _, time_source_local = _measure_time_components(
+    raw_time_expr, _, _, time_source_local, _ = _measure_time_components(
         plan, denominator_plan, config
     )
     if plan.time and (raw_time_expr is None or not time_source_local):
@@ -2856,15 +2856,15 @@ def _snapshot_select_fields(
     plan: LogicalPlan,
     anchored: AnchoredEntitySetPlan,
     config: PackageConfig,
-) -> tuple[list[SqlField], list[Any], Any, Any, str, list[str]]:
+) -> tuple[list[SqlField], list[Any], Any, Any, str, list[str], str]:
     entities = _entity_index(config)
     dimensions = _dimension_index(config)
     temporal_roles = _temporal_role_index(config)
     measure_plan = anchored.denominator_measure_plan
     measure = _measure_index(config)[measure_plan.bound_measure.measure_id]
     source_table = _measure_owned_relation(measure, entities)
-    raw_time_expr, time_expr, time_alias, time_source_local = _measure_time_components(
-        plan, measure_plan, config
+    raw_time_expr, time_expr, time_alias, time_source_local, leaf_time_role = (
+        _measure_time_components(plan, measure_plan, config)
     )
     if plan.time and (raw_time_expr is None or time_expr is None or not time_source_local):
         raise SemanticLayerError(
@@ -2918,7 +2918,15 @@ def _snapshot_select_fields(
         *([time_alias] if time_alias else []),
         *[f"__row_key_{_slug(column)}" for column in row_grain_columns],
     ]
-    return fields, partition_exprs, order_expr, raw_time_expr, time_alias, partition_aliases
+    return (
+        fields,
+        partition_exprs,
+        order_expr,
+        raw_time_expr,
+        time_alias,
+        partition_aliases,
+        leaf_time_role,
+    )
 
 
 def _anchored_snapshot_ctes(
@@ -2929,9 +2937,15 @@ def _anchored_snapshot_ctes(
     entities = _entity_index(config)
     measure = _measure_index(config)[anchored.denominator_measure_plan.bound_measure.measure_id]
     source_table = _measure_owned_relation(measure, entities)
-    fields, partition_exprs, order_expr, raw_time_expr, time_alias, partition_aliases = (
-        _snapshot_select_fields(plan, anchored, config)
-    )
+    (
+        fields,
+        partition_exprs,
+        order_expr,
+        raw_time_expr,
+        time_alias,
+        partition_aliases,
+        leaf_time_role,
+    ) = _snapshot_select_fields(plan, anchored, config)
     where_clauses: list[Any] = []
     source_filters = _source_local_filter_conditions(
         measure.entity,
@@ -2946,7 +2960,9 @@ def _anchored_snapshot_ctes(
     where_clauses.extend(source_filters or [])
     where_clauses.extend(bound_filters or [])
     if plan.time and raw_time_expr is not None:
-        where_clauses.extend(_source_time_window(raw_time_expr, plan.time, config))
+        where_clauses.extend(
+            _source_time_window(raw_time_expr, plan.time, config, role_id=leaf_time_role)
+        )
 
     snapshot_name = f"latest_{_slug(_last_token(measure.entity).replace('entity_', ''), fallback='entity')}_snapshot"
     window_choice = anchored.denominator_measure_plan.bound_measure.aggregation
@@ -4917,6 +4933,17 @@ def _source_time_window(
                     f"time.{key} must be an ISO date or timestamp for a DATE clock",
                     details={"path": f"time.{key}"},
                 )
+        # A converted DATE is a timestamp; compare its role-local day. Logical
+        # field identifiers remain intact for _predicate_window_filters.
+        column_tz = str(role.column_timezone or "").strip()
+        target_tz = str(role.timezone or "").strip()
+        if (
+            column_tz
+            and target_tz
+            and column_tz != target_tz
+            and column != SqlIdentifier(parts=[role.dimension])
+        ):
+            column = SqlCast(column, "DATE")
         return _whole_day_window(column, {**time, "temporal_role": role_id}, config)
     return [
         SqlBinary(column, operator, SqlLiteral(time[key]))

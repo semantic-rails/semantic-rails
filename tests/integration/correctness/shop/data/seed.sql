@@ -24,6 +24,13 @@ INSERT INTO orders VALUES
 ALTER TABLE orders ADD COLUMN ordered_at_tz TIMESTAMP WITH TIME ZONE;
 UPDATE orders SET ordered_at_tz = ordered_at AT TIME ZONE 'UTC';
 
+-- DATE and timestamp clocks straddle different window edges; converted dates
+-- read as June 30 and July 1 in New York.
+CREATE TABLE clock_edges (id INTEGER, source_day DATE, source_time TIMESTAMP, amount INTEGER);
+INSERT INTO clock_edges VALUES
+  (1, DATE '2024-07-01', TIMESTAMP '2024-07-01 13:00:00', 10),
+  (2, DATE '2024-07-02', TIMESTAMP '2024-07-02 01:00:00', 20);
+
 -- Conversion to a first order within 7 days: 101 converts (4 days), 102 does not (exactly
 -- 7 days, as the window is half-open), 103 converts (one second inside), 104 does not (its
 -- order came first), 105 converts (the same instant), 106 converts in the next month and

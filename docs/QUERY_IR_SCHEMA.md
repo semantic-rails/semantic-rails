@@ -599,7 +599,10 @@ A clock declared as `kind: date` applies the calendar spine's whole-day rule
 to its source rows too: `start` includes its local day, and an exclusive `end`
 after midnight includes its local day. An end at exact midnight excludes that
 day. Offset-bearing bounds use the role's zone. An empty or reversed interval
-includes no days. Timestamp clocks retain precise half-open bounds.
+includes no days. After `column_timezone` conversion, the comparison uses the
+converted local date. Each measure's source scan uses its own clock's day rule,
+including an anchored population or snapshot on a different query time axis.
+Timestamp clocks retain precise half-open bounds.
 
 ## PolicyContext
 
