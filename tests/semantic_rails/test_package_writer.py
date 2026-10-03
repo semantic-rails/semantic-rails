@@ -64,6 +64,7 @@ def test_contracts_path_policy_and_authored_values_are_written(tmp_path) -> None
             *config.measures[1:],
         ],
         path_policy=PathPolicyConfig(max_hops=6),
+        package=replace(config.package, observation_scope="query"),
     )
     directory = write_package(config, tmp_path / "shop_starter", namespace="shop")
     loaded = load_package_snapshot(directory).config
@@ -73,6 +74,7 @@ def test_contracts_path_policy_and_authored_values_are_written(tmp_path) -> None
         config.path_policy,
     )
     assert loaded.measures[0].suggested_aggregations == ["max"]
+    assert loaded.package.observation_scope == "query"
 
 
 def _relation_pipeline(config):
