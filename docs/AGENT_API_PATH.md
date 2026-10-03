@@ -11,6 +11,9 @@ Moved to [Agent quickstart: Recommended Loop](AGENT_QUICKSTART.md#recommended-lo
 (`route_decisions`) or records it in the package (`record_route_decision`) is under
 [Agent quickstart: Graph-Style Agents](AGENT_QUICKSTART.md#graph-style-agents).
 
+A refusal with `AMBIGUOUS_CHILD_SCOPE` is answered by resending one option's `where` from
+`details.clarification` ([Agent quickstart: Recommended Agent Policy](AGENT_QUICKSTART.md#recommended-agent-policy)).
+
 ## Plan Status And Detail
 
 Moved to [Agent quickstart: Plan Status And Detail](AGENT_QUICKSTART.md#plan-status-and-detail).

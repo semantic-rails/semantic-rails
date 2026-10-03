@@ -164,16 +164,22 @@ In practice:
 - a distinct count grouped by such a dimension counts each row once in every group it
   has a matching child in ("orders that included each product type"); both carry a
   `REWRITE_APPLIED` warning (`fanout_dedup`)
+- a child group in `where` (`{child, match: any|none, where}`) says whether its
+  conditions apply to the same child row; it lowers to correlated `EXISTS` or
+  `NOT EXISTS`. Two or more positive plain filters on one child, or one negated one,
+  are refused with `AMBIGUOUS_CHILD_SCOPE`, whose clarification offers each reading as a
+  `where` list
 - unsupported grain-expanding shapes still fail fast rather than silently miscomputing:
   other aggregations grouped across the hop (order revenue by item product type reads
   as either an item split or each containing order's total), negated, null or `false`
-  tests across it, and many-to-many or off-key paths
+  tests in a measure's own filter across it, and many-to-many or off-key paths
 
 Relevant statuses and codes:
 
 - `rewrite_strategy.status = "direct"`
 - `rewrite_strategy.status = "rewritten"`
 - `MIXED_GRAIN_INVALID`
+- `AMBIGUOUS_CHILD_SCOPE`
 - `REWRITE_NOT_SUPPORTED`
 
 ### Physical Variant Routing

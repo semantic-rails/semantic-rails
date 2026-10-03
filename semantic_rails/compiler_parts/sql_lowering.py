@@ -11,7 +11,14 @@ from zoneinfo import ZoneInfo
 
 from ..acceleration.routing import aggregate_routing_report, record_rollup_scan
 from ..acceleration.selection import recombine_aggregation
-from ..ast import normalize_query
+from ..ast import (
+    ChildGroup,
+    child_groups,
+    is_child_group,
+    normalize_query,
+    plain_filters,
+    refuse_child_groups,
+)
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
 from ..expressions import (
@@ -39,7 +46,13 @@ from ..expressions import (
     expr_to_dict,
     expression_field,
 )
-from ..fanout import analyze_fanout, recording_route_choices, resolve_path
+from ..fanout import (
+    analyze_fanout,
+    filter_only_semijoin,
+    one_to_many_descent,
+    recording_route_choices,
+    resolve_path,
+)
 from ..ir import (
     LogicalPlan,
     MeasurePlan,
@@ -868,6 +881,8 @@ def _source_local_filter_conditions(
 ) -> list[Any] | None:
     conditions: list[Any] = []
     for item in items:
+        if is_child_group(item):
+            return None
         dim_id = str(item.get("field", "") or "")
         if (
             _direct_dimension_source_expr(measure_entity, dim_id, config) is None
@@ -1094,7 +1109,7 @@ def _aggregate_relation_leaf_select(
         group_fields.append(time_expr)
 
     where_clauses: list[Any] = []
-    for item in list(plan.query.get("where", []) or []):
+    for item in refuse_child_groups(plan.query.get("where"), "on a rollup"):
         where_clauses.append(_aggregate_relation_filter_expr(aggregate, dict(item)))
     if raw_time_expr is not None and plan.time:
         time = dict(plan.time)
@@ -1590,6 +1605,8 @@ def _filter_dimensions_are_source_local(
 ) -> bool:
     dimensions = _dimension_index(config)
     for item in items:
+        if is_child_group(item):
+            return False
         dim_id = str(item.get("field", "") or "")
         dim = dimensions.get(dim_id)
         if dim is None:
@@ -1732,6 +1749,8 @@ def _entity_in_terms_of_anchor_plan(
         return None
     if _all_metric_predicates(plan, measure_plan):
         return None
+    if child_groups(plan.query.get("where")):
+        return None  # a child group's leaf is the semi-join leaf
 
     anchor_entity = ""
     anchor_key_columns: list[str] = []
@@ -1809,7 +1828,7 @@ def _entity_in_terms_of_anchor_plan(
     required_dimension_ids = [(dim_id, lookup) for dim_id in plan.group_by]
     required_dimension_ids.extend(
         (str(item.get("field")), lookup)
-        for item in list(plan.query.get("where", []) or [])
+        for item in refuse_child_groups(plan.query.get("where"), "in a child-grain count")
         if item.get("field")
     )
     required_dimension_ids.extend(
@@ -1954,7 +1973,7 @@ def _entity_in_terms_of_leaf_select(
             where_clauses.append(SqlBinary(raw_expr, ">=", SqlLiteral(time["start"])))
         if time.get("end") is not None:
             where_clauses.append(SqlBinary(raw_expr, "<", SqlLiteral(time["end"])))
-    for item in list(plan.query.get("where", []) or []):
+    for item in refuse_child_groups(plan.query.get("where"), "in a child-grain count"):
         expr, _ = _direct_dimension_source_expr(
             anchor_entity, str(item["field"]), config
         ) or _resolve_dimension_expr(str(item["field"]), config)
@@ -2072,43 +2091,25 @@ def _fanout_filter_leaf_select(
 
     Each hop is nested so its authored join condition correlates with the preceding row. A
     lookup on the rows an EXISTS reads joins LEFT inside it instead, so a child row it finds
-    no match for stays, with NULL for the lookup, as do the lookups outside EXISTS.
+    no match for stays, with NULL for the lookup, as do the lookups outside EXISTS. The flat
+    child filter takes one EXISTS; each child group takes its own (see
+    ``_child_group_condition``).
     """
     measure = _measure_index(config)[measure_plan.bound_measure.measure_id]
-    crossing = [row for row in measure_plan.path_selections if row.analysis.get("status") != "ok"]
+    crossing = [
+        row
+        for row in measure_plan.path_selections
+        if row.analysis.get("status") != "ok" and row.purpose != "child_group"
+    ]
     child_joins = _joins_for_paths(
         measure.entity, crossing, config, measure_entity=measure.entity, time_spec=plan.time
     )
-    levels: list[tuple[SqlJoin, SqlExpr, list[SqlJoin]]] = []
-    for join in child_joins:
-        if join.on is None:
-            raise SemanticLayerError(
-                "MIXED_GRAIN_INVALID", "A child filter needs a correlated join."
-            )
-        # A lookup from the measure's own row nests like any hop: the hop after it needs its
-        # match anyway.
-        holders = [
-            lookups
-            for level, _, lookups in reversed(levels)
-            if join.join_type == "LEFT"
-            and _tables_read(join.on) <= {_join_table_name(row) for row in (level, *lookups, join)}
-        ]
-        if holders:
-            holders[0].append(join)
-        else:
-            levels.append((join, join.on, []))
-    conditions = child_where
-    for join, on, lookups in reversed(levels):
-        conditions = [
-            SqlExists(
-                SqlSelect(
-                    select=[SqlField(SqlLiteral(1), "match")],
-                    from_table=join.table,
-                    joins=lookups,
-                    where=[on, *conditions],
-                )
-            )
-        ]
+    conditions = _nested_exists(child_joins, child_where)
+    query = normalize_query(plan.query)
+    conditions += [
+        _child_group_condition(plan, query, config, measure, group)
+        for group in child_groups(query.where)
+    ]
     joins = _joins_for_paths(
         measure.entity,
         [row for row in measure_plan.path_selections if row.analysis.get("status") == "ok"],
@@ -2134,6 +2135,231 @@ def _fanout_filter_leaf_select(
         where=[*where, *conditions],
         group_by=[field.expression for field in key_fields],
     )
+
+
+def _nested_exists(child_joins: list[SqlJoin], conditions: list[Any]) -> list[Any]:
+    """``conditions`` inside one EXISTS per hop of ``child_joins``, each correlated on its
+    authored join. A LEFT lookup on the rows an EXISTS reads joins inside it. No joins leave
+    ``conditions`` as they are."""
+    levels: list[tuple[SqlJoin, SqlExpr, list[SqlJoin]]] = []
+    for join in child_joins:
+        if join.on is None:
+            raise SemanticLayerError(
+                "MIXED_GRAIN_INVALID", "A child filter needs a correlated join."
+            )
+        # A lookup from the measure's own row nests like any hop: the hop after it needs its
+        # match anyway.
+        holders = [
+            lookups
+            for level, _, lookups in reversed(levels)
+            if join.join_type == "LEFT"
+            and _tables_read(join.on) <= {_join_table_name(row) for row in (level, *lookups, join)}
+        ]
+        if holders:
+            holders[0].append(join)
+        else:
+            levels.append((join, join.on, []))
+    for join, on, lookups in reversed(levels):
+        conditions = [
+            SqlExists(
+                SqlSelect(
+                    select=[SqlField(SqlLiteral(1), "match")],
+                    from_table=join.table,
+                    joins=lookups,
+                    where=[on, *conditions],
+                )
+            )
+        ]
+    return conditions
+
+
+def _distinct_parent_group_conditions(
+    plan: LogicalPlan, measure_plan: MeasurePlan, config: PackageConfig, measure: Any
+) -> list[Any]:
+    """A child group's conditions in the de-duplicated parent leaf, ClickHouse's semi-join.
+
+    The leaf joins the group's route once, INNER, so its conditions hold on one child row
+    together: ``match: any``. A second group, a ``none`` group, a lookup from the child (an
+    INNER join drops what a LEFT join reads as NULL) or another child condition beside it
+    would need more than that one join; the planner refuses them, and so does this, so no
+    plan reaches the leaf with a group it would drop or misread.
+    """
+    query = normalize_query(plan.query)
+    groups = child_groups(query.where)
+    if not groups:
+        return []
+    group = groups[0]
+    _, lookups = child_group_route(config, query, measure, group)
+    crossing = [row for row in measure_plan.path_selections if row.analysis.get("status") != "ok"]
+    if (
+        config.package.warehouse != "clickhouse"
+        or len(groups) > 1
+        or group.match != "any"
+        or any(lookups)
+        or [row.purpose for row in crossing] != ["child_group"]
+    ):
+        raise SemanticLayerError(
+            "MIXED_GRAIN_INVALID",
+            "This child group needs correlated EXISTS, which this leaf does not use.",
+            details={
+                "child": group.child,
+                "match": group.match,
+                "why_invalid": (
+                    "ClickHouse's de-duplicated parent leaf answers one 'any' child group on the "
+                    "child's own columns, as the leaf's only condition across a one-to-many hop."
+                ),
+            },
+        )
+    return [
+        build_filter_condition(
+            (
+                _direct_dimension_source_expr(group.child, condition.field, config)
+                or _resolve_dimension_expr(condition.field, config)
+            )[0],
+            condition.op,
+            condition.value,
+        )
+        for condition in group.where
+    ]
+
+
+def child_group_route(
+    config: PackageConfig, query: Any, measure: Any, group: ChildGroup
+) -> tuple[PathSelection, list[PathSelection | None]]:
+    """The route from ``measure``'s entity to a group's child, and each condition's lookup from
+    the child (None for a value the child's row holds).
+
+    Planning and lowering both read a group through this one function. The child must sit
+    across a one-to-many hop: otherwise a plain where states the condition. A route tie, or a
+    route other than a key-based descent beside another candidate, is ambiguous. Each
+    condition is on the child or a declared many-to-one lookup from it, where a missing row
+    reads NULL. No table a condition reads may be one the route reads: its name would bind
+    to the lookup inside EXISTS and part the subquery from the row it belongs to.
+    """
+    entities = _entity_index(config)
+    dimensions = _dimension_index(config)
+    start = measure.entity
+    time_bound = _time_bound_relationship_ids(query, config)
+
+    def path(source: str, target: str, purpose: str) -> PathSelection:
+        chosen, candidates = resolve_path(config, start=source, target=target)
+        return PathSelection(
+            target_entity=target,
+            purpose=purpose,
+            chosen_path=list(chosen),
+            candidate_paths=[list(candidate) for candidate in candidates],
+            analysis=analyze_fanout(config, source, chosen, time_bound_relationships=time_bound),
+        )
+
+    def invalid(message: str, **details: Any) -> SemanticLayerError:
+        return SemanticLayerError(
+            "INVALID_QUERY",
+            message,
+            details={"path": "where[].child", "child": group.child, **details},
+        )
+
+    if group.child == start:
+        raise invalid(
+            f"'{group.child}' is the entity of measure '{measure.id}', not a child of it.",
+            why_invalid="Filter the measure's own rows with a plain where item.",
+        )
+    route = path(start, group.child, "child_group")
+    if route.analysis.get("status") == "ok":
+        raise invalid(
+            f"'{start}' reaches '{group.child}' only through lookups, so each row has at most "
+            "one child row.",
+            why_invalid="A child group is for rows across a one-to-many hop; use a plain where.",
+            route=route.chosen_path,
+        )
+    keys = {entity.id: list(entity.key or [entity.primary_key]) for entity in config.entities}
+    if len(route.candidate_paths) > 1 and not one_to_many_descent(route.analysis, keys):
+        raise SemanticLayerError(
+            "AMBIGUOUS_PATH",
+            f"Ambiguous path from '{start}' to '{group.child}': "
+            + "; ".join(" -> ".join(candidate) for candidate in route.candidate_paths),
+            details={
+                "start": start,
+                "target": group.child,
+                "candidates": route.candidate_paths,
+                "hint": (
+                    "These routes reach different child rows. Pin the one the question means "
+                    "with graph.path_preferences (source_entity, target_entity, "
+                    "relationship_path)."
+                ),
+            },
+        )
+    lookups: list[PathSelection | None] = []
+    for condition in group.where:
+        dim = dimensions[condition.field]
+        if (
+            dim.entity == group.child
+            or _direct_dimension_source_expr(group.child, condition.field, config) is not None
+        ):
+            lookups.append(None)
+            continue
+        lookup = path(group.child, dim.entity, "child_group_lookup")
+        if lookup.analysis.get("status") != "ok" or not filter_only_semijoin(lookup.analysis):
+            raise invalid(
+                f"'{condition.field}' is not a dimension of '{group.child}' or of a declared "
+                "many-to-one lookup from it.",
+                why_invalid=(
+                    "Every condition in a child group is about one child row: its own "
+                    "dimensions, or one row each of its lookups."
+                ),
+                dimension=condition.field,
+                route=lookup.chosen_path,
+            )
+        lookups.append(lookup)
+    route_tables = {_measure_owned_relation(measure, entities)} | {
+        join.table.name for join in _joins_for_paths(start, [route], config, measure_entity=None)
+    }
+    lookup_tables = {
+        join.table.name
+        for join in _joins_for_paths(
+            group.child, [row for row in lookups if row], config, measure_entity=None
+        )
+    }
+    clash = sorted(route_tables & lookup_tables)
+    if clash:
+        raise invalid(
+            f"A condition of the child group reads '{clash[0]}', which its route to "
+            f"'{group.child}' already reads.",
+            why_invalid=(
+                "Inside the group, that table would be the condition's row, not the route's. "
+                "Filter the parent with a plain where item."
+            ),
+            tables=clash,
+        )
+    return route, lookups
+
+
+def _child_group_condition(
+    plan: LogicalPlan, query: Any, config: PackageConfig, measure: Any, group: ChildGroup
+) -> Any:
+    """EXISTS over every condition of the group on one child row, nested hop by hop along the
+    route to the child; NOT EXISTS for ``match: none``. Lookups from the child are LEFT joins,
+    so a missing row reads NULL, and NULL fails a comparison."""
+    route, lookups = child_group_route(config, query, measure, group)
+    found = [row for row in lookups if row is not None]
+    inner_joins = _joins_for_paths(
+        group.child, found, config, measure_entity=None, time_spec=plan.time
+    )
+    conditions = [
+        build_filter_condition(
+            (
+                _direct_dimension_source_expr(group.child, condition.field, config)
+                or _resolve_dimension_expr(condition.field, config)
+            )[0],
+            condition.op,
+            condition.value,
+        )
+        for condition in group.where
+    ]
+    hops = _joins_for_paths(
+        measure.entity, [route], config, measure_entity=measure.entity, time_spec=plan.time
+    )
+    [exists] = _nested_exists([*hops, *inner_joins], conditions)
+    return replace(exists, negated=group.match == "none")
 
 
 def _source_rollup_leaf_select(
@@ -2358,9 +2584,18 @@ def _measure_leaf_select(
     semijoin = (
         config.package.warehouse != "clickhouse"
         and measure_plan.rewrite_strategy == "fanout_dedup"
-        and all(purpose in {"where", "metric_filter"} for _, purpose in crossing_filters)
+        and all(
+            purpose in {"where", "metric_filter", "child_group"} for _, purpose in crossing_filters
+        )
     )
-    for item in list(query.get("where", []) or []):
+    # Child groups lower in the semi-join leaf, each to its own EXISTS (_fanout_filter_leaf_select),
+    # or as the one child of ClickHouse's de-duplicated leaf below. Any other leaf refuses them.
+    filters = (
+        plain_filters(query.get("where"))
+        if measure_plan.rewrite_strategy == "fanout_dedup"
+        else refuse_child_groups(query.get("where"), "in this measure's leaf")
+    )
+    for item in filters:
         expr, _ = _direct_dimension_source_expr(
             measure.entity,
             str(item["field"]),
@@ -2417,6 +2652,7 @@ def _measure_leaf_select(
             calendar_join=leaf_calendar_join,
         )
     if measure_plan.rewrite_strategy == "fanout_dedup":
+        where_clauses += _distinct_parent_group_conditions(plan, measure_plan, config, measure)
         joins = _joins_for_paths(
             measure.entity,
             measure_plan.path_selections,
@@ -2705,7 +2941,9 @@ def _anchored_snapshot_ctes(
     )
     where_clauses: list[Any] = []
     source_filters = _source_local_filter_conditions(
-        measure.entity, list(plan.query.get("where", []) or []), config
+        measure.entity,
+        refuse_child_groups(plan.query.get("where"), "in an entity-set ratio"),
+        config,
     )
     bound_filters = _source_local_filter_conditions(
         measure.entity,
@@ -3066,7 +3304,7 @@ def _distinct_value_select(plan: LogicalPlan, config: PackageConfig) -> SqlSelec
         group_fields.append(time_expr)
 
     where_clauses: list[Any] = []
-    for item in list(query.where or []):
+    for item in refuse_child_groups(query.where, "in a query without a measure"):
         expr, _ = _resolve_dimension_expr(str(item.field), config)
         where_clauses.append(build_filter_condition(expr, item.op, item.value))
 
@@ -3209,7 +3447,9 @@ def _filters_pushable_to_entity_scan(
         if not _dimension_is_local_or_direct(source_entity, role.dimension, config):
             return False
     for item in list(plan.query.get("where", []) or []):
-        if not _dimension_is_local_or_direct(source_entity, str(item.get("field", "")), config):
+        if is_child_group(item) or not _dimension_is_local_or_direct(
+            source_entity, str(item.get("field", "")), config
+        ):
             return False
     for item in _bound_filter_clauses(measure_plan.bound_measure, config):
         if not _dimension_is_local_or_direct(source_entity, str(item.get("field", "")), config):
@@ -4200,7 +4440,7 @@ def _measure_group_leaf_select(
         group_fields.append(time_expr)
 
     where_clauses: list[Any] = []
-    for item in list(query.get("where", []) or []):
+    for item in refuse_child_groups(query.get("where"), "in a folded leaf"):
         expr, _ = _direct_dimension_source_expr(
             first_measure.entity, str(item["field"]), config
         ) or _resolve_dimension_expr(str(item["field"]), config)

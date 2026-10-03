@@ -31,12 +31,14 @@ import duckdb
 import pytest
 import yaml
 
+from semantic_rails import fanout as fanout_module
 from semantic_rails.compiler import _entity_determines
 from semantic_rails.compiler_parts.grain_recovery import _chosen_path
+from semantic_rails.compiler_parts.indexes import get_package_analysis
 from semantic_rails.config import load_package_config
 from semantic_rails.diagnostics import exception_issue
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.fanout import resolve_path, resolve_route
+from semantic_rails.fanout import eligible_path_targets, resolve_path, resolve_route
 from semantic_rails.metadata_parts.path_coverage import _path_availability
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import PathPreferenceConfig
@@ -1127,3 +1129,58 @@ def test_a_child_filter_through_an_inherited_route_counts_each_loan_once(tmp_pat
         "JOIN branches b ON b.branch_id = a.branch_id WHERE b.branch_name = 'Main'"
     )
     assert "EXISTS" in runtime.compile(query)["explain"]["rendered_sql"]
+
+
+@pytest.mark.parametrize(
+    ("relationships", "rows", "forward_only", "max_hops", "start"),
+    [
+        (LENDER, [ACCOUNT_OWNER_ROW], (), 4, LOAN),
+        (LENDER, [ACCOUNT_OWNER_ROW], (), 4, DISTRICT),
+        (LENDER, [ACCOUNT_OWNER_ROW], ("clients_district",), 4, DISTRICT),
+        (OWN_DISTRICT, [ACCOUNT_OWNER_ROW], (), 4, LOAN),
+        ((*LENDER, "accounts_district"), [ACCOUNT_OWNER_ROW], (), 2, LOAN),
+        (
+            (*OWN_DISTRICT, "loans_payout_district"),
+            [_row(DISTRICT, LOAN, OWN_KEY)],
+            (),
+            4,
+            LOAN,
+        ),
+    ],
+    ids=["inherited", "reverse", "one-way", "own-key", "excluded", "two-own-keys"],
+)
+def test_path_hints_agree_with_the_inherited_route_ladder(
+    tmp_path, monkeypatch, relationships, rows, forward_only, max_hops, start
+):
+    config = load_package_config(
+        str(
+            _write_package(
+                tmp_path,
+                relationships=relationships,
+                rows=rows,
+                forward_only=forward_only,
+                max_hops=max_hops,
+            )
+        )
+    )
+    expected = []
+    for entity in sorted(config.entities, key=lambda entity: entity.id):
+        if entity.id == start:
+            continue
+        try:
+            resolve_path(config, start=start, target=entity.id)
+        except SemanticLayerError:
+            continue
+        expected.append(entity.id)
+    analysis = get_package_analysis(config)
+    analysis.path_cache.clear()
+
+    def reject_full_resolution(*args, **kwargs):
+        pytest.fail("hint eligibility must not enumerate or render full route envelopes")
+
+    monkeypatch.setattr(fanout_module, "enumerate_paths", reject_full_resolution)
+    monkeypatch.setattr(fanout_module, "resolve_route", reject_full_resolution)
+    monkeypatch.setattr(fanout_module, "_route_decision_required", reject_full_resolution)
+    assert eligible_path_targets(config, start=start) == expected
+    assert not analysis.path_cache
+    assert not analysis.route_note_cache

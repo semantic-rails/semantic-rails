@@ -185,9 +185,11 @@ Restricted queries select explicit metric references, such as
 The allowed recipe can read its internal dependencies, subject to package access
 policies. Callers cannot select those measures or columns independently. Grouping,
 filters, and explicit time roles require corresponding dimension grants. Raw measures,
-column/conditional aggregates, runtime expression composition, metric filters,
+column/conditional aggregates, runtime expression composition, child-scope groups, metric filters,
 temporal-role overrides, and dimension-only queries are unavailable in this bounded
 contract. Denial occurs before compilation or warehouse access, including cache hits.
+Metric and dimension grants do not authorize caller-selected child entity scopes;
+an explicit child group is denied even when all its condition dimensions are granted.
 
 Catalog, discovery, inspection, and build options return a small projection containing
 only visible metric/dimension/temporal-role IDs and labels. Restricted planning matches

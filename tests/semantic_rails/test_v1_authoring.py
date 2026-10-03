@@ -15,7 +15,9 @@ from typing import Any
 import pytest
 import yaml
 
+from semantic_rails.architect_service import ArchitectProject
 from semantic_rails.config import load_package_config
+from semantic_rails.config_parts.package_loader import normalize_package
 from semantic_rails.config_validation import validate_runtime_package
 from semantic_rails.errors import SemanticLayerError
 from tests.semantic_rails.conftest import copy_package_config
@@ -496,6 +498,139 @@ def test_graph_model_cannot_be_primary_for_two_entities(tmp_path: Path) -> None:
         load_package_config(str(pkg))
     assert exc.value.code == "INVALID_CONFIG"
     assert all(f"'{name}'" in str(exc.value) for name in ("readings", "reading", "device"))
+
+
+@pytest.mark.parametrize("customer_first", [False, True])
+@pytest.mark.parametrize("identity", [None, "binding", "entity", "single_match"])
+def test_shared_entity_keys_require_explicit_primary_identity(
+    tmp_path: Path, customer_first: bool, identity: str | None
+) -> None:
+    names = ["customer", "supplier"] if customer_first else ["supplier", "customer"]
+    graph_entities = {name: {"key": ["id"]} for name in names}
+    graph_entities["supplier"]["model"] = "supplier"
+    model: dict[str, Any] = {
+        "id": "parties",
+        "relation": "parties",
+        "grain": ["id"],
+        "entities": {name: {} for name in names},
+        "dimensions": {"label": {"column": "label", "kind": "categorical"}},
+        "measures": {"party_count": {"kind": "entity_count", "entity_key": ["id"]}},
+    }
+    if identity == "binding":
+        graph_entities["customer"]["model"] = "parties"
+    elif identity == "entity":
+        model["entity"] = "customer"
+    elif identity == "single_match":
+        graph_entities["supplier"]["key"] = ["supplier_id"]
+    pkg = _write_synthetic_package(
+        tmp_path / "shared_keys",
+        graph_entities=graph_entities,
+        models={
+            "parties": model,
+            "supplier": {
+                "id": "supplier",
+                "entity": "supplier",
+                "relation": "suppliers",
+                "grain": ["id"],
+            },
+        },
+    )
+    if identity is None:
+        message = (
+            "model 'parties' grain ['id'] matches multiple entity keys: customer, supplier; "
+            "bind the model in the graph or set entity:"
+        )
+        with pytest.raises(SemanticLayerError) as exc:
+            load_package_config(str(pkg))
+        assert exc.value.code == "INVALID_CONFIG"
+        assert str(exc.value) == message
+        assert any(message in error for error in validate_runtime_package(pkg))
+    else:
+        config = load_package_config(str(pkg))
+        customer = next(
+            entity for entity in config.entities if entity.id == "entity.synth_customer"
+        )
+        assert customer.table == "parties"
+        assert customer.key == ["id"]
+
+
+def test_architect_mutation_rolls_back_when_grain_remains_ambiguous(tmp_path: Path) -> None:
+    pkg = _write_synthetic_package(
+        tmp_path / "ambiguous_edit",
+        graph_entities={"customer": {"key": ["id"]}, "supplier": {"key": ["id"]}},
+        models={
+            "parties": {
+                "id": "parties",
+                "relation": "parties",
+                "grain": ["id"],
+                "entities": {"customer": {}, "supplier": {}},
+            },
+            "supplier": {"entity": "supplier", "relation": "suppliers", "grain": ["id"]},
+        },
+    )
+    original = (pkg / "models" / "supplier.yml").read_bytes()
+    project = ArchitectProject(pkg, workspace_root=tmp_path)
+    report = project.upsert_model(
+        model_id="supplier", entity_key="supplier", relation="updated_suppliers", primary_key=["id"]
+    ).report
+
+    assert report["changes"]
+    assert report["status"] == "rolled_back_after_parse_error"
+    assert report["parse"]["ok"] is False
+    assert any(
+        error["code"] == "INVALID_CONFIG"
+        and (
+            "model 'parties' grain ['id'] matches multiple entity keys: customer, supplier; "
+            "bind the model in the graph or set entity:"
+        )
+        in error["message"]
+        for error in report["parse"]["errors"]
+    )
+    assert (pkg / "models" / "supplier.yml").read_bytes() == original
+
+
+@pytest.mark.parametrize("customer_first", [False, True])
+@pytest.mark.parametrize("key_source", ["graph", "expr", "primary"])
+def test_ambiguous_grain_cannot_fall_back_to_model_name(
+    customer_first: bool, key_source: str
+) -> None:
+    names = ["customer", "supplier"] if customer_first else ["supplier", "customer"]
+    model: dict[str, Any] = {
+        "entities": {name: {} for name in names},
+        "grain": ["id"],
+    }
+    if key_source == "expr":
+        model["entities"] = {name: {"expr": "id"} for name in names}
+    elif key_source == "primary":
+        model.pop("grain")
+        model["keys"] = {"primary": {"columns": ["id"]}}
+    raw = {
+        "graph": {
+            "entities": {
+                name: {"key": [f"{name}_id" if key_source == "expr" else "id"]} for name in names
+            }
+        },
+        "models": {"customer": model},
+    }
+    with pytest.raises(SemanticLayerError) as exc:
+        normalize_package(raw)
+    assert exc.value.code == "INVALID_CONFIG"
+    assert str(exc.value) == (
+        "model 'customer' grain ['id'] matches multiple entity keys: customer, supplier; "
+        "bind the model in the graph or set entity:"
+    )
+
+
+@pytest.mark.parametrize(
+    "package_path",
+    [
+        "configs/semantic_rails/jaffle_shop",
+        "configs/semantic_rails/tpch_sf1_showcase",
+        "configs/examples/semantic_rails_package_starter.yml",
+    ],
+)
+def test_bundled_packages_resolve_primary_entities(package_path: str) -> None:
+    assert load_package_config(str(REPO_ROOT / package_path)).entities
 
 
 def test_model_primary_is_not_chosen_by_declaration_order(tmp_path: Path) -> None:

@@ -36,6 +36,7 @@ def query_execution_error(details: dict[str, Any]) -> SemanticLayerError:
 
 ERROR_CODES = {
     "AMBIGUOUS_ALIAS",
+    "AMBIGUOUS_CHILD_SCOPE",
     "AMBIGUOUS_PATH",
     "DUPLICATE_OUTPUT_ALIAS",
     "UNSUPPORTED_AGGREGATION",

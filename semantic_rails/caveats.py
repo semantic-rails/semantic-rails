@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
+from .ast import child_groups, every_filter
 from .diagnostics import semantic_issue
 from .expressions import collect_object_references, expr_to_dict
 from .policies import context_scope_matches
@@ -151,7 +152,10 @@ def _signals_for_query(
         if dim is not None:
             signals.strong_entity_ids.add(dim.entity)
 
-    for row in list(query.get("where", []) or []):
+    # A child group's conditions filter on dimensions just as flat filters do.
+    for group in child_groups(query.get("where")):
+        signals.strong_entity_ids.add(str(group.get("child", "")))
+    for row in every_filter(query.get("where")):
         if not isinstance(row, dict):
             continue
         field = str(row.get("field", "") or "")

@@ -2509,7 +2509,26 @@ class Runtime:
 
     def _bind(self, payload: dict[str, Any], policy_context: dict[str, Any]) -> BoundQuery:
         filters = row_filters_for_context(self._config, policy_context)
-        return bind_query(self._config, self.registry, payload, row_filters=filters)
+
+        def check_policies(option: dict[str, Any], binding: BoundQuery) -> None:
+            # A child-scope reading is offered only if this request's policy gate passes it.
+            enforce_query_policies(
+                self._config,
+                binding.object_ids,
+                environment=str(policy_context.get("environment", "")),
+                audience=str(policy_context.get("audience", "")),
+                roles=policy_context.get("roles", []),
+                query=option,
+                binding=binding,
+            )
+
+        return bind_query(
+            self._config,
+            self.registry,
+            payload,
+            row_filters=filters,
+            check_policies=check_policies,
+        )
 
     def _segment_policy_effects(
         self, segment_id: str, context: dict[str, Any]
