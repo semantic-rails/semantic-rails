@@ -413,10 +413,24 @@ def _resolve_uncached(config: PackageConfig, start: str, target: str) -> RouteRe
 
 
 def _has_unique_inherited_route(
-    config: PackageConfig, start: str, target: str, hop_limit: int
+    config: PackageConfig,
+    start: str,
+    target: str,
+    hop_limit: int,
+    reverse_graph: dict[str, list[str]],
 ) -> bool:
-    """Count at most two agreeing simple routes, pruning a disagreeing prefix."""
+    """Count at most two agreeing simple routes that can still reach the target."""
     analysis = get_package_analysis(config)
+    distances = {target: 0}
+    pending = deque([target])
+    while pending:
+        node = pending.popleft()
+        if distances[node] >= hop_limit:
+            continue
+        for previous in reverse_graph.get(node, []):
+            if previous not in distances:
+                distances[previous] = distances[node] + 1
+                pending.append(previous)
 
     def routes(entities: list[str], path: list[str]) -> Iterator[None]:
         if entities[-1] == target:
@@ -425,7 +439,11 @@ def _has_unique_inherited_route(
         if len(path) >= hop_limit:
             return
         for neighbor, rel_id in analysis.graph.get(entities[-1], []):
-            if neighbor in entities:
+            # A shortest remaining distance is a lower bound even with visited nodes excluded.
+            if (
+                neighbor in entities
+                or distances.get(neighbor, hop_limit) > hop_limit - len(path) - 1
+            ):
                 continue
             following, extended = [*entities, neighbor], [*path, rel_id]
             if disagreeing_row(following, extended, analysis.route_rows) is None:
@@ -440,9 +458,10 @@ def eligible_path_targets(config: PackageConfig, *, start: str) -> list[str]:
     """Proven resolvable targets without building or caching route refusal envelopes.
 
     One hop-bounded BFS excludes unreachable unpinned targets. Pins and unique functional
-    direct routes then need no further search. Without inherited rows, other targets
-    need at most ``hop_limit + 1`` BFS scans. With rows, a prefix-pruned search stops
-    at the second agreeing route. Neither search writes caches or builds refusals.
+    direct routes then need no further search. Without source-reachable inherited rows,
+    other targets need at most ``hop_limit + 1`` BFS scans. With rows, reverse distances
+    prune prefixes that cannot reach the target within the remaining hops, and the search
+    stops at the second agreeing route. Neither search writes caches or builds refusals.
     """
     analysis = get_package_analysis(config)
     hop_limit = package_hop_limit(config)
@@ -456,6 +475,13 @@ def eligible_path_targets(config: PackageConfig, *, start: str) -> list[str]:
             if neighbor not in reachable:
                 reachable.add(neighbor)
                 pending.append((neighbor, hops + 1))
+    # Inheritance can affect a bounded route only when it visits both endpoints of a row.
+    inherited = any(source in reachable and end in reachable for source, end in analysis.route_rows)
+    reverse_graph: dict[str, list[str]] = {}
+    if inherited:
+        for source, edges in analysis.graph.items():
+            for end, _rel_id in edges:
+                reverse_graph.setdefault(end, []).append(source)
     direct: dict[str, list[list[str]]] = {}
     if hop_limit >= 1:
         for target, rel_id in analysis.graph.get(start, []):
@@ -472,8 +498,8 @@ def eligible_path_targets(config: PackageConfig, *, start: str) -> list[str]:
         elif len(direct.get(target, [])) == 1:
             # The start's unique own key wins before inherited decisions.
             eligible.append(target)
-        elif analysis.route_rows:
-            if _has_unique_inherited_route(config, start, target, hop_limit):
+        elif inherited:
+            if _has_unique_inherited_route(config, start, target, hop_limit, reverse_graph):
                 eligible.append(target)
         elif not _has_multiple_routes(analysis.graph, start, target, hop_limit):
             eligible.append(target)
