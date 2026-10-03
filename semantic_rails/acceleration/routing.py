@@ -5,7 +5,6 @@ or ``Runtime.set_aggregate_routing``). Its request scope enters :func:`aggregate
 planner rejects every rollup with :data:`ROUTING_OFF` while it is off, and the compile cache
 keys on :func:`aggregate_routing_enabled`, so a switch applies to the next request even when
 the plan is cached.
-
 """
 
 from __future__ import annotations

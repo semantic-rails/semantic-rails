@@ -2073,10 +2073,6 @@ Routing is conservative in the MVP:
 - An `aggregate_relations:` entry that declares `filters` doesn't route yet: it
   holds only the rows its filters kept.
 
-  On DuckDB, MotherDuck, DuckLake and Postgres, which run each query in its role's
-  zone, build the rollup and run each pair with the session time zone set to UTC
-  (`SET TimeZone = 'UTC'`).
-
 When a rollup can't answer a query exactly, the query runs on the base tables, and
 `logical_plan.measure_plans[].aggregate_relation_rejections` maps each rejected
 rollup of that measure's entity to the reason.
