@@ -1280,7 +1280,13 @@
         "where": {
           "type": "array",
           "items": {
-            "type": "object"
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "type": "string", "const": "value_filter" },
+              "op": { "type": "string" },
+              "value": {}
+            }
           }
         }
       }
