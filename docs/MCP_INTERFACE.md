@@ -321,13 +321,7 @@ question holds, not how the phrase is built, so a plural, a repeated "at" or a s
 changes nothing: "revenue at customer type and at store name levels" needs both Customer type
 and Store name. A dimension the question names (its label, the last part of its name or an
 alias, as whole words) needs its own id in `group_by`; an entity needs one of the stand-ins
-described below. The guard also reads these dimension and entity names with underscores,
-spaces and case variants: `customer_type` names Customer type. Declared leading and trailing
-underscores are kept, so aliases such as `_customer_type` and `customer_type_` also count.
-The extra underscore pass reads only caller-visible dimensions and entities. These extra
-matches only add holds; an existing hold remains even when the extra spelling names a complete
-grouping.
-A name doesn't count inside a longer declared name ("customer type" is not
+described below. A name doesn't count inside a longer declared name ("customer type" is not
 also the entity Customer) or inside a phrase naming the query's clock ("order date"), and
 neither does a declared value or a dimension the draft's `where` pins to one value (`=`, or `IN`
 with one value). The word before each level word must end the name of a dimension, an entity
@@ -338,15 +332,23 @@ repeat", "customer types" is no declared name, so the entity Customer must be gr
 These readers add obligations only to the dropped-grouping check; planning and the checks that
 authorize a draft's groupings retain their existing readers. The check only holds a plan; it
 never changes a draft or makes one ready.
-In any question, with a level word or not, a dimension or entity name the question holds (read
-with spaces and with underscores, as above) that contains a value a draft filter keeps (`=`
-that value, or `IN` with it) holds the plan, whatever words surround the name and even when
-the draft groups by it, since the filter may narrow the answer: with an alias `_new_type` or
-`new type` for Customer type, "revenue by _new_type and store name" is not ready.
-`why.details.filter_inside_grouping` lists each such filter as `{"term", "field", "value"}`,
-`dropped_groupings` keeps the term, and the recovery hint asks the caller to confirm the value
-with the user or remove it from that field's filters in `best.query_ir.where`. The draft and
-its filter are unchanged.
+In any question, with a level word or not, every caller-visible dimension or entity name the
+question holds has the same obligation, whatever words surround it. Names are read as above and
+also with underscores, spaces and any case: `customer_type` and `customer type` name Customer
+type, and declared leading and trailing underscores are kept, so aliases such as
+`_customer_type` and `customer_type_` count too. The draft must group by the dimension, or pin
+it to one value with a `where` filter or with the `all` filter of a metric it selects; an
+entity needs one of its own dimensions grouped or pinned. A value word inside the name never
+discharges it, and neither do words the selected measure's label shares: with an alias
+`_new_type` for Customer type and revenue labelled "Revenue (new and repeat types)", "revenue
+by _new_type and store name" grouped only by Store name is not ready. A name holding a value
+that a draft filter keeps (`=` that value, or `IN` with it) holds the plan even when the draft
+groups by it, since the filter may narrow the answer. `why.details.filter_inside_grouping` lists
+each such filter as `{"term", "field", "value"}`, `dropped_groupings` keeps the term, and the
+recovery hint asks the caller to confirm the value with the user or remove it from that field's
+filters in `best.query_ir.where`. This reading never reads hidden dimensions, entities,
+measures or metrics, so a hidden object answers exactly as an absent one. It only holds a plan;
+the draft and its filters are unchanged.
 A listed grouping that names an entity is satisfied only by that entity's own key
 dimension, or by the single declared dimension of that entity whose own words name it, and an
 entity with a composite key is never satisfied. A term names an entity only with every word of
