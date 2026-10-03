@@ -287,25 +287,8 @@ object it uses (a measure's entity and time role included), allowing a plural or
 a filter value; descriptions and topics never use a word. A word that names a catalog object is
 held to a stricter rule, and one the draft doesn't consume is not a warning: it makes the plan
 `low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`, since the draft dropped a grouping
-("by customer type, order" grouped by Store name and Customer type;
-`why.details.dropped_groupings` lists only "order") or answers about another subject. Each
-listed grouping, apart from clock terms and declared values, must match its own `group_by`
-dimension. A listed grouping that names an entity is satisfied only by that entity's own key
-dimension, or by the single declared dimension of that entity whose own words name it. An
-entity with a composite key is never satisfied by the guard, so the plan is not ready. A
-grouping whose words all belong to an entity's label or name matches nothing else, and it
-names an entity only with every word of that entity's label ("customer" names Customer, not
-Customer history); a declared time, such as Store opened at, never stands in for its entity.
-Any other grouping matches a dimension whose own words name it: its label, its aliases and the
-last part of its name, not the prefix of its id. A grouping that dimensions of two or more
-entities match, none of them the measure's own ("name" for an order count: Customer name or
-Store name), is ambiguous, and `plan` never picks one: the plan is not ready, and
-`why.details.ambiguous_groupings` lists it. Naming the entity ("customer name") settles it, as
-does a dimension in the caller's `partial_query` group_by when the draft adds no other that
-matches. A comma continues the grouping list only when the next piece names a dimension,
-entity or clock term; otherwise it ends the clause. A grain phrase such as "at week grain" or
-"month level" sets the grain on the measure's own clock.
-A word names an object when it is a word of the
+("by store, customer type and product type" grouped by store; `why.details.dropped_groupings`
+names it) or answers about another subject. A word names an object when it is a word of the
 object's label or aliases, or of the last dotted part of its id or name outside the object's own
 namespaces ("sales" in `metric.sales.aov_usd` names nothing); a plural counts as its singular.
 Only the draft consumes one: by the label, aliases, id or name of an object it selects (an id the
@@ -320,7 +303,24 @@ and consumed using the same forms; "-es" applies only after s, x, z, ch or sh. A
 synonym, a typo, a namespace, a description, a framing word or an object the draft doesn't select
 (a measure's entity included) never does. So `plan` may hold back a right draft ("revenue from
 orders": Orders is a measure), but never calls one ready that drops a grouping the question
-names. Words that name no catalog object also make the plan `low_confidence` when the draft
+names. Last, each grouping the question lists, apart from clock terms and declared values, must
+match its own `group_by` dimension, or the plan is `low_confidence` with
+`why.code="PLAN_UNMATCHED_TERMS"` and `why.details.dropped_groupings` naming the unmatched ones.
+This check reads past a comma when the next piece names a dimension, an entity or a clock, and
+stops at a window the question states, while the draft still reads its groupings up to the
+comma: "repair cost by incident name, incident" grouped by Incident name alone is not ready, as
+two incidents can share a name. The check only holds a plan; it never changes a draft or makes
+one ready. A listed grouping that names an entity is satisfied only by that entity's own key
+dimension, or by the single declared dimension of that entity whose own words name it, and an
+entity with a composite key is never satisfied. A term names an entity only with every word of
+its label ("customer" names Customer, not Customer history), and a declared time, such as Store
+opened at, never stands in for its entity. Any other grouping matches a dimension whose own
+words name it: its label, its aliases and the last part of its name, not the prefix of its id.
+A grouping that dimensions of two or more entities match, none of them the measure's own
+("name" for an order count: Customer name or Store name), is ambiguous and never a pick: the
+plan is not ready, and `why.details.ambiguous_groupings` lists it. Naming the entity ("customer
+name") settles it, as does a dimension in the caller's `partial_query` group_by when the draft
+adds no other that matches. Words that name no catalog object also make the plan `low_confidence` when the draft
 doesn't consume them, they aren't stopwords or number words, and `intent_ir.unresolved`
 still holds them. This returns `why.code="PLAN_UNMATCHED_TERMS"` with
 `why.details={"terms": [...], "kind": "filter_values_unrealized"}` and an
