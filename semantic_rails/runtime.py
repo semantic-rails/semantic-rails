@@ -2564,6 +2564,12 @@ class Runtime:
         # operators use this to enforce per-tenant policies without forking;
         # local users typically leave `limits` unset.
         limits = _normalize_query_limits(payload.get("limits"), _time_zone(self._config, compiled))
+        limit = compiled["sql_ast"].limit
+        probe = compiled.get("limit_probe")
+        # A resource fence that hides the boundary row takes precedence over
+        # tie detection. Keep both the adapter cap and its truncation signal.
+        if probe is not None and limits.get("max_rows", 0) and limits["max_rows"] <= limit:
+            probe = None
         # If the caller asked for a statement_timeout_ms but the adapter
         # can't honor it at the warehouse boundary, surface a warning so
         # the caller learns the limit was best-effort. Without this, the
@@ -2571,6 +2577,7 @@ class Runtime:
         # `max_rows` post-fetch fence clips the result — the v2 audit
         # called out the "half-fake contract" smell on the DuckDB path.
         limits_warnings: list[dict[str, Any]] = []
+        tie_warnings: list[dict[str, Any]] = []
         try:
             with self._query_lock:
                 # Keep adapter selection and execution in one critical
@@ -2602,10 +2609,14 @@ class Runtime:
                     )
                 rows = _adapter_query(
                     adapter,
-                    compiled["prepared_query"],
+                    probe if probe is not None else compiled["prepared_query"],
                     limits=limits,
                     policy_context=policy_context,
                 )
+            if probe is not None:
+                from .top_n import limit_rows
+
+                rows, tie_warnings = limit_rows(rows, limit, compiled["limit_order_keys"])
         except Exception as exc:
             if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":
                 raise
@@ -2645,6 +2656,7 @@ class Runtime:
                 ),
                 *_filter_value_warnings(self, compiled, payload),
                 *limits_warnings,
+                *tie_warnings,
                 *self._seed_warnings,
             ],
             "recovery_hints": [],

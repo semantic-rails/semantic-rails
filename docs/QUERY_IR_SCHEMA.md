@@ -660,6 +660,19 @@ Plain filters on a child:
 The runtime rejects any `field` that does not resolve, with
 `INVALID_ORDER_BY` and a list of available aliases.
 
+With `limit`, the engine preserves these sort terms and appends every remaining
+output column in output order, ascending with NULLs last. Identical output rows
+are interchangeable. Ordering without `limit` is unchanged.
+
+Execution fetches at most `limit + 1` rows in the same warehouse statement and
+returns only `limit` rows. If the boundary row shares all requested sort keys
+with the last returned row, `TIES_AT_LIMIT` reports `details.tie_count`, the
+number of observed rows sharing that key, and `tie_count_is_lower_bound: true`.
+The full tie group may be larger than this bounded sample. Compile SQL retains
+the requested limit; the internal execution probe uses one extra row. A
+`limits.max_rows` fence at or below `limit` takes precedence: no extra row is
+fetched and cutoff ties cannot be reported.
+
 ## TimeBlock
 
 ```jsonc

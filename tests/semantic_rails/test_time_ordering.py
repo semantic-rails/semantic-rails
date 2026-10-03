@@ -34,7 +34,7 @@ def test_default_order_is_time_then_authored_groups(
     config, _ = package_config_factory("jaffle_shop")
     config = replace(config, package=replace(config.package, warehouse=warehouse))
     compiled = compile_query(config, None, _query(fill=fill, groups=groups, limit=3))
-    expected = [TIME, *groups]
+    expected = [TIME, *groups, "orders"]
     assert [(o.expression.parts, o.direction) for o in compiled["sql_ast"].order_by] == [
         ([alias], "ASC") for alias in expected
     ]
@@ -45,7 +45,8 @@ def test_default_order_is_time_then_authored_groups(
     quote = "`" if warehouse in {"bigquery", "databricks"} else '"'
     order_sql = compiled["sql"].rsplit("\nORDER BY\n", 1)[1].split("\nLIMIT ", 1)[0]
     assert order_sql == ",\n".join(
-        f"  {quote}{aliases.get(alias, alias)}{quote} ASC" for alias in expected
+        [f"  {quote}{aliases.get(alias, alias)}{quote} ASC" for alias in expected[:-1]]
+        + ["  orders ASC NULLS LAST"]
     )
 
 
@@ -201,7 +202,9 @@ def test_nested_query_preserves_only_explicit_order(package_config_factory, expl
         query["order_by"] = [{"field": "time", "direction": "DESC"}]
     select = _compile_query_sql_ast(config, query)
     assert select.limit == 3
-    assert [o.direction for o in select.order_by] == (["DESC"] if explicit else [])
+    assert [o.direction for o in select.order_by] == (["DESC", "ASC"] if explicit else [])
+    if explicit:
+        assert select.order_by[-1].nulls_last
 
 
 @pytest.mark.parametrize("missing", [TIME, GROUPS[0]])
