@@ -98,7 +98,9 @@ def test_plan_lets_reasonable_intents_through(runtime_factory, intent):
         payload = plan_candidate_envelope(runtime, intent=intent)
     finally:
         runtime.close()
-    if intent == "revenue by store last month":
+    if intent == "orders per store":
+        held_candidate(payload, "PLAN_UNMATCHED_TERMS")
+    elif intent == "revenue by store last month":
         held_candidate(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
     else:
         assert payload["candidates"], (

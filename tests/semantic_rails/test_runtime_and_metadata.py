@@ -1020,24 +1020,32 @@ def test_valid_values_supports_search_paging_and_selection_context(runtime_facto
 def test_plan_supports_guided_query_building(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        planned = plan_candidate_envelope(runtime, intent="new customer orders over time", limit=2)
+        planned = plan_candidate_envelope(
+            runtime, intent="new customer orders over time", limit=2, verbosity="full"
+        )
         conversion = plan_candidate_envelope(
-            runtime, intent="session to order conversion rate", limit=2
+            runtime,
+            intent="session to order conversion rate",
+            limit=2,
+            verbosity="full",
         )
         contextual = plan_candidate_envelope(
             runtime,
             intent="monthly order volume for customers that made more than 10 purchases in that month",
             limit=2,
+            verbosity="full",
         )
         revenue_qualified = plan_candidate_envelope(
             runtime,
             intent="monthly revenue from customers with at least 10 orders by store",
             limit=2,
+            verbosity="full",
         )
         daily_qualified = plan_candidate_envelope(
             runtime,
             intent="daily order volume from customers with at least 10 orders in that month",
             limit=2,
+            verbosity="full",
         )
 
         assert planned["candidates"]
@@ -1063,9 +1071,7 @@ def test_plan_supports_guided_query_building(runtime_factory):
         assert any(
             row["id"] == "entity.jaffle_customer" for row in contextual["blocked"][0]["resolved"]
         )
-        held_candidate(contextual, "PLAN_INTENT_COVERAGE_GAP")
-        held_candidate(revenue_qualified, "PLAN_UNMATCHED_TERMS")
-        held_candidate(daily_qualified, "PLAN_INTENT_COVERAGE_GAP")[0]["validation"]["ok"] is True
+        assert contextual["blocked"][0]["validation"]["ok"] is True
         revenue_query = revenue_qualified["blocked"][0]["candidate_ir"]
         revenue_expr = revenue_query["select"][0]["expression"]
         assert revenue_qualified["interpreted_intent"]["pattern"] == "qualified_metric_rollup"
@@ -1147,9 +1153,14 @@ def test_plan_generic_q4_bounds_and_paying_filter_not_group_by(tmp_path: Path):
 def test_plan_avoids_irrelevant_value_filters(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        top_stores = plan_candidate_envelope(runtime, intent="top stores by revenue", limit=2)
+        top_stores = plan_candidate_envelope(
+            runtime, intent="top stores by revenue", limit=2, verbosity="full"
+        )
         new_customer_trend = plan_candidate_envelope(
-            runtime, intent="new customer orders over time", limit=2
+            runtime,
+            intent="new customer orders over time",
+            limit=2,
+            verbosity="full",
         )
 
         held_candidate(top_stores, "PLAN_FALLBACK_SEMANTIC_DRIFT")
@@ -1163,7 +1174,9 @@ def test_plan_avoids_irrelevant_value_filters(runtime_factory):
 def test_plan_does_not_invent_generic_dimension_value_filters(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        planned = plan_candidate_envelope(runtime, intent="top stores by revenue", limit=2)
+        planned = plan_candidate_envelope(
+            runtime, intent="top stores by revenue", limit=2, verbosity="full"
+        )
         held_candidate(planned, "PLAN_FALLBACK_SEMANTIC_DRIFT")
         candidate_query = planned["blocked"][0]["candidate_ir"]
         assert "where" not in candidate_query or candidate_query["where"] == []

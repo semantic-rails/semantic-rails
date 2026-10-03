@@ -137,6 +137,7 @@ def test_qualified_rollup_without_top_n_returns_every_row(runtime_factory) -> No
             runtime,
             intent="monthly order volume for customers that made more than 10 purchases in that month",
             limit=2,
+            verbosity="full",
         )
         candidate = held_candidate(payload, "PLAN_INTENT_COVERAGE_GAP")
         query = candidate["candidate_ir"]

@@ -11,6 +11,7 @@ about another subject, so plan keeps it in ``best`` and returns ``low_confidence
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -121,6 +122,33 @@ def test_a_dropped_grouping_is_not_ready(jaffle: Runtime) -> None:
     payload = plan_payload(jaffle, intent="revenue by store, customer type and product type")
 
     assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+
+
+@contextmanager
+def _with_store_dimensions(jaffle: Runtime, *dimensions: tuple[str, str, str]) -> Iterator[Runtime]:
+    """Jaffle with more Store dimensions, each (name, label, column), without aliases."""
+
+    config = jaffle.config
+    store = next(row for row in config.dimensions if row.id == STORE)
+    added = [
+        replace(
+            store,
+            id=f"dimension.{name}",
+            name=name,
+            label=label,
+            aliases=[],
+            description="",
+            column=column,
+        )
+        for name, label, column in dimensions
+    ]
+    runtime = Runtime.from_config(
+        replace(config, dimensions=[*config.dimensions, *added]), source_path=jaffle.source_path
+    )
+    try:
+        yield runtime
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize(
@@ -260,7 +288,7 @@ def test_light_verbs_do_not_hide_unknown_modifiers(jaffle: Runtime, verb: str) -
 def test_a_cadence_or_request_word_never_consumes_a_dropped_catalog_name(
     jaffle: Runtime, name: str
 ) -> None:
-    # The same framing remains valid when it names no extra catalog object.
+    # An unresolved store grouping is held even without the extra catalog object.
     assert_plan_held(
         plan_payload(jaffle, intent="show monthly revenue by store"), "PLAN_UNMATCHED_TERMS"
     )
@@ -269,7 +297,7 @@ def test_a_cadence_or_request_word_never_consumes_a_dropped_catalog_name(
             plan_payload(runtime, intent="monthly revenue by store"), "PLAN_UNMATCHED_TERMS"
         )
         payload = plan_payload(runtime, intent=f"monthly revenue by store, {name}")
-        _not_ready(payload, [name])
+        _not_ready(payload, ["store", name] if name == "date" else [name])
         assert payload["best"]["query_ir"]["group_by"] == [
             "dimension.jaffle_customer_history_preferred_store_id"
         ]
@@ -461,7 +489,7 @@ def test_a_declared_filter_value_matches_reference_sql(jaffle: Runtime) -> None:
 def test_an_unknown_modifier_is_not_ready(jaffle: Runtime, intent: str, terms: list[str]) -> None:
     payload = plan_payload(jaffle, intent=intent)
     if intent == "revenue decile by store":
-        assert_plan_held(plan_payload(jaffle, intent=intent), "PLAN_FALLBACK_SEMANTIC_DRIFT")
+        assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
         return
     _not_ready(payload, terms)
     assert payload["why"]["details"]["kind"] == "filter_values_unrealized"
@@ -578,7 +606,7 @@ def test_every_draft_goes_through_the_one_gate(
         jaffle, intent="food revenue vs drink revenue by store, customer type"
     )
     assert comparison["best"]["pattern"] == "inline_comparison"
-    assert_plan_held(comparison, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+    assert_plan_held(comparison, "PLAN_UNMATCHED_TERMS")
 
     # The catalog fallback's draft, for a question no pattern realizes.
     monkeypatch.setattr(

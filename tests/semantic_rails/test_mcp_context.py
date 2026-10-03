@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from scripts import mcp_context
+from tests.semantic_rails.result_helpers import assert_plan_held
 
 
 @pytest.fixture(scope="module")
@@ -116,6 +117,25 @@ def test_planner_accuracy_does_not_regress(
     summary = mcp_context.plan_summary(outcomes)
     assert summary["pass"] >= baseline["summary"]["pass"]
     assert summary["wrong_silent"] <= baseline["summary"]["wrong_silent"]
+
+
+@pytest.mark.parametrize(
+    ("question", "code"),
+    [
+        ("monthly revenue by store for 2017", "PLAN_UNMATCHED_TERMS"),
+        ("revenue by store in Q2 2017", "PLAN_UNMATCHED_TERMS"),
+        ("which store had the most orders in 2017", "PLAN_INTENT_COVERAGE_GAP"),
+        ("revenue before tax by store", "VALIDATION_FAILED"),
+        ("orders that included a drink, by store", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        ("gross margin percentage by store", "VALIDATION_FAILED"),
+    ],
+)
+def test_unresolved_store_questions_are_not_ready(
+    jaffle_package: Path, question: str, code: str
+) -> None:
+    with mcp_context.QueryMCPClient(jaffle_package) as client:
+        payload = client.tool_payload("plan", {"intent": question, "detail": "query"})
+    assert_plan_held(payload, code)
 
 
 def test_gold_answers_are_stable(jaffle_package: Path, dev_cases: list[dict[str, Any]]) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,7 @@ import duckdb
 import pytest
 import yaml
 
-from semantic_rails.planner import plan_payload
+from semantic_rails.planner import compose, plan_payload
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.plan import _qualifying_entity_why
 from semantic_rails.runtime import Runtime
@@ -27,6 +28,9 @@ NAME_FILTER = {"field": STORE_NAME, "op": "IN", "value": ["Central", "Harbor"]}
 # A question that names store attributes plainly is answered, grouped by those attributes.
 ANSWERED = {
     "revenue by store id",
+    "revenue by store code",
+    "revenue by store key",
+    "revenue by store number",
     "revenue by store name",
     "revenue by store label",
     "revenue by store id and store name",
@@ -259,11 +263,9 @@ def test_store_list_is_grouped_by_store_or_withholds_execution(
         payload = plan_payload(runtime, intent=intent)
         assert payload["status"] == "low_confidence", payload
         assert "execute" not in payload["next"].get("ready_for", []), payload
-        assert payload["why"]["code"] in {
-            "PLAN_INTENT_COVERAGE_GAP",
-            "PLAN_UNASKED_GROUPING",
-            "PLAN_UNMATCHED_TERMS",
-        }, payload
+        assert payload["why"]["code"] == (
+            "PLAN_INTENT_COVERAGE_GAP" if path == "primary" else "PLAN_UNMATCHED_TERMS"
+        ), payload
     finally:
         runtime.close()
 
@@ -418,9 +420,7 @@ def test_number_of_open_stores_matches_end_of_period_reference(
             ).fetchall()
         if grain:
             time_column = f"temporal_role.jaffle_inventory_day__{grain}"
-            expected = [
-                {time_column: period, alias: value} for period, value in rows
-            ]
+            expected = [{time_column: period, alias: value} for period, value in rows]
         else:
             expected = [{alias: value} for _, value in rows]
         assert sorted(actual, key=str) == sorted(expected, key=str)
@@ -462,5 +462,70 @@ def test_named_store_revenue_is_one_combined_monthly_series(
         assert {
             row["temporal_role.jaffle_order_time__month"]: row[alias] for row in actual
         } == pytest.approx(expected)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize(
+    "question",
+    ["stores with more than 2000 orders in 2017", "customers with more than 3 orders in 2017"],
+)
+def test_forcing_a_qualification_draft_through_fallback_still_holds(
+    runtime_factory, monkeypatch, path, question
+) -> None:
+    import semantic_rails.planner.plan as module
+
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        result = compose(runtime, question)
+        assert result.draft is not None
+        assert runtime.validate(result.draft.query)["ok"]
+        assert not result.draft.query.get("group_by")
+        if path == "fallback":
+            monkeypatch.setattr(
+                module, "compose", lambda *args, **kwargs: replace(result, draft=None)
+            )
+            monkeypatch.setattr(
+                module,
+                "_distinct_fallback_drafts",
+                lambda *args, **kwargs: [(result.draft, result.pattern)],
+            )
+        payload = plan_payload(runtime, intent=question)
+        assert payload["status"] == "low_confidence"
+        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+        assert "execute" not in payload["next"].get("ready_for", [])
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "stores with more than 2000 orders in 2017",
+        "customers with more than 3 orders in 2017",
+        "daily order volume from customers who made more than 10 purchases in that month",
+        "daily order volume from customers with at least 10 orders in that month",
+        "monthly order volume for customers that made more than 10 purchases in that month",
+        "monthly orders from customers who made more than 10 purchases in that month",
+    ],
+)
+def test_qualification_check_only_downgrades_scalar_cohort_answers(
+    runtime_factory, monkeypatch, question
+) -> None:
+    import semantic_rails.planner.plan as module
+
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        after = plan_payload(runtime, intent=question)
+        with monkeypatch.context() as without_check:
+            without_check.setattr(module, "_qualifying_entity_why", lambda *args: None)
+            before = plan_payload(runtime, intent=question)
+        assert before["status"] == "ok"
+        assert "execute" in before["next"]["ready_for"]
+        assert after["status"] == "low_confidence"
+        assert after["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+        assert "execute" not in after["next"].get("ready_for", [])
+        assert after["best"]["query_ir"] == before["best"]["query_ir"]
     finally:
         runtime.close()

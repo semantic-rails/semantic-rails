@@ -201,7 +201,8 @@ def test_a_ranking_of_more_than_its_entity_offers_no_runnable_option(
     query = {
         **payload["best"]["query_ir"],
         "group_by": [STORE, CUSTOMER_TYPE],
-        "order_by": [{"field": "time", "direction": "ASC"}],
+        "order_by": [{"field": "revenue_usd", "direction": "DESC"}],
+        "limit": 3,
     }
     why = plan_module._unasked_grouping_why(jaffle, intent, query)
     assert why["code"] == RANKING
@@ -664,6 +665,7 @@ _CASES = [
 def _outcome(payload: dict[str, Any]) -> str:
     if payload["status"] == "ok" and "execute" in payload["next"].get("ready_for", []):
         return OK
+    assert "execute" not in payload["next"].get("ready_for", [])
     return str((payload.get("why") or {}).get("code"))
 
 

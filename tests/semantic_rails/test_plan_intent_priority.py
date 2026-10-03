@@ -115,7 +115,7 @@ def test_monthly_revenue_returns_base_revenue_measure(runtime_factory) -> None:
 def test_revenue_intent_returns_base_measure(runtime_factory, intent, expected_measure) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
-        payload = plan_candidate_envelope(runtime, intent=intent, limit=5)
+        payload = plan_candidate_envelope(runtime, intent=intent, limit=5, verbosity="full")
         top = (
             held_candidate(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
             if intent == "revenue by store last month"

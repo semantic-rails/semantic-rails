@@ -554,6 +554,8 @@ def test_a_ranking_question_with_its_limit_is_ok(
         if text == "top 5 stores by revenue in 2017"
         else "PLAN_INTENT_COVERAGE_GAP"
     )
+    if text in {"top 5 stores by revenue", "top five stores by revenue", "top 3 stores by orders"}:
+        code = "PLAN_FALLBACK_SEMANTIC_DRIFT"
     assert_plan_held(payload, code)
     assert _query(payload)["limit"] == limit
 
@@ -1291,7 +1293,7 @@ def test_a_second_measure_is_never_dropped_silently(
     try:
         payload = plan_payload(runtime, intent=intent, detail="query")
         if intent == "revenue and orders by store":
-            assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+            assert_plan_held(payload, "VALIDATION_FAILED")
             return
         assert payload["status"] == "low_confidence"
         assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
