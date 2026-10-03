@@ -1246,7 +1246,9 @@ never added across two parents, or repeated over the child's own child rows.
 - A NULL foreign key reads NULL. A parent with no source rows reads 0 when the source
   holds a value elsewhere in scope, and NULL (with `NO_DATA_IN_SCOPE`) when it holds
   none; an `avg`, `min` or `max` source reads NULL for it.
-- The source is compiled as its own query, so its access policies apply. A row filter
+- The source is compiled as its own query, so its access policies apply. The lookup's
+  direct relationship is also a bound dependency: denying or redacting it refuses
+  validate, compile and query with `POLICY_DENIED` before rendering or execution. A row filter
   allows one relation per query, so a lookup under any row filter is refused with
   `POLICY_DENIED`.
 - Time: the carried value is the parent's all-time total. A query's `where`, `time`
@@ -1259,8 +1261,15 @@ The load refuses a lookup with `INVALID_CONFIG`, naming the key at fault, when:
 
 - `from` is a stock, an entity count, `additive: false` or another lookup;
 - `via` is a time entity;
+- `via` has a composite key, even when both relationships cover every key column;
 - `via` isn't the target of exactly one direct, untimed many-to-one relationship
-  covering its whole key, both from the child's entity and from the source's entity.
+  covering its whole key, both from the child's entity and from the source's entity;
+- a `graph.path_preferences` route for the child-to-`via` or source-to-`via` pair uses
+  a path other than that direct relationship. A recorded direct route is allowed.
+
+The guard also refuses a different resolved route with `ROLLUP_UNSAFE` if the configuration
+bypasses these load checks. Lookup measures support only the direct relationships and a
+single-column `via` key.
 
 Each answer carries a `parent_lookup` rewrite step (`REWRITE_APPLIED`) naming `from`, `via`
 and the relationships it used. Interchange export leaves lookups out as unsupported.

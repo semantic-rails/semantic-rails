@@ -11,7 +11,13 @@ from typing import Any
 
 from ..errors import SemanticLayerError
 from ..expressions import ColumnRefExpr
-from ..schema import EntityConfig, MeasureConfig, PackageConfig, RelationshipConfig
+from ..schema import (
+    EntityConfig,
+    MeasureConfig,
+    PackageConfig,
+    PathPreferenceConfig,
+    RelationshipConfig,
+)
 
 # Taken from the source or fixed: one total per parent, never re-aggregated.
 _FIXED = frozenset(
@@ -94,6 +100,7 @@ def resolve_lookup_measures(
     entities: list[EntityConfig],
     entity_lookup: dict[str, str],
     *,
+    path_preferences: list[PathPreferenceConfig],
     path: str,
 ) -> list[MeasureConfig]:
     """Bind each lookup's ``from`` and ``via``, or refuse the package (``INVALID_CONFIG``)."""
@@ -118,14 +125,34 @@ def resolve_lookup_measures(
         via = next((entity for entity in entities if entity.id == via_id), None)
         if via is None or via.kind == "time":
             raise _invalid(label, "via", f"'{measure.lookup_via}' must name a non-time entity")
+        if len(via.key or [via.primary_key]) != 1:
+            raise _invalid(
+                label,
+                "via",
+                f"'{via.id}' has a composite key {via.key}; lookup needs one key column",
+            )
         child = _one_link(measure.entity, via, relationships)
-        if child is None or _one_link(source.entity, via, relationships) is None:
+        parent = _one_link(source.entity, via, relationships)
+        if child is None or parent is None:
             raise _invalid(
                 label,
                 "via",
                 f"'{measure.entity}' and '{source.entity}' each need exactly one direct, untimed "
                 f"many-to-one relationship to the whole key of '{via.id}'",
             )
+        for link in (child, parent):
+            for route in path_preferences:
+                if (route.source_entity, route.target_entity) == (
+                    link.source_entity,
+                    via.id,
+                ) and route.relationship_path != [link.id]:
+                    raise _invalid(
+                        label,
+                        "via",
+                        f"graph.path_preferences route '{link.source_entity}' -> '{via.id}' "
+                        f"({', '.join(route.relationship_path)}) conflicts with the lookup's "
+                        f"direct relationship '{link.id}'",
+                    )
         resolved.append(
             replace(
                 measure,

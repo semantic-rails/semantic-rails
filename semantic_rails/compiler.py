@@ -573,6 +573,16 @@ def _single_valued_columns(
     measure's own ``date`` clock at ``grain: day``. Metric, measure and segment
     filters never count: they don't split the output rows.
     """
+    if measure.lookup_from:
+        child, source = lookup_links(measure, config)
+        for link in (child, source):
+            chosen, _ = resolve_path(config, start=link.source_entity, target=measure.lookup_via)
+            if chosen != [link.id]:
+                # A via key reached by another route cannot prove the leaf's direct FK fixed,
+                # even if the child's own key is grouped. Recheck configs that bypassed load.
+                _raise_non_additive_sum(
+                    measure, "parent_lookup", child.source_columns or [child.source_column], config
+                )
     dimensions = _dimension_index(config)
     pinned = set(query.group_by)
     for item in plain_filters(query.where):  # a child group pins no output row's value

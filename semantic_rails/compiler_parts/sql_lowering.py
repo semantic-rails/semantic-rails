@@ -110,6 +110,7 @@ from .dependencies import (
     plan_is_root,
     project_is_cut,
     recipe_objects,
+    record_bound_object,
     record_ids,
     record_leaf_reference,
 )
@@ -2170,9 +2171,23 @@ def _parent_lookup_leaf_select(
     }
     # The inner query's settled values are internal: no NO_DATA_IN_SCOPE output of their own.
     with measure_objects(measure.id), recording_zero_outputs():
+        record_bound_object(child_link, config)
         source_sql = _compile_query_sql_ast(config, payload, project_cut=project_is_cut())
-    source = "lookup_source"  # the leaf is namespaced by its CTE name
     table = _measure_source_relation(measure, _entity_index(config)[measure.entity])
+    occupied = {table.casefold()} | {
+        node.name.casefold()
+        for node in sql_nodes([source_sql, ctes, joins])
+        if isinstance(node, (SqlCte, SqlTableRef))
+    }
+    source = base = f"{measure_plan.cte_name}_lookup_source"
+    index = 1
+    # Namespacing prefixes CTEs with '__'; reserve their eventual names as well.
+    while any(
+        name in {source, f"{source}_gate"} or name.endswith((f"__{source}", f"__{source}_gate"))
+        for name in occupied
+    ):
+        index += 1
+        source = f"{base}_{index}"
     keys = list(
         zip(
             child_link.source_columns or [child_link.source_column],

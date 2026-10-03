@@ -2340,8 +2340,20 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     ),
                 )
             )
+    path_preferences = _parse_path_preferences(
+        raw,
+        entities=entities,
+        entity_lookup=entity_lookup,
+        relationships=relationships,
+        path=path,
+    )
     measures = resolve_lookup_measures(
-        measures, relationships, entities, entity_lookup, path=str(path)
+        measures,
+        relationships,
+        entities,
+        entity_lookup,
+        path_preferences=path_preferences,
+        path=str(path),
     )
 
     metric_recipes_by_id: dict[str, MetricConfig] = {}
@@ -3081,13 +3093,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         measures=measures,
         metric_recipes=sorted(metric_recipes_by_id.values(), key=lambda row: row.id),
         segments=sorted(segments, key=lambda row: row.id),
-        path_preferences=_parse_path_preferences(
-            raw,
-            entities=entities,
-            entity_lookup=entity_lookup,
-            relationships=relationships,
-            path=path,
-        ),
+        path_preferences=path_preferences,
         path_policy=_parse_path_policy(raw, path=path),
         semantic_policies=policies,
         semantic_caveats=caveats,

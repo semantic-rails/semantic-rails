@@ -419,7 +419,8 @@ Important planner behaviors:
   a dialect without `outer_lookup_joins` (ClickHouse, whose unmatched outer-join columns read
   a type default, not NULL); a hop any of them walks is inner for every read. Hops that fan
   out are inner joins. `_joins_for_paths` (`compiler_parts/paths.py`) is the one place that
-  decides, and the only caller of the join-condition builder; leaves cannot opt out
+  decides, and the only caller of the join-condition builder; the `parent_lookup` leaf
+  described below is its named exception
 - an `entity_in_terms_of` count always requires a matching row of the counted entity,
   including when grouping only by the child's lookup without a parent dimension or time
   axis. The shortcut requires exactly one relationship between child and parent, on the
@@ -438,6 +439,17 @@ Important planner behaviors:
 - contextual `time_grain` overrides are limited to coarser deterministic ancestor buckets on the same calendar
 - supported conversion requests compile as event-pair matching subplans
 - unsupported conversion requests fail semantically rather than silently degrading into ratios
+
+The `parent_lookup` leaf compiles its source measure as an inner query grouped by the
+single-column `via` key under the same bindings, including access policies, and records
+the child's direct relationship in the owning leaf's dependencies. It applies the source's
+settlement gate, LEFT JOINs the settled source onto the child's direct foreign key, and
+uses MAX over values proved single per output row. `_validate_non_additive_sums`, through
+`_single_valued_columns`, is the one enforcement point for that proof: planning and the leaf
+both call it, and it refuses a different resolved route or unsafe grain with `ROLLUP_UNSAFE`.
+The loader refuses composite `via` keys and recorded routes that conflict with either
+direct relationship. This leaf's explicit LEFT JOIN to a compiled total is the named
+exception to the `_joins_for_paths` rule above.
 
 ### Loaded semantics and executable SQL
 

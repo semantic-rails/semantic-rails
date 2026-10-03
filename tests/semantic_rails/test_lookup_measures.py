@@ -348,15 +348,24 @@ def test_the_lookup_equals_a_hand_written_view_join(runtime: Runtime, package_di
 
 
 @pytest.mark.parametrize("model,table", [("claims", "claim"), ("premiums", "premium")])
+@pytest.mark.parametrize(
+    "relation",
+    [
+        "lookup_source",
+        "leaf_1_lookup_source",
+        "leaf_1_lookup_source_gate",
+        "leaf_1__leaf_1_lookup_source",
+    ],
+)
 def test_a_physical_relation_can_be_named_lookup_source(
-    tmp_path: Path, model: str, table: str
+    tmp_path: Path, model: str, table: str, relation: str
 ) -> None:
     models = _models()
-    models[model]["relation"] = "lookup_source"
+    models[model]["relation"] = relation
     root = _write(tmp_path / NS, models)
-    _seed(root, {table: "lookup_source"})
-    reference = _PER_CLAIM.format(value="amount").replace(f"from {table}", "from lookup_source")
-    expected = _reference(root, reference.replace(f"{table}.", "lookup_source."))
+    _seed(root, {table: relation})
+    reference = _PER_CLAIM.format(value="amount").replace(f"from {table}", f"from {relation}")
+    expected = _reference(root, reference.replace(f"{table}.", f"{relation}."))
     engine = Runtime.from_path(str(root))
     try:
         assert _rows(engine, _query()) == expected
