@@ -310,7 +310,7 @@ def test_expression_shape_examples_validate_as_query_ir(runtime_factory):
 def test_discover_minimal_verbosity_slims_records(runtime_factory):
     """The 'minimal' verbosity on discover (the MCP default) keeps a slim
     card: what an agent needs to pick a candidate and tell near-duplicates
-    apart (id, kind, label, score, a short description,
+    apart (id, kind, label, measure, a short description,
     default_temporal_role, available, and blocked_reason when unavailable).
     Ranking and debug detail (name, topics, match_reasons,
     recommended_next_actions, comparison metadata, starter_query_patch)
@@ -344,7 +344,7 @@ def test_discover_minimal_verbosity_slims_records(runtime_factory):
             "id",
             "kind",
             "label",
-            "score",
+            "measure",
             "description",
             "default_temporal_role",
             "available",
@@ -358,7 +358,7 @@ def test_discover_minimal_verbosity_slims_records(runtime_factory):
                 )
                 extra = set(row.keys()) - allowed
                 assert not extra, f"minimal verbosity {bucket} row leaked verbose keys: {extra}"
-                assert len(row.get("description", "")) <= 120
+                assert "score" not in row
 
         # Wire-size check: minimal must be materially smaller than compact.
         compact_bytes = len(json.dumps(compact_payload))
