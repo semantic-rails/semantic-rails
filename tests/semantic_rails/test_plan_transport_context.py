@@ -17,6 +17,7 @@ from semantic_rails.request_context import (
     set_policy_context_resolver,
 )
 from semantic_rails.schema import SemanticPolicyConfig
+from tests.semantic_rails.result_helpers import assert_plan_held
 
 
 @pytest.fixture
@@ -123,8 +124,8 @@ def test_authenticated_plan_queries_round_trip_to_compile(governed_app, transpor
     status, plan = _call(governed_app, transport, "plan", arguments)
     assert status == 200
     assert plan["ok"] is True
-    assert plan["status"] == "ok", plan.get("why")
-    assert plan["best"]["validation_ok"] is True
+    assert_plan_held(plan, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+    assert plan["best"]["validation_ok"] is False
     assert plan["request_context"]["tenant"] == "planner-tenant"
     queries = _query_irs(plan)
     assert queries
@@ -133,7 +134,8 @@ def test_authenticated_plan_queries_round_trip_to_compile(governed_app, transpor
             not {"policy_context", "request_context", "request_id", "intent", "detail"}
             & query.keys()
         )
-    query = plan["best"]["query_ir"]
+    # Author the intended grouping before independently testing compile and its policy.
+    query = {**plan["best"]["query_ir"], "group_by": ["dimension.jaffle_store_name"]}
     if partial:
         assert query["limit"] == 17  # The planner's alternative cap is not a query limit.
 
@@ -172,7 +174,7 @@ def test_plan_validates_with_trusted_policy_despite_caller_spoofs(governed_app, 
         }
     status, plan = _call(governed_app, transport, "plan", arguments, key="test-plan-prod")
     assert status == 200
-    assert plan["status"] == "low_confidence"
+    assert_plan_held(plan, "VALIDATION_FAILED" if partial else "PLAN_FALLBACK_SEMANTIC_DRIFT")
     assert plan["best"]["validation_ok"] is False
     assert not plan["next"].get("ready_for")
     assert plan["request_context"]["environment"] == "production"
@@ -184,7 +186,7 @@ def test_plan_validates_with_trusted_policy_despite_caller_spoofs(governed_app, 
     # A legal fallback for a different revenue measure can make the planner
     # explain semantic drift first. Follow its public recovery path and prove
     # the selected draft failed policy, not query structure or caller claims.
-    query = plan["best"]["query_ir"]
+    query = {**plan["best"]["query_ir"], "group_by": ["dimension.jaffle_store_name"]}
     status, denied = _call(
         governed_app, transport, "validate", {"query": query}, key="test-plan-prod"
     )

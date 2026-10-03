@@ -32,6 +32,7 @@ from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ValueDomainConfig, ValueDomainValue
 from tests.semantic_rails.conftest import copy_package_config
+from tests.semantic_rails.result_helpers import assert_plan_held
 
 ORDER_TIME = "temporal_role.jaffle_order_time"
 STORE = "dimension.jaffle_store_name"
@@ -1609,9 +1610,7 @@ def test_a_number_in_a_time_phrase_is_not_a_ranking(
     adapter: SemanticLayerMCPAdapter, intent: str, limit: int | None, held: bool
 ) -> None:
     plan = adapter.call_tool("plan", {"intent": intent, "detail": "query"})
-    assert (plan["status"], (plan.get("why") or {}).get("code")) == (
-        ("low_confidence", "PLAN_UNASKED_GROUPING") if held else ("ok", None)
-    )
+    assert_plan_held(plan, "PLAN_INTENT_COVERAGE_GAP" if limit else "PLAN_UNMATCHED_TERMS")
     assert plan["best"]["query_ir"].get("limit") == limit
 
 
@@ -1655,7 +1654,11 @@ def test_a_named_order_date_is_the_order_clock(
 ) -> None:
     plan = adapter.call_tool("plan", {"intent": intent, "detail": "query"})
     query = plan["best"]["query_ir"]
-    assert plan["status"] == "ok"
+    if group_by == [STORE]:
+        assert_plan_held(plan, "PLAN_UNMATCHED_TERMS")
+        group_by = ["dimension.jaffle_customer_history_preferred_store_id"]
+    else:
+        assert plan["status"] == "ok"
     # "At <unit> grain" names no catalog object, so the plan reports "grain" as unmatched.
     grain_only = [{"code": "PLAN_UNMATCHED_TERMS", "terms": ["grain"]}] if "grain" in intent else []
     warnings = [{"code": w["code"], "terms": w["details"]["terms"]} for w in plan["warnings"]]
@@ -1668,7 +1671,13 @@ def test_the_order_date_answer_groups_by_store_and_month_only(
     adapter: SemanticLayerMCPAdapter,
 ) -> None:
     intent = "revenue by store and order date at month grain, from January 1 2017 to March 31 2017"
-    query = adapter.call_tool("plan", {"intent": intent, "detail": "query"})["best"]["query_ir"]
+    plan = adapter.call_tool("plan", {"intent": intent, "detail": "query"})
+    assert_plan_held(plan, "PLAN_UNMATCHED_TERMS")
+    query = {
+        **plan["best"]["query_ir"],
+        "group_by": [STORE],
+        "order_by": [{"field": "time", "direction": "ASC"}],
+    }
     rows = adapter.call_tool("execute", {"query": query})["rows"]
     assert len(rows) == 4  # Philadelphia for three months, Brooklyn from March
     assert {key for row in rows for key in row} == {

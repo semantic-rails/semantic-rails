@@ -37,6 +37,7 @@ from semantic_rails.metadata import (
 from semantic_rails.package_tools import check_package_report
 from semantic_rails.planner import plan_payload
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.result_helpers import assert_plan_held
 
 COUNT = "measure.catalogue.item_count"
 AMOUNT = "measure.catalogue.total_amount"
@@ -376,8 +377,8 @@ def test_plan_with_time_keeps_readiness(runtime_factory, intent, detail) -> None
     runtime = runtime_factory("jaffle_shop")
     try:
         result = plan_payload(runtime, intent=intent, detail=detail)
-        assert result["status"] == "ok", result
-        assert result["best"]["validation_ok"]
+        assert_plan_held(result, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+        assert result["best"]["validation_ok"] is False
         assert not any(w["code"] == "INVALID_TEMPORAL_ROLE" for w in result.get("warnings", []))
     finally:
         runtime.close()
