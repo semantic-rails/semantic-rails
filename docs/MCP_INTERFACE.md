@@ -281,9 +281,14 @@ grouping whose words all belong to an entity's label or name matches nothing els
 names an entity only with every word of that entity's label ("customer" names Customer, not
 Customer history); a declared time, such as Store opened at, never stands in for its entity.
 Any other grouping matches a dimension whose own words name it: its label, its aliases and the
-last part of its name, not the prefix of its id. A comma continues the grouping list only when
-the next piece names a dimension, entity or clock term; otherwise it ends the clause. A grain
-phrase such as "at week grain" or "month level" sets the grain on the measure's own clock.
+last part of its name, not the prefix of its id. A grouping that dimensions of two or more
+entities match, none of them the measure's own ("name" for an order count: Customer name or
+Store name), is ambiguous, and `plan` never picks one: the plan is not ready, and
+`why.details.ambiguous_groupings` lists it. Naming the entity ("customer name") settles it, as
+does a dimension in the caller's `partial_query` group_by when the draft adds no other that
+matches. A comma continues the grouping list only when the next piece names a dimension,
+entity or clock term; otherwise it ends the clause. A grain phrase such as "at week grain" or
+"month level" sets the grain on the measure's own clock.
 A word names an object when it is a word of the
 object's label or aliases, or of the last dotted part of its id or name outside the object's own
 namespaces ("sales" in `metric.sales.aov_usd` names nothing); a plural counts as its singular.
@@ -494,7 +499,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `<TOOL>_UNKNOWN_ARG` | every tool but `segment` | Unknown argument (on `discover`, incl. `term`/`kind` typos); the value was ignored |
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain; flip `allow_live_query=true` to probe |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
-| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, when one names a catalog object, when a listed non-clock, non-value grouping has no matching dimension of its own (`details.dropped_groupings` lists only unmatched terms), or when two or more are names the catalog doesn't have |
+| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, when one names a catalog object, when a listed non-clock, non-value grouping has no matching dimension of its own (`details.dropped_groupings` lists only unmatched terms) or may be a dimension of any of several other entities (`details.ambiguous_groupings`), or when two or more are names the catalog doesn't have |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
 | `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain and no `start`/`end` window, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |

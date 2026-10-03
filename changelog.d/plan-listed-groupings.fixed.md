@@ -12,3 +12,7 @@
   by customer history, month" is no longer ready when grouped by the customer id alone: an
   entity with a composite key is never satisfied, and the plan is not ready. A dimension's
   words for this check are its label, aliases and the last part of its name, not its id.
+- `plan` no longer picks one reading of a grouping that dimensions of several entities match,
+  none of them the measure's own: "order count by month, name" (Customer name or Store name)
+  is not ready, with the term in `why.details.ambiguous_groupings`. "Customer name" or "store
+  name" in the question, or the dimension in the caller's `partial_query` group_by, settles it.
