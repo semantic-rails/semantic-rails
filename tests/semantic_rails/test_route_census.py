@@ -486,6 +486,67 @@ def test_a_removal_reports_the_answers_it_moves_and_records_nothing(tmp_path):
     assert "path_preferences" not in _graph(project)["graph"]
 
 
+def _invoice_amounts(pkg: Path) -> list[tuple]:
+    runtime = Runtime.from_path(str(pkg))
+    try:
+        return _rows(runtime.query(_query(AMOUNT, group_by=[REGION_NAME])), [REGION_NAME, "v"])
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("dry_run", [False, True], ids=["write", "preview"])
+def test_removing_an_issued_region_key_refuses_a_switch_to_branch_region(tmp_path, dry_run):
+    project = _architect(tmp_path, relationships=("invoices_account", "accounts_branch_region"))
+    invoice = project.project_path / "models/invoices.yml"
+    model = yaml.safe_load(invoice.read_text())
+    model["model"]["entities"]["region"] = {"expr": "issued_region_id"}
+    invoice.write_text(yaml.safe_dump(model))
+    issued = _gold(AMOUNT_BY_ISSUED)
+    branch = _gold(AMOUNT_BY_BRANCH)
+    assert dict(issued) == {"North": 85, "South": 170, "East": 60}
+    assert dict(branch) == {"North": 195, "South": 40, "East": 80}
+    assert _invoice_amounts(project.project_path) == issued
+    revision, before = project.revision(), _files_and_receipts(project)
+
+    with pytest.raises(SemanticLayerError, match="nothing was written") as raised:
+        project.remove_object(kind="relationship", key="region", model="invoices", dry_run=dry_run)
+    assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
+    changes = {
+        (row["source_entity"], row["target_entity"]): row
+        for row in raised.value.details["route_changes"]
+    }
+    assert changes[(INVOICE, REGION)]["head"] == {"relationship_path": INVOICE_BRANCH}
+    assert changes[(INVOICE, REGION)]["keep_base"] is None
+    assert project.revision() == revision
+    assert _files_and_receipts(project) == before
+    assert _invoice_amounts(project.project_path) == issued
+
+    # The author may deliberately select branch region, then remove the issued-region key.
+    assert project.record_route_decision(**_pin(INVOICE, REGION, INVOICE_BRANCH)).report["ok"]
+    assert _invoice_amounts(project.project_path) == branch
+    report = project.remove_object(kind="relationship", key="region", model="invoices").report
+    assert report["ok"] is True, report
+    assert report["route_decisions_added"] == []
+    assert _invoice_amounts(project.project_path) == branch
+
+
+def test_removing_an_issued_region_key_may_leave_the_pair_ambiguous(tmp_path):
+    project = _architect(tmp_path, relationships=SECOND_ROUTE)
+    invoice = project.project_path / "models/invoices.yml"
+    model = yaml.safe_load(invoice.read_text())
+    model["model"]["entities"]["region"] = {"expr": "issued_region_id"}
+    invoice.write_text(yaml.safe_dump(model))
+    assert _invoice_amounts(project.project_path) == _gold(AMOUNT_BY_ISSUED)
+
+    report = project.remove_object(kind="relationship", key="region", model="invoices").report
+    assert report["ok"] is True, report
+    changes = {(row["source_entity"], row["target_entity"]): row for row in report["route_changes"]}
+    assert changes[(INVOICE, REGION)]["head"] == {"refused": "AMBIGUOUS_PATH"}
+    with pytest.raises(SemanticLayerError) as raised:
+        _invoice_amounts(project.project_path)
+    assert raised.value.code == "AMBIGUOUS_PATH"
+
+
 def test_record_route_decision_is_deliberate_and_reports_inherited_pairs(tmp_path):
     project = _architect(tmp_path, relationships=SECOND_ROUTE)
     report = project.record_route_decision(**_pin(INVOICE, REGION, INVOICE_HOME)).report
@@ -894,14 +955,22 @@ def test_invalid_loader_input_reaches_the_parse_gate_and_rolls_back(
     assert json.loads(after[receipt])["report"]["status"] == "rolled_back_after_parse_error"
 
 
-@pytest.mark.parametrize("repair", [False, True], ids=["preview", "repair-then-preview"])
-def test_an_architect_write_can_repair_invalid_yaml_and_preview_invalid_input(tmp_path, repair):
+@pytest.mark.parametrize(
+    ("repair", "validate_after"),
+    [(False, True), (True, True), (True, False)],
+    ids=["preview", "repair-then-preview", "unvalidated-repair-then-preview"],
+)
+def test_an_architect_write_can_repair_invalid_yaml_and_preview_invalid_input(
+    tmp_path, repair, validate_after
+):
     project = _architect(tmp_path)
     package = project.project_path / "package.yml"
     valid = package.read_text()
     if repair:
         package.write_text("schema_version: [\n")
-        report = project.write_file(relative_path="package.yml", content=valid).report
+        report = project.write_file(
+            relative_path="package.yml", content=valid, validate_after=validate_after
+        ).report
         assert (report["ok"], report["status"]) == (True, "written")
         assert package.read_text() == valid
         load_package_config(str(project.project_path))
@@ -913,6 +982,50 @@ def test_an_architect_write_can_repair_invalid_yaml_and_preview_invalid_input(tm
     assert preview["parse"]["ok"] is False
     assert project.revision() == revision
     assert _files_and_receipts(project) == before
+
+
+def test_an_invalid_intermediate_write_cannot_erase_the_branch_region_baseline(tmp_path):
+    project = _architect(tmp_path, relationships=("invoices_account", "accounts_branch_region"))
+    branch = _gold(AMOUNT_BY_BRANCH)
+    assert _invoice_amounts(project.project_path) == branch
+    graph = _graph(project)
+    source, target, via, key = _RELATIONSHIPS["invoices_issued_region"]
+    relationships = graph["graph"]["relationships"]
+    relationships["invoices_issued_region"] = {
+        "id": "relationship.invoices_issued_region",
+        "entities": [source, target],
+        "cardinality": "many_to_one",
+        "via": [via],
+        "target": [key],
+    }
+    relationships["unknown_entity"] = {
+        "entities": ["account", "unknown"],
+        "cardinality": "many_to_one",
+        "via": ["owner_id"],
+        "target": ["owner_id"],
+    }
+    revision, before = project.revision(), _files_and_receipts(project)
+    with pytest.raises(SemanticLayerError, match="nothing was written") as raised:
+        project.write_file(
+            relative_path="graph.yml", content=yaml.safe_dump(graph), validate_after=False
+        )
+    assert raised.value.code == "INVALID_CONFIG"
+    assert project.revision() == revision
+    assert _files_and_receipts(project) == before
+    assert _invoice_amounts(project.project_path) == branch
+
+    # Retrying only the repaired input still compares against the valid branch-region base.
+    del relationships["unknown_entity"]
+    report = project.write_file(
+        relative_path="graph.yml", content=yaml.safe_dump(graph), validate_after=False
+    ).report
+    assert report["ok"] is True, report
+    assert _pin(INVOICE, REGION, INVOICE_BRANCH) in [
+        entry["row"] for entry in report["route_decisions_added"]
+    ]
+    assert report["route_changes"] == []
+    assert _invoice_amounts(project.project_path) == branch
+    assert branch != _gold(AMOUNT_BY_ISSUED)
 
 
 DISTRICT = "entity.small_district"

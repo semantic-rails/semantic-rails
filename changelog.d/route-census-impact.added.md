@@ -20,4 +20,7 @@
   but answering it by another route requires its own row; otherwise the change is refused
   with `ROUTE_DECISION_NOT_RECORDED` and nothing is written. `record_route_decision` changes
   the default deliberately and adds no keep rows. It and removals report every changed pair
-  in `route_changes`, including refused-to-answered and inherited changes.
+  in `route_changes`, including refused-to-answered and inherited changes. Removals use the
+  same preservation guard; record an alternative route before cutting an answered route.
+  Writes with `validate_after=False` refuse loader-invalid input when the current package
+  loads, preserving the route baseline through subsequent edits.

@@ -1771,9 +1771,17 @@ refused with `ROUTE_DECISION_NOT_RECORDED`. The same error refuses a keep row
 that disagrees with existing rows (`details.conflicts_with`) or fails to take
 effect; nothing is written. `record_route_decision` deliberately changes the
 default, adds no keep rows, and reports every moved pair, inherited pairs
-included. `remove_object` reports routes instead of keeping them. In every
-case `route_changes` lists every changed pair, including refused → answered.
-Hand edits get the same report from `impact-report`.
+included. `remove_object` uses the same preservation guard: removing a route
+may leave the pair refused, but switching to another answer requires the
+author to record that route first. In every case `route_changes` lists every
+changed pair, including refused → answered. Hand edits get the same report
+from `impact-report`.
+
+With `validate_after=False`, a write from a loadable package to loader-invalid
+input is refused with `INVALID_CONFIG` before anything is written, so an
+invalid intermediate edit cannot erase the earlier route baseline. Ordinary
+parse-gated rollback and writes that repair an already-invalid package retain
+their existing behavior.
 
 ### `hop_profile` — observing entity hops
 

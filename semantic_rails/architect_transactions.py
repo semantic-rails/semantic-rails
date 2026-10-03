@@ -507,8 +507,8 @@ class ProjectTransaction:
         Preparation, when supplied, runs under this transaction's lock after
         receipt replay and the expected-revision check, before any file write.
         ``routes`` (see :meth:`_keep_routes`): ``record`` keeps every join route
-        the change would move, ``report`` only lists the moves (a removal, whose
-        routes can't be kept), and ``off`` skips both (an undo, or a new project).
+        the change would move, ``report`` only lists deliberate route decisions,
+        and ``off`` skips both (an undo, or a new project).
         """
 
         expected = str(expected_revision or "").strip()
@@ -600,6 +600,7 @@ class ProjectTransaction:
                     normalized_updates,
                     record=routes == "record",
                     allow_internal_paths=allow_internal_paths,
+                    validate_after=validate_after,
                 )
 
             snapshots = tuple(self._snapshot(update.relative_path) for update in normalized_updates)
@@ -853,6 +854,7 @@ class ProjectTransaction:
         *,
         record: bool,
         allow_internal_paths: bool,
+        validate_after: bool,
     ) -> tuple[tuple[ProjectFileUpdate, ...], dict[str, Any]]:
         """Keep the join routes the change would move; every Architect write passes here.
 
@@ -862,7 +864,7 @@ class ProjectTransaction:
         current route recorded as a ``graph.path_preferences`` row in this same change
         (``keep_routes``: fewest rows, shortest pair first). A removed route or one
         beyond the new hop ceiling is never kept. Such a cut may refuse the pair; another
-        answer requires its own row. Deliberate decisions and removals use report mode.
+        answer requires its own row. Only deliberate decisions use report mode.
 
         The report names the rows (``route_decisions_added``, each with the change's new
         routes) and every pair that resolves differently after
@@ -892,8 +894,14 @@ class ProjectTransaction:
                 ValueError,
                 AttributeError,
                 KeyError,
-            ):
-                # The parse gate reports invalid staged input.
+            ) as exc:
+                if not validate_after:
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        "Architect writes without parse validation require loadable staged input; "
+                        "nothing was written.",
+                    ) from exc
+                # The parse gate reports invalid staged input and restores the valid base.
                 return updates, {}
         added = keep_routes(base, head) if record else []
         final = head

@@ -1781,7 +1781,6 @@ class ArchitectProject:
             success_status="removed",
             metadata=metadata,
             prepare_updates=prepare,
-            routes="report",  # a removed route can't be kept: list the answers it moves
         )
         return ArchitectMutation(
             report=outcome.report,
