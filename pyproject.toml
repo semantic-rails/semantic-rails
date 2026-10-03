@@ -195,6 +195,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
+tmp_path_retention_policy = "failed"
 testpaths = ["tests/semantic_rails", "tests/mf2sr"]
 timeout = 300
 timeout_method = "thread"

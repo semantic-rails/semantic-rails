@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import os
 import shutil
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -11,20 +12,34 @@ import yaml
 from semantic_rails import config as config_module
 from semantic_rails.config import load_package_config, resolve_repo_path
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails import shared_seed
 
 
-def copy_package_config(tmp_path: Path, package_id: str, *, preseed_db: bool = False) -> Path:
+@pytest.fixture(scope="session", autouse=True)
+def shared_seed_db(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    shared_seed.start(tmp_path_factory.getbasetemp())
+    yield
+    shared_seed.verify()
+
+
+def copy_package_config(
+    tmp_path: Path, package_id: str, *, preseed_db: bool = False, writable: bool = False
+) -> Path:
     run_dir = tmp_path / package_id / uuid.uuid4().hex
     run_dir.mkdir(parents=True, exist_ok=True)
     package_dir = Path(resolve_repo_path(f"configs/semantic_rails/{package_id}"))
     package_file = Path(resolve_repo_path(f"configs/semantic_rails/{package_id}.yml"))
-    seeded_db = (
-        Path(resolve_repo_path("data/jaffle_shop.duckdb")) if package_id == "jaffle_shop" else None
-    )
 
     def _preseed_default_db(default_db: Path) -> None:
-        if preseed_db and seeded_db is not None and seeded_db.exists():
-            shutil.copy2(seeded_db, default_db)
+        seed = shared_seed.seed_for(package_id) if preseed_db else None
+        if seed is not None:
+            if not writable:
+                try:
+                    os.symlink(seed, default_db)
+                    return
+                except OSError:
+                    pass
+            shutil.copyfile(seed, default_db)
 
     # default_db stays relative so the copied package passes the same
     # containment validation a real shared package would; it resolves
