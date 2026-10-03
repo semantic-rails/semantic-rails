@@ -656,7 +656,11 @@ def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "w
     try:
         return build_comparison_condition(expr, str(op or "="), SqlLiteral(value), path=path)
     except SemanticLayerError as exc:
-        if exc.code != "INVALID_EXPRESSION_AST" or exc.details.get("token_kind") != "operator":
+        if (
+            not path.startswith("where")
+            or exc.code != "INVALID_EXPRESSION_AST"
+            or exc.details.get("token_kind") != "operator"
+        ):
             raise
         raise SemanticLayerError(
             exc.code,

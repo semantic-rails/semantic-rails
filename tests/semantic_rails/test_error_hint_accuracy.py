@@ -24,6 +24,7 @@ from semantic_rails.schema import (
     PathPreferenceConfig,
     RelationshipConfig,
 )
+from semantic_rails.sql_ast import SqlLiteral, build_filter_condition
 
 
 @pytest.mark.parametrize("aggregation", ["count", "percentile", "unknown", None])
@@ -53,6 +54,15 @@ def test_unknown_aggregation_hint_does_not_invent_allowed_values():
     hint = recovery_hints_for_error("UNSUPPORTED_AGGREGATION", {"aggregation": "unknown"})[0]
     assert hint["aggregation_received"] == "unknown"
     assert "count" not in hint["message"]
+
+
+@pytest.mark.parametrize("path", ["metric_predicate", "metric_filters", "relation.filter"])
+def test_filter_operator_guidance_keeps_other_expression_positions_unchanged(path):
+    with pytest.raises(SemanticLayerError) as raised:
+        build_filter_condition(SqlLiteral(1), "is_null", None, path=path)
+    assert raised.value.code == "INVALID_EXPRESSION_AST"
+    assert raised.value.details["token_kind"] == "operator"
+    assert "expression_position" not in raised.value.details
 
 
 @pytest.mark.parametrize("default", ["sum", "avg", "max"])
