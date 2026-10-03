@@ -403,7 +403,7 @@ def _empty_group_cases(revenue: dict[str, Any], orders: dict[str, Any]) -> Itera
     # a sum and a count of nothing read 0 (the default dataset scope).
     absent = [{"field": STORE, "op": "=", "value": "zzz"}]
     yield Case(
-        "absent_filter_reads_zero",
+        "absent_filter_reads_null",  # retain the frozen case ID when the default answer changes
         "utc_authored",
         {"select": [revenue, orders], "where": absent},
         "SELECT CASE WHEN COUNT(*) > 0 THEN SUM(amount) WHEN EXISTS (SELECT 1 FROM orders"

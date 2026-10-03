@@ -103,6 +103,7 @@ def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def runtime(package: Path):
     engine = Runtime.from_path(str(package))
     try:
+        engine._get_adapter()  # the module fixture owns its connection across tests
         yield engine
     finally:
         engine.close()
