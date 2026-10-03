@@ -395,3 +395,132 @@ def test_store_key_catalog_controls_only_gain_holds(
     before, after = _compare_base(retail, monkeypatch, f"revenue by {term}")
     if change == "missing":
         assert before["status"] == after["status"] == "low_confidence"
+
+
+@pytest.mark.parametrize("separator", [" and ", " & ", ", "])
+def test_complete_suffix_list_matches_reference_sql(
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, separator: str
+) -> None:
+    question = f"revenue at customer type{separator}store name level"
+    partial = {
+        "group_by": [STORE, CUSTOMER_TYPE],
+        "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "IN", "value": ["new", "repeat"]}],
+    }
+    before, complete = _compare_base(jaffle, monkeypatch, question, partial)
+    assert before["status"] == complete["status"] == "ok", complete.get("why")
+    assert "execute" in complete["next"]["ready_for"]
+    query = complete["best"]["query_ir"]
+    with duckdb.connect(":memory:") as connection:
+        seed_path = str(jaffle.db_path).replace("'", "''")
+        connection.execute(f"ATTACH '{seed_path}' AS seed (READ_ONLY)")
+        for table in ["jaffle_order", "jaffle_customer", "jaffle_store"]:
+            connection.execute(f"CREATE TABLE {table} AS SELECT * FROM seed.{table}")
+        reference = connection.execute(
+            "SELECT s.store_name, c.customer_type, SUM(o.order_total_cents / 100.0) "
+            "FROM jaffle_order o JOIN jaffle_customer c USING (customer_id) "
+            "JOIN jaffle_store s USING (store_id) "
+            "WHERE s.store_name IN ('Brooklyn', 'Philadelphia') "
+            "AND c.customer_type IN ('new', 'repeat') GROUP BY 1, 2 ORDER BY 1, 2"
+        ).fetchall()
+        cursor = connection.execute(jaffle.compile(query)["rendered_sql"])
+        columns = [column[0] for column in cursor.description]
+        rows = [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+        actual = [(row[STORE], row[CUSTOMER_TYPE], row[query["select"][0]["as"]]) for row in rows]
+    assert len(actual) == len(reference) == 4
+    assert sorted(actual) == reference
+    assert [row[2] for row in reference] == pytest.approx([90.48, 259334.37, 6.36, 486461.82])
+    assert _named_grouping_terms(question, jaffle._config) == ["customer type", "store name"]
+
+
+@pytest.mark.parametrize("separator", [" and ", " & ", ", "])
+@pytest.mark.parametrize("missing", [STORE, CUSTOMER_TYPE])
+def test_suffix_list_holds_when_either_grouping_is_dropped(
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, separator: str, missing: str
+) -> None:
+    question = f"revenue at customer type{separator}store name level"
+    filters = [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "IN", "value": ["new", "repeat"]}]
+    _, native = _compare_base(jaffle, monkeypatch, question, {"where": filters})
+    assert "execute" not in native["next"].get("ready_for", [])
+    draft = RuntimeCompositionDraft(
+        query={
+            "version": 2,
+            "select": [
+                {"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}
+            ],
+            "group_by": [item for item in [STORE, CUSTOMER_TYPE] if item != missing],
+            "where": filters,
+        },
+        resolved=[],
+        rationale=[],
+        interpreted_intent={},
+    )
+    monkeypatch.setattr(
+        plan_module,
+        "compose",
+        lambda runtime, text: CompositionResult(intent_ir=parse_intent(runtime, text), draft=draft),
+    )
+    _, dropped = _compare_base(jaffle, monkeypatch, question)
+    assert dropped["best"]["validation_ok"] is True
+    assert dropped["status"] == "low_confidence"
+    assert dropped["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+    assert dropped["why"]["details"]["dropped_groupings"] == [
+        "store name" if missing == STORE else "customer type"
+    ]
+    assert "execute" not in dropped["next"].get("ready_for", [])
+
+
+def test_repeated_description_of_one_grouping_stays_ready(
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    before, complete = _compare_base(
+        jaffle, monkeypatch, "revenue at store name level for each store"
+    )
+    assert before["status"] == complete["status"] == "ok", complete.get("why")
+    assert "execute" in complete["next"]["ready_for"]
+    assert typed_rows(jaffle.query(complete["best"]["query_ir"])) == typed_rows(
+        jaffle.query(before["best"]["query_ir"])
+    )
+    _, dropped = _compare_base(
+        jaffle,
+        monkeypatch,
+        "revenue by store name and customer type",
+        {"group_by": [STORE], "where": [JAFFLE_FILTER]},
+    )
+    assert "execute" not in dropped["next"].get("ready_for", [])
+
+
+@pytest.mark.parametrize(
+    ("noun", "dimension"), [("severity level", STORE_ID), ("level", STORE_NAME)]
+)
+def test_level_in_a_dimension_name_stays_ready(
+    retail: Runtime, monkeypatch: pytest.MonkeyPatch, noun: str, dimension: str
+) -> None:
+    retail._config = replace(
+        retail._config,
+        dimensions=[
+            replace(row, label="Severity level", name="severity_level", aliases=[])
+            if row.id == STORE_ID
+            else replace(row, label="Level", name="level", aliases=[])
+            if row.id == STORE_NAME
+            else row
+            for row in retail._config.dimensions
+        ],
+        measures=[
+            replace(
+                row,
+                label="Count",
+                name="count",
+                default_aggregation="count",
+                allowed_aggregations=["count"],
+            )
+            for row in retail._config.measures
+        ],
+    )
+    before, complete = _compare_base(
+        retail, monkeypatch, f"count by {noun}", {"group_by": [dimension]}
+    )
+    assert before["status"] == complete["status"] == "ok", complete.get("why")
+    assert "execute" in complete["next"]["ready_for"]
+    assert typed_rows(retail.query(complete["best"]["query_ir"])) == typed_rows(
+        retail.query(before["best"]["query_ir"])
+    )
