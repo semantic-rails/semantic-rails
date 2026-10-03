@@ -33,6 +33,7 @@ DECISIONS = {
     "docs/QUERY_IR_SCHEMA.md#child-groups",
     "docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union",
     "docs/QUERY_IR_SCHEMA.md#metricfilter-expressions",
+    "docs/QUERY_IR_SCHEMA.md#orderby",
 }
 KINDS = {
     "answer": "query_matches_snapshot",
