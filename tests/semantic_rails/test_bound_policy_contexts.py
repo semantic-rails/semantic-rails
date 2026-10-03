@@ -1240,9 +1240,7 @@ def test_recipe_roles_follow_optimized_operand_bindings(config, monkeypatch, all
     measure = next(m for m in config.measures if m.id == measure_id)
     role = next(r for r in config.temporal_roles if r.id == measure.compatible_temporal_roles[0])
     if shape == "anchored":
-        # A stock with an as-of clock refuses on any other clock (its series would still
-        # hold the as-of column), so this binding test gives the stock calendar clocks,
-        # which still align at month grain.
+        # Give this binding test two calendar clocks, then query the recipe's bound one.
         role = replace(role, temporal_class="calendar_time")
     dimension = next(d for d in config.dimensions if d.id == role.dimension)
     other_dimension = replace(dimension, id="dimension.test.other_clock", column="other_clock")
@@ -1297,6 +1295,11 @@ def test_recipe_roles_follow_optimized_operand_bindings(config, monkeypatch, all
             "select": [{"expression": expr, "as": "value"}],
             "time": {"temporal_role": role.id, "grain": "month"},
         }
+        with pytest.raises(SemanticLayerError) as raised:
+            compiler.compile_query(config, None, query)
+        assert raised.value.code == "INVALID_TEMPORAL_BINDING"
+        assert raised.value.details["compatible"] == [other_role.id]
+        query["time"]["temporal_role"] = other_role.id
     compiled = compiler.compile_query(config, None, query)
     assert "other_clock" in compiled["sql"]
     if shape == "anchored":

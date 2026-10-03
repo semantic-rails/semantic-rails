@@ -149,8 +149,12 @@ class FakeConnection:
     def __init__(self, log: dict[str, Any]):
         self._log = log
 
-    def execute(self, sql: str) -> None:
+    def execute(self, sql: str, parameters=None):
         self._log.setdefault("setup_sql", []).append(sql)
+        return self
+
+    def fetchone(self):
+        return ("",)
 
     def cursor(self) -> FakeCursor:
         return FakeCursor(self._log)
@@ -239,6 +243,8 @@ def test_adapter_bootstrap_attaches_and_uses_catalog(monkeypatch: pytest.MonkeyP
 
     assert rows == [{"ONE": 1, "TWO": "x"}]
     assert log["setup_sql"] == [
+        "SELECT current_setting('disabled_optimizers')",
+        "SET disabled_optimizers = ?",
         "INSTALL ducklake",
         "LOAD ducklake",
         f"ATTACH IF NOT EXISTS 'ducklake:{catalog}' AS jaffle (DATA_PATH '{data_dir}')",

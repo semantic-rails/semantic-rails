@@ -262,7 +262,8 @@ def recovery_hints_for_error(
                     "kind": "fix_expression_shape",
                     "message": (
                         f"{position or 'expression'} entry is missing the required {missing!r} key. "
-                        "Consult docs/QUERY_IR_SCHEMA.md for the per-position shape."
+                        "Send select items as {expression: {measure: '<id>'}, as: '<alias>'}, "
+                        "group_by as dimension ids, and where entries as {field, op, value}."
                     ),
                     "missing_key": missing,
                     "received_keys": received,
@@ -356,7 +357,9 @@ def recovery_hints_for_error(
                 "kind": "fix_expression_shape",
                 "message": (
                     f"Expression with kind={kind!r} in position {position!r} is malformed. "
-                    "Consult docs/QUERY_IR_SCHEMA.md for the per-position shape."
+                    "For select, send {expression: {measure: '<id>'}, as: '<alias>'} or "
+                    "{expression: {metric: '<id>'}}. Put dimension ids in group_by; "
+                    "send where entries as {field, op, value}."
                 ),
                 "details": dict(details),
             }
@@ -594,7 +597,8 @@ def recovery_hints_for_error(
                         "scoped_aggregate.anchor + scoped_aggregate.window "
                         "parse and validate against the published IR "
                         "contract, but the SQL lowering hasn't shipped "
-                        "yet. Track the rollout in docs/CAPABILITIES.md."
+                        "yet. Use an authored anchor-offset column and "
+                        "a measure filter instead."
                     ),
                     "feature_status": feature_status,
                     "anchor": dict(details.get("anchor", {}) or {}),

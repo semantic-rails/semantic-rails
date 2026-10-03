@@ -24,7 +24,7 @@ ROOT = SHOP.parents[3]
 LEDGER = SHOP / "tests" / "answers.yml"
 KEYS = {"kind", "query", "expected_rows", "expected_rows_by_backend", "code", "expect", "why", "cites", "tags", "variant", "reference_sql", "clarify", "intent", "partial_query", "known_wrong"}  # fmt: skip
 TAGS = {"null-vs-zero", "list-vs-conjunction", "second-fact", "time-window", "clock", "child-scope", "refusal", "planner", "empty-result"}  # fmt: skip
-TABLES = ["orders", "refunds", "signups", "dim_fiscal", "customer_history"]
+TABLES = ["orders", "refunds", "signups", "dim_fiscal", "customer_history", "account_days"]
 DEFINITIONS = str(SHOP.relative_to(ROOT)) + "/models/"
 DECISIONS = {
     "docs/QUERY_IR_SCHEMA.md#wherefilter",
@@ -33,6 +33,7 @@ DECISIONS = {
     "docs/QUERY_IR_SCHEMA.md#child-groups",
     "docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union",
     "docs/QUERY_IR_SCHEMA.md#metricfilter-expressions",
+    "docs/QUERY_IR_SCHEMA.md#orderby",
 }
 KINDS = {
     "answer": "query_matches_snapshot",

@@ -549,6 +549,7 @@ class SqlJoin:
 class SqlOrder:
     expression: SqlExpr
     direction: str
+    nulls_last: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "direction", normalize_sql_sort_direction(self.direction))

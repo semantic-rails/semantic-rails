@@ -150,7 +150,11 @@ def alias_select(
         having=[alias_expr(item, registry) for item in select.having],
         qualify=[alias_expr(item, registry) for item in select.qualify],
         order_by=[
-            SqlOrder(expression=alias_expr(item.expression, registry), direction=item.direction)
+            SqlOrder(
+                expression=alias_expr(item.expression, registry),
+                direction=item.direction,
+                nulls_last=item.nulls_last,
+            )
             for item in select.order_by
         ],
         limit=select.limit,

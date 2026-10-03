@@ -52,6 +52,7 @@ from .compiler_parts.empty_groups import (
     observed_outside_filters,
     sql_nodes,
 )
+from .compiler_parts.indexes import get_package_analysis
 from .compiler_parts.paths import _leaf_time_role
 from .config import (
     SEED_KIND_EXTERNAL,
@@ -65,6 +66,7 @@ from .config import (
     resolve_repo_path,
     semantic_rails_home,
 )
+from .config_parts.route_rows import walk_entities
 from .db import (
     Database,
     WarehouseAdapter,
@@ -75,6 +77,7 @@ from .db import (
     seed_digest,
 )
 from .db_parts.base import query_with_limits, reject_parameters
+from .db_parts.duckdb_confinement import confinement_directory, require_inside
 from .diagnostics import (
     enrich_diagnostic_candidates,
     enrich_expression_ast_error,
@@ -94,6 +97,7 @@ from .fanout import (
     build_hop_profile,
     entity_label,
     offered_rows,
+    package_route,
     query_route_decisions,
     route_note,
     route_reading,
@@ -109,6 +113,7 @@ from .policies import (
 )
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
+from .renderer import render_select_for_profile
 from .request_context import (
     context_from_policy_context,
     request_context_payload,
@@ -132,6 +137,8 @@ from .seed_provenance import (
     recorded_seed_digest,
 )
 from .segments import build_segment_query, normalize_segment, strip_segment_preview_metric
+from .sql_ast import SqlCall, SqlField, SqlIdentifier, SqlSelect, SqlTableRef
+from .sql_identifiers import plain_relation_parts
 from .sql_preparation import PreparedQuery, checked_parameter_values
 
 __all__ = [
@@ -402,7 +409,13 @@ def _hop_profile(config, compiled) -> dict[str, Any]:
         )
 
 
-def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+def _route_notes(
+    config,
+    compiled,
+    payload: dict[str, Any] | None,
+    *,
+    policy_context: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """One short note per entity pair the compiled query reads where the engine chose one of
     two or more routes (``fanout.route_note``): by the start's own key (ROUTE_COLOCATED_KEY,
     with the row that would make each other route the default in ``details.alternatives`` when
@@ -420,26 +433,86 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
 
     A pair the query decided itself (``route_decisions``) gets ROUTE_CHOSEN_BY_QUERY instead,
     at every verbosity: the row and the basis it replaced, since the answer may differ from
-    the package's.
+    the package's. Only an undecided pair gets switches from its cached refusal: at most
+    three visible decision rows, with the remaining visible count. No alternative runs.
     """
     notes: list[dict[str, Any]] = []
     decided: set[tuple[str, str]] = set()
+    hidden_ids = diagnostic_hidden_object_ids(config, policy_context)
+    visibility_known = hidden_ids is not None or not any(
+        policy.kind == "object_visibility" for policy in config.semantic_policies
+    )
+
+    def visible(start, path):
+        if not visibility_known:
+            return False
+        if not hidden_ids:
+            return True
+        entities = walk_entities(get_package_analysis(config).relationships, start, path)
+        return not hidden_ids.intersection([*path, *entities])
+
     for row in compiled.get("route_decisions") or []:
         start, target, path = row["source_entity"], row["target_entity"], row["relationship_path"]
         decided.add((start, target))
-        notes.append(
-            semantic_issue(
+        details: dict[str, Any] = {
+            "row": {key: row[key] for key in _ROUTE_ROW_KEYS},
+            "replaced": row["replaced"],
+        }
+        message = f"{route_reading(config, start, path)} (chosen by this query)"
+        options = []
+        if row["replaced"] == "undecided":
+            try:
+                package_route(config, start=start, target=target)
+            except SemanticLayerError as exc:
+                if exc.code == "AMBIGUOUS_PATH":
+                    options = [
+                        option
+                        for option in exc.details.get("clarification", {}).get("options", [])
+                        if visible(start, option["relationship_path"])
+                    ]
+        chosen = next((option for option in options if option["relationship_path"] == path), None)
+        alternatives = [option["decision"] for option in options if option != chosen]
+        shown = min(3, len(alternatives))
+        while True:
+            if chosen is not None:
+                details["meaning"] = chosen["meaning"]
+                details["route_alternatives"] = alternatives[:shown]
+                message = f"Chosen meaning: {chosen['meaning']} (chosen by this query). "
+                if shown:
+                    message += (
+                        "Other meanings (one-step switches): "
+                        + "; ".join(alternative["label"] for alternative in alternatives[:shown])
+                        + ". Use a decision in route_decisions. "
+                    )
+                if len(alternatives) > shown:
+                    details["more_alternatives"] = len(alternatives) - shown
+                    message += (
+                        "Validate the query without route_decisions for every option; "
+                        "no warehouse query runs. "
+                    )
+                message += "A reviewed package default using details.row would remove the question."
+            note = semantic_issue(
                 code="ROUTE_CHOSEN_BY_QUERY",
-                message=f"{route_reading(config, start, path)} (chosen by this query)",
+                message=message,
                 severity="info",
                 stage="planning",
-                details={
-                    "row": {key: row[key] for key in _ROUTE_ROW_KEYS},
-                    "replaced": row["replaced"],
-                },
+                details=details,
                 object_ids=[start, target],
             )
-        )
+            if chosen is None or shown == 0 or len(json.dumps(note)) < 1500:
+                break
+            shown -= 1
+        if chosen is not None and shown == 0 and len(json.dumps(note)) >= 1500:
+            note["message"] = f"{route_reading(config, start, path)} (chosen by this query)"
+            note["details"] = {
+                "row": {key: row[key] for key in _ROUTE_ROW_KEYS},
+                "replaced": row["replaced"],
+            }
+            if alternatives:
+                note["details"]["more_alternatives"] = len(alternatives)
+                if len(json.dumps(note)) >= 1500:
+                    del note["details"]["more_alternatives"]
+        notes.append(note)
     if resolve_verbosity(payload) == "minimal":
         return notes
     for start, target, path in read_routes(
@@ -449,11 +522,14 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
         if resolution is None:
             continue
         route = list(resolution.routes[0])
-        details: dict[str, Any] = {"route": route}
+        details = {"route": route}
         if resolution.basis == "colocated_key":
             code, how = "ROUTE_COLOCATED_KEY", "own key"
             details["alternatives"], conflicts = offered_rows(
-                config, start, target, resolution.routes[1:]
+                config,
+                start,
+                target,
+                [route for route in resolution.routes[1:] if visible(start, route)],
             )
             if conflicts:
                 details["conflicts_with"] = conflicts
@@ -780,10 +856,42 @@ def _unchained_failure(exc: Exception, adapter: Any, query: PreparedQuery) -> Se
     return query_execution_error({"engine": engine, "sql_redacted": True})
 
 
+def _coverage_probe_query(
+    warehouse: str, table: str, column: str, *, entity: str, dimension: str
+) -> PreparedQuery:
+    """``SELECT MIN(column), MAX(column) FROM table``, rendered as compiled SQL is.
+
+    Both names come from package config, so each must be a plain SQL identifier;
+    anything else refuses before any SQL is built.
+    """
+    parts = plain_relation_parts(table)
+    if parts is None or ".".join(parts) != table or plain_relation_parts(column) != [column]:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "The data coverage probe reads only tables and columns with plain SQL names.",
+            details={
+                "reason": "probe_identifier_not_plain",
+                "entity": entity,
+                "dimension": dimension,
+            },
+        )
+    value = SqlIdentifier([column])
+    probe = SqlSelect(
+        select=[
+            SqlField(SqlCall("MIN", [value]), "min_t"),
+            SqlField(SqlCall("MAX", [value]), "max_t"),
+        ],
+        from_table=SqlTableRef(table),
+    )
+    dialect = dialect_for_warehouse(warehouse)
+    return dialect.prepare_query(render_select_for_profile(probe, dialect=dialect))
+
+
 def _data_coverage_probe(
     adapter: Any,
     config: Any,
     *,
+    warehouse: str,
     root_entity: str,
     temporal_role: str,
     limits: dict[str, Any],
@@ -796,8 +904,8 @@ def _data_coverage_probe(
     because the original query already ran and returned nothing.
 
     Returns ``{"min": iso, "max": iso}`` on success; empty dict if any
-    lookup fails or the probe raises. Failures are silent — coverage is
-    a hint, not a guarantee.
+    lookup fails, a name is not plain (see ``_coverage_probe_query``) or the
+    probe raises. Failures are silent — coverage is a hint, not a guarantee.
     """
     try:
         entity_idx = {row.id: row for row in config.entities}
@@ -810,11 +918,14 @@ def _data_coverage_probe(
         dim_row = dim_idx.get(role_row.dimension)
         if dim_row is None or not dim_row.column or not entity_row.table:
             return {}
-        sql = (
-            f"SELECT MIN({dim_row.column}) AS min_t, "
-            f"MAX({dim_row.column}) AS max_t FROM {entity_row.table}"
+        query = _coverage_probe_query(
+            warehouse,
+            entity_row.table,
+            dim_row.column,
+            entity=entity_row.id,
+            dimension=dim_row.id,
         )
-        rows = _adapter_query(adapter, sql, limits=limits)
+        rows = _adapter_query(adapter, query, limits=limits)
         if not rows:
             return {}
         first = rows[0] or {}
@@ -856,14 +967,18 @@ def _scope_refusal(payload: dict[str, Any]) -> SemanticLayerError | None:
 
 
 def _compiled_warnings(
-    config, compiled, payload: dict[str, Any] | None = None
+    config,
+    compiled,
+    payload: dict[str, Any] | None = None,
+    *,
+    policy_context: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     warnings: list[dict[str, Any]] = [
         *(rewrite_warning_payload(step) for step in compiled["logical_plan"].rewrite_steps),
         *_history_warnings(config, compiled["logical_plan"]),
         *_measure_validity_warnings(config, compiled["logical_plan"]),
         *_stock_key_gap_warnings(compiled),
-        *_route_notes(config, compiled, payload),
+        *_route_notes(config, compiled, payload, policy_context=policy_context),
         *_time_zone_warnings(config, compiled),
         *mixed_time_role_warnings(config, compiled["logical_plan"]),
     ]
@@ -1743,7 +1858,7 @@ def _is_repo_managed_source(path: str) -> bool:
 
 
 class Runtime:
-    def __init__(self, package_id: str):
+    def __init__(self, package_id: str, *, confine_to: str | os.PathLike[str] = ""):
         source_path = get_package_path(package_id)
         # Built-in packages (repo checkout or installed share dir) keep
         # their seeded assets under the project data/ root; anything else
@@ -1755,6 +1870,7 @@ class Runtime:
             package_id=package_id,
             source_path=source_path,
             prefer_package_root_assets=not project_managed_source(source_path),
+            confine_to=confine_to,
         )
 
     @classmethod
@@ -1787,6 +1903,7 @@ class Runtime:
         *,
         package_id: str = "",
         prefer_package_root_assets: bool | None = None,
+        confine_to: str | os.PathLike[str] = "",
     ) -> Runtime:
         source_path = snapshot.source_path
         if prefer_package_root_assets is None:
@@ -1801,6 +1918,7 @@ class Runtime:
             package_id=package_id,
             source_path=source_path,
             prefer_package_root_assets=prefer_assets,
+            confine_to=confine_to,
         )
         return runtime
 
@@ -1811,7 +1929,9 @@ class Runtime:
         package_id: str,
         source_path: str,
         prefer_package_root_assets: bool,
+        confine_to: str | os.PathLike[str] = "",
     ) -> None:
+        self._confine_to = confinement_directory(confine_to) if confine_to else ""
         self._snapshot = snapshot
         config = snapshot.config
         self.package_id = package_id or config.package.package_id
@@ -1963,6 +2083,8 @@ class Runtime:
         """
         if self.warehouse != "duckdb":
             return
+        if self._confine_to:
+            self.db_path = require_inside(self._confine_to, self.db_path, option="database path")
         seed = self._config.package.seed
         for _attempt in range(2):
             if os.path.islink(self.db_path) and not os.path.exists(self.db_path):
@@ -1974,6 +2096,12 @@ class Runtime:
                     details={"default_db": self.db_path, "reason": "default_db_broken_link"},
                 )
             if not os.path.exists(self.db_path):
+                if self._confine_to:
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        "A confined Runtime requires an existing database; build it first.",
+                        details={"reason": "duckdb_confined_default_db_missing"},
+                    )
                 if seed.kind == SEED_KIND_EXTERNAL:
                     raise SemanticLayerError(
                         "INVALID_CONFIG",
@@ -1994,7 +2122,9 @@ class Runtime:
                 # its actual catalog before the runtime serves it.
                 continue
             try:
-                missing = missing_duckdb_relations(self.db_path, self._expected_tables())
+                missing = missing_duckdb_relations(
+                    self.db_path, self._expected_tables(), confine_to=self._confine_to
+                )
             except Exception as exc:  # noqa: BLE001 — any uncertain probe fails closed
                 raise self._unreadable_db_error() from exc
             if missing:
@@ -2177,7 +2307,9 @@ class Runtime:
             if self.adapter is None:
                 if self.warehouse == "duckdb":
                     self._ensure_db()
-                self.adapter = create_warehouse_adapter(self._config.package, db_path=self.db_path)
+                self.adapter = create_warehouse_adapter(
+                    self._config.package, db_path=self.db_path, confine_to=self._confine_to
+                )
                 self._seed_warnings = self._stale_seed_warnings()
             return self.adapter
 
@@ -2409,7 +2541,9 @@ class Runtime:
             out = asdict(report)
             freshness_rows = _freshness_by_leaf(self._config, compiled)
             out["status"] = "ok"
-            out["warnings"] = _compiled_warnings(self._config, compiled, payload)
+            out["warnings"] = _compiled_warnings(
+                self._config, compiled, payload, policy_context=policy_context
+            )
             out["errors"] = []
             out["query"] = without_trusted_attributes(payload)
             out["normalized_query"] = compiled["explain"].normalized_query
@@ -2509,7 +2643,9 @@ class Runtime:
             "ok": True,
             "status": "ok",
             "errors": [],
-            "warnings": _compiled_warnings(self._config, compiled, payload),
+            "warnings": _compiled_warnings(
+                self._config, compiled, payload, policy_context=policy_context
+            ),
             "recovery_hints": [],
             "authoring_hints": [],
             "query_ir_hints": [],
@@ -2564,6 +2700,12 @@ class Runtime:
         # operators use this to enforce per-tenant policies without forking;
         # local users typically leave `limits` unset.
         limits = _normalize_query_limits(payload.get("limits"), _time_zone(self._config, compiled))
+        limit = compiled["sql_ast"].limit
+        probe = compiled.get("limit_probe")
+        # A resource fence that hides the boundary row takes precedence over
+        # tie detection. Keep both the adapter cap and its truncation signal.
+        if probe is not None and limits.get("max_rows", 0) and limits["max_rows"] <= limit:
+            probe = None
         # If the caller asked for a statement_timeout_ms but the adapter
         # can't honor it at the warehouse boundary, surface a warning so
         # the caller learns the limit was best-effort. Without this, the
@@ -2571,6 +2713,7 @@ class Runtime:
         # `max_rows` post-fetch fence clips the result — the v2 audit
         # called out the "half-fake contract" smell on the DuckDB path.
         limits_warnings: list[dict[str, Any]] = []
+        tie_warnings: list[dict[str, Any]] = []
         try:
             with self._query_lock:
                 # Keep adapter selection and execution in one critical
@@ -2602,10 +2745,14 @@ class Runtime:
                     )
                 rows = _adapter_query(
                     adapter,
-                    compiled["prepared_query"],
+                    probe if probe is not None else compiled["prepared_query"],
                     limits=limits,
                     policy_context=policy_context,
                 )
+            if probe is not None:
+                from .top_n import limit_rows
+
+                rows, tie_warnings = limit_rows(rows, limit, compiled["limit_order_keys"])
         except Exception as exc:
             if isinstance(exc, SemanticLayerError) and exc.code != "QUERY_EXECUTION_ERROR":
                 raise
@@ -2634,7 +2781,7 @@ class Runtime:
             "status": "ok",
             "errors": [],
             "warnings": [
-                *_compiled_warnings(self._config, compiled, payload),
+                *_compiled_warnings(self._config, compiled, payload, policy_context=policy_context),
                 *_no_data_in_scope_warnings(
                     compiled,
                     rows,
@@ -2645,6 +2792,7 @@ class Runtime:
                 ),
                 *_filter_value_warnings(self, compiled, payload),
                 *limits_warnings,
+                *tie_warnings,
                 *self._seed_warnings,
             ],
             "recovery_hints": [],
@@ -2725,6 +2873,7 @@ class Runtime:
                         actual_data_coverage = _data_coverage_probe(
                             self._get_adapter(),
                             self._config,
+                            warehouse=self.warehouse,
                             root_entity=root_entity,
                             temporal_role=str(time_block.get("temporal_role", "") or ""),
                             limits=limits,

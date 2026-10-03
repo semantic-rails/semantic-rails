@@ -1,7 +1,89 @@
 fixture:
-  tables: [orders, refunds, signups, dim_fiscal, customer_history]
-  data_sha256: 7239197c610505a820d1181968800157664fe222bce85e1c1f51dcd7d406d7d8
+  tables: [orders, refunds, signups, dim_fiscal, customer_history, account_days]
+  data_sha256: 9c846589d4cc8d72b7e3f7bd19ea9d9a21ef246a87d6de79fe4727ea578223e5
 tests:
+  shop/top-stores-with-cutoff-ties:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Stores with equal order counts rank by the remaining output columns, keeping a stable subset.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_IR_SCHEMA.md#orderby]
+    tags: [time-window]
+    query:
+      select: [{expression: {measure: measure.shop.order_count}, as: orders}]
+      group_by: [dimension.shop_order_store_id]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2023-11-01', end: '2023-12-01'}
+      order_by: [{field: orders, direction: DESC}]
+      limit: 1
+    expected_rows: [{dimension.shop_order_store_id: a, orders: 1}]
+    reference_sql: |
+      SELECT store_id, COUNT(order_id) AS orders
+      FROM orders
+      WHERE ordered_at >= TIMESTAMP '2023-11-01' AND ordered_at < TIMESTAMP '2023-12-01'
+      GROUP BY store_id
+      ORDER BY orders DESC, store_id ASC NULLS LAST LIMIT 1
+  shop/pinned-output-refuses-another-advertised-clock:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: INVALID_TEMPORAL_BINDING
+    why: A metric pinned to close time must never filter its orders on order time.
+    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics.closed_orders, tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    tags: [time-window, clock, refusal]
+    query:
+      select: [{expression: {metric: metric.shop.closed_orders}, as: orders}]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2023-11-01', end: '2023-12-01'}
+  shop/aggregate-filter-predicate-refuses-a-dropped-clock-override:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: INVALID_TEMPORAL_BINDING
+    why: A nested conversion predicate in an aggregate filter cannot silently drop the order-clock override.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, tests/integration/correctness/shop/models/signups.yml#model.measures.signup_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    tags: [time-window, clock, refusal]
+    query:
+      select: [{expression: {measure: measure.shop.signup_count}, as: signups}]
+      time: {temporal_role: temporal_role.shop_customer_signed_up_at, start: '2023-11-01', end: '2023-12-01'}
+      temporal_role_overrides: {measure.shop.window_order_count: temporal_role.shop_order_ordered_at}
+      metric_filters:
+        - expression:
+            kind: metric_predicate
+            entity: entity.shop_customer
+            scope_mode: entity_only
+            time_alignment: query_window
+            input:
+              kind: aggregate
+              measure: measure.shop.signup_count
+              aggregation: count_distinct
+              filter:
+                all:
+                  - expression:
+                      kind: metric_predicate
+                      entity: entity.shop_customer
+                      scope_mode: entity_only
+                      input:
+                        kind: conversion
+                        entity: entity.shop_customer
+                        window: {unit: day, value: 7}
+                        matching_mode: first_converted_after_base
+                        base: {kind: aggregate, measure: measure.shop.signup_count}
+                        converted: {kind: aggregate, measure: measure.shop.window_order_count, temporal_role: temporal_role.shop_order_closed_at}
+                      op: '>'
+                      value: 0.5
+            op: '>='
+            value: 1
+          op: '='
+          value: true
+  shop/pinned-output-on-its-bound-clock:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Orders pinned to close time count only orders closed within the requested period.
+    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics.closed_orders, tests/integration/correctness/shop/models/orders.yml#model.times.closed_at, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    tags: [time-window, clock]
+    query:
+      select: [{expression: {metric: metric.shop.closed_orders}, as: orders}]
+      time: {temporal_role: temporal_role.shop_order_closed_at, start: '2023-11-21', end: '2023-12-01'}
+    expected_rows: [{orders: 1}]
+    reference_sql: |
+      SELECT COUNT(*) FROM orders
+      WHERE closed_at >= TIMESTAMP '2023-11-21' AND closed_at < TIMESTAMP '2023-12-01'
   shop/window-predicate-needs-an-input-clock:
     kind: validate_fails_with_code
     expect: refuse
@@ -6982,3 +7064,89 @@ tests:
     reference_sql: SELECT SUM(amount), NULLIF(COUNT(*), 0) FROM orders WHERE store_id = 'zzz'
     expected_rows:
       - {revenue: null, orders: null}
+  shop/stock_by_changing_plan:
+    kind: query_matches_snapshot
+    expect: answer
+    why: An account whose plan changes within the week counts once, under the plan of its last snapshot that week.
+    cites:
+      - tests/integration/correctness/shop/models/account_days.yml#model.dimensions.plan
+      - tests/integration/correctness/shop/models/account_days.yml#model.measures.seats
+      - tests/integration/correctness/shop/models/account_days.yml#model.times.snapshot_day
+      - docs/QUERY_IR_SCHEMA.md#timeblock
+    tags: [clock]
+    variant: utc_authored
+    query:
+      select:
+      - expression:
+          measure: measure.shop.seats
+        as: seats
+      time:
+        temporal_role: temporal_role.shop_account_day_snapshot_day
+        grain: week
+      group_by:
+      - dimension.shop_account_day_plan
+    reference_sql: |-
+      SELECT a.plan, a.b, SUM(a.seats) FROM (
+                SELECT a.*, date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP)) AS b, ROW_NUMBER() OVER (
+                  PARTITION BY a.account_id, date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP)) ORDER BY a.snapshot_day DESC) AS n
+                FROM account_days AS a
+              ) AS a WHERE a.n = 1 GROUP BY 1, 2
+    expected_rows:
+      - {dimension.shop_account_day_plan: builder, temporal_role.shop_account_day_snapshot_day__week: '2024-01-01T00:00:00', seats: 1006}
+      - {dimension.shop_account_day_plan: pro, temporal_role.shop_account_day_snapshot_day__week: '2024-01-01T00:00:00', seats: 16}
+      - {dimension.shop_account_day_plan: pro, temporal_role.shop_account_day_snapshot_day__week: '2024-01-15T00:00:00', seats: 20}
+      - {dimension.shop_account_day_plan: team, temporal_role.shop_account_day_snapshot_day__week: '2024-01-01T00:00:00', seats: 100}
+      - {dimension.shop_account_day_plan: team, temporal_role.shop_account_day_snapshot_day__week: '2024-01-15T00:00:00', seats: 200}
+  shop/stock_by_week:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A stock adds up each account's last snapshot of the week, once per account.
+    cites:
+      - tests/integration/correctness/shop/models/account_days.yml#model.measures.seats
+      - tests/integration/correctness/shop/models/account_days.yml#model.times.snapshot_day
+      - docs/QUERY_IR_SCHEMA.md#timeblock
+    tags: [clock]
+    variant: utc_authored
+    query:
+      select:
+      - expression:
+          measure: measure.shop.seats
+        as: seats
+      time:
+        temporal_role: temporal_role.shop_account_day_snapshot_day
+        grain: week
+    reference_sql: |-
+      SELECT a.b, SUM(a.seats) FROM (
+                SELECT a.*, date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP)) AS b, ROW_NUMBER() OVER (
+                  PARTITION BY a.account_id, date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP)) ORDER BY a.snapshot_day DESC) AS n
+                FROM account_days AS a
+              ) AS a WHERE a.n = 1 GROUP BY 1
+    expected_rows:
+      - {temporal_role.shop_account_day_snapshot_day__week: '2024-01-01T00:00:00', seats: 1122}
+      - {temporal_role.shop_account_day_snapshot_day__week: '2024-01-15T00:00:00', seats: 220}
+  shop/stock_by_snapshot_day:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Grouped by its own snapshot day, a stock answers each day's snapshots, each day a period of its own.
+    cites:
+      - tests/integration/correctness/shop/models/account_days.yml#model.measures.seats
+      - tests/integration/correctness/shop/models/account_days.yml#model.times.snapshot_day
+    tags: [clock]
+    variant: utc_authored
+    query:
+      select:
+      - expression:
+          measure: measure.shop.seats
+        as: seats
+      group_by:
+      - dimension.shop_account_day_snapshot_day
+    reference_sql: SELECT a.snapshot_day, SUM(a.seats) FROM account_days AS a GROUP BY 1
+    expected_rows:
+      - {dimension.shop_account_day_snapshot_day: '2024-01-01', seats: 1110}
+      - {dimension.shop_account_day_snapshot_day: '2024-01-02', seats: 1112}
+      - {dimension.shop_account_day_snapshot_day: '2024-01-03', seats: 1114}
+      - {dimension.shop_account_day_snapshot_day: '2024-01-04', seats: 1116}
+      - {dimension.shop_account_day_snapshot_day: '2024-01-05', seats: 1118}
+      - {dimension.shop_account_day_snapshot_day: '2024-01-06', seats: 1020}
+      - {dimension.shop_account_day_snapshot_day: '2024-01-07', seats: 1022}
+      - {dimension.shop_account_day_snapshot_day: '2024-01-15', seats: 220}

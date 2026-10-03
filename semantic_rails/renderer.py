@@ -427,6 +427,7 @@ def render_select(query: SqlSelect, *, flatten_ctes: bool = True) -> str:
             "ORDER BY\n  "
             + ",\n  ".join(
                 f"{render_expr(order.expression)} {normalize_sql_sort_direction(order.direction)}"
+                + (" NULLS LAST" if order.nulls_last else "")
                 for order in query.order_by
             )
         )

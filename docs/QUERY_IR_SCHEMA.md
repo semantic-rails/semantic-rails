@@ -26,7 +26,7 @@ and the comparison fixtures: see
 | `order_by` | `array` of `OrderBy` | Final-select ordering. Uses `{field, direction}` — not a select-style expression. |
 | `limit` | `integer` (or `null`) | Optional row cap. |
 | `time` | `TimeBlock` (or `null`) | Query-level time anchor: temporal_role + grain + bounds. `start` is inclusive, `end` is exclusive. |
-| `temporal_role_overrides` | `object<measure_id, temporal_role_id>` | Per-measure clock bindings. They do not apply inside a metric predicate input (they only choose or check its window clock); an input that reads an overridden measure through a conversion or a time window refuses with `INVALID_TEMPORAL_BINDING`. |
+| `temporal_role_overrides` | `object<measure_id, temporal_role_id>` | Per-measure clock bindings. They do not apply inside a metric predicate input (they only choose or check its window clock); an input that reads an overridden measure through a conversion, a time window or a nested predicate refuses with `INVALID_TEMPORAL_BINDING` at every nesting depth, including predicates in scoped aggregates and aggregate filters. Filter values remain data. |
 | `route_decisions` | `array` of `RouteDecision` | This query's own route for an entity pair: the `decision` of an `AMBIGUOUS_PATH` option. See [`route_decisions`](#route_decisions). |
 | `observation_scope` | `"dataset"\|"query"` | Whether a sum or count with no rows in a group reads 0 when its measure has data anywhere (`dataset`, the default) or only inside the query's filters (`query`). See "Empty groups" below. |
 | `policy_context` | `object` | Caller-supplied access context (`environment`, `audience`, `roles`, `now`, ...). |
@@ -108,6 +108,19 @@ ignored).
   `details.replaced`, how the package resolves the pair without it (`decided`:
   its own row; `colocated_key`: the start's own key; `inherited`: rows for pairs
   its routes walk through; `only_route`; `undecided`: the package refuses it).
+  Only an `undecided` pair gets `details.meaning` and
+  `details.route_alternatives`, using the package's own refusal options when they
+  include the chosen route. Alternatives are at most three ready decision rows;
+  each row's `label` is its meaning. Routes through hidden entities or
+  relationships are excluded under the query's policy context, including from
+  messages and counts. Unknown visibility under an `object_visibility` policy
+  withholds alternatives. `details.more_alternatives` counts any remaining
+  visible alternatives; validating the query without `route_decisions` returns
+  every clarification option without a warehouse query. State the meaning used
+  and offer the listed rows as one-step switches: resend the query with an
+  alternative row in `route_decisions`. No alternative is executed. The warning
+  mentions once that a reviewed package default using `details.row` would
+  remove the question; this advice is not repeated in `recovery_hints`.
   `hop_profile.targets[*].route_basis` is `query` for the pair.
 - `build-options` with a partial query that carries rows shows the dimensions
   they make reachable, and its query patches keep the rows; a patch that would
@@ -431,6 +444,15 @@ chosen window clock is excluded by any measure inside the input, by its pin, an
 override or its declared clocks; for a conversion, its base measure (the period
 filters base events; converted events match each base event's window).
 
+For a metric selected as an output, its expression's pinned clock takes precedence
+over its advertised compatible clocks. If the query would filter or bucket a leaf
+on another clock that the measure advertises, the request refuses with
+`INVALID_TEMPORAL_BINDING` and a `CHOOSE_OUTPUT_CLOCK` hint to query the bound clock.
+This check also applies to composed outputs and ordinary metric filters. Unpinned
+metrics keep the requested compatible clock; a pinned metric queried on its bound
+clock keeps its answer. Nested scoped predicates also refuse an ambiguous window
+clock rather than choosing one by declaration order.
+
 Ordinary `metric_filters` evaluate aggregated expressions at the grain the query
 returns, after grouping. A `metric_predicate` instead evaluates its input at its
 declared entity within that scope. A contextual predicate inherits the query's
@@ -650,6 +672,23 @@ Plain filters on a child:
 
 The runtime rejects any `field` that does not resolve, with
 `INVALID_ORDER_BY` and a list of available aliases.
+
+With `limit`, the engine preserves these sort terms and appends every remaining
+output column in output order, ascending with NULLs last. Identical output rows
+are interchangeable. Ordering without `limit` is unchanged.
+
+Execution fetches at most `limit + 1` rows in the same warehouse statement and
+returns only `limit` rows. If the boundary row shares all requested sort keys
+with the last returned row, `TIES_AT_LIMIT` reports `details.tie_count`, the
+number of observed rows sharing that key, and `tie_count_is_lower_bound: true`.
+The full tie group may be larger than this bounded sample. Compile SQL retains
+the requested limit; the internal execution probe uses one extra row. A
+`limits.max_rows` fence at or below `limit` takes precedence: no extra row is
+fetched and cutoff ties cannot be reported.
+
+Cutoff comparisons use the returned row's exact column key when present;
+otherwise they require one case-insensitive match, supporting warehouse alias
+case folding. Missing or ambiguous matches fail with `QUERY_EXECUTION_ERROR`.
 
 ## TimeBlock
 

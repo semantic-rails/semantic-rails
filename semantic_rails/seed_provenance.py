@@ -20,6 +20,8 @@ from typing import Any
 
 import duckdb
 
+from .db_parts.duckdb_confinement import confine_duckdb
+from .db_parts.duckdb_setup import configure_duckdb_connection
 from .errors import SemanticLayerError
 from .sql_identifiers import quote_relation
 
@@ -55,8 +57,10 @@ def _probe_cli() -> None:
     path, relations = request["path"], request["relations"]
     try:
         before = _identity(path)
-        conn = duckdb.connect(path, read_only=True)
+        conn = configure_duckdb_connection(duckdb.connect(path, read_only=True))
         try:
+            if request.get("confine_to"):
+                confine_duckdb(conn, request["confine_to"])
             missing = _missing_on_connection(conn, relations)
         finally:
             conn.close()
@@ -69,13 +73,16 @@ def _probe_cli() -> None:
     print(json.dumps(result))
 
 
-def missing_duckdb_relations(db: Any, relations: Iterable[str]) -> list[str]:
+def missing_duckdb_relations(
+    db: Any, relations: Iterable[str], *, confine_to: str | None = None
+) -> list[str]:
     """Return configured relations that the current DuckDB file cannot resolve.
 
     An existing path is opened in a new process, which cannot reuse a stale
     in-process DuckDB catalog or release this process's serving locks. A caller
     that already owns a connection may pass it directly. A changing or unreadable
-    file raises so runtime bootstrap can fail closed.
+    file raises so runtime bootstrap can fail closed. When requested, the child
+    confines its connection before resolving any relation.
     """
     if not isinstance(db, (str, os.PathLike)):
         return _missing_on_connection(db, relations)
@@ -90,7 +97,9 @@ def missing_duckdb_relations(db: Any, relations: Iterable[str]) -> list[str]:
             "-c",
             "from semantic_rails.seed_provenance import _probe_cli; _probe_cli()",
         ],
-        input=json.dumps({"path": path, "relations": sorted(set(relations))}),
+        input=json.dumps(
+            {"path": path, "relations": sorted(set(relations)), "confine_to": confine_to}
+        ),
         text=True,
         capture_output=True,
         timeout=60,
@@ -110,7 +119,7 @@ def missing_duckdb_relations(db: Any, relations: Iterable[str]) -> list[str]:
 
 def record_seed_provenance(db_path: str, package_id: str, seed_digest: str = "") -> None:
     """Record which package and seed files built a new seed, without authorizing replacement."""
-    conn = duckdb.connect(db_path)
+    conn = configure_duckdb_connection(duckdb.connect(db_path))
     try:
         conn.execute("CREATE SCHEMA IF NOT EXISTS _semantic_rails")
         conn.execute(

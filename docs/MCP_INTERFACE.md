@@ -74,7 +74,7 @@ MCP issues leave out empty optional fields and a
 `why_invalid` or `unsupported_construct` that only repeats its `message` or `code`, and
 `request_context` appears only when a transport or `policy_context` set one.
 
-Within a stdio query MCP session, repeated calls still run normally and add
+Within a stdio query MCP session, repeated successful calls still run normally and add
 `same_as`, the first matching response's `request_id`. Matching uses the tool name
 and arguments with JSON object keys sorted, ignoring `verbosity` and
 `request_id` at the argument and query envelopes. Array order, filters, query
@@ -185,8 +185,10 @@ up to 120 characters (sentences naming package dimensions, entities, measures or
 past the cap; descriptions repeating the label are omitted) and `default_temporal_role`, plus
 `available: false` and `blocked_reason` for a candidate that isn't available. A card in a kind's
 bucket leaves out its `kind`; the response leaves out the `terms` and `verbosity` it was called
-with. `verbosity="compact"` returns full cards with match reasons, starter patches and comparison
-metadata. When the question uses an object's whole name ("revenue by store"), that object ranks
+with. `verbosity="compact"` keeps the same slim cards and descriptions but omits unavailable
+candidates and the blocked bucket. Match reasons, starter patches, companions, recommended actions
+and blocked metadata are retained with `verbosity="full"`, subject to the response budget. When the
+question uses an object's whole name ("revenue by store"), that object ranks
 above near-duplicates that add a qualifier the question doesn't use ("Delivered revenue").
 `kinds` takes an array or a comma-separated string, and also a JSON array sent as a string.
 Dimension-value cards keep the raw filter `value`, its business-facing `label`, and explicit
@@ -514,21 +516,16 @@ over the outer `verbosity` argument; error envelopes (`ok: false`) use the same 
 verbosity as the runtime. This is an MCP-only default —
 the HTTP `/api/v1/*` default remains `compact`.
 
-| Verbosity | What's kept | Size (jaffle, measured*) | When to use |
-|---|---|---|---|
-| `minimal` (MCP default) | `{ok, status, errors, warnings}` (plus `error` on failure); mode `sql` also keeps `rendered_sql`; mode `run` also keeps `rows` + `row_count` | ~0.7KB / ~1.9KB / ~2.4KB | Tight agent loops with a tool-output cap |
-| `compact` (HTTP default) | includes compact `trace`; drops top-level `physical_plan`, `performance_plan`, `semantic_summary`, `compile_stats`; strips `output_columns.lineage` | ~88KB / ~94KB / ~96KB | Diagnostics, `explain` review |
-| `full` | includes compact `trace` plus every field, including the heavy plan trees | ~97KB / ~114KB / ~116KB | Debugging, code-gen |
+| Verbosity | What's kept | When to use |
+|---|---|---|
+| `minimal` (MCP default) | Outcome, errors and warnings; mode `sql` adds `rendered_sql`; mode `run` adds rows and counts | Answering a question |
+| `compact` | Adds query metadata, output columns and the semantic trace; excludes `explain` and logical, physical, performance, fanout and SQL plans | Reviewing how an answer was formed |
+| `full` | Adds compiler plans inside `explain`, subject to the same response budget | Debugging |
 
-*Sizes are modes `validate` / `sql` / `run` for a representative 5-row jaffle query (revenue by
-store by month); they scale with query complexity and row count.
-
-To review relationship paths before running a cross-entity query, call `execute` with
-`mode="sql"` and `verbosity="compact"` (minimal leaves `explain` out) and read
-`explain.chosen_paths`. It is keyed by target entity ID; each entry carries `selected` (the chosen
-relationship path), `candidates` (every considered path), and `contracts` (the relationship
-contracts along the selected path) — i.e.
-`explain.chosen_paths["entity.jaffle_store"].candidates`, not `explain.candidates`.
+The MCP adapter never repeats `logical_plan` at the top level. Full responses can include it
+inside `explain`. To review relationship paths before running a cross-entity query, call
+`execute` with `mode="sql"` and `verbosity="full"` and read `explain.chosen_paths` when that
+optional detail fits. `omitted_fields` names detail removed by verbosity or budget shaping.
 
 `sql_profile="off"` drops `rendered_sql` and `sql_plan` at any verbosity for callers that want the semantic envelope without the SQL.
 
@@ -547,21 +544,26 @@ response, not the warehouse work.
 A `limits.max_rows` inside the query is an operator's fetch ceiling. It can lower the `max_rows`
 cap (and then `total_row_count` is `null` once it is reached), but it never raises it.
 
-Separately, `execute` refuses a result whose rows serialize to more than 32,000 characters (about
-8,000 tokens), so few-but-wide rows and capped rows that are still large never reach the model. The
-refusal is the error `RESULT_TOO_LARGE`: no rows come back, `message` names the row count and says
-what would fit (a coarser or set `time.grain`, a filter, fewer `group_by` dimensions or columns), and
-`details` carries `row_count`, `total_row_count`, `result_chars` and `max_result_chars`. An operator
-changes the limit with the `SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS` environment variable, read on
-every call; a missing or non-positive value means the default.
-At effective `verbosity="compact"` (including normalized values and unknown values that fall
-back to compact), the same limit also bounds the execute result, including rows, `explain`
-and `sql_plan`, before the transport adds unknown-argument warnings and session annotations
-(`same_as`, `request_context`). Those additions can exceed the limit. If needed, execute omits
-`explain`, then `sql_plan`, adding one `EXECUTE_DETAILS_OMITTED` warning naming the omitted fields.
-Use `mode="sql"` or `verbosity="full"` for the complete plan; if already using `verbosity="full"`,
-use `mode="sql"`. If the remaining execute result still cannot fit, execute returns
-`RESULT_TOO_LARGE` without rows: its `details` contains only `max_result_chars`.
+Every tool and mode shares one response budget: `MCP_DEFAULT_MAX_RESULT_CHARS`, default
+32,000 characters of the final compact JSON payload. Both `structuredContent` and
+`content[0].text` carry that same payload. The check runs after unknown-argument warnings,
+trusted request context and session annotations are added. It measures each representation's
+payload, rather than the JSON-RPC wrapper or the sum of the two copies.
+
+Optional compiler plans are removed first, then rendered SQL in mode `run`, then metadata
+and query/context echoes if needed;
+`omitted_fields` lists what was removed. Compact responses exclude plan detail even when it
+would fit. Rows are shortened only by the row cap, never silently by the character budget.
+Rendered SQL remains required in mode `sql`. If required data (rows, SQL-mode text,
+a Query IR draft or diagnostics) still cannot fit,
+the tool returns a bounded `RESULT_TOO_LARGE` error. No partial rows or SQL are returned.
+Narrow the query, lower `max_rows`, select fewer columns, or request fewer catalog objects.
+Session hints are added only to responses that fit; their size is checked again before
+delivery. Only a final successful run carrying rows is recorded for `already_ran` advice.
+An operator changes the shared budget with `SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS`, read on
+every call. Missing or non-positive values use the default; positive values below 512 use
+512 so the refusal itself fits. Refusals preserve request identity and context when they fit.
+
 The `query` that execute echoes back carries the caller's own `limits`; a transport-level
 `max_rows` does not become part of that query. The HTTP `/api/v1/query` endpoint leaves
 the response uncapped unless the query itself sets a limit.
@@ -644,7 +646,7 @@ To move a v1 client:
 - `catalog()` becomes `discover(terms="")`, paged at 100 ids per kind (follow
   `DISCOVER_IDS_TRUNCATED`'s `details.next_offset` with `offset`), or a
   `semantic-rails://catalog/*` resource. For v1's
-  default responses, pass `verbosity="compact"` to `discover` and `inspect`, and `detail="best"`
+  default responses, pass `verbosity="full"` to `discover`, `verbosity="compact"` to `inspect`, and `detail="best"`
   to `plan`.
 - `capabilities` and `build-options` have no MCP tool: draft Query IR with `plan` (the `execute`
   schema lists the expression shapes) and look up filter values with `valid-values`. The HTTP API
@@ -934,7 +936,9 @@ At MCP verbosity `minimal`, `MIXED_GRAIN_INVALID` omits the relationship analysi
 dump while retaining offending dimensions, compatible measures and dimensions,
 time-axis recovery, and every recovery hint. `REWRITE_APPLIED` omits `details.analysis`
 and `details.path`, retaining its code, message, and `details.rewrite_kind`.
-Request `compact` or `full` for the complete analysis details.
+Request `compact` or `full` for analysis details within the same response budget. An unsupported
+expression kind names the received kind and its request path (for example,
+`query.select[0].expression.left`); recovery hints include the request shape to send.
 
 ### Error Code Catalog
 
@@ -986,7 +990,7 @@ Request `compact` or `full` for the complete analysis details.
 | `UNKNOWN_MCP_RESOURCE` | Resource URI isn't in the catalog; see `details.available_resources`. |
 | `UNKNOWN_MCP_TOOL` | Tool name isn't in `tools/list`; see `details.available_tools`, and `details.replacement` for a removed v1 tool. |
 | `INVALID_MCP_ARGUMENTS` | Tool arguments don't match the input_schema; `recovery_hints` carries the corrected shape. |
-| `RESULT_TOO_LARGE` | `execute` rows would exceed the response character limit; nothing is returned. `message` says what would fit; see `details.max_result_chars`. |
+| `RESULT_TOO_LARGE` | Required tool response fields exceed the shared character budget after optional detail is trimmed. No partial answer is returned; request fewer rows, columns or objects. See `details.max_result_chars`. |
 | `WINDOW_TOTAL_UNSUPPORTED` | A `time` window with no `grain` would return one total, but part of the query still groups by the raw time column, so the result can't be one row per group. Nothing is returned. Set `time.grain`, or remove `time.start` and `time.end`. |
 | `EMPTY_GROUPS_UNSETTLED` | The compiler built a query that reads a sum or count without settling its empty groups, so a group with no rows would read `NULL` instead of `0`, or a sum missing a required row count, so a group whose amounts are all unknown could read `0`. A measure containing a nested CASE forced onto a rollup is also refused (`details.aggregate_relation`). An engine defect, not a query error; nothing is returned. `details.measures` names them, or `details.row_counts_named_like` a row count named like another column. |
 | `INTERNAL_ERROR` | Bare exception reached the boundary; retry once and file a bug if it recurs. |

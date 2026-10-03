@@ -68,6 +68,10 @@ class MCPQuerySession:
         self._last_validate: tuple[object, str, str] | None = None
         self._lock = Lock()
 
+    def reset_validate_guidance(self) -> None:
+        with self._lock:
+            self._last_validate = None
+
     def annotate(
         self,
         adapter: object,
@@ -126,10 +130,33 @@ class MCPQuerySession:
                                     "result, or change the query."
                                 )
                         break
-            elif summary is not None:
-                # Exactly one retained success per query; LRU touches and failed
-                # runs must never make an older answer look like the latest one.
-                for (owner, _, _), entry in self._requests.items():
-                    if owner is adapter and entry.ran is not None and entry.ran[0] == query_key:
-                        entry.ran = None
-                previous.ran = (query_key, summary)
+
+    def record_run(
+        self,
+        adapter: object,
+        arguments: Mapping[str, Any],
+        response: Mapping[str, Any],
+        *,
+        query: Mapping[str, Any],
+    ) -> None:
+        """Commit answer history only after annotations and the final delivery guard."""
+        if (
+            str(arguments.get("mode") or "run").strip().lower() != "run"
+            or response.get("ok") is not True
+            or "rows" not in response
+        ):
+            return
+        summary = _run_summary(response)
+        fingerprint = _fingerprint(arguments)
+        query_key = _fingerprint(query)
+        if summary is None or fingerprint is None or query_key is None:
+            return
+        with self._lock:
+            previous = self._requests.get((adapter, "execute", fingerprint))
+            if previous is None:
+                return
+            # Retain exactly one delivered success per query, even after LRU touches.
+            for (owner, _, _), entry in self._requests.items():
+                if owner is adapter and entry.ran is not None and entry.ran[0] == query_key:
+                    entry.ran = None
+            previous.ran = (query_key, summary)

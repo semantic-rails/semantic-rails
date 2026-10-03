@@ -52,7 +52,7 @@ from .indexes import (
     get_package_analysis,
     rollup_dimension_entities,
 )
-from .temporal import _allows_coarse_snapshot_alignment
+from .temporal import _allows_coarse_snapshot_alignment, _validate_leaf_window_clock
 
 
 def _column_ref(table: str, column: str) -> SqlIdentifier:
@@ -347,6 +347,7 @@ def _leaf_time_role(bound: BoundMeasure, query: NormalizedQuery, config: Package
     if not requested:
         return bound.temporal_role
     measure = _measure_index(config)[bound.measure_id]
+    _validate_leaf_window_clock(bound.measure_id, bound.temporal_role, requested, config)
     compatible = set(measure.compatible_temporal_roles)
     if requested in compatible:
         return requested
