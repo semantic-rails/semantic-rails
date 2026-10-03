@@ -88,6 +88,23 @@ def expr_resolves_to_zero(
     return False
 
 
+def carried_zero_lookups(expr: SemanticExpr, config: PackageConfig) -> list[str]:
+    """A lookup output whose source reads 0 for an observed parent: NULL everywhere is no data.
+
+    Never zero-filled here: the lookup leaf settles the carried value itself.
+    """
+    if isinstance(expr, MetricRecipeRefExpr):
+        recipe = _recipe_index(config).get(expr.metric_recipe)
+        return carried_zero_lookups(recipe.expression, config) if recipe is not None else []
+    measures = _measure_index(config)
+    measure = (
+        measures.get(expr.measure) if isinstance(expr, MeasureRefExpr | AggregateExpr) else None
+    )
+    if measure is None or not measure.lookup_from:
+        return []
+    return [measure.id] if resolves_to_zero("", measures.get(measure.lookup_from)) else []
+
+
 def zero_outputs(plan: LogicalPlan, config: PackageConfig) -> dict[str, str]:
     return {
         alias: "sum"
