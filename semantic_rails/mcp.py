@@ -121,9 +121,11 @@ MCP_DEFAULT_MAX_ROWS = 200
 MCP_ROW_COUNT_CEILING = 10_000
 # The largest max_rows an MCP caller may request.
 MCP_MAX_ROWS_LIMIT = 100_000
-# Execute refuses a result whose rows serialize to more than this many characters (about 8K
-# tokens). An operator sets another limit with this variable.
+# Every final tool payload, serialized identically for both MCP content channels,
+# fits this character budget. Optional plans are trimmed before refusing an answer.
 MCP_DEFAULT_MAX_RESULT_CHARS = 32_000
+# An error envelope must itself fit, even with an unusably small operator setting.
+MCP_MIN_RESULT_CHARS = 512
 _MAX_RESULT_CHARS_ENV = "SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS"
 
 _TOOL_REQUEST_CONTEXT: ContextVar[RequestContext | None] = ContextVar(
@@ -141,7 +143,7 @@ JSON_OBJECT_SCHEMA: dict[str, Any] = {
 # when to use it and its one gotcha.
 MCP_SERVER_INSTRUCTIONS = (
     "Semantic Rails answers analytics questions from a governed semantic layer. Refer to "
-    "objects by full id (measure.jaffle.revenue_usd, dimension.jaffle_store_name), never "
+    "objects by full id (measure.sales.revenue, dimension.store_name), never "
     "by label.\n"
     "\n"
     "To answer a question:\n"
@@ -168,7 +170,7 @@ MCP_SERVER_INSTRUCTIONS = (
     "segment.\n"
     "\n"
     'Every tool returns its smallest response by default (verbosity "minimal", plan detail '
-    '"query"); pass verbosity "compact" or "full", or detail "best", for more. Errors carry '
+    '"query"). Responses share one character budget; omitted_fields names trimmed detail. Errors carry '
     "recovery_hints and closest_matches; follow them before retrying."
 )
 
@@ -185,8 +187,9 @@ POLICY_CONTEXT_SCHEMA: dict[str, Any] = {
 QUERY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "description": (
-        "Semantic Layer Query IR. Full spec at schemas/query_ir.v1.json; "
-        "narrative at docs/QUERY_IR_SCHEMA.md. Unknown keys rejected as "
+        "Semantic Layer Query IR: select [{expression: {measure: '<id>'}, as: '<alias>'}], "
+        "group_by ['<dimension_id>'], where [{field: '<dimension_id>', op: '=', value: ...}]. "
+        "Unknown keys rejected as "
         "INVALID_QUERY (offenders under details.unsupported_keys)."
     ),
     "additionalProperties": True,
@@ -273,7 +276,7 @@ QUERY_SCHEMA_SLIM: dict[str, Any] = {
     "additionalProperties": True,
     "description": (
         "Semantic Layer Query IR (JSON object). IR + time-block shape: "
-        "see the 'execute' tool schema, or schemas/query_ir.v1.json."
+        "use the expression shapes listed in the 'execute' tool schema."
     ),
 }
 
@@ -284,8 +287,8 @@ VERBOSITY_SCHEMA: dict[str, Any] = {
     "description": (
         "Response detail. 'minimal' (default)={ok,errors,warnings}, "
         "+rendered_sql on compile, +rows/row_count on execute — a few KB. "
-        "'compact' adds rendered_sql/sql_plan/explain/normalized query. "
-        "'full' = legacy maximal envelope (~100KB)."
+        "'compact' adds query metadata without compiler plans. "
+        "'full' adds plans within the same response budget; omitted_fields names trimmed detail."
     ),
 }
 
@@ -494,7 +497,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "Returns measures, metrics, dimensions, and entities, up to 'limit' per kind; "
             f"empty terms list ids per kind instead, {_DISCOVER_ID_PAGE} at a time "
             "(limit, offset). Default: slim cards (id, label, "
-            "description); verbosity='compact' adds match_reasons and starter patches. "
+            "description); compact keeps slim cards and omits blocked candidates. "
             "Gotcha: nonsense terms return 'out_of_scope' or 'low_relevance' with empty "
             "buckets; branch before using a candidate."
         ),
@@ -540,7 +543,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "Return one object's card: label, description, aggregations or values, temporal "
             "roles, related objects, policy. Default: the card without duplicate fields; "
             "verbosity='compact' returns the full card. Gotcha: 'object_id' must be a full "
-            "id like 'measure.jaffle.revenue_usd', not a label — use 'discover' first if you "
+            "id like 'measure.sales.revenue', not a label — use 'discover' first if you "
             "only have a phrase."
         ),
         input_schema=_schema(
@@ -560,7 +563,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "domain, or from a constrained warehouse probe with allow_live_query:"
             " true. Use it before writing a 'where' filter on a categorical "
             "dimension. Gotcha: 'dimension_id' must be a full id like "
-            "'dimension.jaffle_store_name'; allow_live_query costs a warehouse "
+            "'dimension.store_name'; allow_live_query costs a warehouse "
             "round-trip, so use it only when no domain is declared."
         ),
         input_schema=_schema(
@@ -646,10 +649,9 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 "verbosity": {
                     **VERBOSITY_SCHEMA,
                     "description": (
-                        "Response detail. 'minimal' (default)={ok,errors,warnings}, plus "
-                        "rendered_sql in mode 'sql' and rows in mode 'run'. 'compact' adds "
-                        "sql_plan, explain and the normalized query; 'full' is the maximal "
-                        "envelope (~100KB)."
+                        "'minimal' (default): outcome, errors, warnings; SQL in 'sql', rows in 'run'. "
+                        "'compact' adds metadata without plans; 'full' adds plans. "
+                        "All modes share a budget; omitted_fields lists trimmed detail."
                     ),
                 },
                 "sql_profile": SQL_PROFILE_SCHEMA,
@@ -676,7 +678,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             " derived from it, 'explain' adds the SQL, and 'preview' returns sample member rows"
             " and the total member count. Default verbosity='minimal' leaves out compiler "
             "plans; 'full' returns them. Gotcha: 'segment_id' must be a full id like "
-            "'segment.jaffle.high_value_customers' (discover with empty terms lists them); "
+            "'segment.high_value_customers' (discover with empty terms lists them); "
             "'preview' queries the warehouse."
         ),
         input_schema=_schema(
@@ -767,7 +769,7 @@ PROMPT_DEFINITIONS: tuple[PromptDefinition, ...] = (
         arguments=(
             {
                 "name": "segment_id",
-                "description": "Segment id such as segment.jaffle.high_value_customers.",
+                "description": "Segment id such as segment.high_value_customers.",
                 "required": True,
             },
         ),
@@ -779,12 +781,12 @@ _PROMPT_TEXT = {
         "Use the Semantic Layer MCP tools against package '{package_id}' to answer: {intent}\n"
         "Start with discover and inspect the best governed objects. Draft Query IR with plan, "
         "check filter values with valid-values, then run it with execute, which validates and "
-        "compiles first. execute modes 'validate' and 'sql' are optional dry runs; "
-        "verbosity 'compact' adds the explain payload."
+        "compiles first. execute modes 'validate' and 'sql' are optional dry runs. "
+        "The response includes diagnostics and any rendered SQL."
     ),
     "semantic-rails-query-review": (
-        "Review this Semantic Layer Query IR with execute mode 'validate', then mode 'sql' "
-        "(verbosity 'compact' adds the explain payload). Only run it with mode 'run' after "
+        "Review this Semantic Layer Query IR with execute mode 'validate', then mode 'sql'. "
+        "Only run it with mode 'run' after "
         "validation succeeds and the user needs result rows.\n\n{query_json}"
     ),
     "semantic-rails-segment-workflow": (
@@ -894,8 +896,8 @@ def _reject_removed_interface(interface: str | None) -> None:
     if str(raw).strip().lower() not in {"", _INTERFACE}:
         raise SemanticLayerError(
             "INVALID_CONFIG",
-            "The v1 MCP interface was removed; v2 is the only interface "
-            "(see docs/MCP_INTERFACE.md).",
+            "The v1 MCP interface was removed; v2 is the only interface. "
+            "Set interface='v2' or omit interface.",
             details={"interface": str(raw), "valid_values": [_INTERFACE]},
         )
 
@@ -1513,39 +1515,11 @@ def _with_warning(result: dict[str, Any], warning: dict[str, Any] | None) -> dic
 
 
 def _max_result_chars() -> int:
-    """The result-size limit: the operator's environment setting, else the default."""
+    """One final-payload budget, with room for a bounded refusal envelope."""
 
-    return _positive_int(os.environ.get(_MAX_RESULT_CHARS_ENV)) or MCP_DEFAULT_MAX_RESULT_CHARS
-
-
-def _refuse_oversized(
-    result: Mapping[str, Any], query: Mapping[str, Any], *, limit: int, fetched: int
-) -> None:
-    """Refuse rows too large to send, rather than truncating them mid-answer.
-
-    The row cap clips a long result and says so; this covers rows that are few but wide,
-    or capped rows that are still too large for one response.
-    """
-
-    chars = len(json.dumps(result.get("rows") or [], default=str, separators=(",", ":")))
-    if chars <= limit:
-        return
-    returned = int(result.get("row_count", 0) or 0)
-    total = result.get("total_row_count") if result.get("truncated") else returned
-    counted = f"{total:,}" if total is not None else f"more than {fetched:,}"
-    advice = _narrowing_advice(query, result)
-    raise SemanticLayerError(
-        "RESULT_TOO_LARGE",
-        f"The result has {counted} rows, about {chars:,} characters, over the {limit:,}-character "
-        f"limit for one response, so no rows were returned. To fit it, {advice}, or select "
-        "fewer columns.",
-        details={
-            "row_count": returned,
-            "total_row_count": total,
-            "result_chars": chars,
-            "max_result_chars": limit,
-            "suggestion": advice,
-        },
+    return max(
+        MCP_MIN_RESULT_CHARS,
+        _positive_int(os.environ.get(_MAX_RESULT_CHARS_ENV)) or MCP_DEFAULT_MAX_RESULT_CHARS,
     )
 
 
@@ -1577,35 +1551,107 @@ def _columnar_rows(result: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _compact_execute(result: dict[str, Any], *, limit: int) -> dict[str, Any]:
-    """Size the execute result before transport warnings and session annotations."""
+_PLAN_DETAIL_FIELDS = (
+    "explain",
+    "sql_plan",
+    "physical_plan",
+    "performance_plan",
+    "fanout_strategy",
+    "fanout_analysis",
+    "semantic_dag",
+)
+_OPTIONAL_RESPONSE_FIELDS = (
+    *_PLAN_DETAIL_FIELDS,
+    "compile_stats",
+    "semantic_summary",
+    "trace",
+    "intent_ir",
+    "alternatives",
+    "compose_hints",
+    "output_columns",
+    "warehouse_capabilities",
+    "freshness_by_leaf",
+    "provenance_summary",
+    "query_state",
+    "selection_context",
+    "normalized_query",
+    "query",
+    "same_as",
+    "request_context",
+)
 
-    omitted = []
-    warnings = list(result.get("warnings") or [])
-    for field in ("explain", "sql_plan"):
+
+def _bound_response(
+    payload: dict[str, Any], *, compact: bool, query: Mapping[str, Any], sql_required: bool = True
+) -> dict[str, Any]:
+    """Budget the final tool payload without cutting rows or changing its outcome.
+
+    Both MCP representations serialize this same payload. Compiler detail and
+    echoes are optional; rows, SQL-mode text, Query IR drafts and diagnostics are not.
+    If those required fields cannot fit, return a bounded, explicit refusal.
+    """
+    result = dict(payload)
+    limit = _max_result_chars()
+    omitted = list(result.get("omitted_fields") or [])
+
+    def omit(field: str) -> None:
+        if field in result:
+            result.pop(field)
+            omitted.append(field)
+            result["omitted_fields"] = omitted
+
+    # The logical plan belongs only inside full explain, never in a second copy.
+    omit("logical_plan")
+    if compact:
+        for field in _PLAN_DETAIL_FIELDS:
+            omit(field)
+    optional_fields: tuple[str, ...] = _OPTIONAL_RESPONSE_FIELDS
+    if not sql_required:
+        optional_fields = (*_PLAN_DETAIL_FIELDS, "rendered_sql", *_OPTIONAL_RESPONSE_FIELDS)
+    for field in optional_fields:
         if len(json_text(result)) <= limit:
             return result
-        if field not in result:
-            continue
-        result = {key: value for key, value in result.items() if key != field}
-        omitted.append(field)
-        result["warnings"] = [
-            *warnings,
-            {
-                "code": "EXECUTE_DETAILS_OMITTED",
-                "severity": "warning",
-                "message": f"Omitted {', '.join(omitted)} to fit the response limit. "
-                "Use execute mode='sql' for the complete plan.",
-            },
-        ]
-    if len(json_text(result)) > limit:
-        raise SemanticLayerError(
-            "RESULT_TOO_LARGE",
-            "The compact response exceeds the response limit even without plan details. "
-            "Narrow the query or select fewer columns.",
-            details={"max_result_chars": limit},
+        omit(field)
+    if len(json_text(result)) <= limit:
+        return result
+
+    details: dict[str, Any] = {
+        "max_result_chars": limit,
+        "result_chars": len(json_text(result)),
+    }
+    message = (
+        f"Response exceeds the {limit:,}-character budget after omitting optional details. "
+        "Request fewer objects, rows or columns."
+    )
+    if "rows" in result:
+        returned = int(result.get("row_count", result.get("preview_row_count", 0)) or 0)
+        total = result.get("total_row_count") if result.get("truncated") else returned
+        counted = f"{total:,}" if total is not None else f"more than {MCP_ROW_COUNT_CEILING:,}"
+        message = (
+            f"The result has {counted} rows and exceeds the {limit:,}-character response budget "
+            f"without optional details. No rows returned; {_narrowing_advice(query, result)}, "
+            "lower max_rows or select fewer columns."
         )
-    return result
+        details.update(row_count=returned, total_row_count=total)
+    error = SemanticLayerError("RESULT_TOO_LARGE", message, details=details)
+    issue = {"code": error.code, "message": str(error), "details": error.details}
+    refusal: dict[str, Any] = {
+        "ok": False,
+        "status": "error",
+        "error": {"code": issue["code"]},
+        "errors": [issue],
+        "warnings": [],
+    }
+    if len(json_text(refusal)) > limit:
+        issue["message"] = (
+            "Required response fields exceed the budget. Request fewer rows or objects."
+        )
+        issue["details"] = {"max_result_chars": limit}
+    # Identity/context echoes can themselves be unbounded. Include only what fits.
+    for field in ("request_id", "api_version", "package_id", "request_context", "omitted_fields"):
+        if field in result and len(json_text({**refusal, field: result[field]})) <= limit:
+            refusal[field] = result[field]
+    return refusal
 
 
 _DISCOVER_SCREENED_KEYS = ("low_relevance", "out_of_scope")
@@ -1664,7 +1710,7 @@ def _lean_discover(payload: dict[str, Any]) -> dict[str, Any]:
 
     A card in a kind's bucket leaves out its kind, ``available: true`` and empty fields; blocked
     and dimension-value cards keep their explicit fields. The terms and verbosity echoes and an
-    empty query state or selection context go too. "compact" and "full" keep the whole cards.
+    empty query state or selection context go too. Compact uses this projection without blocked cards.
     """
 
     if payload.get("verbosity") != "minimal":
@@ -1838,9 +1884,32 @@ class SemanticLayerMCPAdapter:
                 response["request_context"] = request_context_payload(request_context)
                 if request_context.request_id:
                     response["request_id"] = request_context.request_id
-            if session is not None and (arguments is None or isinstance(arguments, Mapping)):
+            audit_context = dict(response.get("request_context", {}) or {})
+            shaped_query: dict[str, Any] = {}
+            with contextlib.suppress(SemanticLayerError):
+                # Response shaping needs query/options only, never another identity resolution.
+                shaped_query = build_query_payload(
+                    arguments if isinstance(arguments, Mapping) else {},
+                    object_payload=_object_argument,
+                    policy_context={},
+                )
+                if not str(shaped_query.get("verbosity") or "").strip():
+                    shaped_query["verbosity"] = MCP_DEFAULT_QUERY_VERBOSITY
+            compact = resolve_verbosity(shaped_query) == "compact"
+            sql_required = not (
+                name == "execute"
+                and isinstance(arguments, Mapping)
+                and str(arguments.get("mode") or "run").strip().lower() == "run"
+            )
+            response = _bound_response(
+                response,
+                compact=compact,
+                query=shaped_query,
+                sql_required=sql_required,
+            )
+            if session is not None and response.get("ok") is True:
                 query = None
-                if name == "execute" and response.get("ok") is True:
+                if name == "execute":
                     with contextlib.suppress(SemanticLayerError):
                         query = _query_payload(
                             _strip_execute_transport_args(
@@ -1848,13 +1917,23 @@ class SemanticLayerMCPAdapter:
                             )
                         )
                 session.annotate(self, name, args_dict, response, query=query)
+                response = _bound_response(
+                    response,
+                    compact=compact,
+                    query=shaped_query,
+                    sql_required=sql_required,
+                )
+                if name == "execute" and query is not None:
+                    session.record_run(self, args_dict, response, query=query)
+            elif session is not None:
+                session.reset_validate_guidance()
             emit_audit_event(
                 "mcp_tool",
                 tool=name,
                 package_id=self.package_id,
                 request_id=str(response.get("request_id", "")),
                 status=response.get("status"),
-                request_context=dict(response.get("request_context", {}) or {}),
+                request_context=audit_context,
                 error_codes=[
                     str(issue.get("code", ""))
                     for issue in list(response.get("errors", []) or [])
@@ -2366,9 +2445,16 @@ class SemanticLayerMCPAdapter:
                     {"kind": "browse_catalog_or_capabilities", "message": browse_message}
                 )
                 payload["recovery_hints"] = existing_hints
-            if verbosity == "minimal" and "verbosity" in payload:
-                payload["verbosity"] = verbosity
+            if verbosity in {"minimal", "compact"} and "verbosity" in payload:
+                payload["verbosity"] = "minimal"
                 payload = _slim_discover_minimal(payload, self.runtime._config)
+                if verbosity == "compact":
+                    payload.pop("blocked", None)
+                    for bucket in _DISCOVER_BUCKETS:
+                        if bucket in payload:
+                            payload[bucket] = [
+                                row for row in payload[bucket] if row.get("available") is not False
+                            ]
             return _lean_discover(payload)
 
         return self._guarded(arguments, _build)
@@ -2432,16 +2518,12 @@ class SemanticLayerMCPAdapter:
         return self._guarded(arguments, _run)
 
     def _handle_execute(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        compact = False
-
         def _run(args: dict[str, Any]) -> dict[str, Any]:
-            nonlocal compact
             row_format = _row_format_arg(args)
             requested_cap = _max_rows_arg(args.get("max_rows")) or MCP_DEFAULT_MAX_ROWS
             query_payload = _query_payload_with_mcp_default_verbosity(
                 _strip_execute_transport_args(args)
             )
-            compact = resolve_verbosity(query_payload) == "compact"
             cap, fetch, fence_binds = _execute_row_limits(query_payload, requested_cap)
             limits = query_payload.get("limits")
             query_payload["limits"] = {
@@ -2491,17 +2573,9 @@ class SemanticLayerMCPAdapter:
                     result["warnings"] = existing
             if bool(result.get("ok", True)) and row_format == "columns":
                 result = _columnar_rows(result)
-            if bool(result.get("ok", True)):
-                _refuse_oversized(result, query_payload, limit=_max_result_chars(), fetched=fetch)
             return result
 
-        result = self._guarded(arguments, _run)
-        if result.get("ok") and compact:
-            try:
-                return _compact_execute(result, limit=_max_result_chars())
-            except SemanticLayerError as exc:
-                return self._error_response(exc, arguments)
-        return result
+        return self._guarded(arguments, _run)
 
     def _handle_execute_mode(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """``execute``: mode ``run``, ``validate`` or ``sql`` runs, validates or
