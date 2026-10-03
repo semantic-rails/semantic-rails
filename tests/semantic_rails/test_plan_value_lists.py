@@ -40,15 +40,15 @@ def _keeping(query: dict[str, Any], field: str) -> list[dict[str, Any]]:
 
 
 @pytest.mark.parametrize("path", ["primary", "fallback", "plan"])
-def test_named_values_share_one_filter_and_grouping(runtime_factory, path: str) -> None:
+def test_named_values_share_one_filter_without_adding_grouping(runtime_factory, path: str) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
         if path == "primary":
             draft = compose(runtime, INTENT).draft
             assert draft is not None
             query = draft.query
-            assert STORE in draft.interpreted_intent["group_by"]
-            assert STORE in {row["id"] for row in draft.resolved}
+            assert STORE not in draft.interpreted_intent["group_by"]
+            assert STORE not in {row["id"] for row in draft.resolved}
         elif path == "fallback":
             query = _draft_for_choice(runtime, intent=INTENT, partial_query={}, choice=CHOICE).query
         else:
@@ -60,32 +60,32 @@ def test_named_values_share_one_filter_and_grouping(runtime_factory, path: str) 
         assert filters[0]["op"] == "in"
         assert set(filters[0]["value"]) == {"Brooklyn", "Philadelphia"}
         product_dimension = "dimension.jaffle_product_type" if path == "fallback" else PRODUCT_TYPE
-        assert query["group_by"] == [product_dimension, STORE]
+        assert query["group_by"] == [product_dimension]
     finally:
         runtime.close()
 
 
-def test_multi_value_draft_executes_each_value_per_group(runtime_factory) -> None:
+def test_multi_value_draft_executes_combined_values_per_group(runtime_factory) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(runtime, intent=INTENT)
         assert payload["status"] == "ok", payload.get("why")
         rows = runtime.query(payload["best"]["query_ir"])["rows"]
-        actual = {(row[STORE], row[PRODUCT_TYPE]): row["item_revenue_usd"] for row in rows}
+        actual = {row[PRODUCT_TYPE]: row["item_revenue_usd"] for row in rows}
         assert len(actual) == len(rows)
         runtime.close()
         with duckdb.connect(runtime.db_path) as connection:
             expected = {
-                (store, product): revenue
-                for store, product, revenue in connection.execute(
-                    "SELECT s.store_name, i.product_type, SUM(i.item_revenue_cents / 100.0) "
+                product: revenue
+                for product, revenue in connection.execute(
+                    "SELECT i.product_type, SUM(i.item_revenue_cents / 100.0) "
                     "FROM jaffle_item i JOIN jaffle_order o ON i.order_id = o.order_id "
                     "JOIN jaffle_store s ON o.store_id = s.store_id "
-                    "WHERE s.store_name IN ('Brooklyn', 'Philadelphia') GROUP BY 1, 2"
+                    "WHERE s.store_name IN ('Brooklyn', 'Philadelphia') GROUP BY 1"
                 ).fetchall()
             }
         assert actual == pytest.approx(expected)
-        assert {store for store, _ in actual} == {"Brooklyn", "Philadelphia"}
+        assert actual == pytest.approx({"beverage": 381387, "jaffle": 327015})
     finally:
         runtime.close()
 
@@ -143,7 +143,7 @@ def test_single_values_negation_and_distinct_dimensions_keep_their_behavior(
         (f" {STORE} ", " in ", "Brooklyn"),
     ],
 )
-def test_caller_filter_cannot_be_appended_to_a_normalized_list(
+def test_caller_filter_stays_as_written_beside_named_values(
     runtime_factory, monkeypatch, path, field, op, value
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
@@ -155,11 +155,14 @@ def test_caller_filter_cannot_be_appended_to_a_normalized_list(
     finally:
         runtime.close()
     assert partial == before
-    assert payload["status"] == "ok", payload.get("why")
+    expected_status = "ok" if isinstance(value, list) else "low_confidence"
+    assert payload["status"] == expected_status, payload.get("why")
     query = payload["best"]["query_ir"]
-    assert len(_keeping(query, STORE)) == 1
-    assert set(_keeping(query, STORE)[0]["value"]) == {"Brooklyn", "Philadelphia"}
-    assert STORE in query["group_by"]
+    assert query["where"] == [
+        {"field": STORE, "op": op, "value": value},
+        {"field": STORE, "op": "in", "value": ["Brooklyn", "Philadelphia"]},
+    ]
+    assert STORE not in query["group_by"]
 
 
 @pytest.mark.parametrize("path", ["primary", "fallback"])
@@ -397,21 +400,146 @@ def test_ranked_value_lists_refuse_unresolved_intent_without_widening_filters(
 
 
 @pytest.mark.parametrize("caller_has_list", [False, True])
-def test_merge_folds_only_into_generated_lists_without_adding_grouping(caller_has_list) -> None:
+def test_merge_keeps_caller_rows_first_without_adding_grouping(caller_has_list) -> None:
     generated = {"field": STORE, "op": "in", "value": ["Brooklyn", "Philadelphia"]}
     equality = {"field": f" {STORE} ", "op": "=", "value": "Brooklyn"}
     caller_rows = [generated, equality] if caller_has_list else [equality]
     query = {"where": [generated], "group_by": [PRODUCT_TYPE]}
     merged = _merge_partial_query(None, query, {"where": caller_rows})
     assert merged["group_by"] == [PRODUCT_TYPE]
-    expected = [generated, {**equality, "field": STORE}] if caller_has_list else [generated]
+    expected = (
+        [generated, {**equality, "field": STORE}]
+        if caller_has_list
+        else [{**equality, "field": STORE}, generated]
+    )
     assert merged["where"] == expected
 
 
-def test_single_value_normalizes_field_and_operator_without_mutating_caller() -> None:
+def test_single_value_strips_field_without_changing_caller_operator() -> None:
     query = {"where": [{"field": f" {STORE} ", "op": " == ", "value": "Brooklyn"}]}
     before = deepcopy(query)
     normalized = _normalize_value_filters(query, [{"dimension_id": STORE, "value": "Brooklyn"}])
     assert query == before
-    assert normalized["where"] == [{"field": STORE, "op": "=", "value": "Brooklyn"}]
+    assert normalized["where"] == [
+        {"field": STORE, "op": " == ", "value": "Brooklyn"},
+        {"field": STORE, "op": "=", "value": "Brooklyn"},
+    ]
     assert "group_by" not in normalized
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+def test_caller_membership_order_and_case_preserve_equality_and_readiness(
+    runtime_factory, monkeypatch, path
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    intent = "top 3 product type by item revenue for Brooklyn from Philadelphia"
+    _force_fallback(runtime, monkeypatch, intent, path)
+    readiness = set()
+    try:
+        for op in ("IN", "in"):
+            for values in (["Philadelphia", "Brooklyn"], ["Brooklyn", "Philadelphia"]):
+                where = [
+                    {"field": STORE, "op": op, "value": values},
+                    {"field": STORE, "op": "=", "value": "Brooklyn"},
+                ]
+                before = deepcopy(where)
+                payload = plan_payload(runtime, intent=intent, partial_query={"where": where})
+                assert where == before
+                assert payload["best"]["query_ir"]["where"][:2] == where
+                readiness.add((payload["status"], tuple(payload["next"].get("ready_for", []))))
+        assert len(readiness) == 1
+    finally:
+        runtime.close()
+
+
+def test_supplied_ranking_does_not_add_named_value_grouping(runtime_factory, monkeypatch) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    partial = {
+        "group_by": [PRODUCT_TYPE],
+        "order_by": [{"field": "item_revenue_usd", "direction": "DESC"}],
+        "limit": 3,
+    }
+    try:
+        payload = plan_payload(runtime, intent=INTENT, partial_query=partial)
+        _force_fallback(runtime, monkeypatch, INTENT, "fallback")
+        fallback = plan_payload(runtime, intent=INTENT, partial_query=partial)
+        assert STORE not in fallback["best"]["query_ir"]["group_by"]
+        query = payload["best"]["query_ir"]
+        assert STORE not in query["group_by"]
+        filters = _keeping(query, STORE)
+        assert len(filters) == 1 and filters[0]["op"] == "in"
+        assert set(filters[0]["value"]) == {"Brooklyn", "Philadelphia"}
+        assert query["group_by"] == [PRODUCT_TYPE]
+        assert payload["status"] == "ok", payload.get("why")
+        rows = runtime.query(query)["rows"]
+        actual = [(row[PRODUCT_TYPE], row["item_revenue_usd"]) for row in rows]
+        runtime.close()
+        with duckdb.connect(runtime.db_path) as connection:
+            expected = connection.execute(
+                "SELECT i.product_type, SUM(i.item_revenue_cents / 100.0) "
+                "FROM jaffle_item i JOIN jaffle_order o ON i.order_id = o.order_id "
+                "JOIN jaffle_store s ON o.store_id = s.store_id "
+                "WHERE s.store_name IN ('Brooklyn', 'Philadelphia') "
+                "GROUP BY 1 ORDER BY 2 DESC LIMIT 3"
+            ).fetchall()
+        assert [product for product, _ in actual] == [product for product, _ in expected]
+        assert [value for _, value in actual] == pytest.approx([value for _, value in expected])
+        assert dict(actual) == pytest.approx({"beverage": 381387, "jaffle": 327015})
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("caller_filter", [False, True])
+def test_unranked_named_values_execute_a_total_with_caller_filters_preserved(
+    runtime_factory, monkeypatch, path, caller_filter
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    intent = "item revenue for Brooklyn and Philadelphia"
+    where = [{"field": STORE, "op": "=", "value": "Brooklyn"}] if caller_filter else []
+    _force_fallback(runtime, monkeypatch, intent, path)
+    try:
+        payload = plan_payload(runtime, intent=intent, partial_query={"where": where})
+        query = payload["best"]["query_ir"]
+        assert not query.get("group_by")
+        assert query["where"][: len(where)] == where
+        filters = _keeping(query, STORE)
+        assert len(filters) == 1 + len(where)
+        assert filters[-1]["op"] == "in"
+        assert set(filters[-1]["value"]) == {"Brooklyn", "Philadelphia"}
+        assert payload["status"] == ("low_confidence" if caller_filter else "ok"), payload.get(
+            "why"
+        )
+        if caller_filter:
+            assert "execute" not in payload["next"].get("ready_for", [])
+            assert "filter_values_unrealized" in [
+                gap["kind"] for gap in payload["why"]["details"]["gaps"]
+            ]
+        rows = runtime.query(query)["rows"]
+        assert len(rows) == 1
+        actual = rows[0][query["select"][0]["as"]]
+        runtime.close()
+        with duckdb.connect(runtime.db_path) as connection:
+            expected = connection.execute(
+                "SELECT SUM(i.item_revenue_cents / 100.0) "
+                "FROM jaffle_item i JOIN jaffle_order o ON i.order_id = o.order_id "
+                "JOIN jaffle_store s ON o.store_id = s.store_id "
+                "WHERE s.store_name IN ('Brooklyn', 'Philadelphia') "
+                + ("AND s.store_name = 'Brooklyn'" if caller_filter else "")
+            ).fetchone()[0]
+        assert actual == pytest.approx(expected)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("where", [None, "", {}])
+def test_empty_caller_where_does_not_raise(runtime_factory, monkeypatch, path, where) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    _force_fallback(runtime, monkeypatch, INTENT, path)
+    try:
+        payload = plan_payload(runtime, intent=INTENT, partial_query={"where": where})
+    finally:
+        runtime.close()
+    assert payload["status"] == "ok", payload.get("why")
+    assert payload["best"]["query_ir"]["group_by"] == [PRODUCT_TYPE]
