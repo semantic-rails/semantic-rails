@@ -29,6 +29,7 @@ from .diagnostics import enrich_object_not_found, exception_issue, semantic_issu
 from .errors import SemanticLayerError
 from .mcp_session import MCPQuerySession
 from .metadata import (
+    _slim_discover_minimal,
     build_options_payload,
     catalog_payload,
     discover_payload,
@@ -55,7 +56,7 @@ from .request_payload import (
 )
 from .resource_access import GRANT_DISCOVER_KINDS
 from .runtime import Runtime
-from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL
+from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL, resolve_verbosity
 
 __all__ = [
     "JSON_OBJECT_SCHEMA",
@@ -481,7 +482,7 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
             "Returns measures, metrics, dimensions, and entities, up to 'limit' per kind; "
             f"empty terms list ids per kind instead, {_DISCOVER_ID_PAGE} at a time "
             "(limit, offset). Default: slim cards (id, label, "
-            "description, score); verbosity='compact' adds match_reasons and starter patches. "
+            "description); verbosity='compact' adds match_reasons and starter patches. "
             "Gotcha: nonsense terms return 'out_of_scope' or 'low_relevance' with empty "
             "buckets; branch before using a candidate."
         ),
@@ -1550,6 +1551,37 @@ def _columnar_rows(result: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _compact_execute(result: dict[str, Any], *, limit: int) -> dict[str, Any]:
+    """Size the execute result before transport warnings and session annotations."""
+
+    omitted = []
+    warnings = list(result.get("warnings") or [])
+    for field in ("explain", "sql_plan"):
+        if len(json_text(result)) <= limit:
+            return result
+        if field not in result:
+            continue
+        result = {key: value for key, value in result.items() if key != field}
+        omitted.append(field)
+        result["warnings"] = [
+            *warnings,
+            {
+                "code": "EXECUTE_DETAILS_OMITTED",
+                "severity": "warning",
+                "message": f"Omitted {', '.join(omitted)} to fit the response limit. "
+                "Use execute mode='sql' for the complete plan.",
+            },
+        ]
+    if len(json_text(result)) > limit:
+        raise SemanticLayerError(
+            "RESULT_TOO_LARGE",
+            "The compact response exceeds the response limit even without plan details. "
+            "Narrow the query or select fewer columns.",
+            details={"max_result_chars": limit},
+        )
+    return result
+
+
 _DISCOVER_SCREENED_KEYS = ("low_relevance", "out_of_scope")
 
 
@@ -2200,6 +2232,7 @@ class SemanticLayerMCPAdapter:
                         }
                     )
                 return {"catalog": page, "warnings": terms_warnings}
+            verbosity = str(args.get("verbosity") or "minimal")
             payload = discover_payload(
                 self.runtime,
                 terms=terms_str,
@@ -2208,7 +2241,7 @@ class SemanticLayerMCPAdapter:
                 if args.get("query") or args.get("policy_context")
                 else None,
                 stage=str(args.get("stage", "")),
-                verbosity=str(args.get("verbosity") or "minimal"),
+                verbosity="compact" if verbosity == "minimal" else verbosity,
                 limit=_coerce_int(args.get("limit"), 10, field="limit", minimum=1),
                 enforce_scope=True,
             )
@@ -2266,6 +2299,9 @@ class SemanticLayerMCPAdapter:
                     {"kind": "browse_catalog_or_capabilities", "message": browse_message}
                 )
                 payload["recovery_hints"] = existing_hints
+            if verbosity == "minimal" and "verbosity" in payload:
+                payload["verbosity"] = verbosity
+                payload = _slim_discover_minimal(payload, self.runtime._config)
             return _lean_discover(payload)
 
         return self._guarded(arguments, _build)
@@ -2329,12 +2365,16 @@ class SemanticLayerMCPAdapter:
         return self._guarded(arguments, _run)
 
     def _handle_execute(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        compact = False
+
         def _run(args: dict[str, Any]) -> dict[str, Any]:
+            nonlocal compact
             row_format = _row_format_arg(args)
             requested_cap = _max_rows_arg(args.get("max_rows")) or MCP_DEFAULT_MAX_ROWS
             query_payload = _query_payload_with_mcp_default_verbosity(
                 _strip_execute_transport_args(args)
             )
+            compact = resolve_verbosity(query_payload) == "compact"
             cap, fetch, fence_binds = _execute_row_limits(query_payload, requested_cap)
             limits = query_payload.get("limits")
             query_payload["limits"] = {
@@ -2388,7 +2428,13 @@ class SemanticLayerMCPAdapter:
                 _refuse_oversized(result, query_payload, limit=_max_result_chars(), fetched=fetch)
             return result
 
-        return self._guarded(arguments, _run)
+        result = self._guarded(arguments, _run)
+        if result.get("ok") and compact:
+            try:
+                return _compact_execute(result, limit=_max_result_chars())
+            except SemanticLayerError as exc:
+                return self._error_response(exc, arguments)
+        return result
 
     def _handle_execute_mode(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """``execute``: mode ``run``, ``validate`` or ``sql`` runs, validates or

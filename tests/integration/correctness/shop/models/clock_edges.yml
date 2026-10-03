@@ -1,0 +1,17 @@
+model:
+  id: clock_edges
+  relation: clock_edges
+  entities: {clock_edge: {}}
+  times:
+    source_day: {column: source_day, kind: date, class: as_of_time, default: true}
+    source_time: {column: source_time, kind: timestamp, class: as_of_time}
+    local_day: {column: source_day, kind: date, class: event_time,
+      column_timezone: UTC, timezone: America/New_York}
+  measures:
+    day_population: {kind: entity_count, entity_key: id, times: [source_day],
+      accumulation: {kind: population}}
+    time_population: {kind: entity_count, entity_key: id, times: [source_time],
+      accumulation: {kind: population}}
+    day_amount: {kind: aggregate, expr: amount, times: [source_day]}
+    time_amount: {kind: aggregate, expr: amount, times: [source_time]}
+    local_amount: {kind: aggregate, expr: amount, times: [local_day]}
