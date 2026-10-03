@@ -48,9 +48,10 @@ def test_contextual_predicate_groups_by_fact_attributes(
         context.append(f"date_trunc('{grain}', p.ordered_at) = date_trunc('{grain}', o.ordered_at)")
     qualify = " AND ".join(["p.customer_id = o.customer_id", *context])
     predicate_where = "p.store_id = 'a'" if where_store else "TRUE"
+    # Every group has rows: SQL SUM stays NULL when all its amounts are NULL (order 7's group).
     reference = (
         "SELECT "
-        + ", ".join([*groups, "COUNT(*)", "COALESCE(SUM(o.amount), 0)"])
+        + ", ".join([*groups, "COUNT(*)", "SUM(o.amount)"])
         + f" FROM orders o WHERE {where} AND EXISTS ("
         + "SELECT 1 FROM orders p "
         + f"WHERE {predicate_where} AND {qualify} "
@@ -69,8 +70,8 @@ def test_contextual_predicate_groups_by_fact_attributes(
 @pytest.mark.parametrize(
     ("measure", "aggregate", "op", "threshold"),
     [
-        (REVENUE, "COALESCE(SUM(o.amount), 0)", "<", 30),
-        (REVENUE, "COALESCE(SUM(o.amount), 0)", ">=", 30),
+        (REVENUE, "SUM(o.amount)", "<", 30),
+        (REVENUE, "SUM(o.amount)", ">=", 30),
         (ORDERS, "COUNT(*)", ">=", 2),
         (ORDERS, "COUNT(*)", ">=", 5),
     ],
@@ -80,7 +81,7 @@ def test_comparison_filter_matches_having(
 ):
     backend = _backend(request, backend_name)
     select = [_item(REVENUE, "revenue"), _item(ORDERS, "orders")]
-    values = ["COALESCE(SUM(o.amount), 0)", "COUNT(*)"]
+    values = ["SUM(o.amount)", "COUNT(*)"]
     query = {
         "select": select,
         "group_by": [STORE],

@@ -431,6 +431,38 @@ def test_null_and_zero(runtime: Runtime, package_dir: Path) -> None:
     assert set(counts.values()) == {1} and len(counts) == len(rows)
 
 
+def test_a_lookup_preserves_an_all_unknown_source_group(tmp_path: Path) -> None:
+    root = _write(tmp_path / NS, _models())
+    _seed(root)
+    with duckdb.connect(str(root / "data" / f"{NS}.duckdb")) as connection:
+        connection.execute("update premium set amount = NULL where coverage_id = 'C1'")
+    reference = """
+    with per_coverage as (
+        select coverage_id, sum(amount) as total, count(*) as source_rows
+        from premium group by coverage_id
+    )
+    select claim.coverage_id,
+           max(case
+               when claim.coverage_id is null then null
+               when per_coverage.source_rows is null
+                    and exists (select 1 from premium where amount is not null) then 0
+               else per_coverage.total
+           end)
+    from claim left join per_coverage using (coverage_id)
+    group by claim.coverage_id
+    """
+    engine = Runtime.from_path(str(root))
+    try:
+        rows = _rows(engine, _query(group_by=[COVERAGE_KEY]), key=COVERAGE_KEY)
+        assert rows == _reference(root, reference)
+        assert rows["C1"] is None  # Two source rows with unknown amounts, two child rows.
+        assert rows["C2"] == 7
+        assert rows["C4"] == rows["C5"] == 0  # No source rows, and an actual zero.
+        assert rows[None] is None
+    finally:
+        engine.close()
+
+
 def test_empty_groups_are_settled_in_one_place(runtime: Runtime) -> None:
     from tests.semantic_rails.empty_groups_invariant import assert_settled_in_one_place
 

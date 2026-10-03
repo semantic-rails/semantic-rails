@@ -1707,7 +1707,8 @@ SHAPES = {
 DIALECT_SQL = {
     "filtered": """WITH leaf_1 AS (
 SELECT
-  SUM(orders.total) AS m1
+  SUM(orders.total) AS m1,
+  COUNT(1) AS m1_rows
 FROM orders
 WHERE
   EXISTS (
@@ -1721,7 +1722,7 @@ WHERE
 ),
 guarded_base AS (
 SELECT
-  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1
+  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1
 FROM leaf_1 AS base
 )
 SELECT
@@ -1756,7 +1757,8 @@ FROM guarded_base AS base""",
     "monthly": """WITH leaf_1 AS (
 SELECT
   {month} AS t,
-  SUM(orders.total) AS m1
+  SUM(orders.total) AS m1,
+  COUNT(1) AS m1_rows
 FROM orders
 WHERE
   EXISTS (
@@ -1773,7 +1775,7 @@ GROUP BY
 guarded_base AS (
 SELECT
   base.t AS t,
-  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1
+  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1
 FROM leaf_1 AS base
 )
 SELECT
@@ -1806,7 +1808,8 @@ CLICKHOUSE_SQL = {
     "filtered": """WITH leaf_1__leaf_1_entity_rows AS (
 SELECT DISTINCT
   orders.order_id AS __entity_key_1,
-  orders.total AS __entity_value
+  orders.total AS __entity_value,
+  1 AS __entity_rows
 FROM orders
 INNER JOIN order_items ON orders.order_id = order_items.order_id
 WHERE
@@ -1814,12 +1817,13 @@ WHERE
 ),
 leaf_1 AS (
 SELECT
-  SUM(leaf_1__leaf_1_entity_rows.__entity_value) AS m1
+  SUM(leaf_1__leaf_1_entity_rows.__entity_value) AS m1,
+  COUNT(leaf_1__leaf_1_entity_rows.__entity_rows) AS m1_rows
 FROM leaf_1__leaf_1_entity_rows
 ),
 guarded_base AS (
 SELECT
-  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1
+  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1
 FROM leaf_1 AS base
 )
 SELECT
@@ -1829,7 +1833,8 @@ FROM guarded_base AS base""",
 SELECT DISTINCT
   orders.order_id AS __entity_key_1,
   {month} AS t,
-  orders.total AS __entity_value
+  orders.total AS __entity_value,
+  1 AS __entity_rows
 FROM orders
 INNER JOIN order_items ON orders.order_id = order_items.order_id
 WHERE
@@ -1838,7 +1843,8 @@ WHERE
 leaf_1 AS (
 SELECT
   leaf_1__leaf_1_entity_rows.t AS t,
-  SUM(leaf_1__leaf_1_entity_rows.__entity_value) AS m1
+  SUM(leaf_1__leaf_1_entity_rows.__entity_value) AS m1,
+  COUNT(leaf_1__leaf_1_entity_rows.__entity_rows) AS m1_rows
 FROM leaf_1__leaf_1_entity_rows
 GROUP BY
   leaf_1__leaf_1_entity_rows.t
@@ -1846,7 +1852,7 @@ GROUP BY
 guarded_base AS (
 SELECT
   base.t AS t,
-  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1
+  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1
 FROM leaf_1 AS base
 )
 SELECT
