@@ -344,7 +344,7 @@ def test_a_non_key_order_dimension_cannot_stand_in_for_order(
 def test_a_customer_history_grouping_needs_its_whole_key(jaffle: Runtime) -> None:
     payload = plan_payload(jaffle, intent="order count by customer history, month")
     # Customer history's key is (customer_id, valid_from). The reference keeps that identity and
-    # the declared validity join; the draft groups by customer id alone.
+    # the declared validity join; the draft groups by valid_from alone.
     connection = duckdb.connect(jaffle.db_path, read_only=True)
     try:
         reference = connection.execute(
@@ -361,10 +361,20 @@ def test_a_customer_history_grouping_needs_its_whole_key(jaffle: Runtime) -> Non
     assert "execute" not in payload["next"].get("ready_for", [])
     assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
     assert payload["why"]["details"]["dropped_groupings"] == ["customer history"]
-    assert payload["best"]["query_ir"]["group_by"] == [
-        "dimension.jaffle_customer_history_customer_id"
-    ]
-    assert len(typed_rows(jaffle.query(payload["best"]["query_ir"]))) == 5_782
+    query = payload["best"]["query_ir"]
+    dimension = "dimension.jaffle_customer_history_valid_from"
+    assert query["group_by"] == [dimension]
+    assert query["time"] == {"temporal_role": ORDER_TIME, "grain": "month"}
+    # Even a held draft reads the validity join; compare its incomplete grouping to the
+    # reference collapsed over customer id, while keeping the whole-identity hold above.
+    expected = {}
+    for _, valid_from, month, count in reference:
+        key = (valid_from, month)
+        expected[key] = expected.get(key, 0) + count
+    assert {
+        (row[dimension], row[f"{ORDER_TIME}__month"]): row["order_count"]
+        for row in typed_rows(jaffle.query(query))
+    } == expected
 
 
 def test_a_composite_key_entity_grouping_is_never_ready(
@@ -411,8 +421,11 @@ def test_a_window_inside_the_list_never_drops_a_later_grouping(jaffle: Runtime) 
             "order count by name",
             {"terms": ["name"], "dropped_groupings": [], "ambiguous_groupings": ["name"]},
         ),
-        # After a comma the draft has no name grouping, and the catalog-word check holds it.
-        ("order count by month, name", {"terms": ["name"], "dropped_groupings": ["name"]}),
+        # After a comma the draft has no name grouping; it still offers the shared meanings.
+        (
+            "order count by month, name",
+            {"terms": ["name"], "dropped_groupings": [], "ambiguous_groupings": ["name"]},
+        ),
     ],
 )
 def test_a_grouping_naming_dimensions_of_other_entities_is_never_a_pick(
@@ -425,7 +438,9 @@ def test_a_grouping_naming_dimensions_of_other_entities_is_never_a_pick(
     assert payload["status"] == "low_confidence"
     assert "execute" not in payload["next"].get("ready_for", [])
     assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
-    assert payload["why"]["details"] == details
+    assert {
+        key: value for key, value in payload["why"]["details"].items() if key != "clarification"
+    } == details
 
 
 @pytest.mark.parametrize(
@@ -466,7 +481,7 @@ def test_only_the_measures_own_entity_or_the_caller_settles_a_shared_grouping(
     assert (why is not None) is ambiguous
     if why:
         assert why["code"] == "PLAN_UNMATCHED_TERMS"
-        assert why["details"] == {
+        assert {key: value for key, value in why["details"].items() if key != "clarification"} == {
             "terms": [term],
             "dropped_groupings": [],
             "ambiguous_groupings": [term],
@@ -713,8 +728,10 @@ def test_a_single_grouping_stays_ready(
         ("revenue by store, at week grain", ["store"]),
         ("revenue by store, 2017", ["store"]),
         ("revenue by store, nonsense, customer type", ["store"]),
-        # So does a window the question states.
-        ("revenue by store, last month and customer type", ["store"]),
+        # A window the question states separates pieces as a comma does.
+        ("revenue by store, last month and customer type", ["store", "customer type"]),
+        ("revenue by store last month and customer type", ["store", "customer type"]),
+        ("revenue by store, last month, nonsense", ["store"]),
     ],
 )
 def test_the_check_reads_every_listed_grouping(
@@ -794,6 +811,7 @@ def test_repeating_one_dimension_never_satisfies_two_listed_groupings(
 # this check has asked.
 OK = "ok"
 UNMATCHED = "PLAN_UNMATCHED_TERMS"
+UNASKED = "PLAN_UNASKED_GROUPING"
 INVALID = "VALIDATION_FAILED"
 DRIFT = "PLAN_FALLBACK_SEMANTIC_DRIFT"
 GAP = "PLAN_INTENT_COVERAGE_GAP"
@@ -806,6 +824,8 @@ class _Before:
     before: str
     # The check holds this plan, which was ready.
     held: bool = False
+    # The code that holds it: this check's, or the unasked-grouping check's after it.
+    code: str = UNMATCHED
     package: str = "jaffle"
     # The caller's partial_query group_by.
     group_by: tuple[str, ...] = ()
@@ -842,13 +862,13 @@ _BEFORE = [
     _Before("the top 5 stores by revenue", OK),
     _Before("revenue by customer segment", INVALID),
     _Before("order count by month, name", UNMATCHED),
-    _Before("top customers by revenue", OK, held=True),
-    _Before("top 10 customers by revenue in Q1 2017", OK, held=True),
+    _Before("top customers by revenue", OK),
+    _Before("top 10 customers by revenue in Q1 2017", OK),
     _Before("revenue by item in 2017", OK, held=True),
     _Before("order count by month, customer id", UNMATCHED),
     _Before("item revenue by month, name", UNMATCHED),
-    _Before("item revenue by name", OK),
-    _Before("item revenue by month and name", OK),
+    _Before("item revenue by name", OK, held=True),
+    _Before("item revenue by month and name", OK, held=True),
     _Before("order count by month, name", OK, group_by=(STORE,)),
     _Before("order count by month, name", OK, group_by=(CUSTOMER_NAME,)),
     *(
@@ -864,7 +884,7 @@ _BEFORE = [
     ),
     # Store district is hidden.
     _Before("item revenue by districts", UNMATCHED, package="hidden_district"),
-    _Before("item revenue by districts", OK, held=True, package="hidden_district", fallback=True),
+    _Before("item revenue by districts", OK, package="hidden_district", fallback=True),
     *(
         _Before(
             "item revenue by district",
@@ -897,7 +917,10 @@ _BEFORE = [
     _Before("orders by store, time", UNMATCHED),
     _Before("revenue by store, statuses", UNMATCHED),
     _Before("food revenue vs drink revenue by store, customer type", UNMATCHED),
-    _Before("food revenue vs drink revenue by store and customer type", OK),
+    # The comparison buckets by month, which the question never asks for.
+    _Before(
+        "food revenue vs drink revenue by store and customer type", OK, held=True, code=UNASKED
+    ),
     _Before("show monthly revenue by store", OK),
     _Before("order count by name", OK, held=True),
     _Before("order count by customer name", OK),
@@ -907,7 +930,7 @@ _BEFORE = [
     _Before("revenue by type", OK, held=True),
     _Before("revenue by store and type", OK, held=True),
     _Before("revenue by order", DRIFT),
-    _Before("revenue by customer", OK, held=True),
+    _Before("revenue by customer", OK),
     _Before("revenue by stores", OK),
     _Before("revenue by supply", INVALID),
     _Before("revenue by item", OK, held=True),
@@ -1043,21 +1066,23 @@ def test_the_check_only_holds_a_plan_that_was_ready(
         runtime = _runtime_for(case, runtime_factory, upkeep, monkeypatch, stack)
         after = plan_payload(runtime, intent=case.intent, partial_query=partial_query)
         with monkeypatch.context() as without_check:
+            # They are the only readers of the listed groupings.
             without_check.setattr(plan_module, "_dropped_grouping_why", lambda *args: None)
+            without_check.setattr(plan_module, "_unasked_grouping_why", lambda *args: None)
             before = plan_payload(runtime, intent=case.intent, partial_query=partial_query)
 
-    # Without the check, plan answers as it did before the check existed.
+    # Without the checks, plan answers as it did before they existed.
     assert _outcome(before) == case.before
-    # The check never changes the draft.
+    # The checks never change the draft.
     assert after["best"].get("query_ir") == before["best"].get("query_ir")
     assert after["best"].get("pattern") == before["best"].get("pattern")
     if case.held:
-        # It only holds a plan that was ready, and never readies one or picks another.
+        # They only hold a plan that was ready, and never ready one or pick another.
         assert case.before == OK
         assert after["status"] == "low_confidence"
         assert "ready_for" not in after["next"]
-        assert after["why"]["code"] == UNMATCHED
+        assert after["why"]["code"] == case.code
     else:
         assert after["status"] == before["status"]
-        assert after.get("why") == before.get("why")
+        assert _outcome(after) == _outcome(before)
         assert after["next"] == before["next"]

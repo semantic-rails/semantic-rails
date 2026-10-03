@@ -3087,6 +3087,29 @@ def test_parse_report_rejects_a_metric_reference_the_package_lacks(
     ]
 
 
+def test_package_authoring_suggests_a_measure_hidden_from_every_audience(package_config_factory):
+    package_dir = _jaffle_with_sessions_plus_orders(
+        package_config_factory, {"kind": "aggregate", "measure": "order_cnt"}
+    )
+    path = package_dir / "policies.yml"
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    doc["semantic_policies"].append(
+        {
+            "id": "policy.hide_orders",
+            "kind": "object_visibility",
+            "object_ids": ["measure.jaffle.order_count"],
+            "action": "hidden",
+        }
+    )
+    _write_yaml(path, doc)
+
+    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
+
+    assert report["ok"] is False
+    messages = [row["message"] for row in report["errors"]]
+    assert any("did you mean 'measure.jaffle.order_count'?" in message for message in messages)
+
+
 @pytest.mark.parametrize("mutual", [False, True], ids=["self-cycle", "mutual-cycle"])
 def test_parse_report_rejects_cyclic_metric_references(package_config_factory, mutual):
     _, package_dir = package_config_factory("jaffle_shop")
@@ -3196,9 +3219,7 @@ def test_parse_report_rejects_a_conversion_whose_window_cannot_apply(
             "'entity.jaffle_customer' itself on the clock "
             "'temporal_role.jaffle_customer_first_order_at', so each base event converts to "
             "itself at the same time and the 90-day window can never apply. Count events keyed "
-            "by 'entity.jaffle_customer' in both operands instead, for example "
-            "'measure.jaffle.order_count', 'measure.jaffle.delivered_orders', "
-            "'measure.jaffle.session_starts'."
+            "by 'entity.jaffle_customer' in both operands instead (see `candidate_measures`)."
         ]
 
 

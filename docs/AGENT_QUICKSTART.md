@@ -173,8 +173,12 @@ Statuses are:
   number, clock or zone word, and word that names a catalog object (in a label or alias, or the
   last dotted part of an id or name outside its namespaces; never only a description) in the
   question is used by the draft: by an object it selects, a filter value, a time grain or a time
-  phrase, never a synonym, a typo or a framing word. `warnings` can still name other question
-  words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
+  phrase, never a synonym, a typo or a framing word. Every grouping the draft adds, each
+  `group_by` dimension and a time grain that splits the rows, traces to the question too
+  (otherwise `PLAN_UNASKED_GROUPING`), and a ranking keeps the top N of the entity it ranks
+  (otherwise `PLAN_RANKING_PERIOD_AMBIGUOUS`, with no runnable option: ask the user which
+  ranking they mean, such as the top N overall or the top N in each period).
+  `warnings` can still name other question words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
   Request words such as "show" still count when they are exact catalog names. A time grain
   consumes its own unit and its "-ly" form; a grouping that names the query's clock at the
   planned grain ("by order date") is consumed. Other time words must occur inside a recorded
@@ -302,6 +306,11 @@ consistently across discovery, metadata, validation, compile, and query calls.
    `details.clarification.question` from the user's question, or ask the user, then resend the
    chosen option's `where` unchanged. Write a child group (`{child, match, where}`) up front when
    the question already says it.
+   A `PLAN_UNMATCHED_TERMS` grouping option also carries `group_by` and `order_by` to
+   apply with `where` for one unclear term. With several, each option names its
+   `term` and `replaces` IDs: in `best.query_ir`, remove those IDs from `group_by`
+   and their `order_by` entries, add the chosen `id`, keep `group_by` sorted, then validate.
+   When two terms could replace the same grouping, plan offers no options; ask the user.
 
 Use `minimal` or `compact` verbosity unless the user asks for debugging detail. Request
 `full` only for explainability, test failure triage, or query review.
@@ -346,7 +355,12 @@ Branch on structured status fields: a `plan` draft that isn't `ok`, or has warni
 repair node before `execute`. `INVALID_QUERY`, `PATH_JOIN_CONFLICT`,
 `MIXED_GRAIN_INVALID`, `POLICY_DENIED`, and low-relevance results should route to repair or refusal
 nodes instead of being retried as raw SQL. `AMBIGUOUS_CHILD_SCOPE` routes to a clarification
-node: each of its `details.clarification.options` is a complete `where` to resend. `AMBIGUOUS_PATH` (`details.reason:
+node: each of its `details.clarification.options` is a complete `where` to resend.
+A `PLAN_UNMATCHED_TERMS` grouping option also carries `group_by` and `order_by` to apply
+with `where` for one unclear term. With several, in `best.query_ir` remove each chosen
+option's `replaces` IDs from `group_by` and their `order_by` entries, add its `id`,
+keep `group_by` sorted, then validate. When two terms could replace the same grouping,
+plan offers no options; ask the user. `AMBIGUOUS_PATH` (`details.reason:
 route_decision_required`) means two join routes can answer the question differently (an account's
 branch district or its owner's home district) and the package hasn't recorded which one it means.
 The agent never picks one; it asks:

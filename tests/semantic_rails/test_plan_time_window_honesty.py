@@ -171,10 +171,13 @@ def test_plan_last_n_days_is_time_bounded(runtime_factory) -> None:
         payload = plan_payload(runtime, intent="revenue by store last 7 days")
     finally:
         runtime.close()
-    assert payload["status"] == "ok"
     time_spec = payload["best"]["query_ir"]["time"]
     assert time_spec["range"] == {"last": {"unit": "day", "value": 7}}
     assert time_spec["grain"] == "day"
+    # The draft splits the 7 days into days, which the question never asks for.
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "PLAN_UNASKED_GROUPING"
+    assert payload["why"]["details"]["grain"] == "day"
 
 
 def test_plan_unresolved_window_downgrades_instead_of_silently_dropping(

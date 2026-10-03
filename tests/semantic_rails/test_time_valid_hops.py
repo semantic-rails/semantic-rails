@@ -166,6 +166,7 @@ FILES = {
 HOP = "relationship.usage_account_segment"
 OUT_HOP = "relationship.account_segment_account"
 ACCOUNT = "entity.hist_account"
+ACCOUNT_KEY = "dimension.hist_account_id"
 HISTORY = "entity.hist_account_segment"
 SEGMENT = "dimension.hist_account_segment_segment"
 HISTORY_KEY = "dimension.hist_account_segment_account_id"
@@ -266,7 +267,12 @@ def _rows(runtime: Runtime, query: dict[str, Any], keys: list[str]) -> dict[Any,
     "query",
     [
         pytest.param(_amount(group_by=[SEGMENT]), id="group-by"),
+        pytest.param(_amount(group_by=[HISTORY_KEY]), id="group-by-history-key"),
         pytest.param(_amount(where=STARTER), id="where"),
+        pytest.param(
+            _amount(where=[{"field": HISTORY_KEY, "op": "=", "value": "A1"}]),
+            id="where-history-key",
+        ),
         pytest.param(_amount(group_by=[TIER]), id="two-hops"),
         pytest.param(
             {
@@ -367,29 +373,30 @@ def test_a_relationship_without_temporal_validity_needs_no_time(runtime, gold):
     [
         pytest.param(
             {"group_by": [HISTORY_KEY]},
-            {("A1",): 33.0, ("A2",): 5.0, ("A3",): 7.0},
-            "SELECT u.account_id, SUM(u.amount) FROM usage AS u GROUP BY 1",
+            {("A1", 1): 10.0, ("A1", 2): 20.0, ("A2", 1): 5.0, (None, 1): 7.0, (None, 12): 3.0},
+            f"SELECT {SQL_AS_OF.format(column='account_id')}, month(u.used_at),"
+            " SUM(u.amount) FROM usage AS u GROUP BY 1, 2",
             id="group-by",
         ),
         pytest.param(
             {"where": [{"field": HISTORY_KEY, "op": "=", "value": "A1"}]},
-            {(): 33.0},
-            "SELECT SUM(u.amount) FROM usage AS u WHERE u.account_id = 'A1'",
+            {(1,): 10.0, (2,): 20.0},
+            "SELECT month(u.used_at), SUM(u.amount) FROM usage AS u"
+            f" WHERE {SQL_AS_OF.format(column='account_id')} = 'A1' GROUP BY 1",
             id="where",
         ),
     ],
 )
-def test_the_history_key_read_from_the_usage_row_needs_no_time(
+def test_the_history_key_reads_the_version_valid_at_the_usage_time(
     runtime, package, gold, clause, expected, sql
 ):
-    """The segment table's account id is the usage row's own account id, so the query reads it
-    there and joins no version of the history."""
+    """A matching source key does not prove a history version exists at the usage time."""
     config = load_package_config(str(package))
-    query = _amount(**clause)
+    query = _amount(**clause, time=MONTHLY)
 
-    result = _rows(runtime, query, clause.get("group_by", []))
+    result = _rows(runtime, query, [*clause.get("group_by", []), MONTH])
 
-    assert "account_segments" not in compile_query(config, Registry(config), query)["sql"]
+    assert "LEFT JOIN account_segments" in compile_query(config, Registry(config), query)["sql"]
     assert result == expected
     assert result == gold(sql)
 
@@ -409,6 +416,74 @@ def test_a_hop_out_of_the_table_holding_the_window_needs_no_time(runtime, gold):
         "SELECT (SELECT a.region FROM accounts AS a WHERE a.account_id = s.account_id),"
         " SUM(s.seats) FROM account_segments AS s GROUP BY 1"
     )
+
+
+def test_a_hop_out_of_the_validity_window_keeps_the_source_key(runtime, package, gold):
+    query = _seats(group_by=[ACCOUNT_KEY])
+    config = load_package_config(str(package))
+    sql = compile_query(config, Registry(config), query)["sql"]
+
+    by_account = _rows(runtime, query, [ACCOUNT_KEY])
+
+    assert "account_segments.account_id AS g1" in sql
+    assert "JOIN accounts" not in sql
+    assert by_account == {("A1",): 7.0, ("A2",): 1.0}
+    assert by_account == gold(
+        "SELECT account_id, SUM(seats) FROM account_segments GROUP BY account_id"
+    )
+
+
+@pytest.mark.parametrize("clock", ["valid_from", "valid_to"])
+@pytest.mark.parametrize("schema", ["", "analytics"])
+def test_an_anchored_outgoing_hop_keeps_closed_and_open_versions_regions(
+    tmp_path, gold, clock, schema
+):
+    """An existing segment version looks up its account even at its exclusive end time."""
+    files = dict(FILES)
+    files["models/account_segments.yml"] = files["models/account_segments.yml"].replace(
+        f"column: {clock}, kind: timestamp,", f"column: {clock}, kind: timestamp, default: true,"
+    )
+    seed = SEED_SQL
+    if schema:
+        files["models/account_segments.yml"] = files["models/account_segments.yml"].replace(
+            "relation: account_segments", f"relation: {schema}.account_segments"
+        )
+        files["graph.yml"] = files["graph.yml"].replace(
+            "account_segments.valid_", f"{schema}.account_segments.valid_"
+        )
+        seed = f"CREATE SCHEMA {schema};\n" + seed.replace(
+            "TABLE account_segments", f"TABLE {schema}.account_segments"
+        ).replace("INTO account_segments", f"INTO {schema}.account_segments")
+    package = _write_package(tmp_path, files)
+    (package / "data" / "seed.sql").write_text(seed)
+    runtime = opened(Runtime.from_path(str(package)))
+    role = f"temporal_role.hist_account_segment_{clock}"
+    time_key = f"{role}__month"
+    query = _seats(group_by=[REGION], time={"temporal_role": role, "grain": "month"})
+    try:
+        rows = runtime.query(query)["rows"]
+    finally:
+        runtime.close()
+    actual = {
+        (row[REGION], datetime.fromisoformat(row[time_key]) if row[time_key] else None): float(
+            row["value"]
+        )
+        for row in rows
+    }
+    expected = gold(
+        "SELECT (SELECT a.region FROM accounts a WHERE a.account_id = s.account_id),"
+        f" date_trunc('month', s.{clock}), SUM(s.seats) FROM account_segments s GROUP BY 1, 2"
+    )
+    assert expected == (
+        {
+            ("North", datetime(2026, 1, 1)): 2.0,
+            ("North", datetime(2026, 2, 1)): 5.0,
+            ("South", datetime(2026, 1, 1)): 1.0,
+        }
+        if clock == "valid_from"
+        else {("North", datetime(2026, 2, 1)): 2.0, ("North", None): 5.0, ("South", None): 1.0}
+    )
+    assert actual == expected
 
 
 def test_schema_qualified_windows_keep_outgoing_lookups_safe_and_incoming_hops_anchored(tmp_path):
@@ -683,7 +758,10 @@ def test_recovery_hints_skip_a_dimension_behind_a_time_valid_hop(package):
     assert SEGMENT in with_time["compatible_dimensions"]
 
 
-def test_the_join_refuses_a_time_valid_hop_the_classification_let_through(package, monkeypatch):
+@pytest.mark.parametrize("dimension", [SEGMENT, HISTORY_KEY])
+def test_the_join_refuses_a_time_valid_hop_the_classification_let_through(
+    package, monkeypatch, dimension
+):
     """Force the bypass: rate every hop as if the query had a time. The join itself still
     refuses to cross the hop without the time its validity window needs."""
     config = load_package_config(str(package))
@@ -697,7 +775,7 @@ def test_the_join_refuses_a_time_valid_hop_the_classification_let_through(packag
     )
 
     with pytest.raises(SemanticLayerError) as exc:
-        compile_query(config, Registry(config), _amount(group_by=[SEGMENT]))
+        compile_query(config, Registry(config), _amount(group_by=[dimension]))
 
     assert exc.value.code == "FANOUT_UNSAFE"
     assert exc.value.details["relationships"] == [HOP]

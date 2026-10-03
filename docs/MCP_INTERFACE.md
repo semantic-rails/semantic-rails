@@ -307,10 +307,32 @@ names. Last, each grouping the question lists, apart from clock terms and declar
 match its own `group_by` dimension, or the plan is `low_confidence` with
 `why.code="PLAN_UNMATCHED_TERMS"` and `why.details.dropped_groupings` naming the unmatched ones.
 This check reads past a comma when the next piece names a dimension, an entity or a clock, and
-stops at a window the question states, while the draft still reads its groupings up to the
-comma: "repair cost by incident name, incident" grouped by Incident name alone is not ready, as
-two incidents can share a name. The check only holds a plan; it never changes a draft or makes
-one ready. A listed grouping that names an entity is satisfied only by that entity's own key
+reads a window the question states as a comma, while the draft still reads its groupings up to
+the comma: "repair cost by incident name, incident" grouped by Incident name alone is not ready,
+as two incidents can share a name, and neither is "repair cost by incident name, last month and
+incident". It also checks terms after `by` with a comma, tab or newline, after `per`,
+`each`, `for each` or `every`, in lists joined by commas, `and`, `&` or repeated clauses, and
+the nouns before `by` in `top`, `highest` and `lowest` rankings. Each term records its source
+span. Pieces consisting only of connector words add none, and a marker inside a declared name
+("Sends per account") opens no clause.
+A `level`, `levels`, `grain` or `grains` word outside every declared name holds the plan unless
+every grouping the question names is grouped. This check reads which declared names the
+question holds, not how the phrase is built, so a plural, a repeated "at" or a separator
+changes nothing: "revenue at customer type and at store name levels" needs both Customer type
+and Store name. A dimension the question names (its label, the last part of its name or an
+alias, as whole words) needs its own id in `group_by`; an entity needs one of the stand-ins
+described below. A name doesn't count inside a longer declared name ("customer type" is not
+also the entity Customer) or inside a phrase naming the query's clock ("order date"), and
+neither does a declared value or a dimension the draft's `where` pins to one value (`=`, or `IN`
+with one value). The word before each level word must end the name of a dimension, an entity
+or a clock: "revenue at region level" with no Region is not ready, nor is "revenue at the
+level". A declared "Severity level" dimension or "Stock level" measure triggers nothing. Some
+complete plans are held on purpose: in "revenue at store level for customer types new and
+repeat", "customer types" is no declared name, so the entity Customer must be grouped.
+These readers add obligations only to the dropped-grouping check; planning and the checks that
+authorize a draft's groupings retain their existing readers. The check only holds a plan; it
+never changes a draft or makes one ready.
+A listed grouping that names an entity is satisfied only by that entity's own key
 dimension, or by the single declared dimension of that entity whose own words name it, and an
 entity with a composite key is never satisfied. A term names an entity only with every word of
 its label ("customer" names Customer, not Customer history), and a declared time, such as Store
@@ -320,7 +342,45 @@ A grouping that dimensions of two or more entities match, none of them the measu
 ("name" for an order count: Customer name or Store name), is ambiguous and never a pick: the
 plan is not ready, and `why.details.ambiguous_groupings` lists it. Naming the entity ("customer
 name") settles it, as does a dimension in the caller's `partial_query` group_by when the draft
-adds no other that matches. Words that name no catalog object also make the plan `low_confidence` when the draft
+adds no other that matches.
+
+The reverse also holds: every grouping the draft adds traces to the question, or the plan is
+`low_confidence` with `why.code="PLAN_UNASKED_GROUPING"`, `why.details.unasked_groupings`
+naming each one (a dimension's label, or the grain's unit), `details.dimensions` and
+`details.grain`. A `group_by` dimension traces to a grouping the question asks for, read as
+above: one it lists ("by store"), the noun a ranking ranks ("which 5 stores had the most
+orders"), or the words after "per", "each" or "every" ("revenue per store"). It also traces to
+the caller's `partial_query` group_by, or to the draft's own `=` or `IN` filter, which keeps only
+values the question names. The time block's grain traces to the question's words outside its
+windows: its unit or "-ly" form ("by month", "monthly", "at month level", "daily"), a series
+("over time", "trend", "trending", "time series"), or for days a grouping that names the
+query's clock ("by order date"). It also traces to the caller's `partial_query` time grain, or
+it can't split the rows because the window fits in one bucket of the grain ("in Q1 2017", "last
+month", "yesterday"). Packages declare no default grain, so the month plan picks for a
+comparison ("food revenue vs drink revenue by store"), a year-over-year shift ("revenue vs last
+year") or a qualified ranking, and the unit of a window of several periods ("revenue last 7
+days" by day, "revenue by store in the last 3 months" by month, "revenue in 2016 and 2017" by
+year), are held: name the grain ("monthly revenue for the last 3 months by store", "revenue in
+2016 and 2017 by year") or follow the `remove_unasked_grouping` hint.
+
+A ranking (a draft with a `group_by`, a `limit` and a first `order_by` on a selected value) must
+also keep the top N of the entity the question ranks. It ranks the entity when the ranked noun
+("top 3 stores", "which 3 stores") is not a time unit and reads every `group_by` dimension, as
+above (an entity's key and its label). When the question ranks nothing, a ranking the caller's
+`partial_query` states (its `limit`, over its own `group_by`) traces to it unless a grain splits
+its rows. A ranking of the entity whose rows a traced grain splits ("top 3 stores by revenue at
+month level", "top 3 stores by monthly revenue") would keep the top 3 store-months, so it is
+held with `why.code="PLAN_RANKING_PERIOD_AMBIGUOUS"`; its message asks which ranking the
+question means, the top 3 stores over the whole window or the top 3 stores in each month. Any
+other ranking whose rows aren't the ranked entity's, split by a grain or not ("which 3 stores
+have the highest revenue by customer type" keeps the top 3 store and customer type pairs, a
+ranked period such as "which 3 months had the highest revenue by store"), is held with the same
+code. Every such hold has no `clarification` and no Query IR in `why.details`: as its
+`ask_which_ranking` hint says, ask the user which ranking they mean and plan again with a
+question that names it. Both checks only hold a plan; neither changes a draft or makes one
+ready.
+
+Words that name no catalog object also make the plan `low_confidence` when the draft
 doesn't consume them, they aren't stopwords or number words, and `intent_ir.unresolved`
 still holds them. This returns `why.code="PLAN_UNMATCHED_TERMS"` with
 `why.details={"terms": [...], "kind": "filter_values_unrealized"}` and an
@@ -865,6 +925,7 @@ Request `compact` or `full` for the complete analysis details.
 |------|----------------------|
 | `AMBIGUOUS_ALIAS` | Alias resolves to multiple semantic objects; pick one from `details.candidates`. |
 | `AMBIGUOUS_CHILD_SCOPE` | Plain filters on one child entity across a one-to-many hop don't say which child rows they mean: two or more positive ones (the same row or separate ones), or one negated one ("has a row that is not X" or "has no row that is X"). `details.clarification.options` holds both readings, each as the query's whole rewritten `where`; resend one. Offered only when both answer for this caller. |
+| `PLAN_UNMATCHED_TERMS` | A grouping option also carries `group_by` and `order_by` to apply with its complete `where` for one unclear term. With several, in `best.query_ir` remove each chosen option's `replaces` IDs from `group_by` and their `order_by` entries, add its `id`, keep `group_by` sorted, then validate. When two terms could replace the same grouping, plan offers no options; ask the user. |
 | `AMBIGUOUS_PATH` | Several routes between root entity and target can answer differently and the package records none (`details.reason: route_decision_required`). `details.clarification` asks which one the question means (`question`) and lists one option per route: its `meaning` in business words, its `relationship_path`, and its `decision` row. Ask the person, then resend with that `decision` in `route_decisions` (this query only), or record it with Architect `record_route_decision` (the package default; an option's `conflicts_with` names the package rows to change first). |
 | `DUPLICATE_OUTPUT_ALIAS` | Two projected columns share an alias; rename one. |
 | `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. For a measure restriction, `details.aggregation` records the rejected value and the hint's `aggregation_received` and `allowed` mirror `details.aggregation` and `details.allowed`; the hint lists only those allowed values and offers omitting `aggregation` when `details.default_aggregation` belongs to `details.allowed`, naming that default. Parameter errors disclose the required parameter schema. |

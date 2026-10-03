@@ -626,6 +626,9 @@ Supported in metric definitions and in `metric_filters.expression`. Predicate ex
 - contextual predicates inherit the query period by default; omit `time_alignment` unless the input is measured on another clock (next bullet). Plan drafts never set it
 - a contextual predicate whose input is measured on another clock than `time.temporal_role` is refused with `INVALID_TEMPORAL_BINDING`: matching the two clocks' calendar buckets is a different question. Query on the input's clock, use `scope_mode: "entity_only"` for all time, or set `time_alignment: "same_query_period"` (pinning one clock with the input's `temporal_role` if it has several) to compare the calendar periods on purpose
 - `time_alignment` values are `same_query_period` (contextual only), `query_window` and `rolling_window_in_period` (both only for `entity_only` bounded-window predicates)
+- An `entity_only` window predicate uses the query clock when compatible, or its input's sole compatible clock. If the query clock is incompatible and the input has several clocks, it refuses with `INVALID_TEMPORAL_BINDING` and lists the candidates. A measure's `default_temporal_role` does not choose among those clocks. For a direct measure input, pin its `temporal_role` or set `temporal_role_overrides` for the measure. For a metric input advertising several `compatible_temporal_roles`, pins and measure overrides inside the metric do not narrow those clocks; set `query.time.temporal_role` to one of the listed clocks. For either input, omit `time_alignment` to apply the predicate over all time. A model's default time supplies the clock only when the measure does not declare its own `times` list.
+- A window-aligned metric predicate refuses with `INVALID_TEMPORAL_BINDING` if the chosen window clock is excluded by any measure inside the input, by its pin, an override or its declared clocks; for a conversion, its base measure (the period filters base events; converted events match each base event's window).
+- `temporal_role_overrides` do not apply inside a metric predicate input (they only choose or check its window clock); an input that reads an overridden measure through a conversion or a time window refuses with `INVALID_TEMPORAL_BINDING`.
 - a threshold that zero satisfies (`= 0`, `< 3`, `<= 0`, `!= 1`) counts an entity with no rows at all as 0 when the input is a count or a sum, or an add or subtract of them, so "customers with no orders" works. Every entity, with rows or none, reads by one rule (see [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0)): an operand is 0 where its measure has data somewhere in the predicate's scope, and `NULL` where it has none. So `large_orders = 0` keeps every customer without a large order when some order in scope is large, and keeps nobody when none is (with no large order anywhere in scope there is no data, not a count of zero), and `orders - returned_orders` is `NULL` for every customer in a window where nothing was returned. An entity whose rows all have a NULL amount is unknown (`NULL`), not 0, except that an add or subtract of measures, a measure with a `CASE` below its expression root, and any predicate in a query with a `distribution` output, reads an operand's unknown amounts as 0 where its measure has data in scope. `NULL` satisfies no threshold, as with a `metric_filter` on the same expression. An average, minimum, maximum, median or ratio over no rows is `NULL` too (an average of nothing is undefined), so `average_order_value < 20` keeps only customers that have orders, as SQL `HAVING AVG(x) < 20` does. Conversion metrics and anchored `scoped_aggregate` ratios refuse a count or sum threshold that zero satisfies for now
 
 Monthly contextual example:
@@ -1026,6 +1029,43 @@ and composition hints in every detail mode. If visibility cannot be determined,
 dimensions are withheld. Naming a hidden dimension has the same outcome as naming
 an absent dimension; a draft that bypasses the visibility check is refused with
 `OBJECT_NOT_FOUND` without naming the dimension.
+
+When a grouping word names available dimensions on several entities and none
+belongs to the selected measure's root entity, planning holds the draft with
+`low_confidence` and `PLAN_UNMATCHED_TERMS`. This applies to primary planning
+and catalog fallback, adding discovery's additional matches, including plurals,
+unless a strict match names the whole term by label or dimension ID (underscores
+read as spaces). A column name alone does not settle it. Discovery evidence can add a hold or an option;
+only strict matches satisfy a grouping. The reason lists
+`ambiguous_groupings` and `details.clarification.options`, with one validated
+option per visible candidate dimension. Each option names its `id`, `label`
+and grouping `term`. With exactly one unclear term, it also carries
+`group_by`, `where` and `order_by`: apply those three fields to `best.query_ir`,
+then validate or execute the chosen reading. Filters and unrelated groupings
+are preserved; dimension sort fields follow the chosen grouping. With two or
+more unclear terms, options carry `id`, `label`, `term` and `replaces`, the draft
+`group_by` IDs matching that term. In `best.query_ir`, for each ambiguous term,
+remove its chosen option's `replaces` IDs from `group_by` and the corresponding
+`order_by` entries, add the chosen `id` to `group_by`, keep `group_by` IDs sorted
+so choices compose in any order, then validate. When two terms could replace the
+same grouping, plan offers no options; ask the user. For example,
+"item revenue by district" asks whether Store district or Customer district
+is intended.
+
+A root-owned matching dimension takes precedence: a draft using another
+entity's match instead is held with `PLAN_UNMATCHED_TERMS`. Planning keeps
+that draft for inspection rather than changing its business meaning. A
+caller-supplied `group_by` settles a shared non-root grouping only when the
+draft adds no competing match. No heuristic match alone makes a held draft
+ready.
+
+Catalog candidate lists added during validation and error enrichment apply the
+same visibility check before producing recovery hints or near-match suggestions.
+Hidden candidates are omitted, and an unresolved policy context withholds alternatives.
+An ambiguous filter alias with fewer than two visible matches is refused as an
+unknown field; validation never selects its remaining match. Error messages refer
+to structured clock alternatives without embedding catalog IDs. Package authoring
+validation retains the full catalog for reference suggestions.
 
 Validate or execute `best.query_ir` directly. `next` carries `ready_for` and optional
 `valid_values` calls, without duplicating the query. For `detail="best"`, fallback drift

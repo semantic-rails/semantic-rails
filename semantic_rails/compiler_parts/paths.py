@@ -52,7 +52,7 @@ from .indexes import (
     get_package_analysis,
     rollup_dimension_entities,
 )
-from .temporal import _allows_coarse_snapshot_alignment
+from .temporal import _allows_coarse_snapshot_alignment, _validate_leaf_window_clock
 
 
 def _column_ref(table: str, column: str) -> SqlIdentifier:
@@ -179,6 +179,10 @@ def _direct_entity_key_source_expr(
     if len(routes) != 1:
         return None
     rel, source_col = routes[0]
+    # A hop into the validity window cannot establish a history version from the source key.
+    # Keep its temporal lookup; a window on the source table already has one version per row.
+    if enters_validity_window(rel, source.table):
+        return None
     # The shortcut only stands when the route resolver picks exactly the one direct
     # relationship found: a row or another route to the target may mean a different row than
     # the source table's own column, and an ambiguous pair falls through to path selection,
@@ -343,6 +347,7 @@ def _leaf_time_role(bound: BoundMeasure, query: NormalizedQuery, config: Package
     if not requested:
         return bound.temporal_role
     measure = _measure_index(config)[bound.measure_id]
+    _validate_leaf_window_clock(bound.measure_id, bound.temporal_role, requested, config)
     compatible = set(measure.compatible_temporal_roles)
     if requested in compatible:
         return requested
@@ -412,10 +417,12 @@ def _join_on_for_relationship(
             SqlBinary(_column_ref(left_table, left_col), "=", _column_ref(right_table, right_col)),
         )
     time_anchor = _time_anchor_expr(time_spec, config)
-    if time_anchor is None and enters_validity_window(rel, entities[current_entity].table):
+    enters_window = enters_validity_window(rel, entities[current_entity].table)
+    if time_anchor is None and enters_window:
         # analyze_fanout refuses such a hop when it plans the path; this is the join's own guard.
         raise unanchored_time_valid_hop_error([(rel.id, next_entity)], [rel.id])
-    if time_anchor is not None and rel.temporal_validity:
+    # Leaving the window table reads an existing version; only entering it selects a version.
+    if time_anchor is not None and enters_window:
         valid_from = str(rel.temporal_validity.get("valid_from", "")).strip()
         valid_to = str(rel.temporal_validity.get("valid_to", "")).strip()
         if valid_from:

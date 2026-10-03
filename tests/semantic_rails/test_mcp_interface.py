@@ -209,8 +209,10 @@ def test_replace_tool_handler_swaps_one_adapter_body_behind_the_boundary(
             measures=[],
             dimensions=[],
             segments=[],
+            semantic_policies=[],
         ),
     )
+    runtime._config = runtime.config
     adapter, other = SemanticLayerMCPAdapter(runtime), SemanticLayerMCPAdapter(runtime)
     seen: list[dict] = []
 
@@ -940,13 +942,7 @@ def test_mcp_unknown_resource_returns_available_resource_hint(runtime_factory):
 
 
 def test_mcp_jsonrpc_error_envelope_includes_recovery_hints_for_policy_context(runtime_factory):
-    """v2 adversarial Attack 5: ``INVALID_MCP_ARGUMENTS`` raised inside
-    ``_policy_context_payload`` escapes as a ``SemanticLayerError``, gets
-    caught by the JSON-RPC wrapper, and used to ship with empty
-    ``recovery_hints`` — even though ``diagnostics.py`` defines the
-    hint for that exact argument. The wrapper now runs the same
-    enrichment as ``_tool_content`` so the hint reaches the agent.
-    """
+    """Malformed policy context returns a tool error with its recovery hint."""
     runtime = runtime_factory("jaffle_shop")
     adapter = SemanticLayerMCPAdapter(runtime)
     try:
@@ -969,9 +965,13 @@ def test_mcp_jsonrpc_error_envelope_includes_recovery_hints_for_policy_context(r
     finally:
         adapter.close()
     assert result is not None
-    error = result["error"]
-    assert error["code"] == -32000
-    data = error["data"]
+    tool_result = result["result"]
+    assert tool_result["isError"] is True
+    payload = tool_result["structuredContent"]
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "INVALID_MCP_ARGUMENTS"
+    assert "request_context" not in payload
+    data = payload["errors"][0]
     assert data["code"] == "INVALID_MCP_ARGUMENTS"
     hints = list(data.get("recovery_hints", []) or [])
     assert hints, (
@@ -979,7 +979,7 @@ def test_mcp_jsonrpc_error_envelope_includes_recovery_hints_for_policy_context(r
         "array means the agent has to guess the fix"
     )
     assert any(h.get("kind") == "wrap_policy_context_as_object" for h in hints)
-    assert "closest_valid_query" in data
+    assert "closest_valid_query" not in data
 
 
 def test_mcp_jsonrpc_error_envelope_populates_top_level_closest_valid_query(runtime_factory):

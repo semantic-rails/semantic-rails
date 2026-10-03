@@ -298,6 +298,9 @@ Core query rules:
   measure, or remove `metric_filters`. Ordinary `where`, `order_by` and `limit` still
   apply to distinct-group queries
 - `temporal_role_overrides` must only reference declared temporal roles
+- an output leaf's bound clock takes precedence over advertised compatible clocks;
+  a query that would replace it with another advertised clock refuses with
+  `INVALID_TEMPORAL_BINDING`, in both planning and SQL lowering
 - when only some measures have the query's clock, each other measure is timed by its own
   clock; one with several clocks, none of them the query's, fails with
   `INCOMPATIBLE_TEMPORAL_ROLE` unless its aggregate's `temporal_role` or
@@ -330,7 +333,9 @@ Runtime validate/compile/query and restricted resource grants enforce the same
 bound object set. Supporting metadata uses the same compiler ownership records
 for dimensions and roles. Temporal recipe metadata binds a valid default time
 invocation using the compiler-selected role and a supported grain; a missing
-caller time axis does not hide an otherwise valid granted metric. Actual queries
+caller time axis does not hide an otherwise valid granted metric. When all window
+leaves resolve to one clock, metadata uses that clock ahead of the advertised
+compatible list; otherwise it retains the advertised default. Actual queries
 always bind and authorize their own time context. Rendering reuses the authorized plan and SQL AST. Every request
 is authorized before consulting the compiled-result cache; policy contexts remain
 in cache keys. Segment preview and membership/count query preparations use the
@@ -410,6 +415,13 @@ Important planner behaviors:
   leaves; routed leaves expose `aggregate_relation_id` and physical/performance
   plan metadata
 - historical joins use temporal-validity conditions anchored to the effective time axis
+- a key dimension reached by a hop into the validity window uses that temporal
+  join and validity rewrite, even when the source has a matching foreign-key column.
+  Missing history versions group under NULL; without a query time, incoming history
+  lookups refuse with `FANOUT_UNSAFE`. Co-located keys keep their source-column shortcut
+  for non-temporal hops and hops out of the table holding the window, where each source
+  row is already one version. Jaffle Shop labels its historical customer key distinctly
+  so all-time customer rankings use the ordinary customer key
 - a many-to-one or one-to-one hop never removes a measure's row: it is a left join in every
   leaf, whatever reads the looked-up dimension, so a row with a NULL or unmatched foreign key
   keeps its measure value under NULL. Only these reads keep an inner join: a time role
@@ -442,6 +454,7 @@ Important planner behaviors:
 - contextual predicates inherit outer time and compatible grouped context entities, and inherit compatible filters without widening the join key; a dimension on the input's own row entity contributes its values, joined null-safely, instead of that entity's key
 - distribution branches refuse post-aggregation metric filters rather than evaluating them at the per-entity grain; contextual predicates on a different entity also refuse because branch grouping cannot preserve the outer context, including predicates bound inside the input through scoped aggregates or metric recipes
 - contextual `time_grain` overrides are limited to coarser deterministic ancestor buckets on the same calendar
+- entity-only window predicates use the compatible query clock or a sole compatible input clock; an incompatible query clock with multiple input clocks refuses centrally in `_predicate_time_spec` with `INVALID_TEMPORAL_BINDING`, including during direct SQL lowering
 - supported conversion requests compile as event-pair matching subplans
 - unsupported conversion requests fail semantically rather than silently degrading into ratios
 

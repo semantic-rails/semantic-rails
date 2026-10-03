@@ -134,6 +134,7 @@ from .compiler_parts.temporal import (
     _time_bound_relationship_ids,
     _validate_query_temporal_bindings,
     _validate_restrictive_time_semantics,
+    _window_measure_exprs,
 )
 from .config_parts.lookup_measures import lookup_links
 from .config_parts.route_rows import (
@@ -463,11 +464,19 @@ def _object_default_query_temporal_role(config: PackageConfig, object_id: str) -
         raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown semantic object '{object_id}'")
     if recipe.temporal_role:
         return recipe.temporal_role
-    if recipe.compatible_temporal_roles:
-        return recipe.compatible_temporal_roles[0]
     query = normalize_query(
         {"version": 1, "select": [{"expression": {"metric": object_id}, "as": recipe.label}]}
     )
+    leaf_roles = [
+        _expr_compatible_temporal_roles(leaf, config, query)
+        for leaf in _window_measure_exprs(recipe.expression, config)
+    ]
+    if leaf_roles and all(len(roles) == 1 for roles in leaf_roles):
+        bound_roles = set.union(*leaf_roles)
+        if len(bound_roles) == 1:
+            return next(iter(bound_roles))
+    if recipe.compatible_temporal_roles:
+        return recipe.compatible_temporal_roles[0]
     compatible = sorted(_expr_compatible_temporal_roles(recipe.expression, config, query))
     return compatible[0] if compatible else ""
 
@@ -2271,7 +2280,7 @@ def _cross_clock_predicate_error(
         "INVALID_TEMPORAL_BINDING",
         (
             f"The contextual metric_predicate measures {_predicate_metric_label(predicate)!r} "
-            f"on {', '.join(clocks)}, but the query's time is {query.time.temporal_role}. "
+            f"on a different clock (see `compatible`) from the query's {query.time.temporal_role}. "
             "Matching the two by calendar bucket would compare different clocks, so the "
             "query is refused."
         ),
@@ -2283,9 +2292,115 @@ def _cross_clock_predicate_error(
                 {
                     "code": "CHOOSE_PREDICATE_CLOCK",
                     "message": (
-                        f"To apply the threshold per period on {clocks[0]}, set "
-                        "query.time.temporal_role to it. To apply it over all time, set "
+                        "To apply the threshold per period, set query.time.temporal_role "
+                        "to one of `compatible`. To apply it over all time, set "
                         "scope_mode to 'entity_only'."
+                    ),
+                }
+            ],
+        },
+    )
+
+
+def _validate_predicate_metric_clocks(
+    predicate: MetricPredicateExpr,
+    query: NormalizedQuery,
+    config: PackageConfig,
+    predicate_temporal_role: str,
+) -> None:
+    """The window clock filters every measure in the input, so none may be bound away from it."""
+    for expr in _window_measure_exprs(predicate.input, config):
+        # The measure's pin, then the query's override, then its declared clocks.
+        bound_roles = _expr_compatible_temporal_roles(expr, config, query)
+        if bound_roles and predicate_temporal_role not in bound_roles:
+            clocks = sorted(bound_roles)
+            raise SemanticLayerError(
+                "INVALID_TEMPORAL_BINDING",
+                f"Measure '{expr.measure}' in the metric predicate input is bound to "
+                f"{', '.join(clocks)}, excluding window clock '{predicate_temporal_role}'",
+                details={
+                    "requested": predicate_temporal_role,
+                    "compatible": clocks,
+                    "predicate": expr_to_dict(predicate),
+                    "recovery_hints": [
+                        {
+                            "code": "CHOOSE_PREDICATE_CLOCK",
+                            "message": (
+                                f"The input is bound to {', '.join(clocks)}; set "
+                                "query.time.temporal_role to one of them, or omit "
+                                "time_alignment to apply the predicate over all time."
+                            ),
+                        }
+                    ],
+                },
+            )
+
+
+def _refuse_overridden_predicate_input(
+    predicate: MetricPredicateExpr, query: NormalizedQuery, config: PackageConfig
+) -> None:
+    """The query's temporal_role_overrides never reach a metric predicate input's own query.
+
+    So a conversion, time window or nested predicate inside the input would read an
+    overridden measure on its own clock, and the input refuses. A pinned leaf refuses too when
+    overridden, though its pin would win: conservative, and never a wrong number.
+    """
+    if not query.temporal_role_overrides:
+        return
+
+    def filter_expressions(spec: Any) -> Iterable[SemanticExpr]:
+        # Only expression clauses and boolean containers are expression positions.
+        # A field clause's value, even a reference-shaped mapping, stays data.
+        if isinstance(spec, list):
+            for clause in spec:
+                yield from filter_expressions(clause)
+        elif isinstance(spec, dict):
+            if isinstance(spec.get("expression"), dict):
+                yield _parse_public_expr(spec["expression"])
+            for key in ("all", "any", "not"):
+                yield from filter_expressions(spec.get(key))
+
+    def input_measures(expr: Any, inside: bool = False) -> Iterable[str]:
+        inside = inside or isinstance(expr, (*_LOOKUP_TIME_EXPRS, MetricPredicateExpr))
+        if inside and isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
+            yield expr.measure
+        if isinstance(expr, MetricRecipeRefExpr):
+            recipe = _recipe_index(config).get(expr.metric_recipe)
+            if recipe is not None:
+                yield from input_measures(recipe.expression, inside)
+        elif isinstance(expr, ScopedAggregateExpr):
+            for raw in expr.predicates:
+                yield from input_measures(
+                    _parse_public_expr(_scoped_predicate_expr_payload(raw)), inside
+                )
+        elif isinstance(expr, AggregateExpr):
+            for child in filter_expressions(expr.filter):
+                yield from input_measures(child, inside)
+        if is_dataclass(expr):
+            for item in fields(expr):
+                value = getattr(expr, item.name)
+                for child in value if isinstance(value, list) else [value]:
+                    if is_dataclass(child):
+                        yield from input_measures(child, inside)
+
+    overridden = set(query.temporal_role_overrides) & set(input_measures(predicate.input))
+    if not overridden:
+        return
+    measures = sorted(overridden)
+    raise SemanticLayerError(
+        "INVALID_TEMPORAL_BINDING",
+        "temporal_role_overrides do not apply inside a metric predicate input, so the "
+        f"override for {', '.join(f'measure {m!r}' for m in measures)} would be ignored by "
+        "the conversion, time window or nested predicate that reads it",
+        details={
+            "measures": measures,
+            "predicate": expr_to_dict(predicate),
+            "recovery_hints": [
+                {
+                    "code": "CHOOSE_PREDICATE_CLOCK",
+                    "message": (
+                        "Remove the override for this measure, or use a metric whose "
+                        "definition binds that clock."
                     ),
                 }
             ],
@@ -2296,6 +2411,9 @@ def _cross_clock_predicate_error(
 def _predicate_time_spec(
     predicate: MetricPredicateExpr, query: NormalizedQuery, config: PackageConfig
 ) -> dict[str, Any] | None:
+    # Every predicate source reads its clock here: both builders through _predicate_scope, and
+    # the anchored entity-set ratio directly. So the override guard runs here, for any alignment.
+    _refuse_overridden_predicate_input(predicate, query, config)
     if predicate.scope_mode == "entity_only":
         if predicate.time_grain:
             raise SemanticLayerError(
@@ -2316,6 +2434,32 @@ def _predicate_time_spec(
             compatible_roles = _expr_compatible_temporal_roles(predicate.input, config, query)
             predicate_temporal_role = query.time.temporal_role
             if query.time.temporal_role not in compatible_roles:
+                if len(compatible_roles) > 1:
+                    clocks = sorted(compatible_roles)
+                    raise SemanticLayerError(
+                        "INVALID_TEMPORAL_BINDING",
+                        "entity_only metric_predicate query-window alignment needs one "
+                        f"input clock; choose from {', '.join(clocks)}",
+                        details={
+                            "requested": query.time.temporal_role,
+                            "compatible": clocks,
+                            "predicate": expr_to_dict(predicate),
+                            "recovery_hints": [
+                                {
+                                    "code": "CHOOSE_PREDICATE_CLOCK",
+                                    "message": (
+                                        (
+                                            "Set query.time.temporal_role to one of the listed clocks. "
+                                            if isinstance(predicate.input, MetricRecipeRefExpr)
+                                            else "Set the predicate input's temporal_role to a candidate "
+                                            "clock, or set temporal_role_overrides for its measures. "
+                                        )
+                                        + "Omit time_alignment to apply the predicate over all time."
+                                    ),
+                                }
+                            ],
+                        },
+                    )
                 predicate_temporal_role = next(iter(sorted(compatible_roles)), "")
                 if not predicate_temporal_role:
                     raise SemanticLayerError(
@@ -2326,6 +2470,7 @@ def _predicate_time_spec(
                             "predicate": expr_to_dict(predicate),
                         },
                     )
+            _validate_predicate_metric_clocks(predicate, query, config, predicate_temporal_role)
             return {
                 "temporal_role": predicate_temporal_role,
                 "output_temporal_role": "",
@@ -2359,6 +2504,7 @@ def _predicate_time_spec(
         if predicate.time_alignment != "same_query_period" or len(compatible_roles) != 1:
             raise _cross_clock_predicate_error(predicate, query, compatible_roles)
         predicate_temporal_role = next(iter(compatible_roles))
+    _validate_predicate_metric_clocks(predicate, query, config, predicate_temporal_role)
     outer_grain = str(query.time.grain or "").lower()
     predicate_grain = str(predicate.time_grain or outer_grain or "").lower()
     if predicate.time_grain:
@@ -3826,7 +3972,7 @@ def _conversion_sources(
             and measure.measure_class in {"event_count", "distinct_population"}
             and _conversion_operand_problem(measure, entities.get(measure.entity)) is None
         ]
-        example = f", for example {', '.join(map(repr, candidates[:3]))}" if candidates else ""
+        example = " (see `candidate_measures`)" if candidates else ""
         raise SemanticLayerError(
             "CONVERSION_NOT_SUPPORTED",
             (

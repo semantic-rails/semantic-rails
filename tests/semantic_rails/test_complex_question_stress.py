@@ -448,6 +448,7 @@ def test_plan_composes_exact_complex_question_shapes(runtime_factory):
             runtime,
             intent="Give me the 28D adoption funnel from signup to Send for stores that have an order rate of over 90% grouped by month",
             limit=1,
+            verbosity="full",
         )
 
         assert snapshot["best"]["pattern"] == "qualified_metric_rollup"
@@ -479,9 +480,15 @@ def test_plan_composes_exact_complex_question_shapes(runtime_factory):
         }
 
         assert adoption["interpreted_intent"]["pattern"] == "filtered_adoption_funnel"
-        adoption_query = adoption["candidates"][0]["candidate_ir"]
+        # "For stores that have ..." qualifies the stores, and the draft also splits the funnel
+        # by store, which the question never asks for: the drafted shape is held, not offered.
+        assert not adoption["candidates"]
+        [blocked] = adoption["blocked"]
+        assert blocked["why_blocked"]["code"] == "PLAN_UNASKED_GROUPING"
+        assert blocked["why_blocked"]["details"]["unasked_groupings"] == ["Store name"]
+        adoption_query = blocked["candidate_ir"]
         adoption_filter = adoption_query["metric_filters"][0]
-        assert adoption["candidates"][0]["validation"]["ok"] is True
+        assert blocked["validation"]["ok"] is True
         assert adoption_query["select"][0]["expression"] == {
             "metric": "metric.adoption.signup_to_send_conversion_rate_28d"
         }

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import replace
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from ..ast import every_filter, is_child_group, rewrite_select_shorthand
@@ -29,9 +30,13 @@ from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
 from ._base import (
+    _NAME_CONNECTORS,
+    _TIME_UNITS,
     _grouping_matches,
     _is_temporal_grouping_term,
+    _last_token,
     _listed_grouping_terms,
+    _named_grouping_terms,
     _names_time_axis,
     _names_whole_entity,
     _object_by_id,
@@ -42,6 +47,9 @@ from ._base import (
     _with_fiscal_calendar,
 )
 from .faithfulness import (
+    _dimension_nouns,
+    _ranking_request,
+    _singular,
     intent_faithfulness_why,
     intent_subject_why,
     unconsumed_catalog_words,
@@ -49,7 +57,7 @@ from .faithfulness import (
     unconsumed_unknown_words,
     unmatched_intent_terms,
 )
-from .generators import blocked_object_not_found, fallback_drafts
+from .generators import _grouping_term_matches, blocked_object_not_found, fallback_drafts
 from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
 from .visibility import (
@@ -326,10 +334,23 @@ def plan_payload(
     # that names a catalog object, is consumed by something the draft carries. Otherwise an
     # hour, a range, a threshold, a grouping or the asked-for subject was dropped. Last, every
     # grouping the question lists, apart from clock terms and declared values, has its own
-    # group_by dimension; that check only holds a draft, it never changes one.
+    # group_by dimension, and every grouping the draft adds traces to the question; those
+    # checks only hold a draft, they never change one.
+    grouping_why = (
+        _dropped_grouping_why(runtime, intent_str, best_draft.query, partial_query)
+        if best_ok
+        else None
+    )
     value_why = (
         (
             _unconsumed_terms_why(unconsumed_terms(runtime, intent_str, best_draft.query))
+            # A shared grouping needs options even when fallback discovery consumed
+            # words the primary parser did not (for example "their districts").
+            or (
+                grouping_why
+                if (grouping_why or {}).get("details", {}).get("clarification")
+                else None
+            )
             or _unconsumed_catalog_why(
                 intent_str, unconsumed_catalog_words(runtime, intent_str, best_draft.query)
             )
@@ -337,7 +358,8 @@ def plan_payload(
                 unconsumed_unknown_words(runtime, intent_str, best_draft.query),
                 set(intent_ir.unresolved),
             )
-            or _dropped_grouping_why(runtime, intent_str, best_draft.query, partial_query)
+            or grouping_why
+            or _unasked_grouping_why(runtime, intent_str, best_draft.query, partial_query)
         )
         if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
         else None
@@ -740,6 +762,180 @@ def _entity_grouping_dimensions(config: Any, term: str) -> set[str] | None:
     return allowed
 
 
+def _query_clocks(config: Any, query: dict[str, Any]) -> list[str]:
+    """The labels of the time block's clock: its temporal role, and the calendar it buckets on."""
+
+    time = _time_of(query)
+    return [
+        str(row.label or "")
+        for row in [
+            _object_by_id(config.temporal_roles, str(time.get("temporal_role") or "")),
+            *(
+                row
+                for row in config.entities
+                if row.calendar_id and row.calendar_id == time.get("calendar_id")
+            ),
+        ]
+        if row is not None
+    ]
+
+
+def _listed_dimension_terms(config: Any, question: str, query: dict[str, Any]) -> list[str]:
+    """The listed groupings a dimension answers: not a clock term ("by month", "by order
+    date"), which is the time block's, nor a declared value, which is a filter."""
+
+    clocks = _query_clocks(config, query)
+    return [
+        term
+        for term in _named_grouping_terms(question, config)
+        if not (
+            _is_temporal_grouping_term(term)
+            or any(_names_time_axis(term, clock) for clock in clocks)
+            or _term_matches_value_domain(config, term)
+        )
+    ]
+
+
+def _reads_grouping(term: str, ids: set[str] | None, row: Any) -> bool:
+    """Whether a dimension is a reading of a listed grouping: one of the entity's stand-ins
+    (``_entity_grouping_dimensions``) for a term naming an entity, else a dimension whose own
+    words name the term."""
+
+    return _grouping_matches(term, row) if ids is None else row.id in ids
+
+
+def _time_of(query: dict[str, Any]) -> dict[str, Any]:
+    raw = (query or {}).get("time")
+    return raw if isinstance(raw, dict) else {}
+
+
+# A word asking for the rows at the level of the groupings it follows ("store name levels").
+_LEVEL_WORD_RE = re.compile(r"\b(?:levels?|grains?)\b")
+
+
+def _declared_name_spans(config: Any, lowered: str) -> dict[tuple[int, int], list[Any]]:
+    """Where the question names a declared dimension, measure, metric recipe or entity, with
+    the objects each span names, as ``(kind, row)``.
+
+    A name is a label (also without its parenthetical: "item revenue" for Item revenue
+    (USD)), the last part of the object's name or an alias, matched as whole words. A span
+    inside a longer one is part of that name: "customer type" names Customer type, not the
+    entity Customer as well.
+    """
+
+    found: dict[tuple[int, int], list[Any]] = {}
+    for kind, rows in (
+        ("dimension", config.dimensions),
+        ("value", [*config.measures, *config.metric_recipes]),
+        ("entity", config.entities),
+    ):
+        for row in rows:
+            label = str(row.label or "")
+            names = {label, re.sub(r"\s*\(.*?\)", "", label), _last_token(row.name)}
+            for name in names | set(row.aliases or []):
+                words = re.findall(r"[^\W_]+", str(name).lower())
+                if not words:
+                    continue
+                pattern = r"\b" + r"\s+".join(map(re.escape, words)) + r"\b"
+                for match in re.finditer(pattern, lowered):
+                    found.setdefault(match.span(), []).append((kind, row))
+    return {
+        (low, high): named
+        for (low, high), named in found.items()
+        if not any(a <= low and high <= b and b - a > high - low for a, b in found)
+    }
+
+
+def _level_groupings_unmet(config: Any, question: str, query: dict[str, Any]) -> list[str]:
+    """The groupings a question asking for a level or grain names that the draft doesn't
+    group by.
+
+    It reads which declared names the question holds (``_declared_name_spans``), never how
+    the phrase around them is built, so a plural, a repeated "at" or a separator changes
+    nothing. It runs only when "level", "levels", "grain" or "grains" stands outside every
+    declared name (a measure named Stock level triggers nothing). Then every dimension or
+    entity the question names must be grouped: a dimension by its own id, an entity by one of
+    its stand-ins (``_entity_grouping_dimensions``). A declared value, a dimension the draft's
+    ``where`` pins to one value (``=``, or ``IN`` with one value), and a name inside a clock
+    phrase need nothing: a clock phrase ("week", or "order date" for the query's Order time)
+    is the time block's. It is words joined by spaces only, never with a level word. The word
+    before each level word, past
+    commas and connectors, must end the name of a dimension, an entity or a clock; any other
+    word ("region level" with no Region) is unmet as well. The check only holds a plan.
+    """
+
+    lowered = str(question or "").lower()
+    if not _LEVEL_WORD_RE.search(lowered):
+        return []
+    spans = _declared_name_spans(config, lowered)
+    triggers = [
+        match
+        for match in _LEVEL_WORD_RE.finditer(lowered)
+        if not any(low <= match.start() and match.end() <= high for low, high in spans)
+    ]
+    if not triggers:
+        return []
+    clocks = _query_clocks(config, query)
+
+    def clock(term: str) -> bool:
+        return _is_temporal_grouping_term(term) or any(_names_time_axis(term, c) for c in clocks)
+
+    words = list(re.finditer(r"[^\W_]+", lowered))
+    clock_spans: list[tuple[int, int]] = []
+    for index, first in enumerate(words):
+        for last in words[index:]:
+            text = lowered[first.start() : last.end()]
+            if _LEVEL_WORD_RE.search(text) or not re.fullmatch(r"[^\W_]+(?:\s+[^\W_]+)*", text):
+                break
+            if clock(text):
+                clock_spans.append((first.start(), last.end()))
+    pinned = {
+        str(row["field"])
+        for row in _where_filters(query)
+        if "field" in row
+        and (
+            (
+                row.get("op") == "="
+                and row.get("value") is not None
+                and not isinstance(row.get("value"), (list, tuple, dict))
+            )
+            or (
+                str(row.get("op")).lower() == "in"
+                and isinstance(row.get("value"), list)
+                and len(row["value"]) == 1
+            )
+        )
+    }
+    grouped = set(query.get("group_by") or [])
+    unmet: list[str] = []
+    for (low, high), named in sorted(spans.items()):
+        term = " ".join(lowered[low:high].split())
+        dimensions = {row.id for kind, row in named if kind == "dimension"}
+        entity = any(kind == "entity" for kind, _ in named)
+        if (
+            not (dimensions or entity)
+            or any(a <= low and high <= b for a, b in clock_spans)
+            or _term_matches_value_domain(config, term)
+        ):
+            continue
+        stand_ins = (_entity_grouping_dimensions(config, term) or set()) if entity else set()
+        if not (dimensions & (grouped | pinned) or stand_ins & grouped):
+            unmet.append(term)
+    ends = {high for (_, high), named in spans.items() if any(kind != "value" for kind, _ in named)}
+    ends |= {high for _, high in clock_spans}
+    for trigger in triggers:
+        before = [
+            word
+            for word in words
+            if word.end() <= trigger.start() and word.group() not in _NAME_CONNECTORS
+        ]
+        if not before:
+            unmet.append(trigger.group())
+        elif before[-1].end() not in ends:
+            unmet.append(before[-1].group())
+    return list(dict.fromkeys(unmet))
+
+
 def _dropped_grouping_why(
     runtime: Any,
     question: str,
@@ -752,7 +948,8 @@ def _dropped_grouping_why(
 
     Any other listed grouping needs a dimension whose own words name it; a clock term ("by
     month", "by order date") is the time block's and a declared value is a filter, so neither
-    needs one. One dimension satisfies one listed grouping.
+    needs one. One dimension satisfies one listed grouping. A question asking for a level or
+    grain must also have every grouping it names (``_level_groupings_unmet``).
 
     A grouping whose dimensions belong to two or more entities, none of them the measure's own
     ("name" for an order count: Customer name, Store name and more), is ambiguous: plan holds
@@ -767,60 +964,63 @@ def _dropped_grouping_why(
         root = _selection_context(config, query)["root_entity"]
     except SemanticLayerError:
         root = ""
-    raw_time = query.get("time")
-    time: dict[str, Any] = raw_time if isinstance(raw_time, dict) else {}
-    # The time block's clock: its temporal role, and the calendar it buckets on.
-    clocks = [
-        str(row.label or "")
-        for row in [
-            _object_by_id(config.temporal_roles, str(time.get("temporal_role") or "")),
-            *(
-                row
-                for row in config.entities
-                if row.calendar_id and row.calendar_id == time.get("calendar_id")
-            ),
-        ]
-        if row is not None
-    ]
-    terms = [
-        term
-        for term in _listed_grouping_terms(question, config)
-        if not (
-            _is_temporal_grouping_term(term)
-            or any(_names_time_axis(term, clock) for clock in clocks)
-            or _term_matches_value_domain(config, term)
-        )
-    ]
+    terms = _listed_dimension_terms(config, question, query)
     grouped = [
         row
         for item in dict.fromkeys(query.get("group_by") or [])
         if (row := _object_by_id(config.dimensions, item)) is not None
     ]
-    stand_ins = [_entity_grouping_dimensions(config, term) for term in terms]
+    visible = visible_dimensions(config)
+    stand_ins = [
+        _entity_grouping_dimensions(replace(config, dimensions=visible), term) for term in terms
+    ]
 
     def reads(term: str, ids: set[str] | None, row: Any) -> bool:
         return _grouping_matches(term, row) if ids is None else row.id in ids
 
     chosen = set((partial_query or {}).get("group_by") or [])
 
-    def unsettled(term: str, ids: set[str] | None) -> bool:
+    matches: list[list[Any]] = []
+    for term, ids in zip(terms, stand_ins, strict=True):
+        named = [row for row in visible if row.groupable and reads(term, ids, row)]
+        if ids is None and not any(
+            term.lower().replace("_", " ")
+            in {
+                str(row.label or "").lower().replace("_", " "),
+                row.id.removeprefix("dimension.").lower().replace("_", " "),
+            }
+            for row in named
+        ):
+            # Discovery recognizes additional words/plurals. They may establish an
+            # ambiguity unless the term names a whole strict label/ID. They never
+            # satisfy a grouping the strict guard cannot read; columns don't settle it.
+            discovered = set(_grouping_term_matches(runtime, query, term, limit=len(visible)) or [])
+            matched_ids = {row.id for row in named} | discovered
+            named = [row for row in visible if row.groupable and row.id in matched_ids]
+        matches.append(named)
+
+    def unsettled(term: str, ids: set[str] | None, named: list[Any]) -> bool:
         """Dimensions of two or more entities, none the measure's own, may be the grouping, and
         the caller's group_by doesn't say which: it names none, or the draft added one."""
 
-        entities = {
-            row.entity for row in config.dimensions if row.groupable and reads(term, ids, row)
-        }
+        entities = {row.entity for row in named}
         picked = {row.id for row in grouped if reads(term, ids, row)}
         return len(entities) > 1 and root not in entities and not (picked and picked <= chosen)
 
-    ambiguous = [term for term, ids in zip(terms, stand_ins, strict=True) if unsettled(term, ids)]
+    ambiguous = [
+        term
+        for term, ids, named in zip(terms, stand_ins, matches, strict=True)
+        if unsettled(term, ids, named)
+    ]
     candidates = [
         [
             index
             for index, dimension in enumerate(grouped)
-            if term not in ambiguous and reads(term, ids, dimension)
+            if term not in ambiguous
+            and reads(term, ids, dimension)
+            and (not any(row.entity == root for row in named) or dimension.entity == root)
         ]
-        for term, ids in zip(terms, stand_ins, strict=True)
+        for term, ids, named in zip(terms, stand_ins, matches, strict=True)
     ]
     assigned: dict[int, int] = {}
 
@@ -835,10 +1035,73 @@ def _dropped_grouping_why(
         return False
 
     dropped = [term for index, term in enumerate(terms) if not assign(index, set())]
+    dropped += [
+        term for term in _level_groupings_unmet(config, question, query) if term not in dropped
+    ]
     if not dropped:
         return None
     unclear = [term for term in dropped if term in ambiguous]
     missing = [term for term in dropped if term not in ambiguous]
+    # An option removes every draft grouping its term matches. When that could remove a
+    # grouping another term needs, options would overwrite each other, so offer none.
+    removals = [
+        {row.id for row in named} & set(query.get("group_by") or [])
+        for term, named in zip(terms, matches, strict=True)
+        if term in unclear
+    ]
+    settled = {grouped[index].id for index in assigned}
+    overlap = any(ids & settled for ids in removals) or any(
+        first & second for index, first in enumerate(removals) for second in removals[index + 1 :]
+    )
+    clarification: dict[str, Any] = {}
+    if unclear and not overlap:
+        options = []
+        for term, named in zip(terms, matches, strict=True):
+            if term not in unclear:
+                continue
+            matching_ids = {row.id for row in named}
+            for row in sorted(named, key=lambda row: row.id):
+                patch = {
+                    "group_by": [
+                        item for item in query.get("group_by", []) if item not in matching_ids
+                    ]
+                    + [row.id],
+                    "where": query.get("where", []),
+                    "order_by": [
+                        {**item, "field": row.id} if item.get("field") in matching_ids else item
+                        for item in query.get("order_by", [])
+                    ],
+                }
+                if _validate_query(runtime, {**query, **patch}, partial_query).get("ok"):
+                    options.append(
+                        {
+                            "id": row.id,
+                            "label": row.label,
+                            "term": term,
+                            **(
+                                patch
+                                if len(unclear) == 1
+                                else {
+                                    "replaces": [
+                                        item
+                                        for item in query.get("group_by", [])
+                                        if item in matching_ids
+                                    ]
+                                }
+                            ),
+                        }
+                    )
+        clarification = {
+            "clarification": {
+                "question": "Which dimension does each ambiguous grouping mean?",
+                "options": options,
+            }
+        }
+    multiple_recovery = (
+        " In best.query_ir, for each ambiguous term remove its option's replaces ids from "
+        "group_by and their entries from order_by, add the chosen id to group_by, keep group_by ids sorted, "
+        "then validate."
+    )
     messages = [
         *(
             [
@@ -853,7 +1116,7 @@ def _dropped_grouping_why(
             [
                 f"The grouping by {', '.join(unclear)} may be a dimension of any of several "
                 "entities, none of them the measure's own, so plan doesn't pick one or call the "
-                "draft ready."
+                "draft ready." + (multiple_recovery if len(unclear) > 1 and not overlap else "")
             ]
             if unclear
             else []
@@ -866,18 +1129,291 @@ def _dropped_grouping_why(
             "terms": dropped,
             "dropped_groupings": missing,
             **({"ambiguous_groupings": unclear} if unclear else {}),
+            **clarification,
         },
         "recovery_hints": [
             {
-                "kind": "use_named_objects",
+                "kind": "clarify_grouping" if unclear else "use_named_objects",
                 "message": (
                     "Find a dimension for each grouping with discover, add the missing ones to "
                     "best.query_ir group_by, then validate; or ask again without those groupings."
                     + (
-                        ' Name the entity of an ambiguous one ("customer name", not "name").'
+                        " Two groupings could replace the same draft dimension, so plan offers "
+                        "no options: ask the user which dimension each grouping the question "
+                        "lists means, then make exactly those ids best.query_ir group_by and "
+                        "validate."
+                        if overlap
+                        else multiple_recovery
+                        if len(unclear) > 1
+                        else " Apply an option's group_by, where and order_by to best.query_ir, then validate."
                         if unclear
                         else ""
                     )
+                ),
+            }
+        ],
+    }
+
+
+def _grain_bucket(day: date, grain: str) -> Any:
+    """The calendar bucket of a day at a grain; weeks start on Monday, as the engine's do."""
+
+    if grain == "week":
+        return day - timedelta(days=day.weekday())
+    if grain == "month":
+        return day.year, day.month
+    if grain == "quarter":
+        return day.year, (day.month - 1) // 3
+    if grain == "year":
+        return day.year
+    return day
+
+
+def _grain_splits(time: dict[str, Any]) -> bool:
+    """Whether the time block's grain can put the rows in two or more buckets.
+
+    It can't when the block's window fits in one bucket: a calendar window inside one period of
+    the grain ("in Q1 2017" at quarter or year), or the last single period of the grain ("last
+    month" at month), or of a day. Any other grain, an open or relative window of more periods,
+    or a non-Gregorian calendar may split them.
+    """
+
+    grain = str(time.get("grain") or "")
+    if not grain:
+        return False
+    if grain not in _TIME_UNITS or str(time.get("calendar_id") or "default") != "default":
+        return True
+    window = time.get("range")
+    if isinstance(window, dict):
+        last = window.get("last")
+        return not (
+            isinstance(last, dict) and last.get("value") == 1 and last.get("unit") in {grain, "day"}
+        )
+    try:
+        start = datetime.fromisoformat(str(time["start"]))
+        end = datetime.fromisoformat(str(time["end"]))
+    except (KeyError, ValueError):
+        return True
+    final = max((end - timedelta(microseconds=1)).date(), start.date())
+    return _grain_bucket(start.date(), grain) != _grain_bucket(final, grain)
+
+
+def _without_windows(question: str) -> str:
+    """The lowercase question with every time window it states blanked out."""
+
+    lowered = str(question or "").lower()
+    for start, end in _time_window(question).spans:
+        lowered = lowered[:start] + " " * (end - start) + lowered[end:]
+    return lowered
+
+
+# A series the question asks for in words: it splits the answer by time at plan's grain.
+_SERIES_RE = re.compile(r"\b(?:over\s+time|trends?|trending|time\s+series)\b")
+
+
+def _names_grain(config: Any, question: str, query: dict[str, Any], grain: str) -> bool:
+    """Whether the question's own words, outside every time window it states, ask for the
+    grain's buckets: its unit or "-ly" form ("by month", "monthly", "month level", "per
+    week", "daily"); a series ("over time", "trend", "trending", "time series"), which plan
+    buckets at its default grain; or, for days, a listed grouping that names the query's clock
+    ("by order date")."""
+
+    lowered = _without_windows(question)
+    forms = {grain, f"{grain}s", "daily" if grain == "day" else f"{grain}ly"}
+    if forms & set(re.findall(r"[^\W\d_]+", lowered)) or _SERIES_RE.search(lowered):
+        return True
+    clocks = _query_clocks(config, query)
+    return grain == "day" and any(
+        _names_time_axis(term, clock)
+        for term in _listed_grouping_terms(question, config)
+        for clock in clocks
+    )
+
+
+# "revenue per store" and "revenue for each store" are "revenue by store": the words after
+# "per", "each" or "every", up to a clause.
+_PER_GROUPING_RE = re.compile(
+    r"\b(?:per|each|every)\s+([a-z _-]+?)"
+    r"(?=\s+(?:by|and|where|for|from|in|with|during|over|having|who|that)\b|\s*[.?!,;]|\s*$)"
+)
+
+
+def _asked_grouping_terms(config: Any, question: str) -> list[str]:
+    """What the question asks to group by: each grouping it lists (``_listed_grouping_terms``),
+    the noun a ranking ranks ("which 5 stores had the most orders"), and the words after
+    "per", "each" or "every" ("revenue per store"). Windows are not part of any of them."""
+
+    request = _ranking_request(question, _dimension_nouns(config))
+    return [
+        *_listed_grouping_terms(question, config),
+        *([str(request["noun"])] if request else []),
+        *(
+            match.group(1).strip()
+            for match in _PER_GROUPING_RE.finditer(_without_windows(question))
+        ),
+    ]
+
+
+def _unasked_grouping_why(
+    runtime: Any,
+    question: str,
+    query: dict[str, Any],
+    partial_query: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Every grouping the draft adds traces to the question, or the plan is not ready.
+
+    A group_by dimension traces when a grouping the question asks for reads it
+    (``_asked_grouping_terms``, read as ``_dropped_grouping_why`` reads a listed one), when the
+    caller's ``partial_query`` group_by has it, or when the draft's own ``=`` or ``IN`` filter
+    keeps only values of it the question names. The time block's grain traces when the
+    question's words outside its windows name it (``_names_grain``), when the caller's
+    ``partial_query`` time has it, or when it can't split the rows because the window fits in
+    one bucket (``_grain_splits``). The package declares no default grain, so a grain plan
+    picks for a comparison, a year-over-year shift or a window of several periods doesn't
+    trace.
+
+    A ranking must then keep the top N of the entity it ranks (``_ranking_why``). The check
+    only holds a plan; it never changes the draft.
+    """
+
+    config = runtime._config
+    caller = partial_query or {}
+    time = _time_of(query)
+    grain = str(time.get("grain") or "")
+    splits = _grain_splits(time)
+    grain_traced = not splits or (
+        _time_of(caller).get("grain") == grain or _names_grain(config, question, query, grain)
+    )
+    terms = _asked_grouping_terms(config, question)
+    stand_ins = [_entity_grouping_dimensions(config, term) for term in terms]
+    # A dimension the draft filters to the values the question names splits the rows into
+    # those values only; the filter-value check holds a filter that keeps any other.
+    pinned = {
+        str(row["field"])
+        for row in _where_filters(query)
+        if (row.get("op") == "=" and not isinstance(row.get("value"), (list, tuple, dict)))
+        or (str(row.get("op")).lower() == "in" and isinstance(row.get("value"), list))
+    }
+    chosen = set(caller.get("group_by") or [])
+    grouped = [
+        row
+        for item in dict.fromkeys(query.get("group_by") or [])
+        if (row := _object_by_id(config.dimensions, item)) is not None
+    ]
+    unasked = [
+        row
+        for row in grouped
+        if row.id not in chosen
+        and row.id not in pinned
+        and not any(
+            _reads_grouping(term, ids, row) for term, ids in zip(terms, stand_ins, strict=True)
+        )
+    ]
+    if unasked or not grain_traced:
+        names = [str(row.label or row.id) for row in unasked] + ([] if grain_traced else [grain])
+        return {
+            "code": "PLAN_UNASKED_GROUPING",
+            "message": (
+                f"The draft groups by {', '.join(names)}, which the question never asks for, "
+                "so it splits the answer into more rows than asked and plan doesn't call it "
+                "ready."
+            ),
+            "details": {
+                "unasked_groupings": names,
+                **({"dimensions": [row.id for row in unasked]} if unasked else {}),
+                **({} if grain_traced else {"grain": grain}),
+            },
+            "recovery_hints": [
+                {
+                    "kind": "remove_unasked_grouping",
+                    "message": (
+                        "Remove them from best.query_ir (a dimension from group_by; the grain "
+                        "from time, or the whole time block and its order_by entry when it "
+                        "holds no start, end or range), then validate; or ask again naming "
+                        'the grouping you want ("by month", "monthly").'
+                    ),
+                }
+            ],
+        }
+    order_by = [row for row in query.get("order_by") or [] if isinstance(row, dict)]
+    aliases = {row.get("as") for row in query.get("select") or [] if isinstance(row, dict)}
+    aliases.discard(None)
+    if not (
+        grouped
+        and query.get("limit") is not None
+        and order_by
+        and order_by[0].get("field") in aliases
+    ):
+        return None
+    return _ranking_why(runtime, question, query, partial_query, grouped, splits)
+
+
+def _ranking_why(
+    runtime: Any,
+    question: str,
+    query: dict[str, Any],
+    partial_query: dict[str, Any] | None,
+    grouped: list[Any],
+    splits: bool,
+) -> dict[str, Any] | None:
+    """A ranking keeps the top N of the entity it ranks, or the plan is not ready.
+
+    The draft keeps the top N of its group_by rows, split by its grain when that can split
+    them. Those rows are the entity the question ranks only when the noun it ranks
+    (``_ranking_request``) is not a time unit and reads every group_by dimension, as
+    ``_unasked_grouping_why`` reads an asked grouping (an entity's key and its label), or,
+    when the question ranks nothing, when the caller's ``partial_query`` states the ranking
+    over its own group_by. Else the draft may keep the top N (store, customer type) pairs, or
+    (month, store) rows. A ranking of the entity the question ranks, split by a grain, may mean
+    the top N over the whole window or the top N in each period. Each is held with no runnable
+    option, and the hint asks which ranking is meant.
+    """
+
+    config = runtime._config
+    request = _ranking_request(question, _dimension_nouns(config))
+    noun = str(request["noun"]) if request else ""
+    stand_ins = _entity_grouping_dimensions(config, noun) if noun else None
+    ranks_entity = (
+        bool(noun)
+        and _singular(noun) not in _TIME_UNITS
+        and all(_reads_grouping(noun, stand_ins, row) for row in grouped)
+    )
+    keys = [row.id for row in grouped]
+    # A question that ranks nothing leaves the ranking to a caller that states it: its limit,
+    # over its own group_by.
+    caller = partial_query or {}
+    callers = (
+        not noun
+        and caller.get("limit") is not None
+        and set(keys) <= set(caller.get("group_by") or [])
+    )
+    if not splits and (ranks_entity or callers):
+        return None
+    entity = noun or " and ".join(str(row.label or row.id) for row in grouped)
+    limit = int(query["limit"])
+    grain = str(_time_of(query).get("grain") or "") if splits else ""
+    rows = ", ".join([str(row.label or row.id) for row in grouped] + ([grain] if grain else []))
+    # Held here, a ranking of the entity the question ranks is split by its grain.
+    readings = (
+        f" The top {limit} {entity} over the whole window, or the top {limit} {entity} in "
+        f"each {grain}?"
+        if ranks_entity
+        else ""
+    )
+    return {
+        "code": "PLAN_RANKING_PERIOD_AMBIGUOUS",
+        "message": (
+            f"The question ranks {entity}, but the draft keeps the top {limit} ({rows}) rows, "
+            f"which may not be the top {limit} {entity}, so plan doesn't call it ready."
+            f"{readings}"
+        ),
+        "details": {"limit": limit, "ranked": keys, **({"grain": grain} if grain else {})},
+        "recovery_hints": [
+            {
+                "kind": "ask_which_ranking",
+                "message": (
+                    "Ask the user which ranking they mean, then plan again with a question "
+                    "that names it."
                 ),
             }
         ],
