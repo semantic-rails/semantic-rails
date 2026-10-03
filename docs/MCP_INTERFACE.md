@@ -83,6 +83,14 @@ retained successful run and its returned row count. A capped run also carries
 `truncated: true` and the effective `max_rows` cap in `already_ran`; a later
 successful run replaces this history even when its cap or row format differs. It is a
 historical hint, not a cached answer or a guarantee that warehouse data is unchanged.
+These dry runs also add a short `next` string telling the agent to answer from
+that result or change the query. On the second consecutive identical `validate`
+of an already-run query, `next` directly tells the agent to stop validating it;
+further consecutive validates keep that guidance. An intervening tool call,
+changed arguments (other than response options), or a call without `already_ran`
+resets the streak. SQL dry runs get the ordinary guidance and reset the streak.
+This advice contains no result rows and never changes validation or refuses a call.
+Unlike `plan`'s structured `next` object, `execute`'s `next` is a string.
 The first call has no added fields. Stateless HTTP and calls without a session
 retain their existing responses; REST, SDK and CLI query responses are unchanged.
 

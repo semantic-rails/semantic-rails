@@ -344,6 +344,7 @@ MCP_RESULT_SCHEMA: dict[str, Any] = {
         },
         "request_context": {"type": "object"},
         "timing_ms": {"type": "number", "minimum": 0},
+        "next": {"type": ["object", "string"]},
     },
     "additionalProperties": True,
     "$defs": {

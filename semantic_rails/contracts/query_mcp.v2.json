@@ -158,6 +158,12 @@
         },
         "type": "array"
       },
+      "next": {
+        "type": [
+          "object",
+          "string"
+        ]
+      },
       "ok": {
         "type": "boolean"
       },
