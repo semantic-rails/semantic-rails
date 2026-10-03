@@ -8,6 +8,10 @@
   `metric_filters` threshold nor a `metric_predicate` threshold keeps it, one that `0`
   passes (`< 5`) included, and
   `goods + shipping` by refund type is `NULL` for a type whose rows leave one of the columns
-  `NULL`. A sum of a `case` measure is no longer answered from a rollup, which can't tell rows
-  that fail its condition from rows that meet it with no amount.
+  `NULL`. A `metric_predicate` threshold that `0` passes on an add or subtract of measures
+  still reads an operand's unknown amounts as `0`, so `goods + shipping = 0` keeps the orders
+  with no refunds. A sum of a `case` measure with no `else` (or `else: null`), with one
+  branch or several, reads `0` in a group where no row meets a branch and is no longer
+  answered from a rollup, which can't tell rows that fail its conditions from rows that meet
+  one with no amount.
   See [Query IR schema](docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0).

@@ -2493,8 +2493,9 @@ def _predicate_ctes_and_join(
     with binding_cut():
         _entity_index(config)[predicate.entity]
     without_rows = _predicate_includes_entities_without_rows(predicate, config)
-    # Over several measures the source reads each operand's unknown amounts as 0 where its
-    # measure has data in scope, so the gate below sees a value for every entity with rows.
+    # Over several measures an entity's value is NULL where one operand is unknown, though the
+    # others have data, and the gate below would read that as no data in scope. So that
+    # source reads an operand's unknown amounts as 0 where its measure has data in scope.
     several = without_rows and not _predicate_reads_one_measure(predicate.input, config)
     with unknown_sums_read_zero(several):
         predicate_sql = _compile_predicate_source_ast(config, mini_query)

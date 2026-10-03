@@ -83,7 +83,7 @@ def is_conditional_case(expr: Any) -> bool:
 def _row_marker(expr: Any) -> Any:
     """1 on each row an aggregate of ``expr`` reads, NULL on the rest: a conditional CASE reads
     only the rows one of its conditions keeps (``aggregate_if``), any other every row."""
-    if not is_conditional_case(expr):
+    if not (isinstance(expr, SqlCase) and is_conditional_case(expr)):
         return SqlLiteral(1)
     return SqlCase([SqlCaseWhen(item.condition, SqlLiteral(1)) for item in expr.whens])
 
@@ -109,7 +109,7 @@ def _maybe_conditional_aggregate(expr: Any, aggregation: str, dialect: SqlDialec
       count rows where a flag is true, with body = key column and
       explicit ``else: literal null``).
     """
-    if not is_conditional_case(expr) or len(expr.whens) != 1:
+    if not (isinstance(expr, SqlCase) and is_conditional_case(expr)) or len(expr.whens) != 1:
         return None
     agg = aggregation.lower()
     condition, body = expr.whens[0].condition, expr.whens[0].result

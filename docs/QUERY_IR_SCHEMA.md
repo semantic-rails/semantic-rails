@@ -741,10 +741,11 @@ month that mixes NULL and known amounts sums the known ones. A conditional sum
 (`aggregate_if`, or an aggregate with a `filter`) reads only the rows that meet its condition: a group
 whose rows all fail it has none and reads `0`, and one whose matching rows all have a NULL
 amount reads `NULL`. Filled or not, a group reads the same.
-A sum of a single-branch `CASE` with no `ELSE` or `ELSE NULL` follows that
-conditional rule. An explicit non-NULL `ELSE`, including `ELSE 0`, contributes on
-nonmatching rows: a matching NULL amount plus a nonmatching zero sums to `0`, while
-a group with only matching NULL amounts remains `NULL`.
+A sum of a `CASE` with no `ELSE` or `ELSE NULL` follows that conditional rule, with one
+branch or several: a group none of whose rows meets a branch reads `0`, and such a sum is
+never answered from a rollup. An explicit non-NULL `ELSE`, including `ELSE 0`, contributes
+on nonmatching rows, so every row is read: a matching NULL amount plus a nonmatching zero
+sums to `0`, while a group with only matching NULL amounts remains `NULL`.
 
 - **Arithmetic** settles each operand first, then combines them. An operand that is unknown
   or has no data in scope is `NULL`, and so is the result: `goods + shipping` by refund type
@@ -761,7 +762,11 @@ a group with only matching NULL amounts remains `NULL`.
   count of zero. `NULL` fails every threshold, `= 0` and `< 1` included, so an entity whose
   rows all have a NULL amount meets none of them. Only a count or sum threshold that 0 passes
   reaches an entity with no rows at all, and a distinct count of a population is 0 for one
-  whether or not the scope has data.
+  whether or not the scope has data. Such a threshold on an add or subtract of measures
+  still reads an operand's unknown amounts as `0` where its measure has data in scope: an
+  entity with rows can be `NULL` because one operand is unknown, which can't show whether the
+  other measures have data, so `goods + shipping = 0` keeps the orders with no refunds even
+  where every refunded order has goods or shipping amounts but never both.
 - **Filters narrow the scope.** With `where: store = 'x'`, a measure that has no rows at
   store x reads `NULL`, even though the same store reads `0` in a `group_by: store` answer. A
   filter value that matches nothing (a misspelled `product`) reads `NULL`, not a confident 0.
