@@ -10,9 +10,10 @@ from semantic_rails.compiler_parts.bind import lift_conditional_aggregates
 from semantic_rails.compiler_parts.post_aggregation import (
     _as_offset_window_expr,
     _compile_offset_window_expr,
+    _summing_window_parts,
 )
 from semantic_rails.errors import SemanticLayerError
-from semantic_rails.expressions import OffsetWindowExpr, parse_semantic_expression
+from semantic_rails.expressions import ColumnRefExpr, OffsetWindowExpr, parse_semantic_expression
 from semantic_rails.http_core import SemanticHTTPService
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.registry import Registry
@@ -100,6 +101,7 @@ UNSAFE = [
     ],
     ({"measure": "measure.jaffle.inventory_on_hand_eop"}, "inventory_on_hand_eop"),
     ({"measure": "measure.jaffle.customer_count"}, "customer_count"),
+    ({"measure": "measure.jaffle.visiting_customer_count"}, "visiting_customer_count"),
     ({**CONDITIONAL_COUNT, "aggregation": "count_distinct"}, "count_distinct"),
     (
         {
@@ -143,13 +145,107 @@ def test_non_additive_inputs_refuse_centrally(config, input_expr, name):
         else:
             compile_query(config, Registry(config), payload)
     assert raised.value.code == "ROLLUP_UNSAFE"
+    assert raised.value.details["unsupported_construct"] == "non_additive_window_input"
     assert name in str(raised.value)
     assert raised.value.details["recovery_hints"]
 
 
+@pytest.mark.parametrize("kind", ["rolling", "cumulative", "period_to_date"])
+@pytest.mark.parametrize("measure_id", [ORDERS["measure"], "measure.jaffle.session_starts"])
+def test_source_row_key_counts_still_feed_summing_windows(config, kind, measure_id):
+    measure = next(m for m in config.measures if m.id == measure_id)
+    payload = query(window({"measure": measure_id}, kind))
+    payload["time"]["temporal_role"] = measure.default_temporal_role
+    assert "SUM(base.m1) OVER" in compile_query(config, Registry(config), payload)["sql"]
+
+
+@pytest.mark.parametrize("key_source", ["row_grain", "entity_key", "primary_key"])
+def test_distinct_count_accepts_each_source_key_declaration(config, key_source):
+    measure = next(m for m in config.measures if m.id == ORDERS["measure"])
+    config = replace(
+        config,
+        measures=[
+            replace(m, row_grain=["order_id"] if key_source == "row_grain" else [])
+            if m.id == measure.id
+            else m
+            for m in config.measures
+        ],
+        entities=[
+            replace(
+                e,
+                key=["order_id"] if key_source == "entity_key" else [],
+                primary_key="order_id" if key_source == "primary_key" else "unrelated",
+            )
+            if e.id == measure.entity
+            else e
+            for e in config.entities
+        ],
+    )
+    expr = parse_semantic_expression(ORDERS, context="query")
+    assert _summing_window_parts(expr, config, construct="rolling") == (expr,)
+
+
+@pytest.mark.parametrize("qualifier", [{"entity": "entity.jaffle_customer"}, {"table": "other"}])
+def test_same_named_key_on_another_source_cannot_feed_a_window(config, qualifier):
+    config = replace(
+        config,
+        measures=[
+            replace(m, expr=ColumnRefExpr("order_id", **qualifier))
+            if m.id == ORDERS["measure"]
+            else m
+            for m in config.measures
+        ],
+    )
+    with pytest.raises(SemanticLayerError) as raised:
+        _summing_window_parts(
+            parse_semantic_expression(ORDERS, context="query"), config, construct="rolling"
+        )
+    assert raised.value.details["unsupported_construct"] == "non_additive_window_input"
+
+
+@pytest.mark.parametrize("kind", ["rolling", "cumulative", "period_to_date"])
+@pytest.mark.parametrize(
+    ("op", "factor", "literal_first"),
+    [
+        ("multiply", 2, False),
+        ("multiply", 0.5, True),
+        ("divide", 100, False),
+    ],
+)
+def test_literal_scaling_preserves_windowed_totals(
+    runtime_factory, kind, op, factor, literal_first
+):
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        literal = {"kind": "literal", "value": factor}
+        expression = {
+            "kind": "arithmetic",
+            "op": op,
+            "left": literal if literal_first else REVENUE,
+            "right": REVENUE if literal_first else literal,
+        }
+        original = runtime.query(query(window(REVENUE, kind)))["rows"]
+        scaled = runtime.query(query(window(expression, kind)))["rows"]
+        assert original and len(scaled) == len(original)
+        for before, after in zip(original, scaled, strict=True):
+            assert before[f"{ROLE}__month"] == after[f"{ROLE}__month"]
+            expected = before["value"] * factor if op == "multiply" else before["value"] / factor
+            assert after["value"] == pytest.approx(expected)
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize("route", ["select", "recipe", "derived", "metric_filter"])
-def test_recipes_and_filters_cannot_bypass_the_guard(config, route):
-    invalid = window({**REVENUE, "aggregation": "max"})
+@pytest.mark.parametrize(
+    "input_expr",
+    [
+        {**REVENUE, "aggregation": "max"},
+        {"measure": "measure.jaffle.visiting_customer_count"},
+    ],
+    ids=["statistic", "non_key_count"],
+)
+def test_recipes_and_filters_cannot_bypass_the_guard(config, route, input_expr):
+    invalid = window(input_expr)
     config = replace(
         config,
         measures=[
@@ -178,14 +274,24 @@ def test_recipes_and_filters_cannot_bypass_the_guard(config, route):
     payload = query(expression)
     if route == "metric_filter":
         payload = query(REVENUE, metric_filters=[{"expression": expression, "op": ">", "value": 0}])
+    measure = next(m for m in config.measures if m.id == input_expr["measure"])
+    payload["time"]["temporal_role"] = measure.default_temporal_role
     with pytest.raises(SemanticLayerError) as raised:
         compile_query(config, Registry(config), payload)
     assert raised.value.code == "ROLLUP_UNSAFE"
 
 
-def test_direct_window_lowering_cannot_bypass_the_guard(config):
+@pytest.mark.parametrize(
+    "input_expr",
+    [
+        {**REVENUE, "aggregation": "max"},
+        {"measure": "measure.jaffle.visiting_customer_count"},
+    ],
+    ids=["statistic", "non_key_count"],
+)
+def test_direct_window_lowering_cannot_bypass_the_guard(config, input_expr):
     expr = OffsetWindowExpr(
-        input=parse_semantic_expression({**REVENUE, "aggregation": "max"}, context="query"),
+        input=parse_semantic_expression(input_expr, context="query"),
         kind="rolling",
         aggregate="sum",
         unit="month",

@@ -69,29 +69,45 @@ def test_average_order_window_matches_ratio_of_totals(
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
-@pytest.mark.parametrize("difference", [False, True], ids=["flow", "difference"])
-def test_rolling_flow_and_difference_keep_their_totals(request, backend_name, difference):
+@pytest.mark.parametrize("form", ["flow", "difference", "multiply", "divide"])
+def test_rolling_additive_arithmetic_keeps_its_totals(request, backend_name, form):
     backend = _backend(request, backend_name)
-    input_expr = {"kind": "arithmetic", "op": "subtract", "left": REVENUE, "right": GOODS}
+    inputs = {
+        "flow": REVENUE,
+        "difference": {"kind": "arithmetic", "op": "subtract", "left": REVENUE, "right": GOODS},
+        "multiply": {
+            "kind": "arithmetic",
+            "op": "multiply",
+            "left": REVENUE,
+            "right": {"kind": "literal", "value": 2},
+        },
+        "divide": {
+            "kind": "arithmetic",
+            "op": "divide",
+            "left": REVENUE,
+            "right": {"kind": "literal", "value": 100},
+        },
+    }
     expression = {
         "kind": "rolling",
-        "input": input_expr if difference else REVENUE,
+        "input": inputs[form],
         "window": {"unit": "month", "value": 3},
     }
     query = _ask("month", _item(expression, "trailing"))
     refunds = (
         " - COALESCE((SELECT SUM(r.goods_amount) FROM refunds r JOIN orders ro "
         "ON ro.order_id = r.order_id WHERE date_trunc('month', ro.ordered_at) = s.b), 0)"
-        if difference
+        if form == "difference"
         else ""
     )
+    scale = {"multiply": " * 2", "divide": " / 100.0"}.get(form, "")
     reference = f"""
         WITH s AS (SELECT g.b FROM generate_series(
           (SELECT date_trunc('month', MIN(ordered_at)) FROM orders),
           (SELECT date_trunc('month', MAX(ordered_at)) FROM orders), INTERVAL '1 month') AS g(b)),
         m AS (SELECT s.b, COALESCE((SELECT SUM(o.amount) FROM orders o
               WHERE date_trunc('month', o.ordered_at) = s.b), 0){refunds} AS v FROM s)
-        SELECT b, SUM(v) OVER (ORDER BY b ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM m
+        SELECT b, SUM(v) OVER (ORDER BY b ROWS BETWEEN 2 PRECEDING AND CURRENT ROW){scale} FROM m
     """
     case = Case("rolling_flow", "utc_authored", query, reference)
     _assert_rows(backend.reference(reference), _answer(backend, case), case.name)

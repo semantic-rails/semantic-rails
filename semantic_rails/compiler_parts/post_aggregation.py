@@ -11,6 +11,7 @@ from ..expressions import (
     BooleanExpr,
     CallExpr,
     CaseExpr,
+    ColumnRefExpr,
     ComparisonExpr,
     ConversionExpr,
     CumulativeExpr,
@@ -49,7 +50,7 @@ from ..sql_ast import (
 )
 from .bind import _expression_alias
 from .dependencies import _recipes, recipe_objects, record_leaf_reference
-from .indexes import _measure_index, _recipe_index
+from .indexes import _entity_index, _measure_index, _recipe_index
 from .namespacing import _namespace_sql_select
 from .temporal import _period_to_date_period, _window_unit_to_rows
 
@@ -115,7 +116,10 @@ def _as_offset_window_expr(expr: SemanticExpr) -> OffsetWindowExpr | None:
 def _summing_window_parts(
     expr: SemanticExpr, config: PackageConfig, *, construct: str
 ) -> tuple[SemanticExpr, ...]:
-    """One rule for binding and lowering: add flows, or divide their windowed parts."""
+    """One rule for binding and lowering: add or scale flows, or divide their windowed parts."""
+
+    def numeric_literal(value: SemanticExpr) -> bool:
+        return isinstance(value, LiteralExpr) and type(value.value) in {int, float}
 
     def resolve(value: SemanticExpr, seen: frozenset[str] = frozenset()) -> SemanticExpr:
         if not isinstance(value, MetricRecipeRefExpr):
@@ -138,6 +142,20 @@ def _summing_window_parts(
             allowed = {"additive": {"sum", "count"}, "event_count": {"count_distinct"}}.get(
                 measure.measure_class, set()
             )
+            if aggregation == "count_distinct":
+                entity = _entity_index(config).get(measure.entity)
+                row_keys = set(measure.row_grain)
+                if entity is not None:
+                    row_keys.update(entity.key or [entity.primary_key])
+                counted = measure.expr
+                if not (
+                    isinstance(counted, ColumnRefExpr)
+                    and counted.column in row_keys
+                    and counted.entity in {"", measure.entity}
+                    and counted.table
+                    in {"", measure.source_relation or (entity.table if entity else "")}
+                ):
+                    allowed = set()
             if (
                 measure.additive
                 and measure.accumulation.kind in {"", "flow", "event"}
@@ -148,6 +166,12 @@ def _summing_window_parts(
         elif isinstance(value, ArithmeticExpr):
             if value.op in {"add", "subtract"}:
                 additive(value.left)
+                additive(value.right)
+                return
+            if value.op in {"multiply", "divide"} and numeric_literal(value.right):
+                additive(value.left)
+                return
+            if value.op == "multiply" and numeric_literal(value.left):
                 additive(value.right)
                 return
             name = value.op
@@ -170,7 +194,11 @@ def _summing_window_parts(
     parts: tuple[SemanticExpr, ...]
     if isinstance(resolved, RatioExpr):
         parts = (resolved.numerator, resolved.denominator)
-    elif isinstance(resolved, ArithmeticExpr) and resolved.op == "divide":
+    elif (
+        isinstance(resolved, ArithmeticExpr)
+        and resolved.op == "divide"
+        and not numeric_literal(resolved.right)
+    ):
         parts = (resolved.left, resolved.right)
     else:
         parts = (resolved,)

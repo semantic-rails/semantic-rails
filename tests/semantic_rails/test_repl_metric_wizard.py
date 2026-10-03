@@ -791,7 +791,7 @@ def test_enter_keeps_an_authored_metric_and_a_new_input_refreshes_it(
         metric,
         {name: canonical[name] for name in ("window", "period", "offset") if name in canonical},
     )
-    assert _values(project, "m") != before
+    assert (refreshed := _values(project, "m")) and refreshed != before
     _repl(project, "undo", None, undo)
     assert path.read_bytes() == original
     assert _values(project, "m", SHIPPED, expect_refusal=refuses) == before

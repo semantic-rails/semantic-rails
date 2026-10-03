@@ -174,16 +174,18 @@ shorthands for the most common cases:
 
 **Summing windows require values that add up across periods.** `rolling`, `cumulative`,
 and `period_to_date` accept additive flows using `sum` or `count`, event counts using
-`count_distinct`, and sums or differences of those inputs. A conditional
-`aggregate_if(count_distinct, …)` is not an event count and refuses. A ratio (including arithmetic
-`divide` and metric recipes that resolve to a ratio) computes the ratio of its windowed
+`count_distinct` of a source-row key (the measure's row grain or its model entity's key),
+and sums, differences, or multiplication/division by numeric literals of those inputs.
+A ratio (including arithmetic `divide` with a nonliteral denominator and metric recipes
+that resolve to a ratio) computes the ratio of its windowed
 parts: `SUM(numerator) OVER w / NULLIF(SUM(denominator) OVER w, 0)`. Each part uses the
 same partition and frame, after the ordinary empty-group settlement; a zero denominator
 returns `NULL`. It does not sum each period's ratio.
 
 Inputs using `avg`, `min`, `max`, `median`, or `percentile`, stocks (semi-additive
-measures), distinct populations, distributions, multiplication, nested windows, and
-ratios inside other arithmetic or inside another ratio refuse with `ROLLUP_UNSAFE`
+measures), distinct populations, distinct counts of non-key columns, distributions,
+products of measures, nested windows, and ratios inside other arithmetic or inside
+another ratio refuse with `ROLLUP_UNSAFE`
 before SQL executes. Ask for a ratio of windowed additive parts, or query the measure's
 own aggregation without a summing window. This rule also applies through derived
 metrics, metric filters, and every execution transport. `prior_period` reads one
