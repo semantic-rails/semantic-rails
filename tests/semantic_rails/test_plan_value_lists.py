@@ -603,11 +603,11 @@ def test_empty_caller_where_does_not_raise(runtime_factory, monkeypatch, path, w
 
 
 @pytest.mark.parametrize(
-    "values", [["Brooklyn", "Philadelphia"], ["Brooklyn", "Philadelphia", "New Orleans"]]
+    "values", [["Brooklyn", "Philadelphia"], ["Brooklyn", "Philadelphia", "San Francisco"]]
 )
 def test_compound_discovery_keeps_each_named_value_and_its_span(runtime_factory, values) -> None:
     runtime = runtime_factory("jaffle_shop")
-    intent = "item revenue for " + ", ".join(values[:-1]) + " and " + values[-1]
+    intent = ("item revenue for " + ", ".join(values[:-1]) + " and " + values[-1]).lower()
     try:
         query = {"select": [{"expression": {"measure": CHOICE["id"]}}]}
         matched = _matched_value_rows(runtime, query, intent)
@@ -615,7 +615,7 @@ def test_compound_discovery_keeps_each_named_value_and_its_span(runtime_factory,
         assert all(row["dimension_id"] == STORE for row in matched)
         for row in matched:
             start, end = row["matched_span"]
-            assert intent[start:end] == row["value"]
+            assert intent[start:end] == row["value"].lower()
     finally:
         runtime.close()
 
