@@ -1036,14 +1036,76 @@ def test_many_route_compact_execute_keeps_rows_and_caps_switch_metadata(
         assert len(json.dumps(warning)) < 1500
         assert "without route_decisions" in warning["message"]
         assert "no warehouse query" in warning["message"]
-        # The warning's continuation returns every refusal option without another execution.
-        assert (
-            runtime.validate(BALANCE_BY_DISTRICT)["errors"][0]["details"]["clarification"][
-                "options"
-            ]
-            == options
+        if hidden is None:
+            # The warning's continuation returns every refusal option without another execution.
+            assert (
+                runtime.validate(BALANCE_BY_DISTRICT)["errors"][0]["details"]["clarification"][
+                    "options"
+                ]
+                == options
+            )
+        assert execute.call_count == 1
+    finally:
+        adapter.close()
+        runtime.close()
+
+
+def test_many_route_compact_execute_keeps_rows_with_an_oversized_chosen_label(
+    tmp_path, monkeypatch
+):
+    config, warehouse = _many_route_config(tmp_path)
+    config = replace(
+        config,
+        entities=[
+            replace(entity, label="A0" + "X" * 5500) if entity.id == "entity.bank_a0" else entity
+            for entity in config.entities
+        ],
+    )
+    runtime = Runtime.from_config(config, source_path=str(tmp_path / "bank"))
+    runtime.set_adapter(warehouse)
+    execute = Mock(wraps=warehouse.query)
+    monkeypatch.setattr(warehouse, "query", execute)
+    adapter = SemanticLayerMCPAdapter(runtime)
+    try:
+        options = runtime.validate(BALANCE_BY_DISTRICT)["errors"][0]["details"]["clarification"][
+            "options"
+        ]
+        assert len(config.entities) == 17 and len(options) == 125
+        chosen = options[0]["decision"]
+        assert chosen["relationship_path"] == [
+            "relationship.account_a0",
+            "relationship.a0_b0",
+            "relationship.b0_c0",
+            "relationship.c0_district",
+        ]
+        out = adapter.call_tool(
+            "execute",
+            {
+                "query": {**BALANCE_BY_DISTRICT, "route_decisions": [chosen]},
+                "verbosity": "compact",
+            },
         )
         assert execute.call_count == 1
+        assert out["ok"] is True, out
+        assert out["status"] == "ok"
+        assert (
+            _rows(out, ["dimension.bank_district_name", "v"])
+            == warehouse._db.conn.execute(
+                "SELECT d.name, SUM(a.balance) FROM account a JOIN a0 USING (id) "
+                "JOIN b0 USING (id) JOIN c0 USING (id) JOIN district d USING (id) GROUP BY d.name"
+            ).fetchall()
+            == [("North", 100)]
+        )
+        (warning,) = [w for w in out["warnings"] if w["code"] == "ROUTE_CHOSEN_BY_QUERY"]
+        assert warning["details"] == {
+            "row": {
+                key: chosen[key] for key in ("source_entity", "target_entity", "relationship_path")
+            },
+            "replaced": "undecided",
+        }
+        assert warning["message"] == (
+            f"{route_reading(config, ACCOUNT, chosen['relationship_path'])} (chosen by this query)"
+        )
     finally:
         adapter.close()
         runtime.close()

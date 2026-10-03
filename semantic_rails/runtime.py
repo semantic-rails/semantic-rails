@@ -498,6 +498,16 @@ def _route_notes(
             if chosen is None or shown == 0 or len(json.dumps(note)) < 1500:
                 break
             shown -= 1
+        if chosen is not None and shown == 0 and len(json.dumps(note)) >= 1500:
+            note["message"] = f"{route_reading(config, start, path)} (chosen by this query)"
+            note["details"] = {
+                "row": {key: row[key] for key in _ROUTE_ROW_KEYS},
+                "replaced": row["replaced"],
+            }
+            if alternatives:
+                note["details"]["more_alternatives"] = len(alternatives)
+                if len(json.dumps(note)) >= 1500:
+                    del note["details"]["more_alternatives"]
         notes.append(note)
     if resolve_verbosity(payload) == "minimal":
         return notes
