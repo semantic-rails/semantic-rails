@@ -172,6 +172,28 @@ shorthands for the most common cases:
 | Period-to-date | `{ "kind": "period_to_date", "input": {...}, "period": "month" }` |
 | Conversion | `{ "kind": "conversion", "base": {...}, "converted": {...}, "entity": "...", "window": {"unit": "day", "value": 7}, "matching_mode": "first_converted_after_base" }` — a converted event counts when `base <= converted < base + window` (7 × 24 hours here, not calendar days). |
 
+**Summing windows require values that add up across periods.** `rolling`, `cumulative`,
+and `period_to_date` accept additive flows and event counts using `sum`, `count`, or
+`count_distinct`, and sums or differences of those inputs. A ratio (including arithmetic
+`divide` and metric recipes that resolve to a ratio) computes the ratio of its windowed
+parts: `SUM(numerator) OVER w / NULLIF(SUM(denominator) OVER w, 0)`. Each part uses the
+same partition and frame, after the ordinary empty-group settlement; a zero denominator
+returns `NULL`. It does not sum each period's ratio.
+
+Inputs using `avg`, `min`, `max`, `median`, or `percentile`, stocks (semi-additive
+measures), distinct populations, distributions, multiplication, nested windows, and
+ratios inside other arithmetic or inside another ratio refuse with `ROLLUP_UNSAFE`
+before SQL executes. Ask for a ratio of windowed additive parts, or query the measure's
+own aggregation without a summing window. This rule also applies through derived
+metrics, metric filters, and every execution transport. `prior_period` reads one
+period with `LAG` and keeps its existing input semantics.
+
+`period_to_date` currently supports only the default calendar. A non-default
+`time.calendar_id`, or a time role bound to a non-default calendar, refuses with
+`REWRITE_NOT_SUPPORTED`; it cannot silently reset on Gregorian periods. Query the
+authored calendar's period as exact start/end dates without `period_to_date` instead.
+Default-calendar resets are unchanged.
+
 Comparisons (`kind: "comparison"`) with a literal `null` on either side lower
 `=` / `IS` to `IS NULL` and `!=` / `<>` / `IS NOT` to `IS NOT NULL`. This applies
 inside CASE and aggregate-if conditions (including a metric predicate's input),

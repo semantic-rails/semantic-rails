@@ -100,9 +100,11 @@ from .compiler_parts.paths import (
     inner_lookups,
 )
 from .compiler_parts.post_aggregation import (
+    _as_offset_window_expr,
     _compile_post_expr,
     _expr_requires_dense_series,
     _namespace_sql_select,
+    _summing_window_parts,
 )
 from .compiler_parts.sql_lowering import (
     _count_key_expr,
@@ -642,12 +644,13 @@ def _single_valued_columns(
 def _validate_non_additive_sums(
     bound_measures: Iterable[BoundMeasure], config: PackageConfig, query: NormalizedQuery
 ) -> None:
-    """Refuse a query that would add up two values of an ``additive: false`` measure.
+    """Refuse unsafe sums of stored values or of post-aggregation window inputs.
 
     A flow sums its rows, and a stock sums its series' last (or first) snapshots, so each
     output row must hold one row (for a stock, one series) of the measure's model. Other
     aggregations (avg, min, max, median, percentile) are statistics of the values and
-    stay allowed. Windows and per-entity rollups over such a measure always refuse.
+    stay allowed without a summing window. Windows and per-entity rollups over such
+    a measure always refuse; summing windows also require additive aggregations.
     """
     measures = _measure_index(config)
     bound_measures = list(bound_measures)
@@ -664,6 +667,44 @@ def _validate_non_additive_sums(
         measure = measures.get(measure_id)
         if measure is not None and not measure.additive:
             _raise_non_additive_sum(measure, construct, [], config)
+
+    def validate_window(expr: Any) -> None:
+        if isinstance(expr, MetricRecipeRefExpr):
+            recipe = _recipe_index(config).get(expr.metric_recipe)
+            if recipe is not None:
+                validate_window(recipe.expression)
+            return
+        window = _as_offset_window_expr(expr)
+        if window is not None and window.aggregate == "sum":
+            _summing_window_parts(window.input, config, construct=window.kind)
+            if window.kind == "period_to_date" and query.time is not None:
+                calendar = (query.time.calendar_id or "default").strip().lower()
+                role = _temporal_role_index(config).get(query.time.temporal_role)
+                dim = _dimension_index(config).get(role.dimension) if role else None
+                entity = _entity_index(config).get(dim.entity) if dim else None
+                role_calendar = (
+                    (entity.calendar_id or "default").strip().lower() if entity else "default"
+                )
+                if calendar != "default" or role_calendar != "default":
+                    raise SemanticLayerError(
+                        "REWRITE_NOT_SUPPORTED",
+                        "period_to_date requires the default calendar; authored non-default "
+                        "calendar period anchors are not supported. Query the fiscal period "
+                        "as exact start/end dates without a period_to_date window.",
+                        details={
+                            "unsupported_construct": "non_default_calendar_period_to_date",
+                            "calendar_id": calendar if calendar != "default" else role_calendar,
+                        },
+                    )
+        if is_dataclass(expr):
+            for item in fields(expr):
+                value = getattr(expr, item.name)
+                for child in value if isinstance(value, list) else [value]:
+                    if is_dataclass(child):
+                        validate_window(child)
+
+    for root in roots:
+        validate_window(root)
     for bound in bound_measures:
         measure = measures[bound.measure_id]
         if measure.additive:

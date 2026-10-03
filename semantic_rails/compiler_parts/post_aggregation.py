@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 from ..dialects import dialect_for_warehouse
@@ -48,7 +49,7 @@ from ..sql_ast import (
 )
 from .bind import _expression_alias
 from .dependencies import _recipes, recipe_objects, record_leaf_reference
-from .indexes import _recipe_index
+from .indexes import _measure_index, _recipe_index
 from .namespacing import _namespace_sql_select
 from .temporal import _period_to_date_period, _window_unit_to_rows
 
@@ -59,6 +60,7 @@ __all__ = [
     "_compile_post_expr",
     "_expr_requires_dense_series",
     "_namespace_sql_select",
+    "_summing_window_parts",
     "_window_partition_exprs",
 ]
 
@@ -110,6 +112,71 @@ def _as_offset_window_expr(expr: SemanticExpr) -> OffsetWindowExpr | None:
     return None
 
 
+def _summing_window_parts(
+    expr: SemanticExpr, config: PackageConfig, *, construct: str
+) -> tuple[SemanticExpr, ...]:
+    """One rule for binding and lowering: add flows, or divide their windowed parts."""
+
+    def resolve(value: SemanticExpr, seen: frozenset[str] = frozenset()) -> SemanticExpr:
+        if not isinstance(value, MetricRecipeRefExpr):
+            return value
+        recipe = _recipe_index(config).get(value.metric_recipe)
+        if recipe is None:
+            raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown metric '{value.metric_recipe}'")
+        if recipe.id in seen:
+            raise SemanticLayerError("ROLLUP_UNSAFE", f"Cyclic window input '{recipe.id}'")
+        return resolve(recipe.expression, seen | {recipe.id})
+
+    def additive(value: SemanticExpr) -> None:
+        value = resolve(value)
+        name = str(expr_to_dict(value).get("kind"))
+        if isinstance(value, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
+            measure = _measure_index(config).get(value.measure)
+            if measure is None:
+                raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown measure '{value.measure}'")
+            aggregation = (value.aggregation or measure.default_aggregation).lower()
+            if (
+                measure.additive
+                and measure.measure_class in {"additive", "event_count"}
+                and measure.accumulation.kind in {"", "flow", "event"}
+                and aggregation in {"sum", "count", "count_distinct"}
+            ):
+                return
+            name = f"measure '{measure.id}' ({aggregation}, {measure.measure_class})"
+        elif isinstance(value, ArithmeticExpr):
+            if value.op in {"add", "subtract"}:
+                additive(value.left)
+                additive(value.right)
+                return
+            name = value.op
+        hint = (
+            "Ask for the ratio of the windowed additive parts, or query the measure's own "
+            "aggregation without a summing window."
+        )
+        raise SemanticLayerError(
+            "ROLLUP_UNSAFE",
+            f"Input {name} cannot feed {construct}: its values do not add up across periods. {hint}",
+            details={
+                "unsupported_construct": "non_additive_window_input",
+                "construct": construct,
+                "input": name,
+                "recovery_hints": [{"kind": "use_additive_window_parts", "message": hint}],
+            },
+        )
+
+    resolved = resolve(expr)
+    parts: tuple[SemanticExpr, ...]
+    if isinstance(resolved, RatioExpr):
+        parts = (resolved.numerator, resolved.denominator)
+    elif isinstance(resolved, ArithmeticExpr) and resolved.op == "divide":
+        parts = (resolved.left, resolved.right)
+    else:
+        parts = (resolved,)
+    for part in parts:
+        additive(part)
+    return parts
+
+
 def _compile_offset_window_expr(
     expr: OffsetWindowExpr,
     config: PackageConfig,
@@ -127,16 +194,20 @@ def _compile_offset_window_expr(
         raise SemanticLayerError(
             "INVALID_TEMPORAL_ROLE", f"{expr.kind} expressions require query.time with grain"
         )
-    base = _compile_post_expr(
-        expr.input,
-        config,
-        time_alias=time_alias,
-        group_aliases=group_aliases,
-        query_grain=query_grain,
-        table_alias=table_alias,
-    )
+
+    def compile_input(input_expr: SemanticExpr) -> SqlExpr:
+        return _compile_post_expr(
+            input_expr,
+            config,
+            time_alias=time_alias,
+            group_aliases=group_aliases,
+            query_grain=query_grain,
+            table_alias=table_alias,
+        )
+
     order_by = [SqlOrderTerm(expr=SqlIdentifier(parts=[table_alias, time_alias]), direction="ASC")]
     if expr.kind == "prior_period":
+        base = compile_input(expr.input)
         offset_rows = _window_unit_to_rows(expr.unit, expr.value, query_grain)
         lag_partition_by = _window_partition_exprs(table_alias, group_aliases)
         # Dialect hook for warehouses without a LAG window function
@@ -175,12 +246,35 @@ def _compile_offset_window_expr(
             SqlIdentifier(parts=[table_alias, time_alias]),
         )
         partition_by = [*partition_by, period_anchor]
-    return SqlWindow(
-        function=SqlCall("SUM", [base]),
-        partition_by=partition_by,
-        order_by=order_by,
-        frame=frame or "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
-    )
+    # Keep the recipe's dependency ownership while expanding its ratio at this boundary.
+    if isinstance(expr.input, MetricRecipeRefExpr):
+        recipe = _recipe_index(config).get(expr.input.metric_recipe)
+        if recipe is None:
+            raise SemanticLayerError(
+                "OBJECT_NOT_FOUND", f"Unknown metric '{expr.input.metric_recipe}'"
+            )
+        with recipe_objects(recipe.id):
+            return _compile_offset_window_expr(
+                replace(expr, input=recipe.expression),
+                config,
+                time_alias=time_alias,
+                group_aliases=group_aliases,
+                query_grain=query_grain,
+                table_alias=table_alias,
+            )
+    parts = _summing_window_parts(expr.input, config, construct=expr.kind)
+    sums = [
+        SqlWindow(
+            function=SqlCall("SUM", [compile_input(part)]),
+            partition_by=partition_by,
+            order_by=order_by,
+            frame=frame or "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
+        )
+        for part in parts
+    ]
+    if len(sums) == 2:
+        return SqlBinary(sums[0], "/", SqlCall("NULLIF", [sums[1], SqlLiteral(0)]))
+    return sums[0]
 
 
 def _compile_post_expr(
