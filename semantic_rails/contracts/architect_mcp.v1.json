@@ -13,7 +13,7 @@
   },
   "producer": {
     "name": "semantic-rails",
-    "version": "0.3.2rc3"
+    "version": "0.3.2rc4"
   },
   "prompts": [
     {

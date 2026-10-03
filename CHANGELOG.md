@@ -8,9 +8,11 @@ All notable changes to this project are documented in this file. The format is b
 
 Pending changes live as fragments in [`changelog.d/`](changelog.d/) until the next release.
 
-## 0.3.2rc3 — 2026-10-03 — Governed joins, faithful plans and exact results
+## 0.3.2rc4 — 2026-10-03 — Governed joins, faithful plans and exact results
 
-**Pre-release.** Install it with `pip install semantic-rails==0.3.2rc3`.
+0.3.2rc3 was tagged but never published; 0.3.2rc4 contains the same changes.
+
+**Pre-release.** Install it with `pip install semantic-rails==0.3.2rc4`.
 
 **Upgrading from 0.3.2rc2** (from earlier versions, read the preceding release notes below
 first): review the entries below, especially these changes to packages and embedding hosts.
