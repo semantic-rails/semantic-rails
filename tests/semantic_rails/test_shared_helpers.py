@@ -48,7 +48,7 @@ def test_atomic_write_bytes_replaces_file_with_requested_mode(tmp_path, mode):
     assert list(path.parent.iterdir()) == [path]
 
 
-@pytest.mark.parametrize("operation", ["fsync", "replace"])
+@pytest.mark.parametrize("operation", ["fsync", "chmod", "replace"])
 def test_atomic_write_failure_preserves_destination(tmp_path, monkeypatch, operation):
     path = tmp_path / "state.yml"
     path.write_bytes(b"old")

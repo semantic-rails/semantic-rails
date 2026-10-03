@@ -16,8 +16,8 @@ def atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> N
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-            if mode is not None:
-                os.fchmod(handle.fileno(), mode)
+        if mode is not None:
+            os.chmod(temporary, mode)
         os.replace(temporary, path)
     except BaseException:
         with contextlib.suppress(OSError):
