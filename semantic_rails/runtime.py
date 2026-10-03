@@ -52,6 +52,7 @@ from .compiler_parts.empty_groups import (
     observed_outside_filters,
     sql_nodes,
 )
+from .compiler_parts.indexes import get_package_analysis
 from .compiler_parts.paths import _leaf_time_role
 from .config import (
     SEED_KIND_EXTERNAL,
@@ -65,6 +66,7 @@ from .config import (
     resolve_repo_path,
     semantic_rails_home,
 )
+from .config_parts.route_rows import walk_entities
 from .db import (
     Database,
     WarehouseAdapter,
@@ -95,6 +97,7 @@ from .fanout import (
     build_hop_profile,
     entity_label,
     offered_rows,
+    package_route,
     query_route_decisions,
     route_note,
     route_reading,
@@ -378,7 +381,13 @@ def _hop_profile(config, compiled) -> dict[str, Any]:
         )
 
 
-def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+def _route_notes(
+    config,
+    compiled,
+    payload: dict[str, Any] | None,
+    *,
+    policy_context: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """One short note per entity pair the compiled query reads where the engine chose one of
     two or more routes (``fanout.route_note``): by the start's own key (ROUTE_COLOCATED_KEY,
     with the row that would make each other route the default in ``details.alternatives`` when
@@ -396,26 +405,86 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
 
     A pair the query decided itself (``route_decisions``) gets ROUTE_CHOSEN_BY_QUERY instead,
     at every verbosity: the row and the basis it replaced, since the answer may differ from
-    the package's.
+    the package's. Only an undecided pair gets switches from its cached refusal: at most
+    three visible decision rows, with the remaining visible count. No alternative runs.
     """
     notes: list[dict[str, Any]] = []
     decided: set[tuple[str, str]] = set()
+    hidden_ids = diagnostic_hidden_object_ids(config, policy_context)
+    visibility_known = hidden_ids is not None or not any(
+        policy.kind == "object_visibility" for policy in config.semantic_policies
+    )
+
+    def visible(start, path):
+        if not visibility_known:
+            return False
+        if not hidden_ids:
+            return True
+        entities = walk_entities(get_package_analysis(config).relationships, start, path)
+        return not hidden_ids.intersection([*path, *entities])
+
     for row in compiled.get("route_decisions") or []:
         start, target, path = row["source_entity"], row["target_entity"], row["relationship_path"]
         decided.add((start, target))
-        notes.append(
-            semantic_issue(
+        details: dict[str, Any] = {
+            "row": {key: row[key] for key in _ROUTE_ROW_KEYS},
+            "replaced": row["replaced"],
+        }
+        message = f"{route_reading(config, start, path)} (chosen by this query)"
+        options = []
+        if row["replaced"] == "undecided":
+            try:
+                package_route(config, start=start, target=target)
+            except SemanticLayerError as exc:
+                if exc.code == "AMBIGUOUS_PATH":
+                    options = [
+                        option
+                        for option in exc.details.get("clarification", {}).get("options", [])
+                        if visible(start, option["relationship_path"])
+                    ]
+        chosen = next((option for option in options if option["relationship_path"] == path), None)
+        alternatives = [option["decision"] for option in options if option != chosen]
+        shown = min(3, len(alternatives))
+        while True:
+            if chosen is not None:
+                details["meaning"] = chosen["meaning"]
+                details["route_alternatives"] = alternatives[:shown]
+                message = f"Chosen meaning: {chosen['meaning']} (chosen by this query). "
+                if shown:
+                    message += (
+                        "Other meanings (one-step switches): "
+                        + "; ".join(alternative["label"] for alternative in alternatives[:shown])
+                        + ". Use a decision in route_decisions. "
+                    )
+                if len(alternatives) > shown:
+                    details["more_alternatives"] = len(alternatives) - shown
+                    message += (
+                        "Validate the query without route_decisions for every option; "
+                        "no warehouse query runs. "
+                    )
+                message += "A reviewed package default using details.row would remove the question."
+            note = semantic_issue(
                 code="ROUTE_CHOSEN_BY_QUERY",
-                message=f"{route_reading(config, start, path)} (chosen by this query)",
+                message=message,
                 severity="info",
                 stage="planning",
-                details={
-                    "row": {key: row[key] for key in _ROUTE_ROW_KEYS},
-                    "replaced": row["replaced"],
-                },
+                details=details,
                 object_ids=[start, target],
             )
-        )
+            if chosen is None or shown == 0 or len(json.dumps(note)) < 1500:
+                break
+            shown -= 1
+        if chosen is not None and shown == 0 and len(json.dumps(note)) >= 1500:
+            note["message"] = f"{route_reading(config, start, path)} (chosen by this query)"
+            note["details"] = {
+                "row": {key: row[key] for key in _ROUTE_ROW_KEYS},
+                "replaced": row["replaced"],
+            }
+            if alternatives:
+                note["details"]["more_alternatives"] = len(alternatives)
+                if len(json.dumps(note)) >= 1500:
+                    del note["details"]["more_alternatives"]
+        notes.append(note)
     if resolve_verbosity(payload) == "minimal":
         return notes
     for start, target, path in read_routes(
@@ -425,11 +494,14 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
         if resolution is None:
             continue
         route = list(resolution.routes[0])
-        details: dict[str, Any] = {"route": route}
+        details = {"route": route}
         if resolution.basis == "colocated_key":
             code, how = "ROUTE_COLOCATED_KEY", "own key"
             details["alternatives"], conflicts = offered_rows(
-                config, start, target, resolution.routes[1:]
+                config,
+                start,
+                target,
+                [route for route in resolution.routes[1:] if visible(start, route)],
             )
             if conflicts:
                 details["conflicts_with"] = conflicts
@@ -859,14 +931,18 @@ def _scope_refusal(payload: dict[str, Any]) -> SemanticLayerError | None:
 
 
 def _compiled_warnings(
-    config, compiled, payload: dict[str, Any] | None = None
+    config,
+    compiled,
+    payload: dict[str, Any] | None = None,
+    *,
+    policy_context: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     warnings: list[dict[str, Any]] = [
         *(rewrite_warning_payload(step) for step in compiled["logical_plan"].rewrite_steps),
         *_history_warnings(config, compiled["logical_plan"]),
         *_measure_validity_warnings(config, compiled["logical_plan"]),
         *_stock_key_gap_warnings(compiled),
-        *_route_notes(config, compiled, payload),
+        *_route_notes(config, compiled, payload, policy_context=policy_context),
         *_time_zone_warnings(config, compiled),
         *mixed_time_role_warnings(config, compiled["logical_plan"]),
     ]
@@ -2412,7 +2488,9 @@ class Runtime:
             out = asdict(report)
             freshness_rows = _freshness_by_leaf(self._config, compiled)
             out["status"] = "ok"
-            out["warnings"] = _compiled_warnings(self._config, compiled, payload)
+            out["warnings"] = _compiled_warnings(
+                self._config, compiled, payload, policy_context=policy_context
+            )
             out["errors"] = []
             out["query"] = without_trusted_attributes(payload)
             out["normalized_query"] = compiled["explain"].normalized_query
@@ -2512,7 +2590,9 @@ class Runtime:
             "ok": True,
             "status": "ok",
             "errors": [],
-            "warnings": _compiled_warnings(self._config, compiled, payload),
+            "warnings": _compiled_warnings(
+                self._config, compiled, payload, policy_context=policy_context
+            ),
             "recovery_hints": [],
             "authoring_hints": [],
             "query_ir_hints": [],
@@ -2648,7 +2728,7 @@ class Runtime:
             "status": "ok",
             "errors": [],
             "warnings": [
-                *_compiled_warnings(self._config, compiled, payload),
+                *_compiled_warnings(self._config, compiled, payload, policy_context=policy_context),
                 *_no_data_in_scope_warnings(
                     compiled,
                     rows,
