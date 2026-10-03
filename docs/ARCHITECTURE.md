@@ -435,7 +435,8 @@ Important planner behaviors:
 - query-time predicates default to contextual scope
 - package-authored predicates must declare `scope_mode`
 - supported v1 predicate modes are `contextual` and `entity_only`
-- contextual predicates inherit outer time and compatible grouped context entities, and inherit compatible filters without widening the join key
+- contextual predicates inherit outer time and compatible grouped context entities, and inherit compatible filters without widening the join key; a dimension on the input's own row entity contributes its values, joined null-safely, instead of that entity's key
+- distribution branches refuse post-aggregation metric filters rather than evaluating them at the per-entity grain; contextual predicates on a different entity also refuse because branch grouping cannot preserve the outer context
 - contextual `time_grain` overrides are limited to coarser deterministic ancestor buckets on the same calendar
 - supported conversion requests compile as event-pair matching subplans
 - unsupported conversion requests fail semantically rather than silently degrading into ratios
