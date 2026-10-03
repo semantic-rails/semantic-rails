@@ -2181,11 +2181,8 @@ def _parent_lookup_leaf_select(
     }
     source = base = f"{measure_plan.cte_name}_lookup_source"
     index = 1
-    # Namespacing prefixes CTEs with '__'; reserve their eventual names as well.
-    while any(
-        name in {source, f"{source}_gate"} or name.endswith((f"__{source}", f"__{source}_gate"))
-        for name in occupied
-    ):
+    # Reserve the source, gate and nested CTE names, including namespace prefixes.
+    while any(source.casefold() in name for name in occupied):
         index += 1
         source = f"{base}_{index}"
     keys = list(

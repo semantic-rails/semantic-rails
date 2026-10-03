@@ -355,6 +355,8 @@ def test_the_lookup_equals_a_hand_written_view_join(runtime: Runtime, package_di
         "leaf_1_lookup_source",
         "leaf_1_lookup_source_gate",
         "leaf_1__leaf_1_lookup_source",
+        "leaf_1_lookup_source__leaf_1",
+        "leaf_1__leaf_1_lookup_source__leaf_1",
     ],
 )
 def test_a_physical_relation_can_be_named_lookup_source(
@@ -368,7 +370,11 @@ def test_a_physical_relation_can_be_named_lookup_source(
     expected = _reference(root, reference.replace(f"{table}.", f"{relation}."))
     engine = Runtime.from_path(str(root))
     try:
+        assert len(expected) == 8
         assert _rows(engine, _query()) == expected
+        assert (
+            f"FROM {relation}" in compile_query(engine.config, None, _query())["sql"].splitlines()
+        )
     finally:
         engine.close()
 

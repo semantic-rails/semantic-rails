@@ -449,7 +449,9 @@ uses MAX over values proved single per output row. `_validate_non_additive_sums`
 both call it, and it refuses a different resolved route or unsafe grain with `ROLLUP_UNSAFE`.
 The loader refuses composite `via` keys and recorded routes that conflict with either
 direct relationship. This leaf's explicit LEFT JOIN to a compiled total is the named
-exception to the `_joins_for_paths` rule above.
+exception to the `_joins_for_paths` rule above. Its CTE allocator skips a source name
+when any occupied relation or CTE name contains it, ignoring case, so gate and nested
+names remain distinct from physical relations after namespacing.
 
 ### Loaded semantics and executable SQL
 
