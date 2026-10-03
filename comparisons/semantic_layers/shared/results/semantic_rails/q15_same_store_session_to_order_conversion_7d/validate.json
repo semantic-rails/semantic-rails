@@ -21,8 +21,8 @@
     "chosen_paths": {},
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 0.658,
-      "compile_ms": 0.329,
+      "cache_lookup_ms": 0.723,
+      "compile_ms": 0.365,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -1325,7 +1325,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 2.974,
+  "timing_ms": 3.62,
   "trace": {
     "fallback": {
       "reason": "",
@@ -1368,11 +1368,108 @@
     {
       "code": "ROUTE_COLOCATED_KEY",
       "details": {
+        "alternatives": [
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.orders_store"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_store"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_customer",
+              "relationship.order_lifecycle_customer",
+              "relationship.order_lifecycle_store"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_store"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_customer",
+              "relationship.orders_customer",
+              "relationship.orders_store"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_store"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.order_lifecycle_order",
+              "relationship.order_lifecycle_store"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_store"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_customer",
+              "relationship.customer_history_customer",
+              "relationship.order_lifecycle_to_customer_history",
+              "relationship.order_lifecycle_store"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_store"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_customer",
+              "relationship.customer_history_customer",
+              "relationship.order_to_customer_history",
+              "relationship.orders_store"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_store"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_customer",
+              "relationship.order_lifecycle_customer",
+              "relationship.order_lifecycle_order",
+              "relationship.orders_store"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_store"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_customer",
+              "relationship.orders_customer",
+              "relationship.order_lifecycle_order",
+              "relationship.order_lifecycle_store"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_store"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.order_to_customer_history",
+              "relationship.order_lifecycle_to_customer_history",
+              "relationship.order_lifecycle_store"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_store"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.orders_customer",
+              "relationship.order_lifecycle_customer",
+              "relationship.order_lifecycle_store"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_store"
+          }
+        ],
         "route": [
           "relationship.storefront_sessions_store"
         ]
       },
-      "message": "Storefront session \u2192 Store (own key)",
+      "message": "the Storefront session's Store (own key)",
       "object_ids": [
         "entity.jaffle_storefront_session",
         "entity.jaffle_store"
@@ -1385,11 +1482,127 @@
     {
       "code": "ROUTE_COLOCATED_KEY",
       "details": {
+        "alternatives": [
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.orders_customer"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_customer"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.order_lifecycle_order",
+              "relationship.order_lifecycle_customer"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_customer"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.order_to_customer_history",
+              "relationship.customer_history_customer"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_customer"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_store",
+              "relationship.order_lifecycle_store",
+              "relationship.order_lifecycle_customer"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_customer"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_store",
+              "relationship.orders_store",
+              "relationship.orders_customer"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_customer"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.order_lifecycle_order",
+              "relationship.order_lifecycle_to_customer_history",
+              "relationship.customer_history_customer"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_customer"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.order_to_customer_history",
+              "relationship.order_lifecycle_to_customer_history",
+              "relationship.order_lifecycle_customer"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_customer"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.orders_store",
+              "relationship.order_lifecycle_store",
+              "relationship.order_lifecycle_customer"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_customer"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_store",
+              "relationship.order_lifecycle_store",
+              "relationship.order_lifecycle_order",
+              "relationship.orders_customer"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_customer"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_store",
+              "relationship.order_lifecycle_store",
+              "relationship.order_lifecycle_to_customer_history",
+              "relationship.customer_history_customer"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_customer"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_store",
+              "relationship.orders_store",
+              "relationship.order_lifecycle_order",
+              "relationship.order_lifecycle_customer"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_customer"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_store",
+              "relationship.orders_store",
+              "relationship.order_to_customer_history",
+              "relationship.customer_history_customer"
+            ],
+            "source_entity": "entity.jaffle_storefront_session",
+            "target_entity": "entity.jaffle_customer"
+          }
+        ],
         "route": [
           "relationship.storefront_sessions_customer"
         ]
       },
-      "message": "Storefront session \u2192 Customer (own key)",
+      "message": "the Storefront session's Customer (own key)",
       "object_ids": [
         "entity.jaffle_storefront_session",
         "entity.jaffle_customer"
@@ -1402,11 +1615,187 @@
     {
       "code": "ROUTE_COLOCATED_KEY",
       "details": {
+        "alternatives": [],
+        "conflicts_with": [
+          {
+            "relationship_path": [
+              "relationship.order_lifecycle_order",
+              "relationship.order_lifecycle_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.storefront_sessions_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.order_to_customer_history",
+              "relationship.order_lifecycle_to_customer_history",
+              "relationship.order_lifecycle_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.orders_customer",
+              "relationship.order_lifecycle_customer",
+              "relationship.order_lifecycle_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.orders_customer",
+              "relationship.storefront_sessions_customer",
+              "relationship.storefront_sessions_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.order_lifecycle_order",
+              "relationship.order_lifecycle_customer",
+              "relationship.storefront_sessions_customer",
+              "relationship.storefront_sessions_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.order_to_customer_history",
+              "relationship.customer_history_customer",
+              "relationship.order_lifecycle_customer",
+              "relationship.order_lifecycle_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.order_to_customer_history",
+              "relationship.customer_history_customer",
+              "relationship.storefront_sessions_customer",
+              "relationship.storefront_sessions_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.orders_customer",
+              "relationship.customer_history_customer",
+              "relationship.order_lifecycle_to_customer_history",
+              "relationship.order_lifecycle_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.storefront_sessions_customer",
+              "relationship.order_lifecycle_customer",
+              "relationship.order_lifecycle_store"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_store"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_store"
+              }
+            ]
+          }
+        ],
         "route": [
           "relationship.orders_store"
         ]
       },
-      "message": "Order \u2192 Store (own key)",
+      "message": "the Order's Store (own key)",
       "object_ids": [
         "entity.jaffle_order",
         "entity.jaffle_store"
@@ -1419,11 +1808,184 @@
     {
       "code": "ROUTE_COLOCATED_KEY",
       "details": {
+        "alternatives": [],
+        "conflicts_with": [
+          {
+            "relationship_path": [
+              "relationship.order_lifecycle_order",
+              "relationship.order_lifecycle_customer"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_customer"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_customer"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.order_to_customer_history",
+              "relationship.customer_history_customer"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_customer"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_customer"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.storefront_sessions_customer"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_customer"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_customer"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.order_lifecycle_order",
+              "relationship.order_lifecycle_to_customer_history",
+              "relationship.customer_history_customer"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_customer"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_customer"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.order_to_customer_history",
+              "relationship.order_lifecycle_to_customer_history",
+              "relationship.order_lifecycle_customer"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_customer"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_customer"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.orders_store",
+              "relationship.order_lifecycle_store",
+              "relationship.order_lifecycle_customer"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_customer"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_customer"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.orders_store",
+              "relationship.storefront_sessions_store",
+              "relationship.storefront_sessions_customer"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_customer"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_customer"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.order_lifecycle_order",
+              "relationship.order_lifecycle_store",
+              "relationship.storefront_sessions_store",
+              "relationship.storefront_sessions_customer"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_customer"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_customer"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.orders_store",
+              "relationship.order_lifecycle_store",
+              "relationship.order_lifecycle_to_customer_history",
+              "relationship.customer_history_customer"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_customer"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_customer"
+              }
+            ]
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.storefront_sessions_store",
+              "relationship.order_lifecycle_store",
+              "relationship.order_lifecycle_customer"
+            ],
+            "rows": [
+              {
+                "relationship_path": [
+                  "relationship.order_items_order",
+                  "relationship.orders_customer"
+                ],
+                "source_entity": "entity.jaffle_item",
+                "target_entity": "entity.jaffle_customer"
+              }
+            ]
+          }
+        ],
         "route": [
           "relationship.orders_customer"
         ]
       },
-      "message": "Order \u2192 Customer (own key)",
+      "message": "the Order's Customer (own key)",
       "object_ids": [
         "entity.jaffle_order",
         "entity.jaffle_customer"

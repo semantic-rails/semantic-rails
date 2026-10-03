@@ -113,13 +113,6 @@ graph:
       # the join with a temporal-validity predicate, so safety is
       # `requires_rewrite` rather than the default `safe`.
       safety: requires_rewrite
-      # Per-direction rollup safety: forward (order → customer_history),
-      # additive aggregations roll up cleanly across the temporal slice.
-      # Reverse (customer_history → order) cannot fan out without the
-      # rewrite, so no aggregations are declared safe in that direction.
-      rollup_safe:
-        forward: [sum, count]
-        reverse: []
       temporal_validity:
         valid_from: jaffle_customer_history.valid_from
         valid_to: jaffle_customer_history.valid_to

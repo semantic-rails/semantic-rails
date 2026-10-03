@@ -943,9 +943,7 @@ def _write_graph_relationship_package(pkg_dir: Path, *, relationship_extra: dict
 
 def test_graph_relationships_block_translates_bidirectional_pair(tmp_path: Path) -> None:
     pkg_dir = tmp_path / "pkg_graph_rel"
-    _write_graph_relationship_package(
-        pkg_dir, relationship_extra={"rollup_safe": {"forward": ["sum", "count"], "reverse": []}}
-    )
+    _write_graph_relationship_package(pkg_dir, relationship_extra={})
     config = load_package_config(str(pkg_dir))
     order_id = next(e.id for e in config.entities if e.id.endswith("_order"))
     customer_id = next(e.id for e in config.entities if e.id.endswith("_customer"))
@@ -955,7 +953,6 @@ def test_graph_relationships_block_translates_bidirectional_pair(tmp_path: Path)
         if r.source_entity == order_id and r.target_entity == customer_id
     )
     assert rel.cardinality == "N:1"
-    assert rel.rollup_safe_aggregations == ["sum", "count"]
 
 
 # ---------------------------------------------------------------------------
@@ -1576,14 +1573,8 @@ def _two_entity_model_skeleton() -> dict[str, Any]:
     }
 
 
-def test_graph_relationships_rollup_safe_both_directions(tmp_path: Path) -> None:
-    """`graph.relationships:` with bidirectional `entities: [a, b]` plus
-    nested `rollup_safe: { forward, reverse }` populates both directions.
-
-    Closes the gap where the existing test only checks the forward list and
-    leaves reverse empty — the loader needs to handle a non-empty reverse
-    list and surface it on the resulting RelationshipConfig.
-    """
+def test_graph_relationships_rollup_safe_reverse(tmp_path: Path) -> None:
+    """Reverse rewrite permissions stay on the authored edge, without a second edge."""
     pkg_dir = tmp_path / "pkg_rollup_both_dirs"
     _write_synthetic_package(
         pkg_dir,
@@ -1596,7 +1587,6 @@ def test_graph_relationships_rollup_safe_both_directions(tmp_path: Path) -> None
                 "entities": ["order", "customer"],
                 "cardinality": "many_to_one",
                 "rollup_safe": {
-                    "forward": ["sum", "count"],
                     "reverse": ["max", "min"],
                 },
                 "safety": "safe",
@@ -1612,11 +1602,6 @@ def test_graph_relationships_rollup_safe_both_directions(tmp_path: Path) -> None
         for r in config.relationships
         if r.source_entity == order_id and r.target_entity == customer_id
     )
-    # Forward direction (order→customer) carries the authored forward list.
-    assert rel.rollup_safe_aggregations == ["sum", "count"]
-    # Reverse direction (customer→order) is captured on the same edge via
-    # the parallel rollup_safe_aggregations_reverse field; the loader does
-    # NOT synthesize a second RelationshipConfig.
     assert rel.rollup_safe_aggregations_reverse == ["max", "min"]
 
 

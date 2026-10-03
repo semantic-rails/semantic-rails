@@ -166,9 +166,6 @@ def _write_package(
               dimension:
                 groupable: true
                 filterable: true
-              measure:
-                subject_entity: self
-                aggregation_entity: self
               relationship:
                 traversal: [forward, reverse]
             """
@@ -440,8 +437,6 @@ def test_pinned_dense_graph_compiles_and_notes_use_bounded_work(tmp_path, monkey
                 base.measures[0],
                 id="measure.e10_count",
                 entity="e10",
-                subject_entity="e10",
-                aggregation_entity="e10",
                 row_grain=["dimension.e10_id"],
                 expr=ColumnRefExpr("id"),
                 measure_class="event_count",
