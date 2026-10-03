@@ -37,6 +37,7 @@ from semantic_rails.metadata_parts.valid_values import valid_values_payload
 from semantic_rails.planner.plan import plan_payload
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import opened
 
 SEED_SQL = """
 CREATE TABLE accounts (account_id VARCHAR, region VARCHAR);
@@ -203,7 +204,7 @@ def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
 @pytest.fixture(scope="module")
 def runtime(package: Path):
     runtime = Runtime.from_path(str(package))
-    yield runtime
+    yield opened(runtime)
     runtime.close()
 
 

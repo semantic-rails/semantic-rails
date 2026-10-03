@@ -31,6 +31,7 @@ from semantic_rails.runtime import (
     Runtime,
     _expression_normalized_away_warnings,
 )
+from tests.semantic_rails.conftest import opened
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 SCHEMA_PATH = REPO_ROOT / "schemas" / "query_ir.v1.json"
@@ -38,7 +39,7 @@ SCHEMA_PATH = REPO_ROOT / "schemas" / "query_ir.v1.json"
 
 @pytest.fixture(scope="module")
 def runtime() -> Runtime:
-    return Runtime("jaffle_shop")
+    return opened(Runtime("jaffle_shop"))
 
 
 # ---------------------------------------------------------------------------

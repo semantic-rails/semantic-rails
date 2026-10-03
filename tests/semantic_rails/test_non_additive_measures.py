@@ -19,6 +19,7 @@ import pytest
 from semantic_rails.compiler import NonAdditiveRefusal
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import opened
 
 NS = "f4add"
 DAY = f"temporal_role.{NS}_traffic_day_day"
@@ -130,7 +131,7 @@ def package_dir(tmp_path_factory) -> Path:
 
 @pytest.fixture(scope="module")
 def runtime(package_dir: Path) -> Runtime:
-    return Runtime.from_path(str(package_dir))
+    return opened(Runtime.from_path(str(package_dir)))
 
 
 def _query(

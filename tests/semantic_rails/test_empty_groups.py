@@ -22,7 +22,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime, _no_data_in_scope_warnings
-from tests.semantic_rails.conftest import copy_package_config
+from tests.semantic_rails.conftest import copy_package_config, opened
 from tests.semantic_rails.empty_groups_invariant import assert_settled_in_one_place
 from tests.semantic_rails.test_rendered_sql_snapshots import SNAPSHOT_CASES
 
@@ -46,7 +46,7 @@ def runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
     package = load_package_config(str(package_dir))
     rt = Runtime.from_config(package, source_path=str(package_dir), package_id="jaffle_shop")
     try:
-        yield rt
+        yield opened(rt)
     finally:
         rt.close()
 

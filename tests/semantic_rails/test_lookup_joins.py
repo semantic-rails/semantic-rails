@@ -35,6 +35,7 @@ from semantic_rails.dialects import _WAREHOUSE_CONNECTORS
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import AggregateRelationConfig
+from tests.semantic_rails.conftest import opened
 
 SEED_SQL = """
 CREATE TABLE airports (airport_code VARCHAR, city VARCHAR);
@@ -240,7 +241,7 @@ def package(tmp_path_factory: pytest.TempPathFactory) -> Path:
 @pytest.fixture(scope="module")
 def runtime(package: Path):
     runtime = Runtime.from_path(str(package))
-    yield runtime
+    yield opened(runtime)
     runtime.close()
 
 
@@ -264,7 +265,7 @@ def null_city_runtime(tmp_path_factory: pytest.TempPathFactory):
     runtime = Runtime.from_path(
         str(_write_package(tmp_path_factory.mktemp("null_city"), NULL_CITY_SEED))
     )
-    yield runtime
+    yield opened(runtime)
     runtime.close()
 
 
@@ -290,7 +291,7 @@ def orphan_leg_runtime(tmp_path_factory: pytest.TempPathFactory):
     runtime = Runtime.from_path(
         str(_write_package(tmp_path_factory.mktemp("orphan_leg"), ORPHAN_LEG_SEED))
     )
-    yield runtime
+    yield opened(runtime)
     runtime.close()
 
 

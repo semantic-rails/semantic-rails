@@ -23,12 +23,12 @@ ROLE = "temporal_role.jaffle_daily_metric_day"
 
 @pytest.fixture(scope="module")
 def runtime(tmp_path_factory):
-    from tests.semantic_rails.conftest import copy_package_config
+    from tests.semantic_rails.conftest import copy_package_config, opened
 
     package_dir = copy_package_config(
         tmp_path_factory.mktemp("semi_additive"), "jaffle_shop", preseed_db=True
     )
-    return Runtime.from_path(str(package_dir))
+    return opened(Runtime.from_path(str(package_dir)))
 
 
 def _rows(runtime: Runtime, payload: dict) -> list[dict]:

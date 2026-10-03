@@ -18,7 +18,7 @@ from semantic_rails.expressions import CONVERSION_MATCHING_MODES
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import inspect_payload
 from semantic_rails.runtime import Runtime
-from tests.semantic_rails.conftest import copy_package_config
+from tests.semantic_rails.conftest import copy_package_config, opened
 
 CONVERSION_METRICS = [
     "metric.adoption.signup_to_send_conversion_rate_28d",
@@ -78,7 +78,7 @@ def adapter(tmp_path_factory: pytest.TempPathFactory) -> Iterator[SemanticLayerM
     policies.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
     runtime = Runtime.from_path(str(path))
     try:
-        yield SemanticLayerMCPAdapter(runtime)
+        yield SemanticLayerMCPAdapter(opened(runtime))
     finally:
         runtime.close()
 

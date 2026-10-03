@@ -26,6 +26,7 @@ from typing import Any
 import pytest
 
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import opened
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 EXAMPLES_DIR = REPO_ROOT / "examples"
@@ -49,7 +50,7 @@ EXAMPLE_IDS = [name for name, _ in EXAMPLES]
 def runtime() -> Runtime:
     rt = Runtime("jaffle_shop")
     try:
-        yield rt
+        yield opened(rt)
     finally:
         rt.close()
 
