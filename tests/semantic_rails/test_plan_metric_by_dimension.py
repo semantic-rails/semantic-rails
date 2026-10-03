@@ -166,8 +166,6 @@ def _claims_config() -> PackageConfig:
             MeasureConfig(
                 id="measure.claim_paid_amount",
                 entity="entity.claim",
-                subject_entity="entity.claim",
-                aggregation_entity="entity.claim",
                 row_grain=["claim_id"],
                 expr=ColumnRefExpr("claim_paid_amount"),
                 default_aggregation="sum",
@@ -177,8 +175,6 @@ def _claims_config() -> PackageConfig:
             MeasureConfig(
                 id="measure.primary_payer_paid_amount",
                 entity="entity.claim",
-                subject_entity="entity.claim",
-                aggregation_entity="entity.claim",
                 row_grain=["claim_id"],
                 expr=ColumnRefExpr("primary_payer_paid_amount"),
                 default_aggregation="sum",

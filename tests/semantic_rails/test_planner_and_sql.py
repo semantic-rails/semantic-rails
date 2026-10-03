@@ -986,8 +986,6 @@ def _primitive_channel_config() -> PackageConfig:
         MeasureConfig(
             id="measure.email_count",
             entity="entity.email_fact",
-            subject_entity="entity.email_fact",
-            aggregation_entity="entity.email_fact",
             row_grain=["email_id"],
             expr=ColumnRefExpr("email_count"),
             default_aggregation="sum",
@@ -996,8 +994,6 @@ def _primitive_channel_config() -> PackageConfig:
         MeasureConfig(
             id="measure.sms_count",
             entity="entity.sms_fact",
-            subject_entity="entity.sms_fact",
-            aggregation_entity="entity.sms_fact",
             row_grain=["sms_id"],
             expr=ColumnRefExpr("sms_count"),
             default_aggregation="sum",
@@ -1006,8 +1002,6 @@ def _primitive_channel_config() -> PackageConfig:
         MeasureConfig(
             id="measure.push_count",
             entity="entity.push_fact",
-            subject_entity="entity.push_fact",
-            aggregation_entity="entity.push_fact",
             row_grain=["push_id"],
             expr=ColumnRefExpr("push_count"),
             default_aggregation="sum",
@@ -1095,51 +1089,6 @@ def test_primitive_only_parent_geo_plan_preaggregates_channel_facts_before_dimen
         source_start = rendered.index(f"FROM {relation}")
         source_group = rendered.index("GROUP BY", source_start)
         assert "JOIN" not in rendered[source_start:source_group]
-
-
-def test_parent_rollup_rejects_non_additive_aggregation_without_sketch_metadata():
-    config = _primitive_channel_config()
-    unsafe_measure = MeasureConfig(
-        id="measure.email_average_per_parent",
-        entity="entity.email_fact",
-        subject_entity="entity.email_fact",
-        aggregation_entity="entity.parent_account",
-        row_grain=["email_id"],
-        expr=ColumnRefExpr("email_count"),
-        default_aggregation="avg",
-        allowed_aggregations=["avg"],
-    )
-    config = replace(
-        config,
-        measures=[*config.measures, unsafe_measure],
-        metric_recipes=[
-            *config.metric_recipes,
-            MetricConfig(
-                id="metric.email_average_per_parent",
-                kind="aggregate",
-                expression=AggregateExpr("measure.email_average_per_parent", "avg"),
-            ),
-        ],
-    )
-
-    with pytest.raises(SemanticLayerError) as exc:
-        compile_query(
-            config,
-            Registry(config),
-            {
-                "version": 1,
-                "select": [
-                    {
-                        "expression": {"metric": "metric.email_average_per_parent"},
-                        "as": "email_average",
-                    }
-                ],
-                "group_by": ["dimension.parent_account_geo"],
-            },
-        )
-
-    assert exc.value.code == "ROLLUP_UNSAFE"
-    assert exc.value.details["unsupported_construct"] == "non_additive_parent_rollup"
 
 
 def test_duckdb_synthetic_parent_geo_total_messages_matches_oracle():

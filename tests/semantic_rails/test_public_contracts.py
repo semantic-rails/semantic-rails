@@ -165,7 +165,6 @@ def test_export_semantic_contract_uses_expression_columns_without_invented_names
                                         {"kind": "literal", "value": 0},
                                     ],
                                 },
-                                "agg": "sum",
                             }
                         },
                     },

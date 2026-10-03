@@ -389,9 +389,6 @@ class _Exporter:
         # The engine aggregates a semi-additive measure over each key's latest snapshot row.
         if measure.measure_class == "semi_additive":
             raise _Unsupported("metrics on semi-additive measures")
-        # ...and re-aggregates (or refuses) a measure rolled up to another entity.
-        if measure.aggregation_entity not in ("", measure.entity):
-            raise _Unsupported("metrics rolled up to another entity")
         aggregation = (expr.aggregation or measure.default_aggregation).lower()
         if aggregation not in _AGGREGATES:
             raise _Unsupported(f"metrics using {aggregation}")

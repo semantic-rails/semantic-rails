@@ -374,9 +374,6 @@ def test_refusal_hints_reach_the_error_envelope(runtime: Runtime) -> None:
     details = _refused(runtime, _query("daily_visitors"))
     assert recovery_hints_for_error("ROLLUP_UNSAFE", details)[0]["kind"] == "stay_at_stored_grain"
     assert "avg / min / max / median" in details["recovery_hints"][0]["message"]
-    # A parent-entity rollup refusal carries no hints of its own and keeps the generic one.
-    legacy = {"unsupported_construct": "non_additive_parent_rollup"}
-    assert recovery_hints_for_error("ROLLUP_UNSAFE", legacy)[0]["kind"] == "change_aggregation"
 
 
 def test_the_refusal_lists_no_key_under_any_policy(runtime: Runtime, package_dir: Path) -> None:
