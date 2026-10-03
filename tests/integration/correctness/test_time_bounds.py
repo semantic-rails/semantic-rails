@@ -393,3 +393,52 @@ def test_entity_only_predicate_window_refuses_timezone_conversion(
         assert expected[0][0].date() == date(2024, 7, 1)
         assert expected[0][1] == 10
         _assert_rows(expected, [tuple(r.values()) for r in typed_rows(result)], clock)
+
+
+@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
+@pytest.mark.parametrize(
+    "clock,measure", [("local_day", "local_amount"), ("source_day", "day_amount")]
+)
+@pytest.mark.parametrize("threshold", [1, 15])
+def test_contextual_predicate_period_join_refuses_timezone_conversion(
+    request, backend_name, clock, measure, threshold
+):
+    """The predicate's converted day buckets never equal the raw stored days it joins."""
+    backend = _backend(request, backend_name)
+    role = f"temporal_role.shop_clock_edge_{clock}"
+    amount = {"measure": f"measure.shop.{measure}"}
+    predicate = {
+        "kind": "metric_predicate",
+        "entity": "entity.shop_clock_edge",
+        "input": amount,
+        "scope_mode": "contextual",
+        "op": ">=",
+        "value": threshold,
+    }
+    query = {
+        "select": [_item(amount, "v")],
+        "time": {
+            "temporal_role": role,
+            "grain": "day",
+            "start": "2024-06-30",
+            "end": "2024-07-01T23:00:00",
+        },
+        "metric_filters": [{"expression": predicate, "op": "=", "value": True}],
+    }
+    runtime = backend.runtimes["utc_implicit"]
+    if clock == "local_day":
+        with pytest.raises(SemanticLayerError) as caught:
+            runtime.query(query)
+        assert caught.value.code == "WINDOWED_TIME_FILTER_UNSUPPORTED"
+        assert caught.value.details["temporal_role"] == role
+        assert caught.value.details["path"] == "predicate_period_join"
+        return
+    within = "source_day >= DATE '2024-06-30' AND source_day <= DATE '2024-07-01'"
+    expected = backend.reference(
+        f"SELECT CAST(source_day AS TIMESTAMP), SUM(amount) FROM clock_edges WHERE {within} "
+        f"AND (id, source_day) IN (SELECT id, source_day FROM clock_edges WHERE {within} "
+        f"GROUP BY id, source_day HAVING SUM(amount) >= {threshold}) GROUP BY 1"
+    )
+    assert [row[1] for row in expected] == ([10] if threshold == 1 else [])
+    result = runtime.query(query)
+    _assert_rows(expected, [tuple(r.values()) for r in typed_rows(result)], f">= {threshold}")

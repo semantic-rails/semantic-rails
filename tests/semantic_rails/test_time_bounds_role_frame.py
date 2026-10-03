@@ -7,12 +7,14 @@ import duckdb
 import pytest
 
 from semantic_rails import ast
-from semantic_rails.compiler import _compile_query_sql_ast
+from semantic_rails.compiler import _compile_query_sql_ast, compile_query
 from semantic_rails.compiler_parts.sql_lowering import _apply_role_timezone
 from semantic_rails.config import load_package_config
+from semantic_rails.dialects import supported_warehouses
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.metadata import _query_state
 from semantic_rails.metadata_parts.valid_values import _query_state as values_query_state
+from semantic_rails.registry import Registry
 from semantic_rails.renderer import render_expr
 from semantic_rails.runtime import Runtime
 from semantic_rails.sql_ast import SqlCall, SqlIdentifier
@@ -63,6 +65,122 @@ def test_converted_date_uses_a_naive_timestamp_input(config, warehouse, session_
             f"AT TIME ZONE 'America/New_York') AS DATE), amount FROM {events} ORDER BY 1"
         ).fetchall()
     assert actual == reference == [(date(2024, 6, 30), 10), (date(2024, 7, 1), 20)]
+
+
+_NAIVE_DATE = "TIMEZONE('America/New_York', TIMEZONE('UTC', CAST(source_day AS TIMESTAMP)))"
+# Only the warehouses whose converted DATE clocks are executed in tests cast the DATE;
+# the others keep the conversion they emitted before that cast existed.
+DATE_CLOCK_CONVERSIONS = {
+    "athena": "AT_TIMEZONE(WITH_TIMEZONE(source_day, 'UTC'), 'America/New_York')",
+    "bigquery": "DATETIME(TIMESTAMP(source_day, 'UTC'), 'America/New_York')",
+    "clickhouse": "toTimeZone(toDateTime(source_day, 'UTC'), 'America/New_York')",
+    "databricks": "CONVERT_TIMEZONE('UTC', 'America/New_York', source_day)",
+    "duckdb": _NAIVE_DATE,
+    "ducklake": _NAIVE_DATE,
+    "motherduck": _NAIVE_DATE,
+    "postgres": _NAIVE_DATE,
+    "snowflake": "CONVERT_TIMEZONE('UTC', 'America/New_York', source_day)",
+}
+
+
+def test_date_clock_conversions_cover_every_warehouse():
+    assert sorted(DATE_CLOCK_CONVERSIONS) == sorted(supported_warehouses())
+
+
+@pytest.mark.parametrize("warehouse", sorted(DATE_CLOCK_CONVERSIONS))
+def test_only_tested_warehouses_cast_a_converted_date_clock(config, warehouse):
+    role = replace(next(r for r in config.temporal_roles if r.id == ROLE), column_timezone="UTC")
+    config = replace(
+        config,
+        package=replace(config.package, warehouse=warehouse),
+        dimensions=[
+            replace(d, data_type="date") if d.id == role.dimension else d for d in config.dimensions
+        ],
+    )
+    converted = _apply_role_timezone(SqlIdentifier(parts=["source_day"]), role, config)
+    assert render_expr(converted) == DATE_CLOCK_CONVERSIONS[warehouse]
+
+
+SESSION_ROLE = "temporal_role.jaffle_session_started_at"
+SESSION_SEED = """
+CREATE TABLE jaffle_customer AS SELECT * FROM (VALUES ('c1'), ('c2')) AS t(customer_id);
+CREATE TABLE jaffle_storefront_session AS SELECT * FROM (VALUES
+  ('s1', 'c1', DATE '2024-07-01'), ('s2', 'c1', DATE '2024-07-02'), ('s3', 'c2', DATE '2024-06-30')
+) AS t(session_id, customer_id, started_at);
+CREATE TABLE jaffle_order AS SELECT * FROM (VALUES
+  ('o1', 'c1', TIMESTAMP '2024-07-01 12:00:00')
+) AS t(order_id, customer_id, ordered_at);
+"""
+# Base sessions in the window's whole days; converted when the customer orders within 7 days.
+SESSION_REFERENCE = """
+SELECT CAST(s.started_at AS TIMESTAMP), AVG(CASE WHEN EXISTS (
+  SELECT 1 FROM jaffle_order o WHERE o.customer_id = s.customer_id
+    AND o.ordered_at >= s.started_at AND o.ordered_at < s.started_at + INTERVAL 7 DAY
+) THEN 1.0 ELSE 0.0 END)
+FROM jaffle_storefront_session s
+WHERE s.started_at >= DATE '2024-06-30' AND s.started_at <= DATE '2024-07-01'
+GROUP BY 1 ORDER BY 1
+"""
+
+
+def _session_conversion(config, data_type, column_timezone):
+    """A daily session-to-order conversion with the session clock's type and storage zone."""
+    role = next(r for r in config.temporal_roles if r.id == SESSION_ROLE)
+    config = replace(
+        config,
+        temporal_roles=[
+            replace(r, column_timezone=column_timezone) if r.id == SESSION_ROLE else r
+            for r in config.temporal_roles
+        ],
+        dimensions=[
+            replace(d, data_type=data_type) if d.id == role.dimension else d
+            for d in config.dimensions
+        ],
+    )
+    conversion = {
+        "kind": "conversion",
+        "entity": "entity.jaffle_customer",
+        "window": {"unit": "day", "value": 7},
+        "matching_mode": "first_converted_after_base",
+        "base": {"kind": "aggregate", "measure": "measure.jaffle.session_starts"},
+        "converted": {"kind": "aggregate", "measure": "measure.jaffle.order_count"},
+    }
+    query = {
+        "version": 2,
+        "select": [{"as": "rate", "expression": conversion}],
+        "time": {
+            "temporal_role": SESSION_ROLE,
+            "grain": "day",
+            "start": "2024-06-30",
+            "end": "2024-07-01T23:00:00",
+        },
+    }
+    return config, query
+
+
+@pytest.mark.parametrize("data_type", ["date", "timestamp"])
+def test_conversion_metric_refuses_a_converted_query_clock(config, data_type):
+    """Its leaf would bucket and bound the stored session days, not the local ones."""
+    config, query = _session_conversion(config, data_type, column_timezone="UTC")
+    with pytest.raises(SemanticLayerError) as caught:
+        compile_query(config, Registry(config), query)
+    assert caught.value.code == "WINDOWED_TIME_FILTER_UNSUPPORTED"
+    assert caught.value.details == {
+        "temporal_role": SESSION_ROLE,
+        "column_timezone": "UTC",
+        "timezone": "America/New_York",
+        "path": "conversion_metric",
+    }
+
+
+def test_conversion_metric_on_an_unconverted_clock_matches_its_reference(config):
+    config, query = _session_conversion(config, "date", column_timezone="")
+    sql = compile_query(config, Registry(config), query)["sql"]
+    with duckdb.connect(":memory:") as connection:
+        connection.execute(SESSION_SEED)
+        actual = connection.execute(sql).fetchall()
+        reference = connection.execute(SESSION_REFERENCE).fetchall()
+    assert actual == reference == [(datetime(2024, 6, 30), 0.0), (datetime(2024, 7, 1), 1.0)]
 
 
 def _query(**time):
