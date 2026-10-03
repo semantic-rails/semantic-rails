@@ -6,8 +6,7 @@ can need: any entity as the start (distinct values and synthetic counts included
 with a dimension, reachable from it, as the target.
 
 * :func:`route_census` lists the pairs the resolver refuses until a decision is recorded
-  (``undecided``) and the pairs it answers by a rule other than a recorded row or the only
-  route (``assumed``).
+  (``undecided``) and multi-route pairs answered by the start's own key (``assumed``).
 * :func:`route_changes` lists the pairs whose resolution differs between two versions of a
   package, with the ``graph.path_preferences`` row that keeps the earlier route.
 * :func:`keep_routes` gives the fewest such rows that make a changed package answer every
@@ -40,7 +39,7 @@ Pair = tuple[str, str]
 
 @dataclass(frozen=True)
 class RouteOutcome:
-    """``resolve_path``'s answer for a pair: its route and every route considered, or the code
+    """``resolve_route``'s answer for a pair: its route and every route considered, or the code
     and details of its refusal."""
 
     path: tuple[str, ...] = ()
@@ -174,8 +173,8 @@ def route_changes(base: PackageConfig, head: PackageConfig) -> list[dict[str, An
 
 def _unkept(base: PackageConfig, head: PackageConfig) -> list[RouteChange]:
     """The changes a row must undo: ``base`` answered the pair, ``head`` refuses it or takes
-    another route, and ``head`` leaves the pair's own row as
-    ``base`` had it (otherwise the change decides the pair itself)."""
+    another route, without a newly written row for that pair. Deleting its row is not a
+    new route decision. A refusal caused by a deliberate cut need not be undone."""
     base_rows = get_package_analysis(base).path_preferences
     head_rows = get_package_analysis(head).path_preferences
     return [
