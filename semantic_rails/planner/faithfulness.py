@@ -49,6 +49,7 @@ from ._base import (
 )
 from .generators import _target_focus_text
 from .intent_ir import IntentIR
+from .visibility import visible_dimensions, visible_value_domains
 
 
 @dataclass(frozen=True)
@@ -791,7 +792,7 @@ def _fiscal_calendar_gaps(config: Any, text: str, query: dict[str, Any]) -> list
     )
     named = {
         row.id
-        for row in config.dimensions
+        for row in visible_dimensions(config)
         if "fiscal" in _tokens(f"{row.id} {row.name} {row.label}")
     }
     bucketed = (
@@ -1142,7 +1143,7 @@ def _ranking_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[Covera
     else:
         ranked = {
             str(row.id)
-            for row in config.dimensions
+            for row in visible_dimensions(config)
             if noun in {_singular(token) for token in _tokens(_object_text(row))}
         }
         grouped = {str(item) for item in list(query.get("group_by") or [])}
@@ -1251,9 +1252,7 @@ def _ranking_measure_ids(config: Any, text: str, request: dict[str, Any]) -> set
 
 def _dimension_nouns(config: Any) -> frozenset[str]:
     return frozenset(
-        _singular(token)
-        for row in list(getattr(config, "dimensions", []) or [])
-        for token in _tokens(_core_text(row))
+        _singular(token) for row in visible_dimensions(config) for token in _tokens(_core_text(row))
     )
 
 
@@ -1377,7 +1376,7 @@ def _where_clause_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
         said = _singular(_plain(match.group("field")))
         fields = [
             str(row.id)
-            for row in runtime._config.dimensions
+            for row in visible_dimensions(runtime._config)
             if said in {_singular(_plain(name)) for name in (row.label, *(row.aliases or []))}
         ]
         if fields and not any(field in predicates for field in fields):
@@ -1437,7 +1436,7 @@ def _value_phrases(config: Any) -> dict[str, list[tuple[Any, Any]]]:
     """Each way the catalog writes a value, with the (domain, value) pairs it names."""
 
     out: dict[str, list[tuple[Any, Any]]] = {}
-    for domain in list(getattr(config, "value_domains", []) or []):
+    for domain in visible_value_domains(config):
         for value in list(domain.values or []):
             if _is_number(value.value):
                 continue
@@ -1493,7 +1492,7 @@ def _tied_to_dimension(
     generic = _GENERIC_ID_WORDS | _ubiquitous_words(config)
     words = {
         _singular(token)
-        for row in config.dimensions
+        for row in visible_dimensions(config)
         if str(row.id) in dimensions
         for token in _tokens(_core_text(row))
     } - generic
@@ -1508,7 +1507,7 @@ def _tied_to_dimension(
 def _ubiquitous_words(config: Any) -> set[str]:
     """Words in most dimension ids, such as a package prefix, which say nothing."""
 
-    rows = list(getattr(config, "dimensions", []) or [])
+    rows = visible_dimensions(config)
     counts = Counter(token for row in rows for token in set(_tokens(_core_text(row))))
     return {token for token, count in counts.items() if count * 2 > len(rows)}
 
@@ -1710,7 +1709,7 @@ def _catalog_rows(config: Any) -> list[Any]:
     return [
         *getattr(config, "measures", []),
         *getattr(config, "metric_recipes", []),
-        *getattr(config, "dimensions", []),
+        *visible_dimensions(config),
         *getattr(config, "entities", []),
         *getattr(config, "segments", []),
         *getattr(config, "temporal_roles", []),
