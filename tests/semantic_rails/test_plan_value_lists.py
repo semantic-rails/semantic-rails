@@ -10,6 +10,7 @@ import duckdb
 import pytest
 
 from semantic_rails.planner import compose, plan_payload
+from semantic_rails.planner.faithfulness import _folded_grouping_gaps
 from semantic_rails.planner.generators import (
     _draft_for_choice,
     _matched_value_rows,
@@ -20,6 +21,8 @@ from semantic_rails.planner.plan import _merge_partial_query
 STORE = "dimension.jaffle_store_name"
 PRODUCT_TYPE = "dimension.jaffle_item_product_type"
 CATALOG_PRODUCT_TYPE = "dimension.jaffle_product_type"
+STORE_DISTRICT = "dimension.store_district"
+CUSTOMER_DISTRICT = "dimension.customer_district"
 INTENT = "item revenue for Brooklyn from Philadelphia by product type"
 CHOICE = {
     "id": "measure.jaffle.item_revenue_usd",
@@ -878,3 +881,115 @@ def test_caller_group_by_naming_every_grouping_is_execute_ready(runtime_factory)
         assert [row[2] for row in actual] == pytest.approx([row[2] for row in expected])
     finally:
         runtime.close()
+
+
+def _with_districts(runtime, monkeypatch) -> None:
+    """Add a store-owned and a customer-owned district; neither is the item's own."""
+
+    dimensions = {dim.id: dim for dim in runtime._config.dimensions}
+    districts = [
+        replace(
+            dimensions[STORE],
+            id=STORE_DISTRICT,
+            name="store_district",
+            label="Store district",
+            column="district",
+            aliases=[],
+            description="",
+        ),
+        replace(
+            dimensions["dimension.jaffle_customer_type"],
+            id=CUSTOMER_DISTRICT,
+            name="customer_district",
+            label="Customer district",
+            aliases=[],
+            description="",
+        ),
+    ]
+    monkeypatch.setattr(
+        runtime, "_config", replace(runtime._config, dimensions=[*dimensions.values(), *districts])
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "intent", "candidates"),
+    [
+        ("primary", "item revenue by districts", [CUSTOMER_DISTRICT, STORE_DISTRICT]),
+        ("fallback", "item revenue by districts", [CUSTOMER_DISTRICT, STORE_DISTRICT]),
+        # Fallback picks the product's own type, not the item's.
+        ("fallback", "item revenue by product types", [PRODUCT_TYPE, CATALOG_PRODUCT_TYPE]),
+        # Of the two product types, only one is the item's own.
+        ("primary", "item revenue by product types", []),
+    ],
+)
+def test_folded_plural_grouping_is_ready_only_when_it_resolves_to_one_dimension(
+    runtime_factory, monkeypatch, path, intent, candidates
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    if "district" in intent:
+        _with_districts(runtime, monkeypatch)
+    _force_fallback(runtime, monkeypatch, intent, path)
+    try:
+        payload = plan_payload(runtime, intent=intent)
+        query = payload["best"]["query_ir"]
+        if candidates:
+            assert payload["status"] == "low_confidence", payload.get("why")
+            assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+            gaps = payload["why"]["details"]["gaps"]
+            assert [gap["kind"] for gap in gaps] == ["ambiguous_grouping"]
+            assert gaps[0]["clause"] == intent.split(" by ")[1]
+            assert gaps[0]["actual"]["dimension_ids"] == candidates
+            assert len(query["group_by"]) == 1 and query["group_by"][0] in candidates
+            assert payload["why"]["recovery_hints"][0]["kind"] == "clarify_grouping"
+            assert "execute" not in payload["next"].get("ready_for", [])
+        else:
+            assert payload["status"] == "ok", payload.get("why")
+            assert "execute" in payload["next"].get("ready_for", [])
+            assert query["group_by"] == [PRODUCT_TYPE]
+            measure = query["select"][0]["as"]
+            rows = runtime.query(query)["rows"]
+            actual = sorted((row[PRODUCT_TYPE], row[measure]) for row in rows)
+            runtime.close()
+            with duckdb.connect(runtime.db_path, read_only=True) as connection:
+                expected = sorted(
+                    connection.execute(
+                        "SELECT product_type, SUM(item_revenue_cents / 100.0) "
+                        "FROM jaffle_item GROUP BY 1"
+                    ).fetchall()
+                )
+            assert [row[0] for row in actual] == [row[0] for row in expected]
+            assert [row[1] for row in actual] == pytest.approx([row[1] for row in expected])
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("intent", "group_by", "caller", "held"),
+    [
+        ("item revenue by districts", [CUSTOMER_DISTRICT], [], True),
+        ("item revenue by districts", [STORE_DISTRICT], [], True),
+        # The caller's group_by names the dimension, which settles it.
+        ("item revenue by districts", [STORE_DISTRICT], [STORE_DISTRICT], False),
+        ("item revenue by product types", [PRODUCT_TYPE], [], False),
+        ("item revenue by product types", [CATALOG_PRODUCT_TYPE], [], True),
+        ("item revenue by product types", [PRODUCT_TYPE, CATALOG_PRODUCT_TYPE], [], True),
+        # A singular is not folded; a draft grouping by no match is left to the
+        # dropped-words check.
+        ("item revenue by district", [CUSTOMER_DISTRICT], [], False),
+        ("item revenue by districts", [], [], False),
+    ],
+)
+def test_folded_grouping_trusts_only_the_root_entity_or_the_caller(
+    runtime_factory, monkeypatch, intent, group_by, caller, held
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    _with_districts(runtime, monkeypatch)
+    query = {
+        "select": [{"as": "item_revenue_usd", "expression": {"measure": CHOICE["id"]}}],
+        "group_by": group_by,
+    }
+    try:
+        gaps = _folded_grouping_gaps(runtime._config, intent, query, {"group_by": caller})
+    finally:
+        runtime.close()
+    assert [gap.kind for gap in gaps] == (["ambiguous_grouping"] if held else [])
