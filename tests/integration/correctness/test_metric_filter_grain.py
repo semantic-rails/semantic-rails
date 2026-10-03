@@ -177,6 +177,9 @@ def test_distribution_predicate_retains_declared_grain(request, backend_name, sc
         "metric_filters": [
             _predicate(entity, scope, ORDERS if customer else REVENUE, ">=", 2 if customer else 7)
         ],
+        # Beside a distribution, the dataset scope refuses a filtered query (it can't judge
+        # the combined outputs outside the filters); this checks the distribution's grain.
+        "observation_scope": "query",
     }
     if customer and scope == "contextual":
         with pytest.raises(SemanticLayerError, match="entity_only") as exc:
