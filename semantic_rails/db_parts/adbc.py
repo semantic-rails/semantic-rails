@@ -92,6 +92,8 @@ def _check_postgres_result_types(schema: Any) -> None:
             or pa.types.is_string(data_type)
             or pa.types.is_boolean(data_type)
             or pa.types.is_date32(data_type)
+            or data_type == pa.time64("us")
+            or data_type == pa.binary()
             or (pa.types.is_timestamp(data_type) and data_type.unit == "us")
             or data_type == pa.month_day_nano_interval()
             or pa.types.is_null(data_type)
@@ -102,6 +104,25 @@ def _check_postgres_result_types(schema: Any) -> None:
             f"Postgres result column {field.name!r} has unsupported Arrow type {data_type}.",
             details={"column": field.name, "type": str(data_type)},
         )
+
+
+def _check_postgres_result_values(batch: Any, schema: Any) -> None:
+    """Refuse clocks that Arrow would wrap during Python conversion."""
+    if not len(schema):
+        return
+    pa = import_driver(
+        "pyarrow", extra="postgres", engine="postgres", connection_kind="postgres_native"
+    )
+    for index, field in enumerate(schema):
+        if field.type == pa.time64("us"):
+            # Inspect the raw microseconds before to_pylist loses 24:00:00.
+            for value in batch.column(index).cast(pa.int64()).to_pylist():
+                if value is not None and not 0 <= value < 86_400_000_000:
+                    raise SemanticLayerError(
+                        "RESULT_TYPE_UNSUPPORTED",
+                        "A Postgres result time cannot be represented as an exact Python time.",
+                        details={"column": field.name, "type": str(field.type)},
+                    )
 
 
 def _postgres_value(value: Any, data_type: Any, result_zone: tzinfo) -> Any:
@@ -250,6 +271,7 @@ class AdbcAdapter(WarehouseAdapter):
                 missing,
                 engine=self.engine,
                 connection_kind=self.connection_kind,
+                strip_file_whitespace=name != "private_key_passphrase",
             )
             if value:
                 options[key] = value
@@ -440,7 +462,9 @@ class AdbcAdapter(WarehouseAdapter):
             for batch in reader:
                 if cap is not None:
                     batch = batch.slice(0, max(0, cap + 1 - len(rows)))
-                if profile == SNOWFLAKE_PROFILE and data_types:
+                if profile == POSTGRES_PROFILE:
+                    _check_postgres_result_values(batch, reader.schema)
+                elif profile == SNOWFLAKE_PROFILE and data_types:
                     batch = _snowflake_temporal_batch(batch)
                 for row in batch.to_pylist():
                     for key, value in row.items():

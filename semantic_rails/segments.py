@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from .ast import child_groups
 from .errors import SemanticLayerError
 from .expressions import (
     AggregateExpr,
@@ -176,6 +177,12 @@ def normalize_segment(config: PackageConfig, segment_id: str) -> NormalizedSegme
             },
         )
 
+    if child_groups(segment.where):
+        raise SemanticLayerError(
+            "INVALID_SEGMENT",
+            f"Segment '{segment.id}' membership has a child group, which segments do not support",
+            details={"segment_id": segment.id, "path": "membership.where"},
+        )
     key_dimensions = member_key_dimensions(config, segment.entity)
     preview_dimensions: list[str] = []
     for dimension_id in segment.preview_dimensions:

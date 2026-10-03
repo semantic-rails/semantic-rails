@@ -7,11 +7,19 @@ import os
 from typing import Any
 
 from ..ast import normalize_query
-from ..compiler import compile_query
+from ..compiler import (
+    _extend_config_with_synthetic_measures,
+    compile_query,
+    query_route_rows,
+    read_routes,
+)
+from ..compiler_parts.bind import lift_conditional_aggregates
+from ..compiler_parts.grain_recovery import _query_measure_ids
 from ..errors import SemanticLayerError
-from ..policies import hidden_object_ids
+from ..policies import hidden_object_ids, row_filters_for_context
 from ..request_context import context_from_policy_context
 from ..runtime import Runtime, runtime_request_scope
+from ..schema import MeasureConfig
 from ..temporal_support import validate_temporal_support
 from .path_coverage import (
     _declared_value_rows,
@@ -58,6 +66,7 @@ def _query_state(query: dict[str, Any]) -> dict[str, Any]:
         "metric_filters",
         "time",
         "temporal_role_overrides",
+        "route_decisions",
         "order_by",
         "limit",
         "debug",
@@ -70,35 +79,88 @@ def _query_state(query: dict[str, Any]) -> dict[str, Any]:
     return state
 
 
-def _anchor_measure_id(runtime: Runtime, dimension: str, query: dict[str, Any] | None) -> str:
+def _live_values_query(
+    measure: MeasureConfig, dimension: str, query: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Probing and execution retain the same filters, time roles and other query semantics."""
+    payload = {
+        **dict(query or {}),
+        "select": [
+            {
+                "expression": {"measure": measure.id, "aggregation": measure.default_aggregation},
+                "as": "anchor",
+            }
+        ],
+        "group_by": [dimension],
+    }
+    for field in ("route_decisions", "order_by", "limit"):
+        payload.pop(field, None)
+    return payload
+
+
+def _anchor_measure_id(
+    runtime: Runtime, dimension: str, query: dict[str, Any] | None
+) -> tuple[str, list[dict[str, Any]]]:
+    """Use the query's measures under decisions; drop only pairs the anchor never reads."""
     probe = dict(query or {})
-    probe_where = list(probe.get("where", []) or [])
-    probe_time = dict(probe.get("time", {}) or {}) or None
+    if "route_decisions" in probe:
+        query_route_rows(
+            runtime._config,
+            probe,
+            row_filters=row_filters_for_context(runtime._config, _policy_context(probe)),
+        )
+    try:
+        normalized, synthetic = lift_conditional_aggregates(normalize_query(probe), runtime._config)
+        own = _query_measure_ids(
+            _extend_config_with_synthetic_measures(runtime._config, synthetic), normalized
+        )
+    except SemanticLayerError:
+        if probe.get("route_decisions"):
+            raise
+        own = []
+    measures = sorted(
+        runtime._config.measures, key=lambda row: own.index(row.id) if row.id in own else len(own)
+    )
+    if probe.get("route_decisions"):
+        measures = [row for row in measures if row.id in own]
     reasons: list[dict[str, Any]] = []
-    for measure in runtime._config.measures:
-        candidate = {
-            "select": [
+    first_refusal: SemanticLayerError | None = None
+    for measure in measures:
+        decisions = list(probe.get("route_decisions", []) or [])
+        dropped: set[tuple[str, str]] = set()
+        candidate = _live_values_query(measure, dimension, probe)
+        while True:
+            try:
+                compiled = compile_query(
+                    runtime._config,
+                    runtime.registry,
+                    {**candidate, **({"route_decisions": decisions} if decisions else {})},
+                )
+            except SemanticLayerError as exc:
+                if exc.details.get("reason") == "route_decision_unused":
+                    dropped.add((exc.details["source_entity"], exc.details["target_entity"]))
+                    index = exc.details["path"].removeprefix("route_decisions[").rstrip("]")
+                    del decisions[int(index)]
+                    continue
+                reasons.append({"measure": measure.id, "code": exc.code, "message": str(exc)})
+                first_refusal = first_refusal or exc
+                break
+            read = read_routes(compiled["logical_plan"], compiled["route_choices"])
+            if dropped.isdisjoint((start, target) for start, target, _ in read):
+                return measure.id, decisions
+            reasons.append(
                 {
-                    "expression": {
-                        "measure": measure.id,
-                        "aggregation": measure.default_aggregation,
-                    },
-                    "as": "anchor",
+                    "measure": measure.id,
+                    "code": "INVALID_QUERY",
+                    "message": "reads a pair the query's route_decisions decide by another route",
                 }
-            ],
-            "group_by": [dimension],
-            "where": probe_where,
-        }
-        if probe_time is not None:
-            candidate["time"] = probe_time
-        try:
-            compile_query(runtime._config, runtime.registry, candidate)
-            return measure.id
-        except SemanticLayerError as exc:
-            reasons.append({"measure": measure.id, "code": exc.code, "message": str(exc)})
+            )
+            break
+    if probe.get("route_decisions") and first_refusal is not None:
+        raise first_refusal
     raise SemanticLayerError(
         "NO_VALID_VALUES_SOURCE",
-        f"No valid values source for '{dimension}'",
+        f"No valid values source for '{dimension}'; select a measure or metric that can anchor it",
         details={"attempts": reasons},
     )
 
@@ -189,19 +251,11 @@ def valid_values_payload(
             ],
         }
 
-    anchor_measure_id = _anchor_measure_id(runtime, dimension_id, query)
-    query_payload = dict(query or {})
+    anchor_measure_id, decisions = _anchor_measure_id(runtime, dimension_id, query)
     anchor_measure = next(measure for measure in config.measures if measure.id == anchor_measure_id)
-    query_payload["select"] = [
-        {
-            "expression": {
-                "measure": anchor_measure_id,
-                "aggregation": anchor_measure.default_aggregation,
-            },
-            "as": "anchor",
-        }
-    ]
-    query_payload["group_by"] = [dimension_id]
+    query_payload = _live_values_query(anchor_measure, dimension_id, query)
+    if decisions:
+        query_payload["route_decisions"] = decisions
     query_payload["order_by"] = [{"field": dimension_id, "direction": "ASC"}]
     query_payload["limit"] = max(limit + offset, 100)
     result = runtime.query(query_payload)

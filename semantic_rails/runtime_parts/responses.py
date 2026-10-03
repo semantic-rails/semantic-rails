@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
+from ..ast import is_child_group
 from ..dialects import dialect_for_warehouse
 from ..expressions import collect_object_references, expr_to_dict
 
@@ -313,6 +314,15 @@ def _selected_filters(query: dict[str, Any]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in list(query.get("where") or []):
         if not isinstance(row, dict):
+            continue
+        if is_child_group(row):
+            out.append(
+                {
+                    "child": str(row.get("child", "")),
+                    "match": str(row.get("match", "")),
+                    "where": _selected_filters({"where": list(row.get("where") or [])}),
+                }
+            )
             continue
         field = row.get("field") or row.get("dimension")
         if not field:

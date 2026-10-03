@@ -45,13 +45,17 @@ surface.
 - safe fact-to-dimension traversal
 - multi-hop entity traversal with per-hop cardinality checks (default ceiling
   4 relationships; raisable to 8 via `graph.path_policy.max_hops`)
-- route rule: a `graph.path_preferences` row for the pair, else the start
-  entity's one direct key (noted with `ROUTE_COLOCATED_KEY`), else the routes
-  that follow every row whose pair they walk through, if one remains; anything
-  else is refused as `AMBIGUOUS_PATH` (`reason: route_decision_required`, with
-  each route's meaning and the row that records it), whatever the routes'
-  lengths. Hop count and weights never decide, and adding a route never changes
-  an answer silently.
+- route rule: a query's own `route_decisions` row for the pair, else a
+  `graph.path_preferences` row for the pair, else the start entity's one direct
+  key (noted with `ROUTE_COLOCATED_KEY`), else the routes that follow every row
+  whose pair they walk through, if one remains; anything else is refused as
+  `AMBIGUOUS_PATH` (`reason: route_decision_required`, with
+  `details.clarification`: the question in business words and, per route, its
+  meaning and the row that decides it), whatever the routes' lengths. Hop count
+  and weights never decide, and adding a route never changes an answer silently.
+- route choice per query (`route_decisions`, the chosen option's row; disclosed
+  as `ROUTE_CHOSEN_BY_QUERY`, refused under a row filter) or as the package
+  default (Architect `record_route_decision`)
 - route recording via `graph.path_preferences` (load-time validated, and again
   for a configuration built in code; rows that disagree about a pair are
   `INVALID_CONFIG`)
@@ -160,16 +164,22 @@ In practice:
 - a distinct count grouped by such a dimension counts each row once in every group it
   has a matching child in ("orders that included each product type"); both carry a
   `REWRITE_APPLIED` warning (`fanout_dedup`)
+- a child group in `where` (`{child, match: any|none, where}`) says whether its
+  conditions apply to the same child row; it lowers to correlated `EXISTS` or
+  `NOT EXISTS`. Two or more positive plain filters on one child, or one negated one,
+  are refused with `AMBIGUOUS_CHILD_SCOPE`, whose clarification offers each reading as a
+  `where` list
 - unsupported grain-expanding shapes still fail fast rather than silently miscomputing:
   other aggregations grouped across the hop (order revenue by item product type reads
   as either an item split or each containing order's total), negated, null or `false`
-  tests across it, and many-to-many or off-key paths
+  tests in a measure's own filter across it, and many-to-many or off-key paths
 
 Relevant statuses and codes:
 
 - `rewrite_strategy.status = "direct"`
 - `rewrite_strategy.status = "rewritten"`
 - `MIXED_GRAIN_INVALID`
+- `AMBIGUOUS_CHILD_SCOPE`
 - `REWRITE_NOT_SUPPORTED`
 
 ### Physical Variant Routing
@@ -275,6 +285,7 @@ Current behavior:
 
 - missing history is null-preserving
 - historical joins become left-join style paths once validity windows are applied
+- a query that joins into the table holding a `temporal_validity` window with no `time` is refused (`FANOUT_UNSAFE`, naming the relationship and the entity) instead of joining every version
 - the API now emits compact warnings/caveats so a `NULL` bucket can be interpreted as “no valid history row at the time anchor”
 - unsupported historical shapes fail semantically rather than silently dropping rows
 

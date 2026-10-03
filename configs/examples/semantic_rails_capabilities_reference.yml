@@ -280,7 +280,7 @@ error_taxonomy:
     - INVALID_EXPRESSION_AST
   review_notes:
     - AMBIGUOUS_ALIAS should return candidate IDs and rationale.
-    - AMBIGUOUS_PATH should expose candidate paths.
+    - AMBIGUOUS_PATH asks which route the question means, with each route's meaning and the row that decides it.
     - REWRITE_NOT_SUPPORTED indicates a shape the current rewrite engine does not yet handle.
     - CONVERSION_NOT_SUPPORTED is the explicit behavior for enriched conversion shapes outside the supported execution model.
 

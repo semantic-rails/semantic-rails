@@ -484,7 +484,11 @@ def test_ask_report_restates_ordering_before_the_default_execution_cap(
 
 
 def test_ask_prints_what_the_query_computes(tmp_path: Path) -> None:
-    env = dict(os.environ, SEMANTIC_RAILS_HOME=str(tmp_path / "home"), PYTHONPATH=str(REPO_ROOT))
+    env = dict(
+        os.environ,
+        SEMANTIC_RAILS_HOME=str(tmp_path / "home"),
+        PYTHONPATH=os.pathsep.join(filter(None, [str(REPO_ROOT), os.getenv("PYTHONPATH")])),
+    )
     args = ("ask", "--package", "jaffle_shop", "monthly revenue by store")
 
     def run(*extra: str) -> str:

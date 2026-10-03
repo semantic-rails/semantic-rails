@@ -195,9 +195,11 @@ class QueryMCPClient:
 
     def __init__(self, package_path: Path, *, request_context: Any = None) -> None:
         from semantic_rails.mcp import SemanticLayerMCPAdapter
+        from semantic_rails.mcp_session import MCPQuerySession
 
         self.adapter = SemanticLayerMCPAdapter.from_path(str(package_path))
         self.request_context = request_context
+        self.session = MCPQuerySession() if request_context is None else None
         self._next_id = 0
 
     def __enter__(self) -> QueryMCPClient:
@@ -213,7 +215,10 @@ class QueryMCPClient:
         # Encode params as a client would, so no call shares objects with another.
         message = {"jsonrpc": "2.0", "id": self._next_id, "method": method, "params": params or {}}
         response = handle_jsonrpc_message(
-            self.adapter, json.loads(json.dumps(message)), request_context=self.request_context
+            self.adapter,
+            json.loads(json.dumps(message)),
+            request_context=self.request_context,
+            session=self.session,
         )
         if not isinstance(response, dict) or "result" not in response:
             raise RuntimeError(f"MCP {method} returned no result: {response!r}")
@@ -461,6 +466,8 @@ def _measured_call(
 def measure_query_mcp(package_path: Path) -> dict[str, int]:
     """Measure the query MCP's upfront surface, default responses, errors and sessions."""
 
+    from semantic_rails.mcp_session import MCPQuerySession
+
     metrics: dict[str, int] = {}
     with QueryMCPClient(package_path) as client:
         metrics.update(_measure_surface(client, "query.v2."))
@@ -479,6 +486,8 @@ def measure_query_mcp(package_path: Path) -> dict[str, int]:
         structured_sizes: list[int] = []
         text_sizes: list[int] = []
         for name, tool, arguments in V2_PROBES:
+            # Default probes measure first calls; session costs are measured below.
+            client.session = MCPQuerySession()
             structured, text_tokens = _measured_call(client, f"v2.{name}", tool, arguments)
             metrics[f"query.v2.default.{name}_tokens"] = structured
             structured_sizes.append(structured)
@@ -486,6 +495,7 @@ def measure_query_mcp(package_path: Path) -> dict[str, int]:
         metrics["query.v2.default.max_structured_tokens"] = max(structured_sizes)
         metrics["query.v2.default.max_text_tokens"] = max(text_sizes)
         for name, tool, arguments, ok, code in ERROR_PROBES:
+            client.session = MCPQuerySession()
             metrics[f"query.error.{name}_tokens"] = _measured_call(
                 client, name, tool, arguments, ok=ok, code=code
             )[0]

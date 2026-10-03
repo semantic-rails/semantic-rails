@@ -27,6 +27,7 @@ and the comparison fixtures: see
 | `limit` | `integer` (or `null`) | Optional row cap. |
 | `time` | `TimeBlock` (or `null`) | Query-level time anchor: temporal_role + grain + bounds. `start` is inclusive, `end` is exclusive. |
 | `temporal_role_overrides` | `object<measure_id, temporal_role_id>` | Per-measure clock bindings. |
+| `route_decisions` | `array` of `RouteDecision` | This query's own route for an entity pair: the `decision` of an `AMBIGUOUS_PATH` option. See [`route_decisions`](#route_decisions). |
 | `policy_context` | `object` | Caller-supplied access context (`environment`, `audience`, `roles`, `now`, ...). |
 | `limits` | `object` | Per-request `statement_timeout_ms`, `max_rows`. |
 | `verbosity` | `"summary"\|"minimal"\|"compact"\|"full"` | Response detail level (default `compact`). On `catalog`, `summary` returns counts + flat ID lists per kind (under 10KB) — recommended for cold-start orientation. |
@@ -53,14 +54,70 @@ public API. The key never changed an answer. A query that still sends it is
 refused with `INVALID_QUERY` and `details.unsupported_keys: ["path_policy"]`;
 delete it.
 
-A query can't choose a join route. The package records one with a
-`graph.path_preferences` row, which also decides every route that walks its
-pair. Without a row, a query whose routes can answer differently uses the
-start entity's one direct key or is refused with `AMBIGUOUS_PATH` (see
-[the route rule](PACKAGE_AUTHORING.md#the-route-rule)).
-Where the engine chose one of two or more routes, compact and full responses
-carry an info note, `ROUTE_COLOCATED_KEY` or `ROUTE_RECORDED`, with the chosen
-route in `details.route`.
+The package records a join route with a `graph.path_preferences` row, which
+also decides every route that walks its pair. Without a row, a query whose
+routes can answer differently uses the start entity's one direct key or is
+refused with `AMBIGUOUS_PATH` (see
+[the route rule](PACKAGE_AUTHORING.md#the-route-rule)), which asks which route
+the question means. Where the engine chose one of two or more routes, compact
+and full responses carry an info note, `ROUTE_COLOCATED_KEY` or
+`ROUTE_RECORDED`, with the chosen route in `details.route`.
+
+### `route_decisions`
+
+After an `AMBIGUOUS_PATH` refusal, the person's answer goes back in the query:
+one row per entity pair, the chosen option's `details.clarification`
+`decision`, shaped like a `graph.path_preferences` row (`label` is accepted and
+ignored).
+
+```jsonc
+{
+  "version": 1,
+  "select": [{"expression": {"measure": "measure.bank.balance"}, "as": "balance"}],
+  "group_by": ["dimension.bank_district_name"],
+  "route_decisions": [{
+    "source_entity": "entity.bank_account",
+    "target_entity": "entity.bank_district",
+    "relationship_path": ["relationship.accounts_owner", "relationship.owners_home_district"]
+  }]
+}
+```
+
+- **This query only.** A row is an exact-pair decision: it applies before the
+  package's row for the same pair (so it overrides a package default for this
+  query), never to other pairs, and is never cached as the package's route. It
+  is not a default: to make one, record the row in the package
+  (`record_route_decision`).
+- **One of the pair's routes.** The path must be one of the routes between the
+  pair within `graph.path_policy.max_hops`, the routes the engine itself
+  considers (no cycles, no longer chains); anything else is `INVALID_QUERY`
+  (`details.reason: route_not_offered`). An unknown entity (by id or name) or
+  relationship, a broken chain, a disallowed direction, or a path that doesn't
+  end at the target is `invalid_route_decision`; so are a malformed row
+  (`malformed_route_decision`), two rows for one pair
+  (`duplicate_route_decision`), and a row for a pair the query never walks
+  (`route_decision_unused`).
+- **Never under a row filter.** When a row filter in the caller's context reads
+  any entity on any of the pair's routes, the query is refused with
+  `POLICY_DENIED` (`details.reason: route_override_under_row_policy`, with
+  `path`, `policy_ids` and `hint`). A reviewed package row is the way to change
+  routes there.
+- **Disclosed.** Every response carries one `info` warning
+  `ROUTE_CHOSEN_BY_QUERY` per row, at every verbosity: `details.row` and
+  `details.replaced`, how the package resolves the pair without it (`decided`:
+  its own row; `colocated_key`: the start's own key; `inherited`: rows for pairs
+  its routes walk through; `only_route`; `undecided`: the package refuses it).
+  `hop_profile.targets[*].route_basis` is `query` for the pair.
+- `build-options` with a partial query that carries rows shows the dimensions
+  they make reachable, and its query patches keep the rows; a patch that would
+  leave a row unused is unavailable with that refusal. Live `valid-values`
+  checks rows before probing and reads through their routes using only the query's
+  configured measures, including those read by metrics; mixed selections containing
+  `aggregate_if` are accepted, but synthetic measures never become anchors. Probing
+  keeps the executed query's filters and temporal role overrides, so a row read only
+  by a metric filter stays in use. If none anchors the dimension, the first anchor's
+  refusal is returned unchanged; unrelated measures never supply values. Without a
+  configured query measure, `NO_VALID_VALUES_SOURCE` asks for a measure or metric anchor.
 
 ## Common gotchas
 
@@ -163,7 +220,7 @@ shorthands for the most common cases:
 | Arithmetic | `{ "kind": "arithmetic", "op": "divide", "left": {...}, "right": {...} }` |
 | Ratio | `{ "kind": "ratio", "numerator": {...}, "denominator": {...} }` |
 | Case | `{ "kind": "case", "whens": [{"when": {...}, "then": {...}}], "else": {...} }` |
-| Aggregate-if | `{ "kind": "aggregate_if", "aggregation": "count", "condition": {...} }` or with `"value": {...}` for sum/avg/min/max. Compiles to `COUNT_IF` / `SUM_IF` on Snowflake, portable `<AGG>(CASE WHEN cond THEN value END)` elsewhere. Column refs inside `condition` / `value` must specify `entity` or `table` (no surrounding measure to inherit from). It aggregates the rows of the value's entity (all `value` columns share it; without a value column, the condition's columns must share one entity). `condition` may also read any entity that entity reaches over declared many-to-one or one-to-one relationships, on the route a `where` filter on that entity takes. A value row with no match on that route never satisfies the condition: for each such entity, a top-level `and` term must compare one of its columns with `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in` or `IS NOT` null, and a condition such a row could satisfy (`IS NULL`, an `or` with the value's own column) is refused with `UNSUPPORTED_CONDITIONAL_AGGREGATE`. So is a condition across a one-to-many, many-to-many, bridge or time-valid hop, or over two routes with no path preference. Policies on the dimensions over the columns such a condition reads apply as they do to a `where` filter on them. |
+| Aggregate-if | `{ "kind": "aggregate_if", "aggregation": "count", "condition": {...} }` or with `"value": {...}` for sum/avg/min/max. Compiles to `COUNT_IF` / `SUM_IF` on Snowflake, portable `<AGG>(CASE WHEN cond THEN value END)` elsewhere. Column refs inside `condition` / `value` must specify `entity` or `table` (no surrounding measure to inherit from). It aggregates the rows of the value's entity (all `value` columns share it; without a value column, the condition's columns must share one entity). `condition` may also read any entity that entity reaches over declared many-to-one or one-to-one relationships, on the route a `where` filter on that entity takes. A value row with no match on that route never satisfies the condition: for each such entity, a top-level `and` term must compare one of its columns with `=`, `!=`, `<`, `<=`, `>`, `>=`, `in`, `not_in` or `IS NOT` null, and a condition such a row could satisfy (`IS NULL`, an `or` with the value's own column) is refused with `UNSUPPORTED_CONDITIONAL_AGGREGATE`. So is a condition across a one-to-many, many-to-many, bridge or time-valid hop, or over two routes with no path preference. Every dimension declared over a column read by `condition` or `value`, including on the measure's own entity, is governed as in a `where` filter or `group_by`: a matching `deny`, `redact` or `hidden` object policy refuses the query with `POLICY_DENIED` before SQL is rendered. Own-entity columns with no declared dimension remain allowed. |
 | Between | `{ "kind": "between", "expr": {...}, "low": {...}, "high": {...} }` — sugar for `expr >= low AND expr <= high`. Use `kind: "not_between"` or `negated: true` for the inverted form (`expr < low OR expr > high`). Desugared at parse time; the kind does not appear in the lowered IR. |
 | Literal | `{ "kind": "literal", "value": 0 }` |
 | Prior period | `{ "kind": "prior_period", "input": {...}, "offset": {"unit": "month", "value": 1} }` |
@@ -204,7 +261,7 @@ functions must use their semantic expression forms instead of `call`.
 `INVALID_EXPRESSION_AST` with `details.allowed` equal to the warehouse's
 accepted set, including `CAST`.
 
-Common names: `ABS`, `CAST`, `CEIL`, `CEILING`, `COALESCE`, `CONCAT`, `EXP`,
+Common names: `ABS`, `CAST`, `CEIL`, `CEILING`, `COALESCE`, `CONCAT`, `DATE_DIFF`, `EXP`,
 `FLOOR`, `LENGTH`, `LN`, `LOG`, `LOWER`, `NULLIF`, `POWER`, `REPLACE`, `ROUND`,
 `SQRT`, `SUBSTR`, `SUBSTRING`, `TRIM`, `UPPER`.
 
@@ -221,6 +278,46 @@ Common names: `ABS`, `CAST`, `CEIL`, `CEILING`, `COALESCE`, `CONCAT`, `EXP`,
 Use each warehouse's scalar argument signatures. For example, Athena `LOG`
 takes a base and a value. Engine-generated SQL has a separate function list;
 it does not advertise functions that a client can call.
+
+Portable date differences use exactly three args:
+
+```json
+{"kind":"call","name":"DATE_DIFF","args":[
+  {"kind":"literal","value":"day"},
+  {"kind":"column","column":"opened_at","entity":"entity.order"},
+  {"kind":"column","column":"closed_at","entity":"entity.order"}
+]}
+```
+
+The first arg must be a string literal unit: `minute`, `hour`, `day`, `week`,
+`month`, `quarter` or `year` (case-insensitive). The result is end minus start,
+counting calendar unit boundaries rather than elapsed durations. The `week`
+exception is the calendar day difference divided by seven, truncated toward
+zero; it does not count Sunday or Monday week boundaries.
+
+BigQuery converts both endpoints to `DATETIME` before taking the difference.
+For `TIMESTAMP` endpoints, calendar boundaries are counted in UTC, so
+23:00 on January 1 to 01:00 on January 3 returns two days, preserving NULLs.
+
+| Warehouse | Supported units | Refused units |
+| --- | --- | --- |
+| DuckDB, MotherDuck, DuckLake, Postgres, Databricks | `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year` | None |
+| Snowflake, BigQuery, ClickHouse | `minute`, `hour`, `day`, `month`, `quarter`, `year` | `week` |
+| Athena | None | `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year` |
+
+Athena's native function counts complete elapsed units; Snowflake, BigQuery and
+ClickHouse count calendar week boundaries. Those calls return
+`INVALID_EXPRESSION_AST` with an unsupported-function message naming the
+warehouse and unit, including in `validate` mode and package loading.
+
+For supported calls, if either endpoint is NULL, the result is NULL and is
+excluded from averages, never replaced with zero. ClickHouse casts both endpoints
+to `Nullable(DateTime64(6))` so this holds even with `cast_keep_nullable=0`, while
+preserving pre-1970 dates: `1950-01-01` to `2024-01-01` is 74 years. The same
+shape works in query selects, package measure expressions and `aggregate_if`
+values. Wrong arity, non-literal units and unknown units return
+`INVALID_EXPRESSION_AST`, including in `validate` mode, with the required shape
+and recognized units.
 
 Numeric conversion uses exactly two args:
 
@@ -257,7 +354,7 @@ conditional aggregates and post-aggregation expressions.
 
 Scalar-call argument types and overload resolution are checked by the warehouse
 at execution, for query, package and relation-pipeline expressions alike.
-Compilation checks the allowed function name and CAST shape without inferring
+Compilation checks the allowed function name and CAST/DATE_DIFF shapes without inferring
 argument categories from literals, dimensions or nested calls. Use CAST when an
 explicit conversion is required. Warehouse execution failures use the stable
 `QUERY_EXECUTION_ERROR` code and remain redacted.
@@ -315,6 +412,11 @@ Supported `op` values (all compile end-to-end):
   instead of erroring. `value: null` with `IN` / `NOT IN` is rejected
   with `INVALID_QUERY` + a `USE_LIST_VALUE_OR_NULL_TEST` recovery hint.
 - `IS NULL` / `IS NOT NULL` ignore `value` entirely — omit it.
+- `IS` / `IS NOT` accept only `null`, `true` or `false`. Other values are
+  rejected before execution with `INVALID_QUERY` and a
+  `USE_EQUALITY_FOR_SCALAR` recovery hint: use `=` / `!=` for scalar comparisons.
+  This applies to plain dimensions, parent dimensions and metric filters
+  on every backend.
 - `value: null` with `=` (or `IS`) lowers to `field IS NULL`; with
   `!=` / `<>` / `IS NOT` it lowers to `field IS NOT NULL`. Ordering
   (`<`, `<=`, `>`, `>=`) and LIKE ops against `null` are rejected with a
@@ -367,13 +469,112 @@ grain is finer than the entity's key, the rewrite refuses it with
 without measures leaves the grain unknown, so only `count_distinct`, `min` and
 `max` are answered there.
 
-At most one group or filter may cross a one-to-many hop. Negated child predicates
-and child `IS NULL` tests remain `MIXED_GRAIN_INVALID`: "has a child that is not X"
-and "has no child that is X" have different answers, and the IR has no explicit
-`NOT EXISTS` predicate. Grouped child dimensions retain their distinct-parent
-count rules; summing a parent amount by a child dimension or reading a child
-measure expression at parent grain remains refused. Under a row policy these
-queries are refused with `POLICY_DENIED`, as before.
+Grouped child dimensions retain their distinct-parent count rules; summing a
+parent amount by a child dimension or reading a child measure expression at
+parent grain remains refused. Under a row policy these queries are refused with
+`POLICY_DENIED`, as before.
+
+### Child groups
+
+"Customers with an item that is a beverage and costs over 5" may mean one item that
+is both, or a beverage and some item over 5. Only the question can say which, so the
+query states it. A child group is a `where` item of its own:
+
+```jsonc
+{
+  "child": "entity.shop_item",              // entity id of the child
+  "match": "any",                           // "any" | "none"
+  "where": [                                // filters, as above
+    {"field": "dimension.shop_item_product_type", "op": "=", "value": "beverage"},
+    {"field": "dimension.shop_item_price", "op": ">", "value": 5}
+  ]
+}
+```
+
+- `any` keeps a row of the measure's entity when at least one of its child rows meets
+  every condition: a correlated `EXISTS` over the conjunction. `none` keeps it when no
+  child row does: `NOT EXISTS`, so a row with no child rows at all is kept.
+- Conditions are dimensions of the child, or of a declared many-to-one or one-to-one
+  lookup from it. A lookup that finds no row reads NULL, and NULL fails a comparison:
+  under `none`, a child row with a NULL value never excludes its parent.
+- Several groups are separate subqueries, ANDed with the other `where` items. Two
+  groups on one child mean separate child rows; one group with both conditions means
+  the same row.
+- One child scope per query. Beside a group, nothing else may cross a one-to-many hop: a
+  plain filter (on that child or another), a grouping by a child dimension, or a measure's
+  own `filter`. Groups on different children, or reaching one child by different routes,
+  are refused too: an item and a payment of a customer's orders may mean one order or
+  any, and neither group says which. Each is `MIXED_GRAIN_INVALID`.
+- The child must sit across a one-to-many hop from each measure's entity. Its route
+  follows [the route rule](PACKAGE_AUTHORING.md#the-route-rule): with several routes and
+  no `graph.path_preferences` row recording one, it is refused with `AMBIGUOUS_PATH`.
+- Refused with `INVALID_QUERY`: a child reached only through lookups, or the measure's
+  own entity (use a plain filter); nested groups; a condition that is not on the child
+  or a lookup from it; a condition whose lookup reads a table the route already reads;
+  and a group in a query without a measure or beside a conversion. A segment's
+  membership refuses a group with `INVALID_SEGMENT`.
+- A group never reads a rollup, and the measure must meet the same rules as under a plain
+  child filter (one value per row of its entity; no window, distribution or metric
+  predicate across the hop).
+  Under a row policy the query is refused with `POLICY_DENIED`.
+  Under [restricted metric grants](QUERY_API.md#restricted-metric-grants), explicit
+  groups are refused with `RESOURCE_ACCESS_DENIED`: metric and dimension grants do not
+  authorize a caller-selected child entity scope.
+- ClickHouse answers one `any` group on the child's own columns with its de-duplicated
+  parent leaf. A `none` group (a NULL-safe anti-join is unproven there), several groups,
+  or a lookup from the child are refused with `MIXED_GRAIN_INVALID`.
+
+Plain filters on a child:
+
+- One positive plain filter reaching a child keeps its meaning: an `any` group of one.
+- `AMBIGUOUS_CHILD_SCOPE` is raised only for a query with no group whose only conditions
+  across a one-to-many hop are plain `where` filters, all reaching one child entity by one
+  route (a lookup from the child counts as that child), each with an operator a group can
+  restate exactly (`=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`, `IN`, `NOT IN`, `LIKE`,
+  `NOT LIKE`, `IS NULL`, `IS NOT NULL`). Then it takes one of two shapes:
+  - two or more filters, none negated: `same_row` (one `any` group of all of them) or
+    `separate_rows` (an `any` group each);
+  - exactly one filter, negated (`!=`, `<>`, `NOT IN`, `NOT LIKE`, `IS NULL`, a null
+    value, or on a boolean anything but `= true`): `any_not` (an `any` group with the
+    condition as written, "has an item that is not a beverage") or `none` (a `none` group
+    with its complement: `=` for `!=`, `IN` for `NOT IN`, `LIKE` for `NOT LIKE`,
+    `IS NOT NULL` for `IS NULL`; "has no beverage item").
+- Every other shape keeps `MIXED_GRAIN_INVALID` with no clarification: a negated filter
+  beside another filter on the child, two negated filters, filters on different children,
+  and `IS` / `IS NOT` with a boolean value, `IS [NOT] DISTINCT FROM`, `<=>`, `ILIKE` or
+  `NOT ILIKE` on a child.
+  Other non-null `IS` / `IS NOT` operands fail earlier with `INVALID_QUERY` and
+  `USE_EQUALITY_FOR_SCALAR`, before child-scope analysis.
+- The refusal carries `details.clarification`:
+
+  ```jsonc
+  {
+    "kind": "child_scope",
+    "apply": ["query"],
+    "question": "Do Product type = \"beverage\" and Price > 5 apply to the same Order item or to separate ones?",
+    "options": [
+      {"id": "same_row", "meaning": "One Order item meets ...", "where": [/* whole rewritten where */]},
+      {"id": "separate_rows", "meaning": "Each of ... may hold on a different Order item.", "where": [/* ... */]}
+    ]
+  }
+  ```
+
+  Each option's `where` is the query's whole `where`, with the other items unchanged;
+  resend it as is. `recovery_hints` carry the same options.
+- A clarification is offered only when every reading answers for this caller. The engine
+  binds each option's `where` once (every measure, the warehouse's child-group rules, row
+  policies) and runs the caller's semantic policies on it (metric constraints such as
+  `required_where` and `allowed_where`, object access). If any option is refused (a
+  measure whose own rows are the child, ClickHouse refusing a reading, a required filter
+  that a group no longer meets as a plain filter), the query is `MIXED_GRAIN_INVALID`
+  without a clarification, and its message names that option and its error code.
+- A group on the child must take the plain filters' own route: the route from the
+  measure's entity to the child, and from the child to a filter's lookup. When it would
+  take another route, or none the package records, the query is refused with
+  `MIXED_GRAIN_INVALID`, naming the `graph.path_preferences` row that records the filters'
+  route.
+- A measure's own `filter` keeps its rules: one positive condition across a hop means
+  `EXISTS`, and a negated one is `MIXED_GRAIN_INVALID`.
 
 ## OrderBy
 
@@ -906,11 +1107,17 @@ Booleans remain booleans, and nested decimal/float values retain their normaliza
 
 The Postgres ADBC adapter accepts only Arrow scalar types with exact mappings:
 integers, decimals (including PostgreSQL NUMERIC stored as text and converted
-to `Decimal`), float32/float64, text, booleans, date32, microsecond timestamps
-with or without a time zone, month-day-nanosecond intervals, and NULL.
-Other Arrow types, including lists, structs, maps, nested NUMERIC, JSON/JSONB
-and unknown extensions, refuse with `RESULT_TYPE_UNSUPPORTED` before rows
-are read, even for empty or all-null results. The error names the column and
+to `Decimal`), float32/float64, text, booleans, date32, microsecond times,
+variable-size binary, microsecond timestamps with or without a time zone,
+month-day-nanosecond intervals, and NULL. Variable-size binary remains binary,
+including 16-byte BYTEA values; UUID-looking text remains text.
+Before converting each bounded batch to Python values, microsecond times outside
+`00:00:00` through `23:59:59.999999` refuse with `RESULT_TYPE_UNSUPPORTED`.
+This includes PostgreSQL `TIME '24:00:00'`, which cannot be represented as an
+exact Python `time` and must never wrap to midnight. Errors expose no raw values.
+Other Arrow types, including lists, structs, maps, nested NUMERIC, JSON/JSONB,
+UUID, fixed-size binary and unknown extensions, refuse with
+`RESULT_TYPE_UNSUPPORTED` before rows are read, even for empty or all-null results. The error names the column and
 Arrow type in `details.column` and `details.type`, without exposing values.
 Intervals still refuse with `RESULT_VALUE_UNSUPPORTED` when their duration
 cannot be represented as an exact Python `timedelta`.

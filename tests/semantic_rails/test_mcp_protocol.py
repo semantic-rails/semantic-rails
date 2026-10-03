@@ -121,5 +121,7 @@ def test_facade_uses_whichever_sdk_is_installed(
     assert names == ["discover", "inspect", "valid-values", "plan", "execute", "segment"]
     text = dict(created["tools"])["discover"]({})
     assert "\n" not in text and json.loads(text)["ok"] is True
+    repeated = json.loads(dict(created["tools"])["discover"]({}))
+    assert repeated["same_as"] == json.loads(text)["request_id"]
     with pytest.raises(RuntimeError, match="stdio-only"):
         facade.run(transport="streamable-http")

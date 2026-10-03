@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -109,7 +110,11 @@ def plugin_run(tmp_path, source, *, parallel=False, **overrides):
     return subprocess.run(
         command,
         cwd=tmp_path,
-        env={**os.environ, "PYTHONPATH": str(ROOT), "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(filter(None, [str(ROOT), os.getenv("PYTHONPATH")])),
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        },
         capture_output=True,
         text=True,
         timeout=30,
@@ -378,6 +383,40 @@ def test_workflow_limits_guard_to_hosted_merge_groups_and_validates_quarantine()
     assert guard["env"]["MERGE_BASE"] == "${{ github.event.merge_group.base_sha }}"
     assert not guard.get("continue-on-error")
     assert any("--validate-quarantine" in step.get("run", "") for step in backend["steps"])
+
+
+@pytest.mark.parametrize(
+    "cases, succeeds",
+    [
+        ([], False),
+        ([("unrelated", False)], False),
+        ([("test_adbc_adapter", False)], False),
+        ([("test_adbc_snowflake", False)], False),
+        ([("test_adbc_adapter", True), ("test_adbc_snowflake", False)], False),
+        ([("test_adbc_adapter", False), ("test_adbc_snowflake", True)], False),
+        ([("test_adbc_adapter", False), ("test_adbc_snowflake", False)], True),
+    ],
+)
+def test_adbc_ci_guard_requires_both_modules_without_skips(tmp_path, cases, succeeds):
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    guard = next(
+        step
+        for step in workflow["jobs"]["backend"]["steps"]
+        if step.get("name") == "Verify ADBC tests ran without skips"
+    )
+    script = guard["run"].split("uv run --no-sync python - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    suite = ET.Element("testsuite")
+    for module, skipped in cases:
+        case = ET.SubElement(
+            suite, "testcase", classname=f"tests.semantic_rails.{module}", name="test_value"
+        )
+        if skipped:
+            ET.SubElement(case, "skipped")
+    ET.ElementTree(suite).write(tmp_path / "backend-results.xml")
+    result = subprocess.run(
+        [sys.executable, "-c", script], cwd=tmp_path, capture_output=True, text=True, timeout=10
+    )
+    assert result.returncode == (0 if succeeds else 1), result.stdout + result.stderr
 
 
 def test_dependabot_updates_uv_lock_weekly_and_keeps_actions():

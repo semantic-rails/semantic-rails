@@ -6,6 +6,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from ..ast import is_child_group
 from ..catalog_service import resolve_catalog
 from ..errors import SemanticLayerError
 from ..runtime import Runtime
@@ -271,6 +272,12 @@ def _describe_filter(item: Any, label: Callable[[Any], str]) -> str:
         return text + _with(item, {key, "op", "value"})
     if item.get("segment"):
         return f"in segment {label(item['segment'])}" + _with(item, {"segment"})
+    if is_child_group(item) and isinstance(item.get("where"), list):
+        quantifier = "no" if item.get("match") == "none" else "some"
+        conditions = " and ".join(_describe_filter(row, label) for row in item["where"])
+        return f"{quantifier} {label(item.get('child'))} has {conditions}" + _with(
+            item, {"child", "match", "where"}
+        )
     return json.dumps(item, sort_keys=True, default=str)
 
 

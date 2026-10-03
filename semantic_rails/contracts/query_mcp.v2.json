@@ -595,7 +595,7 @@
         "readOnlyHint": true,
         "title": "Execute"
       },
-      "description": "Validate, compile and run Query IR against the warehouse: the best.query_ir that 'plan' drafted (call plan first), or Query IR you fixed from it. time.end is exclusive. Returns at most max_rows rows; a capped result reports truncated and total_row_count. mode='validate' only checks the query; mode='sql' also returns rendered_sql; neither runs it. Gotcha: 'query' must be a JSON object, and mode 'run' costs warehouse time. IR: select[]={expression:{...},as}, group_by[]=[<dim>,...] (not in select), where[]={field,op,value}, order_by[]={field,direction}. select.expression: {aggregation, measure} | {metric} | {kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}.",
+      "description": "Validate, compile and run Query IR: plan's best.query_ir (call plan first) or your fix of it. time.end is exclusive. Returns at most max_rows rows; a capped one reports truncated and total_row_count. mode='validate' only checks; mode='sql' adds rendered_sql; neither runs. 'query' is a JSON object; mode 'run' costs warehouse time. IR: select[]={expression:{...},as}, group_by[]=[<dim>,...] (not in select), where[]={field,op,value}, order_by[]={field,direction}. select.expression: {aggregation, measure} | {metric} | {kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -718,6 +718,13 @@
                   "object",
                   "null"
                 ]
+              },
+              "where": {
+                "description": "Filters {field,op,value}. A child group {child, match: any|none, where} holds filters one row of a child entity must meet together. On AMBIGUOUS_CHILD_SCOPE, resend an option's where from details.clarification.",
+                "items": {
+                  "type": "object"
+                },
+                "type": "array"
               }
             },
             "type": "object"

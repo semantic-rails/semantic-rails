@@ -7,6 +7,7 @@ import pytest
 from semantic_rails.db import Database, _split_sql_statements, load_csv_dir_to_duckdb, seed_db
 from semantic_rails.db_parts.common import (
     option_or_env,
+    secret_value,
     timeout_option,
 )
 from semantic_rails.errors import SemanticLayerError
@@ -15,6 +16,22 @@ from semantic_rails.sql_preparation import (
     map_double_quoted_identifiers,
     rewrite_double_quoted_identifiers,
 )
+
+
+@pytest.mark.parametrize("option_name", ["password", "private_key", "token"])
+@pytest.mark.parametrize(
+    ("contents", "expected"),
+    [
+        (b"\t synthetic-file-secret \r\n\n", "synthetic-file-secret"),
+        (b"\t synthetic\r\nfile-secret \r\n", "synthetic\nfile-secret"),
+    ],
+)
+def test_other_secret_files_still_strip_surrounding_whitespace(
+    tmp_path, option_name, contents, expected
+):
+    secret_file = tmp_path / "secret"
+    secret_file.write_bytes(contents)
+    assert secret_value(option_name, "", str(secret_file)) == expected
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "invalid"])

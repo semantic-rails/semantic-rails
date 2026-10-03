@@ -276,6 +276,11 @@ consistently across discovery, metadata, validation, compile, and query calls.
    output.
 6. Call `execute` when the user wants rows. It validates and compiles first, so it needs no
    separate dry run; use `mode: "validate"` for diagnostics without running the query.
+7. On `AMBIGUOUS_CHILD_SCOPE`, the conditions on a child entity can mean the same child row or
+   separate ones (or, negated, "has a row that is not X" or "has no row that is X"). Answer
+   `details.clarification.question` from the user's question, or ask the user, then resend the
+   chosen option's `where` unchanged. Write a child group (`{child, match, where}`) up front when
+   the question already says it.
 
 Use `minimal` or `compact` verbosity unless the user asks for debugging detail. Request
 `full` only for explainability, test failure triage, or query review.
@@ -319,13 +324,25 @@ orient -> discover -> draft -> execute
 Branch on structured status fields: a `plan` draft that isn't `ok`, or has warnings, goes to a
 repair node before `execute`. `INVALID_QUERY`, `PATH_JOIN_CONFLICT`,
 `MIXED_GRAIN_INVALID`, `POLICY_DENIED`, and low-relevance results should route to repair or refusal
-nodes instead of being retried as raw SQL. `AMBIGUOUS_PATH` (`details.reason:
+nodes instead of being retried as raw SQL. `AMBIGUOUS_CHILD_SCOPE` routes to a clarification
+node: each of its `details.clarification.options` is a complete `where` to resend. `AMBIGUOUS_PATH` (`details.reason:
 route_decision_required`) means two join routes can answer the question differently (an account's
-branch region or its owner's home region) and the package hasn't recorded which one it means. A
-query can't pick one: ask which meaning is wanted (`details.meanings` reads each route), or refuse;
-`details.pins` lists the `graph.path_preferences` row a package author adds to record each (a
-route whose row would disagree with the package's rows is in `details.conflicts_with` instead); one
-row also decides every route that walks its pair. An `info` note `ROUTE_COLOCATED_KEY` or
+branch district or its owner's home district) and the package hasn't recorded which one it means.
+The agent never picks one; it asks:
+
+1. Refusal: `details.clarification.question` ("Which District does the question mean for an
+   Account?") and one option per route, each with a `meaning` in business words.
+2. Ask the person, reading each option's `meaning`.
+3. Resend the same query with the chosen option's `decision` in
+   [`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions). The answer is for this person and this
+   query only, and carries an `info` note `ROUTE_CHOSEN_BY_QUERY` with the row and `replaced` (how
+   the package resolves the pair without it: `undecided` when it refuses).
+4. To make it the default for everyone, a maintainer calls Architect
+   [`record_route_decision`](ARCHITECT_MCP.md) with the same `decision`. That is a reviewed package
+   change; from then on the question answers without asking. An option with `conflicts_with`
+   names the package rows to change first; its `decision` still answers per query.
+
+One row also decides every route that walks its pair. An `info` note `ROUTE_COLOCATED_KEY` or
 `ROUTE_RECORDED` (compact and full responses) names the route the answer used, the start entity's
 own key or the package's recorded routes; it needs no follow-up, and `ROUTE_COLOCATED_KEY` lists
 the row that would make each other route the default (or, in `details.conflicts_with`, the rows
