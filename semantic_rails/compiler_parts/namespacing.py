@@ -144,7 +144,11 @@ def _namespace_sql_select(select: SqlSelect, prefix: str) -> SqlSelect:
             having=[_expr(item) for item in node.having],
             qualify=[_expr(item) for item in node.qualify],
             order_by=[
-                SqlOrder(expression=_expr(item.expression), direction=item.direction)
+                SqlOrder(
+                    expression=_expr(item.expression),
+                    direction=item.direction,
+                    nulls_last=item.nulls_last,
+                )
                 for item in node.order_by
             ],
             limit=node.limit,

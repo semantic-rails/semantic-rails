@@ -2,6 +2,25 @@ fixture:
   tables: [orders, refunds, signups, dim_fiscal, customer_history]
   data_sha256: 7239197c610505a820d1181968800157664fe222bce85e1c1f51dcd7d406d7d8
 tests:
+  shop/top-stores-with-cutoff-ties:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Stores with equal order counts rank by the remaining output columns, keeping a stable subset.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, docs/QUERY_IR_SCHEMA.md#orderby]
+    tags: [time-window]
+    query:
+      select: [{expression: {measure: measure.shop.order_count}, as: orders}]
+      group_by: [dimension.shop_order_store_id]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2023-11-01', end: '2023-12-01'}
+      order_by: [{field: orders, direction: DESC}]
+      limit: 1
+    expected_rows: [{dimension.shop_order_store_id: a, orders: 1}]
+    reference_sql: |
+      SELECT store_id, COUNT(order_id) AS orders
+      FROM orders
+      WHERE ordered_at >= TIMESTAMP '2023-11-01' AND ordered_at < TIMESTAMP '2023-12-01'
+      GROUP BY store_id
+      ORDER BY orders DESC, store_id ASC NULLS LAST LIMIT 1
   shop/pinned-output-refuses-another-advertised-clock:
     kind: validate_fails_with_code
     expect: refuse
