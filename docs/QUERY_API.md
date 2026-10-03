@@ -1039,9 +1039,14 @@ caller's `group_by`.
 Singular and regular plural grouping names resolve to the same dimension when
 the singular form is in the catalog. For example, "top 3 product types by item
 revenue for Brooklyn and Philadelphia" groups by product type and uses both
-stores in one membership filter. Catalog fallback reuses a caller grouping
-that already covers the requested dimension instead of appending another
-grouping for the same phrase.
+stores in one membership filter. Catalog fallback resolves each requested
+grouping before deduplicating by dimension ID. For example, "orders by order
+id" adds the order-ID grouping even when the caller already groups by customer
+ID. If the same grouping phrase matches both a caller dimension and a newly
+added, distinct dimension, the plan retains both IDs and returns
+`low_confidence` with `PLAN_INTENT_COVERAGE_GAP` and a `clarify_grouping` hint.
+Fallback discovery uses the user's words, folding regular plurals without
+substituting planner synonyms (for example, "region" stays "region").
 Caller filter rows stay as written, in their original order, with only string
 field IDs stripped of surrounding whitespace. Their operators and values are
 preserved, and generated rows are appended unless identical rows already exist.

@@ -458,26 +458,18 @@ def _choose_group_dimensions(
         discover_payload,
     )
     from ..metadata_parts.relevance import _tokenize  # noqa: WPS433
-    from ._base import _dimension_terms, _object_by_id, _tokens  # noqa: WPS433
+    from ._base import _dimension_terms  # noqa: WPS433
 
     if chosen_group_dim:
         return [chosen_group_dim]
     selection = _selection_context(runtime._config, query)
     group_dims: list[str] = []
-    covered_terms = [
-        set(_tokens(" ".join([dim.id, dim.name, dim.label, *list(dim.aliases or [])])))
-        for dim_id in list(query.get("group_by", []) or [])
-        if (dim := _object_by_id(runtime._config.dimensions, dim_id)) is not None
-    ]
     for dimension_terms in _requested_grouping_terms(text):
         if _is_temporal_grouping_term(dimension_terms) or _term_matches_value_domain(
             runtime._config, dimension_terms
         ):
             continue
-        dimension_terms = " ".join(_dimension_terms(runtime._config, _tokens(dimension_terms)))
-        dimension_tokens = set(_tokenize(dimension_terms))
-        if dimension_tokens and any(dimension_tokens <= covered for covered in covered_terms):
-            continue
+        dimension_terms = " ".join(_dimension_terms(runtime._config, _tokenize(dimension_terms)))
         dim_discovery = discover_payload(
             runtime,
             terms=dimension_terms,
@@ -508,7 +500,6 @@ def _choose_group_dimensions(
             chosen = str(matched_rows[0]["id"])
         if chosen:
             group_dims.append(chosen)
-            covered_terms.append(dimension_tokens)
     return list(dict.fromkeys(group_dims))
 
 

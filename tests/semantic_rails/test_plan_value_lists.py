@@ -376,7 +376,7 @@ def test_unrelated_caller_inclusions_are_preserved_and_refused(
 @pytest.mark.parametrize("path", ["primary", "fallback"])
 @pytest.mark.parametrize("grouping", ["product type", "product types"])
 @pytest.mark.parametrize("separator", ["from", "and"])
-def test_ranked_named_values_execute_one_combined_top_three(
+def test_ranked_named_values_keep_exact_groupings_and_combined_totals(
     runtime_factory, monkeypatch, path, grouping, separator
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
@@ -401,8 +401,16 @@ def test_ranked_named_values_execute_one_combined_top_three(
     try:
         payload = plan_payload(runtime, intent=intent, partial_query=partial)
         assert partial == before
-        assert payload["status"] == "ok", payload.get("why")
-        assert "execute" in payload["next"].get("ready_for", [])
+        if path == "fallback":
+            assert payload["status"] == "low_confidence", payload.get("why")
+            assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+            assert payload["why"]["details"]["gaps"][0]["kind"] == "ambiguous_grouping"
+            assert payload["why"]["details"]["gaps"][0]["clause"] == grouping
+            assert payload["why"]["recovery_hints"][0]["kind"] == "clarify_grouping"
+            assert "execute" not in payload["next"].get("ready_for", [])
+        else:
+            assert payload["status"] == "ok", payload.get("why")
+            assert "execute" in payload["next"].get("ready_for", [])
         query = payload["best"]["query_ir"]
         assert {
             **query,
@@ -415,11 +423,16 @@ def test_ranked_named_values_execute_one_combined_top_three(
                     "expression": {"measure": CHOICE["id"], "aggregation": "sum"},
                 }
             ],
-            "group_by": [PRODUCT_TYPE],
+            "group_by": (
+                [PRODUCT_TYPE, "dimension.jaffle_product_type"]
+                if path == "fallback"
+                else [PRODUCT_TYPE]
+            ),
             "order_by": [{"field": "item_revenue_usd", "direction": "DESC"}],
             "limit": 3,
             "where": [{"field": STORE, "op": "in", "value": ["Brooklyn", "Philadelphia"]}],
         }
+        # Execute the refused fallback's diagnostic IR only for the SQL comparison.
         rows = runtime.query(query)["rows"]
         actual = [(row[PRODUCT_TYPE], row["item_revenue_usd"]) for row in rows]
         runtime.close()
@@ -620,11 +633,81 @@ def test_compound_discovery_keeps_each_named_value_and_its_span(runtime_factory,
         runtime.close()
 
 
+@pytest.mark.parametrize(
+    ("intent", "existing", "requested", "reference_sql"),
+    [
+        (
+            "orders by order id",
+            "dimension.jaffle_order_customer_id",
+            "dimension.jaffle_order_id",
+            "SELECT customer_id, order_id, COUNT(DISTINCT order_id) "
+            "FROM jaffle_order GROUP BY customer_id, order_id",
+        ),
+        (
+            "item revenue by item id",
+            "dimension.jaffle_item_order_id",
+            "dimension.jaffle_item_id",
+            "SELECT order_id, item_id, SUM(item_revenue_cents / 100.0) "
+            "FROM jaffle_item GROUP BY order_id, item_id",
+        ),
+    ],
+)
+def test_fallback_resolves_distinct_groupings_before_deduplicating(
+    runtime_factory, monkeypatch, intent, existing, requested, reference_sql
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    partial = {"group_by": [existing]}
+    before = deepcopy(partial)
+    _force_fallback(runtime, monkeypatch, intent, "fallback")
+    try:
+        payload = plan_payload(runtime, intent=intent, partial_query=partial)
+        query = payload["best"]["query_ir"]
+        assert partial == before
+        assert query["group_by"] == [existing, requested]
+        assert payload["status"] == "ok", payload.get("why")
+        assert "execute" in payload["next"].get("ready_for", [])
+        rows = runtime.query(query)["rows"]
+        measure = query["select"][0]["as"]
+        actual = sorted((row[existing], row[requested], row[measure]) for row in rows)
+        runtime.close()
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            expected = sorted(connection.execute(reference_sql).fetchall())
+        assert [row[:2] for row in actual] == [row[:2] for row in expected]
+        assert [row[2] for row in actual] == pytest.approx([row[2] for row in expected])
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+def test_plan_keeps_both_product_groupings_or_refuses_readiness(
+    runtime_factory, monkeypatch, path
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    intent = "item revenue by product type and product"
+    _force_fallback(runtime, monkeypatch, intent, path)
+    try:
+        payload = plan_payload(runtime, intent=intent)
+        if payload["status"] == "ok":
+            groups = payload["best"]["query_ir"]["group_by"]
+            assert len(groups) == 2
+            assert groups[0] in {PRODUCT_TYPE, "dimension.jaffle_product_type"}
+            assert groups[1] in {
+                "dimension.jaffle_product_id",
+                "dimension.jaffle_product_name",
+                "dimension.jaffle_item_product_name",
+            }
+        else:
+            assert payload["status"] == "low_confidence", payload.get("why")
+            assert "execute" not in payload["next"].get("ready_for", [])
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize("grouping", ["product type", "product types"])
 @pytest.mark.parametrize(
     "authored_groups", [[PRODUCT_TYPE], [PRODUCT_TYPE, "dimension.jaffle_product_type"]]
 )
-def test_fallback_preserves_authored_groups_and_adds_only_uncovered_groupings(
+def test_fallback_preserves_authored_groups_and_deduplicates_resolved_ids(
     runtime_factory, grouping, authored_groups
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
@@ -637,7 +720,47 @@ def test_fallback_preserves_authored_groups_and_adds_only_uncovered_groupings(
             partial_query=partial,
             choice=CHOICE,
         ).query
-        assert query["group_by"] == [*authored_groups, STORE]
+        assert query["group_by"] == list(
+            dict.fromkeys([*authored_groups, "dimension.jaffle_product_type", STORE])
+        )
         assert partial == before
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+def test_ambiguous_added_grouping_cannot_bypass_readiness_guard(
+    runtime_factory, monkeypatch, path
+) -> None:
+    import semantic_rails.planner.plan as module
+
+    runtime = runtime_factory("jaffle_shop")
+    intent = "item revenue by product type"
+    partial = {"group_by": [PRODUCT_TYPE]}
+    result = compose(runtime, intent)
+    if path == "primary":
+        draft = replace(
+            result.draft,
+            query={
+                **result.draft.query,
+                "group_by": [PRODUCT_TYPE, "dimension.jaffle_product_type"],
+            },
+        )
+        result = replace(result, draft=draft)
+    else:
+        result = replace(result, draft=None, pattern="")
+    monkeypatch.setattr(module, "compose", lambda *args, **kwargs: result)
+    try:
+        payload = plan_payload(runtime, intent=intent, partial_query=partial)
+        assert payload["best"]["query_ir"]["group_by"] == [
+            PRODUCT_TYPE,
+            "dimension.jaffle_product_type",
+        ]
+        assert payload["status"] == "low_confidence", payload.get("why")
+        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+        assert payload["why"]["details"]["gaps"][0]["kind"] == "ambiguous_grouping"
+        assert payload["why"]["recovery_hints"][0]["kind"] == "clarify_grouping"
+        assert "product type" in payload["why"]["recovery_hints"][0]["message"]
+        assert "execute" not in payload["next"].get("ready_for", [])
     finally:
         runtime.close()

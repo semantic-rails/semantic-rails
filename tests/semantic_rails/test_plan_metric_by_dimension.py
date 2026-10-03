@@ -249,3 +249,35 @@ def test_fallback_singular_and_plural_groupings_resolve_the_same_dimension(runti
             ]
     finally:
         runtime.close()
+
+
+def test_fallback_discovery_keeps_region_instead_of_a_planner_synonym(
+    runtime_factory, monkeypatch
+) -> None:
+    import semantic_rails.metadata as metadata
+
+    geo = DimensionConfig(
+        id="dimension.jaffle_item_geo",
+        entity="entity.jaffle_item",
+        column="geo",
+        data_type="string",
+        label="Geo",
+    )
+    runtime = runtime_factory("jaffle_shop")
+    monkeypatch.setattr(
+        runtime, "_config", replace(runtime._config, dimensions=[*runtime._config.dimensions, geo])
+    )
+    discover = metadata.discover_payload
+    discovered_terms = []
+
+    def capture_discovery(*args, **kwargs):
+        discovered_terms.append(kwargs["terms"])
+        return discover(*args, **kwargs)
+
+    monkeypatch.setattr(metadata, "discover_payload", capture_discovery)
+    try:
+        groups = _choose_group_dimensions(runtime, {}, "item revenue by region")
+        assert discovered_terms == ["region"]
+        assert geo.id not in groups
+    finally:
+        runtime.close()
