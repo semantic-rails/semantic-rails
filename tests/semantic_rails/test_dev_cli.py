@@ -32,6 +32,7 @@ def _run_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.Comple
         env=run_env,
         capture_output=True,
         text=True,
+        timeout=120,
     )
 
 
@@ -57,6 +58,7 @@ def _run_cli_in(
         env=run_env,
         capture_output=True,
         text=True,
+        timeout=120,
     )
 
 
@@ -310,13 +312,43 @@ def test_mcp_doctor_loads_path_package_and_lists_tools(tmp_path: Path) -> None:
 
     assert payload["ok"] is True, payload
     assert payload["package"]["source_path"] == str(project_path)
-    assert payload["mcp"]["tool_count"] >= 6
+    assert payload["mcp"]["tool_count"] == 5
     assert payload["mcp"]["required_tools_present"] is True
     assert "supported" in payload["managed_lifecycle"]
     if payload["managed_lifecycle"]["supported"]:
         assert any(" mcp start " in command for command in payload["next_commands"])
     else:
         assert not any(" mcp start " in command for command in payload["next_commands"])
+
+
+def test_mcp_doctor_lists_six_tools_with_segments(runtime_factory, monkeypatch, capsys) -> None:
+    import semantic_rails.cli.commands.mcp as mcp_commands
+
+    runtime = runtime_factory("jaffle_shop")
+    monkeypatch.setattr(mcp_commands, "_runtime_from_package_or_path", lambda _args: runtime)
+    mcp_commands.cmd_mcp_doctor(argparse.Namespace(package="jaffle_shop", path=""))
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"], payload
+    assert payload["mcp"]["tool_count"] == 6
+    assert payload["mcp"]["required_tools_present"] is True
+
+
+@pytest.mark.parametrize(
+    "missing", ["discover", "inspect", "valid-values", "plan", "execute", "segment"]
+)
+def test_mcp_doctor_detects_missing_required_tool(runtime_factory, monkeypatch, missing) -> None:
+    import semantic_rails.cli.commands.mcp as mcp_commands
+    import semantic_rails.mcp as mcp_module
+
+    runtime = runtime_factory("jaffle_shop")
+    monkeypatch.setattr(
+        mcp_module,
+        "TOOL_DEFINITIONS",
+        tuple(tool for tool in mcp_module.TOOL_DEFINITIONS if tool.name != missing),
+    )
+    result = mcp_commands._mcp_tool_check(runtime)
+    assert result["required_tools_present"] is False
+    assert result["missing_required_tools"] == [missing]
 
 
 def test_mcp_doctor_uses_windows_safe_foreground_commands(

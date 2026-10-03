@@ -269,6 +269,7 @@ def test_cli_subcommand_round_trips(tmp_path):
         ],
         capture_output=True,
         text=True,
+        timeout=120,
     )
     assert result.returncode == 0, (
         f"CLI exited {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"

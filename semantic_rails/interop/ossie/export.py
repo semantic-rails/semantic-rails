@@ -269,6 +269,8 @@ class _Exporter:
         return datasets
 
     def measure_sql(self, measure: MeasureConfig) -> SqlExpr:
+        if measure.lookup_from:
+            raise _Unsupported("lookup measures")
         entity = self.entities[measure.entity]
         if entity.relation_id:
             raise _Unsupported("measures over relation pipelines")

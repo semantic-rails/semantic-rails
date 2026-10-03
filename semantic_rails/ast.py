@@ -14,6 +14,7 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .errors import SemanticLayerError
 from .expressions import (
@@ -43,6 +44,7 @@ from .expressions import (
     expression_field,
     parse_semantic_expression,
 )
+from .schema import PackageConfig
 
 
 @dataclass(frozen=True)
@@ -381,19 +383,19 @@ _SUPPORTED_TIME_KEYS = {"temporal_role", "grain", "start", "end", "fill", "calen
 _SUPPORTED_RELATIVE_UNITS = {"day", "week", "month", "quarter", "year"}
 
 
-def _parse_now(policy_context: dict[str, Any] | None) -> date:
+def _parse_now(policy_context: dict[str, Any] | None) -> date | datetime:
     raw_now = (policy_context or {}).get("now")
     if raw_now in (None, ""):
-        return datetime.now(UTC).date()
+        return datetime.now(UTC)
     if isinstance(raw_now, datetime):
-        return raw_now.date()
+        return raw_now
     if isinstance(raw_now, date):
         return raw_now
     text = str(raw_now).strip()
     if not text:
-        return datetime.now(UTC).date()
+        return datetime.now(UTC)
     try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         try:
             return date.fromisoformat(text)
@@ -457,7 +459,11 @@ def _shift_period(value: date, unit: str, periods: int) -> date:
 
 
 def _relative_range_bounds(
-    range_payload: Any, *, policy_context: dict[str, Any] | None
+    range_payload: Any,
+    *,
+    policy_context: dict[str, Any] | None,
+    timezone: str = "UTC",
+    calendar_id: str = "default",
 ) -> dict[str, str]:
     if not isinstance(range_payload, dict):
         raise SemanticLayerError(
@@ -558,7 +564,19 @@ def _relative_range_bounds(
             "query.time.range.last.value must be a positive integer",
             details={"path": "time.range.last.value", "value": value},
         )
-    end = _floor_period(_parse_now(policy_context), unit)
+    if calendar_id.strip().lower() not in {"", "default"} and unit != "day":
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            "Relative periods coarser than day require the default calendar; "
+            "use exact time.start and time.end dates for this calendar.",
+            details={"path": "time.range.last.unit", "calendar_id": calendar_id, "unit": unit},
+        )
+    now = _parse_now(policy_context)
+    if isinstance(now, datetime):
+        if now.tzinfo is not None:
+            now = now.astimezone(ZoneInfo(timezone or "UTC"))
+        now = now.date()
+    end = _floor_period(now, unit)
     start = _shift_period(end, unit, -value)
     return {"start": start.isoformat(), "end": end.isoformat()}
 
@@ -568,6 +586,7 @@ def _time_spec_from_payload(
     *,
     allow_missing_temporal_role: bool = False,
     policy_context: dict[str, Any] | None = None,
+    config: PackageConfig | None = None,
 ) -> TimeSpec | None:
     if not payload:
         return None
@@ -595,7 +614,25 @@ def _time_spec_from_payload(
                 "query.time.range cannot be combined with query.time.start or query.time.end",
                 details={"path": "time.range"},
             )
-        expanded = _relative_range_bounds(payload.get("range"), policy_context=policy_context)
+        timezone = "UTC"
+        calendar_id = str(payload.get("calendar_id", "default") or "default")
+        if config is not None and temporal_role:
+            role = next((r for r in config.temporal_roles if r.id == temporal_role), None)
+            if role is None:
+                raise SemanticLayerError(
+                    "INVALID_TEMPORAL_ROLE", f"Unknown temporal role '{temporal_role}'"
+                )
+            timezone = role.timezone or "UTC"
+            dimension = next(d for d in config.dimensions if d.id == role.dimension)
+            entity = next(e for e in config.entities if e.id == dimension.entity)
+            if calendar_id.strip().lower() in {"", "default"}:
+                calendar_id = entity.calendar_id or "default"
+        expanded = _relative_range_bounds(
+            payload.get("range"),
+            policy_context=policy_context,
+            timezone=timezone,
+            calendar_id=calendar_id,
+        )
     return TimeSpec(
         temporal_role=temporal_role,
         grain=str(payload.get("grain", "")),
@@ -1132,7 +1169,9 @@ def rewrite_select_shorthand(
     return {**payload, "select": select, "group_by": [*group_by, *moved]}, notes
 
 
-def normalize_query(payload: dict[str, Any]) -> NormalizedQuery:
+def normalize_query(
+    payload: dict[str, Any], *, config: PackageConfig | None = None
+) -> NormalizedQuery:
     _check_unknown_top_level_keys(payload)
     _check_supported_version(payload)
     # Validate `select` is a list before iterating. ``list(scalar)`` either
@@ -1210,7 +1249,9 @@ def normalize_query(payload: dict[str, Any]) -> NormalizedQuery:
         )  # parse_semantic_expression returns non-None for non-empty payload
         _validate_query_expr(item.expression)
     time = _time_spec_from_payload(
-        payload.get("time"), policy_context=dict(payload.get("policy_context", {}) or {})
+        payload.get("time"),
+        policy_context=dict(payload.get("policy_context", {}) or {}),
+        config=config,
     )
     if not select and not group_by and time is None:
         raise SemanticLayerError(
@@ -1298,7 +1339,9 @@ def normalize_query(payload: dict[str, Any]) -> NormalizedQuery:
     )
 
 
-def normalize_partial_query(payload: dict[str, Any]) -> PartialQueryState:
+def normalize_partial_query(
+    payload: dict[str, Any], *, config: PackageConfig | None = None
+) -> PartialQueryState:
     # Same silent-drift defense as normalize_query — build_options /
     # plan also accept partial query payloads and should reject
     # unknown top-level keys with the same USE_CANONICAL_KEY hint.
@@ -1347,6 +1390,7 @@ def normalize_partial_query(payload: dict[str, Any]) -> PartialQueryState:
         payload.get("time"),
         allow_missing_temporal_role=True,
         policy_context=dict(payload.get("policy_context", {}) or {}),
+        config=config,
     )
     _assert_unique_output_aliases(select, group_by, time if time and time.temporal_role else None)
     return PartialQueryState(

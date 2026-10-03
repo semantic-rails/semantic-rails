@@ -348,7 +348,14 @@ def test_aware_coverage_cutoff_ignores_the_session_zone(changed_runtime, backend
         "date_trunc('day', ordered_at_tz AT TIME ZONE 'UTC') + INTERVAL '1 day' "
         "FROM orders WHERE order_id = 999",
     )[0]
-    result = rt.query(_ask("day", _item(REVENUE, "v"), start=str(start), end=str(end), fill=True))
+    # Store b's revenue has no row that day (order 999 has no store), so it reads 0 exactly
+    # where the day is loaded.
+    store_b = {
+        "kind": "aggregate",
+        **REVENUE,
+        "filter": {"all": [{"field": STORE, "op": "=", "value": "b"}]},
+    }
+    result = rt.query(_ask("day", _item(store_b, "v"), start=str(start), end=str(end), fill=True))
     gold = _rows(
         rt,
         "SELECT CASE WHEN ordered_at_tz <= CURRENT_TIMESTAMP THEN 0 END "

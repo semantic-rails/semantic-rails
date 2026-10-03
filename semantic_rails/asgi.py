@@ -254,7 +254,7 @@ class SemanticLayerASGIApp:
             )
             result["errors"] = [result["error"]]
         except Exception as exc:  # pragma: no cover - defensive ASGI boundary
-            result, status = service.exception_payload(exc, stage="asgi")
+            result, status = service.exception_payload(exc, stage="asgi", context=context)
         response = service.envelope(
             status, result, request_id=request_id, started=started, request_context=context
         )

@@ -56,7 +56,9 @@ def test_minimal_card_keeps_every_fact_once(
     full = adapter.call_tool("inspect", {"object_id": object_id, "verbosity": "compact"})["card"]
     slim = adapter.call_tool("inspect", {"object_id": object_id, "verbosity": "minimal"})["card"]
     for key, value in full.items():
-        if key in DUPLICATES:
+        if key == "recommended_next_actions":
+            assert value and key not in slim
+        elif key in DUPLICATES:
             assert key not in slim
             assert value in (full[DUPLICATES[key]], []), key
         elif key == "usage_summary":

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from contextlib import nullcontext
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from typing import Any
 
 from ..ast import NormalizedQuery, normalize_query
@@ -70,44 +72,63 @@ def _freeze_payload(value: Any) -> str:
     return json.dumps(value, sort_keys=True, default=str)
 
 
-def _else_clause_collapses_to_no_else(else_expr: Any, aggregation: str) -> bool:
-    """Decide whether an explicit ELSE branch is semantically equivalent
-    to no ELSE for the given aggregation, so the single-branch CASE
-    pattern can still be folded to the native conditional-aggregate.
-
-    Equivalence rules (proof by case analysis):
-
-    - ``ELSE NULL`` is equivalent to no ELSE for every aggregation that
-      ignores NULLs (count, count_distinct, sum, avg, min, max, median,
-      percentile — i.e. every aggregation we route through this hook).
-      A NULL contribution is identical to the row being absent.
-
-    - For SUM only, ``ELSE 0`` is also equivalent: 0 contributes nothing
-      to a SUM result. This matches the mf2sr-generated ``sum_boolean``
-      idiom (``SUM(CASE WHEN cond THEN 1 ELSE 0 END)``) and the
-      count-fallback path in mf2sr/translate.py.
-
-    - For COUNT, ``ELSE 0`` is NOT equivalent — ``COUNT(CASE WHEN cond
-      THEN 1 ELSE 0 END)`` counts every row (0 is non-null), giving the
-      total row count rather than the count of matching rows.
-
-    - For AVG/MIN/MAX, ``ELSE 0`` would skew the result (zeros enter the
-      population), so reject those too.
-    """
-    if else_expr is None:
-        return True
-    if not isinstance(else_expr, SqlLiteral):
+def is_conditional_case(expr: Any) -> bool:
+    """Whether an aggregate of ``expr``, a CASE in SQL or in a measure's config, reads only the
+    rows one of its conditions keeps. Only no ELSE or ELSE NULL can exclude other rows: even
+    ELSE 0 contributes a known value when every matching body is NULL."""
+    if not isinstance(expr, SqlCase | CaseExpr):
         return False
-    if else_expr.value is None:
-        return True
-    return aggregation.lower() == "sum" and else_expr.value == 0
+    other = expr.else_expr
+    return other is None or (isinstance(other, SqlLiteral | LiteralExpr) and other.value is None)
+
+
+def _row_marker(expr: Any) -> Any:
+    """1 on each row an aggregate of ``expr`` reads, NULL on the rest: a conditional CASE reads
+    only the rows one of its conditions keeps (``aggregate_if``), any other every row."""
+    if not (isinstance(expr, SqlCase) and is_conditional_case(expr)):
+        return SqlLiteral(1)
+    return SqlCase([SqlCaseWhen(item.condition, SqlLiteral(1)) for item in expr.whens])
+
+
+_earlier_settlement: ContextVar[bool] = ContextVar("earlier_settlement", default=False)
+
+
+@contextmanager
+def earlier_settlement(enabled: bool = True) -> Iterator[None]:
+    """While ``enabled``, lower as before unknown amounts stayed NULL, byte for byte: the guard
+    (``empty_groups``) reads a NULL sum as 0 wherever its measure has data in scope, whether
+    its group has no rows or only rows of unknown amounts, so no leaf counts its rows; a sum's
+    CASE with ELSE 0 folds to its condition, and a rollup may answer a CASE measure. A query
+    with a distribution branch turns it on for every branch (``_lower_query_to_sql``), and so
+    does a metric predicate's source over several measures under a threshold that 0 passes
+    (``_predicate_ctes_and_join``). It is off by default, and a nested block never turns it
+    off."""
+    token = _earlier_settlement.set(enabled or _earlier_settlement.get())
+    try:
+        yield
+    finally:
+        _earlier_settlement.reset(token)
+
+
+def earlier_settlement_applies() -> bool:
+    return _earlier_settlement.get()
+
+
+def _sum_else_zero_folds(expr: SqlCase, aggregation: str) -> bool:
+    """Whether a SUM's ``ELSE 0`` folds away, as it did before unknown amounts stayed NULL."""
+    other = expr.else_expr
+    return (
+        earlier_settlement_applies()
+        and aggregation.lower() == "sum"
+        and isinstance(other, SqlLiteral)
+        and other.value == 0
+    )
 
 
 def _maybe_conditional_aggregate(expr: Any, aggregation: str, dialect: SqlDialect) -> Any | None:
     """If ``expr`` is the canonical ``CASE WHEN cond THEN body END``
     shape that ``aggregate_if`` produces (one when, no else — or an
-    ELSE branch that collapses to equivalent NULL/0 semantics for the
-    aggregation), delegate to ``dialect.conditional_aggregate`` so
+    ELSE NULL), delegate to ``dialect.conditional_aggregate`` so
     dialects with a native form (Snowflake ``COUNT_IF`` / ``SUM_IF``,
     BigQuery ``COUNTIF``, Postgres ``FILTER (WHERE …)``) can emit it.
     Returns ``None`` if the pattern doesn't apply — the caller falls
@@ -125,20 +146,16 @@ def _maybe_conditional_aggregate(expr: Any, aggregation: str, dialect: SqlDialec
       count rows where a flag is true, with body = key column and
       explicit ``else: literal null``).
     - ``SUM(CASE WHEN cond THEN body ELSE 0 END)`` — the mf2sr
-      ``sum_boolean`` and count-fallback idiom (translate.py
-      lines 498-512 and 562-582). COUNT with ``ELSE 0`` is *not*
-      folded because it counts every row.
+      ``sum_boolean`` idiom, only under the earlier settlement
+      (``earlier_settlement``), whose guard reads the
+      NULL of a group with no matching row as 0.
     """
-    if not isinstance(expr, SqlCase):
+    if not isinstance(expr, SqlCase) or len(expr.whens) != 1:
         return None
-    if len(expr.whens) != 1:
-        return None
-    if not _else_clause_collapses_to_no_else(expr.else_expr, aggregation):
+    if not (is_conditional_case(expr) or _sum_else_zero_folds(expr, aggregation)):
         return None
     agg = aggregation.lower()
-    only_when = expr.whens[0]
-    condition = only_when.condition
-    body = only_when.result
+    condition, body = expr.whens[0].condition, expr.whens[0].result
     if agg == "count":
         # ``aggregate_if(count, cond)`` lowers to body=Literal(1). Pass
         # value=None so dialect.conditional_aggregate emits the
@@ -255,6 +272,13 @@ def _measure_required_entities(measure: MeasureConfig, config: PackageConfig) ->
 
 
 def _config_expr_to_sql(expr: SemanticExpr, measure: MeasureConfig, config: PackageConfig) -> Any:
+    if measure.lookup_from:
+        # Its expr is the key to its parent; only the parent_lookup leaf reads its value.
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            f"Lookup measure '{measure.id}' is read only through its parent_lookup leaf.",
+            details={"measure_id": measure.id, "unsupported_construct": "parent_lookup"},
+        )
     with measure_objects(measure.id):
         return _config_expr_to_sql_inner(expr, measure, config)
 
@@ -419,6 +443,7 @@ def _bind_measure(
                 "measure": measure_id,
                 "aggregation": aggregation,
                 "allowed": list(measure.allowed_aggregations),
+                "default_aggregation": measure.default_aggregation,
             },
         )
     temporal_role = resolve_measure_temporal_role(

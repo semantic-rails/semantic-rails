@@ -44,7 +44,7 @@ from .cache import (
 )
 from .catalog_search import CatalogSearchIndex
 from .caveats import caveat_warnings
-from .compiler import BoundQuery, bind_query, compile_query, read_routes
+from .compiler import BoundQuery, NonAdditiveRefusal, bind_query, compile_query, read_routes
 from .compiler_parts.paths import _leaf_time_role
 from .config import (
     SEED_KIND_EXTERNAL,
@@ -91,7 +91,13 @@ from .fanout import (
 )
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
-from .policies import enforce_query_policies, query_policy_effects, row_filters_for_context
+from .policies import (
+    diagnostic_hidden_object_ids,
+    enforce_query_policies,
+    query_policy_effects,
+    row_filters_for_context,
+    withheld_rank_order,
+)
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
 from .request_context import (
@@ -195,14 +201,59 @@ __all__ = [
 ]
 
 
-def _enrich_runtime_error(exc: SemanticLayerError, config: Any) -> SemanticLayerError:
+def _non_additive_refusal_for_visibility(
+    refusal: NonAdditiveRefusal, config: Any, hidden_ids: frozenset[str] | None
+) -> NonAdditiveRefusal:
+    """Name a key only when every key dimension is discoverable by this caller.
+
+    Internal planning without request context keeps the generic refusal. A
+    failed visibility check must also keep that refusal byte for byte.
+    """
+    if hidden_ids is None or not refusal.dimensions:
+        return refusal
+    try:
+        measure = next(row for row in config.measures if row.id == refusal.details["measure_id"])
+        entity = next(row for row in config.entities if row.id == measure.entity)
+        key = list(measure.row_grain or entity.key or [])
+        key_dimensions = [
+            dimension
+            for dimension in config.dimensions
+            if dimension.entity == measure.entity and dimension.column in key
+        ]
+        if not set(refusal.columns) <= {dimension.column for dimension in key_dimensions}:
+            return refusal
+        if any(dimension.id in hidden_ids for dimension in key_dimensions):
+            return refusal
+    except Exception:  # noqa: BLE001 — diagnostics must fail closed on uncertain visibility
+        return refusal
+    names = ", ".join(refusal.dimensions)
+    details = dict(refusal.details)
+    details["key_dimensions"] = list(refusal.dimensions)
+    details["recovery_hints"] = [
+        {**hint, "message": hint["message"].replace("key", f"key ({names})", 1)}
+        for hint in details["recovery_hints"]
+    ]
+    return NonAdditiveRefusal(
+        str(refusal).replace("key,", f"key ({names}),", 1),
+        details=details,
+        columns=refusal.columns,
+        dimensions=refusal.dimensions,
+    )
+
+
+def _enrich_runtime_error(
+    exc: SemanticLayerError, config: Any, policy_context: Mapping[str, Any] | None = None
+) -> SemanticLayerError:
     """Run every applicable diagnostics enricher over a runtime error.
 
     Each enricher is a no-op when its code doesn't match, so we can
     chain them safely. Keeping this in one place means new enrichers
     only need to be added here, not at every catch site.
     """
-    exc = enrich_object_not_found(exc, config)
+    hidden_ids = diagnostic_hidden_object_ids(config, policy_context)
+    if isinstance(exc, NonAdditiveRefusal):
+        exc = _non_additive_refusal_for_visibility(exc, config, hidden_ids)
+    exc = enrich_object_not_found(exc, config, hidden_ids=hidden_ids)
     exc = enrich_expression_ast_error(exc, config)
     exc = enrich_path_not_found(exc, config)
     return exc
@@ -824,6 +875,46 @@ def _window_total_fields(compiled) -> dict[str, Any]:
     return {"assumptions": [WINDOW_TOTAL_ASSUMPTION], "time_shape": TIME_SHAPE_WINDOW_TOTAL}
 
 
+def _withheld_columns(policy_effects: list[dict[str, Any]]) -> set[str]:
+    """The outputs excluded from both value diagnostics and public result metadata."""
+    return {row["withheld_column"] for row in policy_effects if row.get("withheld_column")}
+
+
+def _withhold_values(out: dict[str, Any], policy_effects: list[dict[str, Any]]) -> None:
+    """Drop the column of a rank by withheld values, and name the withheld objects instead."""
+    effects = [row for row in policy_effects if row.get("withheld_column")]
+    if not effects:
+        return
+    columns = _withheld_columns(policy_effects)
+    column = effects[0]["withheld_column"]
+    withheld = sorted({object_id for row in effects for object_id in row["withheld_objects"]})
+    if "rows" in out:
+        out["rows"] = [
+            {key: value for key, value in row.items() if key not in columns} for row in out["rows"]
+        ]
+        for key in columns:
+            out["column_types"].pop(key, None)
+    if "output_columns" in out:
+        out["output_columns"] = [
+            row for row in out["output_columns"] if row.get("field") not in columns
+        ]
+    out["withheld"] = withheld
+    out["warnings"] = [
+        *out["warnings"],
+        semantic_issue(
+            code="VALUES_WITHHELD",
+            message=(
+                f"Rows are ordered by {', '.join(withheld)}, whose values are withheld by "
+                "policy and not shown; ties are ordered by the group keys."
+            ),
+            severity="info",
+            stage="policy",
+            details={"withheld_objects": withheld, "order_by": column},
+            object_ids=withheld,
+        ),
+    ]
+
+
 def _shorthand_normalized_warnings(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Tell the caller which select shorthands were rewritten, with the canonical form."""
     return [
@@ -1186,7 +1277,7 @@ def _stock_key_gap_warnings(compiled) -> list[dict[str, Any]]:
     ]
 
 
-def _no_data_in_scope_warnings(compiled, rows) -> list[dict[str, Any]]:
+def _no_data_in_scope_warnings(compiled, rows, *, excluded_outputs=()) -> list[dict[str, Any]]:
     """Say when a measure that reads 0 for empty groups had no data at all, so it read NULL.
 
     A sum, count or distinct count is 0 in a group with no rows only while its measure has
@@ -1195,7 +1286,11 @@ def _no_data_in_scope_warnings(compiled, rows) -> list[dict[str, Any]]:
     (or, when nothing came back and no time bounds explain it, every such output). One
     warning covers them all, and it needs no query beyond the answer.
     """
-    outputs = {item["output"]: item for item in list(compiled.get("zero_outputs") or [])}
+    outputs = {
+        item["output"]: item
+        for item in list(compiled.get("zero_outputs") or [])
+        if item["output"] not in excluded_outputs
+    }
     window = compiled["logical_plan"].time
     if getattr(rows, "truncated", False) or not outputs:
         return []
@@ -2052,7 +2147,11 @@ class Runtime:
         binding: BoundQuery | None = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
-        normalized = normalize_query(payload).to_dict()
+        normalized = (
+            binding.plan.query
+            if binding is not None
+            else normalize_query(payload, config=self._config).to_dict()
+        )
         key = compilation_cache_key(
             package_hash=self._package_fingerprint,
             normalized_query=normalized,
@@ -2166,6 +2265,7 @@ class Runtime:
                 "trace",
             }
             out.update({key: value for key, value in metadata.items() if key in validate_keep})
+            _withhold_values(out, policy_effects)
             if verbosity == "full":
                 out["compile_stats"] = dict(compiled.get("compile_stats", {}) or {})
                 out["performance_plan"] = asdict(compiled["performance_plan"])
@@ -2174,7 +2274,7 @@ class Runtime:
                 out, verbosity=verbosity, sql_profile=sql_profile, kind="validate"
             )
         except SemanticLayerError as exc:
-            exc = _enrich_runtime_error(exc, self._config)
+            exc = _enrich_runtime_error(exc, self._config, policy_context)
             issue = exception_issue(exc, stage="validate")
             report = ValidationReport(
                 version=2,
@@ -2231,7 +2331,7 @@ class Runtime:
             )
             compiled = self._compile(payload, policy_context=policy_context, binding=binding)
         except SemanticLayerError as exc:
-            raise _enrich_runtime_error(exc, self._config) from exc
+            raise _enrich_runtime_error(exc, self._config, policy_context) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)
         out = {
             "ok": True,
@@ -2258,6 +2358,7 @@ class Runtime:
             "explain": asdict(compiled["explain"]),
             **compile_response_metadata(self, payload, compiled),
         }
+        _withhold_values(out, policy_effects)
         return apply_response_verbosity(
             out, verbosity=verbosity, sql_profile=sql_profile, kind="compile"
         )
@@ -2284,7 +2385,7 @@ class Runtime:
             )
             compiled = self._compile(payload, policy_context=policy_context, binding=binding)
         except SemanticLayerError as exc:
-            raise _enrich_runtime_error(exc, self._config) from exc
+            raise _enrich_runtime_error(exc, self._config, policy_context) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)
         # Per-request resource limits (statement_timeout_ms, max_rows) flow
         # from the request envelope through to the warehouse adapter. Hosted
@@ -2362,7 +2463,9 @@ class Runtime:
             "errors": [],
             "warnings": [
                 *_compiled_warnings(self._config, compiled, payload),
-                *_no_data_in_scope_warnings(compiled, rows),
+                *_no_data_in_scope_warnings(
+                    compiled, rows, excluded_outputs=_withheld_columns(policy_effects)
+                ),
                 *limits_warnings,
                 *self._seed_warnings,
             ],
@@ -2501,6 +2604,7 @@ class Runtime:
                         },
                     }
                 )
+        _withhold_values(out, policy_effects)
         if verbosity == "full":
             out["physical_plan"] = asdict(compiled["physical_plan"])
             out["performance_plan"] = asdict(compiled["performance_plan"])
@@ -2524,12 +2628,24 @@ class Runtime:
                 binding=binding,
             )
 
-        return bind_query(
+        def bind(query: dict[str, Any]) -> BoundQuery:
+            return bind_query(
+                self._config,
+                self.registry,
+                query,
+                row_filters=filters,
+                check_policies=check_policies,
+            )
+
+        binding = bind(payload)
+        # A rank by a withheld value breaks its ties by the group keys, in the same direction.
+        return withheld_rank_order(
             self._config,
-            self.registry,
-            payload,
-            row_filters=filters,
-            check_policies=check_policies,
+            binding,
+            rebind=bind,
+            environment=str(policy_context.get("environment", "")),
+            audience=str(policy_context.get("audience", "")),
+            roles=policy_context.get("roles", []),
         )
 
     def _segment_policy_effects(
@@ -2592,7 +2708,7 @@ class Runtime:
             validation["timing_ms"] = round((time.perf_counter() - started) * 1000, 3)
             return validation
         except SemanticLayerError as exc:
-            exc = _enrich_runtime_error(exc, self._config)
+            exc = _enrich_runtime_error(exc, self._config, context)
             # Route through `exception_issue` so the soft-fail envelope
             # carries the same `recovery_hints` + `closest_matches` +
             # `severity/stage/object_ids/...` fields that the MCP error

@@ -1,0 +1,167 @@
+fixture:
+  tables: [orders, refunds, signups]
+  data_sha256: fe0b91067c5387670f71e50e49bd47214b5968bb4e60f60bf7364b31b311c161
+tests:
+  shop/two-stores-at-once-is-empty:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Conjoined equalities cannot hold on one store, even though orders 1 and 2 belong to a and b.
+    cites: &store_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id, docs/QUERY_IR_SCHEMA.md#wherefilter]
+    tags: [list-vs-conjunction, empty-result]
+    query:
+      select: &revenue [{expression: {measure: measure.shop.revenue}, as: revenue}]
+      group_by: &store [dimension.shop_order_store_id]
+      where:
+        - {field: dimension.shop_order_store_id, op: '=', value: a}
+        - {field: dimension.shop_order_store_id, op: '=', value: b}
+    expected_rows: []
+    reference_sql: SELECT store_id, SUM(amount) FROM orders WHERE store_id = 'a' AND store_id = 'b' GROUP BY 1
+  shop/either-store-is-a-union:
+    kind: query_matches_snapshot
+    expect: answer
+    why: IN includes either store once, giving 43 from a's orders and 25 from b's orders.
+    cites: *store_cites
+    tags: [list-vs-conjunction]
+    query: {select: *revenue, group_by: *store, where: [{field: dimension.shop_order_store_id, op: IN, value: [a, b]}]}
+    expected_rows: [{dimension.shop_order_store_id: a, revenue: 43}, {dimension.shop_order_store_id: b, revenue: 25}]
+    reference_sql: SELECT store_id, SUM(amount) FROM orders WHERE store_id IN ('a', 'b') GROUP BY 1
+  shop/refund-count-beside-revenue-reads-zero-where-there-are-none:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Refunds have data in scope, so order 8's null store reads zero while orders 2, 4, 6 and 7 contribute six refunds.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/refunds.yml#model.measures.refund_count, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, second-fact]
+    query:
+      select:
+        - {expression: {measure: measure.shop.revenue}, as: revenue}
+        - {expression: {measure: measure.shop.refund_count}, as: refund_count}
+      group_by: *store
+    expected_rows: [{dimension.shop_order_store_id: a, revenue: 43, refund_count: 4}, {dimension.shop_order_store_id: b, revenue: 25, refund_count: 2}, {dimension.shop_order_store_id: null, revenue: 6, refund_count: 0}]
+    reference_sql: |
+      SELECT o.store_id, o.revenue, COALESCE(r.n, 0)
+      FROM (SELECT store_id, SUM(amount) AS revenue FROM orders GROUP BY 1) o
+      LEFT JOIN (SELECT store_id, COUNT(refund_id) AS n FROM refunds
+        JOIN orders USING (order_id) GROUP BY 1) r ON o.store_id IS NOT DISTINCT FROM r.store_id
+  shop/a-count-whose-condition-never-matches-reads-null:
+    kind: query_matches_snapshot
+    expect: answer
+    why: No order reaches 1000 anywhere in scope, so every store's conditional count has no data and reads null.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.huge_order_count, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    tags: [null-vs-zero]
+    query: {select: [{expression: {measure: measure.shop.huge_order_count}, as: huge_order_count}], group_by: *store}
+    expected_rows: [{dimension.shop_order_store_id: a, huge_order_count: null}, {dimension.shop_order_store_id: b, huge_order_count: null}, {dimension.shop_order_store_id: null, huge_order_count: null}]
+    reference_sql: |
+      SELECT store_id, CASE WHEN EXISTS (SELECT 1 FROM orders WHERE amount >= 1000)
+        THEN COUNT(CASE WHEN amount >= 1000 THEN order_id END) END FROM orders GROUP BY 1
+  shop/an-amount-never-recorded-reads-null:
+    kind: query_matches_snapshot
+    expect: answer
+    why: All six refunds leave tax_amount unrecorded, so both goods and shipping groups read null.
+    cites: [tests/integration/correctness/shop/models/refunds.yml#model.measures.tax_refunded, tests/integration/correctness/shop/models/refunds.yml#model.dimensions.refund_type, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    tags: [null-vs-zero]
+    query: {select: [{expression: {measure: measure.shop.tax_refunded}, as: tax_refunded}], group_by: [dimension.shop_refund_refund_type]}
+    expected_rows: [{dimension.shop_refund_refund_type: goods, tax_refunded: null}, {dimension.shop_refund_refund_type: shipping, tax_refunded: null}]
+    reference_sql: |
+      SELECT refund_type, CASE WHEN EXISTS (SELECT 1 FROM refunds WHERE tax_amount IS NOT NULL)
+        THEN COALESCE(SUM(tax_amount), 0) END FROM refunds GROUP BY 1
+  shop/months-on-the-utc-clock:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The half-open UTC window includes orders 1, 2 and 3 in November and December, totaling 15 and 7.
+    cites: &clock_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at, docs/QUERY_IR_SCHEMA.md#timeblock, tests/integration/correctness/conftest.py#CLOCKS]
+    tags: [time-window, clock]
+    query: &months
+      select: *revenue
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month, start: '2023-11-01', end: '2024-01-01'}
+      order_by: [{field: time, direction: ASC}]
+    expected_rows: [{temporal_role.shop_order_ordered_at__month: '2023-11-01T00:00:00', revenue: 15}, {temporal_role.shop_order_ordered_at__month: '2023-12-01T00:00:00', revenue: 7}]
+    reference_sql: |
+      SELECT CAST(date_trunc('month', ordered_at) AS DATE), SUM(amount) FROM orders
+      WHERE ordered_at >= TIMESTAMP '2023-11-01' AND ordered_at < TIMESTAMP '2024-01-01'
+      GROUP BY 1 ORDER BY 1
+  shop/months-on-the-new-york-clock:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Order 3 is still in November in New York, so the half-open local window has one month totaling 22.
+    cites: *clock_cites
+    tags: [time-window, clock]
+    variant: ny_authored
+    query: *months
+    expected_rows: [{temporal_role.shop_order_ordered_at__month: '2023-11-01T00:00:00', revenue: 22}]
+    reference_sql: |
+      SELECT CAST(date_trunc('month', (ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York') AS DATE), SUM(amount)
+      FROM orders WHERE (ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York' >= TIMESTAMP '2023-11-01'
+        AND (ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York' < TIMESTAMP '2024-01-01'
+      GROUP BY 1 ORDER BY 1
+  shop/quarters-on-the-new-york-clock:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Order 10 falls in June in New York, putting its 9 in the second quarter rather than the third.
+    cites: *clock_cites
+    tags: [clock]
+    variant: ny_authored
+    query: {select: *revenue, time: {temporal_role: temporal_role.shop_order_ordered_at, grain: quarter}, order_by: [{field: time, direction: ASC}]}
+    expected_rows: [{temporal_role.shop_order_ordered_at__quarter: '2023-10-01T00:00:00', revenue: 22}, {temporal_role.shop_order_ordered_at__quarter: '2024-01-01T00:00:00', revenue: 32}, {temporal_role.shop_order_ordered_at__quarter: '2024-04-01T00:00:00', revenue: 18}, {temporal_role.shop_order_ordered_at__quarter: '2024-07-01T00:00:00', revenue: 2}]
+    reference_sql: |
+      SELECT CAST(date_trunc('quarter', (ordered_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York') AS DATE), SUM(amount)
+      FROM orders GROUP BY 1 ORDER BY 1
+  shop/goods-and-shipping-refunds-must-say-same-refund-or-separate:
+    kind: validate_fails_with_code
+    expect: clarify
+    why: Order 7 has goods and shipping on different refunds, so plain child conditions must ask which reading is intended.
+    cites: &child_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/refunds.yml#model.dimensions.refund_type, docs/QUERY_IR_SCHEMA.md#child-groups]
+    tags: [child-scope]
+    query:
+      select: &orders [{expression: {measure: measure.shop.order_count}, as: order_count}]
+      where:
+        - {field: dimension.shop_refund_refund_type, op: '=', value: goods}
+        - {field: dimension.shop_refund_refund_type, op: '=', value: shipping}
+    code: AMBIGUOUS_CHILD_SCOPE
+    clarify: {options: [same_row, separate_rows]}
+  shop/orders-with-goods-and-shipping-on-separate-refunds:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Separate child groups require two EXISTS checks, and only order 7 has both kinds of refund.
+    cites: *child_cites
+    tags: [child-scope]
+    query:
+      select: *orders
+      where:
+        - {child: entity.shop_refund, match: any, where: [{field: dimension.shop_refund_refund_type, op: '=', value: goods}]}
+        - {child: entity.shop_refund, match: any, where: [{field: dimension.shop_refund_refund_type, op: '=', value: shipping}]}
+    expected_rows: [{order_count: 1}]
+    reference_sql: |
+      SELECT COUNT(order_id) FROM orders o
+      WHERE EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id AND r.refund_type = 'goods')
+        AND EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = o.order_id AND r.refund_type = 'shipping')
+  shop/is-with-a-value-is-refused:
+    kind: validate_fails_with_code
+    expect: refuse
+    why: IS accepts only null or a boolean, so a string store value is refused before inspecting orders.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.order_count, tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id, docs/QUERY_IR_SCHEMA.md#wherefilter]
+    tags: [refusal]
+    query:
+      select: *orders
+      where: [{field: dimension.shop_order_store_id, op: IS, value: x}]
+    code: INVALID_QUERY
+  shop/plan-revenue-by-store:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Revenue sums order amounts within each store, including order 8's null store with 6.
+    cites: *store_cites
+    tags: [planner]
+    intent: revenue by store
+    query: {select: *revenue, group_by: *store}
+    expected_rows: [{dimension.shop_order_store_id: a, revenue: 43}, {dimension.shop_order_store_id: b, revenue: 25}, {dimension.shop_order_store_id: null, revenue: 6}]
+    reference_sql: SELECT store_id, SUM(amount) FROM orders GROUP BY 1
+  shop/plan-revenue-by-store-for-store-b:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Equality selects only b's orders 2, 5, 9 and 10, totaling 25.
+    cites: *store_cites
+    tags: [planner]
+    intent: revenue by store for store b
+    known_wrong: {planner: "The plan drops a store value it cannot match and is still offered for execution."}
+    query: {select: *revenue, group_by: *store, where: [{field: dimension.shop_order_store_id, op: '=', value: b}]}
+    expected_rows: [{dimension.shop_order_store_id: b, revenue: 25}]
+    reference_sql: SELECT store_id, SUM(amount) FROM orders WHERE store_id = 'b' GROUP BY 1

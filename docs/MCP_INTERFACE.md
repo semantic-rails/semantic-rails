@@ -55,9 +55,13 @@ API:
 - `package_id`
 - `warnings`
 - `errors`
-- `recovery_hints` (the errors' hints, and other next steps; left out when there are none)
+- `error` (`{code, message}` from `errors[0]`, present for errors including validate soft-fails)
+- `recovery_hints` (independent discovery next steps only; error hints live in `errors[i].recovery_hints`)
 - `timing_ms`
 
+Each full error issue appears once in `errors`, with its own `recovery_hints`;
+the hints are not repeated at the response root, in `query_ir_hints`, or in that
+issue's `details`. Distinct query-IR hints and independent discovery next steps remain.
 MCP issues leave out empty optional fields and a
 `why_invalid` or `unsupported_construct` that only repeats its `message` or `code`, and
 `request_context` appears only when a transport or `policy_context` set one.
@@ -102,22 +106,31 @@ tool/schema drift cannot be merged silently.
 - `execute` (`/api/v1/query`): validate, compile and run Query IR. `mode="validate"` or
   `mode="sql"` stops before running it.
 - `segment`: `action="validate"`, `"explain"` or `"preview"` for a package-authored segment.
+  Listed only when the current package defines segments; its instruction and workflow prompt
+  are omitted otherwise. Tool availability follows `Runtime.reload()` on the same adapter.
 
 `initialize` returns the workflow as server `instructions` (under 2KB): find objects with
 `discover`, draft Query IR with `plan`, and run it with `execute`, which validates and compiles
 first, so its `validate` and `sql` modes are optional dry runs. The instructions also carry the
-conventions every tool shares: full ids, response detail controls, recovery hints, and
-`policy_context`. Each tool description then says what the tool does, when to use it, and its
+conventions every tool shares: full ids, response detail controls, and recovery hints.
+Instructions use static `jaffle_shop` examples for every package and never insert package
+object ids. Without `time` or `where`, the query adds no time window or filter; metric
+definitions and package policies still apply.
+Each tool description then says what the tool does, when to use it, and its
 one gotcha. Every tool returns its smallest response by default (`verbosity="minimal"`, `plan`
 `detail="query"`); ask for more only when you need it.
 
-Every tool schema advertises and accepts optional `request_id` and `policy_context`.
+Every tool accepts optional `request_id` and `policy_context` at runtime, including tools
+with closed schemas, but leaves these transport fields out of its advertised input schema.
 `policy_context` (`environment`, `audience`, `roles`) is for local testing; authenticated
 transports supply the trusted context and ignore the argument.
 
 `tools/list` is paid once at connect time, before the first call. To keep it bounded, the IR
 cheat-sheet and the full Query-IR time-block schema ship once, on `execute`; the other
-IR-accepting tools point at it.
+IR-accepting tools point at it. The description includes the expression-shape list, per-order ratio, arithmetic and
+conditional-count hints, and lists rows with an empty `select`
+and `group_by` alone. `validate` checks a query before it runs; a query that already ran
+needs no validation.
 
 ### Writing Tool Descriptions
 
@@ -128,16 +141,17 @@ The query MCP follows these rules, and other Semantic Rails MCP servers can reus
   up front.
 - **One description, three parts.** Say what the tool returns, when to use it (relative to
   other tools: "after `discover`", "before writing a `where` filter"), and its one gotcha,
-  introduced with "Gotcha:". Aim for 200–700 characters.
+  introduced with "Gotcha:". Aim for 200–700 characters; `execute` may use up to 850
+  for its IR guidance while staying within the fixed context budgets.
 - **No contradictions.** A description never tells the agent to call a tool that another
   description calls optional. If a step is optional, say so everywhere.
-- **Real examples.** Example ids must exist in the bundled `jaffle_shop` package
+- **Real examples.** Tool-description example ids must exist in the bundled `jaffle_shop` package
   (`dimension.jaffle_store_name`, not `dimension.jaffle.store_name`).
 - **Accurate cost claims.** Say which tools query the warehouse, and match the annotations
   (`readOnlyHint`, `openWorldHint`).
 - **Parameters describe themselves.** When a parameter's name doesn't explain it, put its
   meaning in its schema (`enum`, `default`, a short `description`) rather than in prose. Keep
-  the shared `request_id` and `policy_context` properties on every tool.
+  transport fields `request_id` and `policy_context` accepted without advertising them.
 - **Budgets.** `tests/semantic_rails/mcp_context/budgets.json` gates the size of `tools/list`
   and the instructions (see "Measuring Context Cost").
 
@@ -150,8 +164,9 @@ ids, `kinds` limits the kinds listed, and a `DISCOVER_IDS_TRUNCATED` warning giv
 and `catalog/full` resources return the whole index, descriptive rows, or every card with the
 alias index (see [Resources And Prompts](#resources-and-prompts)).
 
-`discover` returns slim cards by default: `id`, `label`, `score`, a `description` trimmed to 120
-characters (left out when it only repeats the label) and `default_temporal_role`, plus
+`discover` returns slim cards by default: `id`, `label`, a `description` retaining whole sentences
+up to 120 characters (sentences naming package dimensions, entities, measures or metrics survive
+past the cap; descriptions repeating the label are omitted) and `default_temporal_role`, plus
 `available: false` and `blocked_reason` for a candidate that isn't available. A card in a kind's
 bucket leaves out its `kind`; the response leaves out the `terms` and `verbosity` it was called
 with. `verbosity="compact"` returns full cards with match reasons, starter patches and comparison
@@ -159,11 +174,17 @@ metadata. When the question uses an object's whole name ("revenue by store"), th
 above near-duplicates that add a qualifier the question doesn't use ("Delivered revenue").
 `kinds` takes an array or a comma-separated string, and also a JSON array sent as a string.
 Dimension-value cards keep the raw filter `value`, its business-facing `label`, and explicit
-`available` flag, including when a value is blocked.
+`available` flag, including when a value is blocked. Minimal cards omit `score`; order gives rank.
+An aggregate metric at its measure's default aggregation, without filters, windows, parameters
+or temporal pins, replaces its measure card when both are available in the response and neither
+is named in a policy's `object_ids`. It carries `measure` with that measure's id. At most one
+metric replaces each measure; additional equivalent metrics keep their own cards. Other metrics
+and measure-only requests retain separate cards. Grant-scoped discovery retains its card fields,
+including `starter_query_patch`, at every verbosity.
 
 `inspect` (default `verbosity="minimal"`) states each fact once. It leaves out fields that
 repeat another one (`object_type`, `usage_summary`, `top_values`), a description that only repeats
-the label, empty structural fields, and every starter patch after the first. Declared sample values
+the label, generic `recommended_next_actions`, empty structural fields, and every starter patch after the first. Declared sample values
 and query literals remain exact, including blank and null values. `"compact"` or `"full"` return
 the whole card, which is also the HTTP default.
 
@@ -256,17 +277,27 @@ object's label or aliases, or of the last dotted part of its id or name outside 
 namespaces ("sales" in `metric.sales.aov_usd` names nothing); a plural counts as its singular.
 Only the draft consumes one: by the label, aliases, id or name of an object it selects (an id the
 question spells out whole consumes its namespaces too), a value it filters on or that value's
-declared names, a time grain it carries (its unit, "time", "date" and "period"), a count it
-carries ("number of"), or a time phrase it read; only function words ("of", "at") are exempt. A
+declared names, a time grain it carries (only its unit and its "-ly" form), a prior-period
+shift's trigger phrase, one grouping that names the query's clock at the planned grain (a
+second one, as in "by order month and order date", is not consumed), "number of" for a
+selected count-valued measure when the draft has no grouping, or a recorded time phrase or
+honored clause.
+Stopwords are exempt unless they are exact catalog names. Regular plurals are recognized
+and consumed using the same forms; "-es" applies only after s, x, z, ch or sh. A
 synonym, a typo, a namespace, a description, a framing word or an object the draft doesn't select
 (a measure's entity included) never does. So `plan` may hold back a right draft ("revenue from
 orders": Orders is a measure), but never calls one ready that drops a grouping the question
-names. Other words stay warnings; check them before executing.
+names. Words that name no catalog object also make the plan `low_confidence` when the draft
+doesn't consume them, they aren't stopwords or number words, and `intent_ir.unresolved`
+still holds them. This returns `why.code="PLAN_UNMATCHED_TERMS"` with
+`why.details={"terms": [...], "kind": "filter_values_unrealized"}` and an
+`add_missing_condition` hint: find values with `valid_values`, add the filter, then validate,
+or ask again without those words. A single unknown value such as "Brooklyn" blocks readiness
+when the package declares no value domain for it; plan never guesses its dimension or queries
+the warehouse to resolve it. Other unmatched words stay warnings; check them before executing.
 A number, or a clock or zone word, the draft doesn't carry is not a warning: it makes the plan
 `low_confidence` (below), since the draft dropped an hour, a range or a
-threshold. Two words or more that no catalog object has, the first straight after "for",
-"from", "of" or "with", make it `low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`
-instead: "for tangaroo and vanilla ice" is a filter the draft dropped. Every measure a
+threshold. Every measure a
 question lists ("item revenue and orders in Q1 2017") is in the draft's select list or the
 plan is `low_confidence` with a `multiple_subjects_unrealized` gap naming the ones it left
 out. For a measure by a dimension, a measure the question names in full outranks a shorter one
@@ -368,13 +399,14 @@ Use `detail="full"` only when you need alternatives or blocked drafts.
 
 ### Query Verbosity Tiers (execute modes)
 
-`execute` defaults to `verbosity=minimal` in every mode. An explicit `verbosity` argument always
-wins, and error envelopes (`ok: false`) inherit the same default. This is an MCP-only default —
+`execute` defaults to `verbosity=minimal` in every mode. `query.verbosity` takes precedence
+over the outer `verbosity` argument; error envelopes (`ok: false`) use the same resolved
+verbosity as the runtime. This is an MCP-only default —
 the HTTP `/api/v1/*` default remains `compact`.
 
 | Verbosity | What's kept | Size (jaffle, measured*) | When to use |
 |---|---|---|---|
-| `minimal` (MCP default) | `{ok, status, errors, warnings, recovery_hints}`; mode `sql` also keeps `rendered_sql`; mode `run` also keeps `rows` + `row_count` | ~0.7KB / ~1.9KB / ~2.4KB | Tight agent loops with a tool-output cap |
+| `minimal` (MCP default) | `{ok, status, errors, warnings}` (plus `error` on failure); mode `sql` also keeps `rendered_sql`; mode `run` also keeps `rows` + `row_count` | ~0.7KB / ~1.9KB / ~2.4KB | Tight agent loops with a tool-output cap |
 | `compact` (HTTP default) | includes compact `trace`; drops top-level `physical_plan`, `performance_plan`, `semantic_summary`, `compile_stats`; strips `output_columns.lineage` | ~88KB / ~94KB / ~96KB | Diagnostics, `explain` review |
 | `full` | includes compact `trace` plus every field, including the heavy plan trees | ~97KB / ~114KB / ~116KB | Debugging, code-gen |
 
@@ -412,6 +444,14 @@ what would fit (a coarser or set `time.grain`, a filter, fewer `group_by` dimens
 `details` carries `row_count`, `total_row_count`, `result_chars` and `max_result_chars`. An operator
 changes the limit with the `SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS` environment variable, read on
 every call; a missing or non-positive value means the default.
+At effective `verbosity="compact"` (including normalized values and unknown values that fall
+back to compact), the same limit also bounds the execute result, including rows, `explain`
+and `sql_plan`, before the transport adds unknown-argument warnings and session annotations
+(`same_as`, `request_context`). Those additions can exceed the limit. If needed, execute omits
+`explain`, then `sql_plan`, adding one `EXECUTE_DETAILS_OMITTED` warning naming the omitted fields.
+Use `mode="sql"` or `verbosity="full"` for the complete plan; if already using `verbosity="full"`,
+use `mode="sql"`. If the remaining execute result still cannot fit, execute returns
+`RESULT_TOO_LARGE` without rows: its `details` contains only `max_result_chars`.
 The `query` that execute echoes back carries the caller's own `limits`; a transport-level
 `max_rows` does not become part of that query. The HTTP `/api/v1/query` endpoint leaves
 the response uncapped unless the query itself sets a limit.
@@ -521,7 +561,7 @@ Declarative prompts:
 
 - `semantic-rails-query-builder`
 - `semantic-rails-query-review`
-- `semantic-rails-segment-workflow`
+- `semantic-rails-segment-workflow` (only when the current package defines segments)
 
 Use `adapter.read_resource(uri)` and `adapter.get_prompt(name, arguments)` to access these
 surfaces in process.
@@ -777,7 +817,13 @@ Every error surfaced through the MCP or HTTP transport is wrapped in a structure
 }
 ```
 
-Every envelope carries `code` and `message`, plus at least one of `details`, `recovery_hints`, or `closest_matches`. Over MCP, empty optional fields are left out; recovery hints keep their own details so each hint is actionable on its own. Bare `KeyError` / `AttributeError` leaks are wrapped as `INTERNAL_ERROR` envelopes with a bug-tracker hint so the surface is always actionable.
+Each issue carries `code` and `message`, plus at least one of `details`, `recovery_hints`, or `closest_matches`. Over MCP, empty optional fields are left out; recovery hints keep their own details so each hint is actionable on its own. Bare `KeyError` / `AttributeError` leaks are wrapped as `INTERNAL_ERROR` envelopes with a bug-tracker hint so the surface is always actionable.
+
+At MCP verbosity `minimal`, `MIXED_GRAIN_INVALID` omits the relationship analysis
+dump while retaining offending dimensions, compatible measures and dimensions,
+time-axis recovery, and every recovery hint. `REWRITE_APPLIED` omits `details.analysis`
+and `details.path`, retaining its code, message, and `details.rewrite_kind`.
+Request `compact` or `full` for the complete analysis details.
 
 ### Error Code Catalog
 
@@ -787,22 +833,22 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 | `AMBIGUOUS_CHILD_SCOPE` | Plain filters on one child entity across a one-to-many hop don't say which child rows they mean: two or more positive ones (the same row or separate ones), or one negated one ("has a row that is not X" or "has no row that is X"). `details.clarification.options` holds both readings, each as the query's whole rewritten `where`; resend one. Offered only when both answer for this caller. |
 | `AMBIGUOUS_PATH` | Several routes between root entity and target can answer differently and the package records none (`details.reason: route_decision_required`). `details.clarification` asks which one the question means (`question`) and lists one option per route: its `meaning` in business words, its `relationship_path`, and its `decision` row. Ask the person, then resend with that `decision` in `route_decisions` (this query only), or record it with Architect `record_route_decision` (the package default; an option's `conflicts_with` names the package rows to change first). |
 | `DUPLICATE_OUTPUT_ALIAS` | Two projected columns share an alias; rename one. |
-| `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. For a measure restriction, `details.aggregation` records the rejected value and the hint's `aggregation_received` and `allowed` mirror `details.aggregation` and `details.allowed`; the hint lists only those allowed values. Parameter errors disclose the required parameter schema. |
+| `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. For a measure restriction, `details.aggregation` records the rejected value and the hint's `aggregation_received` and `allowed` mirror `details.aggregation` and `details.allowed`; the hint lists only those allowed values and offers omitting `aggregation` when `details.default_aggregation` belongs to `details.allowed`, naming that default. Parameter errors disclose the required parameter schema. |
 | `INVALID_TEMPORAL_ROLE` | Unknown temporal role; pick one from `details.compatible_temporal_roles`. |
 | `INCOMPATIBLE_TEMPORAL_ROLE` | Selected role is not compatible with the chosen measure/metric, or the measure has no time role at all (`details.compatible` is empty; declare one on the model or the measure). |
 | `INVALID_TEMPORAL_BINDING` | Time block targets a clock incompatible with a conversion's anchor; filter on `details.anchor_temporal_role` or push the constraint into a conversion metric. |
 | `INCOMPATIBLE_CALENDAR` | Selected calendar grain is not supported by the underlying measure. |
 | `FANOUT_UNSAFE` | Breakdown crosses a 1-to-many relationship without a pre-aggregation boundary, or joins into a `temporal_validity` window without a query `time`. |
-| `ROLLUP_UNSAFE` | Roll-up combines non-additive primitives; declare the aggregation entity or supply sketch metadata. |
+| `ROLLUP_UNSAFE` | Roll-up combines non-additive primitives; declare the aggregation entity or supply sketch metadata. For an `additive: false` measure summed above its stored grain, group by or filter (=) each key dimension. Keys are named only on validate, compile and run errors made with a request context. The message, `details.key_dimensions` and hint name those dimensions only when every key dimension is visible under the request's policy context; hidden or uncertain visibility keeps the generic refusal. |
 | `MEASURE_VALIDITY_BOUNDARY` | Query crosses a declared measure-validity window; split by sub-window. |
 | `OUT_OF_SCOPE` | Request isn't a governed-data query; hand off to the recommended tool — the semantic layer compiles governed data queries only. |
 | `CUMULATIVE_TIME_FILTER_UNSUPPORTED` | Measure's accumulation semantics forbid the requested time filter. |
 | `WINDOWED_TIME_FILTER_UNSUPPORTED` | Time-windowed filter cannot be applied to this query shape. `details.lookback` carries the metric's window; `recovery_hints` carries a `widen_time_window` patch with a concrete `suggested_start` and a `drop_time_start` patch with `{remove: ["time.start"]}`. |
-| `MIXED_GRAIN_INVALID` | Query mixes incompatible grains; split or rewrite. |
+| `MIXED_GRAIN_INVALID` | Query mixes incompatible grains; split or rewrite. Compatible measure and dimension replacements rank naming-token overlap (id suffix, name and label) before character similarity. Replacements answer a different question and are suggestions for the caller to judge. |
 | `NO_VALID_VALUES_SOURCE` | No `valid_values` source declared for the requested dimension. |
 | `REWRITE_NOT_SUPPORTED` | Required rewrite is not implemented; try a simpler shape. |
-| `INVALID_EXPRESSION_AST` | Expression AST is malformed; check the position-specific shape. |
-| `OBJECT_NOT_FOUND` | Referenced `object_id` does not exist; see `details.closest_matches`. |
+| `INVALID_EXPRESSION_AST` | Expression AST is malformed; check the position-specific shape. An invalid `where` operator lists query filter operators and the null-test form: `op: "IS NULL"` / `"IS NOT NULL"`, omitting `value`. |
+| `OBJECT_NOT_FOUND` | Referenced `object_id` does not exist; see `details.closest_matches`. An existing measure with the exact namespace and name of a missing metric (or the reverse) is the first suggestion when it is visible to the caller; unrelated typos keep same-kind matching. Known hidden IDs are excluded before ranking. Without resolved visibility in a package declaring policies, no counterpart is added and same-kind fuzzy matching is preserved. |
 | `INVALID_QUERY` | Query IR fails structural validation. |
 | `INVALID_CONFIG` | Package config is malformed, or the removed MCP interface v1 was requested. |
 | `INVALID_METRIC_FILTER` | `metric_filters[]` entry is malformed; check the shape. |
@@ -830,7 +876,7 @@ Every envelope carries `code` and `message`, plus at least one of `details`, `re
 | `INVALID_MCP_ARGUMENTS` | Tool arguments don't match the input_schema; `recovery_hints` carries the corrected shape. |
 | `RESULT_TOO_LARGE` | `execute` rows would exceed the response character limit; nothing is returned. `message` says what would fit; see `details.max_result_chars`. |
 | `WINDOW_TOTAL_UNSUPPORTED` | A `time` window with no `grain` would return one total, but part of the query still groups by the raw time column, so the result can't be one row per group. Nothing is returned. Set `time.grain`, or remove `time.start` and `time.end`. |
-| `EMPTY_GROUPS_UNSETTLED` | The compiler built a query that reads a sum or count without settling its empty groups, so a group with no rows would read `NULL` instead of `0`. An engine defect, not a query error; nothing is returned. `details.measures` names them. |
+| `EMPTY_GROUPS_UNSETTLED` | The compiler built a query that reads a sum or count without settling its empty groups, so a group with no rows would read `NULL` instead of `0`, or a sum missing a required row count, so a group whose amounts are all unknown could read `0`. A measure containing a nested CASE forced onto a rollup is also refused (`details.aggregate_relation`). An engine defect, not a query error; nothing is returned. `details.measures` names them, or `details.row_counts_named_like` a row count named like another column. |
 | `INTERNAL_ERROR` | Bare exception reached the boundary; retry once and file a bug if it recurs. |
 
 ### Worked Example Envelopes

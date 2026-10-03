@@ -123,7 +123,8 @@ def test_duckdb_statement_timeout_only_stops_its_own_query(tmp_path):
         for thread in threads:
             thread.start()
         for thread in threads:
-            thread.join()
+            thread.join(timeout=20)  # inside the test's own 30 s limit
+            assert not thread.is_alive(), "a DuckDB query outlived its statement timeout"
     finally:
         adapter.close()
 

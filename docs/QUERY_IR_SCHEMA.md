@@ -678,6 +678,40 @@ recovery hint. `unit` must be one of `day`, `week`, `month`, `quarter`,
 `year` (sub-day relative ranges are not supported); `value` must be a
 positive integer.
 
+`range.last` selects the last complete periods before **today in the temporal
+role's local zone**. An offset-bearing `policy_context.now` is an instant: it
+is converted to that zone before taking its date. Equivalent UTC and offset
+spellings produce the same bounds. Without `now`, the current instant is used;
+an ISO date or a datetime without an offset is read as local wall time.
+For a non-default calendar, `range.last` supports only `unit: "day"`.
+Coarser units are refused with `INVALID_QUERY`; supply exact `start` and `end`
+dates for that calendar's periods.
+
+A clock declared as `kind: date` applies the calendar spine's whole-day rule
+to its source rows too: `start` includes its local day, and an exclusive `end`
+after midnight includes its local day. An end at exact midnight excludes that
+day. Offset-bearing bounds use the role's zone. An empty or reversed interval
+includes no days. On DuckDB, MotherDuck, DuckLake and Postgres, a DATE clock
+enters `column_timezone` conversion as a naive midnight timestamp in that
+storage zone, independent of the session zone; these are the warehouses whose
+converted DATE clocks are tested. Other warehouses pass the DATE to their own
+conversion function unchanged. The comparison then uses the converted local
+date, including an anchored population or snapshot on a different query time
+axis. Timestamp clocks retain precise half-open bounds.
+
+A role requiring timezone conversion (`column_timezone` set and different from
+`timezone`) is converted before its bounds and buckets. Shapes that would read
+its stored values instead are refused with `WINDOWED_TIME_FILTER_UNSUPPORTED`,
+and `details.path` names the shape:
+
+- `entity_only_predicate_window`: an entity-only metric predicate aligned to the
+  query window;
+- `predicate_period_join`: a contextual metric predicate in a query with `time`,
+  which joins on the query's time period;
+- `conversion_metric`: a conversion metric whose query time role converts.
+
+Use an unconverted role for those queries.
+
 ## PolicyContext
 
 ```jsonc
@@ -874,16 +908,49 @@ non-NULL amount, or a count above zero. The scope is the measure's own filters, 
 `where` filters and policy row filters, before the `group_by`. Plain time leaves check
 for data outside the query's time bounds (DuckDB and Postgres; see time coverage below).
 Where a measure has data in scope,
-a group with no rows reads `0`: a store with orders but no refunds has 0 refunds, and a
-month whose orders all have a NULL amount has a revenue of 0. Where it has none, every group
-reads `NULL`: with no refunds anywhere in scope, no store has "0 refunds", because nothing
-says refunds were recorded. An average, minimum or maximum of nothing is undefined, and a
-stock has no value for a period nobody observed, so neither is ever made zero.
+a group with no rows reads `0`: a store with orders but no refunds has 0 refunds. Where it has
+none, every group reads `NULL`: with no refunds anywhere in scope, no store has "0 refunds",
+because nothing says refunds were recorded. An average, minimum or maximum of nothing is
+undefined, and a stock has no value for a period nobody observed, so neither is ever made zero.
 
-- **Arithmetic** settles each operand first, then combines them, so `goods + shipping` by
-  refund type returns numbers even where one column is NULL for a type. An operand with no
-  data in scope stays `NULL` and so does the result: `revenue - refunds` is `NULL` if refunds
-  were never recorded. Division by zero is `NULL`.
+A group whose rows exist but whose amounts are all NULL is not empty: its amounts are unknown,
+so its sum reads `NULL`, as SQL's `SUM` does, while its count still counts the rows. A month
+whose orders all have a NULL amount has a revenue of `NULL` and an order count above 0; a
+month that mixes NULL and known amounts sums the known ones. A conditional sum
+(`aggregate_if`, or an aggregate with a `filter`) reads only the rows that meet its condition: a group
+whose rows all fail it has none and reads `0`, and one whose matching rows all have a NULL
+amount reads `NULL`. Filled or not, a group reads the same.
+A window of a sum or difference windows each operand first, so an unknown goods amount
+drops only the goods, not that month's revenue.
+A summing window refuses a metric referenced inside its input, such as `net * 2` where `net`
+is a metric, with `ROLLUP_UNSAFE` (`details.unsupported_construct: nested_metric_window_input`);
+write that metric's expression inline instead, or make the metric the window's whole input.
+A sum of a `CASE` with no `ELSE` or `ELSE NULL` follows that conditional rule, with one
+branch or several: a group none of whose rows meets a branch reads `0`, and such a sum is
+never answered from a rollup. An explicit non-NULL `ELSE`, including `ELSE 0`, contributes
+on nonmatching rows, so every row is read: a matching NULL amount plus a nonmatching zero
+sums to `0`, while a group with only matching NULL amounts remains `NULL`.
+
+A measure with a `CASE` below its expression's top level, such as
+`CASE WHEN store_id = 'a' THEN amount END / 100.0`, keeps the earlier settlement
+on the base table and never reads a rollup. Its sum is `0` for a no-match group
+when its measure has a known amount elsewhere in scope. Under this fallback,
+a matched-unknown group also reads `0` when another group has a known amount;
+if no amount is known anywhere in scope, it stays `NULL`. Other measures in the
+query keep their own settlement rule.
+
+A query with a `distribution` output keeps the earlier settlement in every output, which reads
+a group's unknown amounts like no rows: there a sum is `0` in a group whose amounts are all
+NULL, wherever its measure has data in scope, and arithmetic settles each operand that way, so
+`goods + shipping` beside a median is `0` for a store with no refunds and a number for one
+whose refunds leave a column NULL. Its plan and SQL are the same as before unknown amounts
+stayed `NULL`.
+
+- **Arithmetic** settles each operand first, then combines them. An operand that is unknown
+  or has no data in scope is `NULL`, and so is the result: `goods + shipping` by refund type
+  is `NULL` for a type whose rows leave one of the columns NULL, and `revenue - refunds` is
+  `NULL` if refunds were never recorded. A ratio over an unknown numerator is `NULL`, which no
+  `metric_filters` threshold keeps. Division by zero is `NULL`.
 - **A `metric_predicate` applies the rule to every entity alike.** An operand reads `0` for an
   entity with no match where its measure has data somewhere in the predicate's scope, and
   `NULL` where it has none, whether that entity has rows or none at all. So
@@ -891,9 +958,16 @@ stock has no value for a period nobody observed, so neither is ever made zero.
   `metric_filter` on the same expression does, and `large_orders = 0` ("customers with no
   large orders") keeps every customer without one when some order in scope is large, and
   keeps nobody when none is: with no large order anywhere in scope there is no data, not a
-  count of zero. `NULL` fails every threshold, `= 0` and `< 1` included. Only a count or sum
-  threshold that 0 passes reaches an entity with no rows at all, and a distinct count of a
-  population is 0 for one whether or not the scope has data.
+  count of zero. `NULL` fails every threshold, `= 0` and `< 1` included, so an entity whose
+  rows all have a NULL amount meets none of them. Only a count or sum threshold that 0 passes
+  reaches an entity with no rows at all, and a distinct count of a population is 0 for one
+  whether or not the scope has data. Such a threshold on an add or subtract of measures
+  still reads an operand's unknown amounts as `0` where its measure has data in scope: an
+  entity with rows can be `NULL` because one operand is unknown, which can't show whether the
+  other measures have data, so `goods + shipping = 0` keeps the orders with no refunds even
+  where every refunded order has goods or shipping amounts but never both. In a query with a
+  `distribution` output, every predicate reads unknown amounts that way. A measure with a
+  nested `CASE` keeps its earlier settlement inside a predicate too.
 - **Filters narrow the scope.** With `where: store = 'x'`, a measure that has no rows at
   store x reads `NULL`, even though the same store reads `0` in a `group_by: store` answer. A
   filter value that matches nothing (a misspelled `product`) reads `NULL`, not a confident 0.
@@ -983,7 +1057,7 @@ is that measure's honest value for "no rows contributed":
 
 | Measure | Filled with | Why |
 |---|---|---|
-| `sum` / `count` / `count_distinct` over an additive, event-count or entity-count measure | `0`, while the measure has data in scope; else `NULL` | Zero is the additive identity — summing no rows really is 0 — but only where the measure has data (see "Empty groups"). |
+| `sum` / `count` / `count_distinct` over an additive, event-count or entity-count measure | `0`, while the measure has data in scope; else `NULL` | Zero is the additive identity — summing no rows really is 0 — but only where the measure has data (see "Empty groups"). A bucket whose rows all have a NULL amount is not empty: its sum reads `NULL`, filled or not. |
 | `avg`, `min`, `max`, `median`, `percentile` | `NULL` | Undefined over no rows. A filled `0` would be a fabricated measurement — a `min` below every value actually observed. |
 | semi-additive measures (snapshots, period-to-date, rolling balances) | `NULL` | A snapshot for a period that was never observed is unknown, not empty. |
 | ratios, conversion rates and other null-preserving expressions | `NULL` | A period with no denominator has no rate; `0` would read as a 0% rate. |

@@ -479,12 +479,16 @@ def test_jaffle_reference_package_has_release_authoring_profile():
         w
         for w in report["warnings"]
         if not (isinstance(w, dict) and str(w.get("code", "")).startswith("SEMANTIC_TERM_"))
+        and w["code"] != "ROUTES_UNDECIDED"
     ]
     # Lifetime spend is a stock on the one-row-per-customer table, a current-state
     # shape the snapshot-key warning can't tell from a mis-keyed snapshot table.
     assert [(w["code"], w["details"]["measure_id"]) for w in non_collision_warnings] == [
         ("STOCK_SNAPSHOT_KEY_MISSING_CLOCK", "measure.jaffle.lifetime_spend_usd")
     ]
+    # Its undecided join routes are reviewed in test_route_census.py.
+    (routes,) = [w for w in report["warnings"] if w["code"] == "ROUTES_UNDECIDED"]
+    assert routes["details"]["count"] == len(report["route_census"]["undecided"])
     collision_warnings = [
         w
         for w in report["warnings"]

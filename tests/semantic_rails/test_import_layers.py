@@ -25,13 +25,13 @@ LAYERS = [
     "metadata metadata_parts catalog_service",
     "runtime runtime_parts manifest segments caveats resource_access policies cache"
     " request_context api_keys audit",
-    "compiler compiler_parts fanout relation_pipelines renderer ir registry diagnostics"
-    " acceleration",
+    "compiler compiler_parts fanout route_census relation_pipelines renderer ir registry"
+    " diagnostics acceleration",
     "db db_parts seed_provenance",
     "config config_parts package_snapshot yaml_loader operational meta_contract",
     "dialects sql_preparation sql_ast sql_identifiers row_filters",
     "ast expressions schema errors request_payload catalog_search scope temporal_support"
-    " result_values",
+    " result_values policy_rules",
 ]
 LAYER_OF = {key: rank for rank, keys in enumerate(LAYERS) for key in keys.split()}
 LAYER_OF[""] = len(LAYERS) - 1  # the package root only reads its version

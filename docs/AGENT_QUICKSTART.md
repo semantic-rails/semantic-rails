@@ -36,7 +36,12 @@ semantic-rails mcp status --path "$PACKAGE_PATH"
 Managed `start/status/stop` is POSIX-only because it verifies process identity
 before signaling a background PID. It uses `ps` for that, so it also refuses (and
 starts nothing) where `ps` is missing, as in minimal container images such as
-`python:3.12-slim`; install `procps` there. On Windows, prefer
+`python:3.12-slim`; install `procps` there. A `ps` that can't run or doesn't answer
+within five seconds counts the same way, and `stop` never signals a process it
+could not identify. If identity observation fails, `stop` reports
+`ok: false` with `identity_unverifiable` and leaves the server registered so you
+can retry. An observed identity mismatch removes the stale registration without
+signaling the process. On Windows, prefer
 `semantic-rails mcp setup --install --yes` so the client launches stdio, or run
 `semantic-rails mcp http ...` as a foreground process in a separate terminal.
 
@@ -170,6 +175,16 @@ Statuses are:
   question is used by the draft: by an object it selects, a filter value, a time grain or a time
   phrase, never a synonym, a typo or a framing word. `warnings` can still name other question
   words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
+  Request words such as "show" still count when they are exact catalog names. A time grain
+  consumes its own unit and its "-ly" form; a grouping that names the query's clock at the
+  planned grain ("by order date") is consumed. Other time words must occur inside a recorded
+  time phrase, and a prior-period shift consumes only its comparison phrase. Regular plurals are recognized
+  and consumed using the same forms. "Number of" is consumed by a selected count-valued
+  measure, including a snapshot count whose aggregation is `last_value`.
+  An unknown word left in `intent_ir.unresolved` also blocks readiness when no object, filter
+  value, grain or recorded span consumes it and it isn't a stopword or number word. The
+  `PLAN_UNMATCHED_TERMS` reason names it with `kind="filter_values_unrealized"`; use
+  `valid_values` to find the value, add the filter and validate, or ask again without the word.
 - `low_confidence`: a draft exists, but validation failed, the draft leaves out part of the
   question (`why` names it, for example `PLAN_INTENT_COVERAGE_GAP`, or `TIME_WINDOW_UNRESOLVED`,
   which returns no `query_ir`: pass the window, temporal role and grain in `query.time` and

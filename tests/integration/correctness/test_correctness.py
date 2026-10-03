@@ -42,14 +42,18 @@ GOODS = {"measure": "measure.shop.goods_refunded"}
 SHIPPING = {"measure": "measure.shop.shipping_refunded"}
 TAX = {"measure": "measure.shop.tax_refunded"}
 REFUND_TYPE = "dimension.shop_refund_refund_type"
-# Plain measures by alias: the query input, and the SQL the reference computes for it. A sum
-# of nothing reads 0 where the measure has amounts elsewhere (one order has a NULL amount).
+# Plain measures by alias: the query input, and the SQL the reference computes for it. Every
+# group here has rows, so a sum is SQL's: NULL where its amounts are all NULL (order 7's).
 PLAIN = {
-    "revenue": (REVENUE, "COALESCE(SUM(o.amount), 0)"),
+    "revenue": (REVENUE, "SUM(o.amount)"),
     "orders": (ORDERS, "COUNT(*)"),
     "average": (AVERAGE, "AVG(o.amount)"),
     "smallest": (SMALLEST, "MIN(o.amount)"),
     "largest": (LARGEST, "MAX(o.amount)"),
+    "average_value": (
+        {"metric": "metric.shop.average_order_value"},
+        "1.0 * SUM(o.amount) / COUNT(*)",
+    ),
 }
 
 # The order clock per package variant, spelled independently of the engine's rewrite.
@@ -120,19 +124,22 @@ def _predicate(entity: str, scope: str, measure: dict[str, Any], op: str, value:
 
 
 LARGE_ORDER = _predicate("entity.shop_order", "contextual", REVENUE, ">", 5)
+SMALL_ORDER = _predicate("entity.shop_order", "contextual", REVENUE, "<", 5)
 REPEAT_CUSTOMER = _predicate("entity.shop_customer", "entity_only", ORDERS, ">=", 2)
 BIG_CUSTOMER_MONTH = _predicate("entity.shop_customer", "contextual", REVENUE, ">", 7)
 
 # -- reference builders -----------------------------------------------------------------
 
 
-def _by(grain: str, value: str, *, clock: str = "utc", where: str = "TRUE", store=False) -> str:
+def _by(
+    grain: str, value: str, *, clock: str = "utc", where: str = "TRUE", having="", store=False
+) -> str:
     """One row per bucket (and store) with data: ``value`` over the orders ``o``."""
     head, group = ("o.store_id, ", "1, 2") if store else ("", "1")
     return (
         f"SELECT {head}date_trunc('{grain}', {CLOCK[clock]}) AS b, {value}"
         f" FROM orders AS o WHERE {where} GROUP BY {group}"
-    )
+    ) + (f" HAVING {having}" if having else "")
 
 
 def _within(start: str, end: str, clock: str = "utc") -> str:
@@ -175,10 +182,23 @@ def _by_store(value: str, *, bounds: tuple[str, str] = ()) -> str:
     """
 
 
-# Revenue in the bucket: 0 without orders, and 0 when its only amounts are NULL.
-NOW = "(SELECT COALESCE(MAX(m.v), 0) FROM m WHERE m.b = s.b)"
-# Per store (``k``, NULL included) and bucket: 0 without orders, and 0 when the only amount is NULL.
-STORE_NOW = "(SELECT COALESCE(MAX(m.v), 0) FROM m WHERE m.k IS NOT DISTINCT FROM k.k AND m.b = s.b)"
+# Revenue in the bucket: 0 without orders, and NULL (unknown) when its only amounts are NULL.
+NOW = "(SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END FROM m WHERE m.b = s.b)"
+# Per store (``k``, NULL included) and bucket, the same: 0 without orders, NULL when the only
+# amount is NULL.
+STORE_NOW = (
+    "(SELECT CASE WHEN COUNT(*) = 0 THEN 0 ELSE MAX(m.v) END"
+    " FROM m WHERE m.k IS NOT DISTINCT FROM k.k AND m.b = s.b)"
+)
+
+
+def _sum_if(condition: str, value: str = "o.amount") -> str:
+    """A conditional sum: 0 where no row meets the condition, and else the SQL sum of the rows
+    that do, NULL when none of them has a value."""
+    return (
+        f"CASE WHEN COUNT(CASE WHEN {condition} THEN 1 END) = 0 THEN 0"
+        f" ELSE SUM(CASE WHEN {condition} THEN {value} END) END"
+    )
 
 
 def _at(offset: str) -> str:
@@ -279,6 +299,7 @@ def _plain(
     aliases: str = "revenue",
     *,
     sql_where: str = "TRUE",
+    sql_having: str = "",
     store: bool = False,
     routes: bool | None = None,
     known: dict | None = None,
@@ -291,7 +312,7 @@ def _plain(
     query = _ask(grain, *(_item(PLAIN[alias][0], alias) for alias in names), **extra)
     value = ", ".join(PLAIN[alias][1] for alias in names)
     clock = variant.split("_")[0]
-    reference = _by(grain, value, clock=clock, where=sql_where, store=store)
+    reference = _by(grain, value, clock=clock, where=sql_where, having=sql_having, store=store)
     return Case(name, variant, query, reference, routes, known or {})
 
 
@@ -310,7 +331,8 @@ def _dense(
 
 
 def _empty_group_cases(revenue: dict[str, Any], orders: dict[str, Any]) -> Iterator[Case]:
-    """A group with no rows reads 0 where its measure has data in scope, NULL where it has none.
+    """A group with no rows reads 0 where its measure has data in scope, NULL where it has none,
+    and a group whose rows all have a NULL amount reads NULL: its amounts are unknown.
 
     Refunds are a second fact: only orders 2, 4, 6 and 7 have any, and their amounts are pivoted
     by type (each type leaves the other amount columns NULL; tax is never filled).
@@ -336,22 +358,36 @@ def _empty_group_cases(revenue: dict[str, Any], orders: dict[str, Any]) -> Itera
         FROM o LEFT JOIN r ON r.store_id IS NOT DISTINCT FROM o.store_id
         """,
     )
-    # Amounts pivoted by type, added: the column a type leaves NULL is 0, not a NULL sum.
+    # Amounts pivoted by type, added: the column a type leaves NULL is unknown for that type, not
+    # 0, and so is its sum with another.
+    pivot = [_item(goods_and_shipping, "total"), _item(GOODS, "goods"), _item(SHIPPING, "shipping")]
     yield Case(
         "pivot_amounts_added_by_type",
         "utc_authored",
-        {
-            "select": [
-                _item(goods_and_shipping, "total"),
-                _item(GOODS, "goods"),
-                _item(SHIPPING, "shipping"),
-            ],
-            **by_type,
-        },
+        {"select": pivot, **by_type},
         """
-        SELECT refund_type, COALESCE(SUM(goods_amount), 0) + COALESCE(SUM(shipping_amount), 0),
-          COALESCE(SUM(goods_amount), 0), COALESCE(SUM(shipping_amount), 0)
+        SELECT refund_type, SUM(goods_amount) + SUM(shipping_amount), SUM(goods_amount),
+          SUM(shipping_amount)
         FROM refunds GROUP BY 1
+        """,
+    )
+    # The same amounts by the order's store, beside revenue: the storeless order has no refund,
+    # so its amounts are 0, while store b's refunds are all goods, so its shipping is unknown.
+    yield Case(
+        "amounts_by_store_beside_a_second_fact",
+        "utc_authored",
+        {"select": [revenue, *pivot], **by_store},
+        """
+        WITH o AS (SELECT store_id, SUM(amount) AS v FROM orders GROUP BY 1),
+        r AS (
+          SELECT o.store_id, SUM(f.goods_amount) AS g, SUM(f.shipping_amount) AS s
+          FROM refunds AS f JOIN orders AS o ON o.order_id = f.order_id GROUP BY 1
+        )
+        SELECT o.store_id, o.v,
+          CASE WHEN r.store_id IS NULL THEN 0 ELSE r.g + r.s END,
+          CASE WHEN r.store_id IS NULL THEN 0 ELSE r.g END,
+          CASE WHEN r.store_id IS NULL THEN 0 ELSE r.s END
+        FROM o LEFT JOIN r ON r.store_id = o.store_id
         """,
     )
     # A measure with no amount anywhere reads NULL in every group, and so does its sum with
@@ -379,18 +415,75 @@ def _empty_group_cases(revenue: dict[str, Any], orders: dict[str, Any]) -> Itera
         "absent_filtered_input_beside_an_observed_one",
         "utc_authored",
         _ask("quarter", revenue, absent_only),
-        _by(
-            "quarter",
-            "COALESCE(SUM(o.amount), 0), SUM(CASE WHEN o.store_id = 'zzz' THEN o.amount END)",
-        ),
+        _by("quarter", "SUM(o.amount), SUM(CASE WHEN o.store_id = 'zzz' THEN o.amount END)"),
     )
-    # A ratio over an empty numerator is 0: store a's May amounts are all NULL, its one order counts.
+    # A ratio over an unknown numerator is unknown: store a's May amounts are all NULL, though
+    # its one order counts.
     average_value = _item({"metric": "metric.shop.average_order_value"}, "aov")
     yield Case(
-        "ratio_over_an_empty_numerator",
+        "ratio_over_an_unknown_numerator",
         "utc_authored",
         _ask("month", average_value, **by_store),
-        _by("month", "1.0 * COALESCE(SUM(o.amount), 0) / COUNT(*)", store=True),
+        _by("month", "1.0 * SUM(o.amount) / COUNT(*)", store=True),
+    )
+    # 2024-05-06 holds only order 7, whose amount is NULL: its revenue is unknown, not 0, and
+    # its order still counts, sparse or filled (2024-05-07 has no order at all).
+    may_6 = {"start": "2024-05-06", "end": "2024-05-08"}
+    yield _plain(
+        "unknown_day",
+        "utc_authored",
+        "day",
+        "revenue orders",
+        sql_where=_within(*may_6.values()),
+        **may_6,
+    )
+    yield Case(
+        "unknown_day_filled",
+        "utc_implicit",
+        _ask("day", revenue, orders, fill=True, **may_6),
+        """
+        SELECT g.b, CASE WHEN COUNT(o.order_id) = 0 THEN 0 ELSE SUM(o.amount) END,
+          COUNT(o.order_id)
+        FROM generate_series(TIMESTAMP '2024-05-06', TIMESTAMP '2024-05-07', INTERVAL '1 day')
+          AS g(b)
+        LEFT JOIN orders AS o ON date_trunc('day', o.ordered_at) = g.b
+        GROUP BY 1
+        """,
+    )
+    # ...as is a ratio over it, which no threshold keeps: "below 5" holds the days of orders 6,
+    # 9 and 11, and not the unknown one.
+    yield _plain(
+        "unknown_ratio_fails_a_threshold",
+        "utc_authored",
+        "day",
+        "average_value",
+        metric_filters=[
+            {"expression": {"metric": "metric.shop.average_order_value"}, "op": "<", "value": 5}
+        ],
+        sql_having="1.0 * SUM(o.amount) / COUNT(*) < 5",
+    )
+    # Store a in May (order 7) is unknown on the base table and on the rollup alike, beside a
+    # store whose month mixes a known amount with nothing unknown.
+    may = {"start": "2024-05-01", "end": "2024-06-01"}
+    for variant, routes in (("utc_authored", True), ("utc_implicit", None)):
+        yield _plain(
+            f"{variant}-unknown_store_month",
+            variant,
+            "month",
+            "revenue orders",
+            store=True,
+            sql_where=_within(*may.values()),
+            routes=routes,
+            **may,
+        )
+    # May mixes order 7's NULL amount with order 8's 6.00: the month's revenue is the known 6.
+    yield _plain(
+        "month_of_known_and_unknown_amounts",
+        "utc_implicit",
+        "month",
+        "revenue orders",
+        sql_where=_within(*may.values()),
+        **may,
     )
 
 
@@ -519,13 +612,12 @@ def _child_filter_cases() -> Iterator[Case]:
         },
         f"""
         SELECT {ORDER_CHANNEL}, COUNT(DISTINCT CASE WHEN o.store_id = 'a' THEN o.order_id END),
-          COUNT(CASE WHEN o.amount >= 5 THEN 1 END),
-          COALESCE(SUM(CASE WHEN o.store_id = 'b' THEN o.amount END), 0)
+          COUNT(CASE WHEN o.amount >= 5 THEN 1 END), {_sum_if("o.store_id = 'b'")}
         FROM orders AS o WHERE {has_refund("goods")} GROUP BY 1
         """,
     )
-    # Each operand of a ratio filters its own rows; the NULL channel's revenue is NULL, so its
-    # share is NULL rather than a division by zero.
+    # Each operand of a ratio filters its own rows; the NULL channel's only order has no
+    # amount, so its share is unknown (NULL).
     yield Case(
         "child_filter-conditional_ratios_by_channel",
         "utc_authored",
@@ -543,12 +635,12 @@ def _child_filter_cases() -> Iterator[Case]:
         f"""
         SELECT {ORDER_CHANNEL},
           1.0 * COUNT(DISTINCT CASE WHEN o.amount >= 5 THEN o.order_id END) / COUNT(*),
-          COALESCE(SUM({a_amount}), 0) / NULLIF(COALESCE(SUM(o.amount), 0), 0)
+          {_sum_if("o.store_id = 'a'")} / NULLIF(SUM(o.amount), 0)
         FROM orders AS o WHERE {has_refund("goods")} GROUP BY 1
         """,
     )
-    # Order 7 alone has no channel and no amount: its sum reads 0 (the sum has amounts elsewhere)
-    # and its average stays NULL.
+    # Order 7 alone has no channel and no amount: it meets the condition, so its sum is unknown
+    # (NULL), like its average. Order 4's channel sums its 20.00.
     yield Case(
         "child_filter-conditional_sum_and_average_of_a_null_amount",
         "utc_authored",
@@ -561,7 +653,7 @@ def _child_filter_cases() -> Iterator[Case]:
             **by_channel,
         },
         f"""
-        SELECT {ORDER_CHANNEL}, COALESCE(SUM({a_amount}), 0), AVG({a_amount})
+        SELECT {ORDER_CHANNEL}, {_sum_if("o.store_id = 'a'")}, AVG({a_amount})
         FROM orders AS o WHERE {has_refund("shipping")} GROUP BY 1
         """,
     )
@@ -610,8 +702,8 @@ def _cases() -> Iterator[Case]:
         yield Case(f"{clock}-fiscal_{grain}", f"{clock}_authored", query, reference)
 
     # Nulls, groups, filters and bounds; whole-month bounds may use the rollup.
-    # Store a has only a NULL amount in May: its sum reads 0 (the measure has amounts elsewhere),
-    # while an average, minimum or maximum of nothing stays NULL.
+    # Store a has only a NULL amount in May: its sum, average, minimum and maximum are unknown
+    # (NULL), while its one order counts.
     yield _plain(
         "null_store_group",
         "utc_authored",
@@ -685,8 +777,10 @@ def _cases() -> Iterator[Case]:
         _ask("month", revenue, start="2024-02-01", end="2024-03-01"),
         "SELECT 1 WHERE FALSE",
     )
+    # An order's unknown revenue (order 7) meets no threshold, "below" included.
     for name, grain, aliases, predicate, where in (
         ("large_orders", "month", "revenue", LARGE_ORDER, "o.amount > 5"),
+        ("small_orders", "month", "revenue orders", SMALL_ORDER, "o.amount < 5"),
         ("repeat_customers", "quarter", "revenue orders", REPEAT_CUSTOMER, REPEAT_CUSTOMER_SQL),
         ("big_customer_months", "month", "revenue", BIG_CUSTOMER_MONTH, BIG_CUSTOMER_MONTH_SQL),
     ):
@@ -720,10 +814,7 @@ def _cases() -> Iterator[Case]:
         "filtered_input",
         "utc_authored",
         _ask("quarter", revenue, only_a),
-        _by(
-            "quarter",
-            "SUM(o.amount), COALESCE(SUM(CASE WHEN o.store_id = 'a' THEN o.amount END), 0)",
-        ),
+        _by("quarter", "SUM(o.amount), " + _sum_if("o.store_id = 'a'")),
     )
 
     # Rollup routing: the monthly rollup (DATE keys) must answer exactly as the base table.
@@ -801,7 +892,25 @@ def _cases() -> Iterator[Case]:
         fill=True,
     )
 
-    # Distributions of per-order revenue, alone and beside window siblings.
+    # Distributions of per-order revenue, alone and beside window siblings. Every branch beside
+    # a distribution keeps the earlier settlement: store a's May, whose only amount is
+    # unknown, reads 0 where revenue has data in scope.
+    for name, revenue_alias, median_alias in (
+        ("distribution_marker_own_output", "agent_branch_1__rows", "median"),
+        ("distribution_marker_other_output", "revenue", "agent_branch_1__rows"),
+    ):
+        for by_store in (False, True):
+            yield Case(
+                f"{name}{'_by_store' if by_store else ''}",
+                "utc_authored",
+                _ask(
+                    "month",
+                    _item(REVENUE, revenue_alias),
+                    _distribution("median", median_alias),
+                    group_by=[STORE] if by_store else [],
+                ),
+                _by("month", f"COALESCE(SUM(o.amount), 0), {MEDIAN}", store=by_store),
+            )
     for function in ("median", "avg", "min", "max", "sum"):
         reference = MEDIAN if function == "median" else f"{function.upper()}(o.amount)"
         query = _ask("month", _distribution(function, function))

@@ -614,6 +614,23 @@ each with an `id`, a `kind`, and (except for `package_release` and `row_filter`)
 the `object_ids` it governs. Six kinds exist, each driving a different runtime
 behavior:
 
+Policy kinds and actions are a closed list in both default and strict validation.
+Unknown kinds or unsupported actions fail to load with `INVALID_CONFIG`; a policy
+constructed directly in Python is checked again before query binding and cache
+lookup, and during policy evaluation. Release labels belong in `config.label`.
+
+| Kind | Allowed action |
+| --- | --- |
+| `package_release` | omitted or `label` |
+| `object_visibility` | `hidden`, `visible` (required) |
+| `object_access` | `deny`, `redact`, `withhold_values` (required) |
+| `protected_object` | omitted or `protected` |
+| `metric_constraint` | omitted or `constrain` |
+| `row_filter` | omitted |
+
+The existing nested `config.action` and `config.visibility` aliases use the same
+action checks. Action text is trimmed and lowercased; kind names must match exactly.
+
 - **`package_release`** — labels the package's release status. `config.label`
   (e.g. `stable`, `preview`) surfaces in the package manifest and discovery
   metadata; it gates nothing by itself.
@@ -631,6 +648,8 @@ behavior:
   columns with no declared dimension remain allowed. While any `object_access`
   or `object_visibility` policy is declared, it may not read another entity's column
   that no dimension declares (`POLICY_DENIED`, reason `column_without_dimension`).
+  `action: withhold_values` lets the scoped caller rank by a metric or measure without
+  seeing its values ("the 3 biggest accounts in EMEA"); see below.
 - **`protected_object`** — pins an object as protected in the named
   environments; `promote-package` and `impact-report` treat changes to
   protected objects as release-gated.
@@ -715,6 +734,48 @@ semantic_policies:
     attribute: customer_id
     rationale: Each customer sees only their own orders.
 ```
+
+### Ranking by withheld values
+
+```yaml
+semantic_policies:
+  - id: policy.revenue_rank_only
+    kind: object_access
+    action: withhold_values
+    object_ids: [metric.revenue]
+    roles: [sales]
+    config: {max_rank: 10}
+```
+
+A `withhold_values` policy answers one shape: a grouped query that selects the governed
+metric or measure directly (no wrapper, aggregation or time-role override) and names it
+first in `order_by`, then every group key (and the time bucket) in the same direction, with
+a `limit` of at most `config.max_rank` (an integer from 1 to 100; default 10). When
+`order_by` names only the metric, the engine adds the group keys. Dimension filters and
+time windows work as usual. The response's `rows` hold the group keys only: the metric's
+column is removed from `rows`, `column_types` and `output_columns`. A top-level `withheld`
+lists the withheld objects, and one `VALUES_WITHHELD` warning says the rows are ordered by
+them. Because ties are ordered by the keys in the rank's direction, ascending is the exact
+reverse of descending, so flipping it cannot tell a tie from a strict order. Every order
+key has a portable NULL indicator in that same direction: NULLs sort first on ascending
+and last on descending, for both the ranked value and nullable group keys.
+
+Every other use is refused with `POLICY_DENIED`, `details.withheld_objects`, a `reason`
+and a recovery hint naming the accepted shape, on validate, compile, execute and MCP:
+selecting it in any expression, metric or measure that reads it (ratios, arithmetic,
+comparisons, prior period, rolling and other windows), ordering by such an expression, a
+`where`, `metric_filters` or threshold reading it, a segment defined on it, `export`, a
+missing or larger `limit`, and other tie orders. Dependencies are the compiler's own, so a
+derived metric cannot stand in for the withheld one. Compiled SQL still contains the
+metric's expression; values come only from the warehouse and never appear in errors,
+warnings or explain output. Data-dependent diagnostics exclude withheld outputs before
+reading row values, including whether they are NULL; permitted outputs keep their
+diagnostics. Any unresolved filter or threshold dependency refuses with reason
+`withheld_unproven`. Resource-granted responses retain `withheld`, warnings naming only
+granted objects, and the runtime's output descriptors after the withheld column is removed.
+`valid-values` never anchors a live lookup on a withheld
+measure, or on one a withheld metric reads. As with `deny`, a policy on a metric does not
+govern its measures when they are selected directly: list them too.
 
 The annotated policy example lives in
 [configs/semantic_rails/jaffle_shop/policies.yml](../configs/semantic_rails/jaffle_shop/policies.yml);
@@ -1214,6 +1275,66 @@ rollup, or `rollup: precomputed` when the variant stores the final value for
 the requested grain. Unsupported or missing rollup semantics force the planner
 back to the raw model relation.
 
+#### Lookup measures
+
+A lookup carries a parent's total onto each of its child rows: a coverage's premium on
+every claim made against it. It takes exactly three keys:
+
+```yaml
+# models/claims.yml (claims and premiums both reference coverage)
+measures:
+  coverage_premium:
+    kind: lookup
+    from: premium_amount    # a measure on another model, totalled per `via` key
+    via: coverage           # the parent entity
+```
+
+The loader copies `value_type` and `currency` from `from`. The value is one total
+per parent, never re-aggregated, so it allows only `sum`, is `additive: false` and has
+a flow accumulation. Authoring `expr`, an aggregation, `additive`, `accumulation`,
+`value_type` or `currency` on a lookup is `INVALID_CONFIG`.
+
+The invariant: a carried total appears at most once per output row's `via` key. It is
+never added across two parents, or repeated over the child's own child rows.
+
+- An output row must hold one parent: group by or pin (`=`) the `via` entity's key, or
+  every column of the measure's own key. Anything coarser is refused with `ROLLUP_UNSAFE`
+  (`details.construct: parent_lookup`), and `project validate` probes the measure grouped by
+  the `via` key.
+- Grouping or filtering by a child of the child (a claim's lines) is refused with
+  `MIXED_GRAIN_INVALID`, and so is a filter on a dimension of the source model.
+  Windows, distributions and metric predicates over a lookup are refused too.
+- A NULL foreign key reads NULL. A parent with no source rows reads 0 when the source
+  holds a value elsewhere in scope, and NULL (with `NO_DATA_IN_SCOPE`) when it holds
+  none; an `avg`, `min` or `max` source reads NULL for it.
+- The source is compiled as its own query, so its access policies apply. The lookup's
+  direct relationship is also a bound dependency: denying or redacting it refuses
+  validate, compile and query with `POLICY_DENIED` before rendering or execution. A row filter
+  allows one relation per query, so a lookup under any row filter is refused with
+  `POLICY_DENIED`.
+- Time: the carried value is the parent's all-time total. A query's `where`, `time`
+  window and buckets on the child's own clocks select child rows, and leave the value
+  unchanged. Bucketing by the source's clock, prior-period, cumulative, rolling and
+  period-to-date wrappers, and `temporal_role_overrides` on a lookup are refused with
+  `REWRITE_NOT_SUPPORTED` (`details.unsupported_construct: lookup_time`).
+
+The load refuses a lookup with `INVALID_CONFIG`, naming the key at fault, when:
+
+- `from` is a stock, an entity count, `additive: false` or another lookup;
+- `via` is a time entity;
+- `via` has a composite key, even when both relationships cover every key column;
+- `via` isn't the target of exactly one direct, untimed many-to-one relationship
+  covering its whole key, both from the child's entity and from the source's entity;
+- a `graph.path_preferences` route for the child-to-`via` or source-to-`via` pair uses
+  a path other than that direct relationship. A recorded direct route is allowed.
+
+The guard also refuses a different resolved route with `ROLLUP_UNSAFE` if the configuration
+bypasses these load checks. Lookup measures support only the direct relationships and a
+single-column `via` key.
+
+Each answer carries a `parent_lookup` rewrite step (`REWRITE_APPLIED`) naming `from`, `via`
+and the relationships it used. Interchange export leaves lookups out as unsupported.
+
 ## Metrics
 
 Metrics codify governed access patterns. Each metric carries a `kind:` that
@@ -1409,8 +1530,8 @@ Warnings (advisory only):
   [`package.environments` and governance `meta:`](#packageenvironments-and-governance-meta)).
 - A measure omits an explicit `default_temporal_role` while declaring
   compatible temporal roles.
-- Several relationships join one pair of entities on different columns
-  (`RELATIONSHIP_ROLES_UNPINNED`), whichever side each is declared from.
+- Entity pairs a question can need have two or more routes and no recorded
+  decision (`ROUTES_UNDECIDED`; see [the route census](#route-census-and-route-changes)).
 
 ## Path-finding behavior (entity hopping)
 
@@ -1702,11 +1823,10 @@ Four guard rails back this up:
   route rule takes that relationship. Every read of the key, a filter on it and
   a metric predicate take the route the rule chose, so the key and the
   airport's other columns always come from the same airport.
-- **`RELATIONSHIP_ROLES_UNPINNED` warning** — reported when the package is
-  parsed (`semantic-rails check`, `validate`): several relationships join the
-  same pair of entities on different columns. It names the relationships, says
-  whether a `path_preferences` row covers the pair and what that row covers, and
-  asks for a row for each entity pair a query needs.
+- **Route census** — parsing the package (`semantic-rails check`, `validate`)
+  lists every entity pair a question can need that is still refused for want of
+  a decision, role-playing keys included, and warns once with `ROUTES_UNDECIDED`
+  ([below](#route-census-and-route-changes)).
 - **`PATH_JOIN_CONFLICT` error** — one query needs the same physical table
   through two different relationships (e.g. a customer's region recorded as
   the regions its orders ship to while its city is read through its own key).
@@ -1715,6 +1835,84 @@ Four guard rails back this up:
   target, or by modeling the second role as its own entity over a dedicated
   relation. Two rows that record different routes through one pair never get
   this far: the package fails to load (above).
+
+### Route census and route changes
+
+A route is a business definition, so a package needs one for every entity pair
+a question can need: every entity is a start, including distinct-values and
+synthetic-count queries, to each other reachable entity. The
+census resolves only pairs with two or more routes, once per pair; impact and
+guard comparisons resolve every pair using package decisions, independently
+of any active query route overrides.
+
+**Census.** The parse report (`semantic-rails check`, `validate`, and
+Architect's `project_status`) carries `route_census`:
+
+- `undecided`: `[{source_entity, target_entity, details}]`, the pairs refused
+  with `AMBIGUOUS_PATH`, where `details` is the refusal's own (each route, its
+  meaning and `details.clarification.options[*].decision`, the row that records
+  it). One `ROUTES_UNDECIDED` warning gives
+  their `count` and `pairs`. Record the route each pair means as a
+  `graph.path_preferences` row with `record_route_decision` before a question
+  needs it. The warning is
+  advisory and never blocks a promotion.
+- `assumed`: `[{source_entity, target_entity, relationship_path, basis}]`, the
+  pairs with two or more routes answered by the
+  start's own key (`basis: colocated_key`). Confirm the route, or record
+  another.
+
+**Route changes.** A new relationship can give a pair a second route, so a
+question that answered before is refused, or now takes the start's own key.
+`impact-report` (Architect's `impact_project`) resolves every census pair of
+either package, between entities both declare, and lists each one the change
+resolves differently under `route_changes`:
+
+```json
+{"source_entity": "entity.bank_invoice", "target_entity": "entity.bank_region",
+ "base": {"relationship_path": ["relationship.invoices_account", "relationship.accounts_branch_region"]},
+ "head": {"refused": "AMBIGUOUS_PATH"}}
+```
+
+`base` and `head` hold the pair's route or the code it is refused with.
+No recovery rows are suggested. Any entry makes the
+risk `high` and counts in `changed_behavior_count`, and the Markdown summary
+lists each one in entity labels ("Invoice to Region: was Invoice → Account →
+Region, now refused (AMBIGUOUS_PATH)").
+
+**Architect requires explicit route decisions.** Every Architect write goes
+through one transaction, which compares the package before and after the
+change. A change that would refuse an answered pair whose route still exists,
+or answer it by another route, is refused with `ROUTE_DECISION_NOT_RECORDED`
+until the author records a decision. Previews use the same guard; nothing is
+written and no route rows are generated. The refusal lists affected pairs in
+`details.route_changes`. Its message names the explicit `graph.path_preferences`
+fields (`source_entity`, `target_entity`, `relationship_path`), without suggesting
+rows: choose a route and use `record_route_decision` before adding the relationship,
+or include chosen rows in the authored change. An ordinary change that
+moves an inherited answer also needs that pair's own decision.
+
+An explicit route chooses a relationship path, not a promise that orphan keys
+keep their values. For example, after adding an origin role alongside a
+destination role, a decision for the destination path uses the airport lookup:
+a destination key with no airport row groups under `NULL` and does not match
+a filter on the airport key. Review the chosen route against reference SQL.
+
+`record_route_decision` writes where the loader reads route rows (a top-level
+`path_preferences` block in `package.yml`, else `graph.yml`, else `package.yml`'s
+`graph` block), rewriting that file as Architect YAML and dropping comments.
+It deliberately changes the default and reports every moved pair, inherited
+pairs included. `remove_object` uses the same preservation guard: a removed
+route or one beyond the new `max_hops` may leave a pair refused, but switching
+to another answer requires the author to record that route first. In every
+case `route_changes` lists every changed pair, including refused → answered,
+and `route_decisions_added` is empty. Hand edits get the same report from
+`impact-report`.
+
+With `validate_after=False`, a write from a loadable package to loader-invalid
+input, including a preview, is refused with `INVALID_CONFIG` before anything
+is written, so an invalid intermediate edit cannot erase the earlier route baseline. Ordinary
+parse-gated rollback and writes that repair an already-invalid package retain
+their existing behavior.
 
 ### `hop_profile` — observing entity hops
 

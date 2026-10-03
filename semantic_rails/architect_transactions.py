@@ -3,7 +3,7 @@
 Every Architect authoring mutation passes through this module. The transaction
 boundary owns deterministic project revisions, optimistic concurrency,
 idempotency receipts, per-project locks, atomic file replacement, parse-gated
-rollback, and write-free previews.
+rollback, write-free previews, and refusing unapproved join-route changes.
 """
 
 from __future__ import annotations
@@ -23,10 +23,16 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+import yaml
+
+from .architect_scaffold import dump_project_yaml
 from .config_validation import PackageReference, parse_config_report
 from .errors import SemanticLayerError
+from .package_snapshot import load_package_snapshot
+from .route_census import route_changes, unkept_route_changes
+from .yaml_loader import safe_load as yaml_safe_load
 
 ABSENT_PROJECT_REVISION = "absent"
 PROJECT_REVISION_FORMAT = 1
@@ -325,6 +331,54 @@ def _file_change_row(
     }
 
 
+def route_rows_update(
+    files: Mapping[str, bytes],
+    rows: list[dict[str, Any]],
+    *,
+    replace_pair: tuple[str, str] | None = None,
+    entities: Mapping[str, str] | None = None,
+) -> tuple[ProjectFileUpdate, dict[str, Any] | None]:
+    """Write rows where the loader reads them, optionally replacing exactly one pair."""
+    package = dict(yaml_safe_load(files["package.yml"]) or {})
+    if "path_preferences" in package:
+        relative, document, block = "package.yml", package, package
+    else:
+        relative = "graph.yml" if "graph.yml" in files else "package.yml"
+        document = (
+            package if relative == "package.yml" else dict(yaml_safe_load(files[relative]) or {})
+        )
+        block = document["graph"] = dict(document.get("graph") or {})
+    existing = list(block.get("path_preferences") or [])
+    references = entities or {}
+    matches = [
+        index
+        for index, row in enumerate(existing)
+        if replace_pair is not None
+        and isinstance(row, dict)
+        and tuple(
+            references.get(str(row.get(end, "")).strip())
+            for end in ("source_entity", "target_entity")
+        )
+        == replace_pair
+    ]
+    replaced = deepcopy(existing[matches[-1]]) if matches else None
+    kept = [row for index, row in enumerate(existing) if index not in matches]
+    position = matches[0] if matches else len(kept)
+    block["path_preferences"] = [*kept[:position], *rows, *kept[position:]]
+    return ProjectFileUpdate(relative, dump_project_yaml(document).encode("utf-8")), replaced
+
+
+def _routes_not_recorded(unkept: list[dict[str, Any]]) -> SemanticLayerError:
+    return SemanticLayerError(
+        "ROUTE_DECISION_NOT_RECORDED",
+        "This change moves the join route of entity pairs without an explicit decision; "
+        "nothing was written. Record each pair with record_route_decision or include its "
+        "graph.path_preferences row in the change itself, with source_entity, "
+        "target_entity and relationship_path fields.",
+        details={"route_changes": unkept},
+    )
+
+
 class ProjectTransaction:
     """One workspace-scoped, optimistic project transaction boundary."""
 
@@ -444,11 +498,15 @@ class ProjectTransaction:
         prepare_updates: (
             Callable[[str], tuple[Iterable[ProjectFileUpdate], Mapping[str, bytes] | None]] | None
         ) = None,
+        routes: Literal["guard", "report", "off"] = "guard",
     ) -> ProjectTransactionOutcome:
         """Apply a parse-gated optimistic transaction or return its preview.
 
         Preparation, when supplied, runs under this transaction's lock after
         receipt replay and the expected-revision check, before any file write.
+        ``routes`` (see :meth:`_guard_routes`): ``guard`` refuses unapproved join-route
+        changes, ``report`` only lists deliberate route decisions,
+        and ``off`` skips both (an undo, or a new project).
         """
 
         expected = str(expected_revision or "").strip()
@@ -534,6 +592,13 @@ class ProjectTransaction:
                         "INVALID_CONFIG",
                         "Scaffold provenance must match the proposed transaction files",
                     )
+            route_report: dict[str, Any] = {}
+            if routes != "off":
+                route_report = self._guard_routes(
+                    normalized_updates,
+                    guard=routes == "guard",
+                    validate_after=validate_after,
+                )
 
             snapshots = tuple(self._snapshot(update.relative_path) for update in normalized_updates)
             effective = tuple(
@@ -569,6 +634,7 @@ class ProjectTransaction:
             }
             if metadata:
                 base_report.update(deepcopy(dict(metadata)))
+            base_report.update(route_report)
 
             if dry_run:
                 if validate_after:
@@ -778,6 +844,59 @@ class ProjectTransaction:
         with self.virtual_project(updates) as project:
             parse, _ = parse_config_report(PackageReference(source_path=str(project)))
         return parse
+
+    def _guard_routes(
+        self,
+        updates: tuple[ProjectFileUpdate, ...],
+        *,
+        guard: bool,
+        validate_after: bool,
+    ) -> dict[str, Any]:
+        """Refuse unapproved route changes; every Architect write passes here.
+
+        Invariant: a change never silently moves the route a question already answers by.
+        A pair the base answers that the staged package refuses or routes differently
+        requires an author-recorded decision. A removed route or one beyond the new hop
+        ceiling may leave the pair refused; switching to another answer still requires
+        its own row. Only deliberate decisions use report mode. No route row is generated.
+        """
+        try:
+            base = load_package_snapshot(str(self.project_path)).config
+        except (
+            SemanticLayerError,
+            yaml.YAMLError,
+            TypeError,
+            ValueError,
+            AttributeError,
+            KeyError,
+        ):
+            # Invalid base input answered nothing; the parse gate can accept its repair.
+            return {}
+        with self.virtual_project(updates) as staged:
+            try:
+                head = load_package_snapshot(str(staged)).config
+            except (
+                SemanticLayerError,
+                yaml.YAMLError,
+                TypeError,
+                ValueError,
+                AttributeError,
+                KeyError,
+            ) as exc:
+                if not validate_after:
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        "Architect writes without parse validation require loadable staged input; "
+                        "nothing was written.",
+                    ) from exc
+                # The parse gate reports invalid staged input and restores the valid base.
+                return {}
+        if guard and (unkept := unkept_route_changes(base, head)):
+            raise _routes_not_recorded(unkept)
+        return {
+            "route_decisions_added": [],
+            "route_changes": route_changes(base, head),
+        }
 
     def _cleanup_new_project(self) -> None:
         if not self.project_path.exists():

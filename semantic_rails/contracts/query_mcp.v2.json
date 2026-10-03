@@ -132,7 +132,20 @@
       "error": {
         "oneOf": [
           {
-            "$ref": "#/$defs/issue"
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "type": "object"
           },
           {
             "type": "null"
@@ -150,12 +163,6 @@
       },
       "package_id": {
         "type": "string"
-      },
-      "recovery_hints": {
-        "items": {
-          "type": "object"
-        },
-        "type": "array"
       },
       "request_context": {
         "type": "object"
@@ -205,7 +212,7 @@
         "readOnlyHint": true,
         "title": "Discover"
       },
-      "description": "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). Returns measures, metrics, dimensions, and entities, up to 'limit' per kind; empty terms list ids per kind instead, 100 at a time (limit, offset). Default: slim cards (id, label, description, score); verbosity='compact' adds match_reasons and starter patches. Gotcha: nonsense terms return 'out_of_scope' or 'low_relevance' with empty buckets; branch before using a candidate.",
+      "description": "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). Returns measures, metrics, dimensions, and entities, up to 'limit' per kind; empty terms list ids per kind instead, 100 at a time (limit, offset). Default: slim cards (id, label, description); verbosity='compact' adds match_reasons and starter patches. Gotcha: nonsense terms return 'out_of_scope' or 'low_relevance' with empty buckets; branch before using a candidate.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -234,26 +241,10 @@
             "minimum": 0,
             "type": "integer"
           },
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
-          },
-          "request_id": {
-            "type": "string"
           },
           "stage": {
             "description": "Builder stage that tunes ranking: initial, post_measure, post_dimension or comparison. Inferred when omitted.",
@@ -324,26 +315,10 @@
           "object_id": {
             "type": "string"
           },
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
-          },
-          "request_id": {
-            "type": "string"
           },
           "verbosity": {
             "default": "minimal",
@@ -429,26 +404,10 @@
             "minimum": 0,
             "type": "integer"
           },
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
-          },
-          "request_id": {
-            "type": "string"
           },
           "search": {
             "type": "string"
@@ -525,26 +484,10 @@
             "minimum": 1,
             "type": "integer"
           },
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
           "query": {
             "additionalProperties": true,
             "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
             "type": "object"
-          },
-          "request_id": {
-            "type": "string"
           }
         },
         "required": [
@@ -595,7 +538,7 @@
         "readOnlyHint": true,
         "title": "Execute"
       },
-      "description": "Validate, compile and run Query IR: plan's best.query_ir (call plan first) or your fix of it. time.end is exclusive. Returns at most max_rows rows; a capped one reports truncated and total_row_count. mode='validate' only checks; mode='sql' adds rendered_sql; neither runs. 'query' is a JSON object; mode 'run' costs warehouse time. IR: select[]={expression:{...},as}, group_by[]=[<dim>,...] (not in select), where[]={field,op,value}, order_by[]={field,direction}. select.expression: {aggregation, measure} | {metric} | {kind:prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|...}.",
+      "description": "Validate, compile and run Query IR: plan's best.query_ir (call plan first) or your fix of it. time.end is exclusive. Returns at most max_rows rows; a capped one reports truncated and total_row_count. mode='validate' only checks; mode='sql' adds rendered_sql; neither runs. 'query' is a JSON object; mode 'run' costs warehouse time. validate checks a query before it runs; a query that already ran needs no validate. select may be empty: group_by alone lists rows. IR: select[]={expression:{...},as}, group_by[]=[<dim>,...] (not in select), where[]={field,op,value}, order_by[]={field,direction}. select.expression:\n{aggregation, measure} | {metric} | {kind: prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|arithmetic|...}\nratio: per-order sum / order count.\narithmetic adds measures; aggregate_if: conditional count.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -615,19 +558,6 @@
               "sql"
             ],
             "type": "string"
-          },
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
           },
           "query": {
             "additionalProperties": true,
@@ -729,9 +659,6 @@
             },
             "type": "object"
           },
-          "request_id": {
-            "type": "string"
-          },
           "row_format": {
             "default": "records",
             "description": "Execute row shape. 'records' (default)=rows as objects; 'columns'=columns plus array rows, avoiding repeated field names.",
@@ -825,22 +752,6 @@
             "description": "Sample rows for action 'preview'.",
             "minimum": 1,
             "type": "integer"
-          },
-          "policy_context": {
-            "additionalProperties": true,
-            "description": "Optional visibility/access policy context.",
-            "properties": {
-              "audience": {
-                "type": "string"
-              },
-              "environment": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
-          "request_id": {
-            "type": "string"
           },
           "segment_id": {
             "type": "string"

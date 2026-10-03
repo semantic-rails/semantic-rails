@@ -49,7 +49,7 @@ _VALID_TIME_CLASSES: frozenset[str] = frozenset(
 # Measure/metric kind and accumulation enums. As with the dimension/time
 # enums above, an unknown value would silently fall through to default
 # behavior (additive semantics, empty expression) — fail loudly instead.
-_VALID_MEASURE_KINDS: frozenset[str] = frozenset({"aggregate", "entity_count"})
+_VALID_MEASURE_KINDS: frozenset[str] = frozenset({"aggregate", "entity_count", "lookup"})
 _VALID_METRIC_KINDS: frozenset[str] = frozenset(
     {
         "aggregate",
@@ -273,6 +273,8 @@ _MEASURE_KEYS: frozenset[str] = frozenset(
         "accumulation",
         "snapshot_policy",
         "publish",
+        "from",
+        "via",
         # `primitive:` is rejected by the loader with a dedicated migration
         # message — listed here so that message fires instead of a generic
         # unknown-key error.

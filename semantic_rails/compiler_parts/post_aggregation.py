@@ -132,7 +132,24 @@ def _summing_window_parts(
         return resolve(recipe.expression, seen | {recipe.id})
 
     def additive(value: SemanticExpr) -> None:
-        value = resolve(value)
+        # Lowering windows each inline operand on its own, but a metric below the top level
+        # would be windowed as one combined value, so only the whole input may name a metric.
+        if isinstance(value, MetricRecipeRefExpr):
+            hint = (
+                "Write the metric's expression inline in the window input, or window the "
+                "metric on its own."
+            )
+            raise SemanticLayerError(
+                "ROLLUP_UNSAFE",
+                f"Metric '{value.metric_recipe}' cannot sit inside the input of {construct}. "
+                f"{hint}",
+                details={
+                    "unsupported_construct": "nested_metric_window_input",
+                    "construct": construct,
+                    "input": value.metric_recipe,
+                    "recovery_hints": [{"kind": "inline_window_metric", "message": hint}],
+                },
+            )
         name = str(expr_to_dict(value).get("kind"))
         if isinstance(value, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
             measure = _measure_index(config).get(value.measure)
@@ -301,6 +318,10 @@ def _compile_offset_window_expr(
     def sum_part(part: SemanticExpr) -> SqlExpr:
         # Constants scale the completed total, rather than becoming another windowed part.
         if isinstance(part, ArithmeticExpr):
+            if part.op in {"add", "subtract"}:
+                return SqlBinary(
+                    sum_part(part.left), "+" if part.op == "add" else "-", sum_part(part.right)
+                )
             if part.op in {"multiply", "divide"} and isinstance(part.right, LiteralExpr):
                 factor = compile_input(part.right)
                 if part.op == "divide":

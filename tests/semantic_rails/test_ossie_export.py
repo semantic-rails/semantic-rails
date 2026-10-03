@@ -74,6 +74,7 @@ def test_cli_export_passes_the_spec_validator(package, tmp_path, monkeypatch, ca
         capture_output=True,
         text=True,
         check=False,
+        timeout=120,
     )
     assert result.returncode == 0, result.stdout
     assert f"Validation PASSED: {document.name}" in result.stdout
