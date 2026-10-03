@@ -14,6 +14,23 @@ STORE_ID = "dimension.retail_store_id"
 STORE_NAME = "dimension.retail_store_name"
 STORE_LABEL = "dimension.retail_store_label"
 JAFFLE_STORE = "dimension.jaffle_store_name"
+LONG_STORE_INTENT = "please " * 285 + "revenue by store name"
+STORE_FILTER = {"field": JAFFLE_STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}
+ORDER_WINDOW = {
+    "temporal_role": "temporal_role.jaffle_order_time",
+    "grain": "month",
+    "start": "2017-01-01",
+    "end": "2018-01-01",
+}
+
+
+@pytest.fixture()
+def jaffle(runtime_factory) -> Iterator[Runtime]:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        yield runtime
+    finally:
+        runtime.close()
 
 
 @pytest.fixture()
@@ -109,6 +126,108 @@ def test_bare_store_keeps_jaffle_names(runtime_factory, question: str) -> None:
         runtime.close()
 
 
+@pytest.mark.parametrize("question", ["revenue by\tstore name", "revenue by\nstore name"])
+def test_store_grouping_with_whitespace_matches_reference_sql(
+    jaffle: Runtime, question: str
+) -> None:
+    plan = plan_payload(jaffle, intent=question, partial_query={"where": [STORE_FILTER]})
+    assert plan["status"] == "ok", plan.get("why")
+    assert "execute" in plan["next"]["ready_for"]
+    query = plan["best"]["query_ir"]
+    assert query["group_by"] == [JAFFLE_STORE]
+    [selected] = query["select"]
+    actual = sorted((row[JAFFLE_STORE], row[selected["as"]]) for row in jaffle.query(query)["rows"])
+    reference = (
+        jaffle._get_adapter()
+        ._db.conn.execute(
+            "SELECT s.store_name, SUM(o.order_total_cents / 100.0) "
+            "FROM jaffle_order o JOIN jaffle_store s USING (store_id) "
+            "WHERE s.store_name IN ('Brooklyn', 'Philadelphia') "
+            "GROUP BY s.store_name ORDER BY s.store_name"
+        )
+        .fetchall()
+    )
+    assert [row[0] for row in actual] == [row[0] for row in reference]
+    assert [row[1] for row in actual] == pytest.approx([row[1] for row in reference])
+    assert [row[1] for row in actual] == pytest.approx([259424.85, 486468.18])
+
+
+def test_long_store_grouping_matches_monthly_reference_sql(jaffle: Runtime) -> None:
+    plan = plan_payload(
+        jaffle,
+        intent=LONG_STORE_INTENT,
+        partial_query={"where": [STORE_FILTER], "time": ORDER_WINDOW},
+    )
+    assert plan["status"] == "ok", plan.get("why")
+    assert "execute" in plan["next"]["ready_for"]
+    query = plan["best"]["query_ir"]
+    assert query["group_by"] == [JAFFLE_STORE]
+    assert query["time"] == ORDER_WINDOW
+    [selected] = query["select"]
+    actual = sorted(
+        (row["time"], row[JAFFLE_STORE], row[selected["as"]]) for row in jaffle.query(query)["rows"]
+    )
+    reference = (
+        jaffle._get_adapter()
+        ._db.conn.execute(
+            "SELECT STRFTIME(DATE_TRUNC('month', o.ordered_at), '%Y-%m-%d'), "
+            "s.store_name, SUM(o.order_total_cents / 100.0) "
+            "FROM jaffle_order o JOIN jaffle_store s USING (store_id) "
+            "WHERE s.store_name IN ('Brooklyn', 'Philadelphia') "
+            "AND o.ordered_at >= '2017-01-01' AND o.ordered_at < '2018-01-01' "
+            "GROUP BY 1, 2 ORDER BY 1, 2"
+        )
+        .fetchall()
+    )
+    assert len(actual) == 14
+    assert [row[:2] for row in actual] == [row[:2] for row in reference]
+    assert [row[2] for row in actual] == pytest.approx([row[2] for row in reference])
+    assert [row[2] for row in actual if row[0] == "2017-03-01"] == pytest.approx(
+        [24857.99, 49092.33]
+    )
+
+
+@pytest.mark.parametrize(
+    ("question", "time"),
+    [
+        ("revenue by\tstore name", None),
+        ("revenue by\nstore name", None),
+        (LONG_STORE_INTENT, ORDER_WINDOW),
+    ],
+    ids=["tab", "newline", "long"],
+)
+@pytest.mark.parametrize("group_by", [[], ["dimension.jaffle_customer_type"]])
+def test_store_filter_cannot_replace_requested_grouping(
+    jaffle: Runtime, question: str, time: dict | None, group_by: list[str]
+) -> None:
+    partial = {"where": [STORE_FILTER], "group_by": group_by}
+    if time is not None:
+        partial["time"] = time
+    plan = plan_payload(jaffle, intent=question, partial_query=partial)
+    assert plan["status"] == "low_confidence"
+    assert plan["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    gaps = plan["why"]["details"]["gaps"]
+    assert any(gap["kind"] == "store_grouping_unrealized" for gap in gaps)
+    assert "execute" not in plan["next"].get("ready_for", [])
+
+
+@pytest.mark.parametrize(
+    ("clause", "dimension"),
+    [
+        ("at the store dimension", STORE_NAME),
+        ("at the store level", STORE_NAME),
+        ("at the store grain", STORE_NAME),
+        ("at\tthe\nstore name\tdimension", STORE_NAME),
+        ("at the store id level", STORE_ID),
+    ],
+)
+def test_store_granularity_clause_requests_grouping(
+    retail: Runtime, clause: str, dimension: str
+) -> None:
+    plan = plan_payload(retail, intent=f"revenue {clause}")
+    assert plan["best"]["query_ir"]["group_by"] == [dimension]
+
+
 @pytest.mark.parametrize(
     ("question", "grouped"),
     [
@@ -123,6 +242,9 @@ def test_open_store_count_matches_reference_sql(
     runtime = runtime_factory("jaffle_shop")
     try:
         plan = plan_payload(runtime, intent=question)
+        if grouped:
+            assert plan["status"] == "ok", plan.get("why")
+            assert "execute" in plan["next"]["ready_for"]
         query = plan["best"]["query_ir"]
         assert query.get("group_by", []) == ([JAFFLE_STORE] if grouped else [])
         [selected] = query["select"]

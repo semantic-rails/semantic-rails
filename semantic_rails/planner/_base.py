@@ -1352,8 +1352,8 @@ def _strip_leading_rank_count(raw: str) -> str:
 
 
 def _requested_grouping_terms(text: str) -> list[str]:
-    lowered = str(text or "").lower()
-    return [lowered[start:end] for start, end in _requested_grouping_spans(text)]
+    lowered = re.sub(r"\s+", " ", str(text or "").lower())
+    return [lowered[start:end] for start, end in _requested_grouping_spans(lowered)]
 
 
 def _requested_grouping_spans(text: str) -> list[tuple[int, int]]:
@@ -1445,11 +1445,17 @@ def _requested_store_grouping_terms(text: str) -> list[str]:
     """Store attributes in grouping clauses, excluding consumed reporting windows."""
 
     lowered = str(text or "").lower()
-    if len(lowered) > _MAX_TIME_TEXT:
-        return []
-    for start, end in _time_window(lowered).spans:
-        lowered = lowered[:start] + " " * (end - start) + lowered[end:]
+    if len(lowered) <= _MAX_TIME_TEXT:
+        for start, end in _time_window(lowered).spans:
+            lowered = lowered[:start] + " " * (end - start) + lowered[end:]
     groups = [term for term in _requested_grouping_terms(lowered) if "store" in _tokens(term)]
+    groups.extend(
+        " ".join(match.group(1).split())
+        for match in re.finditer(
+            r"\bat\s+the\s+(stores?(?:\s+[a-z0-9_-]+)?)\s+(?:dimension|level|grain)\b",
+            lowered,
+        )
+    )
     if groups:
         return groups
     # Existing rank parsers expose where the ranked noun starts; a store mentioned
