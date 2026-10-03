@@ -375,19 +375,11 @@ def test_a_window_inside_the_list_never_drops_a_later_grouping(
     assert payload["best"]["query_ir"]["group_by"] == [STORE]
 
 
-@pytest.mark.parametrize(
-    ("intent", "partial_query"),
-    [
-        ("order count by month, name", None),
-        ("order count by month and name", None),
-        # The caller names Store name, but the draft still adds Customer name, its own pick.
-        ("order count by month, name", {"group_by": [STORE]}),
-    ],
-)
+@pytest.mark.parametrize("intent", ["order count by month, name", "order count by month and name"])
 def test_a_grouping_naming_dimensions_of_other_entities_is_never_a_pick(
-    jaffle: Runtime, intent: str, partial_query: dict[str, Any] | None
+    jaffle: Runtime, intent: str
 ) -> None:
-    payload = plan_payload(jaffle, intent=intent, partial_query=partial_query)
+    payload = plan_payload(jaffle, intent=intent)
 
     # "Name" is Customer name, Store name, Product name and more, none of them the order's own.
     # Each is a defensible reading with its own rows, so plan holds rather than picking one.
@@ -399,6 +391,17 @@ def test_a_grouping_naming_dimensions_of_other_entities_is_never_a_pick(
         "dropped_groupings": [],
         "ambiguous_groupings": ["name"],
     }
+
+
+def test_a_callers_reading_beside_the_drafts_own_pick_is_not_ready(jaffle: Runtime) -> None:
+    payload = plan_payload(
+        jaffle, intent="order count by month, name", partial_query={"group_by": [STORE]}
+    )
+
+    # The caller names Store name, but the draft still adds Customer name, its own pick.
+    assert payload["best"]["query_ir"]["group_by"] == [STORE, CUSTOMER_NAME]
+    assert payload["status"] == "low_confidence"
+    assert "execute" not in payload["next"].get("ready_for", [])
 
 
 @pytest.mark.parametrize(
