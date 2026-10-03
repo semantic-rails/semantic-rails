@@ -32,6 +32,7 @@ from ._base import (
     _grouping_matches,
     _is_temporal_grouping_term,
     _names_time_axis,
+    _names_whole_entity,
     _object_by_id,
     _requested_grouping_terms,
     _runtime_composition_terms,
@@ -682,17 +683,48 @@ def _unconsumed_catalog_why(question: str, words: list[str]) -> dict[str, Any] |
     }
 
 
+def _entity_grouping_dimensions(config: Any, term: str) -> set[str] | None:
+    """The dimensions that may stand for a listed grouping naming an entity, or None when the
+    term names no entity.
+
+    Only an entity the term names by its whole label, with a one-column key, has any: its key
+    dimension, and its one declared dimension whose own words name the term when no other
+    does. A clock the entity declares is not one of them. Another entity's dimension never
+    stands in, and a composite key has none, so the grouping stays unmatched.
+    """
+
+    entities = [row for row in config.entities if _grouping_matches(term, row, entity=True)]
+    if not entities:
+        return None
+    clocks = {row.dimension for row in config.temporal_roles}
+    allowed: set[str] = set()
+    for entity in entities:
+        if len(entity.key) != 1 or not _names_whole_entity(term, entity):
+            continue
+        owned = [row for row in config.dimensions if row.entity == entity.id]
+        allowed |= {row.id for row in owned if row.column == entity.key[0]}
+        named = [
+            row.id
+            for row in owned
+            if row.column != entity.key[0]
+            and row.id not in clocks
+            and _grouping_matches(term, row)
+        ]
+        if len(named) == 1:
+            allowed |= set(named)
+    return allowed
+
+
 def _dropped_grouping_why(
     runtime: Any, question: str, query: dict[str, Any]
 ) -> dict[str, Any] | None:
-    """Every listed non-clock, non-value grouping must match its own group_by dimension.
+    """A listed grouping that names an entity is satisfied only by that entity's own key
+    dimension, or by the single declared dimension of that entity whose own words name it.
+    An entity with a composite key is never satisfied by the guard, so the plan is not ready.
 
-    Each grouping the question lists ("by incident name, incident") needs its own dimension in
-    the draft's group_by. A clock term ("by month", "by order date", "by fiscal quarter" on the
-    fiscal calendar) is the time block's and a term naming a declared value is a filter, so
-    neither needs one. Match declared dimension words or an entity's declared key; unrelated
-    dimensions never stand in for a listed grouping. Report only terms left unmatched by a
-    one-to-one assignment.
+    Any other listed grouping needs a dimension whose own words name it; a clock term ("by
+    month", "by order date") is the time block's and a declared value is a filter, so neither
+    needs one. One dimension satisfies one listed grouping.
     """
 
     config = runtime._config
@@ -729,15 +761,10 @@ def _dropped_grouping_why(
         [
             index
             for index, dimension in enumerate(grouped)
-            if _grouping_matches(term, dimension)
-            or any(
-                dimension.entity == entity.id
-                and dimension.column in entity.key
-                and _grouping_matches(term, entity, entity=True)
-                for entity in config.entities
-            )
+            if (_grouping_matches(term, dimension) if ids is None else dimension.id in ids)
         ]
         for term in terms
+        for ids in [_entity_grouping_dimensions(config, term)]
     ]
     assigned: dict[int, int] = {}
 

@@ -1351,18 +1351,13 @@ def _strip_leading_rank_count(raw: str) -> str:
     return re.sub(rf"^\s*(?:\d+|{rank_words})\s+", "", raw, count=1).strip()
 
 
-def _grouping_matches(term: str, row: Any, *, entity: bool = False) -> bool:
-    """Match content words to declared names, never substring scores or synonyms."""
+def _name_forms(words: Iterable[str]) -> set[str]:
+    """The words with their regular plurals, which name the same object; synonyms do not."""
 
-    names = (
-        [row.name, row.label]
-        if entity
-        else [row.id, _last_token(row.name), row.label, *(row.aliases or [])]
-    )
-    words = set(re.findall(r"[^\W_]+", " ".join(names).lower()))
-    # Regular plurals name the same object; other synonym mappings do not.
-    words |= (
-        {word + "s" for word in words}
+    words = set(words)
+    return (
+        words
+        | {word + "s" for word in words}
         | {word[:-1] + "ies" for word in words if word.endswith("y")}
         | {
             word + "es"
@@ -1370,8 +1365,35 @@ def _grouping_matches(term: str, row: Any, *, entity: bool = False) -> bool:
             if len(word) > 2 and word.endswith(("s", "x", "z", "ch", "sh"))
         }
     )
+
+
+def _grouping_matches(term: str, row: Any, *, entity: bool = False) -> bool:
+    """Match content words to declared names, never substring scores or synonyms.
+
+    A dimension's own words are its label, its aliases and the last part of its name; the
+    namespace, model and entity prefix in its id are not its words.
+    """
+
+    names = (
+        [row.name, row.label]
+        if entity
+        else [_last_token(row.name), row.label, *(row.aliases or [])]
+    )
+    words = _name_forms(re.findall(r"[^\W_]+", " ".join(names).lower()))
     content = set(re.findall(r"[^\W_]+", term.lower())) - _NAME_CONNECTORS
     return bool(content and content <= words)
+
+
+def _names_whole_entity(term: str, entity: Any) -> bool:
+    """Whether a grouping term names an entity by every word of its label: "customer" names
+    Customer, but not Customer history or Customer segment membership."""
+
+    content = set(re.findall(r"[^\W_]+", term.lower())) - _NAME_CONNECTORS
+    label = str(entity.label or _last_token(entity.name)).lower()
+    return _grouping_matches(term, entity, entity=True) and all(
+        _name_forms({word}) & content
+        for word in set(re.findall(r"[^\W_]+", label)) - _NAME_CONNECTORS
+    )
 
 
 def _requested_grouping_terms(text: str, *, config: Any = None) -> list[str]:

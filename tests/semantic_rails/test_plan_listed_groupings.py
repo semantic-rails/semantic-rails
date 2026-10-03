@@ -33,25 +33,37 @@ from tests.semantic_rails.result_helpers import typed_rows
 
 INCIDENT_ID = "dimension.upkeep_incident_incident_id"
 INCIDENT_NAME = "dimension.upkeep_incident_incident_name"
+REVISION = "dimension.upkeep_incident_revision"
 STORE = "dimension.jaffle_store_name"
 CUSTOMER_TYPE = "dimension.jaffle_customer_type"
 ORDER_TIME = "temporal_role.jaffle_order_time"
+HAS_FOOD_ITEM = "dimension.jaffle_order_has_food_item"
+IS_LARGE_ORDER = "dimension.jaffle_order_is_large_order"
 
 
-def _upkeep(path: Path, noun: str, measure: str) -> Runtime:
+def _upkeep(path: Path, noun: str, measure: str, *, revisions: bool = False) -> Runtime:
     """An entity ``noun`` labelled ``noun.title()``, with dimensions "<Noun> id" and "<Noun>
     name", a measure "<Measure> cost" summing ``<measure>_cost``, and two rows that share a name:
-    (1, "Leak", 10) and (2, "Leak", 20)."""
+    (1, "Leak", 10) and (2, "Leak", 20). With ``revisions``, the key is (id, revision) and the
+    rows are revisions 1 and 2 of entity 1."""
 
     title = noun.title()
     (path / "models").mkdir(parents=True)
     (path / "data" / "csv").mkdir(parents=True)
     (path / "data" / "csv" / f"{noun}s.csv").write_text(
-        f"{noun}_id,{noun}_name,reported_at,{measure}_cost\n"
-        "1,Leak,2026-01-01T09:00:00,10\n"
-        "2,Leak,2026-01-02T09:00:00,20\n",
+        (
+            f"{noun}_id,revision,{noun}_name,reported_at,{measure}_cost\n"
+            "1,1,Leak,2026-01-01T09:00:00,10\n"
+            "1,2,Leak,2026-01-02T09:00:00,20\n"
+            if revisions
+            else f"{noun}_id,{noun}_name,reported_at,{measure}_cost\n"
+            "1,Leak,2026-01-01T09:00:00,10\n"
+            "2,Leak,2026-01-02T09:00:00,20\n"
+        ),
         encoding="utf-8",
     )
+    key = [f"{noun}_id", "revision"] if revisions else [f"{noun}_id"]
+    revision = {"revision": {"column": "revision", "label": "Revision"}} if revisions else {}
     files = {
         "package.yml": {
             "schema_version": 1,
@@ -66,7 +78,7 @@ def _upkeep(path: Path, noun: str, measure: str) -> Runtime:
         },
         "graph.yml": {
             "graph": {
-                "entities": {noun: {"key": [f"{noun}_id"], "model": f"{noun}s", "label": title}}
+                "entities": {noun: {"key": key, "model": f"{noun}s", "label": title}}
             }
         },
         f"models/{noun}s.yml": {
@@ -80,6 +92,7 @@ def _upkeep(path: Path, noun: str, measure: str) -> Runtime:
                 "dimensions": {
                     f"{noun}_id": {"column": f"{noun}_id", "label": f"{title} id"},
                     f"{noun}_name": {"column": f"{noun}_name", "label": f"{title} name"},
+                    **revision,
                 },
                 "measures": {
                     f"{measure}_cost": {
@@ -98,11 +111,11 @@ def _upkeep(path: Path, noun: str, measure: str) -> Runtime:
 
 
 @pytest.fixture()
-def upkeep(tmp_path: Path) -> Iterator[Callable[[str, str], Runtime]]:
+def upkeep(tmp_path: Path) -> Iterator[Callable[..., Runtime]]:
     opened: list[Runtime] = []
 
-    def build(noun: str, measure: str) -> Runtime:
-        opened.append(_upkeep(tmp_path / noun, noun, measure))
+    def build(noun: str, measure: str, *, revisions: bool = False) -> Runtime:
+        opened.append(_upkeep(tmp_path / noun, noun, measure, revisions=revisions))
         return opened[-1]
 
     try:
@@ -258,6 +271,157 @@ def test_a_forced_store_grouping_cannot_stand_in_for_order(
     assert "execute" not in payload["next"].get("ready_for", [])
     assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
     assert payload["why"]["details"]["dropped_groupings"] == ["order"]
+
+
+# "Has food item" names the order only in its id; "Is large order" names it in its label, but so
+# do two other Order dimensions. Neither is the order's key, so neither is one row per order.
+@pytest.mark.parametrize("dimension", [HAS_FOOD_ITEM, IS_LARGE_ORDER])
+def test_a_non_key_order_dimension_cannot_stand_in_for_order(
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, dimension: str
+) -> None:
+    intent = "order count by customer type, order"
+    draft = RuntimeCompositionDraft(
+        query={
+            "version": 2,
+            "select": [
+                {"as": "order_count", "expression": {"measure": "measure.jaffle.order_count"}}
+            ],
+            "group_by": [CUSTOMER_TYPE, dimension],
+        },
+        resolved=[],
+        rationale=[],
+        interpreted_intent={},
+    )
+    monkeypatch.setattr(
+        plan_module,
+        "compose",
+        lambda runtime, text: CompositionResult(
+            intent_ir=parse_intent(runtime, text), draft=draft, pattern="test"
+        ),
+    )
+    assert unconsumed_catalog_words(jaffle, intent, draft.query) == []
+    payload = plan_payload(jaffle, intent=intent)
+    assert payload["best"]["validation_ok"] is True
+    assert payload["status"] == "low_confidence"
+    assert "execute" not in payload["next"].get("ready_for", [])
+    assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+    assert payload["why"]["details"]["dropped_groupings"] == ["order"]
+
+
+def test_a_customer_history_grouping_needs_its_whole_key(jaffle: Runtime) -> None:
+    payload = plan_payload(jaffle, intent="order count by customer history, month")
+    # Customer history's key is (customer_id, valid_from). The reference keeps that identity and
+    # the declared validity join; the draft groups by customer id alone.
+    connection = duckdb.connect(jaffle.db_path, read_only=True)
+    try:
+        reference = connection.execute(
+            "SELECT h.customer_id, h.valid_from, DATE_TRUNC('month', o.ordered_at), "
+            "COUNT(DISTINCT o.order_id) FROM jaffle_order o "
+            "LEFT JOIN jaffle_customer_history h ON o.customer_id = h.customer_id "
+            "AND o.ordered_at >= h.valid_from "
+            "AND (o.ordered_at < h.valid_to OR h.valid_to IS NULL) GROUP BY 1, 2, 3"
+        ).fetchall()
+    finally:
+        connection.close()
+    assert len(reference) == 60
+    assert payload["status"] == "low_confidence"
+    assert "execute" not in payload["next"].get("ready_for", [])
+    assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+    assert payload["why"]["details"]["dropped_groupings"] == ["customer history"]
+    assert payload["best"]["query_ir"]["group_by"] == [
+        "dimension.jaffle_customer_history_customer_id"
+    ]
+    assert len(typed_rows(jaffle.query(payload["best"]["query_ir"]))) == 5_782
+
+
+def test_a_composite_key_entity_grouping_is_never_ready(
+    upkeep: Callable[..., Runtime],
+) -> None:
+    runtime = upkeep("incident", "repair", revisions=True)
+    intent = "repair cost by incident name, incident"
+    payload = plan_payload(runtime, intent=intent)
+
+    # Incident 1 has two revisions: two incidents by the declared key, costing 10 and 20.
+    assert payload["status"] == "low_confidence"
+    assert "execute" not in payload["next"].get("ready_for", [])
+    assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+    assert payload["why"]["details"]["dropped_groupings"] == ["incident"]
+    # Neither the id alone nor the id with the revision satisfies the guard.
+    for group_by in ([INCIDENT_NAME, INCIDENT_ID], [INCIDENT_NAME, INCIDENT_ID, REVISION]):
+        why = plan_module._dropped_grouping_why(runtime, intent, {"group_by": group_by})
+        assert why is not None
+        assert why["details"]["dropped_groupings"] == ["incident"]
+
+
+@pytest.mark.parametrize(
+    "intent",
+    [
+        "revenue by store, last month and customer type",
+        "revenue by store last month and customer type",
+    ],
+)
+def test_a_window_inside_the_list_never_drops_a_later_grouping(
+    jaffle: Runtime, intent: str
+) -> None:
+    payload = plan_payload(jaffle, intent=intent)
+
+    assert payload["status"] == "low_confidence"
+    assert "execute" not in payload["next"].get("ready_for", [])
+    assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+    assert payload["why"]["details"]["dropped_groupings"] == ["customer type"]
+    assert payload["best"]["query_ir"]["group_by"] == [STORE]
+
+
+@pytest.mark.parametrize(
+    ("term", "group_by", "matched"),
+    [
+        # The entity's key dimension.
+        ("store", ["dimension.jaffle_store_id"], True),
+        ("order", ["dimension.jaffle_order_id"], True),
+        ("customer", ["dimension.jaffle_customer_id"], True),
+        # The entity's one declared dimension whose own words name it; a clock, such as Store
+        # opened at, is the time block's and never stands in.
+        ("store", [STORE], True),
+        ("stores", [STORE], True),
+        ("supply", ["dimension.jaffle_supply_name"], True),
+        ("store", ["dimension.jaffle_store_opened_at"], False),
+        # One of several: Customer name and Customer type both name the customer.
+        ("customer", ["dimension.jaffle_customer_name"], False),
+        ("order", [IS_LARGE_ORDER], False),
+        ("order", [HAS_FOOD_ITEM], False),
+        # Another entity's dimension, even one on the same column.
+        ("customer", ["dimension.jaffle_order_customer_id"], False),
+        ("customer", ["dimension.jaffle_customer_history_customer_id"], False),
+        ("order", ["dimension.jaffle_order_lifecycle_order_id"], False),
+        ("item", ["dimension.jaffle_order_has_drink_item"], False),
+        ("product", ["dimension.jaffle_item_product_name"], False),
+        # A term naming part of an entity's label names no entity whole: "customer" is not
+        # Customer segment membership, whose key would split by membership.
+        ("customer", ["dimension.jaffle_customer_segment_membership_membership_id"], False),
+        ("customer segment", ["dimension.jaffle_customer_history_segment"], False),
+        # A composite key: no dimension, nor the whole key, satisfies the guard.
+        ("customer history", ["dimension.jaffle_customer_history_customer_id"], False),
+        (
+            "customer history",
+            [
+                "dimension.jaffle_customer_history_customer_id",
+                "dimension.jaffle_customer_history_valid_from",
+            ],
+            False,
+        ),
+        # A term naming no entity matches a dimension by its own words.
+        ("store name", [STORE], True),
+        ("customer type", [CUSTOMER_TYPE], True),
+    ],
+)
+def test_only_an_entitys_key_or_single_named_dimension_stands_in_for_it(
+    jaffle: Runtime, term: str, group_by: list[str], matched: bool
+) -> None:
+    why = plan_module._dropped_grouping_why(jaffle, f"revenue by {term}", {"group_by": group_by})
+    assert (why is None) is matched
+    if why:
+        assert why["code"] == "PLAN_UNMATCHED_TERMS"
+        assert why["details"]["dropped_groupings"] == [term]
 
 
 @pytest.mark.parametrize(
@@ -537,7 +701,8 @@ def test_only_a_named_grouping_continues_past_a_comma(
     ("term", "changes", "matched"),
     [
         ("the case", {"label": "Case"}, True),
-        ("case", {"id": "dimension.case"}, True),
+        # An id's namespace, model and entity prefix are not the dimension's own words.
+        ("case", {"id": "dimension.case"}, False),
         ("case", {"name": "support.case"}, True),
         ("case", {"aliases": ["Case"]}, True),
         ("case", {"label": "Showcase"}, False),
