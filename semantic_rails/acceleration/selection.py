@@ -17,7 +17,7 @@ from ..compiler_parts.bind import (
     _bound_metric_predicates,
     _measure_count_distinct_key_columns,
 )
-from ..compiler_parts.empty_groups import counts_rows, reads_every_row
+from ..compiler_parts.empty_groups import counts_rows, has_nested_case, reads_every_row
 from ..compiler_parts.indexes import (
     _aggregate_dimension_coverage,
     _dimension_index,
@@ -107,7 +107,9 @@ def _leaf_rollup_blocker(
     if measure.measure_class in {"semi_additive", "snapshot"}:
         # The base path takes each key's snapshot per period, whatever the aggregation.
         return "aggregation_not_reaggregable"
-    if counts_rows(bound.aggregation, measure) and not reads_every_row(measure):
+    if has_nested_case(measure) or (
+        counts_rows(bound.aggregation, measure) and not reads_every_row(measure)
+    ):
         # A group whose rows all fail a CASE condition sums to 0 on the base; the rollup's
         # NULL can't tell it from rows that met it with no value.
         return "aggregation_not_reaggregable"

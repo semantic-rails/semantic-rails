@@ -17,4 +17,10 @@
   `distribution` output keeps the earlier settlement, and its plan and SQL, in every output:
   there a sum whose amounts are all `NULL` still reads `0` where its measure has data in
   scope, and arithmetic beside the distribution settles each operand that way.
+  A measure containing a `case` below its expression root, such as a conditional amount
+  divided by 100, keeps the earlier settlement individually and never reads a rollup:
+  no-match groups read `0` where an amount is known elsewhere in scope; matched-unknown
+  groups also read `0` there and stay `NULL` only when no amount is known in scope.
+  Multi-hop aggregation preserves these empty-group zeros when a physical join column
+  is named `__source_rows`.
   See [Query IR schema](docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0).

@@ -482,8 +482,10 @@ observation determines whether zero is defined, each sum's leaf counts the rows 
 zero goes only to a group with none (never to rows whose amounts are all NULL; a leaf without
 the count is refused). A query with a distribution branch, and a metric predicate's source
 over several measures under a threshold 0 passes, keep the earlier settlement
-(`earlier_settlement` in `compiler_parts/bind.py`) and plan and lower exactly as before. Each
-row count is named `m<i>_rows` beside its measure's `m<i>`, renamed until no output, key or
+(`earlier_settlement` in `compiler_parts/bind.py`) and plan and lower exactly as before. A
+measure whose expression contains a CASE below its root also keeps the earlier settlement
+individually and refuses rollups; lowering refuses a plan that bypasses that routing rule.
+Each row count is named `m<i>_rows` beside its measure's `m<i>`, renamed until no output, key or
 package column has the name, so the alias registry never rewrites it. Base time coverage
 bounds only zero
 substitution on filled, dense or combined leaves. One predicate decides both coverage and

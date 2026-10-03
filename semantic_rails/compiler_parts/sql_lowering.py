@@ -117,6 +117,7 @@ from .empty_groups import (
     counts_rows,
     expr_resolves_to_zero,
     guard_empty_groups,
+    has_nested_case,
     reads_every_row,
     record_leaf_scope,
     record_zero_output,
@@ -1095,6 +1096,17 @@ def _aggregate_relation_leaf_select(
     aggregate: AggregateRelationConfig,
     config: PackageConfig,
 ) -> SqlSelect:
+    nested = [
+        row.bound_measure.measure_id
+        for row in measure_plans
+        if has_nested_case(_measure_index(config)[row.bound_measure.measure_id])
+    ]
+    if nested:
+        raise SemanticLayerError(
+            "EMPTY_GROUPS_UNSETTLED",
+            "A measure containing a nested CASE cannot read a rollup.",
+            details={"measures": nested, "aggregate_relation": aggregate.id},
+        )
     record_rollup_scan(aggregate.id)
     select_fields: list[SqlField] = []
     group_fields: list[Any] = []
@@ -2465,7 +2477,7 @@ def _source_rollup_leaf_select(
     )
     markers = _row_markers(measure_plan, measure, leaf_value_expr)
     preagg_select_fields.extend(
-        SqlField(SqlCall("COUNT", [marker]), "__source_rows") for marker, _ in markers
+        SqlField(SqlCall("COUNT", [marker]), alias) for marker, alias in markers
     )
     preagg_group_fields = list(preagg_fields.values())
 
@@ -2488,7 +2500,7 @@ def _source_rollup_leaf_select(
         SqlField(SqlCall("SUM", [SqlIdentifier(parts=[rollup_name, "__source_value"])]), leaf_alias)
     )
     final_select_fields.extend(
-        SqlField(SqlCall("SUM", [SqlIdentifier(parts=[rollup_name, "__source_rows"])]), alias)
+        SqlField(SqlCall("SUM", [SqlIdentifier(parts=[rollup_name, alias])]), alias)
         for _, alias in markers
     )
 
@@ -5481,6 +5493,11 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 zero,
                 scopes,
                 rows=rows,
+                earlier={
+                    row.bound_measure.alias
+                    for row in plan.measure_plans
+                    if has_nested_case(_measure_index(config)[row.bound_measure.measure_id])
+                },
                 time_key=time_alias if _emits_time_coverage(plan, config) else "",
                 dialect=_dialect(config),
             )

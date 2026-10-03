@@ -20,6 +20,7 @@ from ..errors import SemanticLayerError
 from ..expressions import (
     AggregateExpr,
     ArithmeticExpr,
+    CaseExpr,
     MeasureRefExpr,
     MetricRecipeRefExpr,
     SemanticExpr,
@@ -70,23 +71,36 @@ def counts_rows(aggregation: str, measure: MeasureConfig | None) -> bool:
     """Whether the measure's leaf counts the rows it reads in each group, beside its value.
 
     A sum settles to 0 only where that count is 0; a count is already 0 there. Under the
-    earlier settlement no leaf counts its rows.
+    earlier settlement no leaf counts its rows; a measure with a nested CASE retains that
+    settlement individually.
     """
     if (
         earlier_settlement_applies()
         or measure is None
+        or has_nested_case(measure)
         or not resolves_to_zero(aggregation, measure)
     ):
         return False
     return (aggregation or measure.default_aggregation).lower() not in _COUNTING
 
 
+def has_nested_case(measure: MeasureConfig) -> bool:
+    """A CASE below the expression root keeps base settlement and cannot read a rollup.
+
+    Detect the unsupported shape without interpreting arithmetic or deriving its row marker.
+    """
+    return any(
+        isinstance(node, CaseExpr) and node is not measure.expr for node in sql_nodes(measure.expr)
+    )
+
+
 def reads_every_row(measure: MeasureConfig) -> bool:
     """Whether a sum of the measure reads every row it is given, so a count of the rows says
     whether a group has data. A CASE with no ELSE (or ELSE NULL) reads only the rows its
     conditions keep, which a rollup's pre-aggregated value can't tell apart; the leaf's row
-    marker (``_row_marker``) applies the same test."""
-    return not is_conditional_case(measure.expr)
+    marker (``_row_marker``) applies the same test. A nested CASE cannot prove this either
+    and keeps base settlement instead of deriving a marker."""
+    return not (has_nested_case(measure) or is_conditional_case(measure.expr))
 
 
 def zero_aliases(rows: Iterable[MeasurePlan], config: PackageConfig) -> dict[str, str]:
@@ -167,6 +181,7 @@ def guard_empty_groups(
     scopes: Mapping[str, LeafScope] | None = None,
     *,
     rows: Mapping[str, str] | None = None,
+    earlier: Collection[str] = (),
     time_key: str = "",
     dialect: Any = None,
 ) -> list[SqlCte]:
@@ -176,7 +191,8 @@ def guard_empty_groups(
     the sum reads 0 only where that count is NULL (the group has no row of the measure) or
     0, never where its rows' values are all NULL. A sum without one is refused, as are
     scopes and ``time_key`` without a dialect with time coverage. Inside
-    ``earlier_settlement`` a NULL sum reads 0 wherever its measure has data in scope.
+    ``earlier_settlement`` a NULL sum reads 0 wherever its measure has data in scope. Aliases
+    in ``earlier`` use that same rule individually for measures containing a nested CASE.
     """
     if (scopes or time_key) and not (dialect is not None and dialect.has_time_coverage):
         raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})
@@ -216,7 +232,11 @@ def guard_empty_groups(
                         ctes.append(SqlCte(name=name, query=coverage_select(scope, dialect)))
                         joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
                     seen = SqlBinary(seen, "AND", _loaded_bucket(time_key, name))
-            if aggregation not in _COUNTING and not earlier_settlement_applies():
+            if (
+                aggregation not in _COUNTING
+                and not earlier_settlement_applies()
+                and alias not in earlier
+            ):
                 if alias not in rows:
                     raise _unsettled_error({"measures": [alias], "missing": "row_count"})
                 # A populated sum always survives; a NULL one is 0 only if it read no rows.

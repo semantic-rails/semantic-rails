@@ -857,6 +857,197 @@ def test_a_conditional_sum_is_zero_only_where_no_row_meets_its_condition(shop: R
     assert got[1] == 10
 
 
+def _case_under_arithmetic_config(shop_package: Path) -> Any:
+    config = load_package_config(str(shop_package))
+    expr = parse_config_expression(
+        {
+            "kind": "arithmetic",
+            "op": "divide",
+            "left": {
+                "kind": "case",
+                "whens": [{"when": IN_STORE_A, "then": {"kind": "column", "column": "amount"}}],
+            },
+            "right": {"kind": "literal", "value": 100.0},
+        }
+    )
+    return replace(
+        config,
+        measures=[
+            replace(row, expr=expr) if row.id == SHOP_REVENUE["measure"] else row
+            for row in config.measures
+        ],
+    )
+
+
+@pytest.mark.parametrize("unknown_only", [False, True])
+def test_a_case_under_arithmetic_keeps_the_base_settlement(
+    shop_package: Path, unknown_only: bool
+) -> None:
+    """The fallback makes a no-match group zero when amounts are observed elsewhere; a scope
+    containing only the matched unknown amount remains NULL, as on the base path."""
+    config = replace(_case_under_arithmetic_config(shop_package), aggregate_relations=[])
+    raw = next(
+        row
+        for row in load_package_config(str(shop_package)).measures
+        if row.id == SHOP_REVENUE["measure"]
+    )
+    config = replace(
+        config, measures=[*config.measures, replace(raw, id="measure.shop.raw_revenue")]
+    )
+    rt = Runtime.from_config(config, source_path=str(shop_package))
+    try:
+        query = {
+            "version": 1,
+            "select": _select(revenue=SHOP_REVENUE, raw={"measure": "measure.shop.raw_revenue"}),
+            "group_by": [SHOP_STORE],
+            "time": SHOP_MONTH,
+            **({"where": [{"field": SHOP_ORDER, "op": "=", "value": 7}]} if unknown_only else {}),
+        }
+        response = rt.query(query)
+        month = f"{SHOP_MONTH['temporal_role']}__month"
+        got = {
+            (row[SHOP_STORE], str(row[month])[:7]): row["revenue"] for row in typed_rows(response)
+        }
+        gold = _gold(
+            rt,
+            "WITH amounts AS (SELECT store_id AS s, date_trunc('month', ordered_at) AS month, "
+            "SUM(CASE WHEN store_id = 'a' THEN amount END / 100.0) AS revenue FROM orders "
+            + ("WHERE order_id = 7 " if unknown_only else "")
+            + "GROUP BY 1, 2) SELECT s, month, CASE WHEN COUNT(revenue) OVER () > 0 "
+            "THEN COALESCE(revenue, 0) END AS revenue FROM amounts",
+        )
+        assert got == {(row["s"], str(row["month"])[:7]): row["revenue"] for row in gold}
+        if unknown_only:
+            assert got == {("a", "2024-05"): None}
+        else:
+            assert got[("b", "2023-11")] == 0
+        # The nested CASE fallback must not turn an ordinary sum's unknown amount into zero.
+        assert (
+            next(
+                row
+                for row in typed_rows(response)
+                if row[SHOP_STORE] == "a" and str(row[month])[:7] == "2024-05"
+            )["raw"]
+            is None
+        )
+        compiled = compile_query(config, Registry(config), query)
+        assert_settled_in_one_place(compiled, config)
+    finally:
+        rt.close()
+
+
+@pytest.mark.parametrize("beside_a_distribution", [False, True])
+def test_a_rollup_never_answers_a_case_under_arithmetic(
+    shop_package: Path, beside_a_distribution: bool
+) -> None:
+    config = _case_under_arithmetic_config(shop_package)
+    query = {"select": _select(revenue=SHOP_REVENUE), "group_by": [SHOP_STORE], "time": SHOP_MONTH}
+    if beside_a_distribution:
+        query["select"] += REFUNDS_BESIDE_A_MEDIAN["select"][1:]
+    compiled = compile_query(config, Registry(config), {"version": 1, **query})
+    (leaf,) = compiled["logical_plan"].measure_plans
+    assert leaf.aggregate_relation_id == ""
+    assert set(leaf.aggregate_relation_rejections.values()) == {"aggregation_not_reaggregable"}
+
+
+def test_a_nested_case_forced_onto_a_rollup_is_refused(
+    shop_package: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _case_under_arithmetic_config(shop_package)
+    monkeypatch.setattr(
+        compiler,
+        "_select_aggregate_relation",
+        lambda *args, **kwargs: (config.aggregate_relations[0].id, {}),
+    )
+    with pytest.raises(SemanticLayerError) as raised:
+        compile_query(
+            config,
+            Registry(config),
+            {
+                "version": 1,
+                "select": _select(revenue=SHOP_REVENUE),
+                "group_by": [SHOP_STORE],
+                "time": SHOP_MONTH,
+            },
+        )
+    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
+    assert raised.value.details["measures"] == [SHOP_REVENUE["measure"]]
+
+
+def test_a_source_rollup_count_never_shadows_a_physical_join_column(tmp_path: Path) -> None:
+    """Refunds reach the customer channel through orders; the intermediate count must not
+    read the physical order key named __source_rows as a count of matching refunds."""
+    package = _write_variant(tmp_path, "utc_authored")
+    seed = package / "data" / "seed.sql"
+    seed.write_text(
+        seed.read_text(encoding="utf-8")
+        + "\nALTER TABLE refunds RENAME COLUMN order_id TO __source_rows;\n"
+    )
+    config = load_package_config(str(package))
+    expr = parse_config_expression(
+        {
+            "kind": "case",
+            "whens": [
+                {
+                    "when": {
+                        "kind": "comparison",
+                        "op": "=",
+                        "left": {"kind": "column", "column": "refund_type"},
+                        "right": {"kind": "literal", "value": "goods"},
+                    },
+                    "then": {"kind": "column", "column": "goods_amount"},
+                }
+            ],
+        }
+    )
+    config = replace(
+        config,
+        entities=[
+            replace(
+                row,
+                foreign_keys={
+                    target: [
+                        "__source_rows" if column == "order_id" else column for column in columns
+                    ]
+                    for target, columns in row.foreign_keys.items()
+                },
+            )
+            if row.table == "refunds"
+            else row
+            for row in config.entities
+        ],
+        relationships=[
+            replace(row, source_column="__source_rows", source_columns=["__source_rows"])
+            if row.source_entity == "entity.shop_refund" and row.source_column == "order_id"
+            else row
+            for row in config.relationships
+        ],
+        measures=[
+            replace(row, expr=expr) if row.id == SHOP_GOODS["measure"] else row
+            for row in config.measures
+        ],
+    )
+    rt = Runtime.from_config(config, source_path=str(package))
+    try:
+        channel = "dimension.shop_customer_channel"
+        query = {"version": 1, "select": _select(goods=SHOP_GOODS), "group_by": [channel]}
+        response = rt.query(query)
+        got = {(row[channel], row["goods"]) for row in typed_rows(response)}
+        gold = _gold(
+            rt,
+            "SELECT s.channel, CASE WHEN COUNT(CASE WHEN r.refund_type = 'goods' THEN 1 END) = 0 "
+            "THEN 0 ELSE SUM(CASE WHEN r.refund_type = 'goods' THEN r.goods_amount END) END AS goods "
+            "FROM refunds r LEFT JOIN orders o ON r.__source_rows = o.order_id "
+            "LEFT JOIN signups s ON o.customer_id = s.customer_id GROUP BY 1",
+        )
+        assert got == {(row["channel"], row["goods"]) for row in gold}
+        assert ("web", 0) in got
+        assert "_source_rollup AS" in response["rendered_sql"]
+        assert_settled_in_one_place(compile_query(config, Registry(config), query), config)
+    finally:
+        rt.close()
+
+
 @pytest.mark.parametrize("fill", [False, True])
 def test_a_sum_whose_rows_all_lack_a_value_is_unknown_and_its_count_is_not(
     shop: Runtime, fill: bool

@@ -747,6 +747,14 @@ never answered from a rollup. An explicit non-NULL `ELSE`, including `ELSE 0`, c
 on nonmatching rows, so every row is read: a matching NULL amount plus a nonmatching zero
 sums to `0`, while a group with only matching NULL amounts remains `NULL`.
 
+A measure with a `CASE` below its expression's top level, such as
+`CASE WHEN store_id = 'a' THEN amount END / 100.0`, keeps the earlier settlement
+on the base table and never reads a rollup. Its sum is `0` for a no-match group
+when its measure has a known amount elsewhere in scope. Under this fallback,
+a matched-unknown group also reads `0` when another group has a known amount;
+if no amount is known anywhere in scope, it stays `NULL`. Other measures in the
+query keep their own settlement rule.
+
 A query with a `distribution` output keeps the earlier settlement in every output, which reads
 a group's unknown amounts like no rows: there a sum is `0` in a group whose amounts are all
 NULL, wherever its measure has data in scope, and arithmetic settles each operand that way, so
@@ -774,7 +782,8 @@ stayed `NULL`.
   entity with rows can be `NULL` because one operand is unknown, which can't show whether the
   other measures have data, so `goods + shipping = 0` keeps the orders with no refunds even
   where every refunded order has goods or shipping amounts but never both. In a query with a
-  `distribution` output, every predicate reads unknown amounts that way.
+  `distribution` output, every predicate reads unknown amounts that way. A measure with a
+  nested `CASE` keeps its earlier settlement inside a predicate too.
 - **Filters narrow the scope.** With `where: store = 'x'`, a measure that has no rows at
   store x reads `NULL`, even though the same store reads `0` in a `group_by: store` answer. A
   filter value that matches nothing (a misspelled `product`) reads `NULL`, not a confident 0.

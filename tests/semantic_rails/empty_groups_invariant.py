@@ -15,6 +15,7 @@ from semantic_rails.compiler import resolve_compile_config
 from semantic_rails.compiler_parts.empty_groups import (
     GUARDED_BASE,
     base_reads,
+    has_nested_case,
     sql_nodes,
     zero_aliases,
     zero_outputs,
@@ -88,8 +89,16 @@ def assert_settled_in_one_place(compiled: dict[str, Any], config: PackageConfig)
             for field in settled
             if len(base_reads(field.expression) - {field.alias} - keys) == 1
         ]
+        measures = {measure.id: measure for measure in config.measures}
+        earlier = {
+            row.bound_measure.alias
+            for row in plan.measure_plans
+            if has_nested_case(measures[row.bound_measure.measure_id])
+        }
         sums = [
-            aggregation for aggregation in expected.values() if aggregation == "sum" and not dag
+            aggregation
+            for alias, aggregation in expected.items()
+            if aggregation == "sum" and not dag and alias not in earlier
         ]
         assert len(counted) == len(sums), (
             f"{GUARDED_BASE} reads a row count for {len(counted)} measures, "
