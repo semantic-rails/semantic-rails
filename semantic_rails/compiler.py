@@ -2271,7 +2271,7 @@ def _cross_clock_predicate_error(
         "INVALID_TEMPORAL_BINDING",
         (
             f"The contextual metric_predicate measures {_predicate_metric_label(predicate)!r} "
-            f"on {', '.join(clocks)}, but the query's time is {query.time.temporal_role}. "
+            f"on a different clock (see `compatible`) from the query's {query.time.temporal_role}. "
             "Matching the two by calendar bucket would compare different clocks, so the "
             "query is refused."
         ),
@@ -2283,8 +2283,8 @@ def _cross_clock_predicate_error(
                 {
                     "code": "CHOOSE_PREDICATE_CLOCK",
                     "message": (
-                        f"To apply the threshold per period on {clocks[0]}, set "
-                        "query.time.temporal_role to it. To apply it over all time, set "
+                        "To apply the threshold per period, set query.time.temporal_role "
+                        "to one of `compatible`. To apply it over all time, set "
                         "scope_mode to 'entity_only'."
                     ),
                 }
@@ -3826,7 +3826,7 @@ def _conversion_sources(
             and measure.measure_class in {"event_count", "distinct_population"}
             and _conversion_operand_problem(measure, entities.get(measure.entity)) is None
         ]
-        example = f", for example {', '.join(map(repr, candidates[:3]))}" if candidates else ""
+        example = " (see `candidate_measures`)" if candidates else ""
         raise SemanticLayerError(
             "CONVERSION_NOT_SUPPORTED",
             (

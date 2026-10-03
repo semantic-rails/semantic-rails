@@ -54,6 +54,15 @@ INSERT INTO signups VALUES
   (106, TIMESTAMP '2024-06-25 03:30:00', 'web'),
   (107, TIMESTAMP '2024-06-10 08:00:00', 'store');
 
+-- Customer 101 has no version at its first or last order, and order 3 is exactly
+-- the boundary between its versions. Customer 104's order is at its validity end.
+CREATE TABLE customer_history (customer_id INTEGER, valid_from TIMESTAMP, valid_to TIMESTAMP);
+INSERT INTO customer_history VALUES
+  (101, TIMESTAMP '2023-11-10 00:00:00', TIMESTAMP '2023-12-01 02:00:00'),
+  (101, TIMESTAMP '2023-12-01 02:00:00', TIMESTAMP '2024-01-01 00:00:00'),
+  (102, TIMESTAMP '2023-11-20 23:30:00', NULL),
+  (104, TIMESTAMP '2024-03-01 00:00:00', TIMESTAMP '2024-03-01 02:00:00');
+
 -- Refunds pivoted by type: a goods refund fills goods_amount and a shipping refund fills
 -- shipping_amount, each leaving the other columns NULL, and tax_amount is never filled. Order 8
 -- (no store) and every order but 2, 4, 6 and 7 have no refund. Order 2 has two goods refunds,

@@ -1056,6 +1056,14 @@ caller-supplied `group_by` settles a shared non-root grouping only when the
 draft adds no competing match. No heuristic match alone makes a held draft
 ready.
 
+Catalog candidate lists added during validation and error enrichment apply the
+same visibility check before producing recovery hints or near-match suggestions.
+Hidden candidates are omitted, and an unresolved policy context withholds alternatives.
+An ambiguous filter alias with fewer than two visible matches is refused as an
+unknown field; validation never selects its remaining match. Error messages refer
+to structured clock alternatives without embedding catalog IDs. Package authoring
+validation retains the full catalog for reference suggestions.
+
 Validate or execute `best.query_ir` directly. `next` carries `ready_for` and optional
 `valid_values` calls, without duplicating the query. For `detail="best"`, fallback drift
 reasons use slot paths in `best.trace.intent_slots` and `why.details.fallback_slots`

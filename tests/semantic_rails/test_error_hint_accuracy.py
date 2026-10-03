@@ -151,8 +151,8 @@ def test_object_suggestions_respect_known_or_uncertain_visibility(
     suggestions = object_id_suggestions(
         config, f"{missing_kind}.synthetic.private_fee", hidden_ids=hidden_ids
     )
-    # Without a resolved context, preserve only the existing same-kind fuzzy behavior.
-    assert suggestions == ([] if visibility_known else [fuzzy_match])
+    # Unresolved visibility cannot authorize even same-kind fuzzy disclosure.
+    assert suggestions == []
 
 
 def test_existing_closest_matches_cannot_bypass_visibility_filter(package_config_factory):

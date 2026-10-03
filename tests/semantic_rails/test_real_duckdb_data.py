@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import duckdb
+import pytest
+
+from semantic_rails.compiler import compile_query
 from semantic_rails.expressions import AggregateExpr, RollingExpr
 from semantic_rails.metadata import _expr_summary, catalog_payload, valid_values_payload
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import copy_package_config
 
 PACKAGE_CASES = {
     "jaffle_shop": {
@@ -23,6 +28,51 @@ PACKAGE_CASES = {
         "expected_root": "entity.jaffle_order",
     },
 }
+
+
+@pytest.mark.parametrize("temporal", [True, False], ids=["history-key", "co-located-key"])
+def test_customer_key_grouping_matches_reference_sql(tmp_path, temporal):
+    package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    dimension = (
+        "dimension.jaffle_customer_history_customer_id"
+        if temporal
+        else "dimension.jaffle_customer_id"
+    )
+    month = "temporal_role.jaffle_order_time__month"
+    query = {
+        "version": 1,
+        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+        "group_by": [dimension],
+        "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+    }
+    reference = (
+        "SELECT h.customer_id, DATE_TRUNC('month', o.ordered_at), COUNT(DISTINCT o.order_id)"
+        " FROM jaffle_order o LEFT JOIN jaffle_customer_history h"
+        " ON o.customer_id = h.customer_id AND o.ordered_at >= h.valid_from"
+        " AND (o.ordered_at < h.valid_to OR h.valid_to IS NULL) GROUP BY 1, 2"
+        if temporal
+        else "SELECT customer_id, DATE_TRUNC('month', ordered_at), COUNT(DISTINCT order_id)"
+        " FROM jaffle_order GROUP BY 1, 2"
+    )
+    runtime = Runtime.from_path(str(package))
+    try:
+        compiled = compile_query(runtime.config, runtime.registry, query)
+        result = runtime.query(query)
+        with duckdb.connect(str(package / "jaffle_shop.duckdb"), read_only=True) as connection:
+            expected = {
+                (customer, bucket.isoformat()): orders
+                for customer, bucket, orders in connection.execute(reference).fetchall()
+            }
+    finally:
+        runtime.close()
+
+    actual = {(row[dimension], row[month]): row["orders"] for row in result["rows"]}
+    assert actual == expected
+    assert result["row_count"] == len(expected) == (60 if temporal else 5782)
+    if temporal:
+        assert "LEFT JOIN jaffle_customer_history" in compiled["sql"]
+    else:
+        assert "JOIN" not in compiled["sql"]
 
 
 def test_runtime_flows_work_on_real_duckdb_data(runtime_factory):

@@ -64,7 +64,9 @@ from .common import (
     _add_policy_context_args,
     _add_response_detail_args,
     _package_ref_from_args,
+    _policy_context_from_args,
     _print_stderr,
+    _query_payload_from_args,
 )
 from .output import _print_error_envelope
 
@@ -997,12 +999,18 @@ def main() -> None:
         # Same diagnostics enrichment as the HTTP boundary
         # (SemanticHTTPService.exception_payload) and the MCP adapter
         # (_error_response) — closest_matches on OBJECT_NOT_FOUND etc.
-        # Enrichment is a pure read on the in-memory config, but it must
-        # never mask the original error, hence the suppress.
         config = _config_for_error_enrichment(args)
         if config is not None:
-            with contextlib.suppress(Exception):
-                exc = _enrich_runtime_error(exc, config)
+            policy_context: dict[str, Any] | None
+            try:
+                policy_context = (
+                    _query_payload_from_args(args).get("policy_context", {})
+                    if getattr(args, "query_json", None)
+                    else _policy_context_from_args(args)
+                )
+            except Exception:  # noqa: BLE001 — uncertain visibility withholds alternatives
+                policy_context = None
+            exc = _enrich_runtime_error(exc, config, policy_context)
         issue = exception_issue(exc, stage="cli")
         if getattr(args, "human_cli", False) and not getattr(args, "json", False):
             _print_stderr(f"error [{issue['code']}]: {issue['message']}")

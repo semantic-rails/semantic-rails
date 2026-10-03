@@ -2,9 +2,22 @@ graph:
   entities:
     order: {label: Order, key: [order_id], model: orders}
     customer: {label: Customer, key: [customer_id], model: signups}
+    customer_history: {label: Customer history, key: [customer_id, valid_from],
+      model: customer_history, allowed_as_root: false}
     refund: {label: Refund, key: [refund_id], model: refunds}
     clock_edge: {label: Clock edge, key: [id], model: clock_edges}
     default_calendar: {label: Calendar, kind: time, key: [date_day], model: default_calendar,
       allowed_as_root: false}
     fiscal_calendar: {label: Fiscal calendar, kind: time, key: [date_day],
       model: fiscal_calendar, allowed_as_root: false}
+  relationships:
+    order_customer_history:
+      id: relationship.order_customer_history
+      entities: [order, customer_history]
+      cardinality: many_to_one
+      target: [customer_id]
+      allowed_directions: [forward]
+      safety: requires_rewrite
+      temporal_validity:
+        valid_from: customer_history.valid_from
+        valid_to: customer_history.valid_to

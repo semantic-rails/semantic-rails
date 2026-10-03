@@ -406,4 +406,6 @@ def test_operands_counting_the_conversion_entity_on_one_clock_are_rejected(
         error = report["errors"][0]
         assert error["code"] == "CONVERSION_NOT_SUPPORTED"
         assert "the 28-day window can never apply" in error["message"]
-        assert "for example 'measure.jaffle.order_count'" in error["message"]
+        assert "see `candidate_measures`" in error["message"]
+        assert "measure.jaffle.order_count" not in error["message"]
+        assert "measure.jaffle.order_count" in error["details"]["candidate_measures"]

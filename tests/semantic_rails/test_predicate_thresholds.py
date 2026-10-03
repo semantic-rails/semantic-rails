@@ -768,7 +768,8 @@ def test_a_contextual_predicate_on_another_clock_is_refused_with_choices(runtime
     assert error.details["requested"] == "temporal_role.pred_enrolled_at"
     assert error.details["compatible"] == ["temporal_role.pred_active_on"]
     hint = error.details["recovery_hints"][0]["message"]
-    assert "temporal_role.pred_active_on" in hint and "entity_only" in hint
+    assert "to one of `compatible`" in hint and "entity_only" in hint
+    assert "temporal_role.pred_active_on" not in hint
 
 
 def test_a_predicate_on_the_query_clock_needs_no_alignment(runtime):
