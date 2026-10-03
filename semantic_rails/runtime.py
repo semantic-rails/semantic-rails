@@ -2052,7 +2052,11 @@ class Runtime:
         binding: BoundQuery | None = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
-        normalized = normalize_query(payload).to_dict()
+        normalized = (
+            binding.plan.query
+            if binding is not None
+            else normalize_query(payload, config=self._config).to_dict()
+        )
         key = compilation_cache_key(
             package_hash=self._package_fingerprint,
             normalized_query=normalized,
