@@ -903,7 +903,9 @@ _BEFORE = [
     _Before("revenue by store, statuses", UNMATCHED),
     _Before("food revenue vs drink revenue by store, customer type", UNMATCHED),
     # The comparison buckets by month, which the question never asks for.
-    _Before("food revenue vs drink revenue by store and customer type", OK, held=True, code=UNASKED),
+    _Before(
+        "food revenue vs drink revenue by store and customer type", OK, held=True, code=UNASKED
+    ),
     _Before("show monthly revenue by store", OK),
     _Before("order count by name", OK, held=True),
     _Before("order count by customer name", OK),
