@@ -1152,6 +1152,37 @@ def enrich_diagnostic_candidates(
 ) -> SemanticLayerError:
     """Filter compiler-supplied catalog alternatives before hints become text."""
     details = dict(exc.details or {})
+    if (
+        exc.code == "AMBIGUOUS_PATH"
+        and details.get("start")
+        and details.get("clarification", {}).get("kind") == "route"
+    ):
+        from .fanout import visible_route, visible_route_rows
+
+        start = details["start"]
+        clarification = dict(details["clarification"])
+        options = []
+        for option in clarification["options"]:
+            if not visible_route(config, start, option["relationship_path"], hidden_ids):
+                continue
+            option = dict(option)
+            if "conflicts_with" in option:
+                option["conflicts_with"] = visible_route_rows(
+                    config, option["conflicts_with"], hidden_ids
+                )
+            options.append(option)
+        clarification["options"] = options
+        if options:
+            message = (
+                f"Ambiguous path from '{start}' to '{details['target']}'. {clarification['question']} "
+                + "; ".join(option["meaning"] for option in options)
+            )
+        else:
+            message = "This question needs a route you can't see; ask your admin."
+            clarification["question"] = message
+            details = {"reason": details["reason"], "hint": message}
+        details["clarification"] = clarification
+        return SemanticLayerError(exc.code, message, details=details)
     if exc.code == "AMBIGUOUS_ALIAS":
         rows = details.get("candidates", [])
         candidate_ids = [row["id"] if isinstance(row, dict) else row for row in rows]
