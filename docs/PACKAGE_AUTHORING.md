@@ -851,9 +851,12 @@ own model's row grain; parent-rollup declarations are not supported.
 To migrate existing packages, delete `subject_entity` and `aggregation_entity`
 lines from `defaults.measure` and individual measures. Defaults are checked once
 per package, with an error naming `defaults.measure.<key>` and the line to delete.
-`rollup_safe` must be a mapping containing only `reverse`; forward declarations,
-the former list form, and `rollup_safe_aggregations` in model joins or relationship
-defaults fail loading with `INVALID_CONFIG` naming the relationship.
+In `graph.relationships`, `rollup_safe` must be a mapping containing only `reverse`;
+forward declarations, the former list form, and `rollup_safe_aggregations` in model
+joins or relationship defaults fail loading with `INVALID_CONFIG` naming the relationship.
+Model joins and `defaults.relationship` do not accept `rollup_safe` in any form;
+declare reverse permissions in `graph.relationships` using `rollup_safe.reverse`.
+A `rollup_safe` default is refused even when no relationship uses it.
 Authored model joins are checked before graph relationships override them;
 removed keys are refused even when their value is `null`.
 

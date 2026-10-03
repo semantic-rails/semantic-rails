@@ -24,10 +24,18 @@ _JOIN_KEYS: frozenset[str] = frozenset(
         "target_key_type",
         "join_semantics",
         "rollup_safe_aggregations_reverse",
-        "rollup_safe",
         "entities",
     }
 )
+
+
+def _reject_unconsumed_rollup_safe(spec: dict[str, Any], *, location: str) -> None:
+    if "rollup_safe" in spec:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"{location}.rollup_safe is not supported; use graph.relationships "
+            "with rollup_safe.reverse for reverse population-count rewrite permissions",
+        )
 
 
 def _slug(value: str) -> str:
@@ -102,10 +110,15 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
     graph = dict(out.get("graph", {}) or {})
     graph_entities = dict(graph.get("entities", {}) or {})
     models = _model_mapping(out)
+    defaults = dict(out.get("defaults", {}) or {})
+    _reject_unconsumed_rollup_safe(
+        dict(defaults.get("relationship", {}) or {}), location="defaults.relationship"
+    )
     # Validate authored joins before graph projection can replace their specs.
     for model_id, model in models.items():
         for join_key, join_raw in dict(model.get("joins", {}) or {}).items():
             join = dict(join_raw or {})
+            _reject_unconsumed_rollup_safe(join, location=f"models.{model_id}.joins.{join_key}")
             unknown = sorted(key for key in set(join) - _JOIN_KEYS if not str(key).startswith("_"))
             if unknown:
                 rel_id = str(join.get("id", f"relationship.{_slug(model_id)}_{_slug(join_key)}"))
