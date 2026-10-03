@@ -270,9 +270,12 @@ def test_unknown_construct_words_need_the_realized_construct(jaffle: Runtime) ->
     assert unconsumed_unknown_words(jaffle, "distinct customers", query) == []
 
 
-def test_light_verbs_do_not_hide_unknown_modifiers(jaffle: Runtime) -> None:
-    assert plan_payload(jaffle, intent="how much revenue did we make")["status"] == "ok"
-    _not_ready(plan_payload(jaffle, intent="how much completed revenue did we make"), ["completed"])
+@pytest.mark.parametrize("verb", ["make", "made", "earn", "earned", "generate", "generated"])
+def test_light_verbs_do_not_hide_unknown_modifiers(jaffle: Runtime, verb: str) -> None:
+    assert plan_payload(jaffle, intent=f"how much revenue did we {verb}")["status"] == "ok"
+    _not_ready(
+        plan_payload(jaffle, intent=f"how much completed revenue did we {verb}"), ["completed"]
+    )
 
 
 @pytest.mark.parametrize("name", ["period", "show", "date"])
@@ -600,6 +603,9 @@ def test_every_draft_goes_through_the_one_gate(
     gated = plan_payload(jaffle, intent="orders by store, customer type")
     assert gated["best"]["validation_ok"] is True
     _not_ready(gated, ["customer", "type"])
+    unknown = plan_payload(jaffle, intent="orders decile by store")
+    assert unknown["best"]["validation_ok"] is True
+    _not_ready(unknown, ["decile"])
 
 
 def test_a_long_question_is_read_to_its_last_word(

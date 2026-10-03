@@ -2219,6 +2219,8 @@ def _honored_clause_spans(runtime: Any, text: str, query: dict[str, Any]) -> lis
         for phrase, rows in _value_phrases(runtime._config).items():
             pattern = re.escape(phrase).replace(r"\ ", r"[\s_-]+") + r"\b"
             value = re.match(pattern, lowered[marker.end() :])
+            if value is None:
+                continue
             honored = (
                 any(
                     predicates[dimension].drops(row.value)
@@ -2229,7 +2231,7 @@ def _honored_clause_spans(runtime: Any, text: str, query: dict[str, Any]) -> lis
                 if negative
                 else bool(_positive_filter_evidence(runtime, query, phrase))
             )
-            if value and honored:
+            if honored:
                 spans.append((marker.start(), marker.end() + value.end()))
     return spans
 
