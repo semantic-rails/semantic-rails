@@ -877,8 +877,19 @@ def _dropped_grouping_why(
         return None
     unclear = [term for term in dropped if term in ambiguous]
     missing = [term for term in dropped if term not in ambiguous]
+    # An option removes every draft grouping its term matches. When that could remove a
+    # grouping another term needs, options would overwrite each other, so offer none.
+    removals = [
+        {row.id for row in named} & set(query.get("group_by") or [])
+        for term, named in zip(terms, matches, strict=True)
+        if term in unclear
+    ]
+    settled = {grouped[index].id for index in assigned}
+    overlap = any(ids & settled for ids in removals) or any(
+        first & second for index, first in enumerate(removals) for second in removals[index + 1 :]
+    )
     clarification: dict[str, Any] = {}
-    if unclear:
+    if unclear and not overlap:
         options = []
         for term, named in zip(terms, matches, strict=True):
             if term not in unclear:
@@ -940,7 +951,7 @@ def _dropped_grouping_why(
             [
                 f"The grouping by {', '.join(unclear)} may be a dimension of any of several "
                 "entities, none of them the measure's own, so plan doesn't pick one or call the "
-                "draft ready." + (multiple_recovery if len(unclear) > 1 else "")
+                "draft ready." + (multiple_recovery if len(unclear) > 1 and not overlap else "")
             ]
             if unclear
             else []
@@ -962,7 +973,12 @@ def _dropped_grouping_why(
                     "Find a dimension for each grouping with discover, add the missing ones to "
                     "best.query_ir group_by, then validate; or ask again without those groupings."
                     + (
-                        multiple_recovery
+                        " Two groupings could replace the same draft dimension, so plan offers "
+                        "no options: ask the user which dimension each grouping the question "
+                        "lists means, then make exactly those ids best.query_ir group_by and "
+                        "validate."
+                        if overlap
+                        else multiple_recovery
                         if len(unclear) > 1
                         else " Apply an option's group_by, where and order_by to best.query_ir, then validate."
                         if unclear

@@ -22,7 +22,10 @@ STORE = "dimension.store_district"
 ITEM_NAME = "dimension.item_name"
 CUSTOMER_NAME = "dimension.customer_name"
 JAFFLE_STORE = "dimension.jaffle_store_name"
+JAFFLE_CUSTOMER = "dimension.jaffle_customer_name"
 PRODUCT_TYPE = "dimension.jaffle_product_type"
+ITEM_PRODUCT_TYPE = "dimension.jaffle_item_product_type"
+ITEM_PRODUCT_NAME = "dimension.jaffle_item_product_name"
 
 
 @pytest.fixture()
@@ -282,6 +285,93 @@ def test_multiple_ambiguous_grouping_options_compose(runtime_factory, tmp_path, 
         assert actual == expected
     finally:
         runtime.close()
+
+
+def _assert_no_grouping_options(why, ambiguous):
+    assert why["code"] == "PLAN_UNMATCHED_TERMS"
+    assert why["details"]["ambiguous_groupings"] == ambiguous
+    assert "clarification" not in why["details"]
+    text = json.dumps(why)
+    assert '"replaces"' not in text
+    assert '"group_by"' not in text
+    hint = why["recovery_hints"][0]
+    assert hint["kind"] == "clarify_grouping"
+    assert "ask the user" in hint["message"]
+    assert "replaces" not in why["message"] + hint["message"]
+
+
+@pytest.mark.parametrize(
+    ("path", "intent", "ambiguous"),
+    [
+        # The draft groups by customer and item product name; "name" could replace both.
+        ("primary", "order count by name and product name", ["name", "product name"]),
+        # "name" could replace the store-name grouping "store name" settles.
+        ("primary", "order count by store name and name", ["name"]),
+        ("fallback", "order count by store name and name", ["name"]),
+    ],
+)
+def test_terms_that_could_replace_the_same_grouping_offer_no_options(
+    runtime_factory, monkeypatch, path, intent, ambiguous
+):
+    runtime = runtime_factory("jaffle_shop")
+    _force_fallback(runtime, monkeypatch, intent, path)
+    payload = plan_payload(runtime, intent=intent)
+    assert payload["status"] == "low_confidence", payload.get("why")
+    assert "execute" not in payload.get("next", {}).get("ready_for", [])
+    _assert_no_grouping_options(payload["why"], ambiguous)
+
+
+def test_fallback_draft_without_overlap_keeps_composable_options(runtime_factory, monkeypatch):
+    runtime = runtime_factory("jaffle_shop")
+    intent = "order count by name and product name"
+    _force_fallback(runtime, monkeypatch, intent, "fallback")
+    payload = plan_payload(runtime, intent=intent)
+    assert payload["status"] == "low_confidence", payload.get("why")
+    assert "execute" not in payload["next"].get("ready_for", [])
+    # Only "name" has a draft grouping to replace, so the choices can't overwrite each other.
+    draft = payload["best"]["query_ir"]
+    assert draft["group_by"] == [JAFFLE_CUSTOMER]
+    options = payload["why"]["details"]["clarification"]["options"]
+    chosen = [
+        next(option for option in options if (option["term"], option["id"]) == pick)
+        for pick in (("name", JAFFLE_STORE), ("product name", ITEM_PRODUCT_NAME))
+    ]
+    assert [option["replaces"] for option in chosen] == [[JAFFLE_CUSTOMER], []]
+    queries = []
+    for choices in (chosen, chosen[::-1]):
+        query = deepcopy(draft)
+        for option in choices:
+            replaced = set(option["replaces"])
+            query["group_by"] = sorted((set(query["group_by"]) - replaced) | {option["id"]})
+            query["order_by"] = [
+                item for item in query.get("order_by", []) if item["field"] not in replaced
+            ]
+        queries.append(query)
+    assert queries[0] == queries[1]
+    assert queries[0]["group_by"] == [ITEM_PRODUCT_NAME, JAFFLE_STORE]
+    assert runtime.validate(queries[0])["ok"]
+    rows = runtime.query(queries[0])["rows"]
+    alias = queries[0]["select"][0]["as"]
+    actual = sorted((row[JAFFLE_STORE], row[ITEM_PRODUCT_NAME], row[alias]) for row in rows)
+    runtime.close()
+    with duckdb.connect(runtime.db_path, read_only=True) as connection:
+        expected = connection.execute(
+            "SELECT s.store_name, i.product_name, COUNT(DISTINCT o.order_id) "
+            "FROM jaffle_order o JOIN jaffle_store s ON o.store_id = s.store_id "
+            "JOIN jaffle_item i ON o.order_id = i.order_id GROUP BY 1, 2 ORDER BY 1, 2"
+        ).fetchall()
+    assert actual
+    assert actual == expected
+
+
+def test_settled_grouping_overlap_offers_no_options_for_several_terms(runtime_factory):
+    runtime = runtime_factory("jaffle_shop")
+    intent = "order count by store name, name and product type"
+    draft = plan_payload(runtime, intent=intent)["best"]["query_ir"]
+    query = {**draft, "group_by": [JAFFLE_STORE, JAFFLE_CUSTOMER, ITEM_PRODUCT_TYPE]}
+    assert runtime.validate(query)["ok"]
+    why = plan_module._dropped_grouping_why(runtime, intent, query)
+    _assert_no_grouping_options(why, ["name", "product type"])
 
 
 @pytest.mark.parametrize("shop", ["plural_store"], indirect=True)
