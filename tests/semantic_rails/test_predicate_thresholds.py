@@ -807,14 +807,15 @@ def test_entity_only_scope_is_the_lifetime_alternative(runtime):
 
 
 def test_a_same_clock_contextual_anti_join_by_a_grouped_dimension_keeps_only_real_keys(runtime):
-    # Orders per status and month from customers whose revenue that month is under 60. Order 5
-    # has no customer and order 2 no status: neither is a customer "with no orders that month".
+    # Orders per status and month from customers whose revenue in that context is under 60.
+    # A NULL status remains a real group; order 5, with no customer, cannot qualify.
     expected = {
         (status, month): count
         for status, month, count in _gold(
             "select o.status, strftime(date_trunc('month', o.ordered_at), '%Y-%m'), count(*) "
             "from orders o where o.customer_id is not null and (select sum(x.amount) from orders x "
             "where x.customer_id = o.customer_id "
+            "and x.status is not distinct from o.status "
             "and date_trunc('month', x.ordered_at) = date_trunc('month', o.ordered_at)) < 60 "
             "group by 1, 2"
         )
@@ -834,14 +835,15 @@ def test_a_same_clock_contextual_anti_join_by_a_grouped_dimension_keeps_only_rea
         for row in rows
     }
     assert got == expected == {(None, "2025-02"): 1, ("placed", "2025-02"): 1}
-    # Every key the anti-join matches on, context and period included, must be present.
+    # Entity and period keys must be present; a NULL attribute is a valid context group.
     sql = " ".join(runtime.compile(query)["rendered_sql"].split())
     for key in (
         "orders.customer_id",
-        "orders.order_id",
         "DATE_TRUNC('month', CAST(orders.ordered_at AS TIMESTAMP))",
     ):
         assert f"AND {key} IS NOT NULL" in sql
+    assert "AND orders.order_id IS NOT NULL" not in sql
+    assert "AND orders.status IS NOT NULL" not in sql
 
 
 @pytest.mark.xfail(

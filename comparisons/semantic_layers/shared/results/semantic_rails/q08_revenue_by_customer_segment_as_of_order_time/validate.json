@@ -85,10 +85,6 @@
             "join_semantics": "many_to_one",
             "proof_class": "temporal_validity",
             "relationship_id": "relationship.order_to_customer_history",
-            "rollup_safe_aggregations": [
-              "sum",
-              "count"
-            ],
             "safety": "requires_rewrite",
             "source_key_role": "foreign",
             "target_key_role": "primary",
@@ -103,8 +99,8 @@
     },
     "compile_stats": {
       "cache_hit": false,
-      "cache_lookup_ms": 0.597,
-      "compile_ms": 0.232,
+      "cache_lookup_ms": 0.672,
+      "compile_ms": 0.261,
       "dialect": "duckdb",
       "physical_plan_nodes": 5
     },
@@ -130,10 +126,6 @@
                   "join_semantics": "",
                   "label": "Order to Customer history",
                   "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-                  "rollup_safe_aggregations": [
-                    "sum",
-                    "count"
-                  ],
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "requires_rewrite",
                   "source_column": "customer_id",
@@ -243,10 +235,6 @@
               "join_semantics": "",
               "label": "Order to Customer history",
               "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-              "rollup_safe_aggregations": [
-                "sum",
-                "count"
-              ],
               "rollup_safe_aggregations_reverse": [],
               "safety": "requires_rewrite",
               "source_column": "customer_id",
@@ -392,10 +380,6 @@
                     "join_semantics": "",
                     "label": "Order to Customer history",
                     "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-                    "rollup_safe_aggregations": [
-                      "sum",
-                      "count"
-                    ],
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "requires_rewrite",
                     "source_column": "customer_id",
@@ -505,10 +489,6 @@
                 "join_semantics": "",
                 "label": "Order to Customer history",
                 "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-                "rollup_safe_aggregations": [
-                  "sum",
-                  "count"
-                ],
                 "rollup_safe_aggregations_reverse": [],
                 "safety": "requires_rewrite",
                 "source_column": "customer_id",
@@ -601,10 +581,6 @@
                     "join_semantics": "",
                     "label": "Order to Customer history",
                     "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-                    "rollup_safe_aggregations": [
-                      "sum",
-                      "count"
-                    ],
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "requires_rewrite",
                     "source_column": "customer_id",
@@ -942,10 +918,6 @@
                     "join_semantics": "",
                     "label": "Order to Customer history",
                     "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-                    "rollup_safe_aggregations": [
-                      "sum",
-                      "count"
-                    ],
                     "rollup_safe_aggregations_reverse": [],
                     "safety": "requires_rewrite",
                     "source_column": "customer_id",
@@ -1141,10 +1113,6 @@
                       "join_semantics": "",
                       "label": "Order to Customer history",
                       "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-                      "rollup_safe_aggregations": [
-                        "sum",
-                        "count"
-                      ],
                       "rollup_safe_aggregations_reverse": [],
                       "safety": "requires_rewrite",
                       "source_column": "customer_id",
@@ -1767,10 +1735,6 @@
                   "join_semantics": "",
                   "label": "Order to Customer history",
                   "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-                  "rollup_safe_aggregations": [
-                    "sum",
-                    "count"
-                  ],
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "requires_rewrite",
                   "source_column": "customer_id",
@@ -1880,10 +1844,6 @@
               "join_semantics": "",
               "label": "Order to Customer history",
               "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-              "rollup_safe_aggregations": [
-                "sum",
-                "count"
-              ],
               "rollup_safe_aggregations_reverse": [],
               "safety": "requires_rewrite",
               "source_column": "customer_id",
@@ -1976,10 +1936,6 @@
                   "join_semantics": "",
                   "label": "Order to Customer history",
                   "name": "jaffle.Order_TO_jaffle.CustomerHistory",
-                  "rollup_safe_aggregations": [
-                    "sum",
-                    "count"
-                  ],
                   "rollup_safe_aggregations_reverse": [],
                   "safety": "requires_rewrite",
                   "source_column": "customer_id",
@@ -2274,10 +2230,6 @@
             "join_semantics": "many_to_one",
             "proof_class": "temporal_validity",
             "relationship_id": "relationship.order_to_customer_history",
-            "rollup_safe_aggregations": [
-              "sum",
-              "count"
-            ],
             "safety": "requires_rewrite",
             "source_key_role": "foreign",
             "target_key_role": "primary",
@@ -2328,7 +2280,7 @@
   "request_context": {},
   "sql_profile": "audit",
   "status": "ok",
-  "timing_ms": 3.032,
+  "timing_ms": 3.395,
   "trace": {
     "fallback": {
       "reason": "",
@@ -2399,11 +2351,105 @@
     {
       "code": "ROUTE_COLOCATED_KEY",
       "details": {
+        "alternatives": [
+          {
+            "relationship_path": [
+              "relationship.order_lifecycle_order",
+              "relationship.order_lifecycle_to_customer_history"
+            ],
+            "source_entity": "entity.jaffle_order",
+            "target_entity": "entity.jaffle_customer_history"
+          },
+          {
+            "relationship_path": [
+              "relationship.orders_customer",
+              "relationship.customer_history_customer"
+            ],
+            "source_entity": "entity.jaffle_order",
+            "target_entity": "entity.jaffle_customer_history"
+          },
+          {
+            "relationship_path": [
+              "relationship.order_lifecycle_order",
+              "relationship.order_lifecycle_customer",
+              "relationship.customer_history_customer"
+            ],
+            "source_entity": "entity.jaffle_order",
+            "target_entity": "entity.jaffle_customer_history"
+          },
+          {
+            "relationship_path": [
+              "relationship.orders_customer",
+              "relationship.order_lifecycle_customer",
+              "relationship.order_lifecycle_to_customer_history"
+            ],
+            "source_entity": "entity.jaffle_order",
+            "target_entity": "entity.jaffle_customer_history"
+          },
+          {
+            "relationship_path": [
+              "relationship.orders_store",
+              "relationship.order_lifecycle_store",
+              "relationship.order_lifecycle_to_customer_history"
+            ],
+            "source_entity": "entity.jaffle_order",
+            "target_entity": "entity.jaffle_customer_history"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.storefront_sessions_customer",
+              "relationship.customer_history_customer"
+            ],
+            "source_entity": "entity.jaffle_order",
+            "target_entity": "entity.jaffle_customer_history"
+          },
+          {
+            "relationship_path": [
+              "relationship.orders_store",
+              "relationship.order_lifecycle_store",
+              "relationship.order_lifecycle_customer",
+              "relationship.customer_history_customer"
+            ],
+            "source_entity": "entity.jaffle_order",
+            "target_entity": "entity.jaffle_customer_history"
+          },
+          {
+            "relationship_path": [
+              "relationship.orders_store",
+              "relationship.storefront_sessions_store",
+              "relationship.storefront_sessions_customer",
+              "relationship.customer_history_customer"
+            ],
+            "source_entity": "entity.jaffle_order",
+            "target_entity": "entity.jaffle_customer_history"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.storefront_sessions_customer",
+              "relationship.order_lifecycle_customer",
+              "relationship.order_lifecycle_to_customer_history"
+            ],
+            "source_entity": "entity.jaffle_order",
+            "target_entity": "entity.jaffle_customer_history"
+          },
+          {
+            "relationship_path": [
+              "relationship.storefront_sessions_order",
+              "relationship.storefront_sessions_store",
+              "relationship.order_lifecycle_store",
+              "relationship.order_lifecycle_to_customer_history"
+            ],
+            "source_entity": "entity.jaffle_order",
+            "target_entity": "entity.jaffle_customer_history"
+          }
+        ],
         "route": [
           "relationship.order_to_customer_history"
         ]
       },
-      "message": "Order \u2192 Customer history (own key)",
+      "message": "the Order's Customer history (own key)",
       "object_ids": [
         "entity.jaffle_order",
         "entity.jaffle_customer_history"

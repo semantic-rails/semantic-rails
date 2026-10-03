@@ -400,7 +400,7 @@ class _Importer:
             default = default if spec else "sum" if "sum" in aggs or not aggs else min(aggs)
             name = measure_id.split(".", 1)[-1]
             roles = [r for r, entity in self.role_entities.items() if entity == row["entity"]]
-            row.update(subject_entity=row["entity"], aggregation_entity=row["entity"], name=name)
+            row.update(name=name)
             row.update(default_aggregation=default, allowed_aggregations=allowed)
             row.update(invalid_aggregations=invalid, measure_class=measure_class)
             row["suggested_aggregations"] = _suggested_aggregations(default, allowed, measure_class)

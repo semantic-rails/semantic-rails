@@ -248,11 +248,7 @@ def record_bound_object(row: Any, config: PackageConfig) -> None:
     if dependencies is None or row is None:
         return
     ids = {row.id}
-    if isinstance(row, MeasureConfig):
-        ids.update(
-            value for value in (row.entity, row.subject_entity, row.aggregation_entity) if value
-        )
-    elif isinstance(row, DimensionConfig):
+    if isinstance(row, (MeasureConfig, DimensionConfig)):
         ids.add(row.entity)
     elif isinstance(row, TemporalRoleConfig):
         ids.add(row.dimension)

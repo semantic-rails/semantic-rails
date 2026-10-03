@@ -13,6 +13,7 @@ from ..acceleration.routing import aggregate_routing_report, record_rollup_scan
 from ..acceleration.selection import recombine_aggregation
 from ..ast import (
     ChildGroup,
+    NormalizedQuery,
     child_groups,
     is_child_group,
     normalize_query,
@@ -54,6 +55,7 @@ from ..fanout import (
     resolve_path,
 )
 from ..ir import (
+    BoundMeasure,
     LogicalPlan,
     MeasurePlan,
     PathSelection,
@@ -89,7 +91,9 @@ from .bind import (
     _aggregation_expr,
     _bind_scoped_aggregate,
     _bound_filter_clauses,
+    _bound_metric_predicates,
     _collect_conversion_exprs,
+    _collect_measure_refs,
     _config_expr_to_sql,
     _expression_alias,
     _freeze_payload,
@@ -577,30 +581,36 @@ def _query_key_aliases(plan: LogicalPlan) -> list[str]:
     return aliases
 
 
-def _expr_contains_distribution(expr: SemanticExpr) -> bool:
+def _expr_contains_distribution(expr: SemanticExpr, config: PackageConfig) -> bool:
     if isinstance(expr, DistributionExpr):
         return True
+    if isinstance(expr, MetricRecipeRefExpr):
+        recipe = _recipe_index(config).get(expr.metric_recipe)
+        return recipe is not None and _expr_contains_distribution(recipe.expression, config)
     if isinstance(expr, EntityValueExpr):
-        return _expr_contains_distribution(expr.input)
+        return _expr_contains_distribution(expr.input, config)
     if isinstance(expr, (ArithmeticExpr, ComparisonExpr)):
-        return _expr_contains_distribution(expr.left) or _expr_contains_distribution(expr.right)
+        return _expr_contains_distribution(expr.left, config) or _expr_contains_distribution(
+            expr.right, config
+        )
     if isinstance(expr, (BooleanExpr, CallExpr)):
-        return any(_expr_contains_distribution(arg) for arg in expr.args)
+        return any(_expr_contains_distribution(arg, config) for arg in expr.args)
     if isinstance(expr, CaseExpr):
         return any(
-            _expr_contains_distribution(item.when) or _expr_contains_distribution(item.then)
+            _expr_contains_distribution(item.when, config)
+            or _expr_contains_distribution(item.then, config)
             for item in expr.whens
-        ) or (expr.else_expr is not None and _expr_contains_distribution(expr.else_expr))
+        ) or (expr.else_expr is not None and _expr_contains_distribution(expr.else_expr, config))
     if isinstance(
         expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr, OffsetWindowExpr)
     ):
-        return _expr_contains_distribution(expr.input)
+        return _expr_contains_distribution(expr.input, config)
     return False
 
 
-def _plan_requires_agent_dag_lowering(plan: LogicalPlan) -> bool:
+def _plan_requires_agent_dag_lowering(plan: LogicalPlan, config: PackageConfig) -> bool:
     for expr_payload in plan.post_aggregation_exprs.values():
-        if _expr_contains_distribution(_parse_public_expr(expr_payload)):
+        if _expr_contains_distribution(_parse_public_expr(expr_payload), config):
             return True
     return False
 
@@ -952,7 +962,7 @@ def _predicate_payload_set(predicates: list[dict[str, Any]]) -> set[str]:
 def _anchored_entity_set_plan(
     plan: LogicalPlan, config: PackageConfig
 ) -> AnchoredEntitySetPlan | None:
-    if _plan_requires_agent_dag_lowering(plan):
+    if _plan_requires_agent_dag_lowering(plan, config):
         return None
     if len(plan.post_aggregation_exprs) != 1:
         return None
@@ -1169,10 +1179,40 @@ def _branch_context_query(
     if plan.query.get("where"):
         query["where"] = list(plan.query.get("where") or [])
     if plan.query.get("metric_filters"):
-        query["metric_filters"] = list(plan.query.get("metric_filters") or [])
+        query["metric_filters"] = _distribution_metric_filters(plan)
     if plan.query.get("temporal_role_overrides"):
         query["temporal_role_overrides"] = dict(plan.query.get("temporal_role_overrides") or {})
     return query
+
+
+def _distribution_metric_filters(plan: LogicalPlan) -> list[dict[str, Any]]:
+    """Only entity predicates can enter a distribution's finer-grained branches."""
+    filters = list(plan.query.get("metric_filters") or [])
+    if any(
+        not isinstance(_parse_public_expr(dict(item["expression"])), MetricPredicateExpr)
+        for item in filters
+    ):
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            "Comparison metric_filters beside a distribution cannot be evaluated at the "
+            "returned group's grain. Run the group-level filter without the distribution first.",
+        )
+    return filters
+
+
+def _distribution_input_predicates(
+    expr: SemanticExpr, config: PackageConfig, query: NormalizedQuery
+) -> Iterator[MetricPredicateExpr]:
+    """Inspect the same recipe-expanded leaves that binding will put in the branch."""
+    bound_measures: list[BoundMeasure] = []
+    # Only inspect grain here; predicate sources bind their own clocks when lowered.
+    _collect_measure_refs(
+        expr, config, replace(query, time=None, temporal_role_overrides={}), bound_measures
+    )
+    for bound in bound_measures:
+        for predicate in _bound_metric_predicates(bound):
+            yield predicate
+            yield from _distribution_input_predicates(predicate.input, config, query)
 
 
 def _distribution_select(
@@ -1190,6 +1230,17 @@ def _distribution_select(
             "A distribution is not supported when its input or a metric filter has a rolling or "
             "prior-period window: it would count entities in periods where they have no rows.",
         )
+    _distribution_metric_filters(plan)
+    for predicate in [
+        *_query_metric_predicates(plan),
+        *_distribution_input_predicates(expr.over.input, config, normalize_query(plan.query)),
+    ]:
+        if predicate.scope_mode == "contextual" and predicate.entity != expr.over.entity:
+            raise SemanticLayerError(
+                "PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE",
+                "A distribution's per-entity grouping cannot inherit this contextual predicate. "
+                "Use scope_mode: 'entity_only' or a where filter.",
+            )
     # The per-entity grain belongs to this expression, not the outer query.
     with binding_cut() if project_is_cut() or bool(expr.over.where) else nullcontext():
         entity_key_dims = _entity_key_dimension_ids(expr.over.entity, config)
@@ -1260,6 +1311,20 @@ def _single_expression_branch_select(
 ) -> SqlSelect:
     from ..compiler import _compile_query_sql_ast
 
+    if isinstance(expr, MetricRecipeRefExpr) and _expr_contains_distribution(expr, config):
+        with recipe_objects(expr.metric_recipe):
+            recipe = _recipe_index(config)[expr.metric_recipe]
+            return _single_expression_branch_select(
+                recipe.expression, alias=alias, plan=plan, config=config
+            )
+    if isinstance(expr, DistributionExpr):
+        return _distribution_select(expr, alias=alias, plan=plan, config=config)
+    if _expr_contains_distribution(expr, config):
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            "A distribution nested in another expression cannot retain its grouping grain; "
+            "select the distribution separately.",
+        )
     return _compile_query_sql_ast(
         config, _branch_context_query(plan, expr_to_dict(expr), alias), project_cut=project_is_cut()
     )
@@ -1281,11 +1346,7 @@ def _lower_agent_dag_to_sql(
     for index, (alias, expr_payload) in enumerate(plan.post_aggregation_exprs.items(), start=1):
         expr = _parse_public_expr(expr_payload)
         branch_name = f"agent_branch_{index}"
-        branch_query = (
-            _distribution_select(expr, alias=alias, plan=plan, config=config)
-            if isinstance(expr, DistributionExpr)
-            else _single_expression_branch_select(expr, alias=alias, plan=plan, config=config)
-        )
+        branch_query = _single_expression_branch_select(expr, alias=alias, plan=plan, config=config)
         branch_ctes.append(
             SqlCte(name=branch_name, query=_namespace_sql_select(branch_query, f"{branch_name}__"))
         )
@@ -3647,7 +3708,7 @@ def build_physical_plan(plan: LogicalPlan, config: PackageConfig) -> PhysicalPla
             optimizations=optimizations,
         )
 
-    if _plan_requires_agent_dag_lowering(plan):
+    if _plan_requires_agent_dag_lowering(plan, config):
         nodes.append(
             PhysicalPlanNode(
                 id="agent_dag",
@@ -5116,7 +5177,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     anchored_select = _anchored_entity_set_select(plan, config)
     if anchored_select is not None:
         return _tier_internal_aliases(plan, anchored_select, measure_aliases=[])
-    if _plan_requires_agent_dag_lowering(plan):
+    if _plan_requires_agent_dag_lowering(plan, config):
         return _lower_agent_dag_to_sql(plan, config, guard_empty)
 
     key_aliases = _query_key_aliases(plan)

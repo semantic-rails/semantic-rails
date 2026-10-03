@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,100 @@ import yaml
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.expressions import parse_semantic_expression
 from semantic_rails.registry import Registry
+
+
+@pytest.mark.parametrize("form", ["inline", "recipe", "input_recipe"])
+def test_distribution_input_contextual_predicate_refuses_changed_grain(form):
+    config = load_package_config(
+        str(Path(__file__).resolve().parents[1] / "integration/correctness/shop")
+    )
+    scoped_input = {
+        "kind": "scoped_aggregate",
+        "measure": "measure.shop.revenue",
+        "predicates": [
+            {
+                "entity": "entity.shop_customer",
+                "scope_mode": "contextual",
+                "measure": "measure.shop.order_count",
+                "op": ">=",
+                "value": 2,
+            }
+        ],
+    }
+    expression = {
+        "kind": "distribution",
+        "function": "median",
+        "over": {"kind": "entity_value", "entity": "entity.shop_order", "input": scoped_input},
+    }
+    recipe = next(r for r in config.metric_recipes if r.id == "metric.shop.order_revenue_median")
+    if form == "input_recipe":
+        input_recipe = replace(
+            recipe,
+            id="metric.shop.qualifying_revenue",
+            expression=parse_semantic_expression(scoped_input, context="query"),
+        )
+        config = replace(config, metric_recipes=[*config.metric_recipes, input_recipe])
+        expression["over"]["input"] = {"metric": input_recipe.id}
+    if form == "recipe":
+        config = replace(
+            config,
+            metric_recipes=[
+                replace(r, expression=parse_semantic_expression(expression, context="query"))
+                if r.id == recipe.id
+                else r
+                for r in config.metric_recipes
+            ],
+        )
+        expression = {"metric": recipe.id}
+    query = {
+        "select": [{"expression": expression, "as": "median"}],
+        "group_by": ["dimension.shop_order_store_id"],
+    }
+    # The predicate alone qualifies customer 101 within store a. Adding order_id
+    # to that context would make COUNT(DISTINCT order_id) >= 2 impossible.
+    with pytest.raises(SemanticLayerError, match="entity_only") as exc:
+        compile_query(config, Registry(config), query)
+    assert exc.value.code == "PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE"
+
+
+def test_distribution_entity_only_input_predicate_keeps_its_own_clock():
+    config = load_package_config(
+        str(Path(__file__).resolve().parents[1] / "integration/correctness/shop")
+    )
+    query = {
+        "select": [
+            {
+                "as": "median",
+                "expression": {
+                    "kind": "distribution",
+                    "function": "median",
+                    "over": {
+                        "kind": "entity_value",
+                        "entity": "entity.shop_order",
+                        "input": {
+                            "kind": "scoped_aggregate",
+                            "measure": "measure.shop.revenue",
+                            "predicates": [
+                                {
+                                    "entity": "entity.shop_customer",
+                                    "scope_mode": "entity_only",
+                                    "measure": "measure.shop.signup_count",
+                                    "op": ">=",
+                                    "value": 1,
+                                }
+                            ],
+                        },
+                    },
+                },
+            }
+        ],
+        "group_by": ["dimension.shop_order_store_id"],
+        "time": {"temporal_role": "temporal_role.shop_order_ordered_at", "grain": "month"},
+    }
+    # A lifetime signup predicate remains valid in an order-clock distribution.
+    assert compile_query(config, Registry(config), query)["sql"]
 
 
 def _write_yaml(path: Path, payload: dict) -> None:

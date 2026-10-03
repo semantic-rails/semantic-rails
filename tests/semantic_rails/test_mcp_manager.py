@@ -210,8 +210,9 @@ def test_claude_code_install_reports_a_missing_or_failing_cli(
 
 
 @pytest.mark.parametrize("conflict", ["package", "host", "port", "health"])
+@pytest.mark.parametrize("requested_port", [0, 8091])
 def test_start_rejects_named_server_config_or_health_conflict_without_restart(
-    tmp_path: Path, monkeypatch, conflict: str
+    tmp_path: Path, monkeypatch, conflict: str, requested_port: int
 ) -> None:
     import semantic_rails.mcp_manager as manager
 
@@ -222,6 +223,7 @@ def test_start_rejects_named_server_config_or_health_conflict_without_restart(
         "transport": "http",
         "host": "127.0.0.1",
         "port": 8091,
+        "requested_port": requested_port,
         "package_id": "jaffle_shop",
         "package_path": "",
         "process_identity": {"started": "now", "command": "semantic-rails mcp http"},
@@ -256,11 +258,13 @@ def test_start_rejects_named_server_config_or_health_conflict_without_restart(
         package_id="other_package" if conflict == "package" else "jaffle_shop",
     )
     host = "0.0.0.0" if conflict == "host" else "127.0.0.1"
-    port = 8092 if conflict == "port" else 8091
+    port = 8092 if conflict == "port" else requested_port
     with pytest.raises(SemanticLayerError) as exc:
         start_mcp_http_server(ref, name="named", host=host, port=port)
 
     assert exc.value.code == "CONFIG_CONFLICT"
+    assert exc.value.details["assigned_port"] == record["port"]
+    assert exc.value.details["registered"]["port"] == requested_port
     assert exc.value.details["restart_performed"] is False
     expected_mismatch = "package_id" if conflict == "package" else conflict
     assert expected_mismatch in exc.value.details["mismatches"]
@@ -398,6 +402,37 @@ def test_concurrent_managed_servers_do_not_verify_each_others_identity(
             stop_mcp_http_server(name)
 
 
+@pytest.mark.parametrize("error", [OSError("cannot bind"), socket.gaierror("cannot resolve")])
+def test_start_reports_ephemeral_bind_failure_without_spawning_or_registering(
+    tmp_path: Path, monkeypatch, error: OSError
+) -> None:
+    import semantic_rails.mcp_manager as manager
+
+    monkeypatch.setenv("SEMANTIC_RAILS_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(manager, "_assert_process_identity_supported", lambda: None)
+    spawned = []
+    monkeypatch.setattr(manager.subprocess, "Popen", lambda *a, **k: spawned.append((a, k)))
+
+    def bind(address):
+        assert address == ("invalid-host", 0)
+        raise error
+
+    monkeypatch.setattr(manager.socket, "create_server", bind)
+    with pytest.raises(SemanticLayerError) as exc:
+        start_mcp_http_server(
+            PackageReference(source_path="", package_id="jaffle_shop"),
+            host="invalid-host",
+            port=0,
+        )
+
+    assert exc.value.code == "INVALID_CONFIG"
+    assert exc.value.details == {"host": "invalid-host", "spawned": False}
+    assert spawned == []
+    assert not manager.mcp_registry_path().exists()
+    assert load_mcp_registry()["servers"] == {}
+
+
+@pytest.mark.skipif(os.name != "posix", reason="socket fd inheritance requires POSIX")
 @pytest.mark.parametrize("requested_port", [0, 8091])
 def test_start_holds_an_ephemeral_listener_through_spawn(
     tmp_path: Path, monkeypatch, requested_port: int

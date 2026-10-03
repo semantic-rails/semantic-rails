@@ -695,7 +695,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_optional_package_or_path_args(p_mcp_start, package_choices)
     p_mcp_start.add_argument("--name", default="default", help="Local server name.")
     p_mcp_start.add_argument("--host", default=DEFAULT_MCP_HOST, help="Host to bind.")
-    p_mcp_start.add_argument("--port", type=int, default=DEFAULT_MCP_PORT, help="Port to bind.")
+    p_mcp_start.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_MCP_PORT,
+        help="Port to bind (0 = OS-assigned; see `mcp status`).",
+    )
     p_mcp_start.set_defaults(func=cmd_mcp_start)
 
     p_mcp_stop = mcp_sub.add_parser(

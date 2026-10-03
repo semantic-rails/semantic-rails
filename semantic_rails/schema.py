@@ -151,7 +151,6 @@ class RelationshipConfig:
     temporal_validity: dict[str, str] = field(default_factory=dict)
     target_key_type: str = "primary"
     join_semantics: str = ""
-    rollup_safe_aggregations: list[str] = field(default_factory=list)
     rollup_safe_aggregations_reverse: list[str] = field(default_factory=list)
 
 
@@ -206,8 +205,6 @@ class MeasureExternalDiscontinuity:
 class MeasureConfig:
     id: str
     entity: str
-    subject_entity: str
-    aggregation_entity: str
     row_grain: list[str]
     expr: SemanticExpr
     default_aggregation: str

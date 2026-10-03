@@ -41,7 +41,7 @@ SELECT
   DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,
   SUM(comparison_orders.order_total_cents / 100.0) AS m1
 FROM comparison_orders
-INNER JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id
+LEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id
 INNER JOIN leaf_1__qualified_customers_month_by_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_month_by_order_count_1."dimension.jaffle_customer_id" AND comparison_stores.store_id = leaf_1__qualified_customers_month_by_order_count_1."dimension.jaffle_store_id" AND DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) = leaf_1__qualified_customers_month_by_order_count_1.t
 GROUP BY
   comparison_stores.store_name,

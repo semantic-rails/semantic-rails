@@ -252,8 +252,6 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                         "name": "engagement.capacity",
                         "label": "Capacity",
                         "expr": "capacity",
-                        "default_aggregation": "sum",
-                        "allowed_aggregations": ["sum"],
                         "time": "event_at",
                         "publish": {"id": "metric.engagement.capacity"},
                     },

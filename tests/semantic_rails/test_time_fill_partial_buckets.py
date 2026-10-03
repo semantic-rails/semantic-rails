@@ -221,7 +221,7 @@ def test_fill_keeps_every_bucket_with_rows(runtime_factory, grain, start, end, g
 def test_timestamp_calendar_keeps_base_intraday_bounds(tmp_path):
     # Timestamp calendar storage is ambiguous, so its bucket predicate remains
     # the original raw-bound form.
-    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
         connection.execute(
             "ALTER TABLE jaffle_calendar ALTER COLUMN date_day SET DATA TYPE TIMESTAMP"
@@ -256,7 +256,7 @@ def test_timestamp_calendar_keeps_base_intraday_bounds(tmp_path):
 
 
 def test_timestamp_calendar_retains_base_partial_week_limit(tmp_path):
-    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
         connection.execute(
             "ALTER TABLE jaffle_calendar ALTER COLUMN date_day SET DATA TYPE TIMESTAMP"
@@ -285,7 +285,7 @@ def test_timestamp_calendar_retains_base_partial_week_limit(tmp_path):
 
 
 def test_timestamp_calendar_keeps_raw_bounds_across_session_timezone(tmp_path):
-    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
         connection.execute("SET TimeZone='UTC'")
         connection.execute(
@@ -356,7 +356,7 @@ def test_timestamp_calendar_keeps_raw_bounds_across_session_timezone(tmp_path):
 def test_fill_preserves_offset_window_days_with_timestamptz_data(
     tmp_path, zone, start, end, first, second, days
 ):
-    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
         connection.execute(f"SET TimeZone='{zone}'")
         connection.execute(
@@ -430,7 +430,7 @@ def test_fill_preserves_offset_window_days_with_timestamptz_data(
     ids=["positive-repeated-hour", "reversed-repeated-hour"],
 )
 def test_fill_respects_instant_order_during_dst_fold(tmp_path, start, end, expected):
-    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
         connection.execute("SET TimeZone='America/New_York'")
         connection.execute(
@@ -469,7 +469,7 @@ def test_fill_respects_instant_order_during_dst_fold(tmp_path, start, end, expec
 
 
 def test_fill_keeps_source_bucket_with_offset_bounds_on_plain_timestamp(tmp_path):
-    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
         connection.execute("DELETE FROM jaffle_order")
         connection.execute(
@@ -531,7 +531,7 @@ def test_fill_keeps_source_bucket_with_offset_bounds_on_plain_timestamp(tmp_path
     ],
 )
 def test_fill_preserves_nanosecond_window_bounds(tmp_path, start, end, expected, empty_interval):
-    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
         connection.execute(
             "ALTER TABLE jaffle_order ALTER COLUMN ordered_at SET DATA TYPE TIMESTAMP_NS"
@@ -797,7 +797,7 @@ def test_fill_boundary_dates_do_not_overflow(
 def test_fill_date_extremes_with_representable_zone_conversion(
     tmp_path, zone, calendar_day, start, end, expected
 ):
-    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
         connection.execute("INSERT INTO jaffle_calendar VALUES (?, ?, ?, ?, ?)", [calendar_day] * 5)
         from semantic_rails.config import load_package_config
