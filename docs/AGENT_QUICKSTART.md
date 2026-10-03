@@ -138,7 +138,9 @@ discover -> plan -> execute
   A window (`start` and/or `end`) without a `time.grain` returns one total over the window, with no
   time column, and says so in `assumptions`; set `time.grain` for one row per period. A time role
   with no window and no grain still returns one row per timestamp (`UNGRAINED_TIME_PROJECTION`).
-  A result over 32,000 characters is refused with `RESULT_TOO_LARGE` rather than sent.
+  Every MCP tool and mode fits one 32,000-character response budget. Optional plans and metadata
+  are trimmed first (`omitted_fields` names them); required data that still cannot fit is
+  refused with `RESULT_TOO_LARGE`. Compact responses omit compiler plans.
 - `validate` (optional dry run) returns diagnostics, repair hints, output columns, and risk
   metadata without executing.
 - `compile` (optional dry run) returns SQL and plan metadata without executing. At `compact` or `full` verbosity,
