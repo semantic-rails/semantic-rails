@@ -118,6 +118,7 @@ uv run --no-sync pytest -q tests/semantic_rails/test_adbc_adapter.py tests/seman
 
 Test subprocess helpers preserve the inherited `PYTHONPATH` so the DuckDB startup hook also applies to CLI children. Test DuckDB connections keep spill files under pytest's basetemp; `SR_TEST_DUCKDB_MAX_TEMP` (default `4GB`) caps spill per database instance and `SR_TEST_DUCKDB_MEMORY` (default `2GB`) caps memory.
 Tests read one read-only seed per worker; tests that write request `copy_package_config(..., writable=True)`, and passing tests' temporary directories are deleted.
+A DuckDB connection opened in a test body and still open after that test's teardown is closed there, so garbage collection never finalizes it during a later test; the run summary reports "DuckDB connections left open by N tests" with the worst node IDs. Connections opened by fixtures are left to their fixtures; a connection shared across tests belongs in a fixture.
 
 Each test has a five-minute timeout using `pytest-timeout`'s thread method,
 which dumps all thread stacks before terminating the process. Under xdist,
