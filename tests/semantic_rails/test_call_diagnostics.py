@@ -790,8 +790,8 @@ def test_clickhouse_date_diff_casts_both_endpoints_to_nullable_timestamps(unit, 
         "DATE_DIFF", [SqlLiteral(unit), SqlLiteral(start), SqlLiteral(end)]
     )
     assert render_expr(lowered) == (
-        f"DATE_DIFF('{unit}', CAST({render_expr(SqlLiteral(start))} AS Nullable(DateTime)), "
-        f"CAST({render_expr(SqlLiteral(end))} AS Nullable(DateTime)))"
+        f"DATE_DIFF('{unit}', CAST({render_expr(SqlLiteral(start))} AS Nullable(DateTime64(6))), "
+        f"CAST({render_expr(SqlLiteral(end))} AS Nullable(DateTime64(6))))"
     )
 
 
@@ -908,7 +908,7 @@ def test_bigquery_date_diff_column_endpoints_normalized_on_every_surface(package
     + [
         (
             "clickhouse",
-            f"DATE_DIFF('day', CAST('{START}' AS Nullable(DateTime)), CAST('{END}' AS Nullable(DateTime)))",
+            f"DATE_DIFF('day', CAST('{START}' AS Nullable(DateTime64(6))), CAST('{END}' AS Nullable(DateTime64(6))))",
         ),
         (
             "postgres",

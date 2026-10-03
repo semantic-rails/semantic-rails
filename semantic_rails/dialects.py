@@ -1121,8 +1121,9 @@ class ClickHouseDialect(SqlDialect):
       ``null_safe_eq`` (temporal joins, entity-hop joins, snapshot
       joins). The portable ``IS NOT DISTINCT FROM`` is equally
       JOIN-ON-only on ClickHouse, so ``<=>`` is the native spelling.
-    - ``DATE_DIFF('unit', start, end)`` needs explicitly nullable endpoint
-      casts. Its Monday-start week boundaries differ from DuckDB, so
+    - ``DATE_DIFF('unit', start, end)`` needs explicitly nullable DateTime64
+      endpoint casts to preserve NULLs and pre-1970 dates. Its Monday-start
+      week boundaries differ from DuckDB, so
       authored week calls are refused by the scalar-call guard.
       ``DATE_ADD(date, INTERVAL n UNIT)`` uses the portable default.
     - Conditional aggregates keep the portable ``CASE`` default —
@@ -1132,13 +1133,14 @@ class ClickHouseDialect(SqlDialect):
     name: str = "clickhouse"
 
     def date_diff(self, unit: str, start_expr: Any, end_expr: Any) -> Any:
-        # Explicit Nullable targets preserve NULL even with cast_keep_nullable=0.
+        # DateTime64 preserves pre-1970 dates; Nullable preserves NULL even with
+        # cast_keep_nullable=0.
         return SqlCall(
             "DATE_DIFF",
             [
                 SqlLiteral(unit),
-                SqlCast(start_expr, "Nullable(DateTime)"),
-                SqlCast(end_expr, "Nullable(DateTime)"),
+                SqlCast(start_expr, "Nullable(DateTime64(6))"),
+                SqlCast(end_expr, "Nullable(DateTime64(6))"),
             ],
         )
 

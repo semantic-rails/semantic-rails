@@ -255,7 +255,8 @@ warehouse and unit, including in `validate` mode and package loading.
 
 For supported calls, if either endpoint is NULL, the result is NULL and is
 excluded from averages, never replaced with zero. ClickHouse casts both endpoints
-to `Nullable(DateTime)` so this holds even with `cast_keep_nullable=0`. The same
+to `Nullable(DateTime64(6))` so this holds even with `cast_keep_nullable=0`, while
+preserving pre-1970 dates: `1950-01-01` to `2024-01-01` is 74 years. The same
 shape works in query selects, package measure expressions and `aggregate_if`
 values. Wrong arity, non-literal units and unknown units return
 `INVALID_EXPRESSION_AST`, including in `validate` mode, with the required shape
