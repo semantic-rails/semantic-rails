@@ -162,8 +162,11 @@ above near-duplicates that add a qualifier the question doesn't use ("Delivered 
 Dimension-value cards keep the raw filter `value`, its business-facing `label`, and explicit
 `available` flag, including when a value is blocked. Minimal cards omit `score`; order gives rank.
 An aggregate metric at its measure's default aggregation, without filters, windows, parameters
-or temporal pins, replaces its measure card when both are available in the response. It carries
-`measure` with that measure's id. Other metrics and measure-only requests retain separate cards.
+or temporal pins, replaces its measure card when both are available in the response and neither
+is named in a policy's `object_ids`. It carries `measure` with that measure's id. At most one
+metric replaces each measure; additional equivalent metrics keep their own cards. Other metrics
+and measure-only requests retain separate cards. Grant-scoped discovery retains its card fields,
+including `starter_query_patch`, at every verbosity.
 
 `inspect` (default `verbosity="minimal"`) states each fact once. It leaves out fields that
 repeat another one (`object_type`, `usage_summary`, `top_values`), a description that only repeats
@@ -416,10 +419,14 @@ what would fit (a coarser or set `time.grain`, a filter, fewer `group_by` dimens
 `details` carries `row_count`, `total_row_count`, `result_chars` and `max_result_chars`. An operator
 changes the limit with the `SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS` environment variable, read on
 every call; a missing or non-positive value means the default.
-At `verbosity="compact"`, the same limit also covers the complete MCP envelope. If needed,
-execute omits `explain`, then `sql_plan`, adding one `EXECUTE_DETAILS_OMITTED` warning naming
-the omitted fields. Use `mode="sql"` or `verbosity="full"` for the complete plan. If the remaining
-envelope still cannot fit, execute returns `RESULT_TOO_LARGE` without rows.
+At effective `verbosity="compact"` (including normalized values and unknown values that fall
+back to compact), the same limit also bounds the execute result, including rows, `explain`
+and `sql_plan`, before the transport adds unknown-argument warnings and session annotations
+(`same_as`, `request_context`). Those additions can exceed the limit. If needed, execute omits
+`explain`, then `sql_plan`, adding one `EXECUTE_DETAILS_OMITTED` warning naming the omitted fields.
+Use `mode="sql"` or `verbosity="full"` for the complete plan; if already using `verbosity="full"`,
+use `mode="sql"`. If the remaining execute result still cannot fit, execute returns
+`RESULT_TOO_LARGE` without rows: its `details` contains only `max_result_chars`.
 The `query` that execute echoes back carries the caller's own `limits`; a transport-level
 `max_rows` does not become part of that query. The HTTP `/api/v1/query` endpoint leaves
 the response uncapped unless the query itself sets a limit.

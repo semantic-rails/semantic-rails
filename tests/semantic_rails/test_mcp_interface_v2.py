@@ -76,17 +76,19 @@ def _stable(response: dict[str, Any]) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("verbosity", ["compact", " Compact ", "bogus"])
 @pytest.mark.parametrize(
     ("explain_size", "sql_size", "omitted"),
     [(4000, 10, ["explain"]), (4000, 4000, ["explain", "sql_plan"])],
 )
-def test_compact_execute_sizes_the_complete_envelope(
+def test_compact_execute_sizes_the_result_before_transport_additions(
     v2: SemanticLayerMCPAdapter,
     monkeypatch: pytest.MonkeyPatch,
     explain_size: int,
     sql_size: int,
     omitted: list[str],
     nested: bool,
+    verbosity: str,
 ) -> None:
     monkeypatch.setenv("SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS", "2000")
     payload = {
@@ -98,9 +100,9 @@ def test_compact_execute_sizes_the_complete_envelope(
     }
     monkeypatch.setattr(v2.runtime, "query", lambda _query: payload.copy())
     arguments = (
-        {"query": {**QUERY, "verbosity": "compact"}, "verbosity": "full"}
+        {"query": {**QUERY, "verbosity": verbosity}, "verbosity": "full"}
         if nested
-        else {"query": QUERY, "verbosity": "compact"}
+        else {"query": QUERY, "verbosity": verbosity}
     )
     result = v2.call_tool("execute", arguments)
     assert result["ok"] and result["rows"] == payload["rows"]
@@ -110,8 +112,10 @@ def test_compact_execute_sizes_the_complete_envelope(
         assert result["sql_plan"] == payload["sql_plan"]
     notes = [w for w in result["warnings"] if w["code"] == "EXECUTE_DETAILS_OMITTED"]
     assert len(notes) == 1
+    assert notes[0]["severity"] == "warning"
     assert ", ".join(omitted) in notes[0]["message"]
-    assert "mode='sql'" in notes[0]["message"] and "verbosity='full'" in notes[0]["message"]
+    assert "mode='sql'" in notes[0]["message"]
+    assert "verbosity='full'" not in notes[0]["message"]
     full = v2.call_tool("execute", {"query": QUERY, "verbosity": "full"})
     assert full["explain"] == payload["explain"] and full["sql_plan"] == payload["sql_plan"]
 

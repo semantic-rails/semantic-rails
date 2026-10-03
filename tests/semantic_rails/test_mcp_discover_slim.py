@@ -18,7 +18,9 @@ from typing import Any
 import pytest
 
 from semantic_rails.mcp import SemanticLayerMCPAdapter, list_tool_definitions
-from semantic_rails.metadata import discover_payload
+from semantic_rails.metadata import _slim_discover_minimal, discover_payload
+from semantic_rails.runtime import Runtime
+from semantic_rails.schema import SemanticPolicyConfig
 
 SLIM_KEYS = {"id", "kind", "label", "measure", "description", "default_temporal_role", "available"}
 VALUE_KEYS = {"id", "kind", "dimension_id", "value", "label", "available"}
@@ -229,8 +231,90 @@ def test_only_unpinned_default_aggregates_merge(
     assert card.get("measure") == (None if pin else measure_id)
     if pin is None:
         assert sum(m.get("measure") == measure_id for m in minimal["metrics"]) == 1
+        assert {metric_id, "metric.sales.customer_count_alias"} <= {
+            m["id"] for m in minimal["metrics"]
+        }
     measures_only = adapter.call_tool("discover", {**args, "kinds": ["measure"]})
     assert any(m["id"] == measure_id for m in measures_only["measures"])
+
+
+@pytest.mark.parametrize("blocked", ["metric", "measure"])
+def test_unavailable_aggregate_pair_keeps_both_cards(
+    adapter: SemanticLayerMCPAdapter, blocked: str
+) -> None:
+    config = adapter.runtime._config
+    metric = next(m for m in config.metric_recipes if m.id == "metric.sales.customer_count")
+    metric = replace(metric, temporal_role="", compatible_temporal_roles=[])
+    config.metric_recipes[:] = [metric]
+    measure_id = metric.expression.measure
+    payload = {
+        "metrics": [{"id": metric.id, "available": blocked != "metric"}],
+        "measures": [{"id": measure_id, "available": blocked != "measure"}],
+    }
+    result = _slim_discover_minimal(payload, config)
+    assert result["metrics"] == [{"id": metric.id, "available": blocked != "metric"}]
+    assert result["measures"] == [{"id": measure_id, "available": blocked != "measure"}]
+
+
+@pytest.mark.parametrize("target", ["metric", "measure"])
+@pytest.mark.parametrize("action", ["allow", "deny"])
+def test_policy_targeted_pair_keeps_both_cards(
+    adapter: SemanticLayerMCPAdapter, target: str, action: str
+) -> None:
+    config = adapter.runtime._config
+    metric = next(m for m in config.metric_recipes if m.id == "metric.sales.customer_count")
+    metric = replace(metric, temporal_role="", compatible_temporal_roles=[])
+    config.metric_recipes[:] = [metric]
+    measure_id = metric.expression.measure
+    config.semantic_policies.append(
+        SemanticPolicyConfig(
+            id="policy.customer_access",
+            kind="object_access",
+            object_ids=[metric.id if target == "metric" else measure_id],
+            action=action,
+        )
+    )
+    payload = {"metrics": [{"id": metric.id}], "measures": [{"id": measure_id}]}
+    result = _slim_discover_minimal(payload, config)
+    assert result["metrics"] == [{"id": metric.id}]
+    assert result["measures"] == [{"id": measure_id}]
+
+
+def test_denied_metric_does_not_hide_allowed_equivalent_or_measure(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    config = adapter.runtime._config
+    metric = next(m for m in config.metric_recipes if m.id == "metric.sales.customer_count")
+    metric = replace(metric, temporal_role="", compatible_temporal_roles=[])
+    alias = replace(metric, id="metric.sales.customer_count_alias")
+    config.metric_recipes[:] = [metric, alias]
+    config.semantic_policies.append(
+        SemanticPolicyConfig(
+            id="policy.customer_access", kind="object_access", object_ids=[metric.id], action="deny"
+        )
+    )
+    runtime = Runtime.from_config(config, source_path=adapter.runtime.source_path)
+    mcp = SemanticLayerMCPAdapter(runtime)
+    try:
+        args = {"terms": "customer count", "limit": 100}
+        compact = mcp.call_tool("discover", {**args, "verbosity": "compact"})
+        minimal = mcp.call_tool("discover", args)
+        measure_id = metric.expression.measure
+        assert {metric.id, alias.id} <= {row["id"] for row in minimal["metrics"]}
+        assert any(row["id"] == measure_id for row in compact["measures"])
+        assert any(row.get("measure") == measure_id for row in minimal["metrics"])
+        for expression, ok in (
+            ({"metric": metric.id}, False),
+            ({"metric": alias.id}, True),
+            ({"measure": measure_id}, True),
+        ):
+            query = {"version": 2, "select": [{"as": "value", "expression": expression}]}
+            result = runtime.validate(query)
+            assert result["ok"] is ok, result
+            if not ok:
+                assert result["errors"][0]["code"] == "POLICY_DENIED"
+    finally:
+        mcp.close()
 
 
 @pytest.mark.parametrize("reference", [None, "id", "name", "label", "substring"])

@@ -2646,7 +2646,10 @@ def _slim_discover_minimal(
     if config is not None:
         measures = {m.id: m for m in config.measures}
         metrics = {m.id: m for m in config.metric_recipes}
-        present = {row["id"] for row in payload.get("measures", [])}
+        present = {row["id"]: row for row in payload.get("measures", [])}
+        policy_targets = {
+            object_id for policy in config.semantic_policies for object_id in policy.object_ids
+        }
         kept = []
         for row in payload.get("metrics", []):
             metric = metrics.get(row["id"])
@@ -2658,6 +2661,11 @@ def _slim_discover_minimal(
                 and isinstance(expr, AggregateExpr)
                 and measure
                 and measure.id in present
+                and row.get("available") is not False
+                and present[measure.id].get("available") is not False
+                and metric.id not in policy_targets
+                and measure.id not in policy_targets
+                and measure.id not in merged
                 and (expr.aggregation or measure.default_aggregation) == measure.default_aggregation
                 and not any(
                     (
@@ -2672,8 +2680,6 @@ def _slim_discover_minimal(
                     )
                 )
             ):
-                if measure.id in merged:
-                    continue
                 row = {**row, "measure": measure.id}
                 merged.add(measure.id)
             kept.append(row)

@@ -56,7 +56,7 @@ from .request_payload import (
 )
 from .resource_access import GRANT_DISCOVER_KINDS
 from .runtime import Runtime
-from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL
+from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL, resolve_verbosity
 
 __all__ = [
     "JSON_OBJECT_SCHEMA",
@@ -1552,7 +1552,7 @@ def _columnar_rows(result: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _compact_execute(result: dict[str, Any], *, limit: int) -> dict[str, Any]:
-    """Omit optional diagnostics in order, counting the complete successful envelope."""
+    """Size the execute result before transport warnings and session annotations."""
 
     omitted = []
     warnings = list(result.get("warnings") or [])
@@ -1567,8 +1567,9 @@ def _compact_execute(result: dict[str, Any], *, limit: int) -> dict[str, Any]:
             *warnings,
             {
                 "code": "EXECUTE_DETAILS_OMITTED",
+                "severity": "warning",
                 "message": f"Omitted {', '.join(omitted)} to fit the response limit. "
-                "Use execute mode='sql' or verbosity='full' for the complete plan.",
+                "Use execute mode='sql' for the complete plan.",
             },
         ]
     if len(json_text(result)) > limit:
@@ -2298,7 +2299,7 @@ class SemanticLayerMCPAdapter:
                     {"kind": "browse_catalog_or_capabilities", "message": browse_message}
                 )
                 payload["recovery_hints"] = existing_hints
-            if verbosity == "minimal":
+            if verbosity == "minimal" and "verbosity" in payload:
                 payload["verbosity"] = verbosity
                 payload = _slim_discover_minimal(payload, self.runtime._config)
             return _lean_discover(payload)
@@ -2364,12 +2365,16 @@ class SemanticLayerMCPAdapter:
         return self._guarded(arguments, _run)
 
     def _handle_execute(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        compact = False
+
         def _run(args: dict[str, Any]) -> dict[str, Any]:
+            nonlocal compact
             row_format = _row_format_arg(args)
             requested_cap = _max_rows_arg(args.get("max_rows")) or MCP_DEFAULT_MAX_ROWS
             query_payload = _query_payload_with_mcp_default_verbosity(
                 _strip_execute_transport_args(args)
             )
+            compact = resolve_verbosity(query_payload) == "compact"
             cap, fetch, fence_binds = _execute_row_limits(query_payload, requested_cap)
             limits = query_payload.get("limits")
             query_payload["limits"] = {
@@ -2424,10 +2429,7 @@ class SemanticLayerMCPAdapter:
             return result
 
         result = self._guarded(arguments, _run)
-        if (
-            result.get("ok")
-            and _query_payload_with_mcp_default_verbosity(arguments).get("verbosity") == "compact"
-        ):
+        if result.get("ok") and compact:
             try:
                 return _compact_execute(result, limit=_max_result_chars())
             except SemanticLayerError as exc:
