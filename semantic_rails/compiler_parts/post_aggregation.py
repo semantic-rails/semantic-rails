@@ -50,7 +50,7 @@ from ..sql_ast import (
 )
 from .bind import _expression_alias
 from .dependencies import _recipes, recipe_objects, record_leaf_reference
-from .indexes import _entity_index, _measure_index, _recipe_index
+from .indexes import _entity_index, _measure_has_source_row_key, _measure_index, _recipe_index
 from .namespacing import _namespace_sql_select
 from .temporal import _period_to_date_period, _window_unit_to_rows
 
@@ -152,6 +152,7 @@ def _summing_window_parts(
                         or (
                             entity is not None
                             and (entity.key or [entity.primary_key]) == [counted.column]
+                            and _measure_has_source_row_key(measure, entity)
                         )
                     )
                     and counted.entity in {"", measure.entity}

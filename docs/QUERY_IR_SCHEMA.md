@@ -175,8 +175,10 @@ shorthands for the most common cases:
 **Summing windows require values that add up across periods.** `rolling`, `cumulative`,
 and `period_to_date` accept additive flows using `sum` or `count`, event counts using
 `count_distinct` of a complete single-column source-row key (the measure's row grain
-or its model entity's full key),
-and sums, differences, or multiplication/division by numeric literals of those inputs.
+or its model entity's full key). The entity key qualifies only when the measure reads
+the entity's table and its row grain is absent or matches that key.
+Sums, differences, or multiplication/division by numeric literals of those inputs
+are also accepted.
 A ratio (including arithmetic `divide` with a nonliteral denominator and metric recipes
 that resolve to a ratio) computes the ratio of its windowed
 parts: `SUM(numerator) OVER w / NULLIF(SUM(denominator) OVER w, 0)`. Each part uses the

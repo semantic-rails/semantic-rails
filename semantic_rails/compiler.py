@@ -80,6 +80,7 @@ from .compiler_parts.indexes import (
     _default_temporal_role,
     _dimension_index,
     _entity_index,
+    _measure_has_source_row_key,
     _measure_index,
     _recipe_index,
     _relationship_index,
@@ -979,11 +980,9 @@ def _fanout_dedup_refusal(
     if aggregation not in _FANOUT_DEDUP_AGGREGATIONS or not (
         measure.additive
         and measure.measure_class not in {"semi_additive", "snapshot"}
-        and measure.source_relation in {"", entity.table}
+        and _measure_has_source_row_key(measure, entity)
         and measure.aggregation_entity in {"", measure.entity}
         and (entity.key or entity.primary_key)
-        and sorted(measure.row_grain or entity.key or [entity.primary_key])
-        == sorted(entity.key or [entity.primary_key])
     ):
         return (
             f"'{aggregation}' of {subject} is not defined over one row per "

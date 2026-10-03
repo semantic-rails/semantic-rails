@@ -161,7 +161,7 @@ def test_source_row_key_counts_still_feed_summing_windows(config, kind, measure_
 
 @pytest.mark.parametrize("key_source", ["row_grain", "entity_key", "primary_key"])
 @pytest.mark.parametrize("other_key", [[], ["order_id", "customer_id"]])
-def test_distinct_count_accepts_each_source_key_declaration(config, key_source, other_key):
+def test_distinct_count_requires_a_source_row_key(config, key_source, other_key):
     measure = next(m for m in config.measures if m.id == ORDERS["measure"])
     config = replace(
         config,
@@ -189,7 +189,54 @@ def test_distinct_count_accepts_each_source_key_declaration(config, key_source, 
         ],
     )
     expr = parse_semantic_expression(ORDERS, context="query")
+    if key_source != "row_grain" and other_key:
+        with pytest.raises(SemanticLayerError) as raised:
+            _summing_window_parts(expr, config, construct="rolling")
+        assert raised.value.code == "ROLLUP_UNSAFE"
+        return
     assert _summing_window_parts(expr, config, construct="rolling") == (expr,)
+
+
+@pytest.mark.parametrize(
+    ("row_grain", "source_relation"),
+    [(["order_id", "line_no"], ""), ([], "order_lines")],
+    ids=["order_lines_grain", "other_source"],
+)
+@pytest.mark.parametrize("kind", ["rolling", "cumulative", "period_to_date"])
+@pytest.mark.parametrize("route", ["compile", "lower"])
+def test_entity_key_cannot_override_the_measure_source_rows(
+    config, row_grain, source_relation, kind, route
+):
+    measure = next(m for m in config.measures if m.id == ORDERS["measure"])
+    config = replace(
+        config,
+        measures=[
+            replace(m, row_grain=row_grain, source_relation=source_relation)
+            if m.id == measure.id
+            else m
+            for m in config.measures
+        ],
+        entities=[
+            replace(e, key=["order_id"]) if e.id == measure.entity else e for e in config.entities
+        ],
+    )
+    expression = window(ORDERS, kind)
+    with pytest.raises(SemanticLayerError) as raised:
+        if route == "compile":
+            compile_query(config, Registry(config), query(expression))
+        else:
+            expr = _as_offset_window_expr(parse_semantic_expression(expression, context="query"))
+            assert expr is not None
+            _compile_offset_window_expr(
+                expr,
+                config,
+                time_alias="t",
+                group_aliases=[],
+                query_grain="month",
+                table_alias="base",
+            )
+    assert raised.value.code == "ROLLUP_UNSAFE"
+    assert raised.value.details["unsupported_construct"] == "non_additive_window_input"
 
 
 @pytest.mark.parametrize("key_source", ["row_grain", "entity_key", "both"])
