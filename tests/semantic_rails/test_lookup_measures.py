@@ -433,10 +433,31 @@ def test_child_filters_select_claims_not_the_total(runtime: Runtime) -> None:
     assert filtered == {claim: every[claim] for claim in filtered}
     timed = _rows(runtime, _query(time={"temporal_role": OPENED_ROLE, "start": "2026-04-01"}))
     assert timed == filtered
-    monthly = runtime.query(_query(time={"temporal_role": OPENED_ROLE, "grain": "month"}))
-    assert {row[CLAIM_KEY]: row["v"] for row in monthly["rows"]} == every
+    monthly = runtime.query(
+        {
+            **_query(time={"temporal_role": OPENED_ROLE, "grain": "month"}),
+            "select": [
+                {"expression": {"measure": CARRIED}, "as": "v"},
+                {"expression": {"measure": _measure("claim_count")}, "as": "claims"},
+            ],
+        }
+    )
+    assert {row[CLAIM_KEY]: (row["v"], row["claims"]) for row in monthly["rows"]} == {
+        claim: (value, 1) for claim, value in every.items()
+    }
     auto = {"field": f"dimension.{NS}_coverage_line_of_business", "value": "auto"}
     assert _rows(runtime, _query(where=[auto])) == {"K1": 7, "K2": 7, "K6": 0, "K8": 12}
+    # A metric predicate selects claims too: those of coverages with two or more claims.
+    busy = {
+        "kind": "metric_predicate",
+        "entity": f"entity.{NS}_coverage",
+        "input": {"measure": _measure("claim_count")},
+        "op": ">=",
+        "value": 2,
+        "scope_mode": "entity_only",
+    }
+    predicate = {"expression": busy, "op": "=", "value": True}
+    assert _rows(runtime, _query(metric_filters=[predicate])) == {"K1": 7, "K2": 7}
 
 
 def test_a_filter_on_the_source_is_refused(runtime: Runtime) -> None:
@@ -490,6 +511,42 @@ def test_time_on_the_lookup_itself_is_refused(runtime: Runtime, payload: dict[st
     error = _refusal(runtime, payload)
     assert error.code == "REWRITE_NOT_SUPPORTED"
     assert error.details["unsupported_construct"] == "lookup_time"
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        {
+            "kind": "scoped_aggregate",
+            "measure": _measure("reserve"),
+            "aggregation": "sum",
+            "predicates": [
+                {
+                    "kind": "metric_predicate",
+                    "entity": f"entity.{NS}_coverage",
+                    "input": {"measure": CARRIED},
+                    "op": ">",
+                    "value": 5,
+                }
+            ],
+        },
+        {
+            "kind": "distribution",
+            "function": "avg",
+            "over": {
+                "kind": "entity_value",
+                "entity": f"entity.{NS}_coverage",
+                "input": {"measure": CARRIED},
+            },
+        },
+    ],
+    ids=["metric-predicate", "distribution"],
+)
+def test_per_entity_rollups_over_a_lookup_are_refused(
+    runtime: Runtime, expression: dict[str, Any]
+) -> None:
+    error = _refusal(runtime, {**_query(), "select": [{"expression": expression, "as": "v"}]})
+    assert error.code == "ROLLUP_UNSAFE" and error.details["construct"] != "parent_lookup"
 
 
 def test_the_source_clock_alone_binds_no_measure(runtime: Runtime) -> None:
