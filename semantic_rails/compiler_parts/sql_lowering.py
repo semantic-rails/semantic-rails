@@ -20,6 +20,7 @@ from ..ast import (
     plain_filters,
     refuse_child_groups,
 )
+from ..config_parts.lookup_measures import lookup_links
 from ..dialects import dialect_for_warehouse
 from ..errors import SemanticLayerError
 from ..expressions import (
@@ -105,6 +106,7 @@ from .dependencies import (
     capture_objects,
     cut_owners,
     leaf_predicate_roles,
+    measure_objects,
     plan_is_root,
     project_is_cut,
     recipe_objects,
@@ -114,14 +116,19 @@ from .dependencies import (
 from .empty_groups import (
     GUARDED_BASE,
     LeafScope,
+    absent_entities_gate,
     base_reads,
+    carried_zero_lookups,
     expr_resolves_to_zero,
     guard_empty_groups,
     record_leaf_scope,
     record_zero_output,
     recording_leaf_scopes,
+    recording_zero_outputs,
     refuse_unsettled,
+    require_settled_source,
     require_time_scopes,
+    resolves_to_zero,
     sql_nodes,
     zero_aliases,
     zero_outputs,
@@ -2122,6 +2129,92 @@ def _fanout_dedup_leaf_select(
     )
 
 
+def _parent_lookup_leaf_select(
+    plan: LogicalPlan,
+    measure_plan: MeasurePlan,
+    config: PackageConfig,
+    *,
+    key_fields: list[SqlField],
+    group_by: list[Any],
+    joins: list[SqlJoin],
+    where: list[Any],
+    ctes: list[SqlCte],
+) -> SqlSelect:
+    """Carry a lookup's source total per ``via`` key onto the rows of its own entity.
+
+    The source is compiled as its own query grouped by the via key, under the same bindings, so
+    its filters, grants and empty-group settlement apply; the query's filters and time select
+    the child rows only. A parent with no source rows reads 0 while the source is observed (the
+    gate), a NULL key reads NULL, and the guard proves one total per output row, so MAX picks it.
+    """
+    from ..compiler import _compile_query_sql_ast, _validate_non_additive_sums
+
+    bound = measure_plan.bound_measure
+    # Every plan that reaches this leaf passes the one-total-per-row guard here as well.
+    _validate_non_additive_sums([bound], config, normalize_query(plan.query))
+    measure = _measure_index(config)[bound.measure_id]
+    source_measure = _measure_index(config)[measure.lookup_from]
+    child_link, _ = lookup_links(measure, config)
+    via = _entity_index(config)[measure.lookup_via]
+    via_dims = dict(
+        zip(
+            via.key or [via.primary_key],
+            _entity_key_dimension_ids(via.id, config),
+            strict=True,
+        )
+    )
+    payload = {
+        "version": 1,
+        "select": [{"expression": {"measure": source_measure.id}, "as": "__lookup_value"}],
+        "group_by": list(via_dims.values()),
+    }
+    # The inner query's settled values are internal: no NO_DATA_IN_SCOPE output of their own.
+    with measure_objects(measure.id), recording_zero_outputs():
+        source_sql = _compile_query_sql_ast(config, payload, project_cut=project_is_cut())
+    source = f"{measure_plan.cte_name}_lookup_source"
+    table = _measure_source_relation(measure, _entity_index(config)[measure.entity])
+    keys = list(
+        zip(
+            child_link.source_columns or [child_link.source_column],
+            child_link.target_columns or [child_link.target_column],
+            strict=True,
+        )
+    )
+    on: Any = None
+    for column, target in keys:
+        match = SqlBinary(
+            _column_ref(table, column), "=", SqlIdentifier(parts=[source, via_dims[target]])
+        )
+        on = match if on is None else SqlBinary(on, "AND", match)
+    ctes = [*ctes, SqlCte(name=source, query=_namespace_sql_select(source_sql, f"{source}__"))]
+    joins = [*joins, SqlJoin(join_type="LEFT", table=SqlTableRef(name=source), on=on)]
+    value: Any = SqlIdentifier(parts=[source, "__lookup_value"])
+    if resolves_to_zero("", source_measure):
+        # A parent with no source rows reads 0 only while the source holds a value in scope.
+        require_settled_source(source_sql, {"lookup": measure.id})
+        gate_cte, gate_join, gate_condition = absent_entities_gate(
+            f"{source}_gate", source, "__lookup_value"
+        )
+        ctes.append(gate_cte)
+        joins.append(gate_join)
+        has_parent: Any = gate_condition
+        for column, _ in keys:
+            has_parent = SqlBinary(
+                SqlBinary(_column_ref(table, column), "IS NOT", SqlLiteral(None)),
+                "AND",
+                has_parent,
+            )
+        value = SqlCase([SqlCaseWhen(has_parent, SqlCall("COALESCE", [value, SqlLiteral(0)]))])
+    return SqlSelect(
+        ctes=ctes,
+        select=[*key_fields, SqlField(SqlCall("MAX", [value]), bound.alias)],
+        from_table=SqlTableRef(name=table),
+        joins=joins,
+        where=where,
+        group_by=group_by,
+    )
+
+
 def _join_table_name(join: SqlJoin) -> str:
     return join.table.name if isinstance(join.table, SqlTableRef) else ""
 
@@ -2700,6 +2793,27 @@ def _measure_leaf_select(
         )
 
     leaf_alias = measure_plan.bound_measure.alias
+    if measure_plan.rewrite_strategy == "parent_lookup":
+        return _parent_lookup_leaf_select(
+            plan,
+            measure_plan,
+            config,
+            key_fields=select_fields,
+            group_by=group_fields,
+            joins=[
+                *_joins_for_paths(
+                    measure.entity,
+                    measure_plan.path_selections,
+                    config,
+                    measure_entity=measure.entity,
+                    time_spec=plan.time,
+                ),
+                *predicate_joins,
+                *([leaf_calendar_join] if leaf_calendar_join is not None else []),
+            ],
+            where=where_clauses,
+            ctes=predicate_ctes,
+        )
     leaf_value_expr = _config_expr_to_sql(measure.expr, measure, config)
     if semijoin:
         return _fanout_filter_leaf_select(
@@ -3409,7 +3523,7 @@ def _foldable_leaf_signature(
 ) -> tuple[Any, ...] | None:
     measures = _measure_index(config)
     measure = measures[measure_plan.bound_measure.measure_id]
-    if measure.measure_class == "semi_additive":
+    if measure.measure_class == "semi_additive" or measure_plan.rewrite_strategy == "parent_lookup":
         return None
     if _all_metric_predicates(plan, measure_plan):
         return None
@@ -5420,6 +5534,10 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                     if row.bound_measure.alias in reads
                 ),
             )
+        elif guard_empty and (
+            lookups := carried_zero_lookups(_parse_public_expr(post_expr), config)
+        ):
+            record_zero_output(alias, lookups)
 
     metric_filter_aliases: list[str] = []
     for index, item in enumerate(list(plan.query.get("metric_filters", []) or [])):

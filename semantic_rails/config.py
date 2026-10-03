@@ -18,6 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from .config_parts.lookup_measures import lookup_measure_spec, resolve_lookup_measures
 from .config_parts.package_loader import _JOIN_KEYS, normalize_package
 from .config_parts.route_rows import (
     RouteRowError,
@@ -2084,6 +2085,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             _check_binding_keys(
                 measure_spec, _MEASURE_KEYS, label=f"{path}: measure '{measure_key}'"
             )
+            measure_spec = lookup_measure_spec(
+                raw_measure_spec, measure_spec, f"{path}: measure '{measure_key}'"
+            )
             measure_id = str(
                 measure_spec.get("id", f"measure.{_slug(entity_cfg.name)}_{_slug(measure_key)}")
             )
@@ -2224,6 +2228,8 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 ),
                 authoring_warnings=authoring_warnings,
                 additive=_authored_additive(measure_spec, kind, f"{path}: measure '{measure_key}'"),
+                lookup_from=str(measure_spec.get("from", "") or "").strip(),
+                lookup_via=str(measure_spec.get("via", "") or "").strip(),
             )
             measures.append(measure)
             measure_lookup[(model_id, str(measure_key))] = measure_id
@@ -2334,6 +2340,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     ),
                 )
             )
+    measures = resolve_lookup_measures(
+        measures, relationships, entities, entity_lookup, path=str(path)
+    )
 
     metric_recipes_by_id: dict[str, MetricConfig] = {}
 
