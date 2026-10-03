@@ -9,6 +9,7 @@ The numbers themselves are checked against reference SQL in the correctness suit
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import replace
 from typing import Any
 
@@ -23,7 +24,7 @@ from semantic_rails.metadata_parts.valid_values import valid_values_payload
 from semantic_rails.policies import enforce_query_policies, withheld_measure_ids, withheld_shape
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
-from tests.semantic_rails.conftest import copy_package_config
+from tests.semantic_rails.conftest import copy_package_config, opened
 
 REVENUE = "measure.jaffle.revenue_usd"
 LIFETIME = "measure.jaffle.lifetime_spend_usd"
@@ -64,10 +65,12 @@ def _engine(package, policy: SemanticPolicyConfig) -> Runtime:
 
 
 @pytest.fixture(scope="module")
-def engine(package):
+def engine(package) -> Iterator[Runtime]:
     runtime = _engine(package, _policy())
-    yield runtime
-    runtime.close()
+    try:
+        yield opened(runtime)
+    finally:
+        runtime.close()
 
 
 def _select(*items: dict[str, Any]) -> dict[str, Any]:
