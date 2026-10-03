@@ -236,6 +236,7 @@ PolicyContextResolver{resolve(self, headers, *, payload=, request_id=)}
 PreparedQuery(sql, column_mapping=, parameters=)
 RequestContext(request_id=, actor=, tenant=, project=, roles=, environment=, audience=, metric_allowlist=, dimension_allowlist=, attributes=)
 Runtime(package_id)
+SNOWFLAKE_ADBC_CONNECTION_OPTIONS
 SNOWFLAKE_CLI_CONNECTION_OPTIONS
 SNOWFLAKE_NATIVE_CONNECTION_OPTIONS
 SemanticHTTPService(runtime, package_id=)
