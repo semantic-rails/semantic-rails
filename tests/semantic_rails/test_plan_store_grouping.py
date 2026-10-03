@@ -12,6 +12,7 @@ import yaml
 
 from semantic_rails.planner import plan_payload
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.result_helpers import typed_rows
 from tests.semantic_rails.test_plan_value_lists import _force_fallback
 
@@ -21,6 +22,13 @@ STORE_LABEL = "dimension.retail_store_label"
 STORE_COLUMNS = {STORE_ID: "store_id", STORE_NAME: "store_name", STORE_LABEL: "store_label"}
 ID_FILTER = {"field": STORE_ID, "op": "IN", "value": ["a", "b", "c"]}
 NAME_FILTER = {"field": STORE_NAME, "op": "IN", "value": ["Central", "Harbor"]}
+# A question that names store attributes plainly is answered, grouped by those attributes.
+ANSWERED = {
+    "revenue by store id",
+    "revenue by store name",
+    "revenue by store label",
+    "revenue by store id and store name",
+}
 
 
 @pytest.fixture()
@@ -134,6 +142,8 @@ def test_store_attribute_matches_reference_sql_or_withholds_execution(
 ) -> None:
     _force_fallback(retail, monkeypatch, intent, path)
     payload = plan_payload(retail, intent=intent, partial_query={"where": filters})
+    if intent in ANSWERED:
+        assert payload["status"] == "ok", payload
     if payload["status"] != "ok":
         assert "execute" not in payload["next"].get("ready_for", []), payload
         return
@@ -220,5 +230,60 @@ def test_filtered_store_name_matches_reference_sql_or_withholds_execution(
             )
         assert actual == pytest.approx(expected)
         assert actual == pytest.approx({"Brooklyn": 259424.85, "Philadelphia": 486468.18})
+    finally:
+        runtime.close()
+
+
+# A question that lists stores is answered one row per store, never as one total.
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("intent", ["stores with more than 2000 orders in 2017"])
+def test_store_list_is_grouped_by_store_or_withholds_execution(
+    runtime_factory: Any, monkeypatch: pytest.MonkeyPatch, path: str, intent: str
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        _force_fallback(runtime, monkeypatch, intent, path)
+        payload = plan_payload(runtime, intent=intent)
+        if payload["status"] == "ok" and "execute" in payload["next"].get("ready_for", []):
+            group_by = payload["best"]["query_ir"].get("group_by") or []
+            assert any(field.startswith("dimension.jaffle_store") for field in group_by), payload
+    finally:
+        runtime.close()
+
+
+# Two stores share a name, so a ranking by name merges them into one row.
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("intent", ["top 1 store by revenue", "top 3 stores by revenue"])
+def test_store_ranking_with_shared_name_matches_reference_sql_or_withholds_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, path: str, intent: str
+) -> None:
+    package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
+    with duckdb.connect(str(package / "jaffle_shop.duckdb")) as connection:
+        connection.execute(
+            "UPDATE jaffle_store SET store_name = 'Brooklyn' WHERE store_name = 'Philadelphia'"
+        )
+    runtime = Runtime.from_path(str(package))
+    try:
+        _force_fallback(runtime, monkeypatch, intent, path)
+        payload = plan_payload(runtime, intent=intent)
+        if payload["status"] != "ok":
+            assert "execute" not in payload["next"].get("ready_for", []), payload
+            return
+        assert "execute" in payload["next"].get("ready_for", []), payload
+        query = payload["best"]["query_ir"]
+        alias = query["select"][0]["as"]
+        actual = [row[alias] for row in typed_rows(runtime.query(query))]
+        runtime.close()
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            expected = [
+                revenue
+                for _, _, revenue in connection.execute(
+                    "SELECT s.store_id, s.store_name, SUM(o.order_total_cents / 100.0) AS revenue "
+                    "FROM jaffle_order o JOIN jaffle_store s ON o.store_id = s.store_id "
+                    "GROUP BY s.store_id, s.store_name ORDER BY revenue DESC LIMIT ?",
+                    [query["limit"]],
+                ).fetchall()
+            ]
+        assert actual == pytest.approx(expected), payload
     finally:
         runtime.close()
