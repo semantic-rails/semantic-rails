@@ -335,15 +335,10 @@ def stop_mcp_http_server(
                 "name": server_name,
                 "registry_path": str(registry_path),
             }
-        stopped_row = _stop_recorded_process(record)
-        pid = int(record.get("pid", 0) or 0)
-        registry["servers"].pop(server_name, None)
+        stopped_row = _stop_registered_mcp_server(registry, server_name, record)
         _save_mcp_registry_unlocked(registry, registry_path)
         return {
-            "ok": True,
-            "status": stopped_row["status"],
-            "name": server_name,
-            "pid": pid,
+            **stopped_row,
             "registry_path": str(registry_path),
         }
 
@@ -368,11 +363,16 @@ def _stop_mcp_http_servers_for_ref(
     for server_name, record in matches:
         stopped.append(_stop_registered_mcp_server(registry, server_name, record))
     _save_mcp_registry_unlocked(registry, registry_path)
+    ok = all(row["ok"] for row in stopped)
     return {
-        "ok": True,
-        "status": "stopped"
-        if any(row["status"] == "stopped" for row in stopped)
-        else "not_running",
+        "ok": ok,
+        "status": (
+            "identity_unverifiable"
+            if not ok
+            else "stopped"
+            if any(row["status"] == "stopped" for row in stopped)
+            else "not_running"
+        ),
         "package": {"id": ref.package_id, "source_path": ref.source_path},
         "servers": stopped,
         "registry_path": str(registry_path),
@@ -384,8 +384,11 @@ def _stop_registered_mcp_server(
 ) -> dict[str, Any]:
     pid = int(record.get("pid", 0) or 0)
     stopped_row = _stop_recorded_process(record)
-    registry["servers"].pop(server_name, None)
+    ok = stopped_row["status"] != "identity_unverifiable"
+    if ok:
+        registry["servers"].pop(server_name, None)
     return {
+        "ok": ok,
         "name": server_name,
         "pid": pid,
         "status": stopped_row["status"],
@@ -826,7 +829,7 @@ def _assert_process_identity_supported() -> None:
         )
 
 
-def _process_identity(pid: int, *, kernel_start: bool = True) -> dict[str, str]:
+def _process_identity(pid: int, *, kernel_start: bool = True) -> dict[str, str] | None:
     """Return stable OS-observed identity fields for a live process.
 
     The registry never relies on PID alone: PIDs can be reused after a
@@ -838,6 +841,7 @@ def _process_identity(pid: int, *, kernel_start: bool = True) -> dict[str, str]:
     different second on the next call; the kernel's start tick does not.
     ``kernel_start=False`` gives the ``ps``-only identity that records from
     earlier versions hold, so those servers can still be stopped.
+    ``None`` means observation failed; an empty dict means no identity was observed.
     """
 
     if not _pid_alive(pid):
@@ -858,7 +862,7 @@ def _process_identity(pid: int, *, kernel_start: bool = True) -> dict[str, str]:
                 timeout=5,
             )
         except (OSError, subprocess.TimeoutExpired):  # unverifiable, never a match
-            return {}
+            return None
         value = result.stdout.strip() if result.returncode == 0 else ""
         if not value:
             return {}
@@ -876,13 +880,16 @@ def _start_ticks(stat: bytes) -> str:
     return stat.rpartition(b")")[2].split()[19].decode("ascii")
 
 
-def _record_process_matches(record: dict[str, Any]) -> bool:
+def _record_process_matches(record: dict[str, Any]) -> bool | None:
+    """Return True only for a match, or None when identity cannot be observed."""
+
     pid = int(record.get("pid", 0) or 0)
     expected = dict(record.get("process_identity", {}) or {})
     started = expected.get("start_ticks") or expected.get("started")
     if not pid or not started or not expected.get("command"):
         return False
-    return _process_identity(pid, kernel_start="start_ticks" in expected) == expected
+    observed = _process_identity(pid, kernel_start="start_ticks" in expected)
+    return None if observed is None else observed == expected
 
 
 def _wait_for_http_health(
@@ -933,7 +940,10 @@ def _stop_recorded_process(record: dict[str, Any]) -> dict[str, Any]:
     pid = int(record.get("pid", 0) or 0)
     if not pid or not _pid_alive(pid):
         return {"status": "not_running"}
-    if not _record_process_matches(record):
+    matches = _record_process_matches(record)
+    if matches is None:
+        return {"status": "identity_unverifiable"}
+    if not matches:
         return {"status": "identity_mismatch"}
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + 3

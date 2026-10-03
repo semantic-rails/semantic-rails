@@ -4,6 +4,7 @@ import importlib.metadata
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -76,7 +77,8 @@ def test_stop_mcp_http_server_can_stop_by_package_path(tmp_path: Path, monkeypat
     assert sorted(registry["servers"]) == ["other"]
 
 
-def test_stop_refuses_to_signal_a_reused_pid(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("by_ref", [False, True], ids=["name", "ref"])
+def test_stop_refuses_to_signal_a_reused_pid(tmp_path: Path, monkeypatch, by_ref: bool) -> None:
     import semantic_rails.mcp_manager as manager
 
     monkeypatch.setenv("SEMANTIC_RAILS_HOME", str(tmp_path / "home"))
@@ -87,6 +89,7 @@ def test_stop_refuses_to_signal_a_reused_pid(tmp_path: Path, monkeypatch) -> Non
                 "stale": {
                     "pid": os.getpid(),
                     "name": "stale",
+                    "package_id": "jaffle_shop",
                     "process_identity": {"started": "old", "command": "old"},
                 }
             },
@@ -94,12 +97,18 @@ def test_stop_refuses_to_signal_a_reused_pid(tmp_path: Path, monkeypatch) -> Non
     )
     signals: list[tuple[int, int]] = []
     monkeypatch.setattr(manager, "_pid_alive", lambda _pid: True)
-    monkeypatch.setattr(manager, "_record_process_matches", lambda _record: False)
+    monkeypatch.setattr(
+        manager, "_process_identity", lambda *a, **k: {"started": "new", "command": "old"}
+    )
     monkeypatch.setattr(manager.os, "kill", lambda pid, sig: signals.append((pid, sig)))
 
-    report = stop_mcp_http_server("stale")
+    report = stop_mcp_http_server(
+        "stale", ref=PackageReference(source_path="", package_id="jaffle_shop") if by_ref else None
+    )
 
-    assert report["status"] == "identity_mismatch"
+    row = report["servers"][0] if by_ref else report
+    assert row["status"] == "identity_mismatch"
+    assert report["ok"] is True
     assert signals == []
     assert load_mcp_registry()["servers"] == {}
 
@@ -610,12 +619,14 @@ def test_a_record_from_an_earlier_version_still_matches(monkeypatch) -> None:
         subprocess.TimeoutExpired(["ps"], 5),  # a stuck ps must not hang start, status or stop
     ],
 )
+@pytest.mark.usefixtures("requires_process_identity")
 def test_an_unobservable_process_is_never_signaled(
     tmp_path: Path, monkeypatch, error: Exception
 ) -> None:
     import semantic_rails.mcp_manager as manager
 
     monkeypatch.setenv("SEMANTIC_RAILS_HOME", str(tmp_path / "home"))
+    identity = manager._process_identity(os.getpid())
     timeouts: list[float | None] = []
 
     def run(cmd, **kwargs):
@@ -624,7 +635,7 @@ def test_an_unobservable_process_is_never_signaled(
 
     monkeypatch.setattr(manager.subprocess, "run", run)
     monkeypatch.setattr(manager, "_proc_stat", _no_proc)
-    assert manager._process_identity(os.getpid()) == {}
+    assert manager._process_identity(os.getpid()) is None
     assert timeouts == [5]
 
     save_mcp_registry(
@@ -634,7 +645,8 @@ def test_an_unobservable_process_is_never_signaled(
                 "live": {
                     "pid": os.getpid(),
                     "name": "live",
-                    "process_identity": {"started": "now", "command": "python"},
+                    "process_identity": identity,
+                    "instance_nonce": "live-instance",
                 }
             },
         }
@@ -645,8 +657,92 @@ def test_an_unobservable_process_is_never_signaled(
 
     report = stop_mcp_http_server("live")
 
-    assert report["status"] == "identity_mismatch"
+    assert report["ok"] is False
+    assert report["status"] == "identity_unverifiable"
     assert signals == []
+    assert load_mcp_registry()["servers"]["live"] == {
+        "pid": os.getpid(),
+        "name": "live",
+        "process_identity": identity,
+        "instance_nonce": "live-instance",
+    }
+
+
+@pytest.mark.parametrize("error", [OSError("ps denied"), subprocess.TimeoutExpired(["ps"], 5)])
+def test_unavailable_identity_refuses_managed_start(monkeypatch, error: Exception) -> None:
+    import semantic_rails.mcp_manager as manager
+
+    def run(cmd, **kwargs):
+        assert kwargs["timeout"] == 5
+        raise error
+
+    monkeypatch.setattr(manager.subprocess, "run", run)
+    monkeypatch.setattr(manager.shutil, "which", lambda _command: "/bin/ps")
+    monkeypatch.setattr(manager, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(manager.subprocess, "Popen", lambda *a, **k: pytest.fail("must not spawn"))
+    assert manager._process_identity(os.getpid()) is None
+    assert manager.managed_mcp_lifecycle_report()["supported"] is False
+    assert not manager._record_process_matches(
+        {"pid": os.getpid(), "process_identity": {"started": "now", "command": "python"}}
+    )
+    with pytest.raises(SemanticLayerError) as exc:
+        start_mcp_http_server(PackageReference(source_path="", package_id="jaffle_shop"))
+    assert exc.value.code == "UNSUPPORTED_PLATFORM"
+
+
+@pytest.mark.parametrize("error", [OSError("ps denied"), subprocess.TimeoutExpired(["ps"], 5)])
+@pytest.mark.parametrize("by_ref", [False, True], ids=["name", "ref"])
+@pytest.mark.usefixtures("requires_process_identity")
+def test_unverifiable_stop_can_be_retried(
+    tmp_path: Path, monkeypatch, error: Exception, by_ref: bool
+) -> None:
+    import semantic_rails.mcp_manager as manager
+
+    monkeypatch.setenv("SEMANTIC_RAILS_HOME", str(tmp_path / "home"))
+    with subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"]) as child:
+        try:
+            record = {
+                "pid": child.pid,
+                "process_identity": manager._process_identity(child.pid),
+                "instance_nonce": "child-instance",
+                "package_id": "jaffle_shop",
+            }
+            assert manager._record_process_matches(record)
+            save_mcp_registry({"version": 1, "servers": {"live": record}})
+            ref = PackageReference(source_path="", package_id="jaffle_shop") if by_ref else None
+            with monkeypatch.context() as denied:
+
+                def run(cmd, **kwargs):
+                    assert cmd[0] == "ps"
+                    assert kwargs["timeout"] == 5
+                    raise error
+
+                denied.setattr(manager.subprocess, "run", run)
+                real_kill = manager.os.kill
+
+                def kill(pid, sig):
+                    assert sig == 0, "an unverified process must not be signaled"
+                    return real_kill(pid, sig)
+
+                denied.setattr(manager.os, "kill", kill)
+                report = stop_mcp_http_server("live", ref=ref)
+            assert report["ok"] is False
+            assert report["status"] == "identity_unverifiable"
+            if by_ref:
+                assert report["servers"][0]["ok"] is False
+                assert report["servers"][0]["status"] == "identity_unverifiable"
+            assert load_mcp_registry()["servers"]["live"] == record
+            assert child.poll() is None
+
+            report = stop_mcp_http_server("live", ref=ref)
+            assert report["ok"] is True
+            assert report["status"] == "stopped"
+            assert child.wait(timeout=5) == -signal.SIGTERM
+            assert load_mcp_registry()["servers"] == {}
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
 
 
 @pytest.mark.parametrize("name", [b"python", b"a) b (c", b"two words", b"\xe2\x82"])

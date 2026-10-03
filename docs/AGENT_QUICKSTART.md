@@ -38,7 +38,10 @@ before signaling a background PID. It uses `ps` for that, so it also refuses (an
 starts nothing) where `ps` is missing, as in minimal container images such as
 `python:3.12-slim`; install `procps` there. A `ps` that can't run or doesn't answer
 within five seconds counts the same way, and `stop` never signals a process it
-could not identify. On Windows, prefer
+could not identify. If identity observation fails, `stop` reports
+`ok: false` with `identity_unverifiable` and leaves the server registered so you
+can retry. An observed identity mismatch removes the stale registration without
+signaling the process. On Windows, prefer
 `semantic-rails mcp setup --install --yes` so the client launches stdio, or run
 `semantic-rails mcp http ...` as a foreground process in a separate terminal.
 
