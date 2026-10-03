@@ -121,10 +121,15 @@ Tests read one read-only seed per worker; tests that write request `copy_package
 
 Each test has a five-minute timeout using `pytest-timeout`'s thread method,
 which dumps all thread stacks before terminating the process. Under xdist,
-the controller reports the crashed worker and test node ID; worker stack
-output may not be relayed. Tests that legitimately need longer must declare
-an explicit `@pytest.mark.timeout(...)` override. The backend CI job's
-20-minute timeout remains the backstop.
+the controller reports the crashed worker and test node ID; that stack dump
+is not relayed, so `faulthandler_timeout` (240 s) first writes every thread's
+stack to the worker's stderr, which reaches the CI log. Tests that legitimately
+need longer must declare an explicit `@pytest.mark.timeout(...)` override. The
+backend CI job's 20-minute timeout remains the backstop.
+
+Tests bound every wait: subprocess calls, `urlopen`, `communicate`, and
+`join`/`wait` take a timeout; `tests/semantic_rails/test_bounded_waits.py`
+enforces it.
 
 Merge-group CI on Python 3.12 repeats affected unit test files three times with
 random test ordering and `-n auto`. `scripts/flake_guard.py` selects changed tests

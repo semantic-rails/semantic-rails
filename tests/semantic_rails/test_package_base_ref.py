@@ -47,7 +47,7 @@ def _git(repo: Path, *args: str, stdin: bytes | None = None) -> str:
         "GIT_COMMITTER_EMAIL": "test@example.com",
     }
     return subprocess.run(
-        ["git", *args], cwd=repo, check=True, capture_output=True, input=stdin, env=env
+        ["git", *args], cwd=repo, check=True, capture_output=True, input=stdin, env=env, timeout=120
     ).stdout.decode()
 
 
@@ -128,7 +128,7 @@ def test_cli_diff_impact_and_promotion_use_the_packages_repository(repo: Path) -
         ]
         if command == "promote-package":
             arguments.extend(("--environment", "staging"))
-        result = subprocess.run(arguments, capture_output=True, text=True, check=True)
+        result = subprocess.run(arguments, capture_output=True, text=True, check=True, timeout=120)
         report = json.loads(result.stdout)
         assert report["ok"] is True, report
         compared = report["artifacts"]["impact"] if command == "promote-package" else report
@@ -160,7 +160,7 @@ def test_cli_and_mcp_report_a_rejected_baseline_instead_of_low_risk(repo: Path) 
         ]
         if command == "promote-package":
             arguments.extend(("--environment", "staging"))
-        result = subprocess.run(arguments, capture_output=True, text=True)
+        result = subprocess.run(arguments, capture_output=True, text=True, timeout=120)
         assert result.returncode != 0
         payload = json.loads(result.stdout)
         assert payload["ok"] is False

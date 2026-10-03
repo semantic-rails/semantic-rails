@@ -45,6 +45,7 @@ def _cli(site: Path, *args: str, **env: str) -> subprocess.CompletedProcess[str]
         capture_output=True,
         text=True,
         check=False,
+        timeout=120,
     )
 
 
