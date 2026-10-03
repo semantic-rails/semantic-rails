@@ -317,9 +317,10 @@ entity pair that answered before the removal and is refused or routed differentl
 Which route between two entities a question means is a business definition (see
 [the route census](PACKAGE_AUTHORING.md#route-census-and-route-changes)).
 
-- `project_status` returns `route_census` (also in `parse.route_census`): `undecided` lists the
+- `project_status` returns `route_census` once, outside `parse`: `undecided` lists the
   entity pairs a question can need that are refused until a `graph.path_preferences` row records
-  their route, each with the `AMBIGUOUS_PATH` refusal's `details`; `assumed` lists the pairs
+  their route, each with the `AMBIGUOUS_PATH` refusal's `details.clarification.options`
+  (pass an option's `decision` to `record_route_decision`); `assumed` lists the multi-route pairs
   answered by the start entity's own key, to confirm. While pairs are undecided, `next_actions`
   starts with deciding them. `create_project` and `setup_project_dialog` say to decide them once
   entities are related.
@@ -327,18 +328,25 @@ Which route between two entities a question means is a business definition (see
 - Every mutation keeps the answers the package already gives. Before writing, the transaction
   compares the package with the change applied; each pair the package answered that the change
   would refuse, or answer by another route, gets its current route as its
-  `graph.path_preferences` row in the same change (the fewest rows, shortest route first). The
+  `graph.path_preferences` row in the same change (shortest route first, omitting rows settled by inheritance). The
   result's `route_decisions_added` lists `{row, new_routes}` for each: the row, and the routes the
   change added, to name as an alternative or make the default later. A dry run shows the rows in
   its diff.
-- No row is added for a pair whose own row the change writes, or whose route it removes. The
-  result's `route_changes` lists every pair that answered before and answers differently after,
-  as `impact_project` does: `base` and `head` hold the route or the refusal code, and
-  `keep_base` the row that keeps the base route (`null` when that route is gone). `create_project`
-  and undo keep nothing: one starts a package, the other restores files exactly.
-- If an added row would not take effect, the mutation is refused with
-  `ROUTE_DECISION_NOT_RECORDED` and nothing is written; record each listed pair's route in the
-  change itself.
+- Keep rows and `record_route_decision` use the same loader location: top-level
+  `package.yml` `path_preferences`, else the file holding `graph`. That file is rewritten as
+  Architect YAML, dropping comments.
+- No row is added for a pair whose own row the change writes, or whose earlier route is removed
+  or exceeds the new hop ceiling. Such a cut may refuse the pair; answering it by another route
+  without its own row refuses the mutation with `ROUTE_DECISION_NOT_RECORDED`.
+- `record_route_decision` deliberately changes the default and adds no keep rows.
+  `remove_object` reports routes instead of keeping them. The result's `route_changes` lists
+  every pair that resolves differently, including refused → answered, as `impact_project`
+  does. `base` and `head` hold the route or refusal code; `keep_base` holds the row that keeps
+  the base route, or `null` when it cannot be kept. `create_project` and undo keep nothing:
+  one starts a package, the other restores files exactly.
+- A keep row that disagrees with existing rows (`details.conflicts_with`), or fails to take
+  effect, refuses the mutation with `ROUTE_DECISION_NOT_RECORDED` before anything is written;
+  record each moved pair's route in the change itself.
 
 ## Examples, Package Tests and Query Previews
 

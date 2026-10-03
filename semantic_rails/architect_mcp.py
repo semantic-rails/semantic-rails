@@ -949,7 +949,7 @@ def create_architect_mcp_server(
         try:
             project = _resolve_project_path(project_path, workspace_root=root)
             parse = _parse_report(project)
-            census = parse.get("route_census")
+            census = parse.pop("route_census", None)
             undecided = len(census["undecided"]) if census else 0
             out: dict[str, Any] = {
                 "ok": bool(parse.get("ok")),

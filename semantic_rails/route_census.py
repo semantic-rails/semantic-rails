@@ -1,8 +1,8 @@
 """Which entity pairs need a route decision, and which answers a package change moves.
 
-A route between two entities is a business definition, and ``fanout.resolve_path`` is the one
+A route between two entities is a business definition, and ``fanout.resolve_route`` is the one
 place that applies the package's decisions. This module asks it about every pair a question
-can need: the entity of a measure (an entity count included) as the start, and an entity
+can need: any entity as the start (distinct values and synthetic counts included), and an entity
 with a dimension, reachable from it, as the target.
 
 * :func:`route_census` lists the pairs the resolver refuses until a decision is recorded
@@ -23,13 +23,19 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from .compiler_parts.indexes import get_package_analysis
+from .config_parts.route_rows import conflicting_rows
 from .errors import SemanticLayerError
-from .fanout import resolve_path, route_basis, route_meaning, route_pin
+from .fanout import (
+    _has_multiple_routes,
+    package_hop_limit,
+    pair_routes,
+    resolve_route,
+    route_pin,
+    route_reading,
+)
 from .schema import PackageConfig, PathPreferenceConfig
 
 Pair = tuple[str, str]
-# route_basis values that leave nothing to confirm: the only route, or a recorded row.
-_DECIDED_BASES = frozenset({"", "recorded"})
 
 
 @dataclass(frozen=True)
@@ -39,6 +45,7 @@ class RouteOutcome:
 
     path: tuple[str, ...] = ()
     routes: tuple[tuple[str, ...], ...] = ()
+    basis: str = ""
     refused: str = ""
     details: dict[str, Any] = field(default_factory=dict, compare=False)
 
@@ -46,21 +53,14 @@ class RouteOutcome:
         """The outcome as a ``route_changes`` side: its route or its refusal code."""
         return {"refused": self.refused} if self.refused else {"relationship_path": [*self.path]}
 
-    def candidate_routes(self) -> list[tuple[str, ...]]:
-        """Every route the resolver weighed for the pair: an answer's routes, or the routes
-        an ``AMBIGUOUS_PATH`` refusal names (none for another refusal)."""
-        if not self.refused:
-            return list(self.routes)
-        return [tuple(route) for route in self.details.get("candidates", [])]
-
 
 def census_pairs(config: PackageConfig) -> list[Pair]:
-    """Every (start, target) a question can need: ``start`` is a measure's entity, and
+    """Every (start, target) a question can need: ``start`` is any entity, and
     ``target`` is another entity with a dimension that the relationships reach from it."""
     graph = get_package_analysis(config).graph
     targets = {dimension.entity for dimension in config.dimensions}
     pairs: list[Pair] = []
-    for start in sorted({measure.entity for measure in config.measures if measure.entity}):
+    for start in sorted(entity.id for entity in config.entities):
         reached = {start}
         pending = deque([start])
         while pending:
@@ -73,16 +73,16 @@ def census_pairs(config: PackageConfig) -> list[Pair]:
 
 
 def resolve_pairs(config: PackageConfig, pairs: Iterable[Pair]) -> dict[Pair, RouteOutcome]:
-    """Each pair's outcome, asking ``resolve_path`` once per pair (it caches per package)."""
+    """Each pair's outcome, asking ``resolve_route`` once per pair (it caches per package)."""
     outcomes: dict[Pair, RouteOutcome] = {}
     for start, target in pairs:
         try:
-            path, routes = resolve_path(config, start=start, target=target)
+            resolution = resolve_route(config, start=start, target=target)
         except SemanticLayerError as exc:
             outcomes[(start, target)] = RouteOutcome(refused=exc.code, details=exc.details)
         else:
             outcomes[(start, target)] = RouteOutcome(
-                path=tuple(path), routes=tuple(tuple(route) for route in routes)
+                path=resolution.routes[0], routes=resolution.routes, basis=resolution.basis
             )
     return outcomes
 
@@ -92,19 +92,22 @@ def route_census(config: PackageConfig) -> dict[str, list[dict[str, Any]]]:
 
     ``undecided``: pairs refused with ``AMBIGUOUS_PATH``, each with the refusal's ``details``
     as raised (its routes, their meanings and the row that records each). ``assumed``: pairs
-    answered by a basis other than a recorded row or the only route (``route_basis``, for
-    example the start's own key), with that route, for the author to confirm.
+    answered by the start's own key, with two or more routes, for the author to confirm.
     """
     undecided: list[dict[str, Any]] = []
     assumed: list[dict[str, Any]] = []
-    for (start, target), outcome in resolve_pairs(config, census_pairs(config)).items():
+    graph = get_package_analysis(config).graph
+    pairs = (
+        pair
+        for pair in census_pairs(config)
+        if _has_multiple_routes(graph, *pair, package_hop_limit(config))
+    )
+    for (start, target), outcome in resolve_pairs(config, pairs).items():
         ends = {"source_entity": start, "target_entity": target}
         if outcome.refused == "AMBIGUOUS_PATH":
             undecided.append({**ends, "details": outcome.details})
-        elif not outcome.refused:
-            basis = route_basis(config, start, target, outcome.routes)
-            if basis not in _DECIDED_BASES:
-                assumed.append({**ends, "relationship_path": [*outcome.path], "basis": basis})
+        elif outcome.basis == "colocated_key" and len(outcome.routes) >= 2:
+            assumed.append({**ends, "relationship_path": [*outcome.path], "basis": outcome.basis})
     return {"undecided": undecided, "assumed": assumed}
 
 
@@ -151,7 +154,11 @@ def _changes(base: PackageConfig, head: PackageConfig) -> list[RouteChange]:
         old, new = before[pair], after[pair]
         if old.shape() == new.shape():
             continue
-        kept = not old.refused and _route_exists(head, *pair, old.path)
+        kept = (
+            not old.refused
+            and len(old.path) <= package_hop_limit(head)
+            and _route_exists(head, *pair, old.path)
+        )
         changes.append(RouteChange(pair, old, new, route_pin(*pair, [*old.path]) if kept else None))
     return changes
 
@@ -161,26 +168,31 @@ def route_changes(base: PackageConfig, head: PackageConfig) -> list[dict[str, An
     resolves differently from ``base``: ``base`` and ``head`` hold its ``relationship_path``
     or the code it is ``refused`` with; ``keep_base`` is the ``graph.path_preferences`` row
     that keeps the base route in ``head``, or ``None`` when the base refused or its route no
-    longer exists."""
+    longer exists or exceeds the head's hop ceiling."""
     return [change.payload() for change in _changes(base, head)]
 
 
 def _unkept(base: PackageConfig, head: PackageConfig) -> list[RouteChange]:
     """The changes a row must undo: ``base`` answered the pair, ``head`` refuses it or takes
-    another route, the base route still exists, and ``head`` leaves the pair's own row as
+    another route, and ``head`` leaves the pair's own row as
     ``base`` had it (otherwise the change decides the pair itself)."""
     base_rows = get_package_analysis(base).path_preferences
     head_rows = get_package_analysis(head).path_preferences
     return [
         change
         for change in _changes(base, head)
-        if change.keep_base is not None and head_rows.get(change.pair) == base_rows.get(change.pair)
+        if not change.base.refused
+        and (change.keep_base is not None or not change.head.refused)
+        and (
+            head_rows.get(change.pair) is None
+            or head_rows.get(change.pair) == base_rows.get(change.pair)
+        )
     ]
 
 
 def unkept_route_changes(base: PackageConfig, head: PackageConfig) -> list[dict[str, Any]]:
-    """The ``route_changes`` entries that :func:`keep_routes` records a row for; once its rows
-    are in ``head``, there are none."""
+    """Answered pairs still moved without their own row, including an unkeepable route swap.
+    A deliberate cut may refuse a pair whose earlier route cannot be kept."""
     return [change.payload() for change in _unkept(base, head)]
 
 
@@ -192,17 +204,38 @@ def keep_routes(base: PackageConfig, head: PackageConfig) -> list[dict[str, Any]
     "new_routes": [...]}``: the routes ``head`` offers besides the base route, to name as
     alternatives or make the default later.
     """
-    pending = sorted(_unkept(base, head), key=lambda change: (len(change.base.path), change.pair))
+    pending = sorted(
+        (change for change in _unkept(base, head) if change.keep_base is not None),
+        key=lambda change: (len(change.base.path), change.pair),
+    )
     added: list[dict[str, Any]] = []
     kept = head
     while pending:
         change, *pending = pending
         source, target = change.pair
+        row = PathPreferenceConfig(source, target, [*change.base.path])
+        conflicts = conflicting_rows(
+            get_package_analysis(kept).relationships, row, kept.path_preferences
+        )
+        if conflicts:
+            raise SemanticLayerError(
+                "ROUTE_DECISION_NOT_RECORDED",
+                "The row keeping the earlier route disagrees with existing route rows; "
+                "nothing was written. Record each moved pair's route in the change itself.",
+                details={
+                    "row": change.keep_base,
+                    "conflicts_with": [
+                        route_pin(item.source_entity, item.target_entity, item.relationship_path)
+                        for item in conflicts
+                    ],
+                    "route_changes": route_changes(base, head),
+                },
+            )
         kept = replace(
             kept,
             path_preferences=[
                 *kept.path_preferences,
-                PathPreferenceConfig(source, target, [*change.base.path]),
+                row,
             ],
         )
         added.append(
@@ -210,8 +243,8 @@ def keep_routes(base: PackageConfig, head: PackageConfig) -> list[dict[str, Any]
                 "row": change.keep_base,
                 "new_routes": [
                     [*route]
-                    for route in change.head.candidate_routes()
-                    if route != change.base.path
+                    for route in pair_routes(head, source, target)
+                    if tuple(route) != change.base.path
                 ],
             }
         )
@@ -232,7 +265,7 @@ def route_change_lines(
     def reads(config: PackageConfig, start: str, side: dict[str, Any]) -> str:
         if "refused" in side:
             return f"refused ({side['refused']})"
-        return route_meaning(config, start, side["relationship_path"])
+        return route_reading(config, start, side["relationship_path"])
 
     lines = []
     for change in changes:

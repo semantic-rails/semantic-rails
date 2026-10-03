@@ -449,7 +449,7 @@ def test_two_writers_from_same_revision_cannot_lose_updates(tmp_path: Path):
     assert existing.count(True) == 1
 
 
-def test_raw_write_parse_failure_rolls_back_bytes_and_revision(tmp_path: Path):
+def test_raw_write_staging_failure_preserves_bytes_and_revision(tmp_path: Path):
     server = create_architect_mcp_server(workspace_root=tmp_path)
     created = _create_project(server, "rollback_core")
     project_path = Path(created["project_path"])
@@ -469,9 +469,8 @@ def test_raw_write_parse_failure_rolls_back_bytes_and_revision(tmp_path: Path):
     )
 
     assert result["ok"] is False
-    assert result["status"] == "rolled_back_after_parse_error"
-    assert result["revision"] == created["revision"]
-    assert result["rolled_back"] is True
+    assert result["status"] == "error"
+    assert result.get("rolled_back", False) is False  # staging failed before the first write
     assert package_path.read_bytes() == before
     status = _call_tool(server, "project_status", {"project_path": str(project_path)})
     assert status["revision"] == created["revision"]

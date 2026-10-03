@@ -1704,21 +1704,24 @@ Four guard rails back this up:
 ### Route census and route changes
 
 A route is a business definition, so a package needs one for every entity pair
-a question can need: from the entity of each measure (entity counts included)
-to each other entity with a dimension that its relationships reach. Each pair
-is resolved once, by the same route rule queries use.
+a question can need: every entity is a start, including distinct-values and
+synthetic-count queries, to each other entity with a reachable dimension. The
+census resolves only pairs with two or more routes, once per pair; impact and
+keep reports resolve every pair, by the same route rule queries use.
 
 **Census.** The parse report (`semantic-rails check`, `validate`, and
 Architect's `project_status`) carries `route_census`:
 
 - `undecided`: `[{source_entity, target_entity, details}]`, the pairs refused
   with `AMBIGUOUS_PATH`, where `details` is the refusal's own (each route, its
-  meaning and the row that records it). One `ROUTES_UNDECIDED` warning gives
+  meaning and `details.clarification.options[*].decision`, the row that records
+  it). One `ROUTES_UNDECIDED` warning gives
   their `count` and `pairs`. Record the route each pair means as a
-  `graph.path_preferences` row before a question needs it. The warning is
+  `graph.path_preferences` row with `record_route_decision` before a question
+  needs it. The warning is
   advisory and never blocks a promotion.
 - `assumed`: `[{source_entity, target_entity, relationship_path, basis}]`, the
-  pairs answered by a rule rather than a row or the only route: today the
+  pairs with two or more routes answered by the
   start's own key (`basis: colocated_key`). Confirm the route, or record
   another.
 
@@ -1738,7 +1741,8 @@ resolves differently under `route_changes`:
 
 `base` and `head` hold the pair's route or the code it is refused with.
 `keep_base` is the `graph.path_preferences` row that keeps the base route, or
-`null` when the base refused or its route no longer exists. Any entry makes the
+`null` when the base refused, its route no longer exists, or it exceeds the
+new hop ceiling. Any entry makes the
 risk `high` and counts in `changed_behavior_count`, and the Markdown summary
 lists each one in entity labels ("Invoice to Region: was Invoice → Account →
 Region, now refused (AMBIGUOUS_PATH)").
@@ -1747,18 +1751,24 @@ Region, now refused (AMBIGUOUS_PATH)").
 transaction, which compares the package before and after the change. Each pair
 the package answered, and that the change would refuse or answer by another
 route, gets its earlier route as its `graph.path_preferences` row in the same
-change: shortest route first, re-resolving after each row, so no row is
-redundant. The result lists each row in `route_decisions_added` with the
-change's `new_routes`, to name as an alternative or make the default later, and
-a dry run shows the rows in its diff. The rows go where the loader reads them
-(a top-level `path_preferences` block in `package.yml`, else `graph.yml`, else
-`package.yml`'s `graph` block), and that file is rewritten the way Architect
-writes YAML. No row is added for a pair whose own row the change writes, or
-whose route the change removes (`remove_object`, or an edit that drops a
-relationship): the result's `route_changes` lists every pair that answered
-before and answers differently after. If an added row would not take effect,
-the change is refused with `ROUTE_DECISION_NOT_RECORDED` and nothing is
-written. Hand edits get the same `route_changes` from `impact-report`.
+change: shortest route first, re-resolving after each row, so an inherited
+route needs no redundant row. The result lists each row in
+`route_decisions_added` with the change's `new_routes`, to name as an alternative
+or make the default later, and a dry run shows the rows in its diff. The rows
+go where the loader reads them (a top-level `path_preferences` block in
+`package.yml`, else `graph.yml`, else `package.yml`'s `graph` block). That file
+is rewritten as Architect YAML, dropping comments.
+
+No row is added for a pair whose own row the change writes, or whose earlier
+route is removed or exceeds the new `max_hops`. A cut may leave the pair
+refused; a change that answers it by another route without its own row is
+refused with `ROUTE_DECISION_NOT_RECORDED`. The same error refuses a keep row
+that disagrees with existing rows (`details.conflicts_with`) or fails to take
+effect; nothing is written. `record_route_decision` deliberately changes the
+default, adds no keep rows, and reports every moved pair, inherited pairs
+included. `remove_object` reports routes instead of keeping them. In every
+case `route_changes` lists every changed pair, including refused → answered.
+Hand edits get the same report from `impact-report`.
 
 ### `hop_profile` — observing entity hops
 

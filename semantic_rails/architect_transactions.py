@@ -329,6 +329,43 @@ def _file_change_row(
     }
 
 
+def route_rows_update(
+    files: Mapping[str, bytes],
+    rows: list[dict[str, Any]],
+    *,
+    replace_pair: tuple[str, str] | None = None,
+    entities: Mapping[str, str] | None = None,
+) -> tuple[ProjectFileUpdate, dict[str, Any] | None]:
+    """Write rows where the loader reads them, optionally replacing exactly one pair."""
+    package = dict(yaml_safe_load(files["package.yml"]) or {})
+    if "path_preferences" in package:
+        relative, document, block = "package.yml", package, package
+    else:
+        relative = "graph.yml" if "graph.yml" in files else "package.yml"
+        document = (
+            package if relative == "package.yml" else dict(yaml_safe_load(files[relative]) or {})
+        )
+        block = document["graph"] = dict(document.get("graph") or {})
+    existing = list(block.get("path_preferences") or [])
+    references = entities or {}
+    matches = [
+        index
+        for index, row in enumerate(existing)
+        if replace_pair is not None
+        and isinstance(row, dict)
+        and tuple(
+            references.get(str(row.get(end, "")).strip())
+            for end in ("source_entity", "target_entity")
+        )
+        == replace_pair
+    ]
+    replaced = deepcopy(existing[matches[-1]]) if matches else None
+    kept = [row for index, row in enumerate(existing) if index not in matches]
+    position = matches[0] if matches else len(kept)
+    block["path_preferences"] = [*kept[:position], *rows, *kept[position:]]
+    return ProjectFileUpdate(relative, dump_project_yaml(document).encode("utf-8")), replaced
+
+
 def _routes_not_recorded(
     added: list[dict[str, Any]], unkept: list[dict[str, Any]], reason: str
 ) -> SemanticLayerError:
@@ -821,21 +858,25 @@ class ProjectTransaction:
         Each entity pair a question can need (``route_census``) that the current package
         answers, and that the staged package answers by another route or refuses, gets its
         current route recorded as a ``graph.path_preferences`` row in this same change
-        (``keep_routes``: fewest rows, shortest pair first). Exceptions: the change writes
-        that pair's row itself, its route no longer exists (a removal), or ``record`` is off.
+        (``keep_routes``: fewest rows, shortest pair first). A removed route or one
+        beyond the new hop ceiling is never kept. Such a cut may refuse the pair; another
+        answer requires its own row. Deliberate decisions and removals use report mode.
 
         The report names the rows (``route_decisions_added``, each with the change's new
-        routes) and every pair that still answered before and answers differently after
+        routes) and every pair that resolves differently after
         (``route_changes``). The guard reloads the package as it will be written: if any
         pair is still moved without a row (``unkept_route_changes``), the change is refused
         with ``ROUTE_DECISION_NOT_RECORDED`` before anything is written.
         """
         try:
             base = load_package_snapshot(str(self.project_path)).config
-            with self.virtual_project(updates) as staged:
-                head = load_package_snapshot(str(staged)).config
-        except Exception:  # nothing answered before, or the parse gate reports the staged package
+        except SemanticLayerError:  # nothing answered before
             return updates, {}
+        with self.virtual_project(updates) as staged:
+            try:
+                head = load_package_snapshot(str(staged)).config
+            except SemanticLayerError:  # the parse gate reports invalid staged semantics
+                return updates, {}
         added = keep_routes(base, head) if record else []
         final = head
         if added:
@@ -853,7 +894,7 @@ class ProjectTransaction:
         changes = route_changes(base, final)
         return updates, {
             "route_decisions_added": added,
-            "route_changes": [row for row in changes if "relationship_path" in row["base"]],
+            "route_changes": changes,
         }
 
     def _route_rows_update(
@@ -862,20 +903,7 @@ class ProjectTransaction:
         """The staged file with ``rows`` appended where the loader reads route rows: a
         top-level ``path_preferences`` block in package.yml, else graph.yml's ``graph``
         block, else package.yml's."""
-        files = self.proposed_files(updates)
-        package = dict(yaml_safe_load(files["package.yml"]) or {})
-        if "path_preferences" in package:
-            relative, document, block = "package.yml", package, package
-        else:
-            relative = "graph.yml" if "graph.yml" in files else "package.yml"
-            document = (
-                package
-                if relative == "package.yml"
-                else dict(yaml_safe_load(files["graph.yml"]) or {})
-            )
-            block = document["graph"] = dict(document.get("graph") or {})
-        block["path_preferences"] = [*list(block.get("path_preferences") or []), *rows]
-        return ProjectFileUpdate(relative, dump_project_yaml(document).encode("utf-8"))
+        return route_rows_update(self.proposed_files(updates), rows)[0]
 
     def _cleanup_new_project(self) -> None:
         if not self.project_path.exists():

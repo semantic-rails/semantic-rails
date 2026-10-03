@@ -8,6 +8,7 @@ import yaml
 
 from semantic_rails.config import load_package_config
 from semantic_rails.config_validation import _compiled_package_warnings
+from semantic_rails.route_census import route_census
 
 
 def _write_yaml(path: Path, payload: dict) -> None:
@@ -128,7 +129,7 @@ def test_meta_contract_unknown_key_emits_warning(tmp_path: Path):
     measure = next(m for m in config.measures if m.id == "measure.demo.order_count")
     assert measure.meta == {"owner_team": "finance", "mystery_field": "blue"}
 
-    warnings = _compiled_package_warnings(config, Path(package_dir))
+    warnings = _compiled_package_warnings(config, Path(package_dir), census=route_census(config))
     mystery_warnings = [
         w
         for w in warnings
@@ -158,7 +159,7 @@ def test_meta_contract_enum_violation_emits_warning(tmp_path: Path):
     )
 
     config = load_package_config(str(package_dir))
-    warnings = _compiled_package_warnings(config, Path(package_dir))
+    warnings = _compiled_package_warnings(config, Path(package_dir), census=route_census(config))
     enum_warnings = [
         w for w in warnings if "owner_team" in w and "legal" in w and "declared values" in w
     ]

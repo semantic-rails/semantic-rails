@@ -479,7 +479,9 @@ def _undecided(tmp_path, **kwargs) -> dict[tuple[str, str], list[list[str]]]:
     """The route census's undecided pairs, each with the routes its refusal names."""
     config = load_package_config(str(_write_package(tmp_path, **kwargs)))
     return {
-        (row["source_entity"], row["target_entity"]): sorted(row["details"]["candidates"])
+        (row["source_entity"], row["target_entity"]): sorted(
+            option["relationship_path"] for option in row["details"]["clarification"]["options"]
+        )
         for row in route_census(config)["undecided"]
     }
 
@@ -513,11 +515,9 @@ def test_three_roles_of_one_pair_are_one_entry_naming_each(tmp_path):
     assert undecided[(LEG, AIRPORT)] == [[ALTERNATE], [DESTINATION], [ORIGIN]]
 
 
-def test_a_pair_pin_settles_only_its_own_direction(tmp_path):
-    """A pair pin covers queries from the source to the target only, so the reverse pair
-    stays undecided."""
-    undecided = _undecided(tmp_path, **_pin("origin", "explicit_origin_first"))
-    assert undecided == {(AIRPORT, LEG): [[DESTINATION], [ORIGIN]]}
+def test_a_pair_pin_settles_its_own_direction_and_the_reverse(tmp_path):
+    """The reverse pair inherits the row when every hop allows a reverse walk."""
+    assert _undecided(tmp_path, **_pin("origin", "explicit_origin_first")) == {}
 
 
 def test_the_key_shortcut_declines_a_pair_with_several_routes(tmp_path):

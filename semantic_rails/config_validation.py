@@ -1287,7 +1287,7 @@ def _expression_nodes(node: Any) -> Iterator[Any]:
 
 
 def _compiled_package_warnings(
-    config, source_path: Path, *, census: dict[str, list[dict[str, Any]]] | None = None
+    config, source_path: Path, *, census: dict[str, list[dict[str, Any]]]
 ) -> list[str | dict[str, Any]]:
     warnings: list[str | dict[str, Any]] = []
     if not list(config.package.environments or []):
@@ -1377,7 +1377,6 @@ def _compiled_package_warnings(
                 )
             )
     warnings.extend(_semantic_collision_warnings(config, source_path))
-    census = route_census(config) if census is None else census
     if undecided := _undecided_routes_warning(census, source_path):
         warnings.append(undecided)
     return warnings
@@ -1400,9 +1399,9 @@ def _undecided_routes_warning(
         "ROUTES_UNDECIDED",
         f"{source_path}: {len(pairs)} entity pairs reach their target by two or more routes "
         f"and no route is recorded ({', '.join(named)}); a query that needs one is refused "
-        "as AMBIGUOUS_PATH. Which route a question means is a business definition: record "
-        "it as a graph.path_preferences row (route_census.undecided lists each pair's routes "
-        "and the row for each).",
+        "as AMBIGUOUS_PATH. Choose each pair's route from "
+        "route_census.undecided[*].details.clarification.options and pass its decision "
+        "to record_route_decision to write the graph.path_preferences row.",
         details={"count": len(pairs), "pairs": pairs},
     )
 
