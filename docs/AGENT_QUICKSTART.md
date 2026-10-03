@@ -176,8 +176,8 @@ Statuses are:
   phrase, never a synonym, a typo or a framing word. Every grouping the draft adds, each
   `group_by` dimension and a time grain that splits the rows, traces to the question too
   (otherwise `PLAN_UNASKED_GROUPING`), and a ranking keeps the top N of the entity it ranks
-  (otherwise `PLAN_RANKING_PERIOD_AMBIGUOUS`; for a ranking of the entity split by a period it
-  names, with runnable options in `why.details.clarification` when plan can check them).
+  (otherwise `PLAN_RANKING_PERIOD_AMBIGUOUS`, with no runnable option: ask the user which
+  ranking they mean, such as the top N overall or the top N in each period).
   `warnings` can still name other question words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
   Request words such as "show" still count when they are exact catalog names. A time grain
   consumes its own unit and its "-ly" form; a grouping that names the query's clock at the

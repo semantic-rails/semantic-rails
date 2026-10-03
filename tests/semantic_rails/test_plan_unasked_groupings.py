@@ -7,15 +7,13 @@ names. The time block's grain traces to words outside the question's windows ("b
 "monthly", "over time"), to the caller's grain, or can't split the rows because the window fits in
 one bucket. A ranking keeps the top N of the entity it ranks, never of (entity, period) or
 (entity, another dimension). A ranking of the entity split by a period it names asks which
-ranking it means, the top N overall or in each period, with Query IR for each only when the
-select sums to one total over a window and each query validates; any other ranking is held with
-no runnable option. The check only holds a plan: it never changes a draft, nor readies one.
+ranking it means, the top N overall or in each period. Every such ranking is held with no
+runnable option. The check only holds a plan: it never changes a draft, nor readies one.
 """
 
 from __future__ import annotations
 
 import json
-from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -138,89 +136,41 @@ def test_a_comparison_never_splits_by_a_month_the_question_never_asks_for(
 
 
 @pytest.mark.parametrize(
-    "intent", ["top 3 stores by revenue at month level", "top 1 store by revenue at month level"]
+    "intent",
+    [
+        "top 3 stores by revenue at month level",
+        "top 1 store by revenue at month level",
+        "top 3 stores by monthly revenue",
+        "top 3 stores by revenue by month",
+    ],
 )
 def test_a_ranking_split_by_a_period_asks_which_ranking_it_means(
     jaffle: Runtime, intent: str
 ) -> None:
-    limit = 3 if "3" in intent else 1
+    limit = 1 if "top 1" in intent else 3
+    stores = "store" if limit == 1 else "stores"
     payload = plan_payload(jaffle, intent=intent)
 
     details = _held(payload, RANKING)
-    assert (details["limit"], details["ranked"], details["grain"]) == (limit, [STORE], "month")
-    clarification = details["clarification"]
-    assert clarification["question"] == (
-        f"The top {limit} {'stores' if limit == 3 else 'store'} over the whole window, or the top "
-        f"{limit} {'stores' if limit == 3 else 'store'} in each month?"
+    assert details == {"limit": limit, "ranked": [STORE], "grain": "month"}
+    assert "clarification" not in details
+    assert "execute" not in payload["next"].get("ready_for", [])
+    # The message states both readings; no option runs either one.
+    assert payload["why"]["message"].endswith(
+        f"The top {limit} {stores} over the whole window, or the top {limit} {stores} in each "
+        "month?"
     )
-    overall, per_period = clarification["options"]
-    assert (overall["id"], per_period["id"]) == ("top_overall", "top_per_period")
+    assert [hint["kind"] for hint in payload["why"]["recovery_hints"]] == ["ask_which_ranking"]
+    assert "query_ir" not in json.dumps(payload["why"])
 
     # The draft keeps the top N store-months, which is neither reading.
     draft = _cents(typed_rows(jaffle.query(payload["best"]["query_ir"])), STORE, MONTH)
-    store_months = [
+    assert draft == [
         (store, str(month), round(float(revenue), 2))
         for store, month, revenue in _reference(
             jaffle, f"{_STORE_MONTHS} ORDER BY revenue DESC LIMIT {limit}"
         )
     ]
-    assert draft == store_months
-
-    # The top N overall, on their total.
-    top = [
-        (row[STORE], round(float(row["revenue_usd"]), 2))
-        for row in typed_rows(jaffle.query(overall["query_ir"]))
-    ]
-    assert top == [
-        (store, round(float(revenue), 2))
-        for store, revenue in _reference(
-            jaffle,
-            f"SELECT store, SUM(revenue) AS revenue FROM ({_STORE_MONTHS}) GROUP BY 1 "
-            f"ORDER BY revenue DESC LIMIT {limit}",
-        )
-    ]
-    # Each of them by month: the breakdown filtered to the stores the ranking returned.
-    assert overall["breakdown"]["filter_fields"] == [STORE]
-    breakdown = {
-        **overall["breakdown"]["query_ir"],
-        "where": [{"field": STORE, "op": "in", "value": [store for store, _ in top]}],
-    }
-    assert _cents(typed_rows(jaffle.query(breakdown)), STORE, MONTH) == [
-        (store, str(month), round(float(revenue), 2))
-        for store, month, revenue in _reference(
-            jaffle,
-            f"WITH top AS (SELECT store, SUM(revenue) AS total FROM ({_STORE_MONTHS}) GROUP BY 1 "
-            f"ORDER BY total DESC LIMIT {limit}) SELECT * FROM ({_STORE_MONTHS}) "
-            "WHERE store IN (SELECT store FROM top) ORDER BY store, month",
-        )
-    ]
-
-    # The top N in each month: each month's first N rows.
-    kept: list[tuple[Any, ...]] = []
-    seen: Counter[str] = Counter()
-    for row in _cents(typed_rows(jaffle.query(per_period["query_ir"])), STORE, MONTH):
-        if seen[row[1]] < per_period["keep_first_per_period"]:
-            seen[row[1]] += 1
-            kept.append(row)
-    assert per_period["keep_first_per_period"] == limit
-    assert kept == [
-        (store, str(month), round(float(revenue), 2))
-        for store, month, revenue in _reference(
-            jaffle,
-            f"SELECT * FROM ({_STORE_MONTHS}) QUALIFY ROW_NUMBER() OVER "
-            f"(PARTITION BY month ORDER BY revenue DESC, store) <= {limit} "
-            "ORDER BY month, revenue DESC, store",
-        )
-    ]
-    if limit == 1:
-        # The readings differ: Philadelphia overall, but Brooklyn in July and August 2017,
-        # and the draft's one store-month is Brooklyn's August.
-        assert [store for store, _ in top] == ["Philadelphia"]
-        assert [(store, month) for store, month, _ in kept if store == "Brooklyn"] == [
-            ("Brooklyn", "2017-07-01"),
-            ("Brooklyn", "2017-08-01"),
-        ]
-        assert [row[:2] for row in draft] == [("Brooklyn", "2017-08-01")]
 
 
 @pytest.mark.parametrize(
@@ -284,8 +234,7 @@ _TOP_3_STORES = {
     [
         # The noun it ranks is the period.
         ("which 3 months had the highest revenue by store", {"grain": "month"}),
-        # Fiscal buckets of the order time need fill, which a total over the window can't
-        # have, so the top 3 overall doesn't validate.
+        # The months of a window on another calendar.
         (
             "top 3 stores by monthly revenue",
             {
@@ -298,7 +247,7 @@ _TOP_3_STORES = {
         ),
     ],
 )
-def test_a_ranking_plan_cant_check_offers_no_runnable_option(
+def test_a_ranking_of_a_period_or_on_another_calendar_offers_no_runnable_option(
     jaffle: Runtime, question: str, time: dict[str, Any]
 ) -> None:
     query = {**_TOP_3_STORES, "time": {"temporal_role": ORDER_TIME, **time}}
@@ -672,37 +621,3 @@ def test_a_grain_the_caller_sets_is_asked_for(jaffle: Runtime) -> None:
     assert why["details"] == {"unasked_groupings": ["week"], "grain": "week"}
     # The check never changes the draft.
     assert query == {"group_by": [STORE], "time": {"temporal_role": ORDER_TIME, "grain": "week"}}
-
-
-def test_a_ranking_clarification_keeps_the_window(jaffle: Runtime) -> None:
-    window = {"start": "2017-01-01", "end": "2017-07-01"}
-    clock = {"temporal_role": ORDER_TIME, "calendar_id": "default"}
-    query = {**_TOP_3_STORES, "time": {**clock, "grain": "month", **window}}
-    why = plan_module._unasked_grouping_why(jaffle, "top 3 stores by monthly revenue", query)
-
-    assert why is not None
-    overall, per_period = why["details"]["clarification"]["options"]
-    # The window and the calendar stay; only the grain goes.
-    assert overall["query_ir"]["time"] == {**clock, **window}
-    assert overall["query_ir"]["limit"] == 3
-    assert per_period["query_ir"]["time"] == query["time"]
-    assert "limit" not in per_period["query_ir"]
-    assert per_period["query_ir"]["order_by"] == [
-        {"field": "time", "direction": "ASC"},
-        {"field": "revenue_usd", "direction": "DESC"},
-        {"field": STORE, "direction": "ASC"},
-    ]
-    # The top 3 stores on their total over the first half of 2017.
-    assert [
-        (row[STORE], round(float(row["revenue_usd"]), 2))
-        for row in typed_rows(jaffle.query(overall["query_ir"]))
-    ] == [
-        (store, round(float(revenue), 2))
-        for store, revenue in _reference(
-            jaffle,
-            "SELECT s.store_name, SUM(o.order_total_cents / 100.0) AS revenue "
-            "FROM jaffle_order o JOIN jaffle_store s ON o.store_id = s.store_id "
-            "WHERE o.ordered_at >= '2017-01-01' AND o.ordered_at < '2017-07-01' "
-            "GROUP BY 1 ORDER BY revenue DESC, 1 LIMIT 3",
-        )
-    ]

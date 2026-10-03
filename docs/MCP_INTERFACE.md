@@ -348,23 +348,15 @@ above (an entity's key and its label). When the question ranks nothing, a rankin
 `partial_query` states (its `limit`, over its own `group_by`) traces to it unless a grain splits
 its rows. A ranking of the entity whose rows a traced grain splits ("top 3 stores by revenue at
 month level", "top 3 stores by monthly revenue") would keep the top 3 store-months, so it is
-held with `why.code="PLAN_RANKING_PERIOD_AMBIGUOUS"` and a
-`why.details.clarification` that asks which ranking the question means. Its option
-`top_overall` carries a `query_ir` for the top N on their total over the draft's window (its
-`calendar_id` kept), and a `breakdown.query_ir` to run with a `where` filter on
-`breakdown.filter_fields` keeping the values that query returns; `top_per_period` carries a
-`query_ir` for every row, each period's highest first, of which you keep each period's first
-`keep_first_per_period` rows, since Query IR can't rank within a period. Plan offers these
-options only when each select item is a plain measure or metric reference that `validate` sums
-to one total over a window (`time_shape: "window_total"`: no running, rolling, to-date,
-prior-period or conversion value, and no metric predicate), the draft has no `metric_filters`,
-and every option's query validates. Any other ranking whose rows aren't the ranked entity's,
-split by a grain or not ("which 3 stores have the highest revenue by customer type" keeps the top
-3 store and customer type pairs, "top 3 stores by cumulative revenue by month", a ranked period
-such as "which 3 months had the highest revenue by store"), is held with the same code, no
-`clarification` and no Query IR: as its `ask_which_ranking` hint says, ask the user which
-ranking they mean and plan again with a question that names it. Both checks only hold a plan;
-neither changes a draft or makes one ready.
+held with `why.code="PLAN_RANKING_PERIOD_AMBIGUOUS"`; its message asks which ranking the
+question means, the top 3 stores over the whole window or the top 3 stores in each month. Any
+other ranking whose rows aren't the ranked entity's, split by a grain or not ("which 3 stores
+have the highest revenue by customer type" keeps the top 3 store and customer type pairs, a
+ranked period such as "which 3 months had the highest revenue by store"), is held with the same
+code. Every such hold has no `clarification` and no Query IR in `why.details`: as its
+`ask_which_ranking` hint says, ask the user which ranking they mean and plan again with a
+question that names it. Both checks only hold a plan; neither changes a draft or makes one
+ready.
 
 Words that name no catalog object also make the plan `low_confidence` when the draft
 doesn't consume them, they aren't stopwords or number words, and `intent_ir.unresolved`
