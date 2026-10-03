@@ -5,9 +5,14 @@ from __future__ import annotations
 import hashlib
 import os
 import uuid
+import weakref
 from pathlib import Path
 
 import duckdb
+
+# Every connection `capped` returns, so the test process can close the ones a
+# test leaves open; unused in subprocesses.
+open_connections: weakref.WeakSet[duckdb.DuckDBPyConnection] = weakref.WeakSet()
 
 
 def limited_connect(root: Path):
@@ -29,6 +34,7 @@ def limited_connect(root: Path):
         connection = connect(database, read_only=read_only, config=options)
         # The startup config reports the cap but DuckDB 1.5.6 needs SET to enforce it.
         connection.execute("SET max_temp_directory_size = ?", [options["max_temp_directory_size"]])
+        open_connections.add(connection)
         return connection
 
     return capped

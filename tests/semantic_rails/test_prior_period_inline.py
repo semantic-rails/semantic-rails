@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -31,14 +32,19 @@ from semantic_rails.runtime import (
     Runtime,
     _expression_normalized_away_warnings,
 )
+from tests.semantic_rails.conftest import opened
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 SCHEMA_PATH = REPO_ROOT / "schemas" / "query_ir.v1.json"
 
 
 @pytest.fixture(scope="module")
-def runtime() -> Runtime:
-    return Runtime("jaffle_shop")
+def runtime() -> Iterator[Runtime]:
+    rt = Runtime("jaffle_shop")
+    try:
+        yield opened(rt)
+    finally:
+        rt.close()
 
 
 # ---------------------------------------------------------------------------
