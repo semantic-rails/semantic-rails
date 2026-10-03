@@ -49,6 +49,7 @@ from .db_parts.base import (
     restore_column_names,
 )
 from .db_parts.common import session_time_zone, set_duckdb_time_zone
+from .db_parts.duckdb_setup import configure_duckdb_connection
 from .db_parts.snowflake import (
     SnowflakeCliAdapter,
     SnowflakeNativeAdapter,
@@ -169,7 +170,10 @@ class Database:
                 raise RuntimeError(
                     "duckdb is not installed. Add it to your environment dependencies."
                 )
-            return cls(conn=duckdb.connect(db_path, read_only=read_only), engine=engine)
+            return cls(
+                conn=configure_duckdb_connection(duckdb.connect(db_path, read_only=read_only)),
+                engine=engine,
+            )
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         return cls(conn=conn, engine="sqlite")
@@ -178,7 +182,7 @@ class Database:
     def connect_in_memory(cls) -> Database:
         if duckdb is None:
             raise RuntimeError("duckdb is not installed. Add it to your environment dependencies.")
-        return cls(conn=duckdb.connect(":memory:"), engine="duckdb")
+        return cls(conn=configure_duckdb_connection(duckdb.connect(":memory:")), engine="duckdb")
 
     def execute(self, sql: str, params: Iterable[Any] | None = None) -> None:
         cur = self.conn.cursor()

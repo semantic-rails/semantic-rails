@@ -20,6 +20,7 @@ from typing import Any
 
 import duckdb
 
+from .db_parts.duckdb_setup import configure_duckdb_connection
 from .errors import SemanticLayerError
 from .sql_identifiers import quote_relation
 
@@ -55,7 +56,7 @@ def _probe_cli() -> None:
     path, relations = request["path"], request["relations"]
     try:
         before = _identity(path)
-        conn = duckdb.connect(path, read_only=True)
+        conn = configure_duckdb_connection(duckdb.connect(path, read_only=True))
         try:
             missing = _missing_on_connection(conn, relations)
         finally:
@@ -110,7 +111,7 @@ def missing_duckdb_relations(db: Any, relations: Iterable[str]) -> list[str]:
 
 def record_seed_provenance(db_path: str, package_id: str, seed_digest: str = "") -> None:
     """Record which package and seed files built a new seed, without authorizing replacement."""
-    conn = duckdb.connect(db_path)
+    conn = configure_duckdb_connection(duckdb.connect(db_path))
     try:
         conn.execute("CREATE SCHEMA IF NOT EXISTS _semantic_rails")
         conn.execute(
