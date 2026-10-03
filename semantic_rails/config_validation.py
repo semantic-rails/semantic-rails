@@ -684,20 +684,6 @@ def _check_strict_raw_yaml(
             f"omit it from canonical packages.",
         )
 
-    # 3. policies.yml plan_constraint
-    for policy in list(package_root.get("semantic_policies") or []):
-        if (
-            isinstance(policy, dict)
-            and str(policy.get("kind", "")).strip().lower() == "plan_constraint"
-        ):
-            add_error(
-                errors,
-                f"{path / 'package.yml'}: policy {policy.get('id', '')} has kind "
-                f"'plan_constraint' which is a runtime no-op. Drop the policy or "
-                f"use a real kind (package_release, object_visibility, "
-                f"object_access, protected_object, metric_constraint).",
-            )
-
     # 4. Graph entity strict checks
     graph = graph_root.get("graph", {}) or {}
     for entity_key, entity_raw in (graph.get("entities") or {}).items():
@@ -959,17 +945,6 @@ def _check_strict_authoring(config, source_path: Path, errors: list[str]) -> Non
                 f"{source_path}: measure {measure.id} has accumulation.kind {kind!r} "
                 f"which is not in the strict enum {{flow, stock, event, population}}. "
                 f"Use one of those values or remove the accumulation block.",
-            )
-
-    # 2. policy.kind: plan_constraint is a runtime no-op; reject in strict mode.
-    for policy in config.semantic_policies:
-        if str(policy.kind or "").strip().lower() == "plan_constraint":
-            add_error(
-                errors,
-                f"{source_path}: policy {policy.id} has kind 'plan_constraint' "
-                f"which is not a runtime-recognized policy kind. Drop the policy "
-                f"or use one of: package_release, object_visibility, object_access, "
-                f"protected_object, metric_constraint.",
             )
 
 

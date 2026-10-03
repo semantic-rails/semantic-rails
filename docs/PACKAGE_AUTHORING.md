@@ -614,6 +614,23 @@ each with an `id`, a `kind`, and (except for `package_release` and `row_filter`)
 the `object_ids` it governs. Six kinds exist, each driving a different runtime
 behavior:
 
+Policy kinds and actions are a closed list in both default and strict validation.
+Unknown kinds or unsupported actions fail to load with `INVALID_CONFIG`; a policy
+constructed directly in Python is checked again before query binding and cache
+lookup, and during policy evaluation. Release labels belong in `config.label`.
+
+| Kind | Allowed action |
+| --- | --- |
+| `package_release` | omitted or `label` |
+| `object_visibility` | `hidden`, `visible` (required) |
+| `object_access` | `deny`, `redact` (required) |
+| `protected_object` | omitted or `protected` |
+| `metric_constraint` | omitted or `constrain` |
+| `row_filter` | omitted |
+
+The existing nested `config.action` and `config.visibility` aliases use the same
+action checks. Action text is trimmed and lowercased; kind names must match exactly.
+
 - **`package_release`** — labels the package's release status. `config.label`
   (e.g. `stable`, `preview`) surfaces in the package manifest and discovery
   metadata; it gates nothing by itself.
