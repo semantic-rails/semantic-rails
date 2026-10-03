@@ -75,6 +75,7 @@ from .db import (
     seed_digest,
 )
 from .db_parts.base import query_with_limits, reject_parameters
+from .db_parts.duckdb_confinement import confinement_directory, require_inside
 from .diagnostics import (
     enrich_diagnostic_candidates,
     enrich_expression_ast_error,
@@ -109,6 +110,7 @@ from .policies import (
 )
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
+from .renderer import render_select_for_profile
 from .request_context import (
     context_from_policy_context,
     request_context_payload,
@@ -132,6 +134,8 @@ from .seed_provenance import (
     recorded_seed_digest,
 )
 from .segments import build_segment_query, normalize_segment, strip_segment_preview_metric
+from .sql_ast import SqlCall, SqlField, SqlIdentifier, SqlSelect, SqlTableRef
+from .sql_identifiers import plain_relation_parts
 from .sql_preparation import PreparedQuery, checked_parameter_values
 
 __all__ = [
@@ -780,10 +784,42 @@ def _unchained_failure(exc: Exception, adapter: Any, query: PreparedQuery) -> Se
     return query_execution_error({"engine": engine, "sql_redacted": True})
 
 
+def _coverage_probe_query(
+    warehouse: str, table: str, column: str, *, entity: str, dimension: str
+) -> PreparedQuery:
+    """``SELECT MIN(column), MAX(column) FROM table``, rendered as compiled SQL is.
+
+    Both names come from package config, so each must be a plain SQL identifier;
+    anything else refuses before any SQL is built.
+    """
+    parts = plain_relation_parts(table)
+    if parts is None or ".".join(parts) != table or plain_relation_parts(column) != [column]:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "The data coverage probe reads only tables and columns with plain SQL names.",
+            details={
+                "reason": "probe_identifier_not_plain",
+                "entity": entity,
+                "dimension": dimension,
+            },
+        )
+    value = SqlIdentifier([column])
+    probe = SqlSelect(
+        select=[
+            SqlField(SqlCall("MIN", [value]), "min_t"),
+            SqlField(SqlCall("MAX", [value]), "max_t"),
+        ],
+        from_table=SqlTableRef(table),
+    )
+    dialect = dialect_for_warehouse(warehouse)
+    return dialect.prepare_query(render_select_for_profile(probe, dialect=dialect))
+
+
 def _data_coverage_probe(
     adapter: Any,
     config: Any,
     *,
+    warehouse: str,
     root_entity: str,
     temporal_role: str,
     limits: dict[str, Any],
@@ -796,8 +832,8 @@ def _data_coverage_probe(
     because the original query already ran and returned nothing.
 
     Returns ``{"min": iso, "max": iso}`` on success; empty dict if any
-    lookup fails or the probe raises. Failures are silent — coverage is
-    a hint, not a guarantee.
+    lookup fails, a name is not plain (see ``_coverage_probe_query``) or the
+    probe raises. Failures are silent — coverage is a hint, not a guarantee.
     """
     try:
         entity_idx = {row.id: row for row in config.entities}
@@ -810,11 +846,14 @@ def _data_coverage_probe(
         dim_row = dim_idx.get(role_row.dimension)
         if dim_row is None or not dim_row.column or not entity_row.table:
             return {}
-        sql = (
-            f"SELECT MIN({dim_row.column}) AS min_t, "
-            f"MAX({dim_row.column}) AS max_t FROM {entity_row.table}"
+        query = _coverage_probe_query(
+            warehouse,
+            entity_row.table,
+            dim_row.column,
+            entity=entity_row.id,
+            dimension=dim_row.id,
         )
-        rows = _adapter_query(adapter, sql, limits=limits)
+        rows = _adapter_query(adapter, query, limits=limits)
         if not rows:
             return {}
         first = rows[0] or {}
@@ -1743,7 +1782,7 @@ def _is_repo_managed_source(path: str) -> bool:
 
 
 class Runtime:
-    def __init__(self, package_id: str):
+    def __init__(self, package_id: str, *, confine_to: str | os.PathLike[str] = ""):
         source_path = get_package_path(package_id)
         # Built-in packages (repo checkout or installed share dir) keep
         # their seeded assets under the project data/ root; anything else
@@ -1755,6 +1794,7 @@ class Runtime:
             package_id=package_id,
             source_path=source_path,
             prefer_package_root_assets=not project_managed_source(source_path),
+            confine_to=confine_to,
         )
 
     @classmethod
@@ -1787,6 +1827,7 @@ class Runtime:
         *,
         package_id: str = "",
         prefer_package_root_assets: bool | None = None,
+        confine_to: str | os.PathLike[str] = "",
     ) -> Runtime:
         source_path = snapshot.source_path
         if prefer_package_root_assets is None:
@@ -1801,6 +1842,7 @@ class Runtime:
             package_id=package_id,
             source_path=source_path,
             prefer_package_root_assets=prefer_assets,
+            confine_to=confine_to,
         )
         return runtime
 
@@ -1811,7 +1853,9 @@ class Runtime:
         package_id: str,
         source_path: str,
         prefer_package_root_assets: bool,
+        confine_to: str | os.PathLike[str] = "",
     ) -> None:
+        self._confine_to = confinement_directory(confine_to) if confine_to else ""
         self._snapshot = snapshot
         config = snapshot.config
         self.package_id = package_id or config.package.package_id
@@ -1963,6 +2007,8 @@ class Runtime:
         """
         if self.warehouse != "duckdb":
             return
+        if self._confine_to:
+            self.db_path = require_inside(self._confine_to, self.db_path, option="database path")
         seed = self._config.package.seed
         for _attempt in range(2):
             if os.path.islink(self.db_path) and not os.path.exists(self.db_path):
@@ -1974,6 +2020,12 @@ class Runtime:
                     details={"default_db": self.db_path, "reason": "default_db_broken_link"},
                 )
             if not os.path.exists(self.db_path):
+                if self._confine_to:
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        "A confined Runtime requires an existing database; build it first.",
+                        details={"reason": "duckdb_confined_default_db_missing"},
+                    )
                 if seed.kind == SEED_KIND_EXTERNAL:
                     raise SemanticLayerError(
                         "INVALID_CONFIG",
@@ -1994,7 +2046,9 @@ class Runtime:
                 # its actual catalog before the runtime serves it.
                 continue
             try:
-                missing = missing_duckdb_relations(self.db_path, self._expected_tables())
+                missing = missing_duckdb_relations(
+                    self.db_path, self._expected_tables(), confine_to=self._confine_to
+                )
             except Exception as exc:  # noqa: BLE001 — any uncertain probe fails closed
                 raise self._unreadable_db_error() from exc
             if missing:
@@ -2177,7 +2231,9 @@ class Runtime:
             if self.adapter is None:
                 if self.warehouse == "duckdb":
                     self._ensure_db()
-                self.adapter = create_warehouse_adapter(self._config.package, db_path=self.db_path)
+                self.adapter = create_warehouse_adapter(
+                    self._config.package, db_path=self.db_path, confine_to=self._confine_to
+                )
                 self._seed_warnings = self._stale_seed_warnings()
             return self.adapter
 
@@ -2737,6 +2793,7 @@ class Runtime:
                         actual_data_coverage = _data_coverage_probe(
                             self._get_adapter(),
                             self._config,
+                            warehouse=self.warehouse,
                             root_entity=root_entity,
                             temporal_role=str(time_block.get("temporal_role", "") or ""),
                             limits=limits,

@@ -93,6 +93,18 @@ jobs:
           uv run --no-sync python -c "import pyarrow, adbc_driver_manager.dbapi, adbc_driver_postgresql.dbapi"
       - run: uv run python scripts/changelog_fragments.py check
       - run: uv run pytest -q tests/semantic_rails tests/mf2sr -n auto --validate-quarantine --junitxml=backend-results.xml
+      - name: Verify DuckDB confinement tests ran without skips
+        run: |
+          uv run --no-sync python - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          cases = ET.parse("backend-results.xml").findall(".//testcase")
+          selected = [case for case in cases if case.get("classname") == "tests.semantic_rails.test_duckdb_confinement"]
+          skipped = [case.attrib["name"] for case in selected if case.find("skipped") is not None]
+          if not selected or skipped:
+              raise SystemExit(f"DuckDB confinement tests must run without skips: {skipped}")
+          print(f"All {len(selected)} DuckDB confinement tests ran without skips.")
+          PY
       - name: Verify ADBC tests ran without skips
         if: matrix.python-version == '3.12'
         run: |
