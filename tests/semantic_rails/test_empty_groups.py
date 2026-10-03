@@ -19,13 +19,14 @@ import pytest
 from semantic_rails import compiler
 from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts import sql_lowering
-from semantic_rails.compiler_parts.empty_groups import resolves_to_zero
+from semantic_rails.compiler_parts.empty_groups import resolves_to_zero, sql_nodes
 from semantic_rails.config import load_package_config, resolve_repo_path
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_config_expression
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime, _no_data_in_scope_warnings
+from semantic_rails.sql_ast import SqlCte
 from tests.integration.correctness.conftest import _write_variant
 from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.empty_groups_invariant import assert_settled_in_one_place
@@ -974,15 +975,23 @@ def test_a_nested_case_forced_onto_a_rollup_is_refused(
     assert raised.value.details["measures"] == [SHOP_REVENUE["measure"]]
 
 
-def test_a_source_rollup_count_never_shadows_a_physical_join_column(tmp_path: Path) -> None:
+@pytest.mark.parametrize("composite", [False, True])
+def test_a_source_rollup_count_never_shadows_a_physical_join_column(
+    tmp_path: Path, composite: bool
+) -> None:
     """Refunds reach the customer channel through orders; the intermediate count must not
-    read the physical order key named __source_rows as a count of matching refunds."""
+    read a physical join column as a count of matching refunds."""
     package = _write_variant(tmp_path, "utc_authored")
     seed = package / "data" / "seed.sql"
-    seed.write_text(
-        seed.read_text(encoding="utf-8")
-        + "\nALTER TABLE refunds RENAME COLUMN order_id TO __source_rows;\n"
+    extra = (
+        "ALTER TABLE refunds ADD COLUMN m1_rows INTEGER;\n"
+        "UPDATE refunds SET m1_rows = 1;\n"
+        "ALTER TABLE orders ADD COLUMN pair_key INTEGER;\n"
+        "UPDATE orders SET pair_key = 1;\n"
+        if composite
+        else "ALTER TABLE refunds RENAME COLUMN order_id TO __source_rows;\n"
     )
+    seed.write_text(seed.read_text(encoding="utf-8") + "\n" + extra)
     config = load_package_config(str(package))
     expr = parse_config_expression(
         {
@@ -1012,12 +1021,18 @@ def test_a_source_rollup_count_never_shadows_a_physical_join_column(tmp_path: Pa
                     for target, columns in row.foreign_keys.items()
                 },
             )
-            if row.table == "refunds"
+            if row.table == "refunds" and not composite
             else row
             for row in config.entities
         ],
         relationships=[
-            replace(row, source_column="__source_rows", source_columns=["__source_rows"])
+            replace(
+                row,
+                source_column="" if composite else "__source_rows",
+                target_column="" if composite else row.target_column,
+                source_columns=["order_id", "m1_rows"] if composite else ["__source_rows"],
+                target_columns=["order_id", "pair_key"] if composite else row.target_columns,
+            )
             if row.source_entity == "entity.shop_refund" and row.source_column == "order_id"
             else row
             for row in config.relationships
@@ -1033,19 +1048,83 @@ def test_a_source_rollup_count_never_shadows_a_physical_join_column(tmp_path: Pa
         query = {"version": 1, "select": _select(goods=SHOP_GOODS), "group_by": [channel]}
         response = rt.query(query)
         got = {(row[channel], row["goods"]) for row in typed_rows(response)}
+        join = (
+            "r.order_id = o.order_id AND r.m1_rows = o.pair_key"
+            if composite
+            else "r.__source_rows = o.order_id"
+        )
         gold = _gold(
             rt,
             "SELECT s.channel, CASE WHEN COUNT(CASE WHEN r.refund_type = 'goods' THEN 1 END) = 0 "
             "THEN 0 ELSE SUM(CASE WHEN r.refund_type = 'goods' THEN r.goods_amount END) END AS goods "
-            "FROM refunds r LEFT JOIN orders o ON r.__source_rows = o.order_id "
+            f"FROM refunds r LEFT JOIN orders o ON {join} "
             "LEFT JOIN signups s ON o.customer_id = s.customer_id GROUP BY 1",
         )
         assert got == {(row["channel"], row["goods"]) for row in gold}
         assert ("web", 0) in got
         assert "_source_rollup AS" in response["rendered_sql"]
-        assert_settled_in_one_place(compile_query(config, Registry(config), query), config)
+        compiled = compile_query(config, Registry(config), query)
+        source_rollups = [
+            node
+            for node in sql_nodes(compiled["sql_ast"])
+            if isinstance(node, SqlCte) and node.name.endswith("_source_rollup")
+        ]
+        assert source_rollups
+        for cte in source_rollups:
+            names = [field.alias.casefold() for field in cte.query.select]
+            assert len(names) == len(set(names))
+            if composite:
+                assert "m1_rows_2" in names
+        assert_settled_in_one_place(compiled, config)
     finally:
         rt.close()
+
+
+@pytest.mark.parametrize("op", ["add", "subtract"])
+@pytest.mark.parametrize(
+    ("kind", "width", "expected"),
+    [
+        (
+            "rolling",
+            3,
+            {
+                "2023-11": (21, 9),
+                "2023-12": (28, 16),
+                "2024-01": (48, 36),
+                "2024-02": (27, 27),
+                "2024-03": (36, 28),
+            },
+        ),
+        ("rolling", 1, {"2024-01": (None, None), "2024-02": (0, 0)}),
+        ("cumulative", 0, {"2024-01": (48, 36)}),
+        ("period_to_date", 0, {"2024-01": (None, None), "2024-03": (36, 28)}),
+    ],
+    ids=["trailing_three", "trailing_one", "cumulative", "year_to_date"],
+)
+def test_a_summing_window_combines_each_operands_window(
+    shop: Runtime,
+    op: str,
+    kind: str,
+    width: int,
+    expected: dict[str, tuple[int | None, int | None]],
+) -> None:
+    expression = {
+        "kind": kind,
+        "input": {"kind": "arithmetic", "op": op, "left": SHOP_REVENUE, "right": SHOP_GOODS},
+    }
+    if kind == "rolling":
+        expression["window"] = {"unit": "month", "value": width}
+    elif kind == "period_to_date":
+        expression["period"] = "year"
+    response = shop.query(
+        {"select": _select(value=expression), "time": {**SHOP_MONTH, "fill": True}}
+    )
+    got = {
+        row[f"{SHOP_MONTH['temporal_role']}__month"].strftime("%Y-%m"): row["value"]
+        for row in typed_rows(response)
+    }
+    for month, values in expected.items():
+        assert got[month] == values[op == "subtract"], month
 
 
 @pytest.mark.parametrize("fill", [False, True])

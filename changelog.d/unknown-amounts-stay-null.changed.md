@@ -4,7 +4,9 @@
   and a conditional sum (`aggregate_if`, or an aggregate with a `filter`) only where no row
   meets its condition. The period's own value, filled (`time.fill`) or unfilled, and a
   `prior_period` read of it are `NULL`; rolling and cumulative windows skip its unknown
-  value. An unknown amount carries through: a ratio over it is `NULL`, and neither a
+  value. A window of a sum or difference windows each operand first, so an unknown goods
+  amount drops only the goods, not that month's revenue.
+  An unknown amount carries through: a ratio over it is `NULL`, and neither a
   `metric_filters` threshold nor a `metric_predicate` threshold keeps it, one that `0`
   passes (`< 5`) included, and
   `goods + shipping` by refund type is `NULL` for a type whose rows leave one of the columns
@@ -21,6 +23,4 @@
   divided by 100, keeps the earlier settlement individually and never reads a rollup:
   no-match groups read `0` where an amount is known elsewhere in scope; matched-unknown
   groups also read `0` there and stay `NULL` only when no amount is known in scope.
-  Multi-hop aggregation preserves these empty-group zeros when a physical join column
-  is named `__source_rows`.
   See [Query IR schema](docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0).

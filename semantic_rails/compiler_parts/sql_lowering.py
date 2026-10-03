@@ -4524,7 +4524,12 @@ def _names_in_use(plan: LogicalPlan, config: PackageConfig) -> set[str]:
         *(
             column
             for row in config.relationships
-            for column in (row.source_column, row.target_column)
+            for column in (
+                row.source_column,
+                row.target_column,
+                *row.source_columns,
+                *row.target_columns,
+            )
         ),
         *(
             column

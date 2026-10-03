@@ -301,6 +301,10 @@ def _compile_offset_window_expr(
     def sum_part(part: SemanticExpr) -> SqlExpr:
         # Constants scale the completed total, rather than becoming another windowed part.
         if isinstance(part, ArithmeticExpr):
+            if part.op in {"add", "subtract"}:
+                return SqlBinary(
+                    sum_part(part.left), "+" if part.op == "add" else "-", sum_part(part.right)
+                )
             if part.op in {"multiply", "divide"} and isinstance(part.right, LiteralExpr):
                 factor = compile_input(part.right)
                 if part.op == "divide":
