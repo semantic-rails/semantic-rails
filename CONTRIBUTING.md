@@ -116,6 +116,8 @@ uv run --no-sync pytest -q tests/semantic_rails/test_adbc_adapter.py tests/seman
 
 ### Intermittent tests
 
+Test subprocess helpers preserve the inherited `PYTHONPATH` so the DuckDB startup hook also applies to CLI children. Test DuckDB connections keep spill files under pytest's basetemp; `SR_TEST_DUCKDB_MAX_TEMP` (default `4GB`) caps spill per database instance and `SR_TEST_DUCKDB_MEMORY` (default `2GB`) caps memory.
+
 Each test has a five-minute timeout using `pytest-timeout`'s thread method,
 which dumps all thread stacks before terminating the process. Under xdist,
 the controller reports the crashed worker and test node ID; worker stack
