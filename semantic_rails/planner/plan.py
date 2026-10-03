@@ -31,6 +31,7 @@ from ..temporal_support import validate_temporal_support
 from ._base import (
     _grouping_matches,
     _is_temporal_grouping_term,
+    _listed_grouping_terms,
     _names_time_axis,
     _names_whole_entity,
     _object_by_id,
@@ -305,7 +306,11 @@ def plan_payload(
         else None
     )
     unmatched = unmatched_intent_terms(runtime, intent_str, best_draft.query) if best_ok else []
-    # Every listed non-clock, non-value grouping must match its own group_by dimension.
+    # The readiness invariants: every numeral and clock word in the question, and every word
+    # that names a catalog object, is consumed by something the draft carries. Otherwise an
+    # hour, a range, a threshold, a grouping or the asked-for subject was dropped. Last, every
+    # grouping the question lists, apart from clock terms and declared values, has its own
+    # group_by dimension; that check only holds a draft, it never changes one.
     value_why = (
         (
             _unconsumed_terms_why(unconsumed_terms(runtime, intent_str, best_draft.query))
@@ -650,12 +655,13 @@ def _unconsumed_catalog_why(question: str, words: list[str]) -> dict[str, Any] |
     """Explain a draft that leaves out a question word naming a catalog object.
 
     A word inside a grouping the question asks for ("by store, customer type and product type")
-    means the draft dropped that grouping, and the message says so.
+    means the draft dropped that grouping, and the message says so. A comma in the list reads as
+    "and" here: the grouping parse stops at a comma, which is how the draft lost the rest.
     """
 
     if not words:
         return None
-    listed = _requested_grouping_terms(question)
+    listed = _requested_grouping_terms(re.sub(r"\s*,\s*(?:and\s+)?", " and ", question))
     dropped = [term for term in listed if set(words) & set(re.findall(r"[^\W_]+", term))]
     terms = words[:8]  # as many as the warning names
     message = (
@@ -757,7 +763,7 @@ def _dropped_grouping_why(
     ]
     terms = [
         term
-        for term in _requested_grouping_terms(question, config=config)
+        for term in _listed_grouping_terms(question, config)
         if not (
             _is_temporal_grouping_term(term)
             or any(_names_time_axis(term, clock) for clock in clocks)

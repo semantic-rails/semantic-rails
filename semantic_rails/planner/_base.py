@@ -1396,22 +1396,61 @@ def _names_whole_entity(term: str, entity: Any) -> bool:
     )
 
 
-def _requested_grouping_terms(text: str, *, config: Any = None) -> list[str]:
+def _requested_grouping_terms(text: str) -> list[str]:
     lowered = str(text or "").lower()
-    return [lowered[start:end] for start, end in _requested_grouping_spans(text, config=config)]
+    return [lowered[start:end] for start, end in _requested_grouping_spans(text)]
 
 
-def _requested_grouping_spans(text: str, *, config: Any = None) -> list[tuple[int, int]]:
+def _requested_grouping_spans(text: str) -> list[tuple[int, int]]:
     """Record exactly where the existing grouping parser reads each term."""
 
     lowered = str(text or "").lower()
     top_by_match = re.search(
-        r"^\s*(?:the\s+)?top\s+([a-z0-9 _,-]+?)\s+by\s+([a-z0-9 _-]+?)(?:[.?!,;]|$)",
+        r"^\s*top\s+([a-z0-9 _-]+?)\s+by\s+([a-z0-9 _-]+?)(?:[.?!,;]|$)",
         lowered,
     )
     match: re.Match[str] | None
     if top_by_match:
         match = top_by_match
+        raw_terms = _strip_leading_rank_count(match.group(1).strip())
+    else:
+        match = re.search(
+            r"\bby ([a-z0-9 _-]+?)(?:\s+(?:where|for|from|in|with|during|over|having|who|that)\b|[.?!,;]|$)",
+            lowered,
+        )
+        raw_terms = match.group(1).strip() if match else ""
+    if not match or not raw_terms:
+        return []
+    offset = match.start(1) + match.group(1).find(raw_terms)
+    spans: list[tuple[int, int]] = []
+    start = 0
+    cuts = [
+        (part.start(), part.end()) for part in re.finditer(r"\s*(?:,| and | & | by )\s*", raw_terms)
+    ]
+    for end, next_start in [*cuts, (len(raw_terms), len(raw_terms))]:
+        term = raw_terms[start:end]
+        if term.strip():
+            low = start + len(term) - len(term.lstrip())
+            spans.append((offset + low, offset + low + len(term.strip())))
+        start = next_start
+    return spans
+
+
+def _listed_grouping_terms(text: str, config: Any) -> list[str]:
+    """Every grouping the question lists, read only to decide whether a draft is ready.
+
+    A draft reads its groupings with ``_requested_grouping_terms``, where a comma ends the
+    list. Here the piece after a comma continues it when it names a clock, a dimension or an
+    entity ("by incident name, incident" lists two), and a window the question states ends it
+    ("by store, last month" lists one). A listed grouping the draft lacks holds the plan, so
+    reading more of the question can hold more plans but never makes one ready.
+    """
+
+    lowered = str(text or "").lower()
+    match = re.search(
+        r"^\s*(?:the\s+)?top\s+([a-z0-9 _,-]+?)\s+by\s+[a-z0-9 _-]+?(?:[.?!,;]|$)", lowered
+    )
+    if match:
         raw_terms = _strip_leading_rank_count(match.group(1).strip())
     else:
         match = re.search(
@@ -1421,49 +1460,38 @@ def _requested_grouping_spans(text: str, *, config: Any = None) -> list[tuple[in
         raw_terms = match.group(1).strip() if match else ""
     if not match or not raw_terms:
         return []
+    # A recorded window is a clause boundary, not part of the grouping's name.
     offset = match.start(1) + match.group(1).find(raw_terms)
-    if config is not None:
-        # A recorded window is a clause boundary, not part of the grouping's name.
-        # Reuse consumed spans rather than inventing a list of window cue words.
-        end = min(
-            (
-                start
-                for start, _end in _time_window(text).spans
-                if offset <= start < offset + len(raw_terms)
-            ),
-            default=offset + len(raw_terms),
-        )
-        raw_terms = raw_terms[: end - offset].rstrip()
-    spans: list[tuple[int, int]] = []
-    start = 0
-    after_comma = False
-    cuts = [
-        (part.start(), part.end())
-        for part in re.finditer(r"\s*(?:,\s*and |,| and | & | by )\s*", raw_terms)
-    ]
-    for end, next_start in [*cuts, (len(raw_terms), len(raw_terms))]:
-        term = raw_terms[start:end]
-        if term.strip():
-            if (
-                after_comma
-                and config is not None
-                and not (
-                    _is_temporal_grouping_term(term.strip())
-                    or any(_names_time_axis(term, row.label) for row in config.temporal_roles)
-                    or any(
-                        row.calendar_id and _names_time_axis(term, row.label)
-                        for row in config.entities
-                    )
-                    or any(_grouping_matches(term, row) for row in config.dimensions)
-                    or any(_grouping_matches(term, row, entity=True) for row in config.entities)
+    end = min(
+        (
+            start
+            for start, _end in _time_window(text).spans
+            if offset <= start < offset + len(raw_terms)
+        ),
+        default=offset + len(raw_terms),
+    )
+    pieces = re.split(r"(\s*(?:,\s*and |,| and | & | by )\s*)", raw_terms[: end - offset])
+    terms: list[str] = []
+    for index in range(0, len(pieces), 2):
+        term = pieces[index].strip()
+        if not term:
+            continue
+        if (
+            index
+            and "," in pieces[index - 1]
+            and not (
+                _is_temporal_grouping_term(term)
+                or any(_names_time_axis(term, row.label) for row in config.temporal_roles)
+                or any(
+                    row.calendar_id and _names_time_axis(term, row.label) for row in config.entities
                 )
-            ):
-                break
-            low = start + len(term) - len(term.lstrip())
-            spans.append((offset + low, offset + low + len(term.strip())))
-        after_comma = "," in raw_terms[end:next_start]
-        start = next_start
-    return spans
+                or any(_grouping_matches(term, row) for row in config.dimensions)
+                or any(_grouping_matches(term, row, entity=True) for row in config.entities)
+            )
+        ):
+            break
+        terms.append(term)
+    return terms
 
 
 # Words that make a grouping term name a clock ("order date", "order month at month grain").
@@ -1495,9 +1523,6 @@ def _is_temporal_grouping_term(term: str) -> bool:
         and term_tokens.issubset(
             {"day", "week", "month", "quarter", "year", "time", "delivered", "ordered"}
         )
-        # A grain phrase ("at week grain", "month level") names the clock's grain.
-        or term_tokens & set(_TIME_UNITS)
-        and term_tokens.issubset({*_TIME_UNITS, *_GRAIN_WORDS})
     )
 
 
@@ -1538,7 +1563,7 @@ def _maybe_group_by(
         dim = _dimension(config, ["geo"], prefer_parent="parent" in lowered)
         if dim is not None:
             group_by.append(dim.id)
-    for term in _requested_grouping_terms(text, config=config):
+    for term in _requested_grouping_terms(text):
         term_tokens = set(_tokens(term))
         if (
             term_tokens & {"store", "geo"}
