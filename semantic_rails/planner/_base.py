@@ -15,6 +15,7 @@ from functools import lru_cache
 from typing import Any
 
 from ..expressions import MeasureRefExpr, expr_to_dict
+from .visibility import visible_dimensions, visible_value_domains
 
 
 @dataclass(frozen=True)
@@ -466,7 +467,7 @@ def _aggregation_from_text(text: str, terms: set[str], measure: Any) -> str:
 
 def _dimension(config: Any, terms: Iterable[str], *, prefer_parent: bool = False) -> Any | None:
     candidates = []
-    for row in config.dimensions:
+    for row in visible_dimensions(config):
         row_score = _score(row, terms)
         if row_score <= 0:
             continue
@@ -480,7 +481,7 @@ def _dimension(config: Any, terms: Iterable[str], *, prefer_parent: bool = False
 def _dimension_for_value(config: Any, value: str, *, terms: Iterable[str] = ()) -> Any | None:
     value_text = str(value).lower()
     domain_dimensions: set[str] = set()
-    for domain in config.value_domains:
+    for domain in visible_value_domains(config):
         for row in list(domain.values or []):
             values = [
                 str(row.value).lower(),
@@ -489,7 +490,7 @@ def _dimension_for_value(config: Any, value: str, *, terms: Iterable[str] = ()) 
             ]
             if value_text in values:
                 domain_dimensions.update(domain.dimensions)
-    candidates = [row for row in config.dimensions if row.id in domain_dimensions]
+    candidates = [row for row in visible_dimensions(config) if row.id in domain_dimensions]
     if candidates:
         return _best(candidates, [*terms, "product"]) or candidates[0]
     return _dimension(config, [*terms, "product"])
@@ -633,7 +634,9 @@ def _with_fiscal_calendar(config: Any, text: str, query: dict[str, Any]) -> dict
         return query
     column = _CALENDAR_BUCKET_COLUMNS.get(str(time["grain"]))
     bucket = {
-        row.id for row in config.dimensions if row.entity == calendar.id and row.column == column
+        row.id
+        for row in visible_dimensions(config)
+        if row.entity == calendar.id and row.column == column
     }
     out = {**query, "time": {**time, "calendar_id": calendar.calendar_id, "fill": True}}
     order_by: list[Any] = []
@@ -1427,7 +1430,7 @@ def _term_matches_value_domain(config: Any, term: str) -> bool:
     term_tokens = set(_tokens(term))
     if not term_tokens:
         return False
-    for domain in config.value_domains:
+    for domain in visible_value_domains(config):
         for row in list(domain.values or []):
             values = [
                 str(row.value),
@@ -1449,7 +1452,7 @@ def _maybe_group_by(
     target_set = {term for term in target_terms if term}
     group_by: list[str] = []
     if terms & {"segment", "segments"} and ("customer" in terms or "historical" in terms):
-        dim = _object_by_id(config.dimensions, "dimension.jaffle_customer_history_segment")
+        dim = _object_by_id(visible_dimensions(config), "dimension.jaffle_customer_history_segment")
         if dim is not None:
             group_by.append(dim.id)
     if "store" in terms:

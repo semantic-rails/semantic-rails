@@ -45,12 +45,19 @@ from .faithfulness import (
 from .generators import blocked_object_not_found, fallback_drafts
 from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
+from .visibility import (
+    require_visible_dimensions,
+    visible_dimensions,
+    visible_value_domains,
+    with_dimension_visibility,
+)
 
 _VERSION = 1
 
 
 # ---------------------------------------------------------------------------
 @runtime_request_scope
+@with_dimension_visibility
 def plan_payload(
     runtime: Any,
     *,
@@ -123,10 +130,18 @@ def plan_payload(
                 out_of_scope=scope_block_payload(intent_str, classification),
             )
             return _query_detail_payload(payload) if detail_level == "query" else payload
-        catalog_tokens = _catalog_token_index(
-            runtime._config,
-            search_index=runtime._get_catalog_search_index(),
-        )
+        dimensions = visible_dimensions(runtime._config)
+        catalog_config = runtime._config
+        search_index = None
+        if len(dimensions) == len(catalog_config.dimensions):
+            search_index = runtime._get_catalog_search_index()
+        else:
+            catalog_config = replace(
+                catalog_config,
+                dimensions=dimensions,
+                value_domains=visible_value_domains(catalog_config),
+            )
+        catalog_tokens = _catalog_token_index(catalog_config, search_index=search_index)
         passes, overlap = _intent_passes_relevance_floor(intent_str, catalog_tokens)
         if not passes:
             sample = sorted(catalog_tokens)[:30]
@@ -159,6 +174,7 @@ def plan_payload(
     if result.draft is not None:
         validate_temporal_support(runtime._config, result.draft.query)
     intent_ir = result.intent_ir
+    require_visible_dimensions(runtime._config, {}, intent_ir.to_dict().get("grouping", []))
     draft_rows: list[tuple[Any, str]] = []
     blocked: list[dict[str, Any]] = []
     primary_query_keys: set[str] = set()
@@ -496,6 +512,11 @@ def _planned_row(
     )
     merged_draft = replace(
         draft, query=_merge_partial_query(runtime._config, fiscal_query, partial_query)
+    )
+    require_visible_dimensions(
+        runtime._config,
+        merged_draft.query,
+        merged_draft.resolved,
     )
     if merged_draft.blocked_reason:
         why = dict(merged_draft.blocked_reason)
