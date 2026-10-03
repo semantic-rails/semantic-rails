@@ -332,11 +332,15 @@ def test_a_prior_period_shift_never_consumes_a_grouping(jaffle: Runtime) -> None
 
 
 @pytest.mark.parametrize(
-    ("name", "label", "plural"),
-    [("tax", "Tax", "taxes"), ("box", "Box", "boxes"), ("status", "Membership status", "statuses")],
+    ("name", "label", "plural", "status"),
+    [
+        ("tax", "Tax", "taxes", "ok"),
+        ("box", "Box", "boxes", "ok"),
+        ("status", "Membership status", "statuses", "low_confidence"),
+    ],
 )
 def test_a_plural_is_consumed_by_the_same_forms_that_recognize_it(
-    jaffle: Runtime, name: str, label: str, plural: str
+    jaffle: Runtime, name: str, label: str, plural: str, status: str
 ) -> None:
     with _with_store_dimensions(jaffle, (name, label, "store_id")) as runtime:
         selected = plan_payload(
@@ -344,9 +348,22 @@ def test_a_plural_is_consumed_by_the_same_forms_that_recognize_it(
             intent=f"revenue by {plural}",
             partial_query={"group_by": [f"dimension.{name}"]},
         )
-        assert selected["status"] == "ok", selected.get("why")
-        assert "execute" in selected["next"]["ready_for"]
-        assert selected["best"]["query_ir"]["group_by"] == [f"dimension.{name}"]
+        assert selected["status"] == status, selected.get("why")
+        query = selected["best"]["query_ir"]
+        assert unconsumed_catalog_words(runtime, f"revenue by {plural}", query) == []
+        if status == "ok":
+            assert "execute" in selected["next"]["ready_for"]
+            assert query["group_by"] == [f"dimension.{name}"]
+        else:
+            # Two dimensions share "Membership status". The primary adds the existing
+            # membership grouping; a validating fallback drops it, so keep the hold.
+            assert selected["why"]["code"] == "PLAN_FALLBACK_SEMANTIC_DRIFT"
+            assert "ready_for" not in selected["next"]
+            assert query["group_by"] == ["dimension.status", "dimension.jaffle_membership_status"]
+            assert selected["why"]["details"]["fallback_slots"]["grouping"] == ["dimension.status"]
+            assert "grouping_dropped" in [
+                reason["kind"] for reason in selected["why"]["details"]["reasons"]
+            ]
         _not_ready(plan_payload(runtime, intent=f"revenue by store, {plural}"), [plural])
 
 
