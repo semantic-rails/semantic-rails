@@ -1,21 +1,32 @@
 """A metric constraint governs the filters a caller writes inside an expression."""
 
-from copy import deepcopy
+from contextlib import nullcontext
 from dataclasses import replace
+from datetime import date
 
+import duckdb
 import pytest
 
 from semantic_rails import compiler
+from semantic_rails.compiler_parts import bind
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
+from tests.semantic_rails.conftest import copy_package_config
 
 PACKAGE = "configs/semantic_rails/jaffle_shop"
+REVENUE = "measure.jaffle.revenue_usd"
+ORDERS = "measure.jaffle.order_count"
 INVENTORY = "measure.jaffle.inventory_on_hand_eop"
 INVENTORY_DAY = "temporal_role.jaffle_inventory_day"
 INVENTORY_STORE = "dimension.jaffle_store_inventory_snapshot_store_id"
 STORE_NAME = "dimension.jaffle_store_name"
+CUSTOMER_TYPE = "dimension.jaffle_customer_type"
+ORDER = "entity.jaffle_order"
+CUSTOMER = "entity.jaffle_customer"
+AOV = "metric.sales.aov_usd"
+RETURNING = {"field": CUSTOMER_TYPE, "op": "=", "value": "returning"}
 
 
 @pytest.fixture(scope="module")
@@ -24,15 +35,14 @@ def config():
 
 
 def _constrained(config, constraint, governed, source_path=PACKAGE):
+    """``governed=None`` makes the policy package-wide."""
     policy = SemanticPolicyConfig(
         id="policy.test.inline_filters",
         kind="metric_constraint",
         object_ids=[governed] if governed else [],
         config=constraint,
     )
-    return Runtime.from_config(
-        replace(config, semantic_policies=[policy]), source_path=source_path
-    )
+    return Runtime.from_config(replace(config, semantic_policies=[policy]), source_path=source_path)
 
 
 def _assert_denied_before_output(engine, monkeypatch, query):
@@ -84,3 +94,206 @@ def test_an_inline_filter_outside_allowed_where_is_refused(config, monkeypatch):
             "source": "inline_expression",
         }
     ]
+
+
+FILTERED_REVENUE = {"kind": "aggregate", "measure": REVENUE, "filter": {"all": [RETURNING]}}
+
+
+def _select(expression, **query):
+    return {"select": [{"expression": expression, "as": "value"}], **query}
+
+
+# Each places a filter on customer type inside an expression that reads revenue.
+INLINE_SHAPES = {
+    "aggregate": _select(FILTERED_REVENUE),
+    "semi_additive": _select({**FILTERED_REVENUE, "kind": "semi_additive"}),
+    "scoped_where": _select({"kind": "scoped_aggregate", "measure": REVENUE, "where": [RETURNING]}),
+    "nested": _select({"kind": "ratio", "numerator": FILTERED_REVENUE, "denominator": {"measure": REVENUE}}),
+    "window_input": _select(
+        {"kind": "cumulative", "input": FILTERED_REVENUE},
+        time={"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+    ),
+    "metric_filter": {
+        **_select({"measure": ORDERS}),
+        "metric_filters": [{"expression": FILTERED_REVENUE, "op": ">", "value": 0}],
+    },
+    "predicate_input": _select(
+        {
+            "kind": "scoped_aggregate",
+            "measure": ORDERS,
+            "predicates": [{"entity": CUSTOMER, "input": FILTERED_REVENUE, "op": ">", "value": 0}],
+        }
+    ),
+}
+
+# Each constraint key, and the violation the inline filter above meets.
+CONSTRAINTS = {
+    "allowed_where": ({"allowed_where": [STORE_NAME]}, "disallowed_where"),
+    "allow_metric_filters": ({"allow_metric_filters": False}, "metric_filters_not_allowed"),
+    "allowed_metric_filter_entities": (
+        {"allowed_metric_filter_entities": [ORDER]},
+        "disallowed_metric_filter_entity",
+    ),
+    # The inline filter names the required field, but cuts only its own leaf.
+    "required_where": ({"required_where": [CUSTOMER_TYPE]}, "missing_required_where"),
+}
+
+
+@pytest.mark.parametrize("key", sorted(CONSTRAINTS))
+@pytest.mark.parametrize("shape", sorted(INLINE_SHAPES))
+def test_constraint_keys_govern_inline_filters(config, monkeypatch, shape, key):
+    query = INLINE_SHAPES[shape]
+    assert compiler.compile_query(config, None, query)["sql"]
+    constraint, kind = CONSTRAINTS[key]
+    engine = _constrained(config, constraint, REVENUE)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert kind in [row["kind"] for row in violations]
+    if key == "allowed_where":
+        assert violations == [
+            {
+                "kind": "disallowed_where",
+                "disallowed": [CUSTOMER_TYPE],
+                "allowed": [STORE_NAME],
+                "source": "inline_expression",
+            }
+        ]
+
+
+def test_a_metric_read_by_an_inline_filter_meets_the_metric_allowlist(config, monkeypatch):
+    predicate = {"kind": "metric_predicate", "entity": CUSTOMER, "input": {"metric": AOV}}
+    expression = {
+        "kind": "aggregate",
+        "measure": REVENUE,
+        "filter": {"all": [{"expression": {**predicate, "op": ">", "value": 0}}]},
+    }
+    query = _select(expression)
+    assert compiler.compile_query(config, None, query)["sql"]
+    engine = _constrained(config, {"allowed_metric_filter_metrics": []}, REVENUE)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert {"kind": "disallowed_metric_filter_metric", "disallowed": [AOV], "allowed": []} in (
+        violations
+    )
+
+
+def test_every_inline_filter_is_a_metric_filter_cut(config, monkeypatch):
+    """Even one the compiler records no cut for."""
+    monkeypatch.setattr(bind, "binding_cut", nullcontext)
+    query = INLINE_SHAPES["aggregate"]
+    assert not compiler.bind_query(config, None, query).cuts
+    engine = _constrained(config, {"allow_metric_filters": False}, REVENUE)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {"kind": "metric_filters_not_allowed", "metric_filter_refs": {}, "source": "inline_expression"}
+    ]
+
+
+CONDITIONAL = {
+    "kind": "aggregate_if",
+    "aggregation": "count",
+    "condition": {
+        "kind": "not_in",
+        "expr": {"kind": "column", "table": "jaffle_customer", "column": "customer_id"},
+        "values": [0],
+    },
+}
+
+
+@pytest.mark.parametrize("governed", [None, REVENUE])
+def test_a_conditional_aggregate_condition_is_never_an_allowed_field(
+    config, monkeypatch, governed
+):
+    """Its condition reads columns, not fields: refused when it filters a governed leaf.
+
+    Only a package-wide constraint governs its synthetic measure; a constraint on another
+    measure leaves it a sibling."""
+    query = {
+        "select": [
+            {"expression": {"measure": REVENUE}, "as": "revenue"},
+            {"expression": CONDITIONAL, "as": "customers"},
+        ]
+    }
+    assert compiler.compile_query(config, None, query)["sql"]
+    engine = _constrained(config, {"allowed_where": [STORE_NAME]}, governed)
+    try:
+        if governed:
+            assert engine.validate(query)["ok"]
+            return
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": ["aggregate_if.condition"],
+            "allowed": [STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
+
+
+@pytest.mark.parametrize("placement", ["select", "metric_filter"])
+def test_an_inline_filter_on_an_ungoverned_sibling_is_its_own(config, placement):
+    """A filter on another measure's leaf does not cut the governed measure."""
+    filtered_orders = {"kind": "aggregate", "measure": ORDERS, "filter": {"all": [RETURNING]}}
+    query = _select({"measure": REVENUE})
+    if placement == "select":
+        query["select"].append({"expression": filtered_orders, "as": "orders"})
+    else:
+        query["metric_filters"] = [{"expression": filtered_orders, "op": ">", "value": 0}]
+    query["group_by"] = [STORE_NAME]
+    engine = _constrained(config, {"allowed_where": [STORE_NAME]}, REVENUE)
+    try:
+        result = engine.validate(query)
+        assert result["ok"], result["errors"]
+    finally:
+        engine.close()
+
+
+def test_an_inline_filter_on_an_allowed_field_still_answers(tmp_path):
+    package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    config = replace(load_package_config(str(package)), semantic_policies=[])
+    stores = ["Brooklyn", "Philadelphia"]
+    query = _closing_inventory({"field": STORE_NAME, "op": "in", "value": stores})
+    engine = _constrained(
+        config, {"allowed_where": [STORE_NAME]}, INVENTORY, source_path=str(package)
+    )
+    try:
+        rows = engine.query(query)["rows"]
+        db_path = engine.db_path
+    finally:
+        engine.close()
+    # Each store's last snapshot in each month, then summed across the stores.
+    with duckdb.connect(db_path, read_only=True) as connection:
+        reference = connection.execute(
+            """
+            WITH snapshots AS (
+                SELECT i.store_id, DATE_TRUNC('month', i.date_day) AS month, i.date_day,
+                    i.inventory_on_hand
+                FROM jaffle_store_inventory_snapshot i JOIN jaffle_store s USING (store_id)
+                WHERE s.store_name IN (?, ?)
+            ),
+            closing AS (
+                SELECT store_id, month, MAX(date_day) AS date_day FROM snapshots GROUP BY 1, 2
+            )
+            SELECT month, SUM(inventory_on_hand)
+            FROM snapshots JOIN closing USING (store_id, month, date_day)
+            GROUP BY 1 ORDER BY 1
+            """,
+            stores,
+        ).fetchall()
+    assert len(reference) > 1
+    actual = dict(
+        (date.fromisoformat(str(row[f"{INVENTORY_DAY}__month"])[:10]), row["inventory"])
+        for row in rows
+    )
+    expected = {date.fromisoformat(str(month)[:10]): float(value) for month, value in reference}
+    assert actual == pytest.approx(expected)
