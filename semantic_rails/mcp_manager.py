@@ -216,6 +216,7 @@ def start_mcp_http_server(
                     "name": server_name,
                     "requested": requested_config,
                     "registered": registered_config,
+                    "assigned_port": int(existing.get("port", 0) or 0),
                     "mismatches": sorted(set(mismatches)),
                     "server": row,
                     "restart_performed": False,
@@ -249,7 +250,14 @@ def start_mcp_http_server(
             pass_fds: tuple[int, ...] = ()
             if port == 0:
                 # Hold the kernel-selected port until the child inherits its listener.
-                listener = stack.enter_context(socket.create_server((host, 0)))
+                try:
+                    listener = stack.enter_context(socket.create_server((host, 0)))
+                except OSError as exc:
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        f"Cannot bind a managed MCP listener on host {host!r}: {exc}",
+                        details={"host": host, "spawned": False},
+                    ) from exc
                 port = int(listener.getsockname()[1])
                 pass_fds = (listener.fileno(),)
                 env["SEMANTIC_RAILS_MCP_SOCKET_FD"] = str(listener.fileno())

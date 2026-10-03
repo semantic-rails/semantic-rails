@@ -552,6 +552,11 @@ The manager holds the listening socket through server startup, so concurrent
 starts cannot claim the same port. The start response and `mcp status` report
 the assigned port. Repeating the same named start with `--port 0` reuses its
 healthy server; process identity and health nonce checks still apply.
+For port zero, if the host cannot resolve or bind, startup returns `INVALID_CONFIG` without
+spawning a process or writing a server record. Configuration conflicts report
+the server's `assigned_port` while comparing the originally requested port.
+The server consumes the inherited socket-fd environment variable at startup,
+including when an explicit port is used, so child processes do not inherit it.
 
 Windows users should install the generated stdio client config with
 `semantic-rails mcp setup --install --yes`, or run `mcp http` in a foreground
