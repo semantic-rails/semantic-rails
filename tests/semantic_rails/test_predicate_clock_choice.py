@@ -693,3 +693,202 @@ def test_anchored_ratio_cannot_bypass_override_refusal(warehouse, monkeypatch):
         compile_query(config, None, _share_query(override=True))
     assert len(built) == 2
     _assert_override_refusal(raised.value)
+
+
+def _output_query(name, role, grain=""):
+    query = _query()
+    query.pop("metric_filters")
+    query["select"] = [{"expression": {"metric": f"metric.clocks.{name}"}, "as": "n"}]
+    query["time"].update(temporal_role=role, grain=grain)
+    return query
+
+
+@pytest.mark.parametrize("grain", ["", "month"])
+@pytest.mark.parametrize("entrypoint", ["compile", "nested", "runtime"])
+def test_pinned_metric_output_refuses_a_window_on_another_advertised_clock(
+    warehouse, tmp_path, grain, entrypoint
+):
+    config, conn = warehouse
+    assert conn.execute(
+        "SELECT customer_id, COUNT(*) FROM orders WHERE shipped_at >= TIMESTAMP '2025-01-01' "
+        "AND shipped_at < TIMESTAMP '2025-02-01' GROUP BY 1"
+    ).fetchall() == [(2, 1)]
+    query = _output_query("pinned_orders", ORDERED, grain)
+    with pytest.raises(SemanticLayerError) as raised:
+        if entrypoint == "runtime":
+            runtime = _runtime(tmp_path, conn)
+            try:
+                report = runtime.validate(query)
+                assert not report["ok"]
+                assert report["errors"][0]["code"] == "INVALID_TEMPORAL_BINDING"
+                runtime.query(query)
+            finally:
+                runtime.close()
+        elif entrypoint == "nested":
+            _compile_query_sql_ast(config, query)
+        else:
+            compile_query(config, None, query)
+    error = raised.value
+    assert error.code == "INVALID_TEMPORAL_BINDING"
+    assert error.details["measure"] == "measure.clocks.orders"
+    assert error.details["requested"] == ORDERED
+    assert error.details["compatible"] == [SHIPPED]
+    assert error.details["recovery_hints"][0]["code"] == "CHOOSE_OUTPUT_CLOCK"
+    assert SHIPPED in error.details["recovery_hints"][0]["message"]
+
+
+@pytest.mark.parametrize(
+    "name,role,clock",
+    [
+        ("pinned_orders", SHIPPED, "shipped_at"),
+        ("unpinned_orders", ORDERED, "ordered_at"),
+        ("unpinned_orders", SHIPPED, "shipped_at"),
+    ],
+)
+def test_metric_output_on_its_bound_clock_matches_reference(warehouse, name, role, clock):
+    config, conn = warehouse
+    expected = conn.execute(
+        f"SELECT customer_id, COUNT(*) FROM orders WHERE {clock} >= TIMESTAMP '2025-01-01' "
+        f"AND {clock} < TIMESTAMP '2025-02-01' GROUP BY 1"
+    ).fetchall()
+    assert expected == [(1 if role == ORDERED else 2, 1)]
+    assert (
+        conn.execute(compile_query(config, None, _output_query(name, role))["sql"]).fetchall()
+        == expected
+    )
+
+
+def test_direct_lowering_cannot_bypass_pinned_output_clock_refusal(warehouse):
+    config, _conn = warehouse
+    safe = _output_query("pinned_orders", SHIPPED)
+    plan = plan_query(config, None, safe)
+    with pytest.raises(SemanticLayerError) as raised:
+        lower_to_sql(replace(plan, query=_output_query("pinned_orders", ORDERED)), config)
+    assert raised.value.code == "INVALID_TEMPORAL_BINDING"
+    assert raised.value.details["compatible"] == [SHIPPED]
+
+
+@pytest.mark.parametrize("shape", ["arithmetic", "separate-output", "metric-filter", "override"])
+def test_composed_output_cannot_hide_a_conflicting_bound_clock(warehouse, shape):
+    config, _conn = warehouse
+    query = _output_query("pinned_orders", ORDERED, "month")
+    pinned = query["select"][0]["expression"]
+    unpinned = {"metric": "metric.clocks.unpinned_orders"}
+    if shape == "arithmetic":
+        query["select"][0]["expression"] = {
+            "kind": "arithmetic",
+            "op": "+",
+            "left": pinned,
+            "right": unpinned,
+        }
+    elif shape == "separate-output":
+        query["select"].append({"expression": unpinned, "as": "other"})
+    elif shape == "metric-filter":
+        query["select"][0]["expression"] = unpinned
+        query["metric_filters"] = [{"expression": pinned, "op": ">", "value": 0}]
+    else:
+        query["select"][0]["expression"] = unpinned
+        query["temporal_role_overrides"] = {"measure.clocks.orders": SHIPPED}
+    with pytest.raises(SemanticLayerError) as raised:
+        compile_query(config, None, query)
+    assert raised.value.code == "INVALID_TEMPORAL_BINDING"
+    assert raised.value.details["compatible"] == [SHIPPED]
+
+
+def _nested_query(alignment, override, depth=1, input_=None):
+    query = _query(alignment=alignment)
+    predicate = {
+        "input": input_ or {"metric": "metric.clocks.signup_to_order_7d"},
+        "entity": "entity.clocks_customer",
+        "scope_mode": "entity_only",
+        "op": ">",
+        "value": 0.5,
+    }
+    for _ in range(depth):
+        scoped = {
+            "kind": "scoped_aggregate",
+            "measure": "measure.clocks.customers",
+            "aggregation": "count_distinct",
+            "predicates": [predicate],
+        }
+        predicate = {**predicate, "input": scoped, "op": ">=", "value": 1}
+    query["metric_filters"][0]["expression"]["input"] = scoped
+    if alignment is None:
+        del query["metric_filters"][0]["expression"]["time_alignment"]
+    elif alignment == "same_query_period":
+        query["metric_filters"][0]["expression"]["scope_mode"] = "contextual"
+    if override:
+        query["temporal_role_overrides"] = {"measure.clocks.orders": ORDERED}
+    return query
+
+
+@pytest.mark.parametrize("alignment", CONVERSION_ALIGNMENTS)
+@pytest.mark.parametrize("depth", [1, 2])
+@pytest.mark.parametrize("entrypoint", ["runtime", "compile"])
+def test_nested_scoped_predicate_refuses_an_override_its_input_would_drop(
+    warehouse, tmp_path, alignment, depth, entrypoint
+):
+    config, conn = warehouse
+    assert [row[0] for row in _conversion_reference(conn, "ordered_at")] == [1]
+    assert [row[0] for row in _conversion_reference(conn, "shipped_at")] == [2]
+    query = _nested_query(alignment, override=True, depth=depth)
+    with pytest.raises(SemanticLayerError) as raised:
+        if entrypoint == "runtime":
+            runtime = _runtime(tmp_path, conn)
+            try:
+                runtime.query(query)
+            finally:
+                runtime.close()
+        else:
+            _compile_query_sql_ast(config, query)
+    _assert_override_refusal(raised.value)
+
+
+@pytest.mark.parametrize("alignment", CONVERSION_ALIGNMENTS)
+@pytest.mark.parametrize("depth", [1, 2])
+def test_nested_scoped_predicate_without_override_matches_reference(
+    warehouse, tmp_path, alignment, depth
+):
+    config, conn = warehouse
+    expected = _conversion_reference(conn, "shipped_at")
+    query = _nested_query(alignment, override=False, depth=depth)
+    assert conn.execute(compile_query(config, None, query)["sql"]).fetchall() == expected
+    runtime = _runtime(tmp_path, conn)
+    try:
+        result = runtime.query(query)
+    finally:
+        runtime.close()
+    assert [tuple(row.values()) for row in result["rows"]] == [
+        (customer, signed_up.isoformat(), n) for customer, signed_up, n in expected
+    ]
+
+
+def test_direct_lowering_cannot_bypass_nested_override_refusal(warehouse):
+    config, _conn = warehouse
+    plan = plan_query(config, None, _nested_query("query_window", override=False))
+    with pytest.raises(SemanticLayerError) as raised:
+        lower_to_sql(replace(plan, query=_nested_query("query_window", override=True)), config)
+    _assert_override_refusal(raised.value)
+
+
+@pytest.mark.parametrize("depth", [1, 2])
+def test_nested_scoped_predicate_still_refuses_an_ambiguous_window_clock(warehouse, depth):
+    config, conn = warehouse
+    assert [row[0] for row in _reference(conn, "ordered_at")] == [1]
+    assert [row[0] for row in _reference(conn, "shipped_at")] == [2]
+    query = _nested_query(
+        "same_query_period",
+        override=False,
+        depth=depth,
+        input_={"measure": "measure.clocks.orders"},
+    )
+    scoped = query["metric_filters"][0]["expression"]["input"]
+    for _ in range(depth):
+        predicate = scoped["predicates"][0]
+        predicate.update(scope_mode="contextual", time_alignment="same_query_period")
+        scoped = predicate["input"]
+    predicate.update(scope_mode="entity_only", time_alignment="query_window")
+    with pytest.raises(SemanticLayerError) as raised:
+        compile_query(config, None, query)
+    assert raised.value.code == "INVALID_TEMPORAL_BINDING"
+    assert raised.value.details["compatible"] == [ORDERED, SHIPPED]

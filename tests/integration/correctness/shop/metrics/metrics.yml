@@ -1,4 +1,10 @@
 metrics:
+  closed_orders:
+    as: metric.shop.closed_orders
+    label: Orders on close time
+    kind: derived
+    compatible_temporal_roles: [temporal_role.shop_order_ordered_at, temporal_role.shop_order_closed_at]
+    expression: {measure: measure.shop.window_order_count, temporal_role: temporal_role.shop_order_closed_at}
   shop.order_revenue_median:
     as: metric.shop.order_revenue_median
     label: Median order revenue

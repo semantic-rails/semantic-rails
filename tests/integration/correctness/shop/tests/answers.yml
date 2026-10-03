@@ -2,6 +2,29 @@ fixture:
   tables: [orders, refunds, signups, dim_fiscal, customer_history]
   data_sha256: 7239197c610505a820d1181968800157664fe222bce85e1c1f51dcd7d406d7d8
 tests:
+  shop/pinned-output-refuses-another-advertised-clock:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: INVALID_TEMPORAL_BINDING
+    why: A metric pinned to close time must never filter its orders on order time.
+    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics.closed_orders, tests/integration/correctness/shop/models/orders.yml#model.measures.window_order_count, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    tags: [time-window, clock, refusal]
+    query:
+      select: [{expression: {metric: metric.shop.closed_orders}, as: orders}]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2023-11-01', end: '2023-12-01'}
+  shop/pinned-output-on-its-bound-clock:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Orders pinned to close time count only orders closed within the requested period.
+    cites: [tests/integration/correctness/shop/metrics/metrics.yml#metrics.closed_orders, tests/integration/correctness/shop/models/orders.yml#model.times.closed_at, docs/QUERY_IR_SCHEMA.md#metricfilter-expressions]
+    tags: [time-window, clock]
+    query:
+      select: [{expression: {metric: metric.shop.closed_orders}, as: orders}]
+      time: {temporal_role: temporal_role.shop_order_closed_at, start: '2023-11-21', end: '2023-12-01'}
+    expected_rows: [{orders: 1}]
+    reference_sql: |
+      SELECT COUNT(*) FROM orders
+      WHERE closed_at >= TIMESTAMP '2023-11-21' AND closed_at < TIMESTAMP '2023-12-01'
   shop/window-predicate-needs-an-input-clock:
     kind: validate_fails_with_code
     expect: refuse

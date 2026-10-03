@@ -26,7 +26,7 @@ and the comparison fixtures: see
 | `order_by` | `array` of `OrderBy` | Final-select ordering. Uses `{field, direction}` — not a select-style expression. |
 | `limit` | `integer` (or `null`) | Optional row cap. |
 | `time` | `TimeBlock` (or `null`) | Query-level time anchor: temporal_role + grain + bounds. `start` is inclusive, `end` is exclusive. |
-| `temporal_role_overrides` | `object<measure_id, temporal_role_id>` | Per-measure clock bindings. They do not apply inside a metric predicate input (they only choose or check its window clock); an input that reads an overridden measure through a conversion or a time window refuses with `INVALID_TEMPORAL_BINDING`. |
+| `temporal_role_overrides` | `object<measure_id, temporal_role_id>` | Per-measure clock bindings. They do not apply inside a metric predicate input (they only choose or check its window clock); an input that reads an overridden measure through a conversion, a time window or a nested predicate refuses with `INVALID_TEMPORAL_BINDING` at every nesting depth. |
 | `route_decisions` | `array` of `RouteDecision` | This query's own route for an entity pair: the `decision` of an `AMBIGUOUS_PATH` option. See [`route_decisions`](#route_decisions). |
 | `observation_scope` | `"dataset"\|"query"` | Whether a sum or count with no rows in a group reads 0 when its measure has data anywhere (`dataset`, the default) or only inside the query's filters (`query`). See "Empty groups" below. |
 | `policy_context` | `object` | Caller-supplied access context (`environment`, `audience`, `roles`, `now`, ...). |
@@ -430,6 +430,15 @@ A window-aligned metric predicate refuses with `INVALID_TEMPORAL_BINDING` if the
 chosen window clock is excluded by any measure inside the input, by its pin, an
 override or its declared clocks; for a conversion, its base measure (the period
 filters base events; converted events match each base event's window).
+
+For a metric selected as an output, its expression's pinned clock takes precedence
+over its advertised compatible clocks. If the query would filter or bucket a leaf
+on another clock that the measure advertises, the request refuses with
+`INVALID_TEMPORAL_BINDING` and a `CHOOSE_OUTPUT_CLOCK` hint to query the bound clock.
+This check also applies to composed outputs and ordinary metric filters. Unpinned
+metrics keep the requested compatible clock; a pinned metric queried on its bound
+clock keeps its answer. Nested scoped predicates also refuse an ambiguous window
+clock rather than choosing one by declaration order.
 
 Ordinary `metric_filters` evaluate aggregated expressions at the grain the query
 returns, after grouping. A `metric_predicate` instead evaluates its input at its

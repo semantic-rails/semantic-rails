@@ -298,6 +298,9 @@ Core query rules:
   measure, or remove `metric_filters`. Ordinary `where`, `order_by` and `limit` still
   apply to distinct-group queries
 - `temporal_role_overrides` must only reference declared temporal roles
+- an output leaf's bound clock takes precedence over advertised compatible clocks;
+  a query that would replace it with another advertised clock refuses with
+  `INVALID_TEMPORAL_BINDING`, in both planning and SQL lowering
 - when only some measures have the query's clock, each other measure is timed by its own
   clock; one with several clocks, none of them the query's, fails with
   `INCOMPATIBLE_TEMPORAL_ROLE` unless its aggregate's `temporal_role` or
