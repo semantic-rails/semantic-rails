@@ -120,12 +120,11 @@ def _not_ready(payload: dict[str, Any], terms: list[str]) -> None:
 def test_a_dropped_grouping_is_not_ready(jaffle: Runtime) -> None:
     payload = plan_payload(jaffle, intent="revenue by store, customer type and product type")
 
-    _not_ready(payload, ["customer", "type", "product"])
+    _not_ready(payload, ["customer type", "product type"])
     assert payload["best"]["query_ir"]["group_by"] == [STORE]
-    assert payload["why"]["details"]["dropped_groupings"] == ["customer type", "product type"]
-    assert payload["why"]["message"].startswith(
-        "The draft drops the grouping by customer type, product type"
-    )
+    assert payload["why"]["details"]["dropped_groupings"] == ["customer type"]
+    assert payload["why"]["details"]["ambiguous_groupings"] == ["product type"]
+    assert payload["why"]["message"].startswith("The draft drops the grouping by customer type")
 
 
 @contextmanager
