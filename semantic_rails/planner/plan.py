@@ -63,6 +63,7 @@ from .orchestrator import compose
 from .visibility import (
     require_visible_dimensions,
     visible_dimensions,
+    visible_object_ids,
     visible_value_domains,
     with_dimension_visibility,
 )
@@ -825,23 +826,34 @@ def _declared_name_spans(
     entity Customer as well.
     """
 
+    dimensions = visible_dimensions(config) if underscores else config.dimensions
+    entities = config.entities
+    if underscores:
+        entity_ids = set(visible_object_ids(config, (row.id for row in entities)))
+        entities = [row for row in entities if row.id in entity_ids]
     found: dict[tuple[int, int], list[Any]] = {}
     for kind, rows in (
-        ("dimension", config.dimensions),
+        ("dimension", dimensions),
         ("value", [*config.measures, *config.metric_recipes]),
-        ("entity", config.entities),
+        ("entity", entities),
     ):
         for row in rows:
             label = str(row.label or "")
             names = {label, re.sub(r"\s*\(.*?\)", "", label), _last_token(row.name)}
             for name in names | set(row.aliases or []):
-                words = re.findall(r"[^\W_]+", str(name).lower())
+                spelling = str(name).lower()
+                words = re.findall(r"[^\W_]+", spelling)
                 if not words:
                     continue
-                separator = r"[\s_]+" if underscores and kind != "value" else r"\s+"
-                pattern = r"\b" + separator.join(map(re.escape, words)) + r"\b"
-                for match in re.finditer(pattern, lowered):
-                    found.setdefault(match.span(), []).append((kind, row))
+                patterns = {r"\b" + r"\s+".join(map(re.escape, words)) + r"\b"}
+                if underscores and kind != "value":
+                    patterns = {
+                        r"(?<![^\W_])" + body + r"(?![^\W_])"
+                        for body in (re.escape(spelling), r"[\s_]+".join(map(re.escape, words)))
+                    }
+                for pattern in patterns:
+                    for match in re.finditer(pattern, lowered):
+                        found.setdefault(match.span(), []).append((kind, row))
     return {
         (low, high): named
         for (low, high), named in found.items()
@@ -850,7 +862,9 @@ def _declared_name_spans(
 
 
 def _level_groupings_unmet(config: Any, question: str, query: dict[str, Any]) -> list[str]:
-    """Add underscore-name obligations without removing any existing readiness hold."""
+    """The groupings a level/grain question names that the draft doesn't group by, reading
+    declared names with spaces or underscores; see ``_level_groupings_with_names``.
+    """
 
     return list(
         dict.fromkeys(
@@ -877,10 +891,10 @@ def _level_groupings_with_names(
     its stand-ins (``_entity_grouping_dimensions``). A declared value, a dimension the draft's
     ``where`` pins to one value (``=``, or ``IN`` with one value), and a name inside a clock
     phrase need nothing: a clock phrase ("week", or "order date" for the query's Order time)
-    is the time block's. It is words joined by spaces only, never with a level word. The word
-    before each level word, past
-    commas and connectors, must end the name of a dimension, an entity or a clock; any other
-    word ("region level" with no Region) is unmet as well. The check only holds a plan.
+    is the time block's. The clock phrase must be words joined by spaces only, never with a
+    level word. The word before each level word, past commas and connectors, must end the
+    name of a dimension, an entity or a clock; any other word ("region level" with no Region)
+    is unmet as well. The check only holds a plan.
     """
 
     lowered = str(question or "").lower()
