@@ -1,5 +1,4 @@
-- Plan several named values of one dimension as one `in` filter, folding caller
-  inclusions only when their literals are among those named values. Preserve
-  caller-only constraints and conflicting filters for confidence checks. Ranked
-  drafts keep their requested grouping and rank over the combined values;
-  other drafts group by the value dimension for labelled rows.
+- Plan the question's values on one dimension as one filter (`=` for one value,
+  `in` for several) for one total or combined ranking, without adding grouping.
+  Keep caller filter rows as written, with surrounding field whitespace removed;
+  append generated rows unless an identical row already exists.

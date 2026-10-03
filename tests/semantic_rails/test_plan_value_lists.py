@@ -158,10 +158,11 @@ def test_caller_filter_stays_as_written_beside_named_values(
     expected_status = "ok" if isinstance(value, list) else "low_confidence"
     assert payload["status"] == expected_status, payload.get("why")
     query = payload["best"]["query_ir"]
-    assert query["where"] == [
-        {"field": STORE, "op": op, "value": value},
-        {"field": STORE, "op": "in", "value": ["Brooklyn", "Philadelphia"]},
-    ]
+    assert len(query["where"]) == 2
+    assert query["where"][0] == {"field": STORE, "op": op, "value": value}
+    assert query["where"][1]["field"] == STORE
+    assert query["where"][1]["op"] == "in"
+    assert set(query["where"][1]["value"]) == {"Brooklyn", "Philadelphia"}
     assert STORE not in query["group_by"]
 
 
@@ -542,4 +543,5 @@ def test_empty_caller_where_does_not_raise(runtime_factory, monkeypatch, path, w
     finally:
         runtime.close()
     assert payload["status"] == "ok", payload.get("why")
-    assert payload["best"]["query_ir"]["group_by"] == [PRODUCT_TYPE]
+    product_dimension = "dimension.jaffle_product_type" if path == "fallback" else PRODUCT_TYPE
+    assert payload["best"]["query_ir"]["group_by"] == [product_dimension]

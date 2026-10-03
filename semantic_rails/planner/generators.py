@@ -166,47 +166,31 @@ def _draft_for_choice(
 def _normalize_value_filters(
     query: dict[str, Any], matched_values: list[dict[str, Any]] | None = None
 ) -> dict[str, Any]:
-    """Fold only named values and caller inclusions contained in those values."""
+    """Combine question values without changing caller filters or grouping."""
 
-    # faithfulness imports generators.
-    from .faithfulness import _contains_literal, _membership_literals
-
-    where = list(query.get("where", []) or [])
+    where = [
+        {**row, "field": row["field"].strip()}
+        if isinstance(row, dict) and isinstance(row.get("field"), str)
+        else row
+        for row in list(query.get("where", []) or [])
+    ]
     named: dict[str, list[Any]] = {}
     for row in matched_values or []:
-        where.append({"field": row["dimension_id"], "op": "=", "value": row["value"]})
-        if _membership_literals("=", row["value"]):
-            values = named.setdefault(row["dimension_id"].strip(), [])
-            if not _contains_literal(values, row["value"]):
-                values.append(row["value"])
-
-    group_by = list(query.get("group_by", []) or [])
-    out: list[Any] = []
-    for row in where:
-        field = row.get("field") if isinstance(row, dict) else None
-        if isinstance(field, str):
-            field = field.strip()
-            row = {**row, "field": field}
-        op = str(row.get("op", "=")).strip().upper() if isinstance(row, dict) else ""
-        literals = _membership_literals(op, row.get("value")) if op in {"=", "==", "IN"} else None
-        values = named.get(field, []) if isinstance(field, str) else []
-        if literals and values and all(_contains_literal(values, value) for value in literals):
-            normalized = {
-                "field": field,
-                "op": "in" if len(values) > 1 else "=",
-                "value": values if len(values) > 1 else values[0],
-            }
-            if normalized not in out:
-                out.append(normalized)
-            if len(values) > 1 and "limit" not in query and field not in group_by:
-                group_by.append(field)
-        else:
-            out.append(row)
+        values = named.setdefault(row["dimension_id"].strip(), [])
+        value = row["value"]
+        if not any(type(value) is type(existing) and value == existing for existing in values):
+            values.append(value)
+    for field, values in named.items():
+        normalized = {
+            "field": field,
+            "op": "in" if len(values) > 1 else "=",
+            "value": values if len(values) > 1 else values[0],
+        }
+        if normalized not in where:
+            where.append(normalized)
     result = dict(query)
-    if out:
-        result["where"] = out
-    if group_by:
-        result["group_by"] = group_by
+    if where:
+        result["where"] = where
     return result
 
 

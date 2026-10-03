@@ -35,7 +35,7 @@ from .faithfulness import (
     unconsumed_terms,
     unmatched_intent_terms,
 )
-from .generators import _normalize_value_filters, blocked_object_not_found, fallback_drafts
+from .generators import blocked_object_not_found, fallback_drafts
 from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
 
@@ -685,14 +685,10 @@ def _merge_partial_query(
     additive list fields we append generated entries after existing
     caller entries. For scalar/dict fields the caller wins, with ``time``
     merged shallowly so generated temporal roles can still fill missing
-    fields. Caller inclusions fold only into generated IN rows containing
-    values named by the question, and only when every caller literal is in
-    that list. Caller-only lists and other rows stay as written. This merge
-    never adds grouping for filters; ranked drafts keep their grouping.
+    fields. The question's values on one field form one generated filter
+    for one total or combined ranking, without adding grouping. Caller
+    rows stay as written, with only string predicate fields stripped.
     """
-
-    # faithfulness imports generators.
-    from .faithfulness import _contains_literal, _membership_literals
 
     partial = dict(partial_query or {})
     # Context is validation authority, not portable Query IR. _validate_query
@@ -701,37 +697,20 @@ def _merge_partial_query(
     partial.pop("policy_context", None)
     partial.pop("request_context", None)
     partial.pop("request_id", None)
-    merged = _normalize_value_filters(draft_query or {})
-    caller_where = _normalize_value_filters(partial).get("where", [])
-    generated_where = merged.get("where", [])
-    generated_lists = [
-        row
-        for row in generated_where
-        if isinstance(row, dict)
-        and str(row.get("op", "=")).strip().upper() == "IN"
-        and row not in caller_where
-    ]
+    merged = dict(draft_query or {})
     if partial.get("select"):
         merged, partial["select"] = _without_caller_selects(config, merged, partial["select"])
     for key, value in partial.items():
         if value in (None, "", [], {}):
             continue
         if key == "where":
-            kept = []
-            for row in caller_where:
-                op = str(row.get("op", "=")).strip().upper() if isinstance(row, dict) else ""
-                literals = (
-                    _membership_literals(op, row.get("value")) if op in {"=", "==", "IN"} else None
-                )
-                if not literals or not any(
-                    row.get("field") == generated.get("field")
-                    and (values := _membership_literals("IN", generated.get("value")))
-                    and all(_contains_literal(values, literal) for literal in literals)
-                    for generated in generated_lists
-                ):
-                    kept.append(row)
-            merged[key] = _append_unique_dicts(kept, generated_where)
-        elif key in {"select", "metric_filters", "order_by"}:
+            value = [
+                {**row, "field": row["field"].strip()}
+                if isinstance(row, dict) and isinstance(row.get("field"), str)
+                else row
+                for row in list(value or [])
+            ]
+        if key in {"select", "where", "metric_filters", "order_by"}:
             merged[key] = _append_unique_dicts(list(value or []), list(merged.get(key, []) or []))
         elif key == "group_by":
             merged[key] = list(

@@ -1015,15 +1015,14 @@ fields such as `select`, `where`, `metric_filters`, `order_by`, and
 `group_by` keep the caller entries first, then append generated entries
 when needed.
 
-Inferred inclusion filters on the same dimension are combined into one filter:
-`=` for one value and `in` for several. A caller inclusion joins that filter only
-when every literal it contains is among the values the question names. Otherwise
-the caller rows stay as written, including caller-only conjunctions and lists;
-conflicts yield `low_confidence`. Several inferred values also add grouping by
-that dimension for labelled rows, except on ranked drafts with a `limit`, which
-keep their requested grouping and rank over the combined values. The caller merge
-never adds grouping for filters. Exclusions stay separate, with canonical field
-IDs; excluding a requested value yields `low_confidence`.
+The question's values on the same dimension become one filter: `=` for one value
+and `in` for several. This yields one total or one combined ranking; no grouping
+is added for those values. A per-value breakdown needs an explicit grouping in
+the question (for example, "by store") or the caller's `group_by`.
+Caller filter rows stay as written, in their original order, with only string
+field IDs stripped of surrounding whitespace. Their operators and values are
+preserved, and generated rows are appended unless identical rows already exist.
+Conflicting filters or exclusions of requested values yield `low_confidence`.
 
 Qualified metric asks return `interpreted_intent.pattern: "qualified_metric_rollup"` and a validated runtime-composed `scoped_aggregate`. Contextual predicates omit `time_alignment`; `time_grain` appears only when the qualification grain differs from the output grain, such as daily output qualified by monthly customer activity.
 
