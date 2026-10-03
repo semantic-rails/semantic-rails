@@ -57,6 +57,18 @@ def limit_rows(
     """Discard the probe and count only observed rows sharing the cutoff key."""
     warnings = []
     if limit > 0 and len(rows) > limit:
+        # Warehouses can fold unquoted output aliases. Resolve once against
+        # the returned schema, preferring an exact key over folded matches.
+        resolved_keys = []
+        for key in keys:
+            if key in rows[0]:
+                resolved_keys.append(key)
+                continue
+            matches = [name for name in rows[0] if name.casefold() == key.casefold()]
+            if len(matches) != 1:
+                raise KeyError(key)
+            resolved_keys.append(matches[0])
+        keys = tuple(resolved_keys)
         # Index rather than .get(): an adapter missing a sort column cannot
         # establish a tie by silently comparing absent values as NULL.
         boundary = tuple(rows[limit - 1][key] for key in keys)

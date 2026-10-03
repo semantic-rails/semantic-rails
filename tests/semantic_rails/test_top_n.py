@@ -5,11 +5,12 @@ from dataclasses import replace
 import pytest
 
 from semantic_rails.compiler import compile_query
-from semantic_rails.db_parts.base import QueryRows
+from semantic_rails.db_parts.base import QueryRows, WarehouseAdapter
 from semantic_rails.dialects import supported_warehouses
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
 from semantic_rails.renderer import render_select
+from semantic_rails.runtime import Runtime
 from semantic_rails.sql_ast import SqlField, SqlIdentifier, SqlLiteral, SqlOrder, SqlSelect
 from semantic_rails.top_n import limit_order, limit_rows
 
@@ -107,14 +108,96 @@ def test_boundary_warning_counts_only_observed_ties(values, limit, count):
         }
 
 
-def test_all_requested_sort_keys_must_tie():
+@pytest.mark.parametrize("keys", [("a", "b"), ("A", "B")])
+def test_all_requested_sort_keys_must_tie(keys):
     rows = [{"a": 1, "b": 2}, {"a": 1, "b": 3}]
-    assert limit_rows(rows, 1, ("a", "b"))[1] == []
+    assert limit_rows(rows, 1, keys)[1] == []
 
 
 def test_missing_sort_key_is_not_treated_as_null():
     with pytest.raises(KeyError):
         limit_rows([{}, {}], 1, ("score",))
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [{"SCORE": 1, "Score": 1}, {"SCORE": 1, "Score": 1}],
+        [{"SCORE": 1}, {"score": 1}],
+    ],
+    ids=["ambiguous-folded-key", "inconsistent-row-keys"],
+)
+def test_unresolvable_sort_keys_fail_closed(rows):
+    with pytest.raises(KeyError):
+        limit_rows(rows, 1, ("score",))
+
+
+def test_exact_sort_key_takes_precedence_over_folded_matches():
+    rows = [{"score": 1, "SCORE": 2}, {"score": 1, "SCORE": 3}]
+    limited, warnings = limit_rows(rows, 1, ("score",))
+    assert limited == rows[:1]
+    assert warnings[0]["code"] == "TIES_AT_LIMIT"
+
+
+@pytest.mark.parametrize(
+    "warehouse,alias,returned_key,store_key",
+    [
+        ("snowflake", "orders", "ORDERS", "STORE"),
+        ("postgres", "orderCount", "ordercount", "store"),
+        ("athena", "orderCount", "ordercount", "store"),
+    ],
+)
+@pytest.mark.parametrize("tied", [False, True], ids=["distinct-cutoff", "tied-cutoff"])
+def test_runtime_cutoff_uses_warehouse_result_key_casing(
+    package_config_factory, warehouse, alias, returned_key, store_key, tied
+):
+    config, config_path = package_config_factory("jaffle_shop")
+    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    rows = [
+        {returned_key: value, store_key: store}
+        for value, store in zip([3, 2, 2 if tied else 1], ["a", "b", "c"], strict=True)
+    ]
+    statements = []
+
+    class ResultAdapter(WarehouseAdapter):
+        engine = warehouse
+
+        def query(self, sql, *, limits=None):
+            statements.append(sql)
+            return rows
+
+        def close(self):
+            pass
+
+    runtime = Runtime.from_config(config, source_path=str(config_path))
+    runtime.set_adapter(ResultAdapter())
+    try:
+        result = runtime.query(
+            {
+                "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": alias}],
+                "group_by": ["dimension.jaffle_store_name"],
+                "order_by": [{"field": alias, "direction": "DESC"}],
+                "limit": 2,
+            }
+        )
+    finally:
+        runtime.close()
+    assert result["status"] == "ok"
+    assert result["rows"] == rows[:2]
+    assert result["row_count"] == 2
+    assert not result["truncated"]
+    assert len(statements) == 1
+    assert "LIMIT 3" in statements[0]
+    warnings = [warning for warning in result["warnings"] if warning["code"] == "TIES_AT_LIMIT"]
+    if tied:
+        assert len(warnings) == 1
+        assert warnings[0]["details"] == {
+            "limit": 2,
+            "tie_count": 2,
+            "tie_count_is_lower_bound": True,
+        }
+    else:
+        assert not warnings
 
 
 def test_probe_removal_preserves_adapter_truncation():

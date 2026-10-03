@@ -673,6 +673,10 @@ the requested limit; the internal execution probe uses one extra row. A
 `limits.max_rows` fence at or below `limit` takes precedence: no extra row is
 fetched and cutoff ties cannot be reported.
 
+Cutoff comparisons use the returned row's exact column key when present;
+otherwise they require one case-insensitive match, supporting warehouse alias
+case folding. Missing or ambiguous matches fail with `QUERY_EXECUTION_ERROR`.
+
 ## TimeBlock
 
 ```jsonc
