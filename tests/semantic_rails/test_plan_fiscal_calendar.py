@@ -26,7 +26,7 @@ from semantic_rails.planner._base import (
 from semantic_rails.planner.faithfulness import intent_faithfulness_why
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.runtime import Runtime
-from tests.semantic_rails.conftest import copy_package_config
+from tests.semantic_rails.conftest import copy_package_config, opened
 from tests.semantic_rails.result_helpers import typed_rows
 
 REVENUE = {"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}
@@ -57,7 +57,7 @@ def _runtime(tmp_path_factory: pytest.TempPathFactory, *, fiscal: bool) -> Itera
         (path / "package.yml").write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
     runtime = Runtime.from_path(str(path))
     try:
-        yield runtime
+        yield opened(runtime) if fiscal else runtime  # The comparison has no database.
     finally:
         runtime.close()
 

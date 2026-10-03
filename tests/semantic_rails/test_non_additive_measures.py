@@ -10,6 +10,7 @@ one series); anything else is refused, and avg/min/max stay available.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ import pytest
 from semantic_rails.compiler import NonAdditiveRefusal
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import opened
 
 NS = "f4add"
 DAY = f"temporal_role.{NS}_traffic_day_day"
@@ -130,8 +132,12 @@ def package_dir(tmp_path_factory) -> Path:
 
 
 @pytest.fixture(scope="module")
-def runtime(package_dir: Path) -> Runtime:
-    return Runtime.from_path(str(package_dir))
+def runtime(package_dir: Path) -> Iterator[Runtime]:
+    rt = Runtime.from_path(str(package_dir))
+    try:
+        yield opened(rt)
+    finally:
+        rt.close()
 
 
 def _query(

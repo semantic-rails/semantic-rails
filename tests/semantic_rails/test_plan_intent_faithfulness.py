@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from semantic_rails.planner import plan_payload
+from tests.semantic_rails.conftest import opened
 
 
 def _gap_kinds(payload: dict) -> set[str]:
@@ -163,7 +164,11 @@ def trailing_window_runtime(tmp_path_factory):
         "t(repo, snapshot_date, visitors_14d)"
     )
     connection.close()
-    return Runtime.from_path(str(package))
+    runtime = Runtime.from_path(str(package))
+    try:
+        yield opened(runtime)
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize(

@@ -29,7 +29,7 @@ from semantic_rails.runtime import Runtime, _no_data_in_scope_warnings
 from semantic_rails.schema import MetricConfig
 from semantic_rails.sql_ast import SqlCte
 from tests.integration.correctness.conftest import _write_variant
-from tests.semantic_rails.conftest import copy_package_config
+from tests.semantic_rails.conftest import copy_package_config, opened
 from tests.semantic_rails.empty_groups_invariant import assert_settled_in_one_place
 from tests.semantic_rails.result_helpers import typed_rows
 from tests.semantic_rails.test_rendered_sql_snapshots import SNAPSHOT_CASES
@@ -54,7 +54,7 @@ def runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]:
     package = load_package_config(str(package_dir))
     rt = Runtime.from_config(package, source_path=str(package_dir), package_id="jaffle_shop")
     try:
-        yield rt
+        yield opened(rt)
     finally:
         rt.close()
 
@@ -443,7 +443,7 @@ def shop_package(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def shop(shop_package: Path) -> Iterator[Runtime]:
     rt = Runtime.from_path(str(shop_package))
     try:
-        yield rt
+        yield opened(rt)
     finally:
         rt.close()
 
@@ -1175,7 +1175,7 @@ def shop_with_net(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]
     )
     rt = Runtime.from_config(config, source_path=str(package))
     try:
-        yield rt
+        yield opened(rt)
     finally:
         rt.close()
 

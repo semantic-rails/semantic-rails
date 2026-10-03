@@ -37,7 +37,7 @@ metrics:
 
 @pytest.fixture(scope="module")
 def runtime(tmp_path_factory):
-    from tests.semantic_rails.conftest import copy_package_config
+    from tests.semantic_rails.conftest import copy_package_config, opened
 
     package_dir = copy_package_config(
         tmp_path_factory.mktemp("disclosures"), "jaffle_shop", preseed_db=True
@@ -46,7 +46,7 @@ def runtime(tmp_path_factory):
         _ORDERS_PER_SESSION_YAML, encoding="utf-8"
     )
     runtime = Runtime.from_path(str(package_dir))
-    yield runtime
+    yield opened(runtime)
     runtime.close()
 
 

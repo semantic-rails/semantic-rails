@@ -22,6 +22,7 @@ from semantic_rails.compiler import compile_query
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import opened
 
 SEED_SQL = """
 CREATE TABLE customers (customer_id INTEGER, signed_up_at TIMESTAMP);
@@ -95,7 +96,7 @@ def runtime(tmp_path_factory):
     _write_models(root / "models")
     runtime = Runtime.from_path(str(root))
     try:
-        yield runtime
+        yield opened(runtime)
     finally:
         runtime.close()
 
