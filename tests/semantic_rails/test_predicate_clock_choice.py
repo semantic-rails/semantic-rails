@@ -144,6 +144,32 @@ def _reference(conn, clock):
     ).fetchall()
 
 
+def _order_reference(conn, clock, predicate_clock):
+    assert clock in {"ordered_at", "shipped_at"}
+    assert predicate_clock in {"ordered_at", "shipped_at"}
+    return conn.execute(
+        f"SELECT o.customer_id, o.{clock}, COUNT(*) FROM orders o "
+        f"WHERE o.{clock} >= TIMESTAMP '2025-01-01' "
+        f"AND o.{clock} < TIMESTAMP '2025-02-01' "
+        "AND EXISTS (SELECT 1 FROM orders p WHERE p.customer_id = o.customer_id "
+        f"AND p.{predicate_clock} >= TIMESTAMP '2025-01-01' "
+        f"AND p.{predicate_clock} < TIMESTAMP '2025-02-01') "
+        "GROUP BY 1, 2 ORDER BY 1"
+    ).fetchall()
+
+
+def _metric_order_query(binding, alignment, role):
+    name = "pinned_orders" if binding == "input" else "unpinned_orders"
+    query = _query({"metric": f"metric.clocks.{name}"}, alignment)
+    query["time"]["temporal_role"] = role
+    query["select"] = [
+        {"expression": {"measure": "measure.clocks.orders", "temporal_role": role}, "as": "n"}
+    ]
+    if binding == "override":
+        query["temporal_role_overrides"] = {"measure.clocks.orders": SHIPPED}
+    return query
+
+
 @pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
 @pytest.mark.parametrize("entrypoint", [compile_query, _compile_query_sql_ast])
 def test_ambiguous_window_clock_refuses_with_candidates(warehouse, alignment, entrypoint):
@@ -219,6 +245,66 @@ def test_metric_advertised_clocks_refuse_despite_measure_binding(
         "Set query.time.temporal_role to one of the listed clocks. "
         "Omit time_alignment to apply the predicate over all time."
     )
+
+
+@pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
+@pytest.mark.parametrize("binding", ["input", "override"])
+@pytest.mark.parametrize("entrypoint", [compile_query, _compile_query_sql_ast])
+def test_metric_bound_clock_conflicting_with_window_clock_refuses(
+    warehouse, alignment, binding, entrypoint
+):
+    config, conn = warehouse
+    assert _order_reference(conn, "ordered_at", "shipped_at") == []
+    query = _metric_order_query(binding, alignment, ORDERED)
+    with pytest.raises(SemanticLayerError) as raised:
+        if entrypoint is compile_query:
+            entrypoint(config, None, query)
+        else:
+            entrypoint(config, query)
+    error = raised.value
+    assert error.code == "INVALID_TEMPORAL_BINDING"
+    assert error.details["requested"] == ORDERED
+    assert error.details["compatible"] == [SHIPPED]
+    hint = error.details["recovery_hints"][0]
+    assert hint["code"] == "CHOOSE_PREDICATE_CLOCK"
+    assert SHIPPED in hint["message"]
+    assert "query.time.temporal_role" in hint["message"]
+    assert "omit time_alignment" in hint["message"]
+
+
+def test_contextual_metric_bound_clock_conflict_refuses(warehouse):
+    config, conn = warehouse
+    assert _order_reference(conn, "ordered_at", "shipped_at") == []
+    query = _metric_order_query("input", "same_query_period", ORDERED)
+    query["metric_filters"][0]["expression"]["scope_mode"] = "contextual"
+    with pytest.raises(SemanticLayerError) as raised:
+        compile_query(config, None, query)
+    assert raised.value.code == "INVALID_TEMPORAL_BINDING"
+    assert raised.value.details["requested"] == ORDERED
+    assert raised.value.details["compatible"] == [SHIPPED]
+
+
+@pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
+@pytest.mark.parametrize("binding", ["input", "override"])
+def test_metric_bound_clock_agreeing_with_window_clock_matches_reference(
+    warehouse, alignment, binding
+):
+    config, conn = warehouse
+    expected = _order_reference(conn, "shipped_at", "shipped_at")
+    assert [row[0] for row in expected] == [2]
+    query = _metric_order_query(binding, alignment, SHIPPED)
+    assert conn.execute(compile_query(config, None, query)["sql"]).fetchall() == expected
+
+
+def test_direct_lowering_cannot_bypass_metric_bound_clock_refusal(warehouse):
+    config, _conn = warehouse
+    plan = plan_query(config, None, _metric_order_query("input", "query_window", SHIPPED))
+    unsafe = _metric_order_query("input", "query_window", ORDERED)
+    with pytest.raises(SemanticLayerError) as raised:
+        lower_to_sql(replace(plan, query=unsafe), config)
+    assert raised.value.code == "INVALID_TEMPORAL_BINDING"
+    assert raised.value.details["requested"] == ORDERED
+    assert raised.value.details["compatible"] == [SHIPPED]
 
 
 @pytest.mark.parametrize("alignment", ["query_window", "rolling_window_in_period"])
