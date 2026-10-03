@@ -611,33 +611,46 @@ def test_only_a_one_value_filter_stands_in_for_a_named_grouping(
     )
 
 
+ORDER_WEEKS = {"temporal_role": "temporal_role.jaffle_order_time", "grain": "week"}
+OPENED_MONTHS = {"temporal_role": "temporal_role.jaffle_store_opened_at", "grain": "month"}
+
+
 @pytest.mark.parametrize(
-    ("question", "group_by", "unmet"),
+    ("question", "group_by", "time", "unmet"),
     [
         # No level word outside a declared name: nothing is read.
-        ("revenue by store name", [], []),
+        ("revenue by store name", [], None, []),
         # An entity takes a stand-in: its key, or its one dimension that names it.
-        ("revenue at store level", [STORE], []),
-        ("revenue at store level", [STORE_ID_JAFFLE], []),
-        ("revenue at store level", [CUSTOMER_TYPE], ["store"]),
-        ("revenue at customer level", [CUSTOMER_TYPE], ["customer"]),
-        ("revenue at customer level", ["dimension.jaffle_customer_id"], []),
+        ("revenue at store level", [STORE], None, []),
+        ("revenue at store level", [STORE_ID_JAFFLE], None, []),
+        ("revenue at store level", [CUSTOMER_TYPE], None, ["store"]),
+        ("revenue at customer level", [CUSTOMER_TYPE], None, ["customer"]),
+        ("revenue at customer level", ["dimension.jaffle_customer_id"], None, []),
         # Every named grouping counts, wherever the question names it.
-        ("revenue at store name level for each customer type", [STORE], ["customer type"]),
-        # A clock term needs no dimension; an unknown noun is unmet.
-        ("revenue at month level", [], []),
-        ("revenue at region level", [], ["region"]),
-        ("revenue at mystery levels", [], ["mystery"]),
-        ("revenue at the level", [], ["revenue"]),
-        ("level of revenue", [], ["level"]),
+        ("revenue at store name level for each customer type", [STORE], None, ["customer type"]),
+        # A clock phrase is the time block's, with the names inside it, but only the query's
+        # own clock, and never across a comma.
+        ("revenue at month level", [], None, []),
+        ("revenue by order date, at week grain", [], ORDER_WEEKS, []),
+        ("revenue by order date, at week grain", [], None, ["order"]),
+        ("revenue at month, store level", [], OPENED_MONTHS, ["store"]),
+        # An unknown noun is unmet.
+        ("revenue at region level", [], None, ["region"]),
+        ("revenue at mystery levels", [], None, ["mystery"]),
+        ("revenue at the level", [], None, ["revenue"]),
+        ("level of revenue", [], None, ["level"]),
         # A plural that isn't a declared name holds rather than guesses.
-        ("revenue at customer types level", [CUSTOMER_TYPE], ["customer", "types"]),
+        ("revenue at customer types level", [CUSTOMER_TYPE], None, ["customer", "types"]),
     ],
 )
 def test_level_words_need_every_named_grouping(
-    jaffle: Runtime, question: str, group_by: list[str], unmet: list[str]
+    jaffle: Runtime,
+    question: str,
+    group_by: list[str],
+    time: dict[str, str] | None,
+    unmet: list[str],
 ) -> None:
-    query = {"group_by": group_by}
+    query = {"group_by": group_by, **({"time": time} if time else {})}
     assert plan_module._level_groupings_unmet(jaffle._config, question, query) == unmet
 
 

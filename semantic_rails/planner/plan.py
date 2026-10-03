@@ -843,11 +843,13 @@ def _level_groupings_unmet(config: Any, question: str, query: dict[str, Any]) ->
     nothing. It runs only when "level", "levels", "grain" or "grains" stands outside every
     declared name (a measure named Stock level triggers nothing). Then every dimension or
     entity the question names must be grouped: a dimension by its own id, an entity by one of
-    its stand-ins (``_entity_grouping_dimensions``). A clock term, a declared value, and a
-    dimension the draft's ``where`` pins to one value (``=``, or ``IN`` with one value) need
-    nothing. The word before each level word, past commas and connectors, must end the name
-    of a dimension, an entity or a clock; any other word ("region level" with no Region) is
-    unmet as well. The check only holds a plan.
+    its stand-ins (``_entity_grouping_dimensions``). A declared value, a dimension the draft's
+    ``where`` pins to one value (``=``, or ``IN`` with one value), and a name inside a clock
+    phrase need nothing: a clock phrase ("week", or "order date" for the query's Order time)
+    is the time block's. It is words joined by spaces only, never with a level word. The word
+    before each level word, past
+    commas and connectors, must end the name of a dimension, an entity or a clock; any other
+    word ("region level" with no Region) is unmet as well. The check only holds a plan.
     """
 
     lowered = str(question or "").lower()
@@ -866,6 +868,15 @@ def _level_groupings_unmet(config: Any, question: str, query: dict[str, Any]) ->
     def clock(term: str) -> bool:
         return _is_temporal_grouping_term(term) or any(_names_time_axis(term, c) for c in clocks)
 
+    words = list(re.finditer(r"[^\W_]+", lowered))
+    clock_spans: list[tuple[int, int]] = []
+    for index, first in enumerate(words):
+        for last in words[index:]:
+            text = lowered[first.start() : last.end()]
+            if _LEVEL_WORD_RE.search(text) or not re.fullmatch(r"[^\W_]+(?:\s+[^\W_]+)*", text):
+                break
+            if clock(text):
+                clock_spans.append((first.start(), last.end()))
     pinned = {
         str(row["field"])
         for row in _where_filters(query)
@@ -889,13 +900,17 @@ def _level_groupings_unmet(config: Any, question: str, query: dict[str, Any]) ->
         term = " ".join(lowered[low:high].split())
         dimensions = {row.id for kind, row in named if kind == "dimension"}
         entity = any(kind == "entity" for kind, _ in named)
-        if not (dimensions or entity) or clock(term) or _term_matches_value_domain(config, term):
+        if (
+            not (dimensions or entity)
+            or any(a <= low and high <= b for a, b in clock_spans)
+            or _term_matches_value_domain(config, term)
+        ):
             continue
         stand_ins = (_entity_grouping_dimensions(config, term) or set()) if entity else set()
         if not (dimensions & (grouped | pinned) or stand_ins & grouped):
             unmet.append(term)
     ends = {high for (_, high), named in spans.items() if any(kind != "value" for kind, _ in named)}
-    words = list(re.finditer(r"[^\W_]+", lowered))
+    ends |= {high for _, high in clock_spans}
     for trigger in triggers:
         before = [
             word
@@ -904,11 +919,7 @@ def _level_groupings_unmet(config: Any, question: str, query: dict[str, Any]) ->
         ]
         if not before:
             unmet.append(trigger.group())
-        elif before[-1].end() not in ends and not any(
-            clock(lowered[word.start() : before[-1].end()])
-            for word in words
-            if word.end() <= before[-1].end()
-        ):
+        elif before[-1].end() not in ends:
             unmet.append(before[-1].group())
     return list(dict.fromkeys(unmet))
 
