@@ -2,7 +2,10 @@
 
 Case IDs are stable and can be cited in pull requests and reviews. A number is
 canonical only when a cited declaration decides it; without one, the case expects
-a clarification. `answers.yml` is also readable by the package test runner.
+a clarification. Cases with a `variant` hold only under `test_answers.py`;
+the product test runner is not a supported entry point for `answers.yml`.
+
+Definitions are shop YAML anchors exactly at `model.measures.<name>`, `model.dimensions.<name>` or `model.times.<name>`; decisions are the doc anchors in `answer_ledger.py`'s `DECISIONS` set.
 
 To add a case, cite the measure or dimension and the decision that governs it.
 Write portable reference SQL from that rule, then run

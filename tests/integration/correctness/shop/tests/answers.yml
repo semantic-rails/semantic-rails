@@ -61,7 +61,9 @@ tests:
     tags: [null-vs-zero]
     query: {select: [{expression: {measure: measure.shop.tax_refunded}, as: tax_refunded}], group_by: [dimension.shop_refund_refund_type]}
     expected_rows: [{dimension.shop_refund_refund_type: goods, tax_refunded: null}, {dimension.shop_refund_refund_type: shipping, tax_refunded: null}]
-    reference_sql: SELECT refund_type, SUM(tax_amount) FROM refunds GROUP BY 1
+    reference_sql: |
+      SELECT refund_type, CASE WHEN EXISTS (SELECT 1 FROM refunds WHERE tax_amount IS NOT NULL)
+        THEN COALESCE(SUM(tax_amount), 0) END FROM refunds GROUP BY 1
   shop/months-on-the-utc-clock:
     kind: query_matches_snapshot
     expect: answer

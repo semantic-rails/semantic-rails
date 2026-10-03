@@ -25,6 +25,12 @@ KEYS = {"kind", "query", "expected_rows", "code", "expect", "why", "cites", "tag
 TAGS = {"null-vs-zero", "list-vs-conjunction", "second-fact", "time-window", "clock", "child-scope", "refusal", "planner", "empty-result"}  # fmt: skip
 TABLES = ["orders", "refunds", "signups"]
 DEFINITIONS = str(SHOP.relative_to(ROOT)) + "/models/"
+DECISIONS = {
+    "docs/QUERY_IR_SCHEMA.md#wherefilter",
+    "docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0",
+    "docs/QUERY_IR_SCHEMA.md#timeblock",
+    "docs/QUERY_IR_SCHEMA.md#child-groups",
+}
 KINDS = {
     "answer": "query_matches_snapshot",
     "clarify": "validate_fails_with_code",
@@ -99,7 +105,14 @@ def messages(entries, fixture, runtime):
         known = spec.get("known_wrong", {})
         answer = spec.get("expect") == "answer"
         cited = isinstance(cites, list) and bool(cites) and all(resolves(cite) for cite in cites)
-        declaration = cited and any(cite.startswith(("docs/", DEFINITIONS)) for cite in cites)
+        declaration = cited and any(
+            cite in DECISIONS
+            or re.fullmatch(
+                rf"{re.escape(DEFINITIONS)}[^/]+\.(?:yml|yaml)#model\.(?:measures|dimensions|times)\.[^.]+",
+                cite,
+            )
+            for cite in cites
+        )
         valid_known = isinstance(known, dict) and set(known) <= {"engine", "planner"}
         valid_known = valid_known and ("planner" not in known or text(spec.get("intent")))
         kind = KINDS.get(spec.get("expect"))
@@ -126,7 +139,7 @@ def messages(entries, fixture, runtime):
 def encode(runtime, spec, reference=None):
     compiled = runtime._compile(spec["query"], policy_context={})
     columns = output_columns(runtime._config, compiled)
-    rows = spec["expected_rows"]
+    rows = spec.get("expected_rows") or []
     if reference is not None:
         keys = list(rows[0]) if rows else [col["field"] for col in columns]
         rows = [dict(zip(keys, row, strict=True)) for row in reference(spec["reference_sql"])]

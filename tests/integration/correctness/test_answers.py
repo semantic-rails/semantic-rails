@@ -72,6 +72,27 @@ def test_ledger_hygiene(duckdb_backend):
 
 
 @pytest.mark.parametrize(
+    "citation",
+    [
+        "tests/integration/correctness/shop/models/orders.yml#model.measures.revenue",
+        "tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id",
+        "tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at",
+        "docs/QUERY_IR_SCHEMA.md#wherefilter",
+        "docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0",
+        "docs/QUERY_IR_SCHEMA.md#timeblock",
+        "docs/QUERY_IR_SCHEMA.md#child-groups",
+    ],
+)
+def test_hygiene_accepts_definition_or_decision(duckdb_backend, citation):
+    case_id, spec = ENTRIES[0]
+    assert not messages(
+        [(case_id, {**spec, "cites": [citation]})],
+        FIXTURE,
+        duckdb_backend.runtimes["utc_authored"],
+    )
+
+
+@pytest.mark.parametrize(
     "changes,fixture_changes,error",
     [
         ({"unknown": True}, {}, "unknown keys"),
@@ -82,6 +103,21 @@ def test_ledger_hygiene(duckdb_backend):
         ({"reference_sql": ""}, {}, "missing reference_sql"),
         (
             {"cites": ["tests/integration/correctness/conftest.py#CLOCKS"]},
+            {},
+            "missing declaration citation",
+        ),
+        (
+            {"cites": ["docs/README.md#semantic-rails-docs"]},
+            {},
+            "missing declaration citation",
+        ),
+        (
+            {"cites": ["tests/integration/correctness/shop/models/orders.yml#model.label"]},
+            {},
+            "missing declaration citation",
+        ),
+        (
+            {"cites": ["tests/integration/correctness/shop/models/orders.yml#model"]},
             {},
             "missing declaration citation",
         ),
@@ -100,6 +136,17 @@ def test_hygiene_rejects_bad_entries(duckdb_backend, changes, fixture_changes, e
         duckdb_backend.runtimes["utc_authored"],
     )
     assert any(error in message for message in errors), errors
+
+
+@pytest.mark.parametrize("changes", [{}, {"expected_rows": None}])
+def test_reference_without_frozen_rows(duckdb_backend, changes):
+    _, spec = ENTRIES[-1]
+    source = duckdb_backend
+    runtime = source.runtimes["utc_authored"]
+    unfrozen = {key: value for key, value in spec.items() if key != "expected_rows"}
+    assert comparable(encode(runtime, {**unfrozen, **changes}, source.reference)) == comparable(
+        encode(runtime, spec)
+    )
 
 
 @pytest.mark.parametrize("backend,case_id,spec", list(parameters("planner")))
