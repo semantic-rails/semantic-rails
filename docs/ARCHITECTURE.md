@@ -53,6 +53,10 @@ Key authoring principles:
 - Metadata must be query-state aware, expose a stable builder-first contract, and answer `build-options` and `valid-values`.
 - Explain output is part of the product, not a debugging afterthought.
 - DuckDB is the zero-setup local execution target; Snowflake execution is available through Snow CLI or optional native connector adapters when the package declares a configured connection.
+- Every engine-owned DuckDB connection, including DuckLake, MotherDuck, seed
+  operations and authoring introspection, disables `common_subplan` before running
+  warehouse SQL, preserving existing optimizer exclusions. This avoids incorrect
+  multi-measure totals over views filtered on derived columns in DuckDB 1.5.6.
 - Physical routing is semantic-first. The compiler may use exact aggregate
   relations for efficiency, but only when the configured rollup covers the
   requested measures, dimensions, filters, time role, and time grain.

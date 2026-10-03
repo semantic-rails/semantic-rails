@@ -35,6 +35,7 @@ from .common import (
     require_missing_env,
     set_duckdb_time_zone,
 )
+from .duckdb_setup import configure_duckdb_connection
 
 # Alias under which the lake catalog is ATTACHed on the in-memory host.
 # Invisible to compiled SQL: the adapter immediately USEs it, so table
@@ -146,7 +147,7 @@ class DuckLakeAdapter(DbApiAdapter):
             os.makedirs(parent, exist_ok=True)
         if data_path:
             os.makedirs(data_path, exist_ok=True)
-        conn = driver.connect()
+        conn = configure_duckdb_connection(driver.connect())
         try:
             conn.execute("INSTALL ducklake")
             conn.execute("LOAD ducklake")

@@ -162,8 +162,12 @@ class FakeConnection:
         self.fail_on = fail_on
         self.closed = False
 
-    def execute(self, sql):
+    def execute(self, sql, parameters=None):
         self.log.append(sql)
+        return self
+
+    def fetchone(self):
+        return ("",)
 
     def cursor(self):
         return FakeCursor(self.log, fail_on=self.fail_on)
@@ -269,7 +273,9 @@ def test_adapter_connects_with_token_and_defaults_namespace(monkeypatch: pytest.
     assert captured["config"] == {"motherduck_token": "tok-value"}
     # Lazy database creation + namespace defaulting so unqualified
     # table names (jaffle_order, …) resolve.
-    assert captured["log"][:4] == [
+    assert captured["log"][:6] == [
+        "SELECT current_setting('disabled_optimizers')",
+        "SET disabled_optimizers = ?",
         'CREATE DATABASE IF NOT EXISTS "sr_jaffle"',
         'USE "sr_jaffle"',
         'CREATE SCHEMA IF NOT EXISTS "analytics"',
