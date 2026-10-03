@@ -307,10 +307,10 @@ names. Last, each grouping the question lists, apart from clock terms and declar
 match its own `group_by` dimension, or the plan is `low_confidence` with
 `why.code="PLAN_UNMATCHED_TERMS"` and `why.details.dropped_groupings` naming the unmatched ones.
 This check reads past a comma when the next piece names a dimension, an entity or a clock, and
-stops at a window the question states, while the draft still reads its groupings up to the
-comma: "repair cost by incident name, incident" grouped by Incident name alone is not ready, as
-two incidents can share a name. The check only holds a plan; it never changes a draft or makes
-one ready. A listed grouping that names an entity is satisfied only by that entity's own key
+reads a window the question states as a comma, while the draft still reads its groupings up to
+the comma: "repair cost by incident name, incident" grouped by Incident name alone is not ready,
+as two incidents can share a name, and neither is "repair cost by incident name, last month and
+incident". The check only holds a plan; it never changes a draft or makes one ready. A listed grouping that names an entity is satisfied only by that entity's own key
 dimension, or by the single declared dimension of that entity whose own words name it, and an
 entity with a composite key is never satisfied. A term names an entity only with every word of
 its label ("customer" names Customer, not Customer history), and a declared time, such as Store
@@ -320,7 +320,45 @@ A grouping that dimensions of two or more entities match, none of them the measu
 ("name" for an order count: Customer name or Store name), is ambiguous and never a pick: the
 plan is not ready, and `why.details.ambiguous_groupings` lists it. Naming the entity ("customer
 name") settles it, as does a dimension in the caller's `partial_query` group_by when the draft
-adds no other that matches. Words that name no catalog object also make the plan `low_confidence` when the draft
+adds no other that matches.
+
+The reverse also holds: every grouping the draft adds traces to the question, or the plan is
+`low_confidence` with `why.code="PLAN_UNASKED_GROUPING"`, `why.details.unasked_groupings`
+naming each one (a dimension's label, or the grain's unit), `details.dimensions` and
+`details.grain`. A `group_by` dimension traces to a grouping the question asks for, read as
+above: one it lists ("by store"), the noun a ranking ranks ("which 5 stores had the most
+orders"), or the words after "per", "each" or "every" ("revenue per store"). It also traces to
+the caller's `partial_query` group_by, or to the draft's own `=` or `IN` filter, which keeps only
+values the question names. The time block's grain traces to the question's words outside its
+windows: its unit or "-ly" form ("by month", "monthly", "at month level", "daily"), a series
+("over time", "trend", "trending", "time series"), or for days a grouping that names the
+query's clock ("by order date"). It also traces to the caller's `partial_query` time grain, or
+it can't split the rows because the window fits in one bucket of the grain ("in Q1 2017", "last
+month", "yesterday"). Packages declare no default grain, so the month plan picks for a
+comparison ("food revenue vs drink revenue by store"), a year-over-year shift ("revenue vs last
+year") or a qualified ranking, and the unit of a window of several periods ("revenue last 7
+days" by day, "revenue by store in the last 3 months" by month, "revenue in 2016 and 2017" by
+year), are held: name the grain ("monthly revenue for the last 3 months by store", "revenue in
+2016 and 2017 by year") or follow the `remove_unasked_grouping` hint.
+
+A ranking (a draft with a `group_by`, a `limit` and a first `order_by` on a selected value) must
+also keep the top N of the entity the question ranks. It ranks the entity when the ranked noun
+("top 3 stores", "which 3 stores") is not a time unit and reads every `group_by` dimension, as
+above (an entity's key and its label). When the question ranks nothing, a ranking the caller's
+`partial_query` states (its `limit`, over its own `group_by`) traces to it unless a grain splits
+its rows. A ranking of the entity whose rows a traced grain splits ("top 3 stores by revenue at
+month level", "top 3 stores by monthly revenue") would keep the top 3 store-months, so it is
+held with `why.code="PLAN_RANKING_PERIOD_AMBIGUOUS"`; its message asks which ranking the
+question means, the top 3 stores over the whole window or the top 3 stores in each month. Any
+other ranking whose rows aren't the ranked entity's, split by a grain or not ("which 3 stores
+have the highest revenue by customer type" keeps the top 3 store and customer type pairs, a
+ranked period such as "which 3 months had the highest revenue by store"), is held with the same
+code. Every such hold has no `clarification` and no Query IR in `why.details`: as its
+`ask_which_ranking` hint says, ask the user which ranking they mean and plan again with a
+question that names it. Both checks only hold a plan; neither changes a draft or makes one
+ready.
+
+Words that name no catalog object also make the plan `low_confidence` when the draft
 doesn't consume them, they aren't stopwords or number words, and `intent_ir.unresolved`
 still holds them. This returns `why.code="PLAN_UNMATCHED_TERMS"` with
 `why.details={"terms": [...], "kind": "filter_values_unrealized"}` and an

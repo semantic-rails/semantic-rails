@@ -95,9 +95,13 @@ def test_qualified_rollup_synthesizes_metric_filters_order_by_limit(runtime_fact
             runtime,
             intent="top 3 stores by order count with at least 4 distinct customers",
             limit=5,
+            verbosity="full",
         )
-        assert payload["candidates"], "expected a runnable candidate"
-        candidate = payload["candidates"][0]
+        # The draft buckets by month, which the question never asks for (it would keep the
+        # top 3 store-months), so it is held; its synthesized shape is checked here.
+        assert not payload["candidates"]
+        candidate = payload["blocked"][0]
+        assert candidate["why_blocked"]["code"] == "PLAN_UNASKED_GROUPING"
         query = candidate["candidate_ir"]
         assert candidate["validation"]["ok"] is True
         # metric_filters must be present and non-empty (phase 5 contract)
@@ -204,10 +208,12 @@ def test_inline_yoy_emits_prior_period_shorthand(runtime_factory) -> None:
             "revenue year over year",
             "revenue vs last year",
         ):
-            payload = plan_candidate_envelope(runtime, intent=intent, limit=3)
-            candidates = list(payload.get("candidates", []) or [])
-            assert candidates, f"no candidates for {intent!r}"
-            candidate = candidates[0]
+            payload = plan_candidate_envelope(runtime, intent=intent, limit=3, verbosity="full")
+            # The draft compares each month with the same month a year before. The question
+            # asks for no month split, so the draft is held; its shape is checked here.
+            assert not payload.get("candidates"), intent
+            candidate = payload["blocked"][0]
+            assert candidate["why_blocked"]["code"] == "PLAN_UNASKED_GROUPING", intent
             query = candidate["candidate_ir"]
             assert candidate["validation"]["ok"] is True, f"{intent!r} candidate must validate"
             selects = query.get("select", []) or []

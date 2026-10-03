@@ -56,20 +56,26 @@ def test_validating_but_unfaithful_complex_plans_fail_closed(
 
 
 @pytest.mark.parametrize(
-    ("intent", "pattern"),
+    ("intent", "pattern", "unasked"),
     [
-        ("revenue vs prior year by store", "inline_period_shift"),
-        ("revenue vs order count by store last quarter", "inline_comparison"),
-        ("orders by store and month", "metric_by_dimension_rollup"),
-        ("orders by store in Brooklyn", "metric_by_dimension_rollup"),
+        # The draft compares each month with the same month a year before: the question asks
+        # for no month split.
+        ("revenue vs prior year by store", "inline_period_shift", ["month"]),
+        ("revenue vs order count by store last quarter", "inline_comparison", []),
+        ("orders by store and month", "metric_by_dimension_rollup", []),
+        ("orders by store in Brooklyn", "metric_by_dimension_rollup", []),
+        # "For stores that have ..." qualifies the stores; the draft also splits by store.
         (
             "Give me the 28D adoption funnel from signup to Send for stores that have an "
             "order rate of over 90% grouped by month",
             "filtered_adoption_funnel",
+            ["Store name"],
         ),
+        # The comparison buckets by month, which the question never asks for.
         (
             "food revenue share vs drink revenue share by store",
             "inline_comparison",
+            ["month"],
         ),
     ],
 )
@@ -77,6 +83,7 @@ def test_faithfulness_gate_preserves_realized_and_supported_shapes(
     runtime_factory,
     intent: str,
     pattern: str,
+    unasked: list[str],
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
@@ -84,8 +91,15 @@ def test_faithfulness_gate_preserves_realized_and_supported_shapes(
     finally:
         runtime.close()
 
-    assert payload["status"] == "ok", payload.get("why")
     assert payload["best"]["pattern"] == pattern
+    if unasked:
+        # The faithfulness gate keeps the shape; a grouping the question never asks for holds it.
+        assert payload["status"] == "low_confidence"
+        assert payload["why"]["code"] == "PLAN_UNASKED_GROUPING"
+        assert payload["why"]["details"]["unasked_groupings"] == unasked
+        assert "ready_for" not in payload["next"]
+        return
+    assert payload["status"] == "ok", payload.get("why")
     assert payload["next"]["ready_for"] == ["execute"]
 
 

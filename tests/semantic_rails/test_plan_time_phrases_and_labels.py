@@ -291,7 +291,9 @@ def test_a_number_or_time_word_that_is_not_an_hour_is_never_read_as_one(
         "average delivery time by month in 2017",
         "revenue by order time in 2017",
         "top 5 stores by revenue in 2017",
-        "revenue for the last 3 months by store",
+        # Without "monthly", the draft's split into months is a grouping the question never asks
+        # for.
+        "monthly revenue for the last 3 months by store",
         "orders in Q1 2017 by month",
     ],
 )
@@ -759,7 +761,8 @@ def test_a_number_range_the_draft_does_not_carry_is_low_confidence(
         "revenue on 15 March 2017",
         "revenue in March 2017 by day",
         "revenue for Q1 2017",
-        "revenue for the last 30 days",
+        # Without "daily", the draft's split into days is a grouping the question never asks for.
+        "daily revenue for the last 30 days",
         "top 5 stores by revenue in 2017",
         "orders on 15 March 2017 by store",
         "revenue by month in 2017",
@@ -1399,7 +1402,8 @@ def test_a_list_of_names_the_draft_does_not_filter_on_is_not_ok(
 @pytest.mark.parametrize(
     "intent",
     # "revenue with cumulative" is not here: "cumulative" names the Cumulative revenue metric.
-    ["revenue with YoY"],
+    # The draft compares months, so the question names its month grain.
+    ["monthly revenue with YoY"],
 )
 def test_a_single_word_the_planner_reads_elsewhere_is_only_a_warning(
     runtime_factory: Any, intent: str
