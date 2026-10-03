@@ -21,6 +21,8 @@ from .errors import SemanticLayerError
 from .expressions import (
     AggregateExpr,
     ConditionalAggregateExpr,
+    ConversionExpr,
+    MetricPredicateExpr,
     ScopedAggregateExpr,
     parse_semantic_expression,
 )
@@ -584,8 +586,8 @@ def _metric_constraint_violations(
 
     # A required filter must cut the query's own rows; a child group's condition cuts child
     # rows, so it never meets one. Every condition, a group's included, must be allowed.
-    # A filter inside an expression cuts only its own leaf, so it never meets one either; it
-    # must be allowed when it cuts the governed object.
+    # An expression filter never meets required_where; it must be allowed when it counts
+    # for the governed object, including whole-query attribution for nested filters.
     inline = cache(
         lambda: _governed_inline_fields(
             _inline_filters(query), bound, object_id, package_wide=not policy.object_ids
@@ -714,48 +716,53 @@ def _where_spec_matches(row: Mapping[str, Any], spec: Mapping[str, Any]) -> bool
     return "value" not in spec or row.get("value") == spec.get("value")
 
 
-def _inline_filters(query: NormalizedQuery) -> list[tuple[str, str]]:
+def _inline_filters(query: NormalizedQuery) -> list[tuple[str | None, str]]:
     """``(measure, field)`` for each filter the caller wrote inside a select or metric-filter
     expression: an aggregate's ``filter`` and a scoped aggregate's ``where``, at any depth,
     predicate inputs included. A conditional aggregate's condition has no declared measure and
-    is ``("", INLINE_CONDITION)``. Recipes are the package's own and are not read here.
+    is ``("", INLINE_CONDITION)``. ``measure=None`` marks whole-query attribution under
+    predicates, metric filters and conversion operands. Recipes are not read here.
     """
-    found: list[tuple[str, str]] = []
+    found: list[tuple[str | None, str]] = []
 
-    def visit(expr: Any) -> None:
+    def visit(expr: Any, *, whole_query: bool = False) -> None:
+        whole_query = whole_query or isinstance(expr, (MetricPredicateExpr, ConversionExpr))
         nested: list[Any] = []
         if isinstance(expr, AggregateExpr):
             for clause in expr.filter.get("all", []):
                 if "expression" in clause:
                     nested.append(dict(clause["expression"]))
                 else:
-                    found.append((expr.measure, str(clause["field"])))
+                    found.append((None if whole_query else expr.measure, str(clause["field"])))
         elif isinstance(expr, ScopedAggregateExpr):
-            found.extend((expr.measure, str(item.get("field", ""))) for item in expr.where)
+            found.extend(
+                (None if whole_query else expr.measure, str(item.get("field", "")))
+                for item in expr.where
+            )
             nested.extend(
                 dict(item["input"])
                 for item in expr.predicates
                 if isinstance(item.get("input"), dict)
             )
         elif isinstance(expr, ConditionalAggregateExpr):
-            found.append(("", INLINE_CONDITION))
+            found.append((None if whole_query else "", INLINE_CONDITION))
         for payload in nested:
-            visit(parse_semantic_expression(payload, context="query"))
+            visit(parse_semantic_expression(payload, context="query"), whole_query=True)
         for item in fields(expr) if is_dataclass(expr) else ():
             value = getattr(expr, item.name)
             for child in value if isinstance(value, list) else [value]:
                 if is_dataclass(child):
-                    visit(child)
+                    visit(child, whole_query=whole_query)
 
     for row in query.select:
         visit(row.expression)
     for metric_filter in query.metric_filters:
-        visit(metric_filter.expression)
+        visit(metric_filter.expression, whole_query=True)
     return found
 
 
 def _governed_inline_fields(
-    filters: list[tuple[str, str]],
+    filters: list[tuple[str | None, str]],
     bound: Callable[[], BoundQuery],
     object_id: str,
     *,
@@ -765,7 +772,8 @@ def _governed_inline_fields(
 
     A filter is owned by the query's root leaves over its measure, and counts by the rule
     that attributes the compiler's own cuts (:meth:`BoundQuery.cut_counts`). A filter on the
-    governed measure itself, or under a package-wide constraint, always counts.
+    governed measure itself, under a package-wide constraint, or marked whole-query
+    (``measure=None``) always counts.
     """
 
     def owners(measure: str) -> frozenset[str]:
@@ -776,7 +784,10 @@ def _governed_inline_fields(
     out = [
         field
         for measure, field in filters
-        if package_wide or measure == object_id or bound().cut_counts(object_id, owners(measure))
+        if package_wide
+        or measure is None
+        or measure == object_id
+        or bound().cut_counts(object_id, owners(measure))
     ]
     return list(dict.fromkeys(out))
 

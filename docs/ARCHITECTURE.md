@@ -367,7 +367,10 @@ and against every cut when ownership is ambiguous. `allow_metric_filters: false`
 refuses the cuts that count for it. The fields of the filters the caller wrote inside
 expressions are read from the normalized query, owned by the root leaves over their
 measure under that same rule (`BoundQuery.cut_counts`), and checked against
-`allowed_where`. Temporal-role constraints check the query
+`allowed_where`. Fields nested under predicates, `metric_filters` or conversion
+operands conservatively count for every governed object in the query; direct
+leaf filters retain the leaf rule. Expression filters never satisfy
+`required_where`. Temporal-role constraints check the query
 axis and each governed object's effective bucket and ordering roles before
 rendering.
 Column binding and caveat temporal-shape inspection retain their specialized views.

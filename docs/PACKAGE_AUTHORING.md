@@ -682,10 +682,15 @@ action checks. Action text is trimmed and lowercased; kind names must match exac
   A filter the caller writes inside an expression (an aggregate's or
   `semi_additive` expression's `filter`, a scoped aggregate's `where`, at any
   depth in `select` or `metric_filters`, predicate inputs included) is checked
-  like a `where` filter when it cuts the governed object, by the same leaf
+  like a `where` filter when it counts for the governed object, by the same leaf
   rule: its field must be in `allowed_where` (a violation carries
   `"source": "inline_expression"`), and it always counts as a metric filter. It
-  cuts only its own leaf, so it never satisfies `required_where`. An
+  never satisfies `required_where`, which requires an outer `where` filter.
+  Fields nested under an aggregate-filter `expression`, a scoped aggregate's
+  `predicates[].input`, a metric predicate, `metric_filters`, or a conversion
+  operand count for every governed object in the query. This conservative rule
+  can refuse a nested filter even when it affects only a sibling expression.
+  Direct leaf filters retain the leaf rule above. An
   `aggregate_if` condition reads columns, not fields, so a package-wide
   constraint with `allowed_where` refuses it.
   `allowed_temporal_roles` checks the query axis and the governed object's
