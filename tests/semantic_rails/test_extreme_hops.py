@@ -115,9 +115,6 @@ def _write_geo_package(
               dimension:
                 groupable: true
                 filterable: true
-              measure:
-                subject_entity: self
-                aggregation_entity: self
               relationship:
                 traversal: [forward, reverse]
             """

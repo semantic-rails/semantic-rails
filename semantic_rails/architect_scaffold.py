@@ -371,7 +371,6 @@ def _package_document(plan: _Plan) -> dict[str, Any]:
                 "default_query_axis": False,
                 "supported_grains": ["day", "week", "month", "quarter", "year"],
             },
-            "measure": {"subject_entity": "self", "aggregation_entity": "self"},
             "relationship": {"traversal": ["forward", "reverse"]},
         },
     }

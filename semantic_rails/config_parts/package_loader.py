@@ -4,6 +4,39 @@ from typing import Any
 
 from ..errors import SemanticLayerError
 
+_JOIN_KEYS: frozenset[str] = frozenset(
+    {
+        "id",
+        "as",
+        "to",
+        "via",
+        "target",
+        "source_key_role",
+        "target_key_role",
+        "cardinality",
+        "safety",
+        "name",
+        "label",
+        "description",
+        "traversal",
+        "allowed_directions",
+        "temporal_validity",
+        "target_key_type",
+        "join_semantics",
+        "rollup_safe_aggregations_reverse",
+        "entities",
+    }
+)
+
+
+def _reject_unconsumed_rollup_safe(spec: dict[str, Any], *, location: str) -> None:
+    if "rollup_safe" in spec:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"{location}.rollup_safe is not supported; use graph.relationships "
+            "with rollup_safe.reverse for reverse population-count rewrite permissions",
+        )
+
 
 def _slug(value: str) -> str:
     raw = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or ""))
@@ -74,9 +107,36 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
         package["namespace"] = namespace
     out["package"] = package
 
+    defaults = dict(out.get("defaults", {}) or {})
+    relationship_defaults = dict(defaults.get("relationship", {}) or {})
+    if "rollup_safe_aggregations" in relationship_defaults:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            "defaults.relationship.rollup_safe_aggregations is not supported; "
+            "delete this line; forward rollup declarations were removed",
+        )
+    _reject_unconsumed_rollup_safe(relationship_defaults, location="defaults.relationship")
     graph = dict(out.get("graph", {}) or {})
     graph_entities = dict(graph.get("entities", {}) or {})
     models = _model_mapping(out)
+    # Validate authored joins before graph projection can replace their specs.
+    for model_id, model in models.items():
+        for join_key, join_raw in dict(model.get("joins", {}) or {}).items():
+            join = dict(join_raw or {})
+            _reject_unconsumed_rollup_safe(join, location=f"models.{model_id}.joins.{join_key}")
+            unknown = sorted(key for key in set(join) - _JOIN_KEYS if not str(key).startswith("_"))
+            if unknown:
+                rel_id = str(join.get("id", f"relationship.{_slug(model_id)}_{_slug(join_key)}"))
+                migration = (
+                    "; delete path_preference and record the route in graph.path_preferences"
+                    if "path_preference" in unknown
+                    else ""
+                )
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"models.{model_id}.joins.{join_key} (relationship '{rel_id}') "
+                    f"has unknown keys {unknown}; use {sorted(_JOIN_KEYS)}{migration}",
+                )
     bound_entities: dict[str, str] = {}
     for entity_key, entity_raw in graph_entities.items():
         entity = dict(entity_raw or {})
@@ -539,10 +599,8 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
     #     safety: safe
     #     allowed_directions: [...]
     #     temporal_validity: { ... }
-    #     rollup_safe:                  # per-direction (forward = a→b)
-    #       forward: [...]
-    #       reverse: [...]              # captured but downstream schema only
-    #                                   # has one rollup_safe_aggregations list
+    #     rollup_safe:
+    #       reverse: [...]              # b→a population-count rewrite permission
     relationship_block = graph.get("relationships") or {}
     if not isinstance(relationship_block, dict):
         raise SemanticLayerError("INVALID_CONFIG", "graph.relationships must be a mapping")
@@ -583,15 +641,14 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
                 "many_to_many": "M:N",
             }
             cardinality = cardinality_map.get(cardinality, cardinality)
-            # rollup_safe: forward is a→b; reverse is b→a.
-            rollup_safe = spec.get("rollup_safe") or {}
-            forward_rollup: list[str] = []
-            reverse_rollup: list[str] = []
-            if isinstance(rollup_safe, dict):
-                forward_rollup = list(rollup_safe.get("forward", []) or [])
-                reverse_rollup = list(rollup_safe.get("reverse", []) or [])
-            elif isinstance(rollup_safe, list):
-                forward_rollup = list(rollup_safe)
+            rollup_safe = spec.get("rollup_safe", {})
+            if not isinstance(rollup_safe, dict) or any(key != "reverse" for key in rollup_safe):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"graph relationship '{rel_name}' rollup_safe must be a mapping "
+                    "with only the 'reverse' key; forward rollup declarations are not supported",
+                )
+            reverse_rollup = list(rollup_safe.get("reverse", []) or [])
 
             # Attach to source model `a`'s joins block as edge `b`.
             source_model = entity_to_model[a]
@@ -627,12 +684,6 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
             # `allowed_directions:`; we rename here at the translator boundary.
             if "allowed_directions" in spec:
                 edge_spec["traversal"] = spec["allowed_directions"]
-            if forward_rollup:
-                edge_spec["rollup_safe_aggregations"] = forward_rollup
-            # Reverse rollup is captured as a sibling key for now; the
-            # runtime schema has a single rollup_safe_aggregations field
-            # which is forward-only. Reverse stays available for future
-            # bidirectional rollup checks.
             if reverse_rollup:
                 edge_spec["rollup_safe_aggregations_reverse"] = reverse_rollup
             # A model keeps every relationship to an entity. A route is its source

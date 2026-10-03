@@ -55,9 +55,6 @@ graph:
       cardinality: many_to_one
       target: [customer_id]
       safety: requires_rewrite
-      rollup_safe:
-        forward: [sum, count]
-        reverse: []
       temporal_validity:
         valid_from: comparison_customer_history.valid_from
         valid_to: comparison_customer_history.valid_to
@@ -68,9 +65,6 @@ graph:
       cardinality: many_to_one
       target: [customer_id]
       safety: requires_rewrite
-      rollup_safe:
-        forward: [sum, count]
-        reverse: []
       temporal_validity:
         valid_from: comparison_customer_history.valid_from
         valid_to: comparison_customer_history.valid_to
