@@ -1594,20 +1594,24 @@ def test_a_metric_is_named_only_around_every_measure_named(
 
 
 @pytest.mark.parametrize(
-    ("intent", "limit"),
+    ("intent", "limit", "held"),
     [
-        # A number in a time phrase sizes the window; it doesn't make a top N.
-        ("What is revenue in the last 3 months by store?", None),
-        ("What was revenue from January 1 2017 to March 31 2017 by store?", None),
-        ("What was revenue in 2017 by store?", None),
-        ("which 3 stores have the highest revenue in the last 6 months", 3),
+        # A number in a time phrase sizes the window; it doesn't make a top N. A window of
+        # several months is held: the draft buckets it by month, which the question doesn't
+        # ask for (for the ranking, it would keep the top 3 store-months).
+        ("What is revenue in the last 3 months by store?", None, True),
+        ("What was revenue from January 1 2017 to March 31 2017 by store?", None, False),
+        ("What was revenue in 2017 by store?", None, False),
+        ("which 3 stores have the highest revenue in the last 6 months", 3, True),
     ],
 )
 def test_a_number_in_a_time_phrase_is_not_a_ranking(
-    adapter: SemanticLayerMCPAdapter, intent: str, limit: int | None
+    adapter: SemanticLayerMCPAdapter, intent: str, limit: int | None, held: bool
 ) -> None:
     plan = adapter.call_tool("plan", {"intent": intent, "detail": "query"})
-    assert plan["status"] == "ok"
+    assert (plan["status"], (plan.get("why") or {}).get("code")) == (
+        ("low_confidence", "PLAN_UNASKED_GROUPING") if held else ("ok", None)
+    )
     assert plan["best"]["query_ir"].get("limit") == limit
 
 

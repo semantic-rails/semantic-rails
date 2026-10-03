@@ -713,8 +713,10 @@ def test_a_single_grouping_stays_ready(
         ("revenue by store, at week grain", ["store"]),
         ("revenue by store, 2017", ["store"]),
         ("revenue by store, nonsense, customer type", ["store"]),
-        # So does a window the question states.
-        ("revenue by store, last month and customer type", ["store"]),
+        # A window the question states separates pieces as a comma does.
+        ("revenue by store, last month and customer type", ["store", "customer type"]),
+        ("revenue by store last month and customer type", ["store", "customer type"]),
+        ("revenue by store, last month, nonsense", ["store"]),
     ],
 )
 def test_the_check_reads_every_listed_grouping(
@@ -794,6 +796,7 @@ def test_repeating_one_dimension_never_satisfies_two_listed_groupings(
 # this check has asked.
 OK = "ok"
 UNMATCHED = "PLAN_UNMATCHED_TERMS"
+UNASKED = "PLAN_UNASKED_GROUPING"
 INVALID = "VALIDATION_FAILED"
 DRIFT = "PLAN_FALLBACK_SEMANTIC_DRIFT"
 GAP = "PLAN_INTENT_COVERAGE_GAP"
@@ -806,6 +809,8 @@ class _Before:
     before: str
     # The check holds this plan, which was ready.
     held: bool = False
+    # The code that holds it: this check's, or the unasked-grouping check's after it.
+    code: str = UNMATCHED
     package: str = "jaffle"
     # The caller's partial_query group_by.
     group_by: tuple[str, ...] = ()
@@ -897,7 +902,8 @@ _BEFORE = [
     _Before("orders by store, time", UNMATCHED),
     _Before("revenue by store, statuses", UNMATCHED),
     _Before("food revenue vs drink revenue by store, customer type", UNMATCHED),
-    _Before("food revenue vs drink revenue by store and customer type", OK),
+    # The comparison buckets by month, which the question never asks for.
+    _Before("food revenue vs drink revenue by store and customer type", OK, held=True, code=UNASKED),
     _Before("show monthly revenue by store", OK),
     _Before("order count by name", OK, held=True),
     _Before("order count by customer name", OK),
@@ -1043,20 +1049,22 @@ def test_the_check_only_holds_a_plan_that_was_ready(
         runtime = _runtime_for(case, runtime_factory, upkeep, monkeypatch, stack)
         after = plan_payload(runtime, intent=case.intent, partial_query=partial_query)
         with monkeypatch.context() as without_check:
+            # They are the only readers of the listed groupings.
             without_check.setattr(plan_module, "_dropped_grouping_why", lambda *args: None)
+            without_check.setattr(plan_module, "_unasked_grouping_why", lambda *args: None)
             before = plan_payload(runtime, intent=case.intent, partial_query=partial_query)
 
-    # Without the check, plan answers as it did before the check existed.
+    # Without the checks, plan answers as it did before they existed.
     assert _outcome(before) == case.before
-    # The check never changes the draft.
+    # The checks never change the draft.
     assert after["best"].get("query_ir") == before["best"].get("query_ir")
     assert after["best"].get("pattern") == before["best"].get("pattern")
     if case.held:
-        # It only holds a plan that was ready, and never readies one or picks another.
+        # They only hold a plan that was ready, and never ready one or pick another.
         assert case.before == OK
         assert after["status"] == "low_confidence"
         assert "ready_for" not in after["next"]
-        assert after["why"]["code"] == UNMATCHED
+        assert after["why"]["code"] == case.code
     else:
         assert after["status"] == before["status"]
         assert after.get("why") == before.get("why")

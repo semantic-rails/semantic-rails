@@ -70,7 +70,7 @@ def test_best_plan_corpus_carries_query_once(runtime_factory) -> None:
         runtime.close()
 
 
-def test_plan_returns_status_ok_for_realizable_intent(runtime_factory) -> None:
+def test_plan_drafts_a_qualified_ranking(runtime_factory) -> None:
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(
@@ -79,11 +79,15 @@ def test_plan_returns_status_ok_for_realizable_intent(runtime_factory) -> None:
         )
     finally:
         runtime.close()
-    assert payload["status"] == "ok"
     assert payload["best"] is not None
     assert payload["best"]["pattern"] == "qualified_metric_rollup"
     assert payload["best"]["validation_ok"] is True
     assert "metric_filters" in payload["best"]["query_ir"]
+    # The draft buckets by month, which the question never asks for: it would keep the top 3
+    # store-months, so it is held.
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "PLAN_UNASKED_GROUPING"
+    assert payload["why"]["details"]["grain"] == "month"
 
 
 @pytest.mark.parametrize(
@@ -362,7 +366,9 @@ def test_plan_compact_detail_discovers_fallback_after_invalid_primary(
     from semantic_rails.planner.orchestrator import CompositionResult
 
     runtime = runtime_factory("jaffle_shop")
-    intent = "top stores by revenue"
+    # The question names the month the parsed time slot carries: a ranking of store-months
+    # ("top stores by revenue" with that slot) is held for its unasked grain.
+    intent = "monthly revenue by store"
     composed = plan_module.compose(runtime, intent)
     assert composed.draft is not None
     # Keep the synthetic rescue draft aligned with every parsed intent slot;

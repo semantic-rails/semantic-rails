@@ -954,12 +954,17 @@ def _grain_splits(time: dict[str, Any]) -> bool:
     return _grain_bucket(start.date(), grain) != _grain_bucket(final, grain)
 
 
+# A series the question asks for in words: it splits the answer by time at plan's grain.
+_SERIES_RE = re.compile(r"\b(?:over\s+time|trends?|trending|time\s+series)\b")
+
+
 def _names_grain(config: Any, question: str, query: dict[str, Any], grain: str) -> bool:
-    """Whether the question's own words, outside every time window it states, name the grain:
-    its unit or "-ly" form ("by month", "monthly", "month level", "per week", "daily"), or, for
-    days, a listed grouping that names the query's clock ("by order date"). A window of whole
-    calendar years ("in 2016 and 2017") names each of its years, so it names the year grain
-    plan reads it at: one total per year."""
+    """Whether the question's own words, outside every time window it states, ask for the
+    grain's buckets: its unit or "-ly" form ("by month", "monthly", "month level", "per
+    week", "daily"); a series ("over time", "trend", "trending", "time series"), which plan
+    buckets at its default grain; or, for days, a listed grouping that names the query's clock
+    ("by order date"). A window of whole calendar years ("in 2016 and 2017") names each of its
+    years, so it names the year grain plan reads it at: one total per year."""
 
     time = _time_of(query)
     if grain == "year" and all(
@@ -971,7 +976,7 @@ def _names_grain(config: Any, question: str, query: dict[str, Any], grain: str) 
     for start, end in _time_window(question).spans:
         lowered = lowered[:start] + " " * (end - start) + lowered[end:]
     forms = {grain, f"{grain}s", "daily" if grain == "day" else f"{grain}ly"}
-    if forms & set(re.findall(r"[^\W\d_]+", lowered)):
+    if forms & set(re.findall(r"[^\W\d_]+", lowered)) or _SERIES_RE.search(lowered):
         return True
     clocks = _query_clocks(config, query)
     return grain == "day" and any(
@@ -981,17 +986,18 @@ def _names_grain(config: Any, question: str, query: dict[str, Any], grain: str) 
     )
 
 
-# "revenue per store" is "revenue by store": the words after "per", up to a clause.
+# "revenue per store" and "revenue for each store" are "revenue by store": the words after
+# "per", "each" or "every", up to a clause.
 _PER_GROUPING_RE = re.compile(
-    r"\bper\s+([a-z _-]+?)(?=\s+(?:by|and|where|for|from|in|with|during|over|having|who|that)\b"
-    r"|\s*[.?!,;]|\s*$)"
+    r"\b(?:per|each|every)\s+([a-z _-]+?)"
+    r"(?=\s+(?:by|and|where|for|from|in|with|during|over|having|who|that)\b|\s*[.?!,;]|\s*$)"
 )
 
 
 def _asked_grouping_terms(config: Any, question: str) -> list[str]:
     """What the question asks to group by: each grouping it lists (``_listed_grouping_terms``),
     the noun a ranking ranks ("which 5 stores had the most orders"), and the words after
-    "per" ("revenue per store"). Windows are not part of any of them."""
+    "per", "each" or "every" ("revenue per store"). Windows are not part of any of them."""
 
     lowered = str(question or "").lower()
     for start, end in _time_window(question).spans:
@@ -1014,8 +1020,8 @@ def _unasked_grouping_why(
 
     A group_by dimension traces when a grouping the question asks for reads it
     (``_asked_grouping_terms``, read as ``_dropped_grouping_why`` reads a listed one), when the
-    caller's ``partial_query`` group_by has it, or when the draft's own ``=`` filter pins it to
-    one value, so it can't split the rows. The time block's grain
+    caller's ``partial_query`` group_by has it, or when the draft's own ``=`` or ``IN`` filter
+    keeps only values of it the question names. The time block's grain
     traces when the question's words outside its windows name it (``_names_grain``), when the
     caller's ``partial_query`` time has it, or when it can't split the rows because the window
     fits in one bucket (``_grain_splits``). The package declares no default grain, so a grain
@@ -1037,10 +1043,13 @@ def _unasked_grouping_why(
     )
     terms = _asked_grouping_terms(config, question)
     stand_ins = [_entity_grouping_dimensions(config, term) for term in terms]
+    # A dimension the draft filters to the values the question names splits the rows into
+    # those values only; the filter-value check holds a filter that keeps any other.
     pinned = {
         str(row["field"])
         for row in _where_filters(query)
-        if row.get("op") == "=" and not isinstance(row.get("value"), (list, tuple, dict))
+        if (row.get("op") == "=" and not isinstance(row.get("value"), (list, tuple, dict)))
+        or (str(row.get("op")).lower() == "in" and isinstance(row.get("value"), list))
     }
     chosen = set(caller.get("group_by") or [])
     grouped = [
