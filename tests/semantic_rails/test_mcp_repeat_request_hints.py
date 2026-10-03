@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from scripts.mcp_context import V2_PROBES, normalize_volatile
-from semantic_rails.mcp import SemanticLayerMCPAdapter, json_text
+from semantic_rails.mcp import MCP_DEFAULT_MAX_ROWS, SemanticLayerMCPAdapter, json_text
 from semantic_rails.mcp_server import serve_stdio
 from semantic_rails.mcp_session import MCPQuerySession
 
@@ -75,7 +75,7 @@ def test_dry_run_points_to_successful_run(adapter: SemanticLayerMCPAdapter, mode
 
 @pytest.mark.parametrize(
     "options",
-    [{"max_rows": 1}, {"verbosity": "full"}, {"query": {**QUERY, "verbosity": "compact"}}],
+    [{"verbosity": "full"}, {"query": {**QUERY, "verbosity": "compact"}}],
 )
 def test_response_options_and_object_key_order_do_not_distinguish_requests(
     adapter: SemanticLayerMCPAdapter, options: dict[str, Any]
@@ -85,6 +85,109 @@ def test_response_options_and_object_key_order_do_not_distinguish_requests(
     reordered = {key: QUERY[key] for key in reversed(QUERY)}
     repeated = adapter.call_tool("execute", {"query": reordered, **options}, session=session)
     assert repeated["same_as"] == first["request_id"]
+
+
+@pytest.mark.parametrize("cap", [1, None])
+@pytest.mark.parametrize("mode", ["validate", "sql"])
+def test_capped_run_then_full_run_reports_the_latest_answer(
+    adapter: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch, cap: int | None, mode: str
+) -> None:
+    row_count = 5 if cap is not None else MCP_DEFAULT_MAX_ROWS + 5
+    rows = [{"revenue": index} for index in range(row_count)]
+    monkeypatch.setattr(
+        adapter.runtime, "query", lambda _: {"ok": True, "rows": rows, "row_count": len(rows)}
+    )
+    capped_args = {"query": QUERY, **({"max_rows": cap} if cap is not None else {})}
+    full_args = {"query": QUERY, **({"max_rows": row_count} if cap is None else {})}
+    session = MCPQuerySession()
+    capped = adapter.call_tool("execute", capped_args, session=session)
+    summary = {
+        "request_id": capped["request_id"],
+        "row_count": cap or MCP_DEFAULT_MAX_ROWS,
+        "truncated": True,
+        "max_rows": cap or MCP_DEFAULT_MAX_ROWS,
+    }
+    assert capped["row_count"] == summary["row_count"]
+    assert capped["truncated"] is True
+    dry_args = {"query": QUERY, "mode": mode}
+    assert adapter.call_tool("execute", dry_args, session=session)["already_ran"] == summary
+    assert adapter.call_tool("execute", capped_args, session=session)["same_as"] == summary
+
+    full = adapter.call_tool("execute", full_args, session=session)
+    assert full["row_count"] == row_count
+    assert not full.get("truncated", False)
+    _no_hints(full)
+    assert adapter.call_tool("execute", dry_args, session=session)["already_ran"] == {
+        "request_id": full["request_id"],
+        "row_count": row_count,
+    }
+    assert adapter.call_tool("execute", full_args, session=session)["same_as"] == full["request_id"]
+
+    refreshed = adapter.call_tool("execute", capped_args, session=session)
+    assert refreshed["same_as"] == summary
+    assert adapter.call_tool("execute", dry_args, session=session)["already_ran"] == {
+        **summary,
+        "request_id": refreshed["request_id"],
+    }
+
+
+def test_same_as_preserves_historical_truncation_when_current_rows_shrink(
+    adapter: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = [{"revenue": index} for index in range(5)]
+    monkeypatch.setattr(
+        adapter.runtime, "query", lambda _: {"ok": True, "rows": rows, "row_count": len(rows)}
+    )
+    session = MCPQuerySession()
+    args = {"query": QUERY, "max_rows": 1}
+    first = adapter.call_tool("execute", args, session=session)
+    rows[:] = rows[:1]
+    current = adapter.call_tool("execute", args, session=session)
+    assert not current.get("truncated", False)
+    assert current["same_as"] == {
+        "request_id": first["request_id"],
+        "row_count": 1,
+        "truncated": True,
+        "max_rows": 1,
+    }
+    assert adapter.call_tool("execute", {"query": QUERY, "mode": "sql"}, session=session)[
+        "already_ran"
+    ] == {"request_id": current["request_id"], "row_count": 1}
+
+
+@pytest.mark.parametrize("latest_options", [{}, {"row_format": "columns"}])
+def test_successful_run_refreshes_history_and_a_failure_does_not_replace_it(
+    adapter: SemanticLayerMCPAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+    latest_options: dict[str, Any],
+) -> None:
+    rows = [{"revenue": index} for index in range(5)]
+    monkeypatch.setattr(
+        adapter.runtime, "query", lambda _: {"ok": True, "rows": rows, "row_count": len(rows)}
+    )
+    session = MCPQuerySession()
+    adapter.call_tool("execute", {"query": QUERY}, session=session)
+    rows[:] = rows[:3]
+    latest = adapter.call_tool("execute", {"query": QUERY, **latest_options}, session=session)
+    assert adapter.call_tool("execute", {"query": QUERY, "mode": "validate"}, session=session)[
+        "already_ran"
+    ] == {"request_id": latest["request_id"], "row_count": 3}
+    monkeypatch.setattr(adapter.runtime, "query", lambda _: {"ok": False, "row_count": 99})
+    assert adapter.call_tool("execute", {"query": QUERY}, session=session)["ok"] is False
+    assert adapter.call_tool("execute", {"query": QUERY, "mode": "validate"}, session=session)[
+        "already_ran"
+    ] == {"request_id": latest["request_id"], "row_count": 3}
+
+
+def test_truncated_run_without_a_known_cap_cannot_be_reused_as_an_answer(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    adapter.replace_tool_handler(
+        "execute", lambda _: {"ok": True, "row_count": 1, "truncated": True}
+    )
+    session = MCPQuerySession()
+    for mode in ("run", "run", "validate"):
+        _no_hints(adapter.call_tool("execute", {"query": QUERY, "mode": mode}, session=session))
 
 
 @pytest.mark.parametrize(
@@ -101,7 +204,7 @@ def test_changed_arguments_get_no_hint(
 ) -> None:
     for mode in ("run", "validate", "sql"):
         session = MCPQuerySession()
-        adapter.call_tool("execute", {"query": QUERY}, session=session)
+        adapter.call_tool("execute", {"query": QUERY, "mode": "run"}, session=session)
         result = adapter.call_tool(
             "execute", {"query": QUERY, "mode": mode, **changes}, session=session
         )
@@ -206,7 +309,7 @@ def test_stdio_owns_one_history_per_connection(adapter: SemanticLayerMCPAdapter)
         first, repeat, validate = exchange()
         _no_hints(first)
         assert repeat["same_as"] == first["request_id"]
-        assert validate["already_ran"]["request_id"] == first["request_id"]
+        assert validate["already_ran"]["request_id"] == repeat["request_id"]
 
 
 @pytest.mark.parametrize(

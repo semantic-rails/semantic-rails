@@ -64,15 +64,20 @@ MCP issues leave out empty optional fields and a
 
 Within a stdio query MCP session, repeated calls still run normally and add
 `same_as`, the first matching response's `request_id`. Matching uses the tool name
-and arguments with JSON object keys sorted, ignoring `max_rows`, `verbosity` and
+and arguments with JSON object keys sorted, ignoring `verbosity` and
 `request_id` at the argument and query envelopes. Array order, filters, query
-limits and policy context still distinguish requests. The session retains the
+limits, `max_rows` and policy context still distinguish requests. If the first
+matching run was capped, `same_as` is instead an object with `request_id`,
+`row_count`, `truncated: true` and `max_rows` describing that historical response.
+The current response retains its own truncation status. The session retains the
 64 most recently used request fingerprints; evicted calls are forgotten.
 
 After a successful `execute` in run mode, `execute` in `validate` or `sql` mode
 for the same query and policy context also adds
-`already_ran: {"request_id": "...", "row_count": 12}`. This refers to the earlier
-successful run and its returned row count, including any response cap. It is a
+`already_ran: {"request_id": "...", "row_count": 12}`. This refers to the latest
+retained successful run and its returned row count. A capped run also carries
+`truncated: true` and the effective `max_rows` cap in `already_ran`; a later
+successful run replaces this history even when its cap or row format differs. It is a
 historical hint, not a cached answer or a guarantee that warehouse data is unchanged.
 The first call has no added fields. Stateless HTTP and calls without a session
 retain their existing responses; REST, SDK and CLI query responses are unchanged.
