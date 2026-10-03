@@ -2142,28 +2142,30 @@ class SemanticLayerMCPAdapter:
     ) -> dict[str, Any]:
         # Surface closest_matches on OBJECT_NOT_FOUND just like the HTTP
         # path — agents shouldn't have to retry blind on a typo'd id.
-        # enrich_object_not_found is a pure read on the in-memory config
-        # but we defensively never want diagnostics enrichment to mask
-        # the original error.
-        with contextlib.suppress(Exception):
-            config = self.runtime._config
-            hidden_ids = diagnostic_hidden_object_ids(
-                config, _resolved_tool_request_context(arguments).to_policy_context()
-            )
-            exc = enrich_diagnostic_candidates(exc, config, hidden_ids=hidden_ids)
-            exc = enrich_object_not_found(
-                exc,
-                config,
-                hidden_ids=hidden_ids,
-            )
+        config = self.runtime._config
+        request_id = _clean_request_id(arguments.get("request_id")) or uuid.uuid4().hex
+        context: RequestContext | None
+        try:
+            context = _resolved_tool_request_context(arguments, request_id=request_id)
+            hidden_ids = diagnostic_hidden_object_ids(config, context.to_policy_context())
+        except Exception:  # noqa: BLE001 — uncertain visibility withholds alternatives
+            context = None
+            hidden_ids = None
+        exc = enrich_diagnostic_candidates(exc, config, hidden_ids=hidden_ids)
+        exc = enrich_object_not_found(exc, config, hidden_ids=hidden_ids)
         issue = exception_issue(exc, stage="mcp")
         out = self._envelope(
             {"ok": False, "status": "error", "error": issue, "errors": [issue]},
-            request_id=_clean_request_id(arguments.get("request_id")),
+            request_id=request_id,
             started_at=started_at or time.perf_counter(),
             arguments=arguments,
         )
-        return self._with_request_context(out, arguments)
+        if context is not None:
+            # Reuse the resolved context; a second resolution can fail on an error path.
+            request_context = request_context_payload(context)
+            if request_context:
+                out.setdefault("request_context", request_context)
+        return out
 
     def _guarded(
         self, arguments: dict[str, Any], handler: Callable[[dict[str, Any]], dict[str, Any]]

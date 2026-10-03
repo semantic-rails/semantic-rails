@@ -495,7 +495,7 @@ def _bind_measure(
         raise SemanticLayerError(
             "INCOMPATIBLE_TEMPORAL_ROLE",
             f"'{measure_id}' isn't timed by '{query_role}' and has several clocks of its own "
-            f"({', '.join(compatible)}). Choose one with temporal_role_overrides "
+            f"(see `compatible`). Choose one with temporal_role_overrides "
             f"{{'{measure_id}': <clock>}}, or query a clock the measure has.",
             details={"measure": measure_id, "requested": query_role, "compatible": compatible},
         )

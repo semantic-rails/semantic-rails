@@ -19,6 +19,7 @@ from types import EllipsisType
 from typing import Any
 
 from .errors import SemanticLayerError
+from .policy_rules import visible_object_ids
 from .schema import PackageConfig, RelationshipConfig
 
 
@@ -1136,9 +1137,6 @@ def _visible_candidate_ids(
     ids: Iterable[str],
     hidden_ids: frozenset[str] | None | EllipsisType,
 ) -> list[str]:
-    # The planner imports compiler code that also imports diagnostics.
-    from .planner.visibility import visible_object_ids
-
     return visible_object_ids(config, ids, hidden_ids=hidden_ids)
 
 
@@ -1150,13 +1148,36 @@ def enrich_diagnostic_candidates(
 ) -> SemanticLayerError:
     """Filter compiler-supplied catalog alternatives before hints become text."""
     details = dict(exc.details or {})
+    if exc.code == "AMBIGUOUS_ALIAS":
+        rows = details.get("candidates", [])
+        candidate_ids = [row["id"] if isinstance(row, dict) else row for row in rows]
+        visible = set(_visible_candidate_ids(config, candidate_ids, hidden_ids))
+        candidates = [
+            row
+            for row, candidate_id in zip(rows, candidate_ids, strict=True)
+            if candidate_id in visible
+        ]
+        if len(candidates) < 2:
+            if "field" not in details:
+                term = details.get("term", "")
+                return SemanticLayerError(
+                    "OBJECT_NOT_FOUND",
+                    f"No object matched '{term}'",
+                    details={"term": term, "kind": details.get("kind", "")},
+                )
+            return SemanticLayerError(
+                "OBJECT_NOT_FOUND", f"Unknown filter field '{details['field']}'"
+            )
+        details["candidates"] = candidates
     for key in (
         "compatible_dimensions",
         "compatible_group_by_dimensions",
         "compatible_measures",
+        "candidate_measures",
         "compatible",
         "available_temporal_roles",
         "allowed_temporal_roles",
+        "alternative_temporal_roles",
         "reachable_targets",
     ):
         if key in details:

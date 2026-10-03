@@ -13,6 +13,7 @@ from .. import policies
 from ..compiler import bind_query
 from ..errors import SemanticLayerError
 from ..expressions import collect_object_references
+from ..policy_rules import visible_object_ids as _visible_object_ids
 
 
 @dataclass(frozen=True)
@@ -75,11 +76,7 @@ def visible_object_ids(
             if current is not None and current.config is config
             else policies.diagnostic_hidden_object_ids(config, {})
         )
-    return [
-        object_id
-        for object_id in object_ids
-        if hidden_ids is not None and object_id not in hidden_ids
-    ]
+    return _visible_object_ids(config, object_ids, hidden_ids=hidden_ids)
 
 
 def visible_dimensions(config: Any) -> list[Any]:

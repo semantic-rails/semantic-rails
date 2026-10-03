@@ -1058,7 +1058,11 @@ def _metric_reference_errors(config, source_path: Path) -> list[str]:
                 and child.strip()
                 and child not in known[key]
             ):
-                hints = [row for row in object_id_suggestions(config, child) if row in known[key]]
+                hints = [
+                    row
+                    for row in object_id_suggestions(config, child, hidden_ids=frozenset())
+                    if row in known[key]
+                ]
                 message = f"{source_path}: metric {metric_id} references unknown {key} {child!r}"
                 errors[message + (f"; did you mean {hints[0]!r}?" if hints else "")] = None
             else:
