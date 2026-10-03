@@ -1141,7 +1141,13 @@ def _object_catalog_ids(config: PackageConfig) -> list[str]:
     return list(dict.fromkeys(ids))
 
 
-def object_id_suggestions(config: PackageConfig, missing_id: str, *, limit: int = 3) -> list[str]:
+def object_id_suggestions(
+    config: PackageConfig,
+    missing_id: str,
+    *,
+    limit: int = 3,
+    hidden_ids: frozenset[str] | None = None,
+) -> list[str]:
     """Suggest near-matching object ids for a missing reference.
 
     The reviewer's "three irrelevant suggestions are worse than zero"
@@ -1163,6 +1169,8 @@ def object_id_suggestions(config: PackageConfig, missing_id: str, *, limit: int 
     if not missing:
         return []
     candidates = _object_catalog_ids(config)
+    if hidden_ids is not None:
+        candidates = [item for item in candidates if item not in hidden_ids]
     if not candidates:
         return []
     lowered = {item.lower(): item for item in candidates}
@@ -1188,7 +1196,8 @@ def object_id_suggestions(config: PackageConfig, missing_id: str, *, limit: int 
     matches: list[str] = []
     # An exact metric/measure counterpart is more useful than a same-kind typo.
     # Keep fuzzy cross-kind suggestions suppressed for unrelated missing ids.
-    if len(parts) == 3 and parts[0] in {"metric", "measure"}:
+    visibility_known = hidden_ids is not None or not config.semantic_policies
+    if visibility_known and len(parts) == 3 and parts[0] in {"metric", "measure"}:
         other_kind = "measure" if parts[0] == "metric" else "metric"
         counterpart = lowered.get(f"{other_kind}.{parts[1]}.{parts[2]}".lower())
         if counterpart:
@@ -1373,7 +1382,12 @@ def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> Sem
     return SemanticLayerError(exc.code, str(exc), details=details)
 
 
-def enrich_object_not_found(exc: SemanticLayerError, config: PackageConfig) -> SemanticLayerError:
+def enrich_object_not_found(
+    exc: SemanticLayerError,
+    config: PackageConfig,
+    *,
+    hidden_ids: frozenset[str] | None = None,
+) -> SemanticLayerError:
     # OBJECT_NOT_FOUND is the canonical "unknown ID" code, but
     # INVALID_TEMPORAL_ROLE is raised with the same shape when an unknown
     # temporal_role id slips through (compiler.py paths). Treat it the
@@ -1382,6 +1396,11 @@ def enrich_object_not_found(exc: SemanticLayerError, config: PackageConfig) -> S
     if exc.code not in {"OBJECT_NOT_FOUND", "INVALID_TEMPORAL_ROLE"}:
         return exc
     details = dict(exc.details or {})
+    if details.get("closest_matches") and hidden_ids is not None:
+        details["closest_matches"] = [
+            item for item in details["closest_matches"] if item not in hidden_ids
+        ]
+        exc = SemanticLayerError(exc.code, str(exc), details=details)
     if details.get("closest_matches"):
         return exc
     missing = (
@@ -1397,7 +1416,7 @@ def enrich_object_not_found(exc: SemanticLayerError, config: PackageConfig) -> S
     if not missing:
         match = re.search(r"'([^']+)'", str(exc))
         missing = match.group(1) if match else ""
-    suggestions = object_id_suggestions(config, str(missing))
+    suggestions = object_id_suggestions(config, str(missing), hidden_ids=hidden_ids)
     if not suggestions:
         # Even with no fuzzy matches, persist the parsed object_id into
         # details so downstream recovery-hint logic (the

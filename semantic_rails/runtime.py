@@ -44,7 +44,7 @@ from .cache import (
 )
 from .catalog_search import CatalogSearchIndex
 from .caveats import caveat_warnings
-from .compiler import BoundQuery, bind_query, compile_query, read_routes
+from .compiler import BoundQuery, NonAdditiveRefusal, bind_query, compile_query, read_routes
 from .compiler_parts.paths import _leaf_time_role
 from .config import (
     SEED_KIND_EXTERNAL,
@@ -91,7 +91,12 @@ from .fanout import (
 )
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
-from .policies import enforce_query_policies, query_policy_effects, row_filters_for_context
+from .policies import (
+    diagnostic_hidden_object_ids,
+    enforce_query_policies,
+    query_policy_effects,
+    row_filters_for_context,
+)
 from .registry import Registry
 from .relation_pipelines import relation_source_tables
 from .request_context import (
@@ -195,14 +200,59 @@ __all__ = [
 ]
 
 
-def _enrich_runtime_error(exc: SemanticLayerError, config: Any) -> SemanticLayerError:
+def _non_additive_refusal_for_visibility(
+    refusal: NonAdditiveRefusal, config: Any, hidden_ids: frozenset[str] | None
+) -> NonAdditiveRefusal:
+    """Name a key only when every key dimension is discoverable by this caller.
+
+    Internal planning without request context keeps the generic refusal. A
+    failed visibility check must also keep that refusal byte for byte.
+    """
+    if hidden_ids is None or not refusal.dimensions:
+        return refusal
+    try:
+        measure = next(row for row in config.measures if row.id == refusal.details["measure_id"])
+        entity = next(row for row in config.entities if row.id == measure.entity)
+        key = list(measure.row_grain or entity.key or [])
+        key_dimensions = [
+            dimension
+            for dimension in config.dimensions
+            if dimension.entity == measure.entity and dimension.column in key
+        ]
+        if not set(refusal.columns) <= {dimension.column for dimension in key_dimensions}:
+            return refusal
+        if any(dimension.id in hidden_ids for dimension in key_dimensions):
+            return refusal
+    except Exception:  # noqa: BLE001 — diagnostics must fail closed on uncertain visibility
+        return refusal
+    names = ", ".join(refusal.dimensions)
+    details = dict(refusal.details)
+    details["key_dimensions"] = list(refusal.dimensions)
+    details["recovery_hints"] = [
+        {**hint, "message": hint["message"].replace("key", f"key ({names})", 1)}
+        for hint in details["recovery_hints"]
+    ]
+    return NonAdditiveRefusal(
+        str(refusal).replace("key,", f"key ({names}),", 1),
+        details=details,
+        columns=refusal.columns,
+        dimensions=refusal.dimensions,
+    )
+
+
+def _enrich_runtime_error(
+    exc: SemanticLayerError, config: Any, policy_context: Mapping[str, Any] | None = None
+) -> SemanticLayerError:
     """Run every applicable diagnostics enricher over a runtime error.
 
     Each enricher is a no-op when its code doesn't match, so we can
     chain them safely. Keeping this in one place means new enrichers
     only need to be added here, not at every catch site.
     """
-    exc = enrich_object_not_found(exc, config)
+    hidden_ids = diagnostic_hidden_object_ids(config, policy_context)
+    if isinstance(exc, NonAdditiveRefusal):
+        exc = _non_additive_refusal_for_visibility(exc, config, hidden_ids)
+    exc = enrich_object_not_found(exc, config, hidden_ids=hidden_ids)
     exc = enrich_expression_ast_error(exc, config)
     exc = enrich_path_not_found(exc, config)
     return exc
@@ -2174,7 +2224,7 @@ class Runtime:
                 out, verbosity=verbosity, sql_profile=sql_profile, kind="validate"
             )
         except SemanticLayerError as exc:
-            exc = _enrich_runtime_error(exc, self._config)
+            exc = _enrich_runtime_error(exc, self._config, policy_context)
             issue = exception_issue(exc, stage="validate")
             report = ValidationReport(
                 version=2,
@@ -2231,7 +2281,7 @@ class Runtime:
             )
             compiled = self._compile(payload, policy_context=policy_context, binding=binding)
         except SemanticLayerError as exc:
-            raise _enrich_runtime_error(exc, self._config) from exc
+            raise _enrich_runtime_error(exc, self._config, policy_context) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)
         out = {
             "ok": True,
@@ -2284,7 +2334,7 @@ class Runtime:
             )
             compiled = self._compile(payload, policy_context=policy_context, binding=binding)
         except SemanticLayerError as exc:
-            raise _enrich_runtime_error(exc, self._config) from exc
+            raise _enrich_runtime_error(exc, self._config, policy_context) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)
         # Per-request resource limits (statement_timeout_ms, max_rows) flow
         # from the request envelope through to the warehouse adapter. Hosted
@@ -2592,7 +2642,7 @@ class Runtime:
             validation["timing_ms"] = round((time.perf_counter() - started) * 1000, 3)
             return validation
         except SemanticLayerError as exc:
-            exc = _enrich_runtime_error(exc, self._config)
+            exc = _enrich_runtime_error(exc, self._config, context)
             # Route through `exception_issue` so the soft-fail envelope
             # carries the same `recovery_hints` + `closest_matches` +
             # `severity/stage/object_ids/...` fields that the MCP error

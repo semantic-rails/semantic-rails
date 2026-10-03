@@ -70,6 +70,26 @@ def hidden_object_ids(
     }
 
 
+def diagnostic_hidden_object_ids(
+    config: PackageConfig, policy_context: Mapping[str, Any] | None
+) -> frozenset[str] | None:
+    """Use discovery's visibility check; uncertainty cannot authorize disclosure."""
+    if policy_context is None:
+        return None
+    try:
+        context = context_from_policy_context(policy_context)
+        return frozenset(
+            hidden_object_ids(
+                config,
+                environment=context.environment,
+                audience=context.audience,
+                roles=context.roles,
+            )
+        )
+    except Exception:  # noqa: BLE001 — diagnostics must fail closed on uncertain visibility
+        return None
+
+
 def query_policy_effects(
     config: PackageConfig,
     object_ids: Iterable[str],

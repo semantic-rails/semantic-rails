@@ -463,14 +463,13 @@ def test_uncertain_key_visibility_preserves_the_generic_refusal(
     runtime: Runtime, monkeypatch
 ) -> None:
     from semantic_rails import policies
-    from semantic_rails.compiler import compile_query
 
     def unavailable(*args, **kwargs):
         raise RuntimeError("Visibility unavailable")
 
     monkeypatch.setattr(policies, "hidden_object_ids", unavailable)
     with pytest.raises(NonAdditiveRefusal) as raised:
-        compile_query(runtime.config, None, _query("daily_visitors"))
+        runtime.compile(_query("daily_visitors"))
     assert "key_dimensions" not in raised.value.details
     assert REPO_DAY not in str(raised.value)
     assert REPO_DAY not in json.dumps(raised.value.details)
@@ -486,7 +485,6 @@ def test_uncertain_key_visibility_preserves_the_generic_refusal(
     ],
 )
 def test_key_names_follow_discovery_policy_context(runtime: Runtime, context, visible) -> None:
-    from semantic_rails.compiler import compile_query
     from semantic_rails.schema import SemanticPolicyConfig
 
     policy = SemanticPolicyConfig(
@@ -499,20 +497,34 @@ def test_key_names_follow_discovery_policy_context(runtime: Runtime, context, vi
         action="hidden",
     )
     config = replace(runtime.config, semantic_policies=[policy])
-    with pytest.raises(NonAdditiveRefusal) as raised:
-        compile_query(config, None, {**_query("daily_visitors"), "policy_context": context})
-    assert (REPO_DAY in str(raised.value)) is visible
+    engine = Runtime.from_config(config, source_path=runtime.source_path)
+    try:
+        with pytest.raises(NonAdditiveRefusal) as raised:
+            engine.compile({**_query("daily_visitors"), "policy_context": context})
+        assert (REPO_DAY in str(raised.value)) is visible
+    finally:
+        engine.close()
 
 
-def test_internal_planning_without_visibility_context_keeps_keys_private(runtime: Runtime) -> None:
+@pytest.mark.parametrize("entry_point", ["internal", "plan", "compile"])
+def test_internal_planning_without_visibility_context_keeps_keys_private(
+    runtime: Runtime, entry_point: str
+) -> None:
     from semantic_rails.ast import normalize_query
-    from semantic_rails.compiler import _plan_query
+    from semantic_rails.compiler import _plan_query, compile_query, plan_query
 
     # Forcing the internal planning path cannot opt into naming a key: it has
     # no request context with which to authorize that disclosure.
     with pytest.raises(NonAdditiveRefusal) as raised:
-        _plan_query(
-            runtime.config, None, normalize_query(_query("daily_visitors")), collapse_window=True
-        )
+        if entry_point == "internal":
+            _plan_query(
+                runtime.config,
+                None,
+                normalize_query(_query("daily_visitors")),
+                collapse_window=True,
+            )
+        else:
+            operation = plan_query if entry_point == "plan" else compile_query
+            operation(runtime.config, None, _query("daily_visitors"))
     assert "key_dimensions" not in raised.value.details
     assert REPO_DAY not in str(raised.value)

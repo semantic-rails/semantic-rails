@@ -42,10 +42,10 @@ def test_compatible_replacements_rank_naming_tokens_before_character_similarity(
     package_config_factory, naming_field
 ):
     config, package = package_config_factory("jaffle_shop")
-    anchor_id = "shipping_fee" if naming_field == "id" else "charge"
-    similar_id = "shipping_fees" if naming_field == "id" else "charges"
-    meaningful_id = "order_line_shipping_fee" if naming_field == "id" else "item_amount"
-    naming = {} if naming_field == "id" else {naming_field: "Shipping Fee"}
+    anchor_id = "delivery_charge" if naming_field == "id" else "charge"
+    similar_id = "delivery_charges" if naming_field == "id" else "charges"
+    meaningful_id = "line_delivery_charge" if naming_field == "id" else "line_total"
+    naming = {} if naming_field == "id" else {naming_field: "Delivery Charge"}
     base = replace(
         config.measures[0],
         id=f"measure.synthetic.{anchor_id}",

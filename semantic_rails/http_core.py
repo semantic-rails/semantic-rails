@@ -56,6 +56,7 @@ from .metadata import (
 )
 from .metadata_parts.capabilities import _EXPRESSION_SHAPES, capabilities_payload
 from .planner import plan_payload
+from .policies import diagnostic_hidden_object_ids
 from .request_context import (
     RequestContext,
     get_policy_context_resolver,
@@ -209,11 +210,20 @@ class SemanticHTTPService:
         invalid_issue = issue("INVALID_REQUEST", message)
         return {"ok": False, "error": invalid_issue, "errors": [invalid_issue]}
 
-    def exception_payload(self, exc: Exception, *, stage: str) -> tuple[dict[str, Any], int]:
+    def exception_payload(
+        self, exc: Exception, *, stage: str, context: RequestContext | None = None
+    ) -> tuple[dict[str, Any], int]:
         if isinstance(exc, HTTPInputError):
             return self.invalid_request_payload(str(exc)), 400
         if isinstance(exc, SemanticLayerError):
-            enriched = enrich_object_not_found(exc, self.runtime._config)
+            enriched = enrich_object_not_found(
+                exc,
+                self.runtime._config,
+                hidden_ids=diagnostic_hidden_object_ids(
+                    self.runtime._config,
+                    context.to_policy_context() if context is not None else None,
+                ),
+            )
             enriched = enrich_expression_ast_error(enriched, self.runtime._config)
             enriched = enrich_path_not_found(enriched, self.runtime._config)
             error_issue = exception_issue(enriched, stage=stage)

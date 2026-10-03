@@ -666,6 +666,7 @@ def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "w
             exc.code,
             f"Unsupported filter operator: {op!r}",
             details={
+                **exc.details,
                 "path": path,
                 "expression_position": "where",
                 "op": str(op),
