@@ -2275,14 +2275,15 @@ def unconsumed_catalog_words(runtime: Any, question: str, query: dict[str, Any])
         if node.get("aggregation") in ("count", "count_distinct"):
             # A count reads the "number of" that asks for it, as "how many" asks for it.
             spans.extend(match.span() for match in re.finditer(r"\bnumber\s+of\b", lowered))
-    named = {_singular(word) for word in names}
+    named = names | {_singular(word) for word in names}
     consumed = {_singular(word) for word in used}
     skipped = _INTENT_STOPWORDS | set(_NUMBER_WORDS)
     out: list[str] = []
     for match in _TERM_RE.finditer(lowered):
         word, (start, end), key = match.group(0), match.span(), _singular(match.group(0))
         if (
-            key not in named
+            # A name in any form ("statuses" for Status), consumed only as a plain plural.
+            not {word, key, word.removesuffix("es")} & named
             or key in consumed
             or word in skipped
             # A number is unconsumed_terms' to check, by where the draft reads it.

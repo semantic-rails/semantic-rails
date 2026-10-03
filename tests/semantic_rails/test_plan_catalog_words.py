@@ -266,6 +266,8 @@ def test_a_count_reads_only_its_number_of(
         # a time grain the draft carries reads it, and these drafts carry none.
         ("revenue by store, date", ["date"]),
         ("orders by store, time", ["time"]),
+        # A plural the planner doesn't fold still names Membership status.
+        ("revenue by store, statuses", ["statuses"]),
     ],
 )
 def test_a_word_naming_an_object_the_draft_does_not_use_is_not_ready(
