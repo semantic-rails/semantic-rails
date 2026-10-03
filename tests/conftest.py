@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -33,6 +34,12 @@ def duckdb_test_limits(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Non
         encoding="utf-8",
     )
     with pytest.MonkeyPatch.context() as patch:
+        mktemp = tmp_path_factory.mktemp  # Deleted paths may still have live readers/caches.
+
+        def unique_mktemp(basename, numbered=True):
+            return mktemp(f"{basename}-{uuid.uuid4().hex}", numbered=numbered)
+
+        patch.setattr(tmp_path_factory, "mktemp", unique_mktemp)
         patch.setattr(duckdb, "connect", limited_connect(root))
         patch.setenv(
             "PYTHONPATH", os.pathsep.join(filter(None, [str(startup), os.getenv("PYTHONPATH")]))

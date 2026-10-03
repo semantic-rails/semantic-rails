@@ -98,4 +98,8 @@ def test_non_conversion_intent_is_unaffected_by_the_guard(runtime_factory):
 def test_currency_conversion_phrasing_does_not_trip_the_guard(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     payload = _plan(runtime, "revenue converted to euros by month")
-    assert payload["status"] == "ok"
+    # Not a funnel, so the conversion guard stays quiet. The draft is revenue in USD, though,
+    # and "converted" names catalog objects (Converted Order Id) it doesn't use: not ready.
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+    assert payload["why"]["details"]["terms"] == ["converted"]
