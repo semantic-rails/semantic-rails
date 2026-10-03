@@ -179,6 +179,10 @@ def _direct_entity_key_source_expr(
     if len(routes) != 1:
         return None
     rel, source_col = routes[0]
+    # A source key cannot establish which history version exists at the query time.
+    # Keep the declared temporal lookup, including its validity rewrite and NULL matches.
+    if rel.temporal_validity:
+        return None
     # The shortcut only stands when the route resolver picks exactly the one direct
     # relationship found: a row or another route to the target may mean a different row than
     # the source table's own column, and an ambiguous pair falls through to path selection,

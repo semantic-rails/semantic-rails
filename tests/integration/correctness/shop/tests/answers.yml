@@ -1,7 +1,34 @@
 fixture:
-  tables: [orders, refunds, signups, dim_fiscal]
-  data_sha256: 85d96a425ef95ba17325f6755fdd0213a9351ca97791e1a0385ade50f2cff1a4
+  tables: [orders, refunds, signups, dim_fiscal, customer_history]
+  data_sha256: 7239197c610505a820d1181968800157664fe222bce85e1c1f51dcd7d406d7d8
 tests:
+  shop/history-key-groups-use-the-version-valid-at-order-time:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A source customer key does not establish a history version. Missing versions group under NULL, and validity ends are exclusive.
+    cites: [tests/integration/correctness/shop/graph.yml#graph.relationships.order_customer_history, tests/integration/correctness/shop/models/orders.yml#model.measures.revenue, tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at, docs/ARCHITECTURE.md#compiler-pipeline]
+    tags: [time-window, null-vs-zero]
+    query:
+      select: [{expression: {measure: measure.shop.revenue}, as: revenue}]
+      group_by: [dimension.shop_customer_history_customer_id]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month}
+    expected_rows:
+      - {dimension.shop_customer_history_customer_id: null, temporal_role.shop_order_ordered_at__month: '2023-11-01T00:00:00', revenue: 10}
+      - {dimension.shop_customer_history_customer_id: 102, temporal_role.shop_order_ordered_at__month: '2023-11-01T00:00:00', revenue: 5}
+      - {dimension.shop_customer_history_customer_id: 101, temporal_role.shop_order_ordered_at__month: '2023-12-01T00:00:00', revenue: 7}
+      - {dimension.shop_customer_history_customer_id: null, temporal_role.shop_order_ordered_at__month: '2024-01-01T00:00:00', revenue: 20}
+      - {dimension.shop_customer_history_customer_id: null, temporal_role.shop_order_ordered_at__month: '2024-03-01T00:00:00', revenue: 8}
+      - {dimension.shop_customer_history_customer_id: 102, temporal_role.shop_order_ordered_at__month: '2024-03-01T00:00:00', revenue: 4}
+      - {dimension.shop_customer_history_customer_id: null, temporal_role.shop_order_ordered_at__month: '2024-05-01T00:00:00', revenue: 6}
+      - {dimension.shop_customer_history_customer_id: null, temporal_role.shop_order_ordered_at__month: '2024-06-01T00:00:00', revenue: 3}
+      - {dimension.shop_customer_history_customer_id: null, temporal_role.shop_order_ordered_at__month: '2024-07-01T00:00:00', revenue: 9}
+      - {dimension.shop_customer_history_customer_id: null, temporal_role.shop_order_ordered_at__month: '2024-08-01T00:00:00', revenue: 2}
+    reference_sql: |
+      SELECT h.customer_id, date_trunc('month', o.ordered_at), SUM(o.amount)
+      FROM orders o LEFT JOIN customer_history h
+        ON o.customer_id = h.customer_id AND o.ordered_at >= h.valid_from
+        AND (o.ordered_at < h.valid_to OR h.valid_to IS NULL)
+      GROUP BY 1, 2
   shop/two-stores-at-once-is-empty:
     kind: query_matches_snapshot
     expect: answer

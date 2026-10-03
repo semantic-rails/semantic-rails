@@ -410,6 +410,11 @@ Important planner behaviors:
   leaves; routed leaves expose `aggregate_relation_id` and physical/performance
   plan metadata
 - historical joins use temporal-validity conditions anchored to the effective time axis
+- a key dimension reached through a relationship declaring `temporal_validity` uses that
+  join and validity rewrite, even when the source has a matching foreign-key column.
+  Missing history versions group under NULL; without a query time, incoming history
+  lookups refuse with `FANOUT_UNSAFE`. Ordinary non-temporal co-located keys keep their
+  source-column shortcut
 - a many-to-one or one-to-one hop never removes a measure's row: it is a left join in every
   leaf, whatever reads the looked-up dimension, so a row with a NULL or unmatched foreign key
   keeps its measure value under NULL. Only these reads keep an inner join: a time role
