@@ -228,12 +228,113 @@ def test_a_time_grain_reads_its_unit_once(jaffle: Runtime) -> None:
     assert unconsumed_catalog_words(jaffle, intent, monthly) == []
 
 
+@pytest.mark.parametrize("name", ["period", "show", "date"])
+def test_a_cadence_or_request_word_never_consumes_a_dropped_catalog_name(
+    jaffle: Runtime, name: str
+) -> None:
+    # The same framing remains valid when it names no extra catalog object.
+    assert plan_payload(jaffle, intent="show monthly revenue by store")["status"] == "ok"
+    with _with_store_dimensions(jaffle, (name, name.title(), "store_id")) as runtime:
+        assert plan_payload(runtime, intent="monthly revenue by store")["status"] == "ok"
+        payload = plan_payload(runtime, intent=f"monthly revenue by store, {name}")
+        _not_ready(payload, [name])
+        assert payload["best"]["query_ir"]["group_by"] == [STORE]
+
+
+def test_a_prior_period_shift_never_consumes_a_grouping(jaffle: Runtime) -> None:
+    query = {
+        "version": 2,
+        "select": [
+            {
+                "as": "prior_revenue",
+                "expression": {
+                    "kind": "prior_period",
+                    "input": {"measure": "measure.jaffle.revenue_usd"},
+                    "grain": "year",
+                    "offset": 1,
+                },
+            }
+        ],
+        "group_by": [STORE],
+        "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "month"},
+    }
+    assert unconsumed_catalog_words(jaffle, "monthly revenue vs prior year by store", query) == []
+    assert unconsumed_catalog_words(
+        jaffle, "monthly revenue by store, year vs prior year", query
+    ) == ["year"]
+
+
+@pytest.mark.parametrize(
+    ("name", "label", "plural"),
+    [("tax", "Tax", "taxes"), ("box", "Box", "boxes"), ("status", "Membership status", "statuses")],
+)
+def test_a_plural_is_consumed_by_the_same_forms_that_recognize_it(
+    jaffle: Runtime, name: str, label: str, plural: str
+) -> None:
+    with _with_store_dimensions(jaffle, (name, label, "store_id")) as runtime:
+        selected = plan_payload(
+            runtime,
+            intent=f"revenue by {plural}",
+            partial_query={"group_by": [f"dimension.{name}"]},
+        )
+        assert selected["status"] == "ok", selected.get("why")
+        assert "execute" in selected["next"]["ready_for"]
+        assert selected["best"]["query_ir"]["group_by"] == [f"dimension.{name}"]
+        _not_ready(plan_payload(runtime, intent=f"revenue by store, {plural}"), [plural])
+
+
+def test_es_does_not_invent_short_or_unrelated_catalog_names(jaffle: Runtime) -> None:
+    with _with_store_dimensions(
+        jaffle, ("us", "US", "store_id"), ("on", "On", "store_id")
+    ) as runtime:
+        payload = plan_payload(runtime, intent="revenue by store uses ones")
+        assert payload["status"] == "ok", payload.get("why")
+        assert (
+            unconsumed_catalog_words(runtime, payload["intent"], payload["best"]["query_ir"]) == []
+        )
+
+
+@pytest.mark.parametrize(
+    "count_metadata",
+    [
+        {"default_aggregation": "count"},
+        {"default_aggregation": "count_distinct"},
+        {"value_type": "count"},
+        {"label": "Visitor count"},
+    ],
+)
+def test_a_selected_count_valued_measure_reads_number_of_without_an_override(
+    jaffle: Runtime, count_metadata: dict[str, str]
+) -> None:
+    config = jaffle.config
+    original = next(row for row in config.measures if row.id == "measure.jaffle.revenue_usd")
+    visitor = replace(
+        original,
+        id="measure.jaffle.visitors",
+        name="visitors",
+        label=count_metadata.get("label", "Visitors"),
+        aliases=[],
+        **{key: value for key, value in count_metadata.items() if key != "label"},
+    )
+    runtime = Runtime.from_config(
+        replace(config, measures=[*config.measures, visitor]), source_path=jaffle.source_path
+    )
+    query = {"version": 2, "select": [{"expression": {"measure": visitor.id}}]}
+    try:
+        assert unconsumed_catalog_words(runtime, "number of visitors", query) == []
+        # Naming the count elsewhere in the catalog doesn't let a non-count sum consume it.
+        revenue = {"version": 2, "select": [{"expression": {"measure": original.id}}]}
+        assert unconsumed_catalog_words(runtime, "number of revenue", revenue) == ["number"]
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize(
     ("intent", "aggregation", "terms"),
     [
         ("number of orders by customer name", "count_distinct", []),
         # Only a count reads "number of"; "number" also names Customer order number.
-        ("number of orders by customer name", "sum", ["number"]),
+        ("number of revenue by customer name", "sum", ["number"]),
         # And a count reads only "number of", never the name's own "number".
         ("orders by customer order number", "count_distinct", ["number"]),
     ],
@@ -241,7 +342,12 @@ def test_a_time_grain_reads_its_unit_once(jaffle: Runtime) -> None:
 def test_a_count_reads_only_its_number_of(
     jaffle: Runtime, intent: str, aggregation: str, terms: list[str]
 ) -> None:
-    orders = {"measure": "measure.jaffle.order_count", "aggregation": aggregation}
+    orders = {
+        "measure": "measure.jaffle.revenue_usd"
+        if aggregation == "sum"
+        else "measure.jaffle.order_count",
+        "aggregation": aggregation,
+    }
     by_name = {
         "version": 2,
         "select": [{"as": "orders", "expression": orders}],

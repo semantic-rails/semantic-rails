@@ -36,9 +36,12 @@ from ._base import (
     _TO_DATE_OR_ROLLING_RE,
     _canonical_measure,
     _canonical_metric,
+    _explicit_grain,
     _fiscal_calendar,
     _named_metric,
+    _names_time_axis,
     _object_text,
+    _requested_grouping_spans,
     _tied_top,
     _time_bounds_from_text,
     _time_window,
@@ -2038,8 +2041,6 @@ _ORDINAL_RE = re.compile(r"\d+(?:st|nd|rd|th)")
 # question words read to find them.
 _MAX_UNMATCHED_TERMS = 8
 _MAX_SCANNED_WORDS = 256
-# Words any time grain of a draft reads besides its own unit: "by date", "over time".
-_TIME_WORDS = frozenset({"time", "date", "period"})
 
 
 # Words that state a clock time or a zone. Like a numeral, one no part of the draft consumes
@@ -2234,10 +2235,11 @@ def unconsumed_catalog_words(runtime: Any, question: str, query: dict[str, Any])
     ``unconsumed_terms`` for numbers.
 
     Only the draft consumes one: by the own words of an object it selects, a value it filters on,
-    a time grain or count it carries, or a time phrase or clause it honors; only function words
-    are exempt. A synonym, a typo, a namespace, a description, a framing word or an object it
-    doesn't select never does, so one catalog name can't stand in for another. One left over is a
-    dropped grouping or a swapped subject. Every word is read.
+    a time grain or count it carries, or a time phrase or clause it honors; function words
+    are exempt only when they aren't exact catalog names. A synonym, a typo, a namespace,
+    a description, a framing word or an object it doesn't select never does, so one catalog
+    name can't stand in for another. One left over is a dropped grouping or a swapped subject.
+    Every word is read.
     """
 
     from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
@@ -2246,12 +2248,45 @@ def unconsumed_catalog_words(runtime: Any, question: str, query: dict[str, Any])
     lowered = text.lower()
     spans = [*_time_window(text).spans, *_honored_clause_spans(runtime, text, query)]
     referenced = set(_referenced_ids(query))
+    count_valued = any(
+        row.id in referenced
+        and (
+            row.default_aggregation in ("count", "count_distinct")
+            or row.value_type == "count"
+            or "count" in _own_words(row)
+        )
+        for row in runtime._config.measures
+    )
     calendar_id = str(_time_block(query).get("calendar_id") or "default")
+    time = _time_block(query)
+    clock = next(
+        (
+            row.label
+            for row in runtime._config.temporal_roles
+            if row.id == time.get("temporal_role")
+        ),
+        "",
+    )
+    if clock and time.get("grain") == _explicit_grain(text, clock):
+        spans.extend(
+            (start, end)
+            for start, end in _requested_grouping_spans(text)
+            if _names_time_axis(lowered[start:end], clock)
+        )
     names: set[str] = set()
+    exact_names: set[str] = set()
     used: set[str] = set()
     for row in _catalog_rows(runtime._config):
         own = _own_words(row)
         names |= own
+        # "Show" names an object; "of" inside "Share of revenue" doesn't name one.
+        exact_names.update(
+            _plain(str(getattr(row, attr, "") or "").rpartition(".")[2]) for attr in ("id", "name")
+        )
+        exact_names.update(
+            _plain(str(name))
+            for name in [getattr(row, "label", "") or "", *(getattr(row, "aliases", None) or [])]
+        )
         if str(getattr(row, "id", "")) in referenced or (
             calendar_id != "default" and getattr(row, "calendar_id", "") == calendar_id
         ):
@@ -2272,28 +2307,39 @@ def unconsumed_catalog_words(runtime: Any, question: str, query: dict[str, Any])
                     if str(node["field"]) in domain.dimensions:
                         used.update(_plain(" ".join(_value_names(row))).split())
         for grain in (node.get("grain"), node.get("time_grain")):
-            # Each grain the draft carries reads its own unit once ("by month", "monthly"), and
-            # a prior period the phrase the planner reads it from ("year over year").
-            if grain in _TIME_UNITS:
-                reads.update({grain, "daily" if grain == "day" else f"{grain}ly", *_TIME_WORDS})
-            if grain in _TIME_UNITS and node.get("kind") == "prior_period":
+            if grain not in _TIME_UNITS:
+                continue
+            # A prior period's grain shifts the clock; it never reads a grouping outside
+            # its trigger span. A grouping grain reads only its own unit, once.
+            if node.get("kind") == "prior_period":
                 for pattern, unit in _PERIOD_SHIFT_TRIGGERS:
                     found = re.finditer(pattern, lowered) if unit == grain else ()
                     spans.extend(match.span() for match in found)
+            else:
+                reads.update({grain, "daily" if grain == "day" else f"{grain}ly"})
         if node.get("aggregation") in ("count", "count_distinct"):
-            # A count reads the "number of" that asks for it, as "how many" asks for it.
-            spans.extend(match.span() for match in re.finditer(r"\bnumber\s+of\b", lowered))
+            count_valued = True
+    if count_valued:
+        # Entity counts normalize to count_distinct; snapshot counts can use last_value.
+        # Either reads "number of", as an explicit counting aggregation does.
+        spans.extend(match.span() for match in re.finditer(r"\bnumber\s+of\b", lowered))
     named = names | {_singular(word) for word in names}
-    consumed = {_singular(word) for word in used}
+    consumed = used | {_singular(word) for word in used}
     skipped = _INTENT_STOPWORDS | set(_NUMBER_WORDS)
     out: list[str] = []
     for match in _TERM_RE.finditer(lowered):
         word, (start, end), key = match.group(0), match.span(), _singular(match.group(0))
+        forms = {word, key}
+        # Plain -s and -ies use _singular. Only s/x/z/ch/sh take -es, with no invented
+        # two-letter stem ("uses" isn't the catalog name "us"; "ones" isn't "on").
+        stem = word.removesuffix("es")
+        if word.endswith("es") and len(stem) > 2 and stem.endswith(("s", "x", "z", "ch", "sh")):
+            forms.add(stem)
         if (
             # A name in any form ("statuses" for Status), consumed only as a plain plural.
-            not {word, key, word.removesuffix("es")} & named
-            or key in consumed
-            or word in skipped
+            not forms & named
+            or forms & consumed
+            or (word in skipped and word not in exact_names)
             # A number is unconsumed_terms' to check, by where the draft reads it.
             or any(char.isdigit() for char in word)
             or any(low < end and start < high for low, high in spans)

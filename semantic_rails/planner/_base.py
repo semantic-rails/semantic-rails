@@ -1353,22 +1353,42 @@ def _strip_leading_rank_count(raw: str) -> str:
 
 def _requested_grouping_terms(text: str) -> list[str]:
     lowered = str(text or "").lower()
+    return [lowered[start:end] for start, end in _requested_grouping_spans(text)]
+
+
+def _requested_grouping_spans(text: str) -> list[tuple[int, int]]:
+    """Record exactly where the existing grouping parser reads each term."""
+
+    lowered = str(text or "").lower()
     top_by_match = re.search(
         r"^\s*top\s+([a-z0-9 _-]+?)\s+by\s+([a-z0-9 _-]+?)(?:[.?!,;]|$)",
         lowered,
     )
+    match: re.Match[str] | None
     if top_by_match:
-        raw_terms = _strip_leading_rank_count(top_by_match.group(1).strip())
+        match = top_by_match
+        raw_terms = _strip_leading_rank_count(match.group(1).strip())
     else:
-        by_match = re.search(
+        match = re.search(
             r"\bby ([a-z0-9 _-]+?)(?:\s+(?:where|for|from|in|with|during|over|having|who|that)\b|[.?!,;]|$)",
             lowered,
         )
-        raw_terms = by_match.group(1).strip() if by_match else ""
-    if not raw_terms:
+        raw_terms = match.group(1).strip() if match else ""
+    if not match or not raw_terms:
         return []
-    parts = re.split(r"\s*(?:,| and | & | by )\s*", raw_terms)
-    return [term.strip() for term in parts if term.strip()]
+    offset = match.start(1) + match.group(1).find(raw_terms)
+    spans: list[tuple[int, int]] = []
+    start = 0
+    cuts = [
+        (part.start(), part.end()) for part in re.finditer(r"\s*(?:,| and | & | by )\s*", raw_terms)
+    ]
+    for end, next_start in [*cuts, (len(raw_terms), len(raw_terms))]:
+        term = raw_terms[start:end]
+        if term.strip():
+            low = start + len(term) - len(term.lstrip())
+            spans.append((offset + low, offset + low + len(term.strip())))
+        start = next_start
+    return spans
 
 
 # Words that make a grouping term name a clock ("order date", "order month at month grain").
