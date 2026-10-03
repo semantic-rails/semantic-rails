@@ -316,7 +316,7 @@ def plan_payload(
                 unconsumed_unknown_words(runtime, intent_str, best_draft.query),
                 set(intent_ir.unresolved),
             )
-            or _dropped_grouping_why(runtime, intent_str, best_draft.query)
+            or _dropped_grouping_why(runtime, intent_str, best_draft.query, partial_query)
         )
         if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
         else None
@@ -714,7 +714,10 @@ def _entity_grouping_dimensions(config: Any, term: str) -> set[str] | None:
 
 
 def _dropped_grouping_why(
-    runtime: Any, question: str, query: dict[str, Any]
+    runtime: Any,
+    question: str,
+    query: dict[str, Any],
+    partial_query: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """A listed grouping that names an entity is satisfied only by that entity's own key
     dimension, or by the single declared dimension of that entity whose own words name it.
@@ -725,8 +728,9 @@ def _dropped_grouping_why(
     needs one. One dimension satisfies one listed grouping.
 
     A grouping whose dimensions belong to two or more entities, none of them the measure's own
-    ("name" for an order count: Customer name, Store name and more), is ambiguous: no dimension
-    satisfies it, so plan holds instead of picking one.
+    ("name" for an order count: Customer name, Store name and more), is ambiguous: plan holds
+    instead of picking one. Only the caller's ``partial_query`` group_by settles it, when the
+    draft adds no other dimension that may be it.
     """
 
     from ..metadata import _selection_context  # noqa: WPS433 - shared metadata helper
@@ -766,25 +770,28 @@ def _dropped_grouping_why(
         if (row := _object_by_id(config.dimensions, item)) is not None
     ]
     stand_ins = [_entity_grouping_dimensions(config, term) for term in terms]
-    readings = [
-        {
-            row.entity
-            for row in config.dimensions
-            if row.groupable and (_grouping_matches(term, row) if ids is None else row.id in ids)
+
+    def reads(term: str, ids: set[str] | None, row: Any) -> bool:
+        return _grouping_matches(term, row) if ids is None else row.id in ids
+
+    chosen = set((partial_query or {}).get("group_by") or [])
+
+    def unsettled(term: str, ids: set[str] | None) -> bool:
+        """Dimensions of two or more entities, none the measure's own, may be the grouping, and
+        the caller's group_by doesn't say which: it names none, or the draft added one."""
+
+        entities = {
+            row.entity for row in config.dimensions if row.groupable and reads(term, ids, row)
         }
-        for term, ids in zip(terms, stand_ins, strict=True)
-    ]
-    ambiguous = [
-        term
-        for term, entities in zip(terms, readings, strict=True)
-        if len(entities) > 1 and root not in entities
-    ]
+        picked = {row.id for row in grouped if reads(term, ids, row)}
+        return len(entities) > 1 and root not in entities and not (picked and picked <= chosen)
+
+    ambiguous = [term for term, ids in zip(terms, stand_ins, strict=True) if unsettled(term, ids)]
     candidates = [
         [
             index
             for index, dimension in enumerate(grouped)
-            if term not in ambiguous
-            and (_grouping_matches(term, dimension) if ids is None else dimension.id in ids)
+            if term not in ambiguous and reads(term, ids, dimension)
         ]
         for term, ids in zip(terms, stand_ins, strict=True)
     ]

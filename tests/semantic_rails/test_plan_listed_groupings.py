@@ -41,6 +41,9 @@ CUSTOMER_TYPE = "dimension.jaffle_customer_type"
 ORDER_TIME = "temporal_role.jaffle_order_time"
 HAS_FOOD_ITEM = "dimension.jaffle_order_has_food_item"
 IS_LARGE_ORDER = "dimension.jaffle_order_is_large_order"
+CUSTOMER_NAME = "dimension.jaffle_customer_name"
+ITEM_PRODUCT_TYPE = "dimension.jaffle_item_product_type"
+PRODUCT_TYPE = "dimension.jaffle_product_type"
 
 
 def _upkeep(path: Path, noun: str, measure: str, *, revisions: bool = False) -> Runtime:
@@ -372,45 +375,67 @@ def test_a_window_inside_the_list_never_drops_a_later_grouping(
     assert payload["best"]["query_ir"]["group_by"] == [STORE]
 
 
-@pytest.mark.parametrize("intent", ["order count by month, name", "order count by month and name"])
+@pytest.mark.parametrize(
+    ("intent", "partial_query"),
+    [
+        ("order count by month, name", None),
+        ("order count by month and name", None),
+        # The caller names Store name, but the draft still adds Customer name, its own pick.
+        ("order count by month, name", {"group_by": [STORE]}),
+    ],
+)
 def test_a_grouping_naming_dimensions_of_other_entities_is_never_a_pick(
-    jaffle: Runtime, intent: str
+    jaffle: Runtime, intent: str, partial_query: dict[str, Any] | None
 ) -> None:
-    payload = plan_payload(jaffle, intent=intent)
+    payload = plan_payload(jaffle, intent=intent, partial_query=partial_query)
 
     # "Name" is Customer name, Store name, Product name and more, none of them the order's own.
     # Each is a defensible reading with its own rows, so plan holds rather than picking one.
     assert payload["status"] == "low_confidence"
     assert "execute" not in payload["next"].get("ready_for", [])
     assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
-    assert payload["why"]["details"]["terms"] == ["name"]
-    assert payload["why"]["details"]["ambiguous_groupings"] == ["name"]
+    assert payload["why"]["details"] == {
+        "terms": ["name"],
+        "dropped_groupings": [],
+        "ambiguous_groupings": ["name"],
+    }
 
 
 @pytest.mark.parametrize(
-    ("measure", "term", "dimension", "ambiguous"),
+    ("measure", "term", "group_by", "chosen", "ambiguous"),
     [
         # Item product type is the item's own, so an item count by product type reads it.
-        ("item_count", "product type", "dimension.jaffle_item_product_type", False),
+        ("item_count", "product type", [ITEM_PRODUCT_TYPE], [], False),
         # For an order count, Item product type and Product type are two other entities'.
-        ("order_count", "product type", "dimension.jaffle_item_product_type", True),
-        ("order_count", "product type", "dimension.jaffle_product_type", True),
-        ("order_count", "name", "dimension.jaffle_customer_name", True),
-        ("order_count", "name", STORE, True),
+        ("order_count", "product type", [ITEM_PRODUCT_TYPE], [], True),
+        ("order_count", "product type", [PRODUCT_TYPE], [], True),
+        ("order_count", "name", [CUSTOMER_NAME], [], True),
+        ("order_count", "name", [STORE], [], True),
         # Named with its entity, a grouping has one reading.
-        ("order_count", "customer name", "dimension.jaffle_customer_name", False),
-        ("order_count", "store name", STORE, False),
+        ("order_count", "customer name", [CUSTOMER_NAME], [], False),
+        ("order_count", "store name", [STORE], [], False),
+        # The caller's own group_by says which, unless the draft adds another reading.
+        ("order_count", "name", [STORE], [STORE], False),
+        ("order_count", "name", [STORE, CUSTOMER_NAME], [STORE], True),
+        ("order_count", "name", [CUSTOMER_NAME], [STORE], True),
     ],
 )
-def test_only_the_measures_own_entity_settles_a_grouping_other_entities_share(
-    jaffle: Runtime, measure: str, term: str, dimension: str, ambiguous: bool
+def test_only_the_measures_own_entity_or_the_caller_settles_a_shared_grouping(
+    jaffle: Runtime,
+    measure: str,
+    term: str,
+    group_by: list[str],
+    chosen: list[str],
+    ambiguous: bool,
 ) -> None:
     query = {
         "version": 2,
         "select": [{"as": measure, "expression": {"measure": f"measure.jaffle.{measure}"}}],
-        "group_by": [dimension],
+        "group_by": group_by,
     }
-    why = plan_module._dropped_grouping_why(jaffle, f"{measure} by {term}", query)
+    why = plan_module._dropped_grouping_why(
+        jaffle, f"{measure} by {term}", query, {"group_by": chosen}
+    )
     assert (why is not None) is ambiguous
     if why:
         assert why["code"] == "PLAN_UNMATCHED_TERMS"
@@ -422,26 +447,41 @@ def test_only_the_measures_own_entity_settles_a_grouping_other_entities_share(
 
 
 @pytest.mark.parametrize(
-    ("intent", "dimension", "column", "join"),
+    ("intent", "partial_query", "dimension", "column", "join"),
     [
         (
             "order count by month, customer name",
-            "dimension.jaffle_customer_name",
+            None,
+            CUSTOMER_NAME,
             "c.customer_name",
             "LEFT JOIN jaffle_customer c ON o.customer_id = c.customer_id",
         ),
         (
             "order count by month, store name",
+            None,
             STORE,
             "s.store_name",
             "LEFT JOIN jaffle_store s ON o.store_id = s.store_id",
         ),
+        # The caller says whose name, and the draft adds no other.
+        (
+            "order count by month, name",
+            {"group_by": [CUSTOMER_NAME]},
+            CUSTOMER_NAME,
+            "c.customer_name",
+            "LEFT JOIN jaffle_customer c ON o.customer_id = c.customer_id",
+        ),
     ],
 )
 def test_a_qualified_name_grouping_stays_ready(
-    jaffle: Runtime, intent: str, dimension: str, column: str, join: str
+    jaffle: Runtime,
+    intent: str,
+    partial_query: dict[str, Any] | None,
+    dimension: str,
+    column: str,
+    join: str,
 ) -> None:
-    payload = plan_payload(jaffle, intent=intent)
+    payload = plan_payload(jaffle, intent=intent, partial_query=partial_query)
 
     assert payload["status"] == "ok", payload.get("why")
     assert "execute" in payload["next"]["ready_for"]
