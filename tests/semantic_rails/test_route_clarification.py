@@ -916,8 +916,7 @@ def test_route_notes_withhold_switches_when_visibility_is_unknown(
     notes = _route_notes(
         config, compiled, query, **({"policy_context": {}} if visibility == "unresolved" else {})
     )
-    assert notes[0]["details"] == {"row": query["route_decisions"][0], "replaced": "undecided"}
-    assert all(relationship not in json.dumps(notes) for relationship in OWNER_ROUTE)
+    assert notes == []
 
 
 def _many_route_config(tmp_path):
@@ -1004,7 +1003,7 @@ def test_many_route_compact_execute_keeps_rows_and_caps_switch_metadata(
     try:
         refusal = runtime.validate(BALANCE_BY_DISTRICT)
         options = refusal["errors"][0]["details"]["clarification"]["options"]
-        assert len(config.entities) == 17 and len(options) == 125
+        assert len(config.entities) == 17 and len(options) == (100 if hidden else 125)
         assert execute.call_count == 0
         out = adapter.call_tool(
             "execute",
