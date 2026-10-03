@@ -419,7 +419,7 @@ _VALUE_IN_NAME_QUESTIONS = [
     "{alias} and store name revenue",
 ]
 
-# Statuses without the value-inside-name hold: every other readiness check already holds these.
+# (phrasing, path, caller group_by length) that other readiness checks hold even without it.
 _HELD_WITHOUT_IT = {
     ("revenue at {alias} and store name level", "fallback", None),
     ("revenue for each {alias} and store name", "fallback", None),
