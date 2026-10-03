@@ -129,11 +129,20 @@ def validate_call_name(name: str, warehouse: str = "duckdb") -> str:
     return normalized
 
 
-def call_date_diff_unit(value: Any, *, arg_count: int) -> str:
-    """Validate the portable DATE_DIFF shape before dialect lowering."""
+def call_date_diff_unit(value: Any, *, arg_count: int, warehouse: str) -> str:
+    """Refuse invalid shapes and nonportable units before dialect lowering."""
     if arg_count == 3 and isinstance(value, str):
         unit = value.strip().lower()
         if unit in CONVERSION_WINDOW_UNITS:
+            if warehouse == "athena" or (
+                unit == "week" and warehouse in {"snowflake", "bigquery", "clickhouse"}
+            ):
+                raise SemanticLayerError(
+                    "INVALID_EXPRESSION_AST",
+                    f"Unsupported DATE_DIFF for warehouse '{warehouse}' and unit '{unit}': "
+                    "the warehouse's date difference does not match the portable semantics.",
+                    details={"function": "DATE_DIFF", "warehouse": warehouse, "unit": unit},
+                )
             return unit
     raise SemanticLayerError(
         "INVALID_EXPRESSION_AST",
@@ -519,6 +528,7 @@ def validate_expression_calls(value: Any, config: PackageConfig) -> None:
                 if value.args and isinstance(value.args[0], LiteralExpr)
                 else None,
                 arg_count=len(value.args),
+                warehouse=config.package.warehouse,
             )
     if is_dataclass(value) and not isinstance(value, type):
         for item in fields(value):

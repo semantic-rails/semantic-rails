@@ -234,13 +234,28 @@ Portable date differences use exactly three args:
 
 The first arg must be a string literal unit: `minute`, `hour`, `day`, `week`,
 `month`, `quarter` or `year` (case-insensitive). The result is end minus start,
-using the warehouse's existing date-difference lowering, which counts unit
-boundaries rather than elapsed durations for units such as `day`. If either
-endpoint is NULL, the result is NULL and is excluded from averages, never
-replaced with zero. The same shape works in query selects, package measure
-expressions and `aggregate_if` values. Wrong arity, non-literal units and unknown
-units return `INVALID_EXPRESSION_AST`, including in `validate` mode, with the
-required shape and supported units.
+counting calendar unit boundaries rather than elapsed durations. The `week`
+exception is the calendar day difference divided by seven, truncated toward
+zero; it does not count Sunday or Monday week boundaries.
+
+| Warehouse | Supported units | Refused units |
+| --- | --- | --- |
+| DuckDB, MotherDuck, DuckLake, Postgres, Databricks | `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year` | None |
+| Snowflake, BigQuery, ClickHouse | `minute`, `hour`, `day`, `month`, `quarter`, `year` | `week` |
+| Athena | None | `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year` |
+
+Athena's native function counts complete elapsed units; Snowflake, BigQuery and
+ClickHouse count calendar week boundaries. Those calls return
+`INVALID_EXPRESSION_AST` with an unsupported-function message naming the
+warehouse and unit, including in `validate` mode and package loading.
+
+For supported calls, if either endpoint is NULL, the result is NULL and is
+excluded from averages, never replaced with zero. ClickHouse casts both endpoints
+to `Nullable(DateTime)` so this holds even with `cast_keep_nullable=0`. The same
+shape works in query selects, package measure expressions and `aggregate_if`
+values. Wrong arity, non-literal units and unknown units return
+`INVALID_EXPRESSION_AST`, including in `validate` mode, with the required shape
+and recognized units.
 
 Numeric conversion uses exactly two args:
 

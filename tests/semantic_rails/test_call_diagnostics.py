@@ -246,6 +246,8 @@ def test_allowed_names_are_constructible_and_duckdb_executes_each(package, wareh
     config = replace(config, package=replace(config.package, warehouse=warehouse))
     dialect = dialect_for_warehouse(warehouse)
     for name in sorted(accepted_call_names(warehouse)):
+        if warehouse == "athena" and name == "DATE_DIFF":
+            continue  # Registered shape, but every unit is covered by the refusal tests.
         values = SMOKE_ARGS.get(
             name, ["abc"] if name in {"LOWER", "UPPER", "LENGTH", "TRIM"} else [2]
         )
@@ -723,8 +725,85 @@ START = "2024-01-01 23:00:00"
 END = "2024-01-03 01:00:00"
 
 
-@pytest.mark.parametrize("warehouse", DATE_DIFF_WAREHOUSES)
-@pytest.mark.parametrize("unit", CONVERSION_WINDOW_UNITS)
+UNSUPPORTED_DATE_DIFF = [
+    *[("athena", unit) for unit in CONVERSION_WINDOW_UNITS],
+    *[(warehouse, "week") for warehouse in ["snowflake", "bigquery", "clickhouse"]],
+]
+
+
+@pytest.mark.parametrize("warehouse,unit", UNSUPPORTED_DATE_DIFF)
+@pytest.mark.parametrize("surface", ["select", "package", "aggregate_if", "relation"])
+def test_unsupported_date_diff_refused_on_every_surface(package, warehouse, unit, surface):
+    expression = call("date_diff", literal(unit.upper()), literal(START), literal(END))
+    config = load_package_config(str(package))
+    config = replace(config, package=replace(config.package, warehouse=warehouse))
+    parsed = parse_semantic_expression(expression, context="query")
+    with pytest.raises(SemanticLayerError) as validation:
+        validate_expression_calls(parsed, config)
+    with pytest.raises(SemanticLayerError) as lowering:
+        if surface == "package":
+            path = package / "package.yml"
+            manifest = yaml.safe_load(path.read_text())
+            manifest["package"]["warehouse"] = warehouse
+            manifest["package"]["connection"] = {"kind": f"{warehouse}_native", "name": "test"}
+            path.write_text(yaml.safe_dump(manifest))
+            path = package / "models/rows.yml"
+            model = yaml.safe_load(path.read_text())
+            model["model"]["measures"]["amount"]["expr"] = expression
+            path.write_text(yaml.safe_dump(model))
+            load_package_config(str(package))
+        elif surface == "relation":
+            _semantic_expr_to_sql(parsed, warehouse=warehouse)
+        elif surface == "select":
+            compile_query(
+                config,
+                None,
+                query(
+                    call("DATE_DIFF", literal(unit), maximum(literal(START)), maximum(literal(END)))
+                ),
+            )
+        else:
+            compile_query(config, None, query(maximum(expression)))
+    assert validation.value.code == lowering.value.code == "INVALID_EXPRESSION_AST"
+    assert str(validation.value) == str(lowering.value)
+    assert "Unsupported DATE_DIFF" in str(lowering.value)
+    assert warehouse in str(lowering.value)
+    assert unit in str(lowering.value)
+    assert lowering.value.details == {"function": "DATE_DIFF", "warehouse": warehouse, "unit": unit}
+
+
+@pytest.mark.parametrize("warehouse,unit", UNSUPPORTED_DATE_DIFF)
+def test_unsupported_date_diff_scalar_guard_refuses_direct_lowering(warehouse, unit):
+    with pytest.raises(SemanticLayerError, match="Unsupported DATE_DIFF") as exc:
+        dialect_for_warehouse(warehouse).scalar_call(
+            "DATE_DIFF", [SqlLiteral(unit), SqlLiteral(START), SqlLiteral(END)]
+        )
+    assert exc.value.code == "INVALID_EXPRESSION_AST"
+    assert exc.value.details["warehouse"] == warehouse
+    assert exc.value.details["unit"] == unit
+
+
+@pytest.mark.parametrize("unit", [unit for unit in CONVERSION_WINDOW_UNITS if unit != "week"])
+@pytest.mark.parametrize("start,end", [(None, END), (START, None), (None, None), (START, END)])
+def test_clickhouse_date_diff_casts_both_endpoints_to_nullable_timestamps(unit, start, end):
+    lowered = dialect_for_warehouse("clickhouse").scalar_call(
+        "DATE_DIFF", [SqlLiteral(unit), SqlLiteral(start), SqlLiteral(end)]
+    )
+    assert render_expr(lowered) == (
+        f"DATE_DIFF('{unit}', CAST({render_expr(SqlLiteral(start))} AS Nullable(DateTime)), "
+        f"CAST({render_expr(SqlLiteral(end))} AS Nullable(DateTime)))"
+    )
+
+
+@pytest.mark.parametrize(
+    "warehouse,unit",
+    [
+        (warehouse, unit)
+        for warehouse in DATE_DIFF_WAREHOUSES
+        for unit in CONVERSION_WINDOW_UNITS
+        if (warehouse, unit) not in UNSUPPORTED_DATE_DIFF
+    ],
+)
 @pytest.mark.parametrize("surface", ["select", "package", "aggregate_if", "relation"])
 def test_date_diff_calls_use_dialect_lowering(package, warehouse, unit, surface, monkeypatch):
     dialect = dialect_for_warehouse(warehouse)
@@ -784,9 +863,13 @@ def test_date_diff_calls_use_dialect_lowering(package, warehouse, unit, surface,
     "warehouse,expected",
     [
         (warehouse, f"DATE_DIFF('day', CAST('{START}' AS TIMESTAMP), CAST('{END}' AS TIMESTAMP))")
-        for warehouse in ["duckdb", "motherduck", "ducklake", "athena", "clickhouse"]
+        for warehouse in ["duckdb", "motherduck", "ducklake"]
     ]
     + [
+        (
+            "clickhouse",
+            f"DATE_DIFF('day', CAST('{START}' AS Nullable(DateTime)), CAST('{END}' AS Nullable(DateTime)))",
+        ),
         (
             "postgres",
             f"CAST(CAST('{END}' AS TIMESTAMP) AS DATE) - CAST(CAST('{START}' AS TIMESTAMP) AS DATE)",
@@ -816,6 +899,20 @@ def test_date_diff_either_null_endpoint_executes_as_null(start, end):
     )
     with duckdb.connect() as conn:
         assert conn.execute("SELECT " + render_expr(lowered)).fetchall() == [(None,)]
+
+
+def test_date_diff_average_excludes_either_null_endpoint():
+    lowered = dialect_for_warehouse("duckdb").scalar_call(
+        "DATE_DIFF",
+        [SqlLiteral("day"), SqlIdentifier(parts=["opened"]), SqlIdentifier(parts=["closed"])],
+    )
+    with duckdb.connect() as conn:
+        conn.execute("CREATE TABLE dates(opened TIMESTAMP, closed TIMESTAMP)")
+        conn.executemany(
+            "INSERT INTO dates VALUES (?, ?)",
+            [(START, END), (None, END), (START, None), (None, None)],
+        )
+        assert conn.execute(f"SELECT AVG({render_expr(lowered)}) FROM dates").fetchall() == [(2.0,)]
 
 
 INVALID_DATE_DIFF_ARGS = [

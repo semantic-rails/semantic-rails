@@ -80,12 +80,10 @@ def test_null_safe_eq_renders_spaceship_operator():
     assert rendered.replace("(", "").replace(")", "") == "a <=> b"
 
 
-def test_portable_defaults_kept_for_date_diff_date_add_and_conditional_aggregate():
-    # Verified live on ClickHouse 24.8: DATE_DIFF('unit', s, e) and
-    # DATE_ADD(date, INTERVAL n UNIT) aliases work with DuckDB
-    # (boundary-crossing, Monday-week) semantics — so no override.
+def test_date_diff_nullable_casts_and_portable_date_add_and_conditional_aggregate():
+    # Nullable timestamp targets preserve missing endpoints independently of settings.
     diff = render_expr(DIALECT.date_diff("day", _ident("s"), _ident("e")))
-    assert diff == "DATE_DIFF('day', CAST(s AS TIMESTAMP), CAST(e AS TIMESTAMP))"
+    assert diff == "DATE_DIFF('day', CAST(s AS Nullable(DateTime)), CAST(e AS Nullable(DateTime)))"
     from semantic_rails.sql_ast import SqlLiteral
 
     add = render_expr(DIALECT.date_add("day", SqlLiteral(3), _ident("d")))

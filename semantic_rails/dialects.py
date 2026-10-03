@@ -105,6 +105,7 @@ class SqlDialect:
             unit = call_date_diff_unit(
                 args[0].value if args and isinstance(args[0], SqlLiteral) else None,
                 arg_count=len(args),
+                warehouse=self.name,
             )
             return self.date_diff(unit, args[1], args[2])
         if name != "CAST":
@@ -799,8 +800,8 @@ class BigQueryDialect(SqlDialect):
 
     def date_diff(self, unit: str, start_expr: Any, end_expr: Any) -> Any:
         # BigQuery reverses the portable order: DATETIME_DIFF(end,
-        # start, unit) — END FIRST. Boundary-crossing semantics match
-        # DuckDB's date_diff.
+        # start, unit) — END FIRST. Week boundaries differ from DuckDB,
+        # so authored week calls are refused by the scalar-call guard.
         return SqlCall(
             "DATETIME_DIFF",
             [
@@ -969,10 +970,11 @@ class AthenaDialect(SqlDialect):
     ``date_diff('unit', start, end)``, ``IS NOT DISTINCT FROM``.
 
     The portable defaults already match Trino for ``date_trunc``
-    (``DATE_TRUNC('month', CAST(.. AS TIMESTAMP))``), ``date_diff``
-    (``DATE_DIFF('unit', start, end)`` with a lowercase unit string),
-    null-safe equality (``IS NOT DISTINCT FROM``), and the conditional
-    aggregate CASE form. Overrides cover ``DATE_ADD('unit', n, ts)``
+    (``DATE_TRUNC('month', CAST(.. AS TIMESTAMP))``), null-safe equality
+    (``IS NOT DISTINCT FROM``), and the conditional aggregate CASE form.
+    Native ``date_diff`` counts complete elapsed units, so authored
+    portable ``DATE_DIFF`` calls are refused by the scalar-call guard.
+    Overrides cover ``DATE_ADD('unit', n, ts)``
     (Trino rejects the INTERVAL form), ``MIN_BY``/``MAX_BY``, and the
     percentile family — Trino has NO exact ``PERCENTILE_CONT``
     aggregate and ``APPROX_PERCENTILE`` is a t-digest sketch, so
@@ -1114,15 +1116,26 @@ class ClickHouseDialect(SqlDialect):
       ``null_safe_eq`` (temporal joins, entity-hop joins, snapshot
       joins). The portable ``IS NOT DISTINCT FROM`` is equally
       JOIN-ON-only on ClickHouse, so ``<=>`` is the native spelling.
-    - ``DATE_DIFF('unit', start, end)`` / ``DATE_ADD(date, INTERVAL n
-      UNIT)`` aliases work as-is with boundary-crossing semantics and
-      Monday-start weeks (DuckDB parity), so the portable defaults
-      stand.
+    - ``DATE_DIFF('unit', start, end)`` needs explicitly nullable endpoint
+      casts. Its Monday-start week boundaries differ from DuckDB, so
+      authored week calls are refused by the scalar-call guard.
+      ``DATE_ADD(date, INTERVAL n UNIT)`` uses the portable default.
     - Conditional aggregates keep the portable ``CASE`` default —
       ClickHouse ``COUNT``/``SUM`` skip NULLs correctly.
     """
 
     name: str = "clickhouse"
+
+    def date_diff(self, unit: str, start_expr: Any, end_expr: Any) -> Any:
+        # Explicit Nullable targets preserve NULL even with cast_keep_nullable=0.
+        return SqlCall(
+            "DATE_DIFF",
+            [
+                SqlLiteral(unit),
+                SqlCast(start_expr, "Nullable(DateTime)"),
+                SqlCast(end_expr, "Nullable(DateTime)"),
+            ],
+        )
 
     # No day_series override: it was withheld because an unmatched LEFT JOIN field reads 0
     # rather than NULL. Every compiled statement now sets join_use_nulls, but a generated

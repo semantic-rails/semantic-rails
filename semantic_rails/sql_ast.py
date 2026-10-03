@@ -264,7 +264,9 @@ def normalize_sql_date_part(part: str) -> str:
 
 def normalize_sql_cast_type_name(type_name: str) -> str:
     # Nullable targets preserve NULL on ClickHouse regardless of session settings.
-    nullable = re.fullmatch(r"Nullable\((Float64|Int64|String|DECIMAL\(\d+,\d+\))\)", type_name)
+    nullable = re.fullmatch(
+        r"Nullable\((Float64|Int64|String|DateTime|DECIMAL\(\d+,\d+\))\)", type_name
+    )
     if nullable:
         return type_name
     normalized = _compact_token(type_name).upper()

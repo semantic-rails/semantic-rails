@@ -1,3 +1,5 @@
-- Accept portable `DATE_DIFF` scalar calls on every warehouse, including package
-  measures and conditional aggregates, with validated units and NULL endpoints
-  preserved in averages.
+- Accept portable `DATE_DIFF` scalar calls, including package measures and
+  conditional aggregates, with validated units and NULL endpoints preserved in
+  averages. Refuse Athena calls and `week` on Snowflake, BigQuery and ClickHouse
+  where native semantics differ; preserve ClickHouse NULL endpoints with nullable
+  timestamp casts.
