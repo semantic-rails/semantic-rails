@@ -747,6 +747,13 @@ never answered from a rollup. An explicit non-NULL `ELSE`, including `ELSE 0`, c
 on nonmatching rows, so every row is read: a matching NULL amount plus a nonmatching zero
 sums to `0`, while a group with only matching NULL amounts remains `NULL`.
 
+A query with a `distribution` output keeps the earlier settlement in every output, which reads
+a group's unknown amounts like no rows: there a sum is `0` in a group whose amounts are all
+NULL, wherever its measure has data in scope, and arithmetic settles each operand that way, so
+`goods + shipping` beside a median is `0` for a store with no refunds and a number for one
+whose refunds leave a column NULL. Its plan and SQL are the same as before unknown amounts
+stayed `NULL`.
+
 - **Arithmetic** settles each operand first, then combines them. An operand that is unknown
   or has no data in scope is `NULL`, and so is the result: `goods + shipping` by refund type
   is `NULL` for a type whose rows leave one of the columns NULL, and `revenue - refunds` is
@@ -766,7 +773,8 @@ sums to `0`, while a group with only matching NULL amounts remains `NULL`.
   still reads an operand's unknown amounts as `0` where its measure has data in scope: an
   entity with rows can be `NULL` because one operand is unknown, which can't show whether the
   other measures have data, so `goods + shipping = 0` keeps the orders with no refunds even
-  where every refunded order has goods or shipping amounts but never both.
+  where every refunded order has goods or shipping amounts but never both. In a query with a
+  `distribution` output, every predicate reads unknown amounts that way.
 - **Filters narrow the scope.** With `where: store = 'x'`, a measure that has no rows at
   store x reads `NULL`, even though the same store reads `0` in a `group_by: store` answer. A
   filter value that matches nothing (a misspelled `product`) reads `NULL`, not a confident 0.

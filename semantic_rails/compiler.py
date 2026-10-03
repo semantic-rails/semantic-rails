@@ -54,6 +54,8 @@ from .compiler_parts.bind import (
     _scoped_predicate_expr_payload,
     check_conditional_aggregate_path,
     conditional_aggregate_route_refusal,
+    earlier_settlement,
+    earlier_settlement_applies,
     is_conditional_aggregate,
     lift_conditional_aggregates,
 )
@@ -71,8 +73,6 @@ from .compiler_parts.dependencies import (
 from .compiler_parts.empty_groups import (
     ZERO_MEASURE_CLASSES,
     absent_entities_gate,
-    earlier_settlement,
-    earlier_settlement_applies,
     expr_resolves_to_zero,
     recording_zero_outputs,
     require_settled_source,
@@ -108,6 +108,7 @@ from .compiler_parts.post_aggregation import (
 )
 from .compiler_parts.sql_lowering import (
     _count_key_expr,
+    _expr_contains_distribution,
     _last_token,
     _plan_requires_agent_dag_lowering,
     _slug,
@@ -4327,8 +4328,14 @@ def plan_query(
 ) -> LogicalPlan:
     validate_temporal_support(config, payload)
     raw_query = normalize_query(payload)
+    # A query with a distribution lowers with the earlier settlement (``_lower_query_to_sql``),
+    # so it routes with it too: its plan and explain are the same as before.
+    distribution = any(
+        item.expression is not None and _expr_contains_distribution(item.expression)
+        for item in raw_query.select
+    )
 
-    with candidate_planning():
+    with candidate_planning(), earlier_settlement(distribution):
         return _plan_query(
             config, registry, raw_query, collapse_window=collapse_window, top_level=True
         )

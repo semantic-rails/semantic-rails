@@ -96,6 +96,7 @@ from .bind import (
     _freeze_payload,
     _parse_public_expr,
     _row_marker,
+    earlier_settlement,
 )
 from .conversion import _conversion_leaf_cte
 from .dependencies import (
@@ -114,7 +115,6 @@ from .empty_groups import (
     LeafScope,
     base_reads,
     counts_rows,
-    earlier_settlement,
     expr_resolves_to_zero,
     guard_empty_groups,
     reads_every_row,

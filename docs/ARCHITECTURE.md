@@ -480,7 +480,12 @@ a row filter). DuckDB binds `?` directly; Postgres preparation finalizes slots a
 parameterized SQL. Empty-group settlement lives in `compiler_parts/empty_groups.py`: untimed
 observation determines whether zero is defined, each sum's leaf counts the rows it read so
 zero goes only to a group with none (never to rows whose amounts are all NULL; a leaf without
-the count is refused), and base time coverage bounds only zero
+the count is refused). A query with a distribution branch, and a metric predicate's source
+over several measures under a threshold 0 passes, keep the earlier settlement
+(`earlier_settlement` in `compiler_parts/bind.py`) and plan and lower exactly as before. Each
+row count is named `m<i>_rows` beside its measure's `m<i>`, renamed until no output, key or
+package column has the name, so the alias registry never rewrites it. Base time coverage
+bounds only zero
 substitution on filled, dense or combined leaves. One predicate decides both coverage and
 rollup refusal, on DuckDB and Postgres only. Populated values pass through; routed
 queries keep the window test and never scan a shadow raw leaf.

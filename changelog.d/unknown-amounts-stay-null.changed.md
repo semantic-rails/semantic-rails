@@ -13,5 +13,8 @@
   with no refunds. A sum of a `case` measure with no `else` (or `else: null`), with one
   branch or several, reads `0` in a group where no row meets a branch and is no longer
   answered from a rollup, which can't tell rows that fail its conditions from rows that meet
-  one with no amount.
+  one with no amount. All of this covers queries without a `distribution`. A query with a
+  `distribution` output keeps the earlier settlement, and its plan and SQL, in every output:
+  there a sum whose amounts are all `NULL` still reads `0` where its measure has data in
+  scope, and arithmetic beside the distribution settles each operand that way.
   See [Query IR schema](docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0).

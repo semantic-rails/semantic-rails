@@ -941,14 +941,16 @@ def test_a_threshold_zero_passes_on_a_sum_of_measures_keeps_entities_without_row
     assert got == [row["id"] for row in gold] == [1, 3, 5, 8, 9, 10, 11]
 
 
+@pytest.mark.parametrize("beside_a_distribution", [False, True])
 @pytest.mark.parametrize("branches", [1, 2])
 @pytest.mark.parametrize("else_value", ["none", None, 0])
 def test_a_rollup_never_answers_a_conditional_sum(
-    shop_package: Path, branches: int, else_value: int | str | None
+    shop_package: Path, branches: int, else_value: int | str | None, beside_a_distribution: bool
 ) -> None:
     """A rollup's sum can't tell rows that all fail a CASE condition (0) from rows that meet it
     with no value (NULL), so routing leaves such a measure on the base table. A non-NULL ELSE
-    reads every row, as the base path's row count does, so the rollup may answer it."""
+    reads every row, as the base path's row count does, so the rollup may answer it. Beside a
+    distribution the plan keeps the earlier settlement, where the rollup answers any of them."""
     config = load_package_config(str(shop_package))
     amount = {"kind": "column", "column": "amount"}
     whens = [{"when": IN_STORE_A, "then": amount}, {"when": IN_STORE_B, "then": amount}]
@@ -965,9 +967,11 @@ def test_a_rollup_never_answers_a_conditional_sum(
         ],
     )
     query = {"select": _select(revenue=SHOP_REVENUE), "group_by": [SHOP_STORE], "time": SHOP_MONTH}
+    if beside_a_distribution:
+        query["select"] += REFUNDS_BESIDE_A_MEDIAN["select"][1:]
     compiled = compile_query(config, Registry(config), {"version": 1, **query})
     (leaf,) = compiled["logical_plan"].measure_plans
-    if else_value == 0:
+    if else_value == 0 or beside_a_distribution:
         assert leaf.aggregate_relation_id != ""
         return
     assert leaf.aggregate_relation_id == ""

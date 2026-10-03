@@ -42,7 +42,7 @@ from ..sql_ast import (
     SqlTableRef,
     SqlWindow,
 )
-from .bind import _parse_public_expr, is_conditional_case
+from .bind import _parse_public_expr, earlier_settlement_applies, is_conditional_case
 from .dependencies import plan_is_root
 from .indexes import _measure_index, _recipe_index
 
@@ -72,7 +72,11 @@ def counts_rows(aggregation: str, measure: MeasureConfig | None) -> bool:
     A sum settles to 0 only where that count is 0; a count is already 0 there. Under the
     earlier settlement no leaf counts its rows.
     """
-    if _earlier_settlement.get() or measure is None or not resolves_to_zero(aggregation, measure):
+    if (
+        earlier_settlement_applies()
+        or measure is None
+        or not resolves_to_zero(aggregation, measure)
+    ):
         return False
     return (aggregation or measure.default_aggregation).lower() not in _COUNTING
 
@@ -155,30 +159,6 @@ def record_leaf_scope(alias: str, scope: LeafScope) -> None:
         scopes[alias] = scope
 
 
-_earlier_settlement: ContextVar[bool] = ContextVar("earlier_settlement", default=False)
-
-
-@contextmanager
-def earlier_settlement(enabled: bool = True) -> Iterator[None]:
-    """While ``enabled``, lower as before unknown amounts stayed NULL, byte for byte: the guard
-    reads a NULL sum as 0 wherever its measure has data in scope, whether its group has no
-    rows or only rows of unknown amounts, so no leaf counts its rows; a sum's CASE with ELSE 0
-    folds to its condition, and a rollup may answer a CASE measure. A query with a
-    distribution branch turns it on for every branch (``_lower_query_to_sql``), and so does a
-    metric predicate's source over several measures under a threshold that 0 passes
-    (``_predicate_ctes_and_join``). It is off by default, and a nested block never turns it
-    off."""
-    token = _earlier_settlement.set(enabled or _earlier_settlement.get())
-    try:
-        yield
-    finally:
-        _earlier_settlement.reset(token)
-
-
-def earlier_settlement_applies() -> bool:
-    return _earlier_settlement.get()
-
-
 def guard_empty_groups(
     source: str,
     keys: Iterable[str],
@@ -236,7 +216,7 @@ def guard_empty_groups(
                         ctes.append(SqlCte(name=name, query=coverage_select(scope, dialect)))
                         joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
                     seen = SqlBinary(seen, "AND", _loaded_bucket(time_key, name))
-            if aggregation not in _COUNTING and not _earlier_settlement.get():
+            if aggregation not in _COUNTING and not earlier_settlement_applies():
                 if alias not in rows:
                     raise _unsettled_error({"measures": [alias], "missing": "row_count"})
                 # A populated sum always survives; a NULL one is 0 only if it read no rows.
