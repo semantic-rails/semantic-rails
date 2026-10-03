@@ -229,6 +229,35 @@ shorthands for the most common cases:
 | Period-to-date | `{ "kind": "period_to_date", "input": {...}, "period": "month" }` |
 | Conversion | `{ "kind": "conversion", "base": {...}, "converted": {...}, "entity": "...", "window": {"unit": "day", "value": 7}, "matching_mode": "first_converted_after_base" }` — a converted event counts when `base <= converted < base + window` (7 × 24 hours here, not calendar days). |
 
+**Summing windows require values that add up across periods.** `rolling`, `cumulative`,
+and `period_to_date` accept additive flows using `sum` or `count`, event counts using
+`count_distinct` of a complete single-column source-row key (the measure's row grain
+or its model entity's full key). The entity key qualifies only when the measure reads
+the entity's table and its row grain is absent or matches that key.
+Sums, differences, or multiplication/division by numeric literals of those inputs
+are also accepted.
+A ratio (including arithmetic `divide` with a nonliteral denominator and metric recipes
+that resolve to a ratio) computes the ratio of its windowed
+parts: `SUM(numerator) OVER w / NULLIF(SUM(denominator) OVER w, 0)`. Each part uses the
+same partition and frame, after the ordinary empty-group settlement; a zero denominator
+returns `NULL`. It does not sum each period's ratio.
+
+Inputs using `avg`, `min`, `max`, `median`, or `percentile`, stocks (semi-additive
+measures), distinct populations, distinct counts of non-key columns or individual
+components of composite keys, distributions,
+products of measures, nested windows, and ratios inside other arithmetic or inside
+another ratio refuse with `ROLLUP_UNSAFE`
+before SQL executes. Ask for a ratio of windowed additive parts, or query the measure's
+own aggregation without a summing window. This rule also applies through derived
+metrics, metric filters, and every execution transport. `prior_period` reads one
+period with `LAG` and keeps its existing input semantics.
+
+`period_to_date` currently supports only the default calendar. A non-default
+`time.calendar_id`, or a time role bound to a non-default calendar, refuses with
+`REWRITE_NOT_SUPPORTED`; it cannot silently reset on Gregorian periods. Query the
+authored calendar's period as exact start/end dates without `period_to_date` instead.
+Default-calendar resets are unchanged.
+
 Comparisons (`kind: "comparison"`) with a literal `null` on either side lower
 `=` / `IS` to `IS NULL` and `!=` / `<>` / `IS NOT` to `IS NOT NULL`. This applies
 inside CASE and aggregate-if conditions (including a metric predicate's input),
@@ -386,6 +415,25 @@ Different shape from `select`. The most common pattern is `kind: metric_predicat
 `scope_mode` is either `contextual` (default for query-time) or
 `entity_only`. `time_alignment` is one of `same_query_period`,
 `query_window`, or `rolling_window_in_period`.
+
+Ordinary `metric_filters` evaluate aggregated expressions at the grain the query
+returns, after grouping. A `metric_predicate` instead evaluates its input at its
+declared entity within that scope. A contextual predicate inherits the query's
+time and grouped context. When a grouped dimension belongs to the input's own
+row entity, the predicate groups by that dimension's values, including NULL,
+rather than by each row's entity key. A `where` filter is inherited before this
+aggregation; `entity_only` omits grouped context and compatible `where` filters.
+
+Comparison and other post-aggregation `metric_filters` beside a `distribution`
+refuse with `REWRITE_NOT_SUPPORTED`: branch lowering cannot apply them once at
+the returned group's grain. This includes distributions reached through derived
+metrics. Run the group-level filter without the distribution first. A contextual
+`metric_predicate` on an entity different from the distribution's per-entity
+grain refuses with `PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE`; use `entity_only` or
+a `where` filter. This refusal also covers predicates inside the distribution's
+input, including scoped aggregates and inputs reached through metric recipes.
+A distribution nested inside another expression also refuses
+with `REWRITE_NOT_SUPPORTED`; select the distribution separately.
 
 ## WhereFilter
 
@@ -891,6 +939,27 @@ no extra query, and a clipped result (`truncated`) never gets it.
 ClickHouse fills an unmatched outer-join field with a type default (0 or an empty string)
 unless the join yields NULLs, so every ClickHouse statement ends with
 `SETTINGS join_use_nulls = 1`.
+
+## What an answer covers
+
+Some answers are right but easy to misread, so the response says what they cover. This never
+changes the SQL or the rows.
+
+**Facts on different clocks.** With no `time` block, selects that read measures of different
+entities or governed metrics with differing sets of real time roles, mixing at least two
+distinct roles, carry one `MIXED_TIME_ROLES` warning that names each measure's role: orders by
+order time and storefront
+sessions by session start, grouped by customer, each read a period on their own role's clock.
+Measure-level filters can bound those periods, even without a `time` block; the warning makes
+no claim about how much history is covered. Undated measures are ignored. A `time` block,
+including a role without bounds or a grain, suppresses this warning. `details.clocks` lists each
+dated measure's `subject` and `temporal_roles`.
+A dated measure inside an expression (`ratio`, arithmetic, `case`, `aggregate_if`) counts like
+a bare one; one inside a conversion or a metric predicate keeps that expression's own time rules. A
+metric counts as one clock, with every role it combines: alone it never warns, since the
+package defined it, and beside a dated measure or metric with a different role set it does.
+Measures that share a role, and bare measures of one entity, never warn. A governed metric
+is a distinct source even when its measures belong to that same entity.
 
 ## Dense fill (`time.fill`)
 

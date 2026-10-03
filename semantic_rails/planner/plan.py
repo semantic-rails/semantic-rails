@@ -28,10 +28,11 @@ from ..ast import every_filter, is_child_group, rewrite_select_shorthand
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
-from ._base import _time_window, _with_fiscal_calendar
+from ._base import _requested_grouping_terms, _time_window, _with_fiscal_calendar
 from .faithfulness import (
     intent_faithfulness_why,
     intent_subject_why,
+    unconsumed_catalog_words,
     unconsumed_terms,
     unmatched_intent_terms,
 )
@@ -292,11 +293,15 @@ def plan_payload(
         else None
     )
     unmatched = unmatched_intent_terms(runtime, intent_str, best_draft.query) if best_ok else []
-    # The readiness invariant: every numeral and clock word in the question is consumed by
-    # something the draft carries. Otherwise an hour, a range or a threshold was dropped.
+    # The readiness invariants: every numeral and clock word in the question, and every word
+    # that names a catalog object, is consumed by something the draft carries. Otherwise an
+    # hour, a range, a threshold, a grouping or the asked-for subject was dropped.
     value_why = (
         (
             _unconsumed_terms_why(unconsumed_terms(runtime, intent_str, best_draft.query))
+            or _unconsumed_catalog_why(
+                intent_str, unconsumed_catalog_words(runtime, intent_str, best_draft.query)
+            )
             or _dropped_value_why(intent_str, unmatched, catalog_tokens, set(intent_ir.unresolved))
         )
         if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
@@ -621,6 +626,44 @@ def _unconsumed_terms_why(terms: list[str]) -> dict[str, Any] | None:
                     "Add the filter or limit to best.query_ir, or (plan resolves days and "
                     "coarser windows only) state an hour range as query.time start and end "
                     "ISO timestamps, or ask again without those words, then validate."
+                ),
+            }
+        ],
+    }
+
+
+def _unconsumed_catalog_why(question: str, words: list[str]) -> dict[str, Any] | None:
+    """Explain a draft that leaves out a question word naming a catalog object.
+
+    A word inside a grouping the question asks for ("by store, customer type and product type")
+    means the draft dropped that grouping, and the message says so. A comma in the list reads as
+    "and" here: the grouping parse stops at a comma, which is how the draft lost the rest.
+    """
+
+    if not words:
+        return None
+    listed = _requested_grouping_terms(re.sub(r"\s*,\s*(?:and\s+)?", " and ", question))
+    dropped = [term for term in listed if set(words) & set(re.findall(r"[^\W_]+", term))]
+    terms = words[:8]  # as many as the warning names
+    message = (
+        f"The draft drops the grouping by {', '.join(dropped)} that the question asks for: "
+        if dropped
+        else "The draft may answer a different question: "
+    ) + (
+        f"it doesn't use these words, which name catalog objects: {', '.join(terms)}. "
+        "So plan doesn't call it ready."
+    )
+    return {
+        "code": "PLAN_UNMATCHED_TERMS",
+        "message": message,
+        "details": {"terms": terms, **({"dropped_groupings": dropped} if dropped else {})},
+        "recovery_hints": [
+            {
+                "kind": "use_named_objects",
+                "message": (
+                    "Find what these words name with discover, add it to best.query_ir (a "
+                    "group_by for a grouping, the select for a measure), then validate; or ask "
+                    "again without those words."
                 ),
             }
         ],

@@ -165,6 +165,14 @@ def _default_temporal_role(measure: MeasureConfig) -> str:
     return measure.compatible_temporal_roles[0] if measure.compatible_temporal_roles else ""
 
 
+def _measure_has_source_row_key(measure: MeasureConfig, entity: EntityConfig) -> bool:
+    """Whether the measure's source rows are at its entity's key."""
+    key = entity.key or [entity.primary_key]
+    return measure.source_relation in {"", entity.table} and sorted(
+        measure.row_grain or key
+    ) == sorted(key)
+
+
 def _aggregate_dimension_coverage(row: AggregateRelationConfig) -> set[str]:
     return {str(item) for item in [*row.dimensions, *row.dimension_columns]}
 

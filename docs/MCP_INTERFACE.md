@@ -227,8 +227,8 @@ A draft that validates can still leave out part of the question. `plan` returns
   (`fiscal_calendar_unrealized`). When the package has one calendar whose name says fiscal,
   `plan` buckets the draft on it itself (`time.calendar_id` with `time.fill: true`) only when
   the question's fiscal words ask for buckets of the draft's grain ("by fiscal quarter",
-  "fiscal quarterly") and no to-date or rolling value (period-to-date resets on Gregorian
-  periods). Any other fiscal period ("the first fiscal quarter", "vs prior fiscal year") is
+  "fiscal quarterly") and no to-date or rolling value (`period_to_date` refuses non-default
+  calendars). Any other fiscal period ("the first fiscal quarter", "vs prior fiscal year") is
   reported, and its recovery hint asks for the period as exact dates; without such a calendar
   the hint names the package's calendars;
 - picked its subject from several that match the question equally well, when neither the
@@ -245,7 +245,23 @@ draft includes it.
 framing words (including verbs and function words such as "dated", "placed", "only", "using"),
 time phrases the planner read, and numbers the draft carries (a limit, a threshold, the
 window's year), come back as a `PLAN_UNMATCHED_TERMS` warning with up to eight of them in
-`details.terms`. Other words stay warnings, as do measure nouns; check them before executing.
+`details.terms`. For the warning, the draft uses a word in the id, name, label or aliases of an
+object it uses (a measure's entity and time role included), allowing a plural or one typo, or in
+a filter value; descriptions and topics never use a word. A word that names a catalog object is
+held to a stricter rule, and one the draft doesn't consume is not a warning: it makes the plan
+`low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`, since the draft dropped a grouping
+("by store, customer type and product type" grouped by store; `why.details.dropped_groupings`
+names it) or answers about another subject. A word names an object when it is a word of the
+object's label or aliases, or of the last dotted part of its id or name outside the object's own
+namespaces ("sales" in `metric.sales.aov_usd` names nothing); a plural counts as its singular.
+Only the draft consumes one: by the label, aliases, id or name of an object it selects (an id the
+question spells out whole consumes its namespaces too), a value it filters on or that value's
+declared names, a time grain it carries (its unit, "time", "date" and "period"), a count it
+carries ("number of"), or a time phrase it read; only function words ("of", "at") are exempt. A
+synonym, a typo, a namespace, a description, a framing word or an object the draft doesn't select
+(a measure's entity included) never does. So `plan` may hold back a right draft ("revenue from
+orders": Orders is a measure), but never calls one ready that drops a grouping the question
+names. Other words stay warnings; check them before executing.
 A number, or a clock or zone word, the draft doesn't carry is not a warning: it makes the plan
 `low_confidence` (below), since the draft dropped an hour, a range or a
 threshold. Two words or more that no catalog object has, the first straight after "for",
@@ -256,7 +272,7 @@ plan is `low_confidence` with a `multiple_subjects_unrealized` gap naming the on
 out. For a measure by a dimension, a measure the question names in full outranks a shorter one
 it shares a word with ("item revenue" is Item revenue, not Revenue), but only when the name
 holds every word of the measure the question otherwise asks for: "large order revenue" is
-still revenue. If a
+still revenue (and `low_confidence` until the draft filters on large orders). If a
 validating fallback would change the target, grouping, qualification/cohort,
 filters, or time scope, `plan` returns `low_confidence` with
 `why.code="PLAN_FALLBACK_SEMANTIC_DRIFT"` instead of silently promoting it.
@@ -426,11 +442,12 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `<TOOL>_UNKNOWN_ARG` | every tool but `segment` | Unknown argument (on `discover`, incl. `term`/`kind` typos); the value was ignored |
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain; flip `allow_live_query=true` to probe |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
-| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, or when two or more are names the catalog doesn't have |
+| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, when one names a catalog object, or when two or more are names the catalog doesn't have |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
 | `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain and no `start`/`end` window, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
 | `NO_DATA_IN_SCOPE` | `execute` | A sum, count or distinct count (or a sum or difference of them) read `NULL` on every returned row (or nothing came back and neither a `start`/`end` window nor a metric filter explains it): its measure has no data in this query's scope, so it is `NULL`, not `0`. `details.outputs` names them; check the filter values. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
+| `MIXED_TIME_ROLES` | `execute` | With no `time` block, the selects read measures of different entities or governed metrics with differing sets of real time roles, mixing at least two distinct roles. Undated measures are ignored; a governed metric counts as one clock. Each period is read on its own role's clock, and measure-level filters can bound those periods. The message names the roles, and `details.clocks` lists them. See [What an answer covers](QUERY_IR_SCHEMA.md#what-an-answer-covers) |
 | `QUERY_SHORTHAND_NORMALIZED` | `execute` | A select item was accepted as shorthand and rewritten; `details.canonical` is the form to send next time (`plan` accepts the same shorthand but returns the canonical form in `best.query_ir` instead of a warning) |
 | `SEMANTIC_CAVEAT_APPLIED` | `execute` | Package-authored advisory context matched the query; interpret affected results with that context |
 | `SEMANTIC_CAVEATS_TRUNCATED` | `execute` | More caveats matched than this verbosity returned; increase verbosity to inspect the rest |
@@ -552,6 +569,11 @@ The manager holds the listening socket through server startup, so concurrent
 starts cannot claim the same port. The start response and `mcp status` report
 the assigned port. Repeating the same named start with `--port 0` reuses its
 healthy server; process identity and health nonce checks still apply.
+For port zero, if the host cannot resolve or bind, startup returns `INVALID_CONFIG` without
+spawning a process or writing a server record. Configuration conflicts report
+the server's `assigned_port` while comparing the originally requested port.
+The server consumes the inherited socket-fd environment variable at startup,
+including when an explicit port is used, so child processes do not inherit it.
 
 Windows users should install the generated stdio client config with
 `semantic-rails mcp setup --install --yes`, or run `mcp http` in a foreground

@@ -149,19 +149,27 @@ CUSTOMERS = "measure.jaffle.customer_count"
 
 
 @pytest.mark.parametrize(
-    ("question", "measure", "group_by"),
+    ("question", "measure", "group_by", "unconsumed"),
     [
-        ("number of customers", CUSTOMERS, None),
-        ("how many customers", CUSTOMERS, None),
-        ("customers", CUSTOMERS, None),
-        ("number of customers by store", CUSTOMERS, ["dimension.jaffle_store_name"]),
+        ("number of customers", CUSTOMERS, None, []),
+        ("how many customers", CUSTOMERS, None, []),
+        ("customers", CUSTOMERS, None, []),
+        ("number of customers by store", CUSTOMERS, ["dimension.jaffle_store_name"], []),
         # The measures whose descriptions start "Number of …" still answer their own questions.
-        ("number of active menu items", "measure.jaffle.active_menu_count_eop", None),
-        ("number of stores open", "measure.jaffle.open_store_count_eop", ...),
+        # Only the description holds "items", though, and it names the Item objects. Their
+        # drafts take the last value of a count, not a count, so nothing reads "number of",
+        # which names Customer order number: plan keeps them but doesn't call them ready.
+        (
+            "number of active menu items",
+            "measure.jaffle.active_menu_count_eop",
+            None,
+            ["number", "items"],
+        ),
+        ("number of stores open", "measure.jaffle.open_store_count_eop", ..., ["number"]),
     ],
 )
 def test_counting_words_name_the_count_measure(
-    runtime_factory: Any, question: str, measure: str, group_by: Any
+    runtime_factory: Any, question: str, measure: str, group_by: Any, unconsumed: list[str]
 ) -> None:
     """ "number of" and "of" don't tie Customer count with measures described as
     "Number of active menu items…", and the question names Customer count over
@@ -173,7 +181,8 @@ def test_counting_words_name_the_count_measure(
     finally:
         runtime.close()
 
-    assert plan["status"] == "ok", plan.get("why")
+    assert plan["status"] == ("low_confidence" if unconsumed else "ok"), plan.get("why")
+    assert (plan.get("why") or {}).get("details", {}).get("terms", []) == unconsumed
     query = plan["best"]["query_ir"]
     [select] = query["select"]
     assert select["expression"]["measure"] == measure

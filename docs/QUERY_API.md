@@ -1163,6 +1163,13 @@ The response `warnings` array can carry these non-error signals:
   measure reads `0` in an empty group only where it has data in scope; here it has none, so it
   is `NULL`. `details.outputs` names the outputs. It never fires on a clipped (`truncated`)
   result. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
+- `MIXED_TIME_ROLES` — fires on `validate`, `compile` and `execute` when a query with no
+  `time` block selects measures of different entities or governed metrics with differing
+  sets of real time roles, mixing at least two distinct roles. Undated measures are ignored;
+  a governed metric counts as one clock. The message names the roles and says each period is
+  read on its own role's clock; measure-level filters can bound those periods.
+  `details.clocks` lists each `subject` with its `temporal_roles`. See
+  [What an answer covers](QUERY_IR_SCHEMA.md#what-an-answer-covers).
 - `EXPRESSION_NORMALIZED_AWAY` — fires when an input expression `kind`
   was recognized by the parser but did not survive normalization (or
   the user's `as:` alias is missing from compiled output). Carries
