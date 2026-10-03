@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .package_loader import _column_list
+from .package_loader import _JOIN_KEYS, _column_list
 
 
 def add_error(errors: list[str], message: str) -> None:
@@ -277,30 +277,6 @@ _MEASURE_KEYS: frozenset[str] = frozenset(
         # message — listed here so that message fires instead of a generic
         # unknown-key error.
         "primitive",
-    }
-)
-_JOIN_KEYS: frozenset[str] = frozenset(
-    {
-        "id",
-        "as",
-        "to",
-        "via",
-        "target",
-        "source_key_role",
-        "target_key_role",
-        "cardinality",
-        "safety",
-        "name",
-        "label",
-        "description",
-        "traversal",
-        "allowed_directions",
-        "temporal_validity",
-        "target_key_type",
-        "join_semantics",
-        "rollup_safe_aggregations_reverse",
-        "rollup_safe",
-        "entities",
     }
 )
 _METRIC_KEYS: frozenset[str] = frozenset(

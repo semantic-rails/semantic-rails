@@ -18,9 +18,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from .config_parts.package_loader import normalize_package
+from .config_parts.package_loader import _JOIN_KEYS, normalize_package
 from .config_parts.route_rows import require_rows_agree
-from .config_parts.shape_checks import _JOIN_KEYS, _MEASURE_KEYS
+from .config_parts.shape_checks import _MEASURE_KEYS
 from .dialects import (
     connection_option_errors,
     snowflake_adbc_connect_errors,
@@ -1928,6 +1928,15 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     dim_defaults = dict(defaults.get("dimension", {}) or {})
     time_defaults = dict(defaults.get("time", {}) or {})
     measure_defaults = dict(defaults.get("measure", {}) or {})
+    removed_measure_defaults = sorted(
+        set(measure_defaults) & {"subject_entity", "aggregation_entity"}
+    )
+    if removed_measure_defaults:
+        locations = ", ".join(f"defaults.measure.{key}" for key in removed_measure_defaults)
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"{path}: {locations}: delete this line; parent-rollup declarations were removed",
+        )
     relationship_defaults = dict(defaults.get("relationship", {}) or {})
     operational_contract = load_operational_contract(defaults, path=path)
     meta_contract = load_meta_contract(defaults, path=path)

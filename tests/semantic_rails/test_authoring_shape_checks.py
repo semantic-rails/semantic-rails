@@ -25,6 +25,7 @@ from semantic_rails.config import load_package_config
 from semantic_rails.config_parts.package_loader import normalize_package
 from semantic_rails.config_validation import validate_runtime_package
 from semantic_rails.errors import SemanticLayerError
+from tests.semantic_rails.conftest import copy_package_config
 
 
 @pytest.fixture()
@@ -81,7 +82,36 @@ def test_parent_rollup_measure_keys_are_unknown(
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(path))
     assert exc.value.code == "INVALID_CONFIG"
-    assert "unknown keys" in str(exc.value) and key in str(exc.value)
+    message = str(exc.value)
+    if location == "defaults":
+        assert message.count(f"defaults.measure.{key}") == 1
+        assert "delete this line; parent-rollup declarations were removed" in message
+        assert "measure '" not in message
+    else:
+        assert "unknown keys" in message and key in message
+
+
+@pytest.mark.parametrize("value", [["sum"], None], ids=["populated", "null"])
+@pytest.mark.parametrize("layout", ["single_file", "directory"])
+def test_removed_join_key_is_rejected_before_graph_override(
+    tmp_path: Path, value: object, layout: str
+) -> None:
+    package = copy_package_config(tmp_path, "jaffle_shop")
+    orders_path = package / "models" / "core" / "orders.yml"
+    raw = yaml.safe_load(orders_path.read_text(encoding="utf-8"))
+    raw["model"]["joins"] = {"customer": {"rollup_safe_aggregations": value}}
+    orders_path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    if layout == "single_file":
+        from semantic_rails.config import _load_package_source
+
+        raw = _load_package_source(str(package))
+        package = package / "package.yml"
+        package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(package))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert "models.orders.joins.customer" in str(exc.value)
+    assert "rollup_safe_aggregations" in str(exc.value)
 
 
 @pytest.mark.parametrize(
@@ -126,7 +156,11 @@ def test_removed_relationship_rollup_forms_fail_loading(
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(path))
     assert exc.value.code == "INVALID_CONFIG"
-    relationship = "orders_customer" if location == "graph" else "orders.customer"
+    relationship = {
+        "graph": "orders_customer",
+        "defaults": "orders.customer",
+        "join": "models.orders.joins.customer",
+    }[location]
     assert relationship in str(exc.value)
     assert "rollup_safe" in str(exc.value)
 

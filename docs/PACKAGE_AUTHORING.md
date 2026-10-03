@@ -848,9 +848,14 @@ declared relative to that pair (`many_to_one` = first is many, second is one).
 `rollup_safe.reverse: [count_distinct]` permits the population-count rewrite
 when traversing from the second entity to the first. Measures aggregate at their
 own model's row grain; parent-rollup declarations are not supported.
+To migrate existing packages, delete `subject_entity` and `aggregation_entity`
+lines from `defaults.measure` and individual measures. Defaults are checked once
+per package, with an error naming `defaults.measure.<key>` and the line to delete.
 `rollup_safe` must be a mapping containing only `reverse`; forward declarations,
 the former list form, and `rollup_safe_aggregations` in model joins or relationship
 defaults fail loading with `INVALID_CONFIG` naming the relationship.
+Authored model joins are checked before graph relationships override them;
+removed keys are refused even when their value is `null`.
 
 Every authored relationship must declare `entities: [source, target]` and attach
 to graph models for both endpoints. An invalid or unattached entry fails loading
