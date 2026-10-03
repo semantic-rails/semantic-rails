@@ -581,10 +581,14 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
                 "many_to_many": "M:N",
             }
             cardinality = cardinality_map.get(cardinality, cardinality)
-            rollup_safe = spec.get("rollup_safe") or {}
-            reverse_rollup = (
-                list(rollup_safe.get("reverse", []) or []) if isinstance(rollup_safe, dict) else []
-            )
+            rollup_safe = spec.get("rollup_safe", {})
+            if not isinstance(rollup_safe, dict) or any(key != "reverse" for key in rollup_safe):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"graph relationship '{rel_name}' rollup_safe must be a mapping "
+                    "with only the 'reverse' key; forward rollup declarations are not supported",
+                )
+            reverse_rollup = list(rollup_safe.get("reverse", []) or [])
 
             # Attach to source model `a`'s joins block as edge `b`.
             source_model = entity_to_model[a]

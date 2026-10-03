@@ -84,6 +84,53 @@ def test_parent_rollup_measure_keys_are_unknown(
     assert "unknown keys" in str(exc.value) and key in str(exc.value)
 
 
+@pytest.mark.parametrize(
+    ("location", "value"),
+    [
+        pytest.param("graph", {"forward": ["sum", "count"]}, id="forward"),
+        pytest.param("graph", ["sum", "count"], id="list"),
+        pytest.param("graph", [], id="empty-list"),
+        pytest.param("graph", None, id="null"),
+        pytest.param("graph", "sum", id="scalar"),
+        pytest.param("graph", {"reverse": [], "typo": []}, id="unknown-key"),
+        pytest.param("defaults", ["sum", "count"], id="relationship-defaults"),
+        pytest.param("join", ["sum", "count"], id="model-join"),
+    ],
+)
+@pytest.mark.parametrize("layout", ["single_file", "directory"])
+def test_removed_relationship_rollup_forms_fail_loading(
+    starter_package: Path, location: str, value: object, layout: str
+) -> None:
+    raw = yaml.safe_load(starter_package.read_text(encoding="utf-8"))
+    if location == "graph":
+        raw["graph"]["relationships"] = {
+            "orders_customer": {"entities": ["order", "customer"], "rollup_safe": value}
+        }
+    elif location == "defaults":
+        raw.setdefault("defaults", {}).setdefault("relationship", {})[
+            "rollup_safe_aggregations"
+        ] = value
+    else:
+        raw["models"]["orders"]["joins"] = {"customer": {"rollup_safe_aggregations": value}}
+    if layout == "directory":
+        (starter_package.parent / "graph.yml").write_text(
+            yaml.safe_dump({"graph": raw.pop("graph")}, sort_keys=False), encoding="utf-8"
+        )
+        models_dir = starter_package.parent / "models"
+        models_dir.mkdir()
+        (models_dir / "models.yml").write_text(
+            yaml.safe_dump({"models": raw.pop("models")}, sort_keys=False), encoding="utf-8"
+        )
+    starter_package.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    path = starter_package.parent if layout == "directory" else starter_package
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(path))
+    assert exc.value.code == "INVALID_CONFIG"
+    relationship = "orders_customer" if location == "graph" else "orders.customer"
+    assert relationship in str(exc.value)
+    assert "rollup_safe" in str(exc.value)
+
+
 def test_unknown_top_level_key_with_close_match_is_rejected(starter_package: Path) -> None:
     """`modles:` produced only 'models must not be empty'."""
     path = _mutated(starter_package, "\nmodels:", "\nmodles:")

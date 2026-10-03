@@ -38,6 +38,7 @@ def relationship_config(config, reverse):
         source_columns=rel.target_columns,
         target_columns=rel.source_columns,
         cardinality="1:N",
+        # The forward list no longer exists, so the reversed edge has no reverse permission.
         rollup_safe_aggregations_reverse=[],
     )
     return replace(

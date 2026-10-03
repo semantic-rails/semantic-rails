@@ -818,8 +818,6 @@ graph:
       temporal_validity:                        # <model relation name>.<column>
         valid_from: shop_customer_history.effective_from
         valid_to: shop_customer_history.effective_to
-      rollup_safe:
-        reverse: []                             # aggregating customer → customer_history
 ```
 
 A query that joins into the table holding the window needs a `time`, so each row reads the
@@ -850,6 +848,9 @@ declared relative to that pair (`many_to_one` = first is many, second is one).
 `rollup_safe.reverse: [count_distinct]` permits the population-count rewrite
 when traversing from the second entity to the first. Measures aggregate at their
 own model's row grain; parent-rollup declarations are not supported.
+`rollup_safe` must be a mapping containing only `reverse`; forward declarations,
+the former list form, and `rollup_safe_aggregations` in model joins or relationship
+defaults fail loading with `INVALID_CONFIG` naming the relationship.
 
 Every authored relationship must declare `entities: [source, target]` and attach
 to graph models for both endpoints. An invalid or unattached entry fails loading

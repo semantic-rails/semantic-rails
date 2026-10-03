@@ -20,7 +20,7 @@ from typing import Any
 
 from .config_parts.package_loader import normalize_package
 from .config_parts.route_rows import require_rows_agree
-from .config_parts.shape_checks import _MEASURE_KEYS
+from .config_parts.shape_checks import _JOIN_KEYS, _MEASURE_KEYS
 from .dialects import (
     connection_option_errors,
     snowflake_adbc_connect_errors,
@@ -2351,6 +2351,11 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     "relationship_path).",
                     details={"relationship": rel_id, "fix": "graph.path_preferences"},
                 )
+            _check_binding_keys(
+                join_spec,
+                _JOIN_KEYS,
+                label=f"{path}: relationship '{rel_id}' (join '{model_id}.{edge_key}')",
+            )
             relationships.append(
                 RelationshipConfig(
                     id=rel_id,
