@@ -2,3 +2,4 @@
   naming tokens before character similarity, suggest visible exact metric/measure counterparts,
   and name the allowed measure default when aggregation can be omitted. Invalid filter
   operators list query operators and show the null-test form.
+- Error suggestions use one package snapshot for candidates and visibility checks.

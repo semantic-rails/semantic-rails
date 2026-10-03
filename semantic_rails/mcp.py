@@ -2060,11 +2060,12 @@ class SemanticLayerMCPAdapter:
         # but we defensively never want diagnostics enrichment to mask
         # the original error.
         with contextlib.suppress(Exception):
+            config = self.runtime._config
             exc = enrich_object_not_found(
                 exc,
-                self.runtime._config,
+                config,
                 hidden_ids=diagnostic_hidden_object_ids(
-                    self.runtime._config,
+                    config,
                     _resolved_tool_request_context(arguments).to_policy_context(),
                 ),
             )

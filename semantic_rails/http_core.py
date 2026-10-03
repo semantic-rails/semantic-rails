@@ -216,16 +216,17 @@ class SemanticHTTPService:
         if isinstance(exc, HTTPInputError):
             return self.invalid_request_payload(str(exc)), 400
         if isinstance(exc, SemanticLayerError):
+            config = self.runtime._config
             enriched = enrich_object_not_found(
                 exc,
-                self.runtime._config,
+                config,
                 hidden_ids=diagnostic_hidden_object_ids(
-                    self.runtime._config,
+                    config,
                     context.to_policy_context() if context is not None else None,
                 ),
             )
-            enriched = enrich_expression_ast_error(enriched, self.runtime._config)
-            enriched = enrich_path_not_found(enriched, self.runtime._config)
+            enriched = enrich_expression_ast_error(enriched, config)
+            enriched = enrich_path_not_found(enriched, config)
             error_issue = exception_issue(enriched, stage=stage)
             return {
                 "ok": False,

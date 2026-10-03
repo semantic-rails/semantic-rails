@@ -68,6 +68,65 @@ def _counterpart_config(config, missing_kind, with_policy):
     return config, hidden_id, fuzzy_id
 
 
+@pytest.mark.parametrize("transport", ["http", "mcp"])
+def test_counterpart_visibility_uses_one_package_snapshot(package_config_factory, transport):
+    from semantic_rails.errors import SemanticLayerError
+    from semantic_rails.http_core import SemanticHTTPService
+    from semantic_rails.request_context import RequestContext
+
+    config, package = package_config_factory("jaffle_shop")
+    config, hidden_id, _ = _counterpart_config(config, "metric", True)
+    config = replace(config, metric_recipes=[])
+    reloaded_config = replace(config, measures=[], semantic_policies=[])
+
+    class ReloadingRuntime:
+        def __init__(self, runtime):
+            self.runtime = runtime
+            self.config_reads = 0
+
+        @property
+        def _config(self):
+            self.config_reads += 1
+            return config if self.config_reads == 1 else reloaded_config
+
+        def __getattr__(self, name):
+            return getattr(self.runtime, name)
+
+    runtime = Runtime.from_config(config, source_path=str(package))
+    proxy = ReloadingRuntime(runtime)
+    missing_id = "metric.synthetic.private_fee"
+    try:
+        if transport == "http":
+            response, status = SemanticHTTPService(proxy).exception_payload(
+                SemanticLayerError(
+                    "OBJECT_NOT_FOUND", "Unknown object", details={"object_id": missing_id}
+                ),
+                stage="http",
+                context=RequestContext(audience="external"),
+            )
+            assert status == 400
+        else:
+            response = SemanticLayerMCPAdapter(proxy).call_tool(
+                "execute",
+                {
+                    "query": {"select": [{"expression": {"metric": missing_id}}]},
+                    "mode": "sql",
+                    "policy_context": {"audience": "external"},
+                    "verbosity": "full",
+                },
+            )
+        assert response["ok"] is False
+        assert response["errors"][0]["code"] == "OBJECT_NOT_FOUND"
+        serialized = json.dumps(response)
+        assert hidden_id not in serialized
+        # The error still echoes the caller's missing ID; every other value must
+        # exclude the private name, including duplicated hints and suggestions.
+        assert "private_fee" not in serialized.replace(missing_id, "")
+        assert proxy.config_reads == 1
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize("missing_kind", ["metric", "measure"])
 @pytest.mark.parametrize("mode", ["run", "validate", "sql"])
 @pytest.mark.parametrize("with_policy", [False, True], ids=["public", "hidden"])
