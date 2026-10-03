@@ -1301,13 +1301,16 @@ SNOWFLAKE_NATIVE_DIRECT_AUTH_OPTIONS: tuple[str, ...] = (
 
 # Experimental ADBC path: password or PKCS #8 key-pair auth only.
 SNOWFLAKE_ADBC_CONNECTION_OPTIONS: tuple[str, ...] = (
+    "account",
     "account_env",
+    "user",
     "user_env",
     "password_env",
     "password_file",
     "private_key_file",
     "private_key_env",
     "private_key_passphrase_env",
+    "private_key_passphrase_file",
     "database",
     "schema",
     "warehouse",
@@ -1523,14 +1526,17 @@ def snowflake_adbc_connect_errors(options: dict[str, Any]) -> tuple[str, ...]:
     """Check authored credential sources without reading environment variables or files."""
     keys = {normalize_connection_option_name(str(key)) for key in options}
     errors = [
-        f"snowflake_adbc requires {key}" for key in ("account_env", "user_env") if key not in keys
+        f"snowflake_adbc requires {key} or {key}_env"
+        for key in ("account", "user")
+        if not keys & {key, f"{key}_env"}
     ]
     has_password = bool(keys & {"password_env", "password_file"})
     has_key = bool(keys & {"private_key_env", "private_key_file"})
     if has_password == has_key:
         errors.append("snowflake_adbc requires exactly one password or PKCS #8 key source")
-    if "private_key_passphrase_env" in keys and not has_key:
-        errors.append("snowflake_adbc private_key_passphrase_env requires a key source")
+    for key in ("private_key_passphrase_env", "private_key_passphrase_file"):
+        if key in keys and not has_key:
+            errors.append(f"snowflake_adbc {key} requires a key source")
     return tuple(errors)
 
 

@@ -44,7 +44,7 @@ from .cache import (
 )
 from .catalog_search import CatalogSearchIndex
 from .caveats import caveat_warnings
-from .compiler import BoundQuery, bind_query, compile_query
+from .compiler import BoundQuery, bind_query, compile_query, read_routes
 from .compiler_parts.paths import _leaf_time_role
 from .config import (
     SEED_KIND_EXTERNAL,
@@ -81,7 +81,14 @@ from .diagnostics import (
 from .dialects import dialect_for_warehouse
 from .errors import SemanticLayerError, query_execution_error
 from .expressions import collect_object_references, expr_to_dict
-from .fanout import build_hop_profile, offered_rows, route_meaning, route_note
+from .fanout import (
+    build_hop_profile,
+    entity_label,
+    offered_rows,
+    query_route_decisions,
+    route_note,
+    route_reading,
+)
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import enforce_query_policies, query_policy_effects, row_filters_for_context
@@ -313,6 +320,26 @@ def _metric_payload(config, object_id: str, kind: str) -> dict[str, Any]:
 _LOG = logging.getLogger(__name__)
 
 
+_ROUTE_ROW_KEYS = ("source_entity", "target_entity", "relationship_path")
+
+
+def _hop_profile(config, compiled) -> dict[str, Any]:
+    """``build_hop_profile`` under the query's own route rows, so a pair a row decided reports
+    ``route_basis: query``."""
+    plan = compiled["logical_plan"]
+    rows = {
+        (row["source_entity"], row["target_entity"]): row["relationship_path"]
+        for row in compiled.get("route_decisions") or []
+    }
+    with query_route_decisions(rows):
+        return build_hop_profile(
+            config,
+            root_entity=plan.root_entity,
+            selected_paths=plan.selected_paths,
+            candidate_paths=plan.candidate_paths,
+        )
+
+
 def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[str, Any]]:
     """One short note per entity pair the compiled query reads where the engine chose one of
     two or more routes (``fanout.route_note``): by the start's own key (ROUTE_COLOCATED_KEY,
@@ -324,30 +351,39 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
     none.
 
     The pairs come, each with the route the SQL read, from the plan's root and leaf paths and
-    from the paths lowering read (predicates, conversions, a rewrite anchor's own lookups,
-    nested compiles, direct key reads); a note names only a route its pair's resolution chose,
-    so a pair the SQL read another way gets none. The minimal response leaves the notes out:
-    the route is the package's own meaning for the pair, not a caveat on the numbers, and a
-    pair with no such meaning is refused instead.
+    from the paths lowering read (``compiler.read_routes``); a note names only a route its
+    pair's resolution chose, so a pair the SQL read another way gets none. The minimal
+    response leaves the notes out: the route is the package's own meaning for the pair, not a
+    caveat on the numbers, and a pair with no such meaning is refused instead.
+
+    A pair the query decided itself (``route_decisions``) gets ROUTE_CHOSEN_BY_QUERY instead,
+    at every verbosity: the row and the basis it replaced, since the answer may differ from
+    the package's.
     """
-    if resolve_verbosity(payload) == "minimal":
-        return []
-    plan = compiled["logical_plan"]
-    choices = [
-        (plan.root_entity, target, tuple(path))
-        for target, path in sorted((plan.selected_paths or {}).items())
-    ]
-    for measure_plan in plan.measure_plans:
-        choices.extend(
-            (measure_plan.source_entity, selection.target_entity, tuple(selection.chosen_path))
-            for selection in measure_plan.path_selections
-        )
-    choices.extend(
-        (start, target, tuple(path)) for start, target, path in compiled.get("route_choices") or []
-    )
     notes: list[dict[str, Any]] = []
-    for start, target, path in dict.fromkeys(choices):
-        resolution = route_note(config, start, target, path)
+    decided: set[tuple[str, str]] = set()
+    for row in compiled.get("route_decisions") or []:
+        start, target, path = row["source_entity"], row["target_entity"], row["relationship_path"]
+        decided.add((start, target))
+        notes.append(
+            semantic_issue(
+                code="ROUTE_CHOSEN_BY_QUERY",
+                message=f"{route_reading(config, start, path)} (chosen by this query)",
+                severity="info",
+                stage="planning",
+                details={
+                    "row": {key: row[key] for key in _ROUTE_ROW_KEYS},
+                    "replaced": row["replaced"],
+                },
+                object_ids=[start, target],
+            )
+        )
+    if resolve_verbosity(payload) == "minimal":
+        return notes
+    for start, target, path in read_routes(
+        compiled["logical_plan"], compiled.get("route_choices") or []
+    ):
+        resolution = None if (start, target) in decided else route_note(config, start, target, path)
         if resolution is None:
             continue
         route = list(resolution.routes[0])
@@ -362,7 +398,7 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
         elif resolution.basis == "inherited":
             code = "ROUTE_RECORDED"
             how = "recorded for " + ", ".join(
-                f"{route_meaning(config, source, [])} → {route_meaning(config, end, [])}"
+                f"{entity_label(config, source)} → {entity_label(config, end)}"
                 for source, end in resolution.rows
             )
             details["rows"] = [
@@ -373,7 +409,7 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
         notes.append(
             semantic_issue(
                 code=code,
-                message=f"{route_meaning(config, start, route)} ({how})",
+                message=f"{route_reading(config, start, route)} ({how})",
                 severity="info",
                 stage="planning",
                 details=details,
@@ -2212,12 +2248,7 @@ class Runtime:
             "provenance_summary": provenance_summary(
                 self._config, compiled["logical_plan"], policy_effects=policy_effects
             ),
-            "hop_profile": build_hop_profile(
-                self._config,
-                root_entity=compiled["logical_plan"].root_entity,
-                selected_paths=compiled["logical_plan"].selected_paths,
-                candidate_paths=compiled["logical_plan"].candidate_paths,
-            ),
+            "hop_profile": _hop_profile(self._config, compiled),
             "query": without_trusted_attributes(payload),
             "normalized_query": compiled["explain"].normalized_query,
             "logical_plan": asdict(compiled["logical_plan"]),
@@ -2343,12 +2374,7 @@ class Runtime:
             "provenance_summary": provenance_summary(
                 self._config, compiled["logical_plan"], policy_effects=policy_effects
             ),
-            "hop_profile": build_hop_profile(
-                self._config,
-                root_entity=compiled["logical_plan"].root_entity,
-                selected_paths=compiled["logical_plan"].selected_paths,
-                candidate_paths=compiled["logical_plan"].candidate_paths,
-            ),
+            "hop_profile": _hop_profile(self._config, compiled),
             "query": without_trusted_attributes(payload),
             "normalized_query": compiled["explain"].normalized_query,
         }

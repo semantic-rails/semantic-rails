@@ -271,6 +271,7 @@ class AdbcAdapter(WarehouseAdapter):
                 missing,
                 engine=self.engine,
                 connection_kind=self.connection_kind,
+                strip_file_whitespace=name != "private_key_passphrase",
             )
             if value:
                 options[key] = value

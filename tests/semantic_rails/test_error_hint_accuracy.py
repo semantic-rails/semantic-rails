@@ -122,12 +122,13 @@ def test_path_hint_targets_pass_the_shared_resolver(
 
 
 @pytest.mark.parametrize("warm", [False, True], ids=["cold", "warm"])
+@pytest.mark.parametrize("preference", ["none", "unrelated", "applicable"])
 def test_branching_path_hints_bound_work_and_leave_cache_unchanged(
-    package_config_factory, monkeypatch, warm
+    package_config_factory, monkeypatch, warm, preference
 ):
     config, _ = package_config_factory("jaffle_shop")
-    layers = [["S"], *[[f"layer_{depth}_{node}" for node in range(4)] for depth in range(8)]]
-    nodes = [node for layer in layers for node in layer] + ["disconnected", "Z"]
+    layers = [["S"], *[[f"layer_{depth}_{node}" for node in range(5)] for depth in range(8)]]
+    nodes = [node for layer in layers for node in layer] + ["disconnected", "X", "Y", "Z"]
     config = replace(
         config,
         entities=[EntityConfig(id=node, table=node, primary_key="id") for node in nodes],
@@ -146,18 +147,31 @@ def test_branching_path_hints_bound_work_and_leave_cache_unchanged(
                 safety="safe",
                 allowed_directions=["forward"],
             )
-            for previous, following in [*zip(layers, layers[1:], strict=False), (["S"], ["Z"])]
+            for previous, following in [
+                *zip(layers, layers[1:], strict=False),
+                (["S"], ["Z"]),
+                (layers[-1], ["Z"]),  # These routes reach Z only beyond the hop ceiling.
+                (["X"], ["Y"]),
+            ]
             for source in previous
             for target in following
         ],
         path_policy=PathPolicyConfig(max_hops=8),
-        path_preferences=[],
+        path_preferences={
+            "none": [],
+            "unrelated": [PathPreferenceConfig("X", "Y", ["X_Y"])],
+            "applicable": [
+                PathPreferenceConfig(
+                    "S", layers[2][0], [f"S_{layers[1][0]}", f"{layers[1][0]}_{layers[2][0]}"]
+                )
+            ],
+        }[preference],
     )
-    assert len(config.entities) == 35
-    assert len(config.relationships) == 117
+    assert len(config.entities) == 45
+    assert len(config.relationships) == 187
     with pytest.raises(SemanticLayerError) as raised:
         resolve_path(config, start="S", target="disconnected")
-    expected = sorted(["Z", *layers[1]])
+    expected = sorted(["Z", *layers[1], *([layers[2][0]] if preference == "applicable" else [])])
     issue = exception_issue(enrich_path_not_found(raised.value, config), stage="plan")
     assert issue["details"]["reachable_targets"] == expected
     assert all(hint["kind"] != "isolated_source_entity" for hint in issue["recovery_hints"])
@@ -170,32 +184,48 @@ def test_branching_path_hints_bound_work_and_leave_cache_unchanged(
         # Preserve both successful routes and existing refusals without rendering them.
         resolve_path(config, start="S", target="Z")
         with pytest.raises(SemanticLayerError):
-            resolve_path(config, start="S", target=layers[2][0])
+            resolve_path(config, start="S", target=layers[2][1])
         enrich_path_not_found(raised.value, config)
     cache_before = dict(analysis.path_cache)
     note_cache_before = dict(analysis.route_note_cache)
     shortest_path = fanout_module._shortest_path
+    disagreeing_row = fanout_module.disagreeing_row
     calls = 0
+    row_checks = 0
 
     def counted_shortest_path(*args, **kwargs):
         nonlocal calls
         calls += 1
         return shortest_path(*args, **kwargs)
 
+    def counted_disagreeing_row(*args, **kwargs):
+        nonlocal row_checks
+        row_checks += 1
+        return disagreeing_row(*args, **kwargs)
+
     def reject_full_resolution(*args, **kwargs):
         pytest.fail("hint eligibility must not enumerate or render full route envelopes")
 
     monkeypatch.setattr(fanout_module, "_shortest_path", counted_shortest_path)
+    monkeypatch.setattr(fanout_module, "disagreeing_row", counted_disagreeing_row)
     monkeypatch.setattr(fanout_module, "resolve_path", reject_full_resolution)
     monkeypatch.setattr(fanout_module, "enumerate_paths", reject_full_resolution)
     monkeypatch.setattr(fanout_module, "_route_decision_required", reject_full_resolution)
     first = enrich_path_not_found(raised.value, config)
     first_calls = calls
+    first_row_checks = row_checks
     second = enrich_path_not_found(raised.value, config)
-    reachable_targets = len(nodes) - 2  # Exclude the source and disconnected entity.
+    reachable_targets = len(nodes) - 4  # Exclude the source and three unreachable entities.
     bound = reachable_targets * (config.path_policy.max_hops + 1) + 1
-    assert 0 < first_calls <= bound
-    assert 0 < calls - first_calls <= bound
+    if preference == "applicable":
+        row_bound = reachable_targets * 4 * config.path_policy.max_hops
+        assert 0 < first_row_checks <= row_bound
+        assert 0 < row_checks - first_row_checks <= row_bound
+        assert calls == 0
+    else:
+        assert 0 < first_calls <= bound
+        assert 0 < calls - first_calls <= bound
+        assert row_checks == 0
     assert first.details == second.details
     assert first.details["reachable_targets"] == expected
     assert first.details["compatible_group_by_dimensions"] == [

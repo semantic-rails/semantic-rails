@@ -501,7 +501,7 @@ Three connection kinds are supported:
 - `snowflake_native` — direct connector via env-var indirection (account, user,
   password, etc. read from environment variables).
 
-Literal credentials in YAML are rejected.
+Literal secrets in YAML are rejected.
 
 For `snowflake_adbc`, driver names, shared-library paths and manifests belong to
 the runtime operator's environment; package options selecting them are rejected
@@ -511,9 +511,14 @@ with `QUERY_EXECUTION_ERROR`.
 Out-of-range timestamps such as `9999-12-31` refuse; cast those columns to
 `TIMESTAMP_*(6)` or `DATE` in the model.
 With `use_high_precision=true`, scale-0 `NUMBER` columns come back typed `decimal`.
-Package loading checks `account_env`, `user_env`, exactly one password or key
-source, and a key source when `private_key_passphrase_env` is authored, without
-reading credentials; `connection.name` is refused for this kind.
+Account and user may be literals (`account`, `user`) or env-indirected
+(`account_env`, `user_env`); the optional key passphrase may use
+`private_key_passphrase_env` or `private_key_passphrase_file`.
+Passphrase files preserve whitespace except for one optional trailing LF (`\n`)
+or CRLF (`\r\n`); other `*_file` secrets still strip surrounding whitespace.
+Package loading checks both locators, exactly one password or key source, and a
+key source when a passphrase is authored, without reading credentials;
+`connection.name` is refused for this kind.
 
 ### Native adapter timeouts
 
@@ -618,10 +623,13 @@ behavior:
   it directly is governed by `object_access`, not visibility.
 - **`object_access`** — enforced at query time. `action: deny` refuses the
   query with a structured policy error; `action: redact` executes but replaces
-  the governed object's values in the result. An `aggregate_if` whose condition
-  reads another entity reads the dimensions over its columns, as a `where` filter
-  on them does, so their policies apply. While any `object_access` or
-  `object_visibility` policy is declared, it may not read a column of that entity
+  the governed object's values in the result. An `aggregate_if` reads every
+  dimension declared over the columns in its condition or value, including on
+  the measure's own entity, as a `where` filter or `group_by` on them does. A
+  matching `deny`, `redact` or `hidden` object policy on any such dimension
+  refuses the query with `POLICY_DENIED` before SQL is rendered. Own-entity
+  columns with no declared dimension remain allowed. While any `object_access`
+  or `object_visibility` policy is declared, it may not read another entity's column
   that no dimension declares (`POLICY_DENIED`, reason `column_without_dimension`).
 - **`protected_object`** — pins an object as protected in the named
   environments; `promote-package` and `impact-report` treat changes to
@@ -1529,7 +1537,9 @@ business definition. The engine never guesses: the decision is recorded once
 in the package, then every query uses it, and adding a route never silently
 changes an existing answer. A route is chosen only by a recorded decision or
 the start entity's own key. For each start entity and target entity, over
-every route within the hop ceiling, in this order:
+every route within the hop ceiling, in this order (a query's own
+[`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions) row for exactly the
+pair comes first, for that query only):
 
 1. **Decided.** A `graph.path_preferences` row for exactly the pair (below)
    wins.
@@ -1566,13 +1576,40 @@ facts' rows is refused the same way, and its recovery hint points at
 `time.grain` instead.
 
 The refusal is a clarification: `details.reason` is `route_decision_required`,
-`details.candidates` lists every route, `details.meanings` reads each one as a
-chain of entity and relationship labels (`Account → Owner → Home region`), and
-`details.pins` holds the `graph.path_preferences` row that records each route
-whose row would load beside the package's rows. A route whose row would
-disagree with existing rows (see "Rows must agree" below) is listed instead in
-`details.conflicts_with`, as `{relationship_path, rows}` with those rows. Copy
-the row for the meaning the package intends into `graph.yml`.
+and `details.clarification` asks which route the question means, in business
+words built only from package labels:
+
+```json
+{"kind": "route", "apply": ["query", "package"],
+ "question": "Which District does the question mean for an Account?",
+ "options": [
+   {"id": "branch_district", "meaning": "the District of the Account's Branch",
+    "relationship_path": ["relationship.accounts_branch", "relationship.branches_district"],
+    "decision": {"source_entity": "entity.bank_account", "target_entity": "entity.bank_district",
+                 "relationship_path": ["relationship.accounts_branch", "relationship.branches_district"],
+                 "label": "the District of the Account's Branch"}},
+   {"id": "owner_district", "meaning": "the District of the Account's Owner", "...": "..."}]}
+```
+
+- `meaning` names every entity on the route by its label. A hop between two
+  entities related more than once is named by the relationship's own label, or
+  else by its foreign-key columns (`the Flight's Airport (origin_airport_id)`),
+  and a one-to-many hop reads "any of the …" (`any of the Account's Memberships`).
+- `id` is unique within the refusal and never an entity key: the waypoint and
+  target entity keys (`branch_district`), or a direct hop's foreign-key column
+  without its `_id`/`_key`/`_code` suffix (`origin_airport`); `_2` on a clash.
+- `decision` is the `graph.path_preferences` row that makes the option the
+  package default, with `label` set to the meaning. When that row would
+  disagree with existing rows (see "Rows must agree" below), the option adds
+  `conflicts_with`: those rows, to change before recording it. Its `decision`
+  still answers per query.
+
+Every option can be applied two ways. For the person who asked, the agent
+resends the query with the option's `decision` in
+[`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions): that query only, not a
+default. For everyone, a maintainer records the same row in the package (Architect
+`record_route_decision` writes it for review); then the question answers
+without asking.
 
 A relationship's `path_preference` weight no longer exists: a package that
 still sets one fails to load with `INVALID_CONFIG`, naming the relationship.
@@ -1594,25 +1631,28 @@ graph:
         - relationship.orders_customer
         - relationship.customers_city
         - relationship.cities_region
+      label: the Region of the City of the Line item's Customer
 ```
 
-`source_entity` and `target_entity` take an entity's key, name or id (the rows in
-`details.pins` use ids). Rows are validated at load time (unknown entities and
-relationships, broken chains, and disallowed traversal directions are
-`INVALID_CONFIG`), and the fanout safety analysis still applies to the recorded
-route. A row decides its own pair, and every other pair whose routes walk
-through it inherits it (rule 3 above), except where the start entity holds its
-own key to the target (rule 2). So one row usually serves a whole family of
-questions: record the shortest pair that carries the meaning.
+`source_entity` and `target_entity` take an entity's key, name or id (a
+clarification option's `decision` uses ids). Rows are validated at load time
+(unknown entities and relationships, broken chains, and disallowed traversal
+directions are `INVALID_CONFIG`), and the fanout safety analysis still applies
+to the recorded route. A row decides its own pair, and every other pair whose
+routes walk through it inherits it (rule 3 above), except where the start
+entity holds its own key to the target (rule 2). So one row usually serves a
+whole family of questions: record the shortest pair that carries the meaning.
+The optional `label` states the meaning in business words; it keeps the
+decision reviewable, the package writer keeps it, and a compile's `hop_profile`
+target and discovery's path availability show it as `route_label` for the
+pair's recorded route.
 
 Rows must agree. When one row's path walks through another row's pair, the
 part between them must be that row's path (or, walked the other way, its path
 reversed); otherwise the package fails to load with `INVALID_CONFIG`, naming
 the rows in `details.rows`. A configuration built in code (for example with
 `Runtime.from_config`) is held to the same check when it is first used. A row
-for a pair with one route is allowed: it
-records a definition. A comment stating the meaning in the question's own
-words keeps the decision reviewable.
+for a pair with one route is allowed: it records a definition.
 
 Four guard rails back this up:
 

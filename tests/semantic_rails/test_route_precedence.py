@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import textwrap
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -351,6 +351,11 @@ def _refusal(pkg: Path, query: dict[str, Any], code: str = "AMBIGUOUS_PATH") -> 
     return exc_info.value
 
 
+def _routes(err: SemanticLayerError) -> list[list[str]]:
+    """The routes an AMBIGUOUS_PATH refusal asks between, one per clarification option."""
+    return [option["relationship_path"] for option in err.details["clarification"]["options"]]
+
+
 # Each start's rows with the account they belong to, as (account_id, v).
 START_ROWS = {
     "account": "SELECT account_id, balance AS v FROM accounts",
@@ -478,7 +483,7 @@ def test_equal_length_routes_refuse_whatever_their_weights_and_a_row_decides(tmp
         assert "graph.path_preferences" in str(exc_info.value)
         return
     err = _refusal(pkg, query)
-    assert sorted(map(len, err.details["candidates"])) == [2, 2]
+    assert sorted(map(len, _routes(err))) == [2, 2]
     for route in ("branch", "owner"):
         path = BRANCH if route == "branch" else OWNER
         pinned = _write_package(tmp_path / route, rows=[_row(ACCOUNT, DISTRICT, path)])
@@ -563,7 +568,7 @@ def test_fan_out_only_alternatives_refuse_and_a_row_decides(tmp_path):
         where=[{"field": "dimension.shop_order_status", "op": "=", "value": "returned"}],
     )
     err = _refusal(_write_shop(tmp_path / "none"), query)
-    assert sorted(err.details["candidates"], key=len) == [DIRECT_ORDERS, SESSION_ORDERS]
+    assert sorted(_routes(err), key=len) == [DIRECT_ORDERS, SESSION_ORDERS]
     golds = {
         tuple(DIRECT_ORDERS): (
             "SELECT COUNT(DISTINCT customer_id) FROM orders WHERE status = 'returned'"
@@ -794,7 +799,7 @@ def test_two_own_keys_are_not_one_and_an_inherited_row_decides(tmp_path):
     two_keys = (*OWN_DISTRICT, "loans_payout_district")
     query = _query(LOAN_AMOUNT, group_by=[DISTRICT_NAME])
     err = _refusal(_write_package(tmp_path / "none", relationships=two_keys), query)
-    assert [OWN_KEY, [_rel("loans_payout_district")]] == err.details["candidates"][:2]
+    assert [OWN_KEY, [_rel("loans_payout_district")]] == _routes(err)[:2]
     pkg = _write_package(
         tmp_path / "row", relationships=two_keys, rows=[_row(DISTRICT, LOAN, OWN_KEY)]
     )
@@ -849,7 +854,10 @@ def test_rows_built_in_code_must_agree_too(tmp_path):
             _query(LOAN_AMOUNT, group_by=[DISTRICT_NAME])
         )
     assert exc_info.value.code == "INVALID_CONFIG"
-    assert exc_info.value.details["rows"] == [ACCOUNT_OWNER_ROW, asdict(loan_branch)]
+    assert exc_info.value.details["rows"] == [
+        ACCOUNT_OWNER_ROW,
+        _row(LOAN, DISTRICT, loan_branch.relationship_path),
+    ]
 
 
 LOAN_BRANCH, LOAN_OWNER = [*LOAN_ACCOUNT, *BRANCH], [*LOAN_ACCOUNT, *OWNER]
@@ -901,8 +909,20 @@ def test_every_suggested_row_loads_and_answers_by_its_route(tmp_path, case):
         details = _notes(Runtime.from_path(str(pkg)).query(query))[(LOAN, DISTRICT)]["details"]
         suggested, routes = details["alternatives"], [LOAN_BRANCH, LOAN_OWNER]
     else:
-        details = _refusal(pkg, query).details
-        suggested, routes = details["pins"], details["candidates"]
+        options = _refusal(pkg, query).details["clarification"]["options"]
+        suggested = [
+            _row(start, DISTRICT, option["relationship_path"])
+            for option in options
+            if "conflicts_with" not in option
+        ]
+        routes = [option["relationship_path"] for option in options]
+        details = {
+            "conflicts_with": [
+                {"relationship_path": option["relationship_path"], "rows": option["conflicts_with"]}
+                for option in options
+                if "conflicts_with" in option
+            ]
+        }
     assert suggested == [_row(start, DISTRICT, path) for path in offered]
     expected = [{"relationship_path": path, "rows": named} for path, named in conflicts]
     assert details.get("conflicts_with", []) == expected

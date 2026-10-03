@@ -1309,6 +1309,255 @@
         "idempotentHint": true,
         "openWorldHint": false,
         "readOnlyHint": false,
+        "title": "Record route decision"
+      },
+      "description": "Record which route a question between two entities means, as the package default: write or replace the pair's graph.path_preferences row (pass the decision of an AMBIGUOUS_PATH clarification option). An off-route path or an unknown entity or relationship is INVALID_CONFIG with nothing written. Returns replaced (the previous row) and summary, one sentence for the review.",
+      "inputSchema": {
+        "properties": {
+          "dry_run": {
+            "default": false,
+            "type": "boolean"
+          },
+          "expected_revision": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "type": "string"
+          },
+          "project_path": {
+            "type": "string"
+          },
+          "relationship_path": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "source_entity": {
+            "type": "string"
+          },
+          "target_entity": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_path",
+          "source_entity",
+          "target_entity",
+          "relationship_path",
+          "expected_revision",
+          "idempotency_key"
+        ],
+        "type": "object"
+      },
+      "name": "record_route_decision",
+      "outputSchema": {
+        "$defs": {
+          "ArchitectFileChange": {
+            "properties": {
+              "after_bytes": {
+                "default": 0,
+                "type": "integer"
+              },
+              "after_sha256": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "before_bytes": {
+                "default": 0,
+                "type": "integer"
+              },
+              "before_sha256": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "content_encoding": {
+                "default": "none",
+                "enum": [
+                  "utf-8",
+                  "base64",
+                  "none"
+                ],
+                "type": "string"
+              },
+              "diff": {
+                "default": "",
+                "type": "string"
+              },
+              "operation": {
+                "enum": [
+                  "create",
+                  "update",
+                  "delete"
+                ],
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              },
+              "proposed_content": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "path",
+              "operation"
+            ],
+            "type": "object"
+          },
+          "ArchitectMutationIssue": {
+            "additionalProperties": true,
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "details": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "message"
+            ],
+            "type": "object"
+          }
+        },
+        "additionalProperties": true,
+        "description": "Stable structured output shared by every Architect mutation tool.",
+        "properties": {
+          "base_revision": {
+            "type": "string"
+          },
+          "changed_files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/$defs/ArchitectFileChange"
+            },
+            "type": "array"
+          },
+          "current_revision": {
+            "type": "string"
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ArchitectMutationIssue"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/$defs/ArchitectMutationIssue"
+            },
+            "type": "array"
+          },
+          "expected_revision": {
+            "type": "string"
+          },
+          "idempotency_key": {
+            "type": "string"
+          },
+          "idempotent_replay": {
+            "type": "boolean"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "parse": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "project_path": {
+            "type": "string"
+          },
+          "proposed_revision": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "workspace_root": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "status",
+          "project_path",
+          "expected_revision",
+          "base_revision",
+          "current_revision",
+          "revision",
+          "proposed_revision",
+          "idempotency_key",
+          "idempotent_replay",
+          "dry_run",
+          "changed_files",
+          "changes"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
         "title": "Upsert metric"
       },
       "description": "Upsert a metric from spec (kind, measure or inputs, value_type, label, description). A new metric goes in metrics/<file_name>, or metrics/<group>/<metric_key>.yml; an existing one stays in its file. Fields merge; replace: true rewrites it, keeping its id. Gotcha: strict packages need an explicit value_type.",

@@ -418,7 +418,7 @@ def _restricted_plan(
         **base,
         "status": "ok",
         "best": best,
-        "next": {"validate": {"query": query}, "ready_for": ["execute"]},
+        "next": {"ready_for": ["execute"]},
     }
 
 

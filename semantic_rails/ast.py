@@ -157,6 +157,68 @@ class OrderBy:
 
 
 @dataclass(frozen=True)
+class RouteDecision:
+    """A ``route_decisions`` row: this query's route for one exact (source, target) pair,
+    shaped like a ``graph.path_preferences`` row (its ``label`` is ignored)."""
+
+    source_entity: str
+    target_entity: str
+    relationship_path: list[str]
+
+
+_ROUTE_DECISION_KEYS = frozenset({"source_entity", "target_entity", "relationship_path", "label"})
+
+
+def route_decisions_from_payload(payload: dict[str, Any]) -> list[RouteDecision]:
+    """The shape of ``route_decisions``; the package checks each row when the query binds."""
+    raw = payload.get("route_decisions")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            "route_decisions must be a list of rows shaped "
+            "{source_entity, target_entity, relationship_path}",
+            details={"path": "route_decisions", "received_type": type(raw).__name__},
+        )
+    rows: list[RouteDecision] = []
+    for index, row in enumerate(raw):
+        where = f"route_decisions[{index}]"
+        path = row.get("relationship_path") if isinstance(row, dict) else None
+        if (
+            not isinstance(row, dict)
+            or set(row) - _ROUTE_DECISION_KEYS
+            or not all(
+                isinstance(row.get(key), str) and row[key].strip()
+                for key in ("source_entity", "target_entity")
+            )
+            or not isinstance(path, list)
+            or not path
+            or not all(isinstance(hop, str) and hop.strip() for hop in path)
+        ):
+            raise SemanticLayerError(
+                "INVALID_QUERY",
+                f"{where} must be an object with source_entity, target_entity and a non-empty "
+                "relationship_path list (the decision of an AMBIGUOUS_PATH option)",
+                details={
+                    "path": where,
+                    "reason": "malformed_route_decision",
+                    "unsupported_keys": sorted(set(row) - _ROUTE_DECISION_KEYS)
+                    if isinstance(row, dict)
+                    else [],
+                },
+            )
+        rows.append(
+            RouteDecision(
+                source_entity=row["source_entity"].strip(),
+                target_entity=row["target_entity"].strip(),
+                relationship_path=[hop.strip() for hop in path],
+            )
+        )
+    return rows
+
+
+@dataclass(frozen=True)
 class NormalizedQuery:
     version: int
     select: list[QuerySelect]
@@ -170,9 +232,18 @@ class NormalizedQuery:
     debug: bool = False
     explain: bool = False
     export: bool = False
+    route_decisions: list[RouteDecision] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        # Only a query that decides a route carries the key, so other queries' normalized
+        # forms (and compile-cache keys) are unchanged.
+        decisions = (
+            {"route_decisions": [asdict(row) for row in self.route_decisions]}
+            if self.route_decisions
+            else {}
+        )
         return {
+            **decisions,
             "version": self.version,
             "select": [
                 {
@@ -765,6 +836,7 @@ QUERY_INPUT_KEYS: frozenset[str] = frozenset(
         "limit",
         "time",
         "temporal_role_overrides",
+        "route_decisions",
         "debug",
         "explain",
         "export",
@@ -1222,6 +1294,7 @@ def normalize_query(payload: dict[str, Any]) -> NormalizedQuery:
         debug=bool(payload.get("debug", False)),
         explain=bool(payload.get("explain", False)),
         export=bool(payload.get("export", False)),
+        route_decisions=route_decisions_from_payload(payload),
     )
 
 
@@ -1231,6 +1304,7 @@ def normalize_partial_query(payload: dict[str, Any]) -> PartialQueryState:
     # unknown top-level keys with the same USE_CANONICAL_KEY hint.
     _check_unknown_top_level_keys(payload)
     _check_supported_version(payload)
+    route_decisions_from_payload(payload)
     payload, _ = rewrite_select_shorthand(payload, partial=True)
     select: list[QuerySelect] = []
     for idx, row in enumerate(list(payload.get("select", []) or [])):

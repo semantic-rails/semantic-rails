@@ -27,6 +27,8 @@ from .compiler import (
     _reduced_context_entities,
     _requires_query_time,
     _time_bound_relationship_ids,
+    bind_query,
+    query_route_rows,
 )
 from .diagnostics import relationship_contract_payload
 from .errors import SemanticLayerError
@@ -57,6 +59,7 @@ from .expressions import (
     expr_to_dict,
     parse_semantic_expression,
 )
+from .fanout import query_route_decisions
 from .metadata_parts.capabilities import (
     _capability_payload,
 )
@@ -93,7 +96,7 @@ from .metadata_parts.relevance import (
 )
 from .metadata_parts.scope_gate import scope_block_payload as _scope_block_payload
 from .metadata_parts.valid_values import valid_values_payload
-from .policies import hidden_object_ids, policy_effects_for_object
+from .policies import hidden_object_ids, policy_effects_for_object, row_filters_for_context
 from .request_context import context_from_policy_context
 from .request_payload import DISCOVER_RANKED_KINDS, checked_discover_kinds
 from .runtime import Runtime, runtime_request_scope
@@ -2745,6 +2748,18 @@ def _slim_inspect_card(card: dict[str, Any]) -> dict[str, Any]:
     return slim
 
 
+def _partial_query_routes(
+    config: PackageConfig, partial_query: dict[str, Any]
+) -> dict[tuple[str, str], list[str]]:
+    """The partial query's ``route_decisions`` by pair, checked as ``bind_query`` checks them
+    (a row filter in its context refuses them)."""
+    if not partial_query.get("route_decisions"):
+        return {}
+    filters = row_filters_for_context(config, _policy_context(partial_query))
+    decided = query_route_rows(config, partial_query, row_filters=filters)
+    return {pair: row.relationship_path for pair, (_, row) in decided.items()}
+
+
 def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[str, Any]:
     config = runtime._config
     validate_temporal_support(config, partial_query)
@@ -2851,6 +2866,33 @@ def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[st
 
 @runtime_request_scope
 def build_options_payload(
+    runtime: Runtime,
+    *,
+    partial_query: dict[str, Any],
+    focus_terms: str = "",
+    focus_object_id: str = "",
+    step: str = "",
+    stage: str = "",
+    verbosity: str = "compact",
+    include_blocked: bool = True,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """The builder's next options; the query's own route_decisions show the way they answer."""
+    with query_route_decisions(_partial_query_routes(runtime._config, partial_query)):
+        return _build_options_payload(
+            runtime,
+            partial_query=partial_query,
+            focus_terms=focus_terms,
+            focus_object_id=focus_object_id,
+            step=step,
+            stage=stage,
+            verbosity=verbosity,
+            include_blocked=include_blocked,
+            limit=limit,
+        )
+
+
+def _build_options_payload(
     runtime: Runtime,
     *,
     partial_query: dict[str, Any],
@@ -3262,6 +3304,18 @@ def build_options_payload(
             }
         )
 
+    if raw_query.get("route_decisions"):
+        # A patch that would leave one of the caller's route rows unused is refused as it
+        # stands: offer it blocked with that refusal, never with the row stripped.
+        for offered in (recommended, available):
+            for row in list(offered):
+                refusal = _unused_route_decision(runtime, row.get("query_patch"))
+                if refusal:
+                    offered.remove(row)
+                    row.pop("query_patch")
+                    row.update(available=False, blocked_reason=refusal, rationale=[refusal])
+                    if include_blocked:
+                        blocked.append(row)
     recommended = sorted(
         recommended,
         key=lambda row: (-float(row.get("rank", 0.0)), row.get("label", ""), row.get("id", "")),
@@ -3315,6 +3369,18 @@ def build_options_payload(
         "blocked": blocked if include_blocked else [],
         "query_patches": query_patches[:shortlist_limit],
     }
+
+
+def _unused_route_decision(runtime: Runtime, patch: dict[str, Any] | None) -> str:
+    """The ``route_decision_unused`` refusal ``patch`` would get, naming the row, else ``""``."""
+    if not patch or not patch.get("route_decisions"):
+        return ""
+    try:
+        bind_query(runtime._config, runtime.registry, patch)
+    except SemanticLayerError as exc:
+        if exc.details.get("reason") == "route_decision_unused":
+            return str(exc)
+    return ""
 
 
 def _select_expr_for_choice(runtime: Runtime, chosen: dict[str, Any]) -> dict[str, Any]:
