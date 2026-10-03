@@ -277,6 +277,22 @@ def _run(package: Path, query: dict[str, Any], *, validate: bool = False) -> dic
         engine.close()
 
 
+@pytest.mark.parametrize("match", ["any", "none"])
+def test_a_misspelled_child_value_is_named(package: Path, match: str) -> None:
+    response = _run(
+        package,
+        _query(
+            [
+                {"child": ITEM, "match": match, "where": [{**BEVERAGE, "value": "beverag"}]},
+            ]
+        ),
+    )
+    (warning,) = [w for w in response["warnings"] if w["code"] == "FILTER_VALUE_NOT_FOUND"]
+    assert warning["details"]["filters"] == [
+        {"dimension": TYPE, "value": "beverag", "suggestion": "beverage"},
+    ]
+
+
 def _normal(rows: Any) -> list[tuple[Any, ...]]:
     return sorted(
         (

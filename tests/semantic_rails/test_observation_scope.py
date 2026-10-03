@@ -26,6 +26,7 @@ from semantic_rails.expressions import parse_config_expression
 from semantic_rails.registry import Registry
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.empty_groups_invariant import assert_settled_in_one_place
 
 SEED = """
 CREATE TABLE sales (sale_id INTEGER, store_id VARCHAR, region VARCHAR, product VARCHAR,
@@ -159,6 +160,11 @@ def test_apples_whose_quantity_is_unknown_stay_unknown(runtime: Runtime, scope: 
     where_items = [*_where(PRODUCT, "apple"), *_where(STORE, "s4")]
     response = _ask(runtime, scope, select=_select(qty=QTY, sales=SALES), where=where_items)
     assert [tuple(row.values()) for row in response["rows"]] == _gold(sql) == [(None, 1)]
+    assert ("NO_DATA_IN_SCOPE" in _codes(response)) is (scope == "query")
+    # The same rule holds when every output in the response is NULL.
+    quantity = _ask(runtime, scope, select=_select(qty=QTY), where=where_items)
+    assert quantity["rows"] == [{"qty": None}]
+    assert ("NO_DATA_IN_SCOPE" in _codes(quantity)) is (scope == "query")
 
 
 @pytest.mark.parametrize("warehouse", sorted(_WAREHOUSE_CONNECTORS))
@@ -170,6 +176,37 @@ def test_every_warehouse_probes_with_plain_ctes(package: Path, warehouse: str) -
     sql = compile_query(config, Registry(config), query)["sql"]
     assert "observed_1_rows AS" in sql and "LIMIT 1" in sql and "CROSS JOIN observed_1" in sql
     assert "EXISTS" not in sql
+
+
+@pytest.mark.parametrize("condition_index", [0, 1])
+def test_the_invariant_detects_each_lost_authored_condition(
+    package: Path, condition_index: int
+) -> None:
+    config = load_package_config(str(package))
+    regional_apples = {
+        **QTY,
+        "kind": "aggregate",
+        "filter": {
+            "all": [
+                *_where(PRODUCT, "apple"),
+                *_where("dimension.obs_sale_region", "east"),
+            ]
+        },
+    }
+    compiled = compile_query(
+        config,
+        Registry(config),
+        {
+            "version": 1,
+            "select": _select(qty=regional_apples),
+            "where": _where(STORE, "s5"),
+        },
+    )
+    assert_settled_in_one_place(compiled, config)
+    probe = next(cte.query for cte in compiled["sql_ast"].ctes if cte.name == "observed_1_rows")
+    probe.where.pop(condition_index)
+    with pytest.raises(AssertionError, match="dataset probe lost an authored leaf condition"):
+        assert_settled_in_one_place(compiled, config)
 
 
 @pytest.mark.parametrize("scope", ["dataset", "query"])
@@ -203,6 +240,105 @@ def test_one_warning_names_every_value_that_matched_nothing(runtime: Runtime) ->
     ]
 
 
+@pytest.mark.parametrize("failed_execution", [2, 3])
+def test_a_failed_value_probe_never_silences_the_guard(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch, failed_execution: int
+) -> None:
+    adapter = runtime._get_adapter()
+    original = adapter.query_prepared
+    calls = 0
+
+    def query(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == failed_execution:
+            raise SemanticLayerError("QUERY_EXECUTION_ERROR", "Value read failed")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(adapter, "query_prepared", query)
+    response = _ask(runtime, "dataset", select=_select(qty=QTY), where=_where(PRODUCT, "appel"))
+    assert response["rows"] == [{"qty": 0}]
+    code = "FILTER_VALUE_UNVERIFIED" if failed_execution == 2 else "FILTER_VALUE_NOT_FOUND"
+    (warning,) = [item for item in response["warnings"] if item["code"] == code]
+    (value,) = warning["details"]["filters"]
+    assert value["dimension"] == PRODUCT and value["value"] == "appel"
+    if failed_execution == 2:
+        assert "could not be verified" in warning["message"]
+        assert PRODUCT in warning["message"] and "'appel'" in warning["message"]
+    else:
+        assert value["suggestion"] is None
+
+
+def test_a_filter_only_dimension_reports_unverified_values(package: Path) -> None:
+    config = load_package_config(str(package))
+    config = replace(
+        config,
+        dimensions=[
+            replace(row, groupable=False) if row.id == PRODUCT else row for row in config.dimensions
+        ],
+    )
+    engine = Runtime.from_config(config, source_path=str(package))
+    try:
+        response = _ask(
+            engine,
+            "dataset",
+            select=_select(qty=QTY),
+            where=_where(PRODUCT, ["apple", "appel"], "IN"),
+        )
+        assert response["rows"] == [{"qty": 5}]
+        (warning,) = [w for w in response["warnings"] if w["code"] == "FILTER_VALUE_UNVERIFIED"]
+        assert [(v["dimension"], v["value"]) for v in warning["details"]["filters"]] == [
+            (PRODUCT, "apple"),
+            (PRODUCT, "appel"),
+        ]
+    finally:
+        engine.close()
+
+
+def test_each_literal_uses_warehouse_equality(runtime: Runtime) -> None:
+    response = _ask(
+        runtime,
+        "dataset",
+        select=_select(qty=QTY),
+        where=_where(PRODUCT, ["apple", "Apple"], "IN"),
+    )
+    assert response["rows"] == [{"qty": 5}]
+    (warning,) = [w for w in response["warnings"] if w["code"] == "FILTER_VALUE_NOT_FOUND"]
+    assert warning["details"]["filters"] == [
+        {"dimension": PRODUCT, "value": "Apple", "suggestion": "apple"},
+    ]
+
+
+def test_every_value_probe_keeps_request_limits_and_identity(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = Runtime.query
+    calls: list[dict[str, Any]] = []
+
+    def query(engine: Runtime, payload: dict[str, Any]) -> dict[str, Any]:
+        calls.append(payload)
+        return original(engine, payload)
+
+    monkeypatch.setattr(Runtime, "query", query)
+    limits = {"statement_timeout_ms": 1000}
+    context = REGIONAL.to_policy_context()
+    response = _ask(
+        runtime,
+        "dataset",
+        select=_select(qty=QTY),
+        where=_where(PRODUCT, "appel"),
+        limits=limits,
+        request_id="value-probe",
+        policy_context=context,
+    )
+    assert "FILTER_VALUE_NOT_FOUND" in _codes(response)
+    assert len(calls) == 3  # answer, existence, optional suggestion
+    for probe in calls[1:]:
+        assert probe["limits"] == limits
+        assert probe["request_id"] == "value-probe"
+        assert probe["policy_context"] == context
+
+
 @pytest.mark.parametrize("scope", ["dataset", "query"])
 def test_an_authored_condition_that_never_matched_reads_null(runtime: Runtime, scope: str) -> None:
     """No durian was ever sold: the filtered measure has no data anywhere, in either scope."""
@@ -228,6 +364,34 @@ def test_a_window_with_no_rows_reads_zero_while_other_dates_have_data(
     )
     response = _ask(runtime, scope, select=_select(qty=QTY), time=time)
     assert [row["qty"] for row in response["rows"]] == [expected[0]] == [0]
+
+
+@pytest.mark.parametrize("scope", ["dataset", "query"])
+def test_a_filtered_empty_month_observes_the_selected_scope(runtime: Runtime, scope: str) -> None:
+    """February has no pears at s1; dataset pears elsewhere permit 0, query data does not."""
+    observation = "" if scope == "dataset" else "AND store_id = 's1'"
+    (expected,) = _gold(
+        "SELECT CASE WHEN COUNT(*) > 0 THEN SUM(qty) WHEN EXISTS "
+        "(SELECT 1 FROM sales WHERE product = 'pear' AND qty IS NOT NULL "
+        f"{observation}) THEN 0 END FROM sales WHERE product = 'pear' AND store_id = 's1' "
+        "AND sold_at >= TIMESTAMP '2025-02-01' AND sold_at < TIMESTAMP '2025-03-01'"
+    )
+    pears = {**QTY, "kind": "aggregate", "filter": {"all": _where(PRODUCT, "pear")}}
+    response = _ask(
+        runtime,
+        scope,
+        select=_select(qty=pears),
+        where=_where(STORE, "s1"),
+        time={
+            "temporal_role": SOLD,
+            "grain": "month",
+            "fill": True,
+            "start": "2025-02-01",
+            "end": "2025-03-01",
+        },
+    )
+    assert [row["qty"] for row in response["rows"]] == [expected[0]]
+    assert expected == ((0,) if scope == "dataset" else (None,))
 
 
 def test_a_regional_caller_never_observes_a_hidden_region(runtime: Runtime) -> None:

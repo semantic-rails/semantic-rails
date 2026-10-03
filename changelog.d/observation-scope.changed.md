@@ -12,3 +12,8 @@
   `distribution`, or over a measure whose condition reads a fan-out or has a `CASE` below its
   top level, is refused with `EMPTY_GROUPS_UNSETTLED` and asks for `observation_scope: "query"`.
   See [Query IR schema](docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
+- Filter-value warnings check each string literal with warehouse equality, including child
+  conditions, and preserve request limits. A failed or unsupported existence read reports
+  `FILTER_VALUE_UNVERIFIED`; suggestion failures omit only the suggestion. Under dataset
+  observation, unknown amounts remain `NULL` without `NO_DATA_IN_SCOPE` when the measure
+  has data elsewhere.

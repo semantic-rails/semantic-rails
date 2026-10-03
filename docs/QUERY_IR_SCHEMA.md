@@ -916,6 +916,9 @@ non-NULL amount, or a count above zero. The scope is the measure's own authored 
   store` answer. A string `=` or `IN` `where` value that matches no row of its dimension
   (under the caller's row filters) adds one `FILTER_VALUE_NOT_FOUND` warning naming each such
   value and the closest one, so a misspelled `product = 'appels'` isn't read as a confident 0.
+  If an existence probe fails or cannot group the dimension, `FILTER_VALUE_UNVERIFIED` names
+  the dimension and literals that could not be verified; a failed suggestion read only omits
+  the suggestion.
 - **`query`**: they do. A measure with no value inside the query's filters reads `NULL` in
   every group with `NO_DATA_IN_SCOPE`: "apples at store 5" reads `NULL`, and a misspelled
   filter value reads `NULL`, not a confident 0.
