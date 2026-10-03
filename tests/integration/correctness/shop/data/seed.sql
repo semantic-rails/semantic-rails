@@ -24,6 +24,15 @@ INSERT INTO orders VALUES
 ALTER TABLE orders ADD COLUMN ordered_at_tz TIMESTAMP WITH TIME ZONE;
 UPDATE orders SET ordered_at_tz = ordered_at AT TIME ZONE 'UTC';
 
+-- Three closed orders take 2, 5 and 1 calendar days. Every other endpoint is NULL.
+-- Order 3 closes less than 24 hours later but crosses a day boundary.
+ALTER TABLE orders ADD COLUMN closed_at TIMESTAMP;
+UPDATE orders SET closed_at = CASE order_id
+  WHEN 1 THEN TIMESTAMP '2023-11-05 09:00:00'
+  WHEN 2 THEN TIMESTAMP '2023-11-25 01:00:00'
+  WHEN 3 THEN TIMESTAMP '2023-12-02 01:00:00'
+  ELSE NULL END;
+
 -- Conversion to a first order within 7 days: 101 converts (4 days), 102 does not (exactly
 -- 7 days, as the window is half-open), 103 converts (one second inside), 104 does not (its
 -- order came first), 105 converts (the same instant), 106 converts in the next month and
