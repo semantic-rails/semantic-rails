@@ -936,6 +936,20 @@ def _with_districts(runtime, monkeypatch) -> None:
     )
 
 
+@pytest.mark.parametrize("intent", ["item revenue by orders", "item revenue by customers"])
+def test_fallback_plural_in_the_planner_word_table_is_not_execute_ready(
+    runtime_factory, monkeypatch, intent
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    _force_fallback(runtime, monkeypatch, intent, "fallback")
+    try:
+        payload = plan_payload(runtime, intent=intent)
+    finally:
+        runtime.close()
+    assert payload["status"] == "low_confidence", payload.get("why")
+    assert "execute" not in payload["next"].get("ready_for", [])
+
+
 @pytest.mark.parametrize(
     "path",
     [
