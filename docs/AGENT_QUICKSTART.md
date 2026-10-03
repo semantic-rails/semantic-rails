@@ -306,6 +306,7 @@ consistently across discovery, metadata, validation, compile, and query calls.
    apply with `where` for one unclear term. With several, each option names its
    `term` and `replaces` IDs: in `best.query_ir`, remove those IDs from `group_by`
    and their `order_by` entries, add the chosen `id`, keep `group_by` sorted, then validate.
+   When two terms could replace the same grouping, plan offers no options; ask the user.
 
 Use `minimal` or `compact` verbosity unless the user asks for debugging detail. Request
 `full` only for explainability, test failure triage, or query review.
@@ -354,7 +355,8 @@ node: each of its `details.clarification.options` is a complete `where` to resen
 A `PLAN_UNMATCHED_TERMS` grouping option also carries `group_by` and `order_by` to apply
 with `where` for one unclear term. With several, in `best.query_ir` remove each chosen
 option's `replaces` IDs from `group_by` and their `order_by` entries, add its `id`,
-keep `group_by` sorted, then validate. `AMBIGUOUS_PATH` (`details.reason:
+keep `group_by` sorted, then validate. When two terms could replace the same grouping,
+plan offers no options; ask the user. `AMBIGUOUS_PATH` (`details.reason:
 route_decision_required`) means two join routes can answer the question differently (an account's
 branch district or its owner's home district) and the package hasn't recorded which one it means.
 The agent never picks one; it asks:

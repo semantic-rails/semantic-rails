@@ -1044,7 +1044,8 @@ more unclear terms, options carry `id`, `label`, `term` and `replaces`, the draf
 `group_by` IDs matching that term. In `best.query_ir`, for each ambiguous term,
 remove its chosen option's `replaces` IDs from `group_by` and the corresponding
 `order_by` entries, add the chosen `id` to `group_by`, keep `group_by` IDs sorted
-so choices compose in any order, then validate. For example,
+so choices compose in any order, then validate. When two terms could replace the
+same grouping, plan offers no options; ask the user. For example,
 "item revenue by district" asks whether Store district or Customer district
 is intended.
 

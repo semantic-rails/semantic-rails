@@ -4,4 +4,5 @@
   options include validated grouping, filter and sort fields. For several, they name
   each term's draft grouping IDs to remove from `best.query_ir` grouping and sort
   fields before adding the chosen ID, keeping grouping IDs sorted, then validating.
+  When two terms could replace the same grouping, plan offers no options; ask the user.
   Drafts choosing another entity's match instead of a root-owned dimension are held.
