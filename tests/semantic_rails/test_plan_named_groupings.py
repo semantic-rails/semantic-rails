@@ -29,6 +29,7 @@ from tests.semantic_rails.test_plan_value_lists import _force_fallback
 STORE = "dimension.jaffle_store_name"
 STORE_ID_JAFFLE = "dimension.jaffle_store_id"
 CUSTOMER_TYPE = "dimension.jaffle_customer_type"
+REVENUE = "measure.jaffle.revenue_usd"
 STORE_ID = "dimension.retail_store_id"
 STORE_NAME = "dimension.retail_store_name"
 STORE_LABEL = "dimension.retail_store_label"
@@ -195,6 +196,7 @@ def _compare_base(
     with monkeypatch.context() as base:
         base.setattr(plan_module, "_named_grouping_terms", _listed_grouping_terms)
         base.setattr(plan_module, "_level_groupings_unmet", lambda *args: [])
+        base.setattr(plan_module, "_named_groupings_unmet", lambda *args: ([], []))
         before = plan_payload(runtime, intent=question, partial_query=partial)
     # Both paths generate exactly the same draft. Only readiness may change.
     assert after["best"] == before["best"]
@@ -210,6 +212,491 @@ def _compare_base(
         else:
             assert "execute" not in after["next"].get("ready_for", [])
     return before, after
+
+
+def _compare_declared_name_base(
+    runtime: Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    question: str,
+    partial: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    after = plan_payload(runtime, intent=question, partial_query=partial)
+    with monkeypatch.context() as base:
+        # Reproduce the base without the name obligation, retaining its whitespace-only
+        # level/grain reader and all its listed, unknown-noun and other readiness checks.
+        base.setattr(plan_module, "_named_groupings_unmet", lambda *args: ([], []))
+        before = plan_payload(runtime, intent=question, partial_query=partial)
+    assert after["best"] == before["best"]
+    if before["status"] == "ok" and after["status"] != "ok":
+        assert after["status"] == "low_confidence"
+        assert after["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+        assert "execute" not in after["next"].get("ready_for", [])
+    else:
+        assert after["status"] == before["status"]
+        assert after["next"] == before["next"]
+        if before["status"] == "ok":
+            assert after.get("why") == before.get("why")
+    return before, after
+
+
+@pytest.mark.parametrize("kind", ["dimension", "entity"])
+@pytest.mark.parametrize("source", ["name", "label", "aliases"])
+@pytest.mark.parametrize(
+    "term",
+    [
+        "client_category",
+        "client category",
+        "CLIENT_CATEGORY",
+        "_client_category",
+        "client_category_",
+    ],
+)
+def test_declared_grouping_names_preserve_underscore_space_and_case_spans(
+    jaffle: Runtime, kind: str, source: str, term: str
+) -> None:
+    rows = jaffle._config.dimensions if kind == "dimension" else jaffle._config.entities
+    row = next(row for row in rows if row.id == CUSTOMER_TYPE) if kind == "dimension" else rows[0]
+    spelling = term.lower().replace(" ", "_")
+    changed = replace(
+        row,
+        **{source: [spelling] if source == "aliases" else spelling},
+    )
+    config = replace(
+        jaffle._config,
+        **{"dimensions" if kind == "dimension" else "entities": [changed]},
+    )
+    question = f"revenue at {term} and store name level"
+    spans = plan_module._declared_name_spans(config, question.lower(), underscores=True)
+    assert [
+        question[low:high] for (low, high), named in spans.items() if (kind, changed) in named
+    ] == [term]
+    unmet, _ = plan_module._named_groupings_unmet(config, question, {"group_by": []})
+    assert term.lower() in unmet
+
+
+@pytest.mark.parametrize("kind", ["dimension", "entity"])
+@pytest.mark.parametrize("source", ["name", "label", "aliases"])
+@pytest.mark.parametrize("term", ["_client_category", "client_category_"])
+def test_boundary_underscores_do_not_hide_a_space_joined_declared_name(
+    jaffle: Runtime, kind: str, source: str, term: str
+) -> None:
+    rows = jaffle._config.dimensions if kind == "dimension" else jaffle._config.entities
+    row = next(row for row in rows if row.id == CUSTOMER_TYPE) if kind == "dimension" else rows[0]
+    changed = replace(
+        row, **{source: ["client category"] if source == "aliases" else "client category"}
+    )
+    config = replace(
+        jaffle._config,
+        **{"dimensions" if kind == "dimension" else "entities": [changed]},
+    )
+    question = f"revenue at {term} and store name level"
+    spans = plan_module._declared_name_spans(config, question, underscores=True)
+    assert [
+        question[low:high] for (low, high), named in spans.items() if (kind, changed) in named
+    ] == ["client_category"]
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("group_by", [None, [STORE], [STORE, CUSTOMER_TYPE]])
+@pytest.mark.parametrize(
+    "question",
+    [
+        "revenue at customer_type and store name level",
+        "revenue at CUSTOMER_TYPE and STORE_NAME levels",
+        "revenue at customer type and store name level",
+        "revenue at customer_type and store_name grain",
+        "revenue at store name and customer_type level",
+        "revenue at store name level",
+        "revenue by store name",
+        "revenue at mystery level",
+    ],
+)
+def test_declared_name_variants_only_add_holds_against_immediate_base(
+    jaffle: Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    group_by: list[str] | None,
+    question: str,
+) -> None:
+    _force_fallback(jaffle, monkeypatch, question, path)
+    partial = {
+        "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "IN", "value": ["new", "repeat"]}],
+        **({"group_by": group_by} if group_by is not None else {}),
+    }
+    before, after = _compare_declared_name_base(jaffle, monkeypatch, question, partial)
+    if question == "revenue at customer_type and store name level":
+        if group_by != [STORE, CUSTOMER_TYPE]:
+            assert after["status"] == "low_confidence"
+            assert "customer_type" in after["why"]["details"]["dropped_groupings"]
+            if before["best"]["query_ir"].get("group_by") == [STORE]:
+                assert before["status"] == "ok"
+                assert after["why"]["details"]["dropped_groupings"] == ["customer_type"]
+        else:
+            assert before["status"] == after["status"] == "ok"
+            query = after["best"]["query_ir"]
+            reference = _in_memory_reference(
+                jaffle,
+                "SELECT s.store_name, c.customer_type, SUM(o.order_total_cents / 100.0) "
+                "FROM jaffle_order o JOIN jaffle_customer c USING (customer_id) "
+                "JOIN jaffle_store s USING (store_id) "
+                "WHERE s.store_name IN ('Brooklyn', 'Philadelphia') "
+                "AND c.customer_type IN ('new', 'repeat') GROUP BY 1, 2 ORDER BY 1, 2",
+            )
+            assert len(reference) == 4
+            assert sorted(_in_memory_rows(jaffle, query, [STORE, CUSTOMER_TYPE])) == reference
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("source", ["name", "label", "aliases"])
+@pytest.mark.parametrize("term", ["_customer_type", "customer_type_"])
+@pytest.mark.parametrize("group_by", [None, [STORE], [STORE, CUSTOMER_TYPE]])
+def test_boundary_underscore_names_only_add_holds(
+    jaffle: Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    source: str,
+    term: str,
+    group_by: list[str] | None,
+) -> None:
+    monkeypatch.setattr(
+        jaffle,
+        "_config",
+        replace(
+            jaffle._config,
+            dimensions=[
+                replace(row, **{source: [term] if source == "aliases" else term})
+                if row.id == CUSTOMER_TYPE
+                else row
+                for row in jaffle._config.dimensions
+            ],
+        ),
+    )
+    question = f"revenue at {term} and store name level"
+    _force_fallback(jaffle, monkeypatch, question, path)
+    partial = {
+        "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "IN", "value": ["new", "repeat"]}],
+        **({"group_by": group_by} if group_by is not None else {}),
+    }
+    before, after = _compare_declared_name_base(jaffle, monkeypatch, question, partial)
+    if group_by != [STORE, CUSTOMER_TYPE]:
+        assert after["status"] == "low_confidence"
+        assert term in after["why"]["details"]["dropped_groupings"]
+        if before["best"]["query_ir"].get("group_by") == [STORE]:
+            assert before["status"] == "ok"
+            assert after["why"]["details"]["dropped_groupings"] == [term]
+        assert "execute" not in after["next"].get("ready_for", [])
+    else:
+        assert before["status"] == after["status"] == "ok"
+        query = after["best"]["query_ir"]
+        reference = _in_memory_reference(
+            jaffle,
+            "SELECT s.store_name, c.customer_type, SUM(o.order_total_cents / 100.0) "
+            "FROM jaffle_order o JOIN jaffle_customer c USING (customer_id) "
+            "JOIN jaffle_store s USING (store_id) "
+            "WHERE s.store_name IN ('Brooklyn', 'Philadelphia') "
+            "AND c.customer_type IN ('new', 'repeat') GROUP BY 1, 2 ORDER BY 1, 2",
+        )
+        expected = {
+            ("Brooklyn", "new"): 90.48,
+            ("Brooklyn", "repeat"): 259334.37,
+            ("Philadelphia", "new"): 6.36,
+            ("Philadelphia", "repeat"): 486461.82,
+        }
+        assert len(reference) == len(expected) == 4
+        assert {(store, kind): value for store, kind, value in reference} == pytest.approx(expected)
+        assert sorted(_in_memory_rows(jaffle, query, [STORE, CUSTOMER_TYPE])) == reference
+
+
+# The words around a grouping name never decide whether a value inside it may filter.
+_VALUE_IN_NAME_QUESTIONS = [
+    "revenue at {alias} and store name level",
+    "revenue by {alias} and store name",
+    "revenue for each {alias} and store name",
+    "revenue per {alias} and store name",
+    "{alias} and store name revenue",
+]
+
+# (phrasing, path, caller group_by length) that other readiness checks hold even without it.
+_HELD_WITHOUT_IT = {
+    ("revenue at {alias} and store name level", "fallback", None),
+    ("revenue for each {alias} and store name", "fallback", None),
+    ("revenue per {alias} and store name", "fallback", None),
+    *(("revenue per {alias} and store name", "primary", group_by) for group_by in (None, 1, 2)),
+}
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("group_by", [None, [STORE], [STORE, CUSTOMER_TYPE]])
+@pytest.mark.parametrize("alias", ["_new_type", "new_type", "new_type_", "new type"])
+@pytest.mark.parametrize("phrasing", _VALUE_IN_NAME_QUESTIONS)
+def test_a_value_inside_a_declared_grouping_name_only_adds_a_hold(
+    jaffle: Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    group_by: list[str] | None,
+    alias: str,
+    phrasing: str,
+) -> None:
+    monkeypatch.setattr(
+        jaffle,
+        "_config",
+        replace(
+            jaffle._config,
+            dimensions=[
+                replace(row, aliases=[*(row.aliases or []), alias])
+                if row.id == CUSTOMER_TYPE
+                else row
+                for row in jaffle._config.dimensions
+            ],
+        ),
+    )
+    question = phrasing.format(alias=alias)
+    _force_fallback(jaffle, monkeypatch, question, path)
+    partial = {
+        "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "IN", "value": ["new", "repeat"]}],
+        **({"group_by": group_by} if group_by is not None else {}),
+    }
+    after = plan_payload(jaffle, intent=question, partial_query=partial)
+    with monkeypatch.context() as base:
+        # Keep the whitespace level reader and every other readiness check.
+        base.setattr(plan_module, "_named_groupings_unmet", lambda *args: ([], []))
+        before = plan_payload(jaffle, intent=question, partial_query=partial)
+    assert after["best"] == before["best"]
+    query = after["best"]["query_ir"]
+    assert {"field": CUSTOMER_TYPE, "op": "=", "value": "new"} in query["where"]
+    held = (phrasing, path, group_by and len(group_by)) in _HELD_WITHOUT_IT
+    assert before["status"] == ("low_confidence" if held else "ok")
+    assert before["status"] == "ok" or after["status"] == before["status"]
+    assert after["status"] == "low_confidence", after.get("why")
+    assert "execute" not in after["next"].get("ready_for", [])
+    collision = [{"term": alias, "field": CUSTOMER_TYPE, "value": "new"}]
+    if before["status"] == "ok":
+        # A draft without the store grouping drops that named grouping as well.
+        unmet = [alias, *([] if STORE in query.get("group_by", []) else ["store name"])]
+        assert after["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+        assert after["why"]["details"]["dropped_groupings"] == unmet
+        assert after["why"]["details"]["filter_inside_grouping"] == collision
+    # Even a caller-supplied complete grouping cannot authorize the narrowed answer, and the
+    # hold names the filter to confirm or remove, not a grouping to add.
+    unmet, inside = plan_module._named_groupings_unmet(jaffle._config, question, query)
+    assert alias in unmet
+    assert inside == collision
+    why = plan_module._dropped_grouping_why(jaffle, question, query, partial)
+    assert why is not None
+    assert why["code"] == "PLAN_UNMATCHED_TERMS"
+    assert alias in why["details"]["dropped_groupings"]
+    assert why["details"]["filter_inside_grouping"] == collision
+    assert f"'new' of {CUSTOMER_TYPE} inside {alias!r}" in why["message"]
+    assert not any(
+        alias in sentence
+        for sentence in why["message"].split(". ")
+        if sentence.startswith("The draft drops the grouping")
+    )
+    hint = why["recovery_hints"][0]["message"]
+    assert "filter_inside_grouping entry, confirm with the user" in hint
+    if {STORE, CUSTOMER_TYPE} <= set(query.get("group_by") or []):
+        assert "drops the grouping" not in why["message"]
+        assert not hint.startswith("Find a dimension")
+
+
+@pytest.mark.parametrize(
+    ("question", "where"),
+    [
+        # A value stated outside every grouping name is the question's own filter.
+        (
+            "revenue by customer type and store name for new customers",
+            [{"field": CUSTOMER_TYPE, "op": "=", "value": "new"}],
+        ),
+        # A filter that doesn't carry the value, or keeps it out, brings nothing in.
+        ("revenue by _new_type and store name", [JAFFLE_FILTER]),
+        (
+            "revenue by _new_type and store name",
+            [{"field": CUSTOMER_TYPE, "op": "IN", "value": ["repeat"]}],
+        ),
+        (
+            "revenue by _new_type and store name",
+            [{"field": CUSTOMER_TYPE, "op": "!=", "value": "new"}],
+        ),
+    ],
+)
+def test_a_value_outside_grouping_names_adds_no_hold(
+    jaffle: Runtime, question: str, where: list[dict[str, Any]]
+) -> None:
+    config = replace(
+        jaffle._config,
+        dimensions=[
+            replace(row, aliases=[*(row.aliases or []), "_new_type"])
+            if row.id == CUSTOMER_TYPE
+            else row
+            for row in jaffle._config.dimensions
+        ],
+    )
+    query = {"group_by": [STORE, CUSTOMER_TYPE], "where": where}
+    assert plan_module._named_groupings_unmet(config, question, query) == ([], [])
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("alias", ["_customer_type", "customer_type", "customer type"])
+@pytest.mark.parametrize("phrasing", _VALUE_IN_NAME_QUESTIONS)
+def test_a_fully_grouped_alias_without_a_value_collision_matches_reference_sql(
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, path: str, alias: str, phrasing: str
+) -> None:
+    question = phrasing.format(alias=alias)
+    monkeypatch.setattr(
+        jaffle,
+        "_config",
+        replace(
+            jaffle._config,
+            dimensions=[
+                replace(row, aliases=[*(row.aliases or []), alias])
+                if row.id == CUSTOMER_TYPE
+                else row
+                for row in jaffle._config.dimensions
+            ],
+        ),
+    )
+    _force_fallback(jaffle, monkeypatch, question, path)
+    partial = {
+        "group_by": [STORE, CUSTOMER_TYPE],
+        "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "IN", "value": ["new", "repeat"]}],
+    }
+    before, after = _compare_declared_name_base(jaffle, monkeypatch, question, partial)
+    assert plan_module._named_groupings_unmet(
+        jaffle._config, question, after["best"]["query_ir"]
+    ) == ([], [])
+    listed = phrasing.startswith(("revenue by ", "revenue for each ", "revenue per "))
+    if (alias == "_customer_type" and listed) or (
+        phrasing.startswith("revenue per ") and path == "primary"
+    ):
+        # Held before this check existed: the listed-grouping reader doesn't read a boundary
+        # underscore, and "per" drifts from the primary draft. Only a hold could be added.
+        assert before["status"] == after["status"] == "low_confidence"
+        return
+    assert before["status"] == after["status"] == "ok", after.get("why")
+    assert "execute" in after["next"]["ready_for"]
+    reference = _in_memory_reference(
+        jaffle,
+        "SELECT s.store_name, c.customer_type, SUM(o.order_total_cents / 100.0) "
+        "FROM jaffle_order o JOIN jaffle_customer c USING (customer_id) "
+        "JOIN jaffle_store s USING (store_id) "
+        "WHERE s.store_name IN ('Brooklyn', 'Philadelphia') "
+        "AND c.customer_type IN ('new', 'repeat') GROUP BY 1, 2 ORDER BY 1, 2",
+    )
+    assert len(reference) == 4
+    assert [row[2] for row in reference] == pytest.approx([90.48, 259334.37, 6.36, 486461.82])
+    assert (
+        sorted(_in_memory_rows(jaffle, after["best"]["query_ir"], [STORE, CUSTOMER_TYPE]))
+        == reference
+    )
+
+
+# The primary draft reads "per" with a filter on the value inside the name, which another
+# check holds as drift with or without the obligation.
+_HELD_WITHOUT_OBLIGATION = {("revenue per {alias} and store name", "primary")}
+
+
+def _value_word_in_measure_label(runtime: Runtime) -> Any:
+    """Customer type with the alias `_new_type`, and revenue labelled with that alias's value
+    word, so value inference brings in no Customer type filter."""
+
+    return replace(
+        runtime._config,
+        dimensions=[
+            replace(row, aliases=[*(row.aliases or []), "_new_type"])
+            if row.id == CUSTOMER_TYPE
+            else row
+            for row in runtime._config.dimensions
+        ],
+        measures=[
+            replace(row, label="Revenue (new and repeat types)") if row.id == REVENUE else row
+            for row in runtime._config.measures
+        ],
+    )
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("phrasing", _VALUE_IN_NAME_QUESTIONS)
+def test_a_named_grouping_without_a_filter_keeps_its_obligation(
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, path: str, phrasing: str
+) -> None:
+    monkeypatch.setattr(jaffle, "_config", _value_word_in_measure_label(jaffle))
+    question = phrasing.format(alias="_new_type")
+    _force_fallback(jaffle, monkeypatch, question, path)
+    partial = {"group_by": [STORE], "where": [JAFFLE_FILTER]}
+    before, after = _compare_declared_name_base(jaffle, monkeypatch, question, partial)
+    query = after["best"]["query_ir"]
+    unmet, inside = plan_module._named_groupings_unmet(jaffle._config, question, query)
+    assert unmet == ["_new_type"]
+    assert after["status"] == "low_confidence"
+    assert "execute" not in after["next"].get("ready_for", [])
+    if (phrasing, path) in _HELD_WITHOUT_OBLIGATION:
+        assert before["status"] == "low_confidence"
+        return
+    # Neither a value word inside the name nor the measure label's words discharge it.
+    assert query["group_by"] == [STORE]
+    assert not any(row["field"] == CUSTOMER_TYPE for row in query["where"])
+    assert inside == []
+    assert before["status"] == "ok"
+    assert after["why"]["details"]["dropped_groupings"] == ["_new_type"]
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("phrasing", _VALUE_IN_NAME_QUESTIONS)
+@pytest.mark.parametrize(
+    ("partial", "sql", "expected"),
+    [
+        (
+            {"group_by": [STORE, CUSTOMER_TYPE], "where": [JAFFLE_FILTER]},
+            "SELECT s.store_name, c.customer_type, SUM(o.order_total_cents / 100.0) "
+            "FROM jaffle_order o JOIN jaffle_customer c USING (customer_id) "
+            "JOIN jaffle_store s USING (store_id) "
+            "WHERE s.store_name IN ('Brooklyn', 'Philadelphia') GROUP BY 1, 2 ORDER BY 1, 2",
+            {
+                ("Brooklyn", "new"): 90.48,
+                ("Brooklyn", "repeat"): 259334.37,
+                ("Philadelphia", "new"): 6.36,
+                ("Philadelphia", "repeat"): 486461.82,
+            },
+        ),
+        (
+            {
+                "group_by": [STORE],
+                "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "=", "value": "repeat"}],
+            },
+            "SELECT s.store_name, SUM(o.order_total_cents / 100.0) "
+            "FROM jaffle_order o JOIN jaffle_customer c USING (customer_id) "
+            "JOIN jaffle_store s USING (store_id) "
+            "WHERE s.store_name IN ('Brooklyn', 'Philadelphia') "
+            "AND c.customer_type = 'repeat' GROUP BY 1 ORDER BY 1",
+            {("Brooklyn",): 259334.37, ("Philadelphia",): 486461.82},
+        ),
+    ],
+    ids=["grouped", "pinned"],
+)
+def test_a_grouped_or_pinned_name_keeps_its_answer(
+    jaffle: Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    phrasing: str,
+    partial: dict[str, Any],
+    sql: str,
+    expected: dict[tuple[str, ...], float],
+) -> None:
+    monkeypatch.setattr(jaffle, "_config", _value_word_in_measure_label(jaffle))
+    question = phrasing.format(alias="_new_type")
+    _force_fallback(jaffle, monkeypatch, question, path)
+    before, after = _compare_declared_name_base(jaffle, monkeypatch, question, partial)
+    if (phrasing, path) in _HELD_WITHOUT_OBLIGATION:
+        assert before["status"] == after["status"] == "low_confidence"
+        return
+    query = after["best"]["query_ir"]
+    assert plan_module._named_groupings_unmet(jaffle._config, question, query) == ([], [])
+    assert before["status"] == after["status"] == "ok", after.get("why")
+    assert "execute" in after["next"]["ready_for"]
+    reference = _in_memory_reference(jaffle, sql)
+    assert {tuple(row[:-1]): row[-1] for row in reference} == pytest.approx(expected)
+    dimensions = partial["group_by"]
+    assert sorted(_in_memory_rows(jaffle, query, dimensions)) == reference
 
 
 @pytest.mark.parametrize("path", ["pattern", "fallback"])

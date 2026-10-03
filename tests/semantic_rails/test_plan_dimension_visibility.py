@@ -208,6 +208,151 @@ def test_explicit_hidden_name_behaves_like_an_absent_dimension(
         runtime.close()
 
 
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("detail", ["query", "best", "full", "debug"])
+def test_hidden_underscore_dimension_behaves_like_an_absent_dimension(
+    runtime_factory, monkeypatch, path, detail
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    hidden_id = "dimension.private_revenue_usd"
+    dimension = replace(
+        runtime._config.dimensions[0],
+        id=hidden_id,
+        name="private.revenue_usd",
+        label="Revenue usd",
+        aliases=[],
+    )
+    policy = SemanticPolicyConfig(
+        id="policy.hide_revenue_dimension",
+        kind="object_visibility",
+        object_ids=[hidden_id],
+        action="hidden",
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_config",
+        replace(
+            runtime._config,
+            dimensions=[*runtime._config.dimensions, dimension],
+            semantic_policies=[*runtime._config.semantic_policies, policy],
+        ),
+    )
+    intent = "revenue_usd at store name level"
+    partial = {
+        "where": [
+            {
+                "field": "dimension.jaffle_store_name",
+                "op": "IN",
+                "value": ["Brooklyn", "Philadelphia"],
+            }
+        ]
+    }
+    _force_fallback(runtime, monkeypatch, intent, path)
+    try:
+        hidden = plan_payload(runtime, intent=intent, detail=detail, partial_query=partial)
+        monkeypatch.setattr(
+            runtime,
+            "_config",
+            replace(
+                runtime._config,
+                dimensions=[dim for dim in runtime._config.dimensions if dim.id != hidden_id],
+            ),
+        )
+        runtime._catalog_search_index = None
+        _force_fallback(runtime, monkeypatch, intent, path)
+        absent = plan_payload(runtime, intent=intent, detail=detail, partial_query=partial)
+        assert hidden == absent
+        assert hidden_id not in json.dumps(hidden)
+        assert "Revenue usd" not in json.dumps(hidden)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("detail", ["query", "best", "full", "debug"])
+def test_hidden_name_holding_a_filter_value_behaves_like_an_absent_dimension(
+    runtime_factory, monkeypatch, path, detail
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    hidden_id = "dimension.private_new_customers"
+    dimension = replace(
+        runtime._config.dimensions[0],
+        id=hidden_id,
+        name="private.new_customers",
+        label="New customers",
+        aliases=[],
+    )
+    policy = SemanticPolicyConfig(
+        id="policy.hide_new_customers",
+        kind="object_visibility",
+        object_ids=[hidden_id],
+        action="hidden",
+    )
+    base = runtime._config
+    monkeypatch.setattr(
+        runtime,
+        "_config",
+        replace(
+            base,
+            dimensions=[*base.dimensions, dimension],
+            semantic_policies=[*base.semantic_policies, policy],
+        ),
+    )
+    # No level word: only the name obligation reads the question's names.
+    intent = "revenue by store name for new customers"
+    partial = {
+        "group_by": ["dimension.jaffle_store_name"],
+        "where": [
+            {
+                "field": "dimension.jaffle_store_name",
+                "op": "IN",
+                "value": ["Brooklyn", "Philadelphia"],
+            }
+        ],
+    }
+    _force_fallback(runtime, monkeypatch, intent, path)
+    try:
+        hidden = plan_payload(runtime, intent=intent, detail=detail, partial_query=partial)
+        monkeypatch.setattr(runtime, "_config", base)
+        runtime._catalog_search_index = None
+        _force_fallback(runtime, monkeypatch, intent, path)
+        absent = plan_payload(runtime, intent=intent, detail=detail, partial_query=partial)
+        assert hidden == absent
+        assert absent["status"] == "ok"
+        assert hidden_id not in json.dumps(hidden)
+        assert "New customers" not in json.dumps(hidden)
+        assert "filter_inside_grouping" not in json.dumps(hidden)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("kind", ["dimensions", "entities"])
+def test_hidden_underscore_objects_are_excluded_from_name_spans(runtime_factory, kind) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    row = getattr(runtime._config, kind)[0]
+    hidden = replace(row, name="private.revenue_usd", label="Revenue usd", aliases=[])
+    policy = SemanticPolicyConfig(
+        id="policy.hide_named_object",
+        kind="object_visibility",
+        object_ids=[row.id],
+        action="hidden",
+    )
+    config = replace(
+        runtime._config,
+        **{kind: [hidden]},
+        semantic_policies=[*runtime._config.semantic_policies, policy],
+    )
+    question = "revenue_usd at store name level"
+    try:
+        assert plan_module._declared_name_spans(config, question, underscores=True) == (
+            plan_module._declared_name_spans(
+                replace(config, **{kind: []}), question, underscores=True
+            )
+        )
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize("detail", ["query", "best", "full", "debug"])
 def test_hidden_name_cannot_ground_an_intent_or_enter_catalog_hints(
     runtime_factory, monkeypatch, detail
