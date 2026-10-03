@@ -2351,9 +2351,48 @@ def _validate_predicate_metric_clocks(
     validate(predicate.input)
 
 
+def _refuse_overridden_predicate_input(
+    predicate: MetricPredicateExpr, query: NormalizedQuery, config: PackageConfig
+) -> None:
+    """The query's temporal_role_overrides never reach a metric predicate input's own query.
+
+    So a conversion or time window inside the input would read an overridden measure on the
+    measure's own clock, and the input refuses. A leaf pinned to a clock refuses too when
+    overridden, though its pin would win: conservative, and never a wrong number.
+    """
+    overridden = set(query.temporal_role_overrides) & _measures_inside(
+        predicate.input, _LOOKUP_TIME_EXPRS, config
+    )
+    if not overridden:
+        return
+    measures = sorted(overridden)
+    raise SemanticLayerError(
+        "INVALID_TEMPORAL_BINDING",
+        "temporal_role_overrides do not apply inside a metric predicate input, so the "
+        f"override for {', '.join(f'measure {m!r}' for m in measures)} would be ignored by "
+        "the conversion or time window that reads it",
+        details={
+            "measures": measures,
+            "predicate": expr_to_dict(predicate),
+            "recovery_hints": [
+                {
+                    "code": "CHOOSE_PREDICATE_CLOCK",
+                    "message": (
+                        "Remove the override for this measure, or use a metric whose "
+                        "definition binds that clock."
+                    ),
+                }
+            ],
+        },
+    )
+
+
 def _predicate_time_spec(
     predicate: MetricPredicateExpr, query: NormalizedQuery, config: PackageConfig
 ) -> dict[str, Any] | None:
+    # Every predicate source reads its clock here: both builders through _predicate_scope, and
+    # the anchored entity-set ratio directly. So the override guard runs here, for any alignment.
+    _refuse_overridden_predicate_input(predicate, query, config)
     if predicate.scope_mode == "entity_only":
         if predicate.time_grain:
             raise SemanticLayerError(

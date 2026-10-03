@@ -8,8 +8,10 @@ import pytest
 import yaml
 
 from semantic_rails.compiler import _compile_query_sql_ast, compile_query, lower_to_sql, plan_query
+from semantic_rails.compiler_parts import sql_lowering
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
 
 ORDERED = "temporal_role.clocks_order_ordered_at"
@@ -102,7 +104,14 @@ def warehouse(tmp_path):
                 "entities": {"customer": {}},
                 "dimensions": {"customer_id": {"kind": "categorical"}},
                 "times": {"signed_up_at": {"column": "signed_up_at", "default": True}},
-                "measures": {"customers": {"kind": "entity_count", "entity_key": "customer_id"}},
+                "measures": {
+                    "customers": {"kind": "entity_count", "entity_key": "customer_id"},
+                    "customer_population": {
+                        "kind": "entity_count",
+                        "entity_key": "customer_id",
+                        "accumulation": "population",
+                    },
+                },
             }
         },
         "models/orders.yml": {
@@ -164,6 +173,22 @@ def warehouse(tmp_path):
                         "denominator": _orders_on(SHIPPED),
                     },
                 }.items()
+            }
+        },
+        "metrics/conversions.yml": {
+            "metrics": {
+                "signup_to_order_7d": {
+                    "kind": "conversion",
+                    "temporal_role": SIGNED_UP,
+                    "expression": {
+                        "kind": "conversion",
+                        "entity": "entity.clocks_customer",
+                        "window": {"unit": "day", "value": 7},
+                        "matching_mode": "first_converted_after_base",
+                        "base": {"kind": "aggregate", "measure": "measure.clocks.customers"},
+                        "converted": {"kind": "aggregate", "measure": "measure.clocks.orders"},
+                    },
+                }
             }
         },
     }
@@ -504,3 +529,169 @@ def test_direct_lowering_cannot_bypass_clock_refusal(warehouse):
     with pytest.raises(SemanticLayerError) as raised:
         lower_to_sql(replace(plan, query=_query()), config)
     assert raised.value.code == "INVALID_TEMPORAL_BINDING"
+
+
+def _conversion_query(alignment, override):
+    query = _query({"metric": "metric.clocks.signup_to_order_7d"}, alignment)
+    predicate = query["metric_filters"][0]["expression"]
+    predicate.update(op=">", value=0.5)
+    if alignment is None:
+        del predicate["time_alignment"]
+    elif alignment == "same_query_period":
+        predicate["scope_mode"] = "contextual"
+    if override:
+        query["temporal_role_overrides"] = {"measure.clocks.orders": ORDERED}
+    return query
+
+
+def _converted_customers(clock):
+    """Customers whose 7-day signup-to-order rate, with orders on ``clock``, is above 0.5."""
+    assert clock in {"ordered_at", "shipped_at"}
+    return (
+        "SELECT b.customer_id FROM customers b GROUP BY 1 HAVING "
+        "AVG(CASE WHEN EXISTS (SELECT 1 FROM orders o WHERE o.customer_id = b.customer_id "
+        f"AND o.{clock} >= b.signed_up_at AND o.{clock} < b.signed_up_at + INTERVAL 7 DAY) "
+        "THEN 1.0 ELSE 0.0 END) > 0.5"
+    )
+
+
+def _conversion_reference(conn, clock):
+    return conn.execute(
+        "SELECT c.customer_id, c.signed_up_at, COUNT(*) FROM customers c "
+        "WHERE c.signed_up_at >= TIMESTAMP '2025-01-01' "
+        "AND c.signed_up_at < TIMESTAMP '2025-02-01' "
+        f"AND c.customer_id IN ({_converted_customers(clock)}) GROUP BY 1, 2 ORDER BY 1"
+    ).fetchall()
+
+
+def _runtime(tmp_path, conn):
+    conn.execute(f"ATTACH '{tmp_path / 'clocks.duckdb'}' AS copy")
+    conn.execute("COPY FROM DATABASE memory TO copy")
+    conn.execute("DETACH copy")
+    return Runtime.from_path(str(tmp_path))
+
+
+def _assert_override_refusal(error):
+    assert error.code == "INVALID_TEMPORAL_BINDING"
+    assert error.details["measures"] == ["measure.clocks.orders"]
+    assert "measure 'measure.clocks.orders'" in str(error)
+    assert error.details["recovery_hints"][0]["message"] == (
+        "Remove the override for this measure, or use a metric whose definition binds that clock."
+    )
+
+
+CONVERSION_ALIGNMENTS = ["query_window", "rolling_window_in_period", "same_query_period", None]
+
+
+@pytest.mark.parametrize("alignment", CONVERSION_ALIGNMENTS)
+@pytest.mark.parametrize("entrypoint", ["runtime", "compile"])
+def test_conversion_input_refuses_overridden_converted_measure(
+    warehouse, tmp_path, alignment, entrypoint
+):
+    config, conn = warehouse
+    assert [row[0] for row in _conversion_reference(conn, "ordered_at")] == [1]
+    assert [row[0] for row in _conversion_reference(conn, "shipped_at")] == [2]
+    query = _conversion_query(alignment, override=True)
+    with pytest.raises(SemanticLayerError) as raised:
+        if entrypoint == "runtime":
+            runtime = _runtime(tmp_path, conn)
+            try:
+                runtime.query(query)
+            finally:
+                runtime.close()
+        else:
+            _compile_query_sql_ast(config, query)
+    _assert_override_refusal(raised.value)
+
+
+@pytest.mark.parametrize("alignment", CONVERSION_ALIGNMENTS)
+def test_conversion_input_without_override_matches_reference(warehouse, tmp_path, alignment):
+    config, conn = warehouse
+    expected = _conversion_reference(conn, "shipped_at")
+    assert [row[0] for row in expected] == [2]
+    query = _conversion_query(alignment, override=False)
+    assert conn.execute(compile_query(config, None, query)["sql"]).fetchall() == expected
+    runtime = _runtime(tmp_path, conn)
+    try:
+        result = runtime.query(query)
+    finally:
+        runtime.close()
+    assert [tuple(row.values()) for row in result["rows"]] == [
+        (customer, signed_up.isoformat(), n) for customer, signed_up, n in expected
+    ]
+
+
+def test_direct_lowering_cannot_bypass_override_refusal(warehouse):
+    config, _conn = warehouse
+    plan = plan_query(config, None, _conversion_query("query_window", override=False))
+    unsafe = _conversion_query("query_window", override=True)
+    with pytest.raises(SemanticLayerError) as raised:
+        lower_to_sql(replace(plan, query=unsafe), config)
+    _assert_override_refusal(raised.value)
+
+
+def _share_query(override):
+    scoped = {
+        "kind": "scoped_aggregate",
+        "measure": "measure.clocks.customer_population",
+        "aggregation": "count_distinct",
+    }
+    predicate = {
+        "input": {"metric": "metric.clocks.signup_to_order_7d"},
+        "entity": "entity.clocks_customer",
+        "op": ">",
+        "value": 0.5,
+    }
+    query = {
+        "select": [
+            {
+                "expression": {
+                    "kind": "ratio",
+                    "numerator": {**scoped, "predicates": [predicate]},
+                    "denominator": scoped,
+                },
+                "as": "share",
+            }
+        ],
+        "time": {"temporal_role": SIGNED_UP, "start": "2025-01-01", "end": "2025-02-01"},
+    }
+    if override:
+        query["temporal_role_overrides"] = {"measure.clocks.orders": ORDERED}
+    return query
+
+
+def _share_reference(conn, clock):
+    return conn.execute(
+        "SELECT c.signed_up_at, AVG(CASE WHEN c.customer_id IN "
+        f"({_converted_customers(clock)}) THEN 1.0 ELSE 0.0 END) FROM customers c "
+        "WHERE c.signed_up_at >= TIMESTAMP '2025-01-01' "
+        "AND c.signed_up_at < TIMESTAMP '2025-02-01' GROUP BY 1 ORDER BY 1"
+    ).fetchall()
+
+
+def test_anchored_ratio_cannot_bypass_override_refusal(warehouse, monkeypatch):
+    """This ratio builds its predicate set itself, without the predicate scope builder."""
+    config, conn = warehouse
+    expected = _share_reference(conn, "shipped_at")
+    assert expected == [(datetime(2025, 1, 5), 0), (datetime(2025, 1, 6), 1)]
+    assert _share_reference(conn, "ordered_at") == [
+        (datetime(2025, 1, 5), 1),
+        (datetime(2025, 1, 6), 0),
+    ]
+    built = []
+    build = sql_lowering._minimal_predicate_set_ctes
+
+    def spy(*args, **kwargs):
+        built.append(kwargs["index"])
+        return build(*args, **kwargs)
+
+    monkeypatch.setattr(sql_lowering, "_minimal_predicate_set_ctes", spy)
+    sql = compile_query(config, None, _share_query(override=False))["sql"]
+    assert conn.execute(sql).fetchall() == expected
+    assert len(built) == 1
+    with pytest.raises(SemanticLayerError) as raised:
+        compile_query(config, None, _share_query(override=True))
+    assert len(built) == 2
+    _assert_override_refusal(raised.value)
+
+
