@@ -1045,6 +1045,16 @@ the singular form is in the catalog. For example, "top 3 product types by item
 revenue for Brooklyn and Philadelphia" groups by product type and uses both
 stores in one membership filter. Catalog fallback resolves each requested
 grouping before deduplicating by dimension ID.
+A plural grouping that matches only when read as its singular is ready to
+execute only when it resolves to one dimension: exactly one dimension reachable
+from the measure's entity has every word of the singular in its ID, name,
+label or aliases, or exactly one of those is the measure entity's own. Otherwise
+the plan keeps the draft's grouping and returns `low_confidence` with an
+`ambiguous_grouping` gap that lists the matching dimension IDs and a
+`clarify_grouping` hint naming them. For example, "item revenue by districts"
+in a package with both a store district and a customer district isn't ready,
+while "item revenue by product types" groups by the item's own product type.
+A dimension the caller passes in `group_by` counts as chosen.
 When the caller passes `group_by` and the draft adds a grouping dimension the
 caller didn't pass, the plan is not ready to execute: the plan keeps both
 groupings in `group_by` and returns `low_confidence` with an
