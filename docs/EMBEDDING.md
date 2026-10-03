@@ -104,6 +104,47 @@ New hosting requirements should first become generic, tested engine seams and
 then be added to this facade. Product-specific identity, tenancy, billing,
 deployment, and secret-storage code does not belong in the engine.
 
+## Confining DuckDB file access
+
+DuckDB and DuckLake run inside the host process, with its file access. A host serving
+several packages from one process passes `confine_to`, an existing absolute directory that
+holds the package's database files (off by default):
+
+```python
+from semantic_rails.embedding import DuckDBAdapter, create_warehouse_adapter
+
+adapter = DuckDBAdapter("/srv/packages/p-123/warehouse.duckdb", confine_to="/srv/packages/p-123")
+lake = create_warehouse_adapter(ducklake_package, confine_to="/srv/packages/p-123")
+```
+
+Once the database files are open (for DuckLake, once the extension loads and the catalog
+attaches), the adapter sets DuckDB's `allowed_directories` to the directory, turns off
+`enable_external_access`, `autoinstall_known_extensions` and `autoload_known_extensions`,
+and sets `lock_configuration`, leaving only `TimeZone` changeable because each query runs in
+its time role's zone. It then reads every setting back. Statements can still read and write
+files inside the directory, but nothing outside it: no file reads or globs, `ATTACH`,
+`COPY TO`, `EXPORT DATABASE`, extension `INSTALL` or `LOAD`, persistent secrets, or setting
+changes. When DuckDB's spill directory is elsewhere, it moves to a `.duckdb_tmp_*` directory
+inside, because DuckDB always allows its spill directory.
+
+Each refusal is `INVALID_CONFIG` with `details.reason`:
+
+- `duckdb_confinement_directory_invalid`: `confine_to` is not an existing absolute directory.
+- `duckdb_path_outside_confinement`: the database file, or DuckLake's `catalog_path` or
+  `data_path` (`details.option`), resolves outside it, symlinks followed. Nothing is opened
+  or created.
+- `duckdb_confinement_failed`: DuckDB rejected the settings, or `details.setting` did not
+  take effect.
+- `duckdb_confinement_unsupported`: `create_warehouse_adapter` got `confine_to` for a
+  warehouse other than DuckDB or DuckLake.
+
+DuckDB shares one database instance between a process's connections to a file, and these
+settings belong to the instance. Confining one adapter confines every connection to that
+file; an adapter opened on a file already confined is checked, not changed, and holds only
+when the existing directory is its own or inside it. DuckDB refuses to open a shared file
+with a different `config`. Confinement covers file access only: CPU and memory limits stay
+with the host, and seed builds, which run the package's own SQL scripts, are not confined.
+
 ## Serving MCP over HTTP
 
 `handle_streamable_http_request(adapter, *, method, headers, body=b"", request_context=None)`
@@ -225,7 +266,7 @@ ConnectionCredentialProvider{credentials_for(self, *, warehouse, connection_kind
 DATABRICKS_CONNECTION_OPTIONS
 DUCKLAKE_CONNECTION_OPTIONS
 Database(conn, engine)
-DuckDBAdapter(db_path)
+DuckDBAdapter(db_path, *, confine_to=)
 HeaderPolicyContextResolver()
 LoadedPackageSnapshot(source_path, source_fingerprint, semantic_fingerprint, provenance, source_kind, _config, _authored, _normalized, _semantic)
 LruCompiledSqlCache(maxsize=)
@@ -255,8 +296,8 @@ WarehouseConnectorSpec(name, dialect, connection_kinds=, connection_options=, re
 audit_logging_enabled()
 context_from_headers(headers, *, payload=, request_id=)
 context_from_policy_context(policy_context, *, request_id=)
-create_duckdb_adapter(package, *, db_path=)
-create_warehouse_adapter(package, *, db_path=)
+create_duckdb_adapter(package, *, db_path=, confine_to=)
+create_warehouse_adapter(package, *, db_path=, confine_to=)
 dialect_for_warehouse(warehouse)
 emit_audit_event(event, **payload)
 get_audit_sink()
