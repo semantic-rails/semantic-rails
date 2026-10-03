@@ -29,6 +29,7 @@ from ._base import (
     _MONTH_NUMBERS,
     _NUMBER_WORDS,
     _ORDINALS,
+    _PERIOD_SHIFT_TRIGGERS,
     _QUANTITY_AFTER_RE,
     _TERM_SYNONYMS,
     _TIME_UNITS,
@@ -2029,6 +2030,8 @@ _ORDINAL_RE = re.compile(r"\d+(?:st|nd|rd|th)")
 # question words read to find them.
 _MAX_UNMATCHED_TERMS = 8
 _MAX_SCANNED_WORDS = 256
+# Words any time grain of a draft reads besides its own unit: "by date", "over time".
+_TIME_WORDS = frozenset({"time", "date", "period"})
 
 
 # Words that state a clock time or a zone. Like a numeral, one no part of the draft consumes
@@ -2178,8 +2181,8 @@ def _unmatched_words(runtime: Any, question: str, query: dict[str, Any]) -> list
 
 
 def _used_ids(config: Any, query: dict[str, Any]) -> set[str]:
-    """The objects a draft uses, for the warning: those it names, and the entity and clock of
-    each measure or metric it names ("revenue from orders" uses the Order entity of Revenue)."""
+    """The objects a draft uses: those it names, and the entity and clock of each measure or
+    metric it names ("revenue from orders" uses the Order entity of Revenue)."""
 
     used = set(_referenced_ids(query))
     for row in [*config.measures, *config.metric_recipes]:
@@ -2218,16 +2221,15 @@ def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -
 
 
 def unconsumed_catalog_words(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
-    """The question's words that name a catalog object and that the draft doesn't consume.
+    """The question's words that name a catalog object (``_own_words``; a plural counts as its
+    singular) and that the draft doesn't consume: the readiness invariant for words, beside
+    ``unconsumed_terms`` for numbers.
 
-    The readiness invariant for words, beside ``unconsumed_terms`` for numbers. A word names an
-    object when it is one of the object's own words (``_own_words``); a plural counts as its
-    singular. Only the draft consumes one: by the own words of an object it selects, a value it
-    filters on or that value's declared names, a time phrase, a fiscal calendar or prior period
-    it honors, or as a framing word. A synonym, a typo, a namespace, a description or an object
-    the draft doesn't select never consumes one, so one catalog name can't stand in for another.
-    One left over is a grouping the draft dropped ("by store, customer type" grouped by store)
-    or a subject it swapped. Every word is read, however long the question.
+    Only the draft consumes one: by the own words of an object it selects, a value it filters on,
+    a time grain or count it carries, or a time phrase or clause it honors; only function words
+    are exempt. A synonym, a typo, a namespace, a description, a framing word or an object it
+    doesn't select never does, so one catalog name can't stand in for another. One left over is a
+    dropped grouping or a swapped subject. Every word is read.
     """
 
     from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
@@ -2252,6 +2254,7 @@ def unconsumed_catalog_words(runtime: Any, question: str, query: dict[str, Any])
                 found = re.finditer(rf"(?<![\w.]){path}(?!\w|\.\w)", lowered) if path else ()
                 spans.extend(match.span() for match in found)
     labels = _value_phrases(runtime._config)
+    reads: Counter[str] = Counter()
     for node in _dict_nodes(query):
         if "field" in node and "value" in node:
             value = node["value"]
@@ -2260,21 +2263,36 @@ def unconsumed_catalog_words(runtime: Any, question: str, query: dict[str, Any])
                 for domain, row in labels.get(_plain(item), []):
                     if str(node["field"]) in domain.dimensions:
                         used.update(_plain(" ".join(_value_names(row))).split())
+        for grain in (node.get("grain"), node.get("time_grain")):
+            # Each grain the draft carries reads its own unit once ("by month", "monthly"), and
+            # a prior period the phrase the planner reads it from ("year over year").
+            if grain in _TIME_UNITS:
+                reads.update({grain, "daily" if grain == "day" else f"{grain}ly", *_TIME_WORDS})
+            if grain in _TIME_UNITS and node.get("kind") == "prior_period":
+                for pattern, unit in _PERIOD_SHIFT_TRIGGERS:
+                    found = re.finditer(pattern, lowered) if unit == grain else ()
+                    spans.extend(match.span() for match in found)
+        if node.get("aggregation") in ("count", "count_distinct"):
+            # A count reads the "number of" that asks for it, as "how many" asks for it.
+            spans.extend(match.span() for match in re.finditer(r"\bnumber\s+of\b", lowered))
     named = {_singular(word) for word in names}
     consumed = {_singular(word) for word in used}
-    skipped = _INTENT_STOPWORDS | _FRAMING_WORDS | set(_NUMBER_WORDS) | set(_ORDINALS)
+    skipped = _INTENT_STOPWORDS | set(_NUMBER_WORDS)
     out: list[str] = []
     for match in _TERM_RE.finditer(lowered):
-        word, (start, end) = match.group(0), match.span()
+        word, (start, end), key = match.group(0), match.span(), _singular(match.group(0))
         if (
-            _singular(word) in named
-            and _singular(word) not in consumed
-            and word not in skipped
-            and word not in out
+            key not in named
+            or key in consumed
+            or word in skipped
             # A number is unconsumed_terms' to check, by where the draft reads it.
-            and not any(char.isdigit() for char in word)
-            and not any(low < end and start < high for low, high in spans)
+            or any(char.isdigit() for char in word)
+            or any(low < end and start < high for low, high in spans)
         ):
+            continue
+        if reads[key] > 0:
+            reads[key] -= 1
+        elif word not in out:
             out.append(word)
     return out
 

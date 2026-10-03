@@ -223,11 +223,12 @@ object's label or aliases, or of the last dotted part of its id or name outside 
 namespaces ("sales" in `metric.sales.aov_usd` names nothing); a plural counts as its singular.
 Only the draft consumes one: by the label, aliases, id or name of an object it selects (an id the
 question spells out whole consumes its namespaces too), a value it filters on or that value's
-declared names, a time phrase, or as a framing word. A synonym, a typo, a namespace, a
-description or an object the draft doesn't select (a measure's entity included) never does. So
-`plan` may hold back a right draft ("revenue from orders": Orders is a measure), but never calls
-one ready that drops a grouping the question names. Other words stay warnings; check them before
-executing.
+declared names, a time grain it carries (its unit, "time", "date" and "period"), a count it
+carries ("number of"), or a time phrase it read; only function words ("of", "at") are exempt. A
+synonym, a typo, a namespace, a description, a framing word or an object the draft doesn't select
+(a measure's entity included) never does. So `plan` may hold back a right draft ("revenue from
+orders": Orders is a measure), but never calls one ready that drops a grouping the question
+names. Other words stay warnings; check them before executing.
 A number, or a clock or zone word, the draft doesn't carry is not a warning: it makes the plan
 `low_confidence` (below), since the draft dropped an hour, a range or a
 threshold. Two words or more that no catalog object has, the first straight after "for",

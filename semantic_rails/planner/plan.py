@@ -615,12 +615,8 @@ def _unconsumed_catalog_why(question: str, words: list[str]) -> dict[str, Any] |
 
     if not words:
         return None
-    listed = re.sub(r"\s*,\s*(?:and\s+)?", " and ", question)
-    dropped = [
-        term
-        for term in _requested_grouping_terms(listed)
-        if set(words) & set(re.findall(r"[^\W_]+", term))
-    ]
+    listed = _requested_grouping_terms(re.sub(r"\s*,\s*(?:and\s+)?", " and ", question))
+    dropped = [term for term in listed if set(words) & set(re.findall(r"[^\W_]+", term))]
     terms = words[:8]  # as many as the warning names
     message = (
         f"The draft drops the grouping by {', '.join(dropped)} that the question asks for: "

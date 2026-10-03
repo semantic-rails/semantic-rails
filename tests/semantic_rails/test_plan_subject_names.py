@@ -156,10 +156,16 @@ CUSTOMERS = "measure.jaffle.customer_count"
         ("customers", CUSTOMERS, None, []),
         ("number of customers by store", CUSTOMERS, ["dimension.jaffle_store_name"], []),
         # The measures whose descriptions start "Number of …" still answer their own questions.
-        # Only the description holds "items", though, and it names the Item objects: plan keeps
-        # the draft but doesn't call it ready.
-        ("number of active menu items", "measure.jaffle.active_menu_count_eop", None, ["items"]),
-        ("number of stores open", "measure.jaffle.open_store_count_eop", ..., []),
+        # Only the description holds "items", though, and it names the Item objects. Their
+        # drafts take the last value of a count, not a count, so nothing reads "number of",
+        # which names Customer order number: plan keeps them but doesn't call them ready.
+        (
+            "number of active menu items",
+            "measure.jaffle.active_menu_count_eop",
+            None,
+            ["number", "items"],
+        ),
+        ("number of stores open", "measure.jaffle.open_store_count_eop", ..., ["number"]),
     ],
 )
 def test_counting_words_name_the_count_measure(

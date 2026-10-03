@@ -2,9 +2,9 @@
 
 The invariant: every question word that names something in the catalog (a word of an object's
 label or aliases, or of the last dotted part of its id or name outside its own namespaces) is
-consumed by the draft: by the own words of an object it selects, a filter value, a time phrase it
-read, or as a framing word. A synonym, a typo, a namespace, a description or an object the draft
-doesn't select never consumes one. A draft that leaves one over dropped a grouping or answers
+consumed by the draft: by the own words of an object it selects, a filter value, a time grain it
+carries or a time phrase it read. A synonym, a typo, a namespace, a description, a framing word or
+an object the draft doesn't select never consumes one. A draft that leaves one over dropped a grouping or answers
 about another subject, so plan keeps it in ``best`` and returns ``low_confidence``.
 """
 
@@ -201,6 +201,56 @@ def test_spelling_a_selected_id_uses_its_namespace_only_there(jaffle: Runtime) -
         )
 
 
+def test_a_time_grain_reads_its_unit_once(jaffle: Runtime) -> None:
+    # The predicate's month is "in that month"; no grain groups the orders "by month".
+    qualified = {
+        "version": 2,
+        "select": [{"as": "orders", "expression": {"measure": "measure.jaffle.order_count"}}],
+        "metric_filters": [
+            {
+                "expression": {
+                    "kind": "metric_predicate",
+                    "entity": "entity.jaffle_customer",
+                    "input": {"measure": "measure.jaffle.order_count"},
+                    "op": ">",
+                    "value": 10,
+                    "time_grain": "month",
+                },
+                "op": "=",
+                "value": True,
+            }
+        ],
+    }
+    intent = "orders by month for customers with more than 10 orders in that month"
+
+    assert unconsumed_catalog_words(jaffle, intent, qualified) == ["month"]
+    monthly = {**qualified, "time": {"grain": "month"}}
+    assert unconsumed_catalog_words(jaffle, intent, monthly) == []
+
+
+@pytest.mark.parametrize(
+    ("intent", "aggregation", "terms"),
+    [
+        ("number of orders by customer name", "count_distinct", []),
+        # Only a count reads "number of"; "number" also names Customer order number.
+        ("number of orders by customer name", "sum", ["number"]),
+        # And a count reads only "number of", never the name's own "number".
+        ("orders by customer order number", "count_distinct", ["number"]),
+    ],
+)
+def test_a_count_reads_only_its_number_of(
+    jaffle: Runtime, intent: str, aggregation: str, terms: list[str]
+) -> None:
+    orders = {"measure": "measure.jaffle.order_count", "aggregation": aggregation}
+    by_name = {
+        "version": 2,
+        "select": [{"as": "orders", "expression": orders}],
+        "group_by": ["dimension.jaffle_customer_name"],
+    }
+
+    assert unconsumed_catalog_words(jaffle, intent, by_name) == terms
+
+
 @pytest.mark.parametrize(
     ("intent", "terms"),
     [
@@ -212,6 +262,10 @@ def test_spelling_a_selected_id_uses_its_namespace_only_there(jaffle: Runtime) -
         # dropped grouping by order, nor "orders", which names the Orders measure.
         ("revenue by store, order", ["order"]),
         ("revenue from orders", ["orders"]),
+        # A framing word that names an object (Calendar day's "date", Order time) counts too: only
+        # a time grain the draft carries reads it, and these drafts carry none.
+        ("revenue by store, date", ["date"]),
+        ("orders by store, time", ["time"]),
     ],
 )
 def test_a_word_naming_an_object_the_draft_does_not_use_is_not_ready(
