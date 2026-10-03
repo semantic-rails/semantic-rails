@@ -2299,40 +2299,42 @@ def _validate_predicate_metric_clocks(
     config: PackageConfig,
     predicate_temporal_role: str,
 ) -> None:
-    """Advertised metric clocks cannot override the input's own temporal bindings."""
+    """The window clock filters every measure in the input, so none may be bound away from it."""
     recipes = _recipe_index(config)
 
     def validate(expr: Any) -> None:
+        if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
+            # The measure's pin, then the query's override, then its declared clocks.
+            bound_roles = _expr_compatible_temporal_roles(expr, config, query)
+            if bound_roles and predicate_temporal_role not in bound_roles:
+                clocks = sorted(bound_roles)
+                raise SemanticLayerError(
+                    "INVALID_TEMPORAL_BINDING",
+                    f"Measure '{expr.measure}' in the metric predicate input is bound to "
+                    f"{', '.join(clocks)}, excluding window clock '{predicate_temporal_role}'",
+                    details={
+                        "requested": predicate_temporal_role,
+                        "compatible": clocks,
+                        "predicate": expr_to_dict(predicate),
+                        "recovery_hints": [
+                            {
+                                "code": "CHOOSE_PREDICATE_CLOCK",
+                                "message": (
+                                    f"The input is bound to {', '.join(clocks)}; set "
+                                    "query.time.temporal_role to one of them, or omit "
+                                    "time_alignment to apply the predicate over all time."
+                                ),
+                            }
+                        ],
+                    },
+                )
+            return
         if isinstance(expr, MetricRecipeRefExpr):
             recipe = recipes.get(expr.metric_recipe)
             if recipe is None:
                 raise SemanticLayerError(
                     "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
                 )
-            if recipe.compatible_temporal_roles:
-                bound_roles = _expr_compatible_temporal_roles(recipe.expression, config, query)
-                if bound_roles and predicate_temporal_role not in bound_roles:
-                    clocks = sorted(bound_roles)
-                    raise SemanticLayerError(
-                        "INVALID_TEMPORAL_BINDING",
-                        f"Metric predicate input '{expr.metric_recipe}' is bound to "
-                        f"{', '.join(clocks)}, excluding window clock '{predicate_temporal_role}'",
-                        details={
-                            "requested": predicate_temporal_role,
-                            "compatible": clocks,
-                            "predicate": expr_to_dict(predicate),
-                            "recovery_hints": [
-                                {
-                                    "code": "CHOOSE_PREDICATE_CLOCK",
-                                    "message": (
-                                        f"The input is bound to {', '.join(clocks)}; set "
-                                        "query.time.temporal_role to it, or omit time_alignment "
-                                        "to apply the predicate over all time."
-                                    ),
-                                }
-                            ],
-                        },
-                    )
             validate(recipe.expression)
             return
         if is_dataclass(expr):
