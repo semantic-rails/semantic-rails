@@ -52,6 +52,7 @@ from .dialects import (
 )
 from .errors import SemanticLayerError
 from .mcp import SemanticLayerMCPAdapter, json_text
+from .naming import slug as _slug
 from .package_tools import (
     diff_package_report,
     impact_report,
@@ -190,19 +191,6 @@ def _without_titles(schema: Any) -> Any:
     }
 
 
-def _slug(value: str, *, fallback: str = "semantic_project") -> str:
-    out = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or "")).strip("_")
-    while "__" in out:
-        out = out.replace("__", "_")
-    return out or fallback
-
-
-def _title(value: str) -> str:
-    return (
-        " ".join(part.capitalize() for part in str(value or "").replace("_", " ").split()) or value
-    )
-
-
 def _within(path: Path, root: Path) -> bool:
     try:
         os.path.commonpath([str(path), str(root)])
@@ -227,7 +215,7 @@ def _resolve_project_path(
     if not raw:
         if not package_id:
             raise SemanticLayerError("INVALID_CONFIG", "Provide project_path or package_id")
-        raw = f"configs/semantic_rails/{_slug(package_id)}"
+        raw = f"configs/semantic_rails/{_slug(package_id, fallback='semantic_project')}"
     path = Path(raw).expanduser()
     if not path.is_absolute():
         path = workspace_root / path
@@ -837,7 +825,9 @@ def create_architect_mcp_server(
         if result.action != "accept" or result.data is None:
             return {"ok": False, "status": str(result.action), "mode": "elicitation", **dialog}
         answers = result.data.model_dump()
-        package_slug = _slug(str(answers.get("package_id") or package_id))
+        package_slug = _slug(
+            str(answers.get("package_id") or package_id), fallback="semantic_project"
+        )
         try:
             draft = _draft_arguments(package_slug, project_path, answers)
         except SemanticLayerError as exc:
@@ -930,7 +920,8 @@ def create_architect_mcp_server(
         except Exception as exc:
             return _mutation_error_result(
                 exc,
-                project_path=project_path or f"configs/semantic_rails/{_slug(package_id)}",
+                project_path=project_path
+                or f"configs/semantic_rails/{_slug(package_id, fallback='semantic_project')}",
                 expected_revision=expected_revision,
                 idempotency_key=idempotency_key,
                 dry_run=dry_run,

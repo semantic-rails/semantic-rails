@@ -20,20 +20,19 @@ from __future__ import annotations
 
 import contextlib
 import os
-from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 from ..config import repo_root
 from ..dialects import DUCKLAKE_CONNECTION_OPTIONS
 from ..errors import SemanticLayerError
+from ..sql_identifiers import quote_identifier
 from .base import WarehouseAdapter
 from .common import (
-    DbApiAdapter,
+    DuckDbApiAdapter,
     import_driver,
     normalize_connection_options,
     option_or_env,
     require_missing_env,
-    set_duckdb_time_zone,
 )
 from .duckdb_confinement import confine_duckdb, confinement_directory, require_inside
 from .duckdb_setup import configure_duckdb_connection
@@ -46,10 +45,6 @@ _CATALOG_ALIAS = "jaffle"
 
 def _escape_sql_string(value: str) -> str:
     return str(value).replace("'", "''")
-
-
-def _quote_ident(value: str) -> str:
-    return '"' + str(value).replace('"', '""') + '"'
 
 
 class _NamespacedConnection:
@@ -79,7 +74,7 @@ class _NamespacedConnection:
         self._conn.close()
 
 
-class DuckLakeAdapter(DbApiAdapter):
+class DuckLakeAdapter(DuckDbApiAdapter):
     engine = "ducklake"
     connection_kind = "ducklake_native"
     # DuckDB has no session/statement timeout mechanism (mirrors the
@@ -140,10 +135,6 @@ class DuckLakeAdapter(DbApiAdapter):
             )
         return catalog_path, data_path
 
-    def _time_zone_scope(self, cursor: Any, zone: str) -> AbstractContextManager[Any]:
-        set_duckdb_time_zone(cursor, zone)  # a DuckDB cursor is a connection of its own
-        return nullcontext()
-
     # -- DbApiAdapter hook ----------------------------------------------------
     def _create_connection(self) -> Any:
         driver = import_driver(
@@ -172,7 +163,7 @@ class DuckLakeAdapter(DbApiAdapter):
             use_target = _CATALOG_ALIAS
             schema = self.options.get("schema", "")
             if schema:
-                use_target = f"{_CATALOG_ALIAS}.{_quote_ident(schema)}"
+                use_target = f"{_CATALOG_ALIAS}.{quote_identifier(schema)}"
             use_sql = f"USE {use_target}"
             # Validate the namespace eagerly (catalog/schema must exist) …
             conn.execute(use_sql)

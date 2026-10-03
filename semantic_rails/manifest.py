@@ -21,6 +21,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .atomic_files import atomic_write_bytes
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 
 
@@ -105,10 +106,10 @@ def _write_loaded_manifest(runtime, *, variants, catalog_payload) -> Path:
 
     out_dir = manifest_dir(runtime.source_path)
     out_dir.mkdir(parents=True, exist_ok=True)
-    tmp = out_dir / (MANIFEST_FILE + ".tmp")
-    tmp.write_text(json.dumps(payload, default=str))
-    tmp.replace(manifest_path(runtime.source_path))
-    fingerprint_path(runtime.source_path).write_text(fingerprint)
+    atomic_write_bytes(
+        manifest_path(runtime.source_path), json.dumps(payload, default=str).encode()
+    )
+    atomic_write_bytes(fingerprint_path(runtime.source_path), fingerprint.encode())
     return manifest_path(runtime.source_path)
 
 
@@ -148,11 +149,6 @@ def load_manifest(
         key: json.dumps(value, default=str) for key, value in catalogs.items()
     }
     return payload
-
-
-def get_catalog(manifest: dict[str, Any], view: str, verbosity: str) -> dict[str, Any] | None:
-    key = f"{view}|{verbosity}"
-    return manifest.get("catalogs", {}).get(key)
 
 
 def get_catalog_json(manifest: dict[str, Any], view: str, verbosity: str) -> str | None:

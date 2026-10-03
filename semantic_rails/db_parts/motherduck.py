@@ -14,7 +14,7 @@ with the same guarded pattern as :mod:`semantic_rails.db`.
 from __future__ import annotations
 
 import re
-from contextlib import AbstractContextManager, nullcontext, suppress
+from contextlib import suppress
 from typing import Any
 
 try:
@@ -26,11 +26,10 @@ from ..dialects import MOTHERDUCK_CONNECTION_OPTIONS
 from ..errors import SemanticLayerError
 from .base import WarehouseAdapter
 from .common import (
-    DbApiAdapter,
+    DuckDbApiAdapter,
     normalize_connection_options,
     require_missing_env,
     secret_value,
-    set_duckdb_time_zone,
 )
 from .duckdb_setup import configure_duckdb_connection
 
@@ -55,7 +54,7 @@ def _require_identifier(option_name: str, value: str) -> str:
     return value
 
 
-class MotherDuckAdapter(DbApiAdapter):
+class MotherDuckAdapter(DuckDbApiAdapter):
     """DB-API-ish adapter over ``duckdb.connect("md:...")``.
 
     DuckDB connections satisfy enough of PEP 249 for the shared
@@ -99,10 +98,6 @@ class MotherDuckAdapter(DbApiAdapter):
                     "option_keys": sorted(self.options),
                 },
             )
-
-    def _time_zone_scope(self, cursor: Any, zone: str) -> AbstractContextManager[Any]:
-        set_duckdb_time_zone(cursor, zone)  # a DuckDB cursor is a connection of its own
-        return nullcontext()
 
     def _create_connection(self) -> Any:
         if duckdb is None:  # pragma: no cover - core dependency
