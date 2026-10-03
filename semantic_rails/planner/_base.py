@@ -464,41 +464,7 @@ def _aggregation_from_text(text: str, terms: set[str], measure: Any) -> str:
     return str(getattr(measure, "default_aggregation", "") or "sum")
 
 
-def _dimension_words(row: Any) -> tuple[str, ...]:
-    """The words a dimension authors: its id, name, label and aliases."""
-
-    return _tokens(
-        " ".join([row.id, row.name, row.label, *list(getattr(row, "aliases", []) or [])])
-    )
-
-
-def _dimension_terms(config: Any, terms: Iterable[str]) -> tuple[str, ...]:
-    """Fold regular plurals only when their singular is authored by a dimension.
-
-    A word in the planner's word table (``_TERM_SYNONYMS``, such as "orders") is
-    never folded: each path already reads it as before, so primary and fallback fold
-    the same words. A folded grouping is execute-ready only when it resolves to one
-    dimension (``faithfulness._folded_grouping_gaps``).
-    """
-
-    vocabulary = {token for row in config.dimensions for token in _dimension_words(row)}
-    normalized = []
-    for term in terms:
-        forms = set()
-        if term.endswith("ies"):
-            forms.add(term[:-3] + "y")
-        if term.endswith("es"):
-            forms.add(term[:-2])
-        if term.endswith("s") and not term.endswith("ss"):
-            forms.add(term[:-1])
-        authored = forms & vocabulary
-        kept = term in vocabulary or term in _TERM_SYNONYMS or len(authored) != 1
-        normalized.append(term if kept else next(iter(authored)))
-    return tuple(normalized)
-
-
 def _dimension(config: Any, terms: Iterable[str], *, prefer_parent: bool = False) -> Any | None:
-    terms = _dimension_terms(config, terms)
     candidates = []
     for row in config.dimensions:
         row_score = _score(row, terms)

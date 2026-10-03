@@ -453,15 +453,12 @@ def _grouping_term_matches(runtime: Any, query: dict[str, Any], term: str) -> li
     """Return discovery's matched dimension IDs, or None for a skipped grouping term."""
 
     from ..metadata import discover_payload  # noqa: WPS433 - shared metadata helper
-    from ..metadata_parts.relevance import _tokenize  # noqa: WPS433
-    from ._base import _dimension_terms  # noqa: WPS433
 
     if _is_temporal_grouping_term(term) or _term_matches_value_domain(runtime._config, term):
         return None
-    dimension_terms = " ".join(_dimension_terms(runtime._config, _tokenize(term)))
     dim_discovery = discover_payload(
         runtime,
-        terms=dimension_terms,
+        terms=term,
         partial_query=query,
         kinds=["dimension"],
         stage="post_measure",

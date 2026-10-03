@@ -36,8 +36,6 @@ from ._base import (
     _TO_DATE_OR_ROLLING_RE,
     _canonical_measure,
     _canonical_metric,
-    _dimension_terms,
-    _dimension_words,
     _explicit_grain,
     _fiscal_calendar,
     _named_metric,
@@ -513,10 +511,7 @@ def intent_faithfulness_why(
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
     gaps.extend(_subject_window_gaps(runtime._config, query))
     gaps.extend(_ranking_gaps(runtime, text, query))
-    gaps.extend(
-        _ambiguous_grouping_gaps(text, query, partial_query or {})
-        or _folded_grouping_gaps(runtime._config, text, query, partial_query or {})
-    )
+    gaps.extend(_ambiguous_grouping_gaps(text, query, partial_query or {}))
     gaps.extend(_where_clause_gaps(runtime, text, query))
     contradictions = _contradictory_filter_gaps(query)
     if contradictions:
@@ -557,72 +552,6 @@ def _ambiguous_grouping_gaps(
             },
         )
     ]
-
-
-def _folded_grouping_gaps(
-    config: Any, text: str, query: dict[str, Any], partial_query: dict[str, Any]
-) -> list[CoverageGap]:
-    """Refuse when a plural grouping matches several dimensions once read as its singular.
-
-    A grouping term that only matches after plural folding ("districts" read as
-    "district") is ready only when it resolves to one dimension: the one available
-    from the draft's root entity that authors every word of the folded term, or the
-    one of those the root entity owns. Otherwise the draft's pick, by score or
-    catalog order, is a guess. A term the draft groups by no such dimension for
-    (a time grain, a value, a dropped grouping) is left to the other checks, and
-    the caller confirms a dimension by passing its ID in ``group_by``.
-    """
-
-    from ..metadata import _availability_for_object, _selection_context  # noqa: WPS433
-    from ._base import _requested_grouping_terms as primary_terms  # noqa: WPS433
-    from .generators import _requested_grouping_terms as fallback_terms  # noqa: WPS433
-
-    root = _selection_context(config, query)["root_entity"]
-    authored = {str(item) for item in partial_query.get("group_by") or []}
-    grouped = [str(item) for item in query.get("group_by") or []]
-    gaps: list[CoverageGap] = []
-    # Each path reads grouping terms with its own parser; check every term either reads.
-    for term in dict.fromkeys([*primary_terms(text), *fallback_terms(text)]):
-        said = _tokens(term)
-        folded = _dimension_terms(config, said)
-        if folded == said:
-            continue
-        matching = [row for row in config.dimensions if set(folded) <= set(_dimension_words(row))]
-        candidates = sorted(
-            (
-                row
-                for row in matching
-                if _availability_for_object(config, root, row.id, "dimension")["available"]
-            ),
-            key=lambda row: str(row.id),
-        )
-        owned = {row.id for row in candidates if row.entity == root}
-        picked = {item for item in grouped if item in {row.id for row in matching}}
-        if (
-            len(candidates) < 2
-            or not picked
-            or picked <= authored
-            or (len(owned) == 1 and picked == owned)
-        ):
-            continue
-        ids = [str(row.id) for row in candidates]
-        labels = " or ".join(f"{row.label} ({row.id})" for row in candidates)
-        gaps.append(
-            CoverageGap(
-                kind="ambiguous_grouping",
-                clause=term,
-                message=(
-                    "The plural grouping matches several dimensions, and the draft picked one "
-                    "of them."
-                ),
-                actual={"dimension_ids": ids, "group_by": grouped},
-                recovery_hint={
-                    "kind": "clarify_grouping",
-                    "message": f"Ask again naming the grouping you mean: {labels}.",
-                },
-            )
-        )
-    return gaps
 
 
 def _coverage_why(gaps: list[CoverageGap]) -> dict[str, Any] | None:
