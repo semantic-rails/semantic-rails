@@ -653,7 +653,34 @@ def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "w
     if op_normalized == "IS NOT NULL":
         return build_comparison_condition(expr, "IS NOT", SqlLiteral(None), path=path)
     validate_single_value_filter_shape(op, value, path=path)
-    return build_comparison_condition(expr, str(op or "="), SqlLiteral(value), path=path)
+    try:
+        return build_comparison_condition(expr, str(op or "="), SqlLiteral(value), path=path)
+    except SemanticLayerError as exc:
+        if exc.code != "INVALID_EXPRESSION_AST" or exc.details.get("token_kind") != "operator":
+            raise
+        raise SemanticLayerError(
+            exc.code,
+            f"Unsupported filter operator: {op!r}",
+            details={
+                "path": path,
+                "expression_position": "where",
+                "op": str(op),
+                "allowed": [
+                    "=",
+                    "!=",
+                    "<",
+                    "<=",
+                    ">",
+                    ">=",
+                    "IN",
+                    "NOT IN",
+                    "LIKE",
+                    "NOT LIKE",
+                    "IS NULL",
+                    "IS NOT NULL",
+                ],
+            },
+        ) from None
 
 
 def is_null_literal(expr: object) -> bool:

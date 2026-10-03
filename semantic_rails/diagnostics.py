@@ -268,6 +268,17 @@ def recovery_hints_for_error(
     if code == "INVALID_EXPRESSION_AST":
         kind = str(details.get("expression_kind", "") or "")
         position = str(details.get("expression_position", "") or "")
+        if position == "where" and "op" in details and "allowed" in details:
+            return [
+                {
+                    "kind": "use_supported_filter_operator",
+                    "message": (
+                        f"Choose a where operator: {', '.join(details['allowed'])}. "
+                        "To test for null, use op 'IS NULL' or 'IS NOT NULL' and omit value."
+                    ),
+                    "allowed": list(details["allowed"]),
+                }
+            ]
         # ``received`` is sometimes a dict (the full malformed expr) and
         # sometimes a scalar (e.g. the bad p value). Coerce defensively
         # so a downstream hint loop doesn't crash on a float.
@@ -466,11 +477,18 @@ def recovery_hints_for_error(
         aggregation = str(details.get("aggregation", "") or "")
         if "allowed" in details:
             allowed = list(details["allowed"])
+            default = str(details.get("default_aggregation", "") or "")
+            default_hint = (
+                f", or omit `aggregation` to use the measure's default ({default})"
+                if default in allowed
+                else ""
+            )
             return [
                 {
                     "kind": "use_supported_aggregation",
                     "message": (
-                        f"Choose an allowed aggregation for this measure: {', '.join(allowed)}."
+                        f"Choose an allowed aggregation for this measure: "
+                        f"{', '.join(allowed)}{default_hint}."
                         if allowed
                         else "This measure allows no aggregations; inspect another measure."
                     ),
@@ -1168,6 +1186,13 @@ def object_id_suggestions(config: PackageConfig, missing_id: str, *, limit: int 
         cid for cid in candidates if not (missing_prefix and cid.startswith(missing_prefix + "."))
     ]
     matches: list[str] = []
+    # An exact metric/measure counterpart is more useful than a same-kind typo.
+    # Keep fuzzy cross-kind suggestions suppressed for unrelated missing ids.
+    if len(parts) == 3 and parts[0] in {"metric", "measure"}:
+        other_kind = "measure" if parts[0] == "metric" else "metric"
+        counterpart = lowered.get(f"{other_kind}.{parts[1]}.{parts[2]}".lower())
+        if counterpart:
+            matches.append(counterpart)
 
     def _add_tail_matches(pool: list[str]) -> None:
         if not pool or len(matches) >= limit:

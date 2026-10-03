@@ -704,9 +704,8 @@ def _validate_non_additive_sums(
 class NonAdditiveRefusal(SemanticLayerError):
     """``ROLLUP_UNSAFE`` for an ``additive: false`` measure summed above its stored grain.
 
-    Its message and details point to the measure's key rather than list it; the key
-    columns and dimensions stay on the object for in-process callers, such as
-    ``project validate``'s probe.
+    Key columns and dimensions stay available to in-process callers. Public
+    diagnostics name dimensions only after checking the request's visibility.
     """
 
     def __init__(
@@ -715,6 +714,53 @@ class NonAdditiveRefusal(SemanticLayerError):
         super().__init__("ROLLUP_UNSAFE", message, details=details)
         self.columns = columns
         self.dimensions = dimensions
+
+
+def _non_additive_refusal_for_context(
+    refusal: NonAdditiveRefusal, config: PackageConfig, payload: dict[str, Any]
+) -> NonAdditiveRefusal:
+    """Name a key only when every key dimension is discoverable by this caller.
+
+    Internal planning without request context keeps the generic refusal. A
+    failed visibility check must also keep that refusal byte for byte.
+    """
+    if not refusal.dimensions:
+        return refusal
+    try:
+        # Local import: policies uses the compiler to bind governed dependencies.
+        from .policies import hidden_object_ids
+        from .request_context import context_from_policy_context
+
+        measure = _measure_index(config)[refusal.details["measure_id"]]
+        key = list(measure.row_grain or _entity_index(config)[measure.entity].key or [])
+        key_dimensions = [
+            dimension
+            for dimension in config.dimensions
+            if dimension.entity == measure.entity and dimension.column in key
+        ]
+        if not set(refusal.columns) <= {dimension.column for dimension in key_dimensions}:
+            return refusal
+        context = context_from_policy_context(payload.get("policy_context"))
+        hidden = hidden_object_ids(
+            config, environment=context.environment, audience=context.audience, roles=context.roles
+        )
+        if any(dimension.id in hidden for dimension in key_dimensions):
+            return refusal
+    except Exception:  # noqa: BLE001 — diagnostics must fail closed on uncertain visibility
+        return refusal
+    names = ", ".join(refusal.dimensions)
+    details = dict(refusal.details)
+    details["key_dimensions"] = list(refusal.dimensions)
+    details["recovery_hints"] = [
+        {**hint, "message": hint["message"].replace("key", f"key ({names})", 1)}
+        for hint in details["recovery_hints"]
+    ]
+    return NonAdditiveRefusal(
+        str(refusal).replace("key,", f"key ({names}),", 1),
+        details=details,
+        columns=refusal.columns,
+        dimensions=refusal.dimensions,
+    )
 
 
 def _raise_non_additive_sum(
@@ -4374,9 +4420,12 @@ def plan_query(
     raw_query = normalize_query(payload)
 
     with candidate_planning():
-        return _plan_query(
-            config, registry, raw_query, collapse_window=collapse_window, top_level=True
-        )
+        try:
+            return _plan_query(
+                config, registry, raw_query, collapse_window=collapse_window, top_level=True
+            )
+        except NonAdditiveRefusal as exc:
+            raise _non_additive_refusal_for_context(exc, config, payload) from None
 
 
 def _plan_query(

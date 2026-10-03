@@ -419,6 +419,7 @@ def _bind_measure(
                 "measure": measure_id,
                 "aggregation": aggregation,
                 "allowed": list(measure.allowed_aggregations),
+                "default_aggregation": measure.default_aggregation,
             },
         )
     temporal_role = resolve_measure_temporal_role(

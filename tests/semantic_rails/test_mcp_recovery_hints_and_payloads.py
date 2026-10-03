@@ -31,8 +31,49 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import catalog_payload
 from tests.plan_candidate_envelope import plan_candidate_envelope
+
+
+@pytest.mark.parametrize("op", ["is_null", "is_not_null", "unknown"])
+def test_where_operator_refusal_names_query_operators_and_null_form(runtime_factory, op):
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        adapter = SemanticLayerMCPAdapter(runtime)
+        query = {
+            "select": [{"expression": {"measure": "measure.jaffle.order_count"}}],
+            "where": [{"field": "dimension.jaffle_store_name", "op": op}],
+        }
+        response = adapter.call_tool("execute", {"query": query, "mode": "validate"})
+        issue = response["errors"][0]
+        assert issue["code"] == "INVALID_EXPRESSION_AST"
+        allowed = [
+            "=",
+            "!=",
+            "<",
+            "<=",
+            ">",
+            ">=",
+            "IN",
+            "NOT IN",
+            "LIKE",
+            "NOT LIKE",
+            "IS NULL",
+            "IS NOT NULL",
+        ]
+        assert issue["details"]["allowed"] == allowed
+        hint = issue["recovery_hints"][0]
+        assert hint["allowed"] == allowed
+        assert "op 'IS NULL' or 'IS NOT NULL' and omit value" in hint["message"]
+        assert "SQL" not in hint["message"]
+        for null_op in ("IS NULL", "IS NOT NULL"):
+            query["where"][0]["op"] = null_op
+            assert adapter.call_tool("execute", {"query": query, "mode": "validate"})["ok"]
+    finally:
+        runtime.close()
 
 
 def test_inline_prior_period_with_offset_alias_returns_authored_alternative(runtime_factory):
