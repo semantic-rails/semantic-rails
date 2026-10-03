@@ -46,7 +46,7 @@
     {
       "arguments": [
         {
-          "description": "Segment id such as segment.jaffle.high_value_customers.",
+          "description": "Segment id such as segment.high_value_customers.",
           "name": "segment_id",
           "required": true
         }
@@ -218,7 +218,7 @@
         "readOnlyHint": true,
         "title": "Discover"
       },
-      "description": "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). Returns measures, metrics, dimensions, and entities, up to 'limit' per kind; empty terms list ids per kind instead, 100 at a time (limit, offset). Default: slim cards (id, label, description); verbosity='compact' adds match_reasons and starter patches. Gotcha: nonsense terms return 'out_of_scope' or 'low_relevance' with empty buckets; branch before using a candidate.",
+      "description": "Rank semantic objects against business terms (e.g. 'revenue', 'aov by store'). Returns measures, metrics, dimensions, and entities, up to 'limit' per kind; empty terms list ids per kind instead, 100 at a time (limit, offset). Default: slim cards (id, label, description); compact keeps slim cards and omits blocked candidates. Gotcha: nonsense terms return 'out_of_scope' or 'low_relevance' with empty buckets; branch before using a candidate.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -249,7 +249,7 @@
           },
           "query": {
             "additionalProperties": true,
-            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: use the expression shapes listed in the 'execute' tool schema.",
             "type": "object"
           },
           "stage": {
@@ -314,7 +314,7 @@
         "readOnlyHint": true,
         "title": "Inspect"
       },
-      "description": "Return one object's card: label, description, aggregations or values, temporal roles, related objects, policy. Default: the card without duplicate fields; verbosity='compact' returns the full card. Gotcha: 'object_id' must be a full id like 'measure.jaffle.revenue_usd', not a label — use 'discover' first if you only have a phrase.",
+      "description": "Return one object's card: label, description, aggregations or values, temporal roles, related objects, policy. Default: the card without duplicate fields; verbosity='compact' returns the full card. Gotcha: 'object_id' must be a full id like 'measure.sales.revenue', not a label — use 'discover' first if you only have a phrase.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -323,7 +323,7 @@
           },
           "query": {
             "additionalProperties": true,
-            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: use the expression shapes listed in the 'execute' tool schema.",
             "type": "object"
           },
           "verbosity": {
@@ -384,7 +384,7 @@
         "readOnlyHint": true,
         "title": "Valid Values"
       },
-      "description": "Return a dimension's governed values: from its declared value domain, or from a constrained warehouse probe with allow_live_query: true. Use it before writing a 'where' filter on a categorical dimension. Gotcha: 'dimension_id' must be a full id like 'dimension.jaffle_store_name'; allow_live_query costs a warehouse round-trip, so use it only when no domain is declared.",
+      "description": "Return a dimension's governed values: from its declared value domain, or from a constrained warehouse probe with allow_live_query: true. Use it before writing a 'where' filter on a categorical dimension. Gotcha: 'dimension_id' must be a full id like 'dimension.store_name'; allow_live_query costs a warehouse round-trip, so use it only when no domain is declared.",
       "inputSchema": {
         "additionalProperties": true,
         "properties": {
@@ -412,7 +412,7 @@
           },
           "query": {
             "additionalProperties": true,
-            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: use the expression shapes listed in the 'execute' tool schema.",
             "type": "object"
           },
           "search": {
@@ -492,7 +492,7 @@
           },
           "query": {
             "additionalProperties": true,
-            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: see the 'execute' tool schema, or schemas/query_ir.v1.json.",
+            "description": "Semantic Layer Query IR (JSON object). IR + time-block shape: use the expression shapes listed in the 'execute' tool schema.",
             "type": "object"
           }
         },
@@ -567,7 +567,7 @@
           },
           "query": {
             "additionalProperties": true,
-            "description": "Semantic Layer Query IR. Full spec at schemas/query_ir.v1.json; narrative at docs/QUERY_IR_SCHEMA.md. Unknown keys rejected as INVALID_QUERY (offenders under details.unsupported_keys).",
+            "description": "Semantic Layer Query IR: select [{expression: {measure: '<id>'}, as: '<alias>'}], group_by ['<dimension_id>'], where [{field: '<dimension_id>', op: '=', value: ...}]. Unknown keys rejected as INVALID_QUERY (offenders under details.unsupported_keys).",
             "properties": {
               "time": {
                 "additionalProperties": true,
@@ -687,7 +687,7 @@
           },
           "verbosity": {
             "default": "minimal",
-            "description": "Response detail. 'minimal' (default)={ok,errors,warnings}, plus rendered_sql in mode 'sql' and rows in mode 'run'. 'compact' adds sql_plan, explain and the normalized query; 'full' is the maximal envelope (~100KB).",
+            "description": "Response detail. 'minimal' (default)={ok,errors,warnings}, plus rendered_sql in mode 'sql' and rows in mode 'run'. 'compact' adds query metadata without compiler plans; 'full' adds plans. Every mode shares one response budget; omitted_fields names trimmed detail.",
             "enum": [
               "minimal",
               "compact",
@@ -741,7 +741,7 @@
         "readOnlyHint": true,
         "title": "Segment"
       },
-      "description": "Work with a package-authored segment, after discover finds its id: action='validate' checks it and the Query IR derived from it, 'explain' adds the SQL, and 'preview' returns sample member rows and the total member count. Default verbosity='minimal' leaves out compiler plans; 'full' returns them. Gotcha: 'segment_id' must be a full id like 'segment.jaffle.high_value_customers' (discover with empty terms lists them); 'preview' queries the warehouse.",
+      "description": "Work with a package-authored segment, after discover finds its id: action='validate' checks it and the Query IR derived from it, 'explain' adds the SQL, and 'preview' returns sample member rows and the total member count. Default verbosity='minimal' leaves out compiler plans; 'full' returns them. Gotcha: 'segment_id' must be a full id like 'segment.high_value_customers' (discover with empty terms lists them); 'preview' queries the warehouse.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {

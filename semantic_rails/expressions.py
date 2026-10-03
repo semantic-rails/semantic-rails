@@ -483,7 +483,17 @@ def _opaque_expression_data(node: Mapping[str, Any], key: str) -> bool:
     )
 
 
-def validate_expression_shapes(value: Any) -> None:
+def _unsupported_expression_kind(kind: Any, path: str) -> SemanticLayerError:
+    return SemanticLayerError(
+        "INVALID_EXPRESSION_AST",
+        f"Unsupported expression kind {kind!r} at {path}. "
+        "Send a select expression {measure: '<measure_id>'} or {metric: '<metric_id>'}; "
+        "put dimension ids in group_by.",
+        details={"expression_kind": kind, "expression_position": path, "path": path},
+    )
+
+
+def validate_expression_shapes(value: Any, *, path: str = "expression") -> None:
     """Fail closed on unknown expression tags, without interpreting literal data."""
     if isinstance(value, Mapping):
         raw_kind = value.get("kind")
@@ -492,14 +502,14 @@ def validate_expression_shapes(value: Any) -> None:
             not isinstance(kind, str)
             or (kind.strip() and kind.strip() not in _reference_expression_kinds())
         ):
-            raise SemanticLayerError("INVALID_EXPRESSION_AST", "Unsupported expression kind.")
+            raise _unsupported_expression_kind(raw_kind, path)
         for key, child in value.items():
             if _opaque_expression_data(value, key):
                 continue
-            validate_expression_shapes(child)
+            validate_expression_shapes(child, path=f"{path}.{key}")
     elif isinstance(value, (list, tuple)):
-        for child in value:
-            validate_expression_shapes(child)
+        for index, child in enumerate(value):
+            validate_expression_shapes(child, path=f"{path}[{index}]")
 
 
 def validate_expression_calls(value: Any, config: PackageConfig) -> None:
@@ -1125,9 +1135,8 @@ def _aggregate_filter(raw: Any) -> dict[str, Any]:
 
 
 NULL_BEHAVIOR_REMOVED = (
-    "`null_behavior` was removed; delete the line. Empty groups now follow "
-    "https://github.com/semantic-rails/semantic-rails/blob/main/docs/QUERY_IR_SCHEMA.md"
-    "#empty-groups-null-or-0"
+    "`null_behavior` was removed; delete the key. Aggregation and observation_scope "
+    "determine whether empty groups return NULL or zero."
 )
 
 
@@ -1211,7 +1220,9 @@ def expression_field(
     return expr[key]
 
 
-def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
+def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> SemanticExpr:
+    if path:
+        validate_expression_shapes(raw, path=path)
     if not isinstance(raw, dict):
         raise SemanticLayerError(
             "INVALID_EXPRESSION_AST", f"{context} expression must be an object"
@@ -1220,7 +1231,7 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
     kind = str(expr.get("kind", "")).strip()
     if kind and kind not in _VALID_KEYS_BY_KIND:
         # Reject before shorthand dispatch can discard the tag and its children.
-        raise SemanticLayerError("INVALID_EXPRESSION_AST", "Unsupported expression kind.")
+        raise _unsupported_expression_kind(expr.get("kind"), path or context)
     # Infer the "effective kind" for unknown-key checking when the
     # caller used a kindless shorthand (``{"measure": ...}`` or
     # ``{"metric": ...}``). The actual dispatch below still owns
@@ -2159,7 +2170,7 @@ def parse_semantic_expression(raw: Any, *, context: str) -> SemanticExpr:
             ],
             dimension_bindings=dimension_bindings,
         )
-    raise SemanticLayerError("INVALID_EXPRESSION_AST", f"Unsupported expression kind '{kind}'")
+    raise _unsupported_expression_kind(expr.get("kind"), path or context)
 
 
 def collect_column_refs(expr: SemanticExpr) -> list[ColumnRefExpr]:

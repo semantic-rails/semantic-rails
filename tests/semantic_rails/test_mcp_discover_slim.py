@@ -3,7 +3,7 @@
 Full cards (match reasons, starter patches, comparison metadata) made
 discover over half of a typical agent session's context. verbosity="minimal"
 (the default) returns slim cards, which leave out their bucket's kind,
-available=true and empty fields; verbosity="compact" returns the full cards.
+available=true and empty fields; verbosity="compact" keeps slim cards without blocked metadata; "full" returns full cards.
 When the question names an object outright ("revenue by store"), that object
 outranks near-duplicates that add a qualifier the question never used
 ("delivered revenue", "drink revenue").
@@ -73,7 +73,7 @@ def test_minimal_dimension_value_keeps_business_label_and_availability(
     adapter: SemanticLayerMCPAdapter, terms: str, value: str, label: str
 ) -> None:
     arguments = {"terms": terms, "limit": 5}
-    full = adapter.call_tool("discover", {**arguments, "verbosity": "compact"})
+    full = adapter.call_tool("discover", {**arguments, "verbosity": "full"})
     minimal = adapter.call_tool("discover", {**arguments, "verbosity": "minimal"})
     expected_id = f"dimension.jaffle_item_product_type={value}"
     full_value = next(row for row in full["dimension_values"] if row["id"] == expected_id)
@@ -89,7 +89,7 @@ def test_minimal_blocked_dimension_value_keeps_label_availability_and_reason(
     adapter: SemanticLayerMCPAdapter,
 ) -> None:
     arguments = {"terms": "Food", "limit": 5, "query": SESSION_STARTS}
-    full = adapter.call_tool("discover", {**arguments, "verbosity": "compact"})
+    full = adapter.call_tool("discover", {**arguments, "verbosity": "full"})
     minimal = adapter.call_tool("discover", {**arguments, "verbosity": "minimal"})
     value_id = "dimension.jaffle_item_product_type=jaffle"
     full_value = next(row for row in full["blocked"] if row["id"] == value_id)
@@ -134,19 +134,45 @@ def test_direct_metadata_minimal_projection_is_unchanged(adapter: SemanticLayerM
                 assert slim["description"] == expected
 
 
-@pytest.mark.parametrize("verbosity", ["compact", "full"])
-def test_full_cards_on_request(adapter: SemanticLayerMCPAdapter, verbosity: str) -> None:
+def test_full_cards_on_request(adapter: SemanticLayerMCPAdapter) -> None:
     response = adapter.call_tool(
-        "discover", {"terms": "revenue by store", "verbosity": verbosity, "limit": 10}
+        "discover", {"terms": "revenue by store", "verbosity": "full", "limit": 10}
     )
     card = response["measures"][0]
     assert {"score", "match_reasons", "starter_query_patch", "topics", "kind"} <= set(card)
     assert len(response["measures"]) > 5
     original = discover_payload(
-        adapter.runtime, terms="revenue by store", verbosity=verbosity, limit=10, enforce_scope=True
+        adapter.runtime, terms="revenue by store", verbosity="full", limit=10, enforce_scope=True
     )
     for bucket in ("measures", "metrics", "dimensions", "entities", "dimension_values", "blocked"):
         assert response[bucket] == original[bucket]
+
+
+@pytest.mark.parametrize("terms", ["revenue by store", "store"])
+def test_compact_discover_keeps_slim_descriptions_without_blocked_metadata(
+    adapter: SemanticLayerMCPAdapter, terms: str
+) -> None:
+    arguments = {"terms": terms, "query": SESSION_STARTS, "limit": 5}
+    minimal = adapter.call_tool("discover", {**arguments, "verbosity": "minimal"})
+    compact = adapter.call_tool("discover", {**arguments, "verbosity": "compact"})
+    assert compact["ok"]
+    assert "blocked" not in compact
+    for bucket in ("measures", "metrics", "dimensions", "entities", "dimension_values"):
+        assert compact[bucket] == [
+            row for row in minimal[bucket] if row.get("available") is not False
+        ]
+        for card in compact[bucket]:
+            assert (
+                not {
+                    "match_reasons",
+                    "recommended_next_actions",
+                    "companions",
+                    "starter_query_patch",
+                    "blocked_reason",
+                    "recommended_dimensions",
+                }
+                & card.keys()
+            )
 
 
 def test_nonsense_terms_return_a_relevance_block_with_empty_buckets(
@@ -221,11 +247,11 @@ def test_only_unpinned_default_aggregates_merge(
     config.metric_recipes[:] = [metric if m.id == metric_id else m for m in config.metric_recipes]
     if pin is None:
         config.metric_recipes.append(replace(metric, id="metric.sales.customer_count_alias"))
-    args = {"terms": "customer count", "limit": 100}
-    compact = adapter.call_tool("discover", {**args, "verbosity": "compact"})
+    args = {"terms": "customer count", "limit": 10, "kinds": ["measure", "metric"]}
+    full = adapter.call_tool("discover", {**args, "verbosity": "full"})
     minimal = adapter.call_tool("discover", args)
-    assert any(m["id"] == measure_id for m in compact["measures"])
-    assert any(m["id"] == metric_id for m in [*compact["metrics"], *compact["blocked"]])
+    assert any(m["id"] == measure_id for m in full["measures"])
+    assert any(m["id"] == metric_id for m in [*full["metrics"], *full["blocked"]])
     assert any(m["id"] == measure_id for m in minimal["measures"]) == bool(pin)
     card = next(m for m in [*minimal["metrics"], *minimal["blocked"]] if m["id"] == metric_id)
     assert card.get("measure") == (None if pin else measure_id)
@@ -296,12 +322,12 @@ def test_denied_metric_does_not_hide_allowed_equivalent_or_measure(
     runtime = Runtime.from_config(config, source_path=adapter.runtime.source_path)
     mcp = SemanticLayerMCPAdapter(runtime)
     try:
-        args = {"terms": "customer count", "limit": 100}
-        compact = mcp.call_tool("discover", {**args, "verbosity": "compact"})
+        args = {"terms": "customer count", "limit": 10, "kinds": ["measure", "metric"]}
+        full = mcp.call_tool("discover", {**args, "verbosity": "full"})
         minimal = mcp.call_tool("discover", args)
         measure_id = metric.expression.measure
         assert {metric.id, alias.id} <= {row["id"] for row in minimal["metrics"]}
-        assert any(row["id"] == measure_id for row in compact["measures"])
+        assert any(row["id"] == measure_id for row in full["measures"])
         assert any(row.get("measure") == measure_id for row in minimal["metrics"])
         for expression, ok in (
             ({"metric": metric.id}, False),
@@ -345,7 +371,5 @@ def test_description_keeps_whole_sentences_and_object_references(
     )
     if reference in ("id", "name", "label"):
         assert len(card["description"]) > 120
-    compact = adapter.call_tool("discover", {**args, "verbosity": "compact"})
-    assert (
-        next(m for m in compact["measures"] if m["id"] == measure.id)["description"] == description
-    )
+    full = adapter.call_tool("discover", {**args, "verbosity": "full"})
+    assert next(m for m in full["measures"] if m["id"] == measure.id)["description"] == description
