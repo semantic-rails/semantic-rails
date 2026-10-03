@@ -693,5 +693,3 @@ def test_anchored_ratio_cannot_bypass_override_refusal(warehouse, monkeypatch):
         compile_query(config, None, _share_query(override=True))
     assert len(built) == 2
     _assert_override_refusal(raised.value)
-
-
