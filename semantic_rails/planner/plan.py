@@ -28,13 +28,7 @@ from ..ast import rewrite_select_shorthand
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
-from ._base import (
-    _TERM_SYNONYMS,
-    _requested_grouping_terms,
-    _time_window,
-    _tokens,
-    _with_fiscal_calendar,
-)
+from ._base import _requested_grouping_terms, _time_window, _with_fiscal_calendar
 from .faithfulness import (
     intent_faithfulness_why,
     intent_subject_why,
@@ -621,9 +615,12 @@ def _unconsumed_catalog_why(question: str, words: list[str]) -> dict[str, Any] |
 
     if not words:
         return None
-    named = {_TERM_SYNONYMS.get(word, word) for word in words}
     listed = re.sub(r"\s*,\s*(?:and\s+)?", " and ", question)
-    dropped = [term for term in _requested_grouping_terms(listed) if named & set(_tokens(term))]
+    dropped = [
+        term
+        for term in _requested_grouping_terms(listed)
+        if set(words) & set(re.findall(r"[^\W_]+", term))
+    ]
     terms = words[:8]  # as many as the warning names
     message = (
         f"The draft drops the grouping by {', '.join(dropped)} that the question asks for: "

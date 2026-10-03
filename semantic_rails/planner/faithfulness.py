@@ -2103,17 +2103,13 @@ def _number_key(value: float) -> str | None:
         return None
 
 
-def _unmatched_words(
-    runtime: Any, question: str, query: dict[str, Any], *, every_word: bool = False
-) -> list[str]:
-    """Question words the draft accounts for nowhere, reading ``_MAX_SCANNED_WORDS`` distinct
-    words unless ``every_word`` (the warning; readiness is ``unconsumed_terms`` and
-    ``unconsumed_catalog_words``)."""
+def _unmatched_words(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
+    """Question words the draft accounts for nowhere (the warning; readiness is
+    ``unconsumed_terms`` and ``unconsumed_catalog_words``)."""
 
     from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
 
     referenced = _used_ids(runtime._config, query)
-    names = _catalog_names(runtime._config)
     calendar_id = str(_time_block(query).get("calendar_id") or "default")
     vocabulary: set[str] = set()
     for row in _catalog_rows(runtime._config):
@@ -2149,7 +2145,7 @@ def _unmatched_words(
     out: list[str] = []
     for word, start, end in tokens:
         scanned.add(word)
-        if not every_word and len(scanned) > _MAX_SCANNED_WORDS:
+        if len(scanned) > _MAX_SCANNED_WORDS:
             break
         if word in reported:
             continue
@@ -2167,13 +2163,7 @@ def _unmatched_words(
             or token in vocabulary
             or _singular(token) in vocabulary
             or in_time(start, end)
-            # An exact catalog name cannot be a typo of a different object's name.
-            or (
-                not numeral
-                and token not in names
-                and _singular(token) not in names
-                and _one_typo_away(token, by_initial)
-            )
+            or (not numeral and _one_typo_away(token, by_initial))
         ):
             continue
         reported.add(word)
@@ -2188,8 +2178,8 @@ def _unmatched_words(
 
 
 def _used_ids(config: Any, query: dict[str, Any]) -> set[str]:
-    """The objects a draft uses: those it names, and the entity and clock of each measure or
-    metric it names ("revenue from orders" uses the Order entity of Revenue)."""
+    """The objects a draft uses, for the warning: those it names, and the entity and clock of
+    each measure or metric it names ("revenue from orders" uses the Order entity of Revenue)."""
 
     used = set(_referenced_ids(query))
     for row in [*config.measures, *config.metric_recipes]:
@@ -2228,47 +2218,77 @@ def unmatched_intent_terms(runtime: Any, question: str, query: dict[str, Any]) -
 
 
 def unconsumed_catalog_words(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
-    """The question's words that name something in the catalog and that the draft doesn't use.
+    """The question's words that name a catalog object and that the draft doesn't consume.
 
-    The readiness invariant for words, beside ``unconsumed_terms`` for numbers: every question
-    word that names a catalog object (a word of some measure's, metric's, dimension's, entity's,
-    segment's or temporal role's id, name, label or aliases) is consumed by the draft, as
-    ``unmatched_intent_terms`` accounts for words: by the names of an object it uses, a filter
-    value, a time phrase it read, or as a framing word. One left over is a grouping the draft
-    dropped ("by store, customer type and product type" grouped by store) or a subject it
-    swapped. A description names nothing here, so a word found only in descriptions stays a
-    warning. Every word is read, however long the question.
+    The readiness invariant for words, beside ``unconsumed_terms`` for numbers. A word names an
+    object when it is one of the object's own words (``_own_words``); a plural counts as its
+    singular. Only the draft consumes one: by the own words of an object it selects, a value it
+    filters on or that value's declared names, a time phrase, a fiscal calendar or prior period
+    it honors, or as a framing word. A synonym, a typo, a namespace, a description or an object
+    the draft doesn't select never consumes one, so one catalog name can't stand in for another.
+    One left over is a grouping the draft dropped ("by store, customer type" grouped by store)
+    or a subject it swapped. Every word is read, however long the question.
     """
 
-    names = _catalog_names(runtime._config)
+    from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
+
+    text = str(question or "")
+    lowered = text.lower()
+    spans = [*_time_window(text).spans, *_honored_clause_spans(runtime, text, query)]
+    referenced = set(_referenced_ids(query))
+    calendar_id = str(_time_block(query).get("calendar_id") or "default")
+    names: set[str] = set()
+    used: set[str] = set()
+    for row in _catalog_rows(runtime._config):
+        own = _own_words(row)
+        names |= own
+        if str(getattr(row, "id", "")) in referenced or (
+            calendar_id != "default" and getattr(row, "calendar_id", "") == calendar_id
+        ):
+            used |= own
+            # The question spelling its whole id or name ("metric.sales.aov_usd") uses that span.
+            for attr in ("id", "name"):
+                path = re.escape(str(getattr(row, attr, "") or "").lower())
+                found = re.finditer(rf"(?<![\w.]){path}(?!\w|\.\w)", lowered) if path else ()
+                spans.extend(match.span() for match in found)
+    labels = _value_phrases(runtime._config)
+    for node in _dict_nodes(query):
+        if "field" in node and "value" in node:
+            value = node["value"]
+            for item in value if isinstance(value, list) else [value]:
+                used.update(_plain(item).split())
+                for domain, row in labels.get(_plain(item), []):
+                    if str(node["field"]) in domain.dimensions:
+                        used.update(_plain(" ".join(_value_names(row))).split())
+    named = {_singular(word) for word in names}
+    consumed = {_singular(word) for word in used}
+    skipped = _INTENT_STOPWORDS | _FRAMING_WORDS | set(_NUMBER_WORDS) | set(_ORDINALS)
     out: list[str] = []
-    for word in _unmatched_words(runtime, question, query, every_word=True):
-        token = _TERM_SYNONYMS.get(word, word)
-        if token in names or _singular(token) in names:
+    for match in _TERM_RE.finditer(lowered):
+        word, (start, end) = match.group(0), match.span()
+        if (
+            _singular(word) in named
+            and _singular(word) not in consumed
+            and word not in skipped
+            and word not in out
+            # A number is unconsumed_terms' to check, by where the draft reads it.
+            and not any(char.isdigit() for char in word)
+            and not any(low < end and start < high for low, high in spans)
+        ):
             out.append(word)
     return out
 
 
-def _catalog_names(config: Any) -> frozenset[str]:
-    """Every word that names a catalog object: in its label or aliases, or in the last dotted
-    part of its id or name outside a namespace.
+def _own_words(row: Any) -> set[str]:
+    """The words that name an object, as written: those of its label and aliases, and those of
+    the last dotted part of its id and name that aren't one of its own namespaces ("sales" in
+    "metric.sales.aov_usd", which is named "jaffle.sales_aov_usd")."""
 
-    A namespace names no object: "sales" in "metric.sales.aov_usd" or "jaffle" in
-    "jaffle.revenue_usd" is a part of an id or name before its last dot.
-    """
-
-    names: set[str] = set()
-    for row in _catalog_rows(config):
-        object_id = str(getattr(row, "id", "") or "")
-        name = str(getattr(row, "name", "") or "")
-        labels = [
-            str(getattr(row, "label", "") or ""),
-            *map(str, getattr(row, "aliases", None) or []),
-        ]
-        names.update(_tokens(" ".join(labels)))
-        own = f"{object_id.rsplit('.', 1)[-1]} {name.rsplit('.', 1)[-1]}"
-        names.update(_tokens(own))
-    return frozenset(names)
+    paths = [str(getattr(row, attr, "") or "") for attr in ("id", "name")]
+    spaces = set(_plain(" ".join(path.rpartition(".")[0] for path in paths)).split())
+    leaves = set(_plain(" ".join(path.rpartition(".")[2] for path in paths)).split())
+    declared = [getattr(row, "label", "") or "", *(getattr(row, "aliases", None) or [])]
+    return (leaves - spaces) | set(_plain(" ".join(map(str, declared))).split())
 
 
 def unconsumed_terms(runtime: Any, question: str, query: dict[str, Any]) -> list[str]:
