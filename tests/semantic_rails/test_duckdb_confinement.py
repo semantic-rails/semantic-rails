@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -13,6 +15,7 @@ import duckdb
 import pytest
 
 from semantic_rails import config as config_module
+from semantic_rails import seed_provenance
 from semantic_rails.config import load_package_snapshot
 from semantic_rails.db import Database, DuckDBAdapter, create_warehouse_adapter
 from semantic_rails.db_parts.duckdb_confinement import confine_duckdb
@@ -172,6 +175,64 @@ def test_runtime_preserves_confinement_after_reload_and_close(
 
 
 @pytest.mark.parametrize("constructor", ["package_id", "snapshot"])
+@pytest.mark.parametrize("outside_exists", [True, False], ids=["existing", "missing"])
+def test_confined_runtime_refuses_outside_views_when_reconnecting(
+    paths: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    constructor: str,
+    outside_exists: bool,
+) -> None:
+    package = write_orders_package(paths.inside, schema="", with_customers=False)
+    csv = paths.outside / "orders.csv"
+    contents = "order_id,ordered_at,status,order_total\n1,2024-01-01,placed,10\n"
+    csv.write_text(contents, encoding="utf-8")
+    db = package / "data" / "warehouse.duckdb"
+    conn = duckdb.connect(str(db))
+    try:
+        csv_literal = str(csv).replace("'", "''")
+        conn.execute(f"CREATE VIEW fct_orders AS SELECT * FROM read_csv('{csv_literal}')")
+    finally:
+        conn.close()
+    if constructor == "package_id":
+        monkeypatch.setattr(config_module, "list_package_paths", lambda: {"shop": str(package)})
+        runtime = Runtime("shop", confine_to=paths.inside)
+    else:
+        runtime = Runtime.from_snapshot(
+            load_package_snapshot(str(package)), confine_to=paths.inside
+        )
+    monkeypatch.setattr(
+        "semantic_rails.runtime.create_warehouse_adapter",
+        lambda *a, **k: pytest.fail("opened serving adapter"),
+    )
+    refusal = None
+    try:
+        for reset in (None, runtime.reload, runtime.close):
+            if reset:
+                reset()
+            for exists in (outside_exists, not outside_exists):
+                if exists:
+                    csv.write_text(contents, encoding="utf-8")
+                else:
+                    csv.unlink(missing_ok=True)
+                with pytest.raises(SemanticLayerError) as exc:
+                    runtime._get_adapter()  # noqa: SLF001
+                assert exc.value.code == "INVALID_CONFIG"
+                assert exc.value.details == {
+                    "default_db": str(db),
+                    "missing_relations": ["fct_orders"],
+                    "reason": "default_db_missing_relations",
+                }
+                assert str(paths.outside) not in str(exc.value)
+                current = (exc.value.code, exc.value.details, str(exc.value))
+                if refusal is None:
+                    refusal = current
+                assert current == refusal
+                assert runtime.adapter is None
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("constructor", ["package_id", "snapshot"])
 def test_confined_runtime_never_builds_a_missing_seed(
     paths: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, constructor: str
 ) -> None:
@@ -195,6 +256,41 @@ def test_confined_runtime_never_builds_a_missing_seed(
         assert sorted(package.rglob("*")) == before
     finally:
         runtime.close()
+
+
+def test_catalog_probe_refuses_before_binding_when_confinement_fails(
+    paths: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    closed = []
+    conn = SimpleNamespace(close=lambda: closed.append(True))
+
+    def connect(path: str, *, read_only: bool) -> Any:
+        assert path == str(paths.db)
+        assert read_only is True
+        return conn
+
+    def refuse(connection: Any, directory: str) -> None:
+        assert connection is conn
+        assert directory == str(paths.inside)
+        raise duckdb.InvalidInputException("driver text")
+
+    monkeypatch.setattr(
+        seed_provenance.sys,
+        "stdin",
+        StringIO(
+            json.dumps(
+                {"path": str(paths.db), "relations": ["orders"], "confine_to": str(paths.inside)}
+            )
+        ),
+    )
+    monkeypatch.setattr(seed_provenance.duckdb, "connect", connect)
+    monkeypatch.setattr(seed_provenance, "confine_duckdb", refuse)
+    monkeypatch.setattr(
+        seed_provenance, "_missing_on_connection", lambda *a: pytest.fail("bound relations")
+    )
+    seed_provenance._probe_cli()  # noqa: SLF001
+    assert json.loads(capsys.readouterr().out) == {"error": "InvalidInputException"}
+    assert closed == [True]
 
 
 def _assert_refused(adapter: Any, sql: str, reason: str) -> None:

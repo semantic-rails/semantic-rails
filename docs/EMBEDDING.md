@@ -119,10 +119,10 @@ lake = create_warehouse_adapter(ducklake_package, confine_to="/srv/packages/p-12
 ```
 
 `Runtime(package_id, *, confine_to="")` and `Runtime.from_snapshot(snapshot, *, confine_to="")`
-retain the option through `reload()` and `close()`, applying it whenever they create an
-adapter. A confined Runtime requires an existing database and refuses seed building with
-`INVALID_CONFIG`; build the database before opening it. Confined database, catalog and data
-paths must be filesystem paths, absolute or relative to their usual adapter base, that
+retain the option through `reload()` and `close()`, applying it to catalog probes and every
+adapter they create. A confined Runtime requires an existing database and refuses seed
+building with `INVALID_CONFIG`; build the database before opening it. Confined database,
+catalog and data paths must be filesystem paths, absolute or relative to their usual adapter base, that
 resolve inside the directory. Connection strings and in-memory database names refuse before
 anything is opened; drivers receive the validated absolute real paths. The host must keep
 the directory free of links that lead outside it.

@@ -2046,7 +2046,9 @@ class Runtime:
                 # its actual catalog before the runtime serves it.
                 continue
             try:
-                missing = missing_duckdb_relations(self.db_path, self._expected_tables())
+                missing = missing_duckdb_relations(
+                    self.db_path, self._expected_tables(), confine_to=self._confine_to
+                )
             except Exception as exc:  # noqa: BLE001 — any uncertain probe fails closed
                 raise self._unreadable_db_error() from exc
             if missing:

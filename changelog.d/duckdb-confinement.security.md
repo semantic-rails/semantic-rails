@@ -6,4 +6,5 @@
   file access outside it, extension installs and loads, and setting changes are refused
   (see [docs/EMBEDDING.md](docs/EMBEDDING.md#confining-duckdb-file-access)). It is off
   by default. Runtime retains confinement when reconnecting and requires an existing
-  database; confined paths must name files inside the directory.
+  database; confined paths must name files inside the directory. Its catalog probes
+  apply the same confinement before validating configured relations.
