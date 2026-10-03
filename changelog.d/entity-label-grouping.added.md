@@ -1,6 +1,6 @@
 - Packages can declare an entity's `label_dimension` so plans grouping by the
   entity or its own key dimensions include every key component before the label,
-  without merging entities that share a name, including store groupings. Explicit
+  without merging entities that share a name. Explicit
   label-dimension grouping remains label-only; foreign-key dimensions on other
   entities do not expand.
   Loading refuses labels or key components without groupable dimensions. Entity

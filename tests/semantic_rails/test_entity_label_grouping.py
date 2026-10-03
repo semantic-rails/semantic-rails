@@ -7,7 +7,7 @@ import duckdb
 import pytest
 import yaml
 
-from semantic_rails.config import load_package_config
+from semantic_rails.config import load_package_config, resolve_repo_path
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.interop.package_writer import write_package
 from semantic_rails.metadata import inspect_payload
@@ -242,12 +242,15 @@ def test_label_sorting_first_does_not_replace_entity_identity(tmp_path, term):
 @pytest.mark.parametrize(
     ("intent", "expected", "columns", "expected_rows"),
     [
-        (
-            "repair cost by store",
-            [KEY, LABEL],
-            "incident_id, incident_name",
-            [(1, "Leak", 10), (2, "Leak", 20)],
-        ),
+        *[
+            (
+                f"repair cost by {terms}",
+                [KEY, LABEL],
+                "incident_id, incident_name",
+                [(1, "Leak", 10), (2, "Leak", 20)],
+            )
+            for terms in ["store", "store id", "store name and store", "store and store name"]
+        ],
         ("repair cost by store name", [LABEL], "incident_name", [("Leak", 30)]),
     ],
 )
@@ -290,6 +293,13 @@ def test_store_grouping_keeps_identity_unless_label_is_requested(
         )
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize("intent", ["revenue by store", "top stores by revenue"])
+def test_package_without_entity_labels_keeps_store_grouping(intent):
+    config = load_package_config(resolve_repo_path("configs/semantic_rails/jaffle_shop"))
+    assert not any(row.label_dimension for row in config.entities)
+    assert _maybe_group_by(config, intent) == ["dimension.jaffle_store_name"]
 
 
 def test_categorical_composite_key_keeps_distinct_entities(tmp_path):
