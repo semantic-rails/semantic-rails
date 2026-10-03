@@ -132,8 +132,6 @@ def test_resolve_path_refuses_a_tie_and_follows_its_pin():
             MeasureConfig(
                 id="m.a",
                 entity="A",
-                subject_entity="A",
-                aggregation_entity="A",
                 row_grain=["A.id"],
                 expr="id",
                 default_aggregation="count_distinct",
@@ -206,8 +204,6 @@ def test_resolve_path_honors_allowed_directions():
             MeasureConfig(
                 id="m.event",
                 entity="event",
-                subject_entity="event",
-                aggregation_entity="event",
                 row_grain=["event.event_id"],
                 expr="event_id",
                 default_aggregation="count_distinct",
@@ -282,8 +278,6 @@ def test_resolve_path_handles_cycles_without_recursing_indefinitely():
             MeasureConfig(
                 id="m.a",
                 entity="A",
-                subject_entity="A",
-                aggregation_entity="A",
                 row_grain=["A.id"],
                 expr="id",
                 default_aggregation="count_distinct",

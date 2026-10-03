@@ -291,11 +291,6 @@ def test_metrics_export_their_sql_or_stay_in_the_sidecar(expression, expected) -
             "measures reading other entities",
             "metrics built on omitted objects",
         ),
-        (
-            {"aggregation_entity": "entity.jaffle_customer"},
-            None,
-            "metrics rolled up to another entity",
-        ),
     ],
 )
 def test_measure_gaps_keep_their_metrics_in_the_sidecar(change, measure_gap, metric_gap) -> None:
