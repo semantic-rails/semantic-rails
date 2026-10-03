@@ -31,6 +31,86 @@ VERBOSITIES = ("minimal", "compact", "full")
 
 
 @pytest.fixture()
+def jaffle_adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
+    adapter = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
+    try:
+        yield adapter
+    finally:
+        adapter.close()
+
+
+@pytest.mark.parametrize("oversized", ["rows", "annotations"])
+def test_refused_run_never_advises_using_an_undelivered_answer(
+    jaffle_adapter: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch, oversized: str
+) -> None:
+    adapter = jaffle_adapter
+    query = {
+        "version": 2,
+        "select": [{"as": "revenue", "expression": {"measure": "measure.jaffle.revenue_usd"}}],
+    }
+    monkeypatch.setattr(
+        adapter.runtime,
+        "query",
+        lambda _: {
+            "ok": True,
+            "row_count": 1,
+            "rows": [{"revenue": "x" * 50_000 if oversized == "rows" else 1}],
+        },
+    )
+    session = MCPQuerySession()
+    annotate = session.annotate
+
+    def large_annotation(*args: Any, **kwargs: Any) -> None:
+        annotate(*args, **kwargs)
+        if args[1] == "execute" and args[2].get("mode", "run") == "run":
+            args[3]["next"] = "x" * 50_000
+
+    if oversized == "annotations":
+        monkeypatch.setattr(session, "annotate", large_annotation)
+    refused = adapter.call_tool("execute", {"query": query}, session=session)
+    assert not refused["ok"] and refused["errors"][0]["code"] == "RESULT_TOO_LARGE"
+    assert "rows" not in refused
+    for mode in ("validate", "sql"):
+        response = adapter.call_tool("execute", {"query": query, "mode": mode}, session=session)
+        assert response["ok"], response
+        assert "already_ran" not in response
+        assert "answer from" not in str(response.get("next", "")).lower()
+
+
+@pytest.mark.parametrize("verbosity", ["compact", "full"])
+def test_large_rendered_sql_is_optional_only_for_a_run(
+    jaffle_adapter: SemanticLayerMCPAdapter, verbosity: str
+) -> None:
+    adapter = jaffle_adapter
+    query = {
+        "version": 2,
+        "select": [{"as": "revenue", "expression": {"measure": "measure.jaffle.revenue_usd"}}],
+        "where": [
+            {
+                "field": "dimension.jaffle_order_customer_order_number",
+                "op": "in",
+                "value": [1, *[10**15 + i for i in range(3000)]],
+            }
+        ],
+    }
+    compiled = adapter.runtime.compile({**query, "verbosity": verbosity})
+    assert len(compiled["rendered_sql"]) > MCP_DEFAULT_MAX_RESULT_CHARS
+    expected = adapter.runtime._get_adapter().query(
+        "SELECT SUM(order_total_cents / 100.0) AS revenue FROM jaffle_order "
+        "WHERE customer_order_number = 1"
+    )
+    response = adapter.call_tool("execute", {"query": query, "verbosity": verbosity})
+    assert response["ok"], response
+    assert response["row_count"] == 1 and response["rows"] == expected
+    assert "rendered_sql" not in response
+    assert "rendered_sql" in response["omitted_fields"]
+    assert len(json_text(response)) <= MCP_DEFAULT_MAX_RESULT_CHARS
+    sql = adapter.call_tool("execute", {"query": query, "mode": "sql", "verbosity": verbosity})
+    assert not sql["ok"] and sql["errors"][0]["code"] == "RESULT_TOO_LARGE"
+    assert "rendered_sql" not in sql
+
+
+@pytest.fixture()
 def medium_adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
     base = runtime_factory("jaffle_shop")
     config = base.config

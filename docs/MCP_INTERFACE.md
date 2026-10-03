@@ -74,7 +74,7 @@ MCP issues leave out empty optional fields and a
 `why_invalid` or `unsupported_construct` that only repeats its `message` or `code`, and
 `request_context` appears only when a transport or `policy_context` set one.
 
-Within a stdio query MCP session, repeated calls still run normally and add
+Within a stdio query MCP session, repeated successful calls still run normally and add
 `same_as`, the first matching response's `request_id`. Matching uses the tool name
 and arguments with JSON object keys sorted, ignoring `verbosity` and
 `request_id` at the argument and query envelopes. Array order, filters, query
@@ -533,12 +533,16 @@ Every tool and mode shares one response budget: `MCP_DEFAULT_MAX_RESULT_CHARS`, 
 trusted request context and session annotations are added. It measures each representation's
 payload, rather than the JSON-RPC wrapper or the sum of the two copies.
 
-Optional compiler plans are removed first, then metadata and query/context echoes if needed;
+Optional compiler plans are removed first, then rendered SQL in mode `run`, then metadata
+and query/context echoes if needed;
 `omitted_fields` lists what was removed. Compact responses exclude plan detail even when it
 would fit. Rows are shortened only by the row cap, never silently by the character budget.
-If required data (rows, rendered SQL, a Query IR draft or diagnostics) still cannot fit,
+Rendered SQL remains required in mode `sql`. If required data (rows, SQL-mode text,
+a Query IR draft or diagnostics) still cannot fit,
 the tool returns a bounded `RESULT_TOO_LARGE` error. No partial rows or SQL are returned.
 Narrow the query, lower `max_rows`, select fewer columns, or request fewer catalog objects.
+Session hints are added only to responses that fit; their size is checked again before
+delivery. Only a final successful run carrying rows is recorded for `already_ran` advice.
 An operator changes the shared budget with `SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS`, read on
 every call. Missing or non-positive values use the default; positive values below 512 use
 512 so the refusal itself fits. Refusals preserve request identity and context when they fit.

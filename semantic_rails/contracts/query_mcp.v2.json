@@ -687,7 +687,7 @@
           },
           "verbosity": {
             "default": "minimal",
-            "description": "Response detail. 'minimal' (default)={ok,errors,warnings}, plus rendered_sql in mode 'sql' and rows in mode 'run'. 'compact' adds query metadata without compiler plans; 'full' adds plans. Every mode shares one response budget; omitted_fields names trimmed detail.",
+            "description": "'minimal' (default): outcome, errors, warnings; SQL in 'sql', rows in 'run'. 'compact' adds metadata without plans; 'full' adds plans. All modes share a budget; omitted_fields lists trimmed detail.",
             "enum": [
               "minimal",
               "compact",

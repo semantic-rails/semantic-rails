@@ -649,10 +649,9 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
                 "verbosity": {
                     **VERBOSITY_SCHEMA,
                     "description": (
-                        "Response detail. 'minimal' (default)={ok,errors,warnings}, plus "
-                        "rendered_sql in mode 'sql' and rows in mode 'run'. 'compact' adds "
-                        "query metadata without compiler plans; 'full' adds plans. "
-                        "Every mode shares one response budget; omitted_fields names trimmed detail."
+                        "'minimal' (default): outcome, errors, warnings; SQL in 'sql', rows in 'run'. "
+                        "'compact' adds metadata without plans; 'full' adds plans. "
+                        "All modes share a budget; omitted_fields lists trimmed detail."
                     ),
                 },
                 "sql_profile": SQL_PROFILE_SCHEMA,
@@ -1583,12 +1582,12 @@ _OPTIONAL_RESPONSE_FIELDS = (
 
 
 def _bound_response(
-    payload: dict[str, Any], *, compact: bool, query: Mapping[str, Any]
+    payload: dict[str, Any], *, compact: bool, query: Mapping[str, Any], sql_required: bool = True
 ) -> dict[str, Any]:
     """Budget the final tool payload without cutting rows or changing its outcome.
 
     Both MCP representations serialize this same payload. Compiler detail and
-    echoes are optional; rows, SQL text, Query IR drafts and diagnostics are not.
+    echoes are optional; rows, SQL-mode text, Query IR drafts and diagnostics are not.
     If those required fields cannot fit, return a bounded, explicit refusal.
     """
     result = dict(payload)
@@ -1606,7 +1605,10 @@ def _bound_response(
     if compact:
         for field in _PLAN_DETAIL_FIELDS:
             omit(field)
-    for field in _OPTIONAL_RESPONSE_FIELDS:
+    optional_fields: tuple[str, ...] = _OPTIONAL_RESPONSE_FIELDS
+    if not sql_required:
+        optional_fields = (*_PLAN_DETAIL_FIELDS, "rendered_sql", *_OPTIONAL_RESPONSE_FIELDS)
+    for field in optional_fields:
         if len(json_text(result)) <= limit:
             return result
         omit(field)
@@ -1631,7 +1633,8 @@ def _bound_response(
             "lower max_rows or select fewer columns."
         )
         details.update(row_count=returned, total_row_count=total)
-    issue = {"code": "RESULT_TOO_LARGE", "message": message, "details": details}
+    error = SemanticLayerError("RESULT_TOO_LARGE", message, details=details)
+    issue = {"code": error.code, "message": str(error), "details": error.details}
     refusal: dict[str, Any] = {
         "ok": False,
         "status": "error",
@@ -1881,16 +1884,6 @@ class SemanticLayerMCPAdapter:
                 response["request_context"] = request_context_payload(request_context)
                 if request_context.request_id:
                     response["request_id"] = request_context.request_id
-            if session is not None and (arguments is None or isinstance(arguments, Mapping)):
-                query = None
-                if name == "execute" and response.get("ok") is True:
-                    with contextlib.suppress(SemanticLayerError):
-                        query = _query_payload(
-                            _strip_execute_transport_args(
-                                {key: value for key, value in args_dict.items() if key != "mode"}
-                            )
-                        )
-                session.annotate(self, name, args_dict, response, query=query)
             audit_context = dict(response.get("request_context", {}) or {})
             shaped_query: dict[str, Any] = {}
             with contextlib.suppress(SemanticLayerError):
@@ -1902,9 +1895,38 @@ class SemanticLayerMCPAdapter:
                 )
                 if not str(shaped_query.get("verbosity") or "").strip():
                     shaped_query["verbosity"] = MCP_DEFAULT_QUERY_VERBOSITY
-            response = _bound_response(
-                response, compact=resolve_verbosity(shaped_query) == "compact", query=shaped_query
+            compact = resolve_verbosity(shaped_query) == "compact"
+            sql_required = not (
+                name == "execute"
+                and isinstance(arguments, Mapping)
+                and str(arguments.get("mode") or "run").strip().lower() == "run"
             )
+            response = _bound_response(
+                response,
+                compact=compact,
+                query=shaped_query,
+                sql_required=sql_required,
+            )
+            if session is not None and response.get("ok") is True:
+                query = None
+                if name == "execute":
+                    with contextlib.suppress(SemanticLayerError):
+                        query = _query_payload(
+                            _strip_execute_transport_args(
+                                {key: value for key, value in args_dict.items() if key != "mode"}
+                            )
+                        )
+                session.annotate(self, name, args_dict, response, query=query)
+                response = _bound_response(
+                    response,
+                    compact=compact,
+                    query=shaped_query,
+                    sql_required=sql_required,
+                )
+                if name == "execute" and query is not None:
+                    session.record_run(self, args_dict, response, query=query)
+            elif session is not None:
+                session.reset_validate_guidance()
             emit_audit_event(
                 "mcp_tool",
                 tool=name,
