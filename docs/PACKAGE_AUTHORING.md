@@ -1237,8 +1237,9 @@ The invariant: a carried total appears at most once per output row's `via` key. 
 never added across two parents, or repeated over the child's own child rows.
 
 - An output row must hold one parent: group by or pin (`=`) the `via` entity's key, or
-  every column of the measure's own key. Anything coarser is refused with `ROLLUP_UNSAFE`,
-  and `project validate` probes the measure grouped by the `via` key.
+  every column of the measure's own key. Anything coarser is refused with `ROLLUP_UNSAFE`
+  (`details.construct: parent_lookup`), and `project validate` probes the measure grouped by
+  the `via` key.
 - Grouping or filtering by a child of the child (a claim's lines) is refused with
   `MIXED_GRAIN_INVALID`, and so is a filter on a dimension of the source model.
   Windows, distributions and metric predicates over a lookup are refused too.
@@ -1252,7 +1253,7 @@ never added across two parents, or repeated over the child's own child rows.
   window and buckets on the child's own clocks select child rows, and leave the value
   unchanged. Bucketing by the source's clock, prior-period, cumulative, rolling and
   period-to-date wrappers, and `temporal_role_overrides` on a lookup are refused with
-  `REWRITE_NOT_SUPPORTED`.
+  `REWRITE_NOT_SUPPORTED` (`details.unsupported_construct: lookup_time`).
 
 The load refuses a lookup with `INVALID_CONFIG`, naming the key at fault, when:
 
