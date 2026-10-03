@@ -1421,6 +1421,9 @@ def _is_temporal_grouping_term(term: str) -> bool:
         and term_tokens.issubset(
             {"day", "week", "month", "quarter", "year", "time", "delivered", "ordered"}
         )
+        # A grain phrase ("at week grain", "month level") names the clock's grain.
+        or term_tokens & set(_TIME_UNITS)
+        and term_tokens.issubset({*_TIME_UNITS, *_GRAIN_WORDS})
     )
 
 
