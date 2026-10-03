@@ -36,6 +36,7 @@ from ._base import (
     _top_n_intent,
 )
 from .generators import _target_focus_text
+from .visibility import visible_dimensions
 
 
 @dataclass(frozen=True)
@@ -326,7 +327,7 @@ def _grouping_candidates(
     dim_ids = _maybe_group_by(config, text, target_terms=target_terms)
     out: list[ResolvedTerm] = []
     for dim_id in dim_ids:
-        dim = next((row for row in config.dimensions if row.id == dim_id), None)
+        dim = next((row for row in visible_dimensions(config) if row.id == dim_id), None)
         if dim is None:
             continue
         out.append(

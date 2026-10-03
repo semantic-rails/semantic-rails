@@ -19,10 +19,17 @@ import re
 from typing import Any
 
 from ._base import RuntimeCompositionDraft
+from .visibility import (
+    discovery_query,
+    visible_dimensions,
+    visible_value_domains,
+    with_dimension_visibility,
+)
 
 _RANK_COUNT_RE = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)"
 
 
+@with_dimension_visibility
 def fallback_drafts(
     runtime: Any,
     *,
@@ -63,7 +70,7 @@ def fallback_drafts(
     discovery = discover_payload(
         runtime,
         terms=target_focus or intent,
-        partial_query=partial,
+        partial_query=discovery_query(partial),
         stage=_infer_stage(partial, "", target_focus or intent),
         limit=max(12, int(limit or 1) * 4),
     )
@@ -115,6 +122,7 @@ def blocked_object_not_found(intent: str) -> dict[str, Any]:
     }
 
 
+@with_dimension_visibility
 def _draft_for_choice(
     runtime: Any,
     *,
@@ -229,7 +237,7 @@ def _choose_object_for_terms(
     discovery = discover_payload(
         runtime,
         terms=search_terms,
-        partial_query=partial_query,
+        partial_query=discovery_query(partial_query),
         stage=_infer_stage(partial_query, "", search_terms),
         limit=15,
     )
@@ -435,7 +443,7 @@ def _term_matches_value_domain(config: Any, term: str) -> bool:
     term_tokens = set(_tokenize(term))
     if not term_tokens:
         return False
-    for domain in config.value_domains:
+    for domain in visible_value_domains(config):
         for row in list(domain.values or []):
             values = [
                 str(row.value),
@@ -454,12 +462,15 @@ def _grouping_term_matches(runtime: Any, query: dict[str, Any], term: str) -> li
 
     from ..metadata import discover_payload  # noqa: WPS433 - shared metadata helper
 
+    visible_ids = {row.id for row in visible_dimensions(runtime._config)}
+    if not visible_ids:
+        return []
     if _is_temporal_grouping_term(term) or _term_matches_value_domain(runtime._config, term):
         return None
     dim_discovery = discover_payload(
         runtime,
         terms=term,
-        partial_query=query,
+        partial_query=discovery_query(query),
         kinds=["dimension"],
         stage="post_measure",
         limit=5,
@@ -467,7 +478,8 @@ def _grouping_term_matches(runtime: Any, query: dict[str, Any], term: str) -> li
     return [
         str(row["id"])
         for row in dim_discovery["dimensions"]
-        if any(
+        if row["id"] in visible_ids
+        and any(
             "label/name matched" in reason
             or "search term matched" in reason
             or "exact name match" in reason
@@ -484,7 +496,9 @@ def _choose_group_dimensions(
         _selection_context,
     )
 
-    if chosen_group_dim:
+    if chosen_group_dim and chosen_group_dim in {
+        row.id for row in visible_dimensions(runtime._config)
+    }:
         return [chosen_group_dim]
     selection = _selection_context(runtime._config, query)
     group_dims: list[str] = []
@@ -564,10 +578,14 @@ def _matched_value_rows(runtime: Any, query: dict[str, Any], text: str) -> list[
     )
     from ..metadata_parts.relevance import _tokenize  # noqa: WPS433
 
+    dimensions = visible_dimensions(runtime._config)
+    if not dimensions:
+        return []
     candidates: list[dict[str, Any]] = []
     filter_terms: list[str] = []
     lowered_text = str(text or "").lower()
     maps = _config_maps(runtime._config)
+    maps = {**maps, "dimensions": {row.id: row for row in dimensions}}
     selection = _selection_context(runtime._config, query)
     selected_text_parts: list[str] = []
     for select in list(query.get("select", []) or []):
@@ -689,7 +707,7 @@ def _matched_value_rows(runtime: Any, query: dict[str, Any], text: str) -> list[
         value_discovery = discover_payload(
             runtime,
             terms=filter_term,
-            partial_query=query,
+            partial_query=discovery_query(query),
             kinds=["dimension_value"],
             stage="post_dimension",
             limit=5,
@@ -721,7 +739,7 @@ def _matched_value_rows(runtime: Any, query: dict[str, Any], text: str) -> list[
                 continue
             seen_value_keys.add(key)
             _add_candidate(row, match_key=matched_phrase, context=_value_context(matched_phrase))
-    for domain in runtime._config.value_domains:
+    for domain in visible_value_domains(runtime._config):
         for value in list(domain.values or []):
             value_phrases = [
                 str(value.value),

@@ -433,6 +433,59 @@ def test_a_hop_out_of_the_validity_window_keeps_the_source_key(runtime, package,
     )
 
 
+@pytest.mark.parametrize("clock", ["valid_from", "valid_to"])
+@pytest.mark.parametrize("schema", ["", "analytics"])
+def test_an_anchored_outgoing_hop_keeps_closed_and_open_versions_regions(
+    tmp_path, gold, clock, schema
+):
+    """An existing segment version looks up its account even at its exclusive end time."""
+    files = dict(FILES)
+    files["models/account_segments.yml"] = files["models/account_segments.yml"].replace(
+        f"column: {clock}, kind: timestamp,", f"column: {clock}, kind: timestamp, default: true,"
+    )
+    seed = SEED_SQL
+    if schema:
+        files["models/account_segments.yml"] = files["models/account_segments.yml"].replace(
+            "relation: account_segments", f"relation: {schema}.account_segments"
+        )
+        files["graph.yml"] = files["graph.yml"].replace(
+            "account_segments.valid_", f"{schema}.account_segments.valid_"
+        )
+        seed = f"CREATE SCHEMA {schema};\n" + seed.replace(
+            "TABLE account_segments", f"TABLE {schema}.account_segments"
+        ).replace("INTO account_segments", f"INTO {schema}.account_segments")
+    package = _write_package(tmp_path, files)
+    (package / "data" / "seed.sql").write_text(seed)
+    runtime = opened(Runtime.from_path(str(package)))
+    role = f"temporal_role.hist_account_segment_{clock}"
+    time_key = f"{role}__month"
+    query = _seats(group_by=[REGION], time={"temporal_role": role, "grain": "month"})
+    try:
+        rows = runtime.query(query)["rows"]
+    finally:
+        runtime.close()
+    actual = {
+        (row[REGION], datetime.fromisoformat(row[time_key]) if row[time_key] else None): float(
+            row["value"]
+        )
+        for row in rows
+    }
+    expected = gold(
+        "SELECT (SELECT a.region FROM accounts a WHERE a.account_id = s.account_id),"
+        f" date_trunc('month', s.{clock}), SUM(s.seats) FROM account_segments s GROUP BY 1, 2"
+    )
+    assert expected == (
+        {
+            ("North", datetime(2026, 1, 1)): 2.0,
+            ("North", datetime(2026, 2, 1)): 5.0,
+            ("South", datetime(2026, 1, 1)): 1.0,
+        }
+        if clock == "valid_from"
+        else {("North", datetime(2026, 2, 1)): 2.0, ("North", None): 5.0, ("South", None): 1.0}
+    )
+    assert actual == expected
+
+
 def test_schema_qualified_windows_keep_outgoing_lookups_safe_and_incoming_hops_anchored(tmp_path):
     files = dict(FILES)
     files["models/account_segments.yml"] = files["models/account_segments.yml"].replace(

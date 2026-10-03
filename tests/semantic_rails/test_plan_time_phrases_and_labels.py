@@ -761,7 +761,6 @@ def test_a_number_range_the_draft_does_not_carry_is_low_confidence(
         "revenue for Q1 2017",
         "revenue for the last 30 days",
         "top 5 stores by revenue in 2017",
-        "top 10 customers by revenue in Q1 2017",
         "orders on 15 March 2017 by store",
         "revenue by month in 2017",
     ],
@@ -772,6 +771,17 @@ def test_a_question_with_a_day_or_coarser_window_is_still_ok(
     payload = _plan(runtime_factory, text)
     assert payload["status"] == "ok", payload.get("why")
     assert payload["next"]["ready_for"] == ["execute"]
+
+
+def test_a_customer_ranking_keeps_its_window_and_ordinary_customer_key(
+    runtime_factory: Any,
+) -> None:
+    payload = _plan(runtime_factory, "top 10 customers by revenue in Q1 2017")
+    assert payload["status"] == "ok", payload.get("why")
+    assert payload["next"]["ready_for"] == ["execute"]
+    assert payload["best"]["query_ir"]["group_by"] == ["dimension.jaffle_customer_id"]
+    time = payload["best"]["query_ir"]["time"]
+    assert (time["start"], time["end"]) == ("2017-01-01", "2017-04-01")
 
 
 def test_a_caller_window_answers_the_time_phrases_plan_could_not_resolve(
@@ -1153,8 +1163,9 @@ def test_a_window_with_no_open_end_states_no_assumption(text: str) -> None:
         ("total item revenue by month", "measure.jaffle.item_revenue_usd", []),
         ("Item revenue (USD) in 2017", "measure.jaffle.item_revenue_usd", []),
         ("revenue in 2017", "measure.jaffle.revenue_usd", []),
-        # The words are not a name when they are not adjacent, or name another thing.
-        ("revenue by item in 2017", "measure.jaffle.revenue_usd", []),
+        # The words are not a name when they are not adjacent, or name another thing. The draft
+        # groups by an order's drink flag, not the Item key, so it isn't ready for "item".
+        ("revenue by item in 2017", "measure.jaffle.revenue_usd", ["item"]),
         ("food revenue in 2017", "measure.jaffle.food_revenue_usd", []),
         # A name inside other words is not the ask: this is revenue, not the count of large orders.
         # The draft doesn't filter on the large-order flag, so it isn't ready.

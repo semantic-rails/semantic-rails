@@ -303,7 +303,24 @@ and consumed using the same forms; "-es" applies only after s, x, z, ch or sh. A
 synonym, a typo, a namespace, a description, a framing word or an object the draft doesn't select
 (a measure's entity included) never does. So `plan` may hold back a right draft ("revenue from
 orders": Orders is a measure), but never calls one ready that drops a grouping the question
-names. Words that name no catalog object also make the plan `low_confidence` when the draft
+names. Last, each grouping the question lists, apart from clock terms and declared values, must
+match its own `group_by` dimension, or the plan is `low_confidence` with
+`why.code="PLAN_UNMATCHED_TERMS"` and `why.details.dropped_groupings` naming the unmatched ones.
+This check reads past a comma when the next piece names a dimension, an entity or a clock, and
+stops at a window the question states, while the draft still reads its groupings up to the
+comma: "repair cost by incident name, incident" grouped by Incident name alone is not ready, as
+two incidents can share a name. The check only holds a plan; it never changes a draft or makes
+one ready. A listed grouping that names an entity is satisfied only by that entity's own key
+dimension, or by the single declared dimension of that entity whose own words name it, and an
+entity with a composite key is never satisfied. A term names an entity only with every word of
+its label ("customer" names Customer, not Customer history), and a declared time, such as Store
+opened at, never stands in for its entity. Any other grouping matches a dimension whose own
+words name it: its label, its aliases and the last part of its name, not the prefix of its id.
+A grouping that dimensions of two or more entities match, none of them the measure's own
+("name" for an order count: Customer name or Store name), is ambiguous and never a pick: the
+plan is not ready, and `why.details.ambiguous_groupings` lists it. Naming the entity ("customer
+name") settles it, as does a dimension in the caller's `partial_query` group_by when the draft
+adds no other that matches. Words that name no catalog object also make the plan `low_confidence` when the draft
 doesn't consume them, they aren't stopwords or number words, and `intent_ir.unresolved`
 still holds them. This returns `why.code="PLAN_UNMATCHED_TERMS"` with
 `why.details={"terms": [...], "kind": "filter_values_unrealized"}` and an
@@ -498,7 +515,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `<TOOL>_UNKNOWN_ARG` | every tool but `segment` | Unknown argument (on `discover`, incl. `term`/`kind` typos); the value was ignored |
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain; flip `allow_live_query=true` to probe |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
-| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, when one names a catalog object, or when two or more are names the catalog doesn't have |
+| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, when one names a catalog object, when a listed non-clock, non-value grouping has no matching dimension of its own (`details.dropped_groupings` lists only unmatched terms) or may be a dimension of any of several other entities (`details.ambiguous_groupings`), or when two or more are names the catalog doesn't have |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
 | `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain and no `start`/`end` window, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |

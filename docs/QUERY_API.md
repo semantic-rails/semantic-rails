@@ -1019,6 +1019,14 @@ compile cost and warms the runtime compile cache. Agents can forward
 `best.query_ir` to `compile` or `query`; call `validate` again only when
 they need the full diagnostics envelope or are editing the IR by hand.
 
+Planning applies the caller's `policy_context` (carried in `partial_query`)
+before matching or ranking dimensions, including catalog fallback and Intent IR
+groupings. Hidden dimensions are omitted from drafts, alternatives, diagnostics
+and composition hints in every detail mode. If visibility cannot be determined,
+dimensions are withheld. Naming a hidden dimension has the same outcome as naming
+an absent dimension; a draft that bypasses the visibility check is refused with
+`OBJECT_NOT_FOUND` without naming the dimension.
+
 Validate or execute `best.query_ir` directly. `next` carries `ready_for` and optional
 `valid_values` calls, without duplicating the query. For `detail="best"`, fallback drift
 reasons use slot paths in `best.trace.intent_slots` and `why.details.fallback_slots`

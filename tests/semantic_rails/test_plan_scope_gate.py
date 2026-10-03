@@ -42,7 +42,6 @@ CLASSIFIER_ROUTED_INTENTS = [
 
 REASONABLE_INTENTS = [
     "average order value by month",
-    "top customers by revenue",
     "revenue trend over time",
     "orders per store",
 ]
@@ -103,19 +102,42 @@ def test_plan_lets_reasonable_intents_through(runtime_factory, intent):
     assert "low_relevance" not in payload
 
 
-def test_customer_ranking_uses_the_customer_key_and_matches_reference_sql(runtime_factory):
+@pytest.mark.parametrize(
+    ("intent", "window", "limit"),
+    [
+        ("top customers by revenue", False, 5),
+        ("top 10 customers by revenue in Q1 2017", True, 10),
+        ("revenue by customer", False, None),
+    ],
+)
+def test_customer_grouping_uses_the_customer_key_and_matches_reference_sql(
+    runtime_factory, intent, window, limit
+):
     runtime = runtime_factory("jaffle_shop")
     try:
-        payload = plan_payload(runtime, intent="top customers by revenue")
+        payload = plan_payload(runtime, intent=intent)
+        assert "out_of_scope" not in payload
+        assert "low_relevance" not in payload
         assert payload["status"] == "ok", payload.get("why")
         assert payload["next"]["ready_for"] == ["execute"]
         query = payload["best"]["query_ir"]
         assert query["group_by"] == ["dimension.jaffle_customer_id"]
-        assert "time" not in query
+        if window:
+            assert query["time"] == {
+                "temporal_role": "temporal_role.jaffle_order_time",
+                "grain": "quarter",
+                "start": "2017-01-01",
+                "end": "2017-04-01",
+            }
+        else:
+            assert "time" not in query
+        assert query.get("limit") == limit
         rows = runtime.query(query)["rows"]
+        where = " WHERE ordered_at >= '2017-01-01' AND ordered_at < '2017-04-01'" if window else ""
+        rank = f" ORDER BY revenue DESC LIMIT {limit}" if limit else ""
         reference = runtime.adapter.query(
             "SELECT customer_id, SUM(order_total_cents / 100.0) AS revenue"
-            " FROM jaffle_order GROUP BY customer_id ORDER BY revenue DESC LIMIT 5"
+            f" FROM jaffle_order{where} GROUP BY customer_id{rank}"
         )
         assert {row["dimension.jaffle_customer_id"]: float(row["revenue_usd"]) for row in rows} == (
             pytest.approx({row["customer_id"]: float(row["revenue"]) for row in reference})
