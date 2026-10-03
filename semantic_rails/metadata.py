@@ -1009,7 +1009,8 @@ def _object_card(
             }
         )
         if entity.label_dimension:
-            base["label_dimension"] = entity.label_dimension
+            if entity.label_dimension not in hidden_ids:
+                base["label_dimension"] = entity.label_dimension
         elif entity.kind != "time":
             key = ", ".join(entity.key or [entity.primary_key])
             base["label_status"] = f"no label declared; {key} identifies it"

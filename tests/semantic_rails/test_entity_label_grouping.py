@@ -239,6 +239,59 @@ def test_label_sorting_first_does_not_replace_entity_identity(tmp_path, term):
         runtime.close()
 
 
+@pytest.mark.parametrize(
+    ("intent", "expected", "columns", "expected_rows"),
+    [
+        (
+            "repair cost by store",
+            [KEY, LABEL],
+            "incident_id, incident_name",
+            [(1, "Leak", 10), (2, "Leak", 20)],
+        ),
+        ("repair cost by store name", [LABEL], "incident_name", [("Leak", 30)]),
+    ],
+)
+def test_store_grouping_keeps_identity_unless_label_is_requested(
+    tmp_path, intent, expected, columns, expected_rows
+):
+    path = _package(tmp_path)
+    raw = yaml.safe_load(path.read_text())
+    raw["graph"]["entities"]["incident"]["label"] = "Store"
+    raw["models"]["incidents"]["dimensions"]["name"]["label"] = "Store name"
+    raw["models"]["incidents"]["dimensions"]["incident_id"] = {
+        "as": KEY,
+        "kind": "id",
+        "label": "Store id",
+    }
+    path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    runtime = Runtime.from_path(str(path))
+    try:
+        plan = plan_payload(runtime, intent=intent)
+        assert plan["status"] == "ok", plan.get("why")
+        query = plan["best"]["query_ir"]
+        assert query["group_by"] == expected
+        rows = typed_rows(runtime.query(query))
+        with duckdb.connect(":memory:") as reference:
+            reference.execute(
+                "CREATE TABLE incidents AS SELECT * FROM read_csv_auto(?)",
+                [str(tmp_path / "data/incidents.csv")],
+            )
+            assert (
+                sorted(
+                    reference.execute(
+                        f"SELECT {columns}, SUM(repair_cost) FROM incidents GROUP BY {columns}"
+                    ).fetchall()
+                )
+                == expected_rows
+            )
+        measure_alias = query["select"][0]["as"]
+        assert sorted(tuple(row[key] for key in [*expected, measure_alias]) for row in rows) == (
+            expected_rows
+        )
+    finally:
+        runtime.close()
+
+
 def test_categorical_composite_key_keeps_distinct_entities(tmp_path):
     path = _package(tmp_path, composite=True)
     data = tmp_path / "data/incidents.csv"
@@ -377,6 +430,39 @@ def test_inspect_does_not_report_declared_label_as_missing(tmp_path, verbosity):
         ]
         assert "label_status" not in card
         assert card["label_dimension"] == LABEL
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("verbosity", ["full", "minimal"])
+@pytest.mark.parametrize("roles", [[], ["sales"]])
+def test_inspect_omits_role_hidden_entity_label(tmp_path, verbosity, roles):
+    path = _package(tmp_path)
+    raw = yaml.safe_load(path.read_text())
+    raw["semantic_policies"] = [
+        {
+            "id": "policy.shop.hidden_incident_name",
+            "kind": "object_visibility",
+            "object_ids": [LABEL],
+            "roles": ["sales"],
+            "action": "hidden",
+        }
+    ]
+    path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    runtime = Runtime.from_path(str(path))
+    try:
+        card = inspect_payload(
+            runtime,
+            object_id="entity.shop_incident",
+            verbosity=verbosity,
+            partial_query={"policy_context": {"roles": roles}},
+        )["card"]
+        assert "label_status" not in card
+        if roles:
+            assert "label_dimension" not in card
+            assert LABEL not in str(card)
+        else:
+            assert card["label_dimension"] == LABEL
     finally:
         runtime.close()
 

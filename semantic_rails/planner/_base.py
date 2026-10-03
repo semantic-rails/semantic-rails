@@ -1475,7 +1475,11 @@ def _maybe_group_by(
     if "store" in terms:
         dim = _dimension(config, ["store", "name"])
         if dim is not None:
-            group_by.append((dim.id, ""))
+            store_term = next(
+                (term for term in _requested_grouping_terms(text) if "store" in _tokens(term)),
+                "store",
+            )
+            group_by.append((dim.id, store_term))
     if any(term in lowered for term in ("geo", "geography", "region", "parent")):
         dim = _dimension(config, ["geo"], prefer_parent="parent" in lowered)
         if dim is not None:
