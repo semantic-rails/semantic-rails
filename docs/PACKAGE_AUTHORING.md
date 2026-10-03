@@ -798,10 +798,9 @@ otherwise loading fails with `INVALID_CONFIG` naming the entity and column. Omit
 key dimensions are synthesized before validation. Without a label declaration,
 planning keeps its existing grouping behavior; a non-time entity's inspect card
 says `no label declared; <key> identifies it`. When a label is declared, the card
-includes `label_dimension`. If an
-`object_visibility` policy hides the declared label dimension for the caller,
-both full and minimal inspect cards omit `label_dimension` without a missing-label
-note.
+includes `label_dimension`. If an `object_visibility` policy hides the declared
+label dimension for the caller, both full and minimal inspect cards omit
+`label_dimension` without a missing-label note.
 
 Each graph entity must have a key, declared on the entity or through its own
 model's `keys.primary:` or `grain:`. An explicit graph model binding makes that
