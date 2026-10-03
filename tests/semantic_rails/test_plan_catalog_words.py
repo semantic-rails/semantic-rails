@@ -359,10 +359,9 @@ def test_es_does_not_invent_short_or_unrelated_catalog_names(jaffle: Runtime) ->
         assert "ready_for" not in payload["next"]
         assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
         assert payload["why"]["details"]["gaps"][0]["kind"] == "store_grouping_unrealized"
-        assert (
-            unconsumed_catalog_words(runtime, payload["intent"], payload["best"]["query_ir"])
-            == ["store"]
-        )
+        assert unconsumed_catalog_words(
+            runtime, payload["intent"], payload["best"]["query_ir"]
+        ) == ["store"]
         assert unconsumed_unknown_words(
             runtime, payload["intent"], payload["best"]["query_ir"]
         ) == ["uses", "ones"]
