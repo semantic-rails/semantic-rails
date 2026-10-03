@@ -11,6 +11,7 @@ on ``validate`` / ``compile`` / ``execute``.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import replace
 from functools import cache
 from typing import Any
 
@@ -23,6 +24,7 @@ from .policy_rules import policy_config as _policy_config
 from .request_context import context_from_policy_context
 from .row_filters import RowFilter, is_row_filter, row_filter
 from .schema import PackageConfig, SemanticPolicyConfig
+from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral, SqlOrder
 from .sql_preparation import checked_slot_value
 
 WITHHOLD = "withhold_values"
@@ -302,6 +304,8 @@ def withheld_shape(
     limit = query.get("limit")
     if limit is None or limit > max_rank:
         return refuse("withheld_rank_limit", f"limit must be at most {max_rank}.")
+    if binding.unresolved_cuts:
+        return refuse("withheld_unproven", "a filter or threshold could not be fully bound.")
     filtered = set().union(*binding.cuts) & set(withheld)
     if filtered:
         return refuse(
@@ -340,28 +344,67 @@ def withheld_rank_order(
     config: PackageConfig,
     binding: BoundQuery,
     *,
+    rebind: Callable[[dict[str, Any]], BoundQuery],
     environment: str = "",
     audience: str = "",
     roles: Iterable[str] | None = None,
-) -> list[dict[str, str]] | None:
-    """The tie order a rank by a withheld object needs, when its only order_by field is that
-    rank; the caller binds again with it, and :func:`withheld_shape` checks the result."""
+) -> BoundQuery:
+    """Bind missing tie keys and give each withheld order key a portable NULL indicator.
+
+    Only the accepted rank gets this SQL order. The indicators follow the rank direction,
+    so NULLs sort first on ASC and last on DESC, including in nullable tie keys.
+    """
     query = binding.plan.query
     order = list(query.get("order_by") or [])
     ranked = next(
         (item for item in query["select"] if order and item["as"] == order[0]["field"]), None
     )
-    if len(order) != 1 or ranked is None:
-        return None
+    if ranked is None:
+        return binding
     target = _direct_reference(ranked["expression"])
-    if not target or not withheld_object_ids(
-        config, [target], environment=environment, audience=audience, roles=roles
-    ):
-        return None
-    return [
-        order[0],
-        *({"field": key, "direction": order[0]["direction"]} for key in rank_keys(query)),
-    ]
+    withheld = (
+        withheld_object_ids(
+            config, [target], environment=environment, audience=audience, roles=roles
+        )
+        if target
+        else {}
+    )
+    if not withheld:
+        return binding
+    if len(order) == 1:
+        binding = rebind(
+            {
+                **query,
+                "order_by": [
+                    order[0],
+                    *(
+                        {"field": key, "direction": order[0]["direction"]}
+                        for key in rank_keys(query)
+                    ),
+                ],
+            }
+        )
+    # The shared policy gate will report the refusal; never transform an unproven shape.
+    if withheld_shape(config, binding, withheld) is not None:
+        return binding
+    fields = {field.alias: field.expression for field in binding.sql_ast.select}
+    sql_order = []
+    for term in binding.sql_ast.order_by:
+        expression = term.expression
+        # Postgres accepts a select alias as an order key, but not inside CASE. Use its
+        # projected expression for the indicator, keeping qualified source keys as-is.
+        if isinstance(expression, SqlIdentifier) and len(expression.parts) == 1:
+            expression = fields.get(expression.parts[0], expression)
+        sql_order.extend(
+            [
+                SqlOrder(
+                    SqlCase([SqlCaseWhen(SqlIsNull(expression), SqlLiteral(0))], SqlLiteral(1)),
+                    term.direction,
+                ),
+                term,
+            ]
+        )
+    return replace(binding, sql_ast=replace(binding.sql_ast, order_by=sql_order))
 
 
 def _direct_reference(expression: Mapping[str, Any]) -> str:

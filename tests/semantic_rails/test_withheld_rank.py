@@ -14,6 +14,9 @@ from typing import Any
 
 import pytest
 
+from semantic_rails.ast import normalize_query
+from semantic_rails.compiler import bind_query
+from semantic_rails.compiler_parts.bind import lift_conditional_aggregates
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
@@ -83,6 +86,14 @@ def _threshold(input_: dict[str, Any]) -> dict[str, Any]:
     return {"expression": predicate, "op": "=", "value": True}
 
 
+CONDITIONAL = {
+    "kind": "aggregate_if",
+    "aggregation": "sum",
+    "condition": _threshold({"measure": REVENUE})["expression"],
+    "value": {"kind": "column", "entity": "entity.jaffle_order", "column": "order_total_cents"},
+}
+
+
 # Every refused shape, with the reason the guard gives.
 REFUSALS = {
     "selected_unordered": ({"order_by": [{"field": STORE, "direction": "ASC"}]}, "not_ranked"),
@@ -147,6 +158,28 @@ REFUSALS = {
         },
         "value_dependency",
     ),
+    "cumulative": (
+        {**MONTHLY, **_select(_value({"kind": "cumulative", "input": {"measure": REVENUE}}))},
+        "value_dependency",
+    ),
+    "window": (
+        {
+            **MONTHLY,
+            **_select(
+                _value({"kind": "period_to_date", "input": {"measure": REVENUE}, "period": "year"})
+            ),
+        },
+        "value_dependency",
+    ),
+    "aggregate_if": (_select(_value(CONDITIONAL)), "INVALID_EXPRESSION_AST"),
+    "lifted_aggregate_if": (
+        _select(_value(CONDITIONAL)),
+        "INVALID_EXPRESSION_AST",
+    ),
+    "segment_where": (
+        {"where": [{"segment": "segment.jaffle.high_value_customers"}]},
+        "INVALID_EXPRESSION_AST",
+    ),
     "metric_filter": (
         {"metric_filters": [{"expression": {"measure": REVENUE}, "op": ">", "value": 1000}]},
         "value_dependency",
@@ -194,14 +227,24 @@ def _codes(engine: Runtime, query: dict[str, Any]) -> list[tuple[str, Any]]:
         outcomes.append((exc.value.code, exc.value.details))
     mcp = SemanticLayerMCPAdapter(engine)
     tool = mcp.call_tool("execute", {"query": query, "mode": "run"})
-    outcomes.append((tool["error"]["code"], tool["error"]["details"]))
+    outcomes.append((tool["error"]["code"], tool["error"].get("details", {})))
     return outcomes
 
 
 @pytest.mark.parametrize("name", REFUSALS)
-def test_every_other_use_is_refused_on_every_surface(engine, name):
+def test_every_other_use_is_refused_on_every_surface(engine, name, request):
     patch, reason = REFUSALS[name]
-    for code, details in _codes(engine, {**RANK, **patch}):
+    query = {**RANK, **patch}
+    if name == "lifted_aggregate_if":
+        lifted, measures = lift_conditional_aggregates(normalize_query(query), engine._config)
+        config = replace(engine._config, measures=[*engine._config.measures, *measures.values()])
+        engine = Runtime.from_config(config, source_path=engine.source_path)
+        request.addfinalizer(engine.close)
+        query = {**lifted.to_dict(), "policy_context": SALES}
+    for code, details in _codes(engine, query):
+        if reason.startswith("INVALID_"):
+            assert code == reason
+            continue
         assert code == "POLICY_DENIED"
         assert details["reason"] == f"withheld_{reason}"
         assert REVENUE in details["withheld_objects"] or LIFETIME in details["withheld_objects"]
@@ -348,3 +391,50 @@ def test_guard_refuses_without_a_binding(engine):
     with pytest.raises(SemanticLayerError) as exc:
         enforce_query_policies(engine._config, [REVENUE], roles=["sales"], query=RANK)
     assert exc.value.details["reason"] == "withheld_tie_order"
+
+
+def test_guard_refuses_unresolved_cuts_on_every_surface(engine, monkeypatch):
+    query = {**RANK, "order_by": [*RANK["order_by"], {"field": STORE, "direction": "DESC"}]}
+    binding = replace(bind_query(engine._config, None, query), unresolved_cuts=("unknown_filter",))
+    refusal = withheld_shape(engine._config, binding, {REVENUE: 10})
+    assert refusal is not None and refusal.details["reason"] == "withheld_unproven"
+    original = engine._bind
+
+    def unresolved(payload, context):
+        return replace(original(payload, context), unresolved_cuts=("unknown_filter",))
+
+    monkeypatch.setattr(engine, "_bind", unresolved)
+    for code, details in _codes(engine, RANK):
+        assert (code, details["reason"]) == ("POLICY_DENIED", "withheld_unproven")
+
+
+@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+@pytest.mark.parametrize("operation", ["validate", "compile", "query", "mcp"])
+def test_granted_rank_retains_withholding_and_redacted_descriptors(package, verbosity, operation):
+    runtime = _engine(package, replace(_policy(), object_ids=[AOV]))
+    query = {
+        **RANK,
+        "select": [_value({"metric": AOV}, "revenue")],
+        "verbosity": verbosity,
+        "policy_context": {**SALES, "metric_allowlist": [AOV], "dimension_allowlist": [STORE]},
+    }
+    try:
+        values = runtime.query({**query, "policy_context": {}})["rows"]
+        if operation == "mcp":
+            result = SemanticLayerMCPAdapter(runtime).call_tool(
+                "execute", {"query": query, "mode": "run"}
+            )
+        else:
+            result = getattr(runtime, operation)(query)
+        assert result["ok"]
+        assert result["withheld"] == [AOV]
+        assert [column["field"] for column in result["output_columns"]] == [STORE]
+        assert "revenue" not in result.get("column_types", {})
+        assert all("revenue" not in row for row in result.get("rows", []))
+        warning = next(row for row in result["warnings"] if row["code"] == "VALUES_WITHHELD")
+        assert warning["object_ids"] == [AOV]
+        serialized = json.dumps(result, default=str)
+        assert REVENUE not in serialized
+        assert not any(str(row["revenue"]) in serialized for row in values)
+    finally:
+        runtime.close()

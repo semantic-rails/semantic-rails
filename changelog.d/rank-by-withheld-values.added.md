@@ -7,3 +7,6 @@
   reads it, a filter or threshold on it, a segment on it, `export`, a larger limit) is
   refused with `POLICY_DENIED` and `details.withheld_objects`. `deny` and `redact` are
   unchanged.
+- Withheld ranks sort NULL values and group keys consistently across warehouses, so
+  ascending reverses descending exactly. Their diagnostics exclude withheld values;
+  resource-granted responses retain the withholding notice and redacted output descriptors.

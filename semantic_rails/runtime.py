@@ -829,20 +829,29 @@ def _window_total_fields(compiled) -> dict[str, Any]:
     return {"assumptions": [WINDOW_TOTAL_ASSUMPTION], "time_shape": TIME_SHAPE_WINDOW_TOTAL}
 
 
+def _withheld_columns(policy_effects: list[dict[str, Any]]) -> set[str]:
+    """The outputs excluded from both value diagnostics and public result metadata."""
+    return {row["withheld_column"] for row in policy_effects if row.get("withheld_column")}
+
+
 def _withhold_values(out: dict[str, Any], policy_effects: list[dict[str, Any]]) -> None:
     """Drop the column of a rank by withheld values, and name the withheld objects instead."""
     effects = [row for row in policy_effects if row.get("withheld_column")]
     if not effects:
         return
+    columns = _withheld_columns(policy_effects)
     column = effects[0]["withheld_column"]
     withheld = sorted({object_id for row in effects for object_id in row["withheld_objects"]})
     if "rows" in out:
         out["rows"] = [
-            {key: value for key, value in row.items() if key != column} for row in out["rows"]
+            {key: value for key, value in row.items() if key not in columns} for row in out["rows"]
         ]
-        out["column_types"].pop(column, None)
+        for key in columns:
+            out["column_types"].pop(key, None)
     if "output_columns" in out:
-        out["output_columns"] = [row for row in out["output_columns"] if row.get("field") != column]
+        out["output_columns"] = [
+            row for row in out["output_columns"] if row.get("field") not in columns
+        ]
     out["withheld"] = withheld
     out["warnings"] = [
         *out["warnings"],
@@ -1222,7 +1231,7 @@ def _stock_key_gap_warnings(compiled) -> list[dict[str, Any]]:
     ]
 
 
-def _no_data_in_scope_warnings(compiled, rows) -> list[dict[str, Any]]:
+def _no_data_in_scope_warnings(compiled, rows, *, excluded_outputs=()) -> list[dict[str, Any]]:
     """Say when a measure that reads 0 for empty groups had no data at all, so it read NULL.
 
     A sum, count or distinct count is 0 in a group with no rows only while its measure has
@@ -1231,7 +1240,11 @@ def _no_data_in_scope_warnings(compiled, rows) -> list[dict[str, Any]]:
     (or, when nothing came back and no time bounds explain it, every such output). One
     warning covers them all, and it needs no query beyond the answer.
     """
-    outputs = {item["output"]: item for item in list(compiled.get("zero_outputs") or [])}
+    outputs = {
+        item["output"]: item
+        for item in list(compiled.get("zero_outputs") or [])
+        if item["output"] not in excluded_outputs
+    }
     window = compiled["logical_plan"].time
     if getattr(rows, "truncated", False) or not outputs:
         return []
@@ -2404,7 +2417,9 @@ class Runtime:
             "errors": [],
             "warnings": [
                 *_compiled_warnings(self._config, compiled, payload),
-                *_no_data_in_scope_warnings(compiled, rows),
+                *_no_data_in_scope_warnings(
+                    compiled, rows, excluded_outputs=_withheld_columns(policy_effects)
+                ),
                 *limits_warnings,
                 *self._seed_warnings,
             ],
@@ -2578,14 +2593,14 @@ class Runtime:
 
         binding = bind(payload)
         # A rank by a withheld value breaks its ties by the group keys, in the same direction.
-        order = withheld_rank_order(
+        return withheld_rank_order(
             self._config,
             binding,
+            rebind=bind,
             environment=str(policy_context.get("environment", "")),
             audience=str(policy_context.get("audience", "")),
             roles=policy_context.get("roles", []),
         )
-        return binding if order is None else bind({**payload, "order_by": order})
 
     def _segment_policy_effects(
         self, segment_id: str, context: dict[str, Any]

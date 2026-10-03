@@ -687,6 +687,37 @@ def test_restricted_empty_columnar_result_retains_schema(granted_runtime, monkey
     assert result["output_columns"][0]["semantic_id"] == CUSTOMERS
 
 
+@pytest.mark.parametrize("operation", ["validate", "compile", "query"])
+@pytest.mark.parametrize("verbosity", ["minimal", "full"])
+def test_grant_warnings_name_only_granted_objects(
+    granted_runtime, monkeypatch, operation, verbosity
+):
+    import semantic_rails.runtime as runtime_module
+
+    public = {"code": "PUBLIC_NOTICE", "message": CUSTOMERS, "object_ids": [CUSTOMERS]}
+    hidden = [
+        {**public, "object_ids": [AOV]},
+        {**public, "message": AOV},
+        {**public, "details": {"related_objects": [SECRET_DIMENSION]}},
+        {**public, "recovery_hints": [{"object_id": "measure.jaffle.revenue_usd"}]},
+        {**public, "object_ids": ["metric.unknown"]},
+    ]
+    monkeypatch.setattr(runtime_module, "_compiled_warnings", lambda *args: [public, *hidden])
+    result = getattr(granted_runtime, operation)(query(verbosity=verbosity))
+    assert result["warnings"] == [public]
+    assert [row["semantic_id"] for row in result["output_columns"]] == [CUSTOMERS]
+
+
+def test_granted_warning_keeps_an_id_with_an_ungranted_prefix(granted_runtime, monkeypatch):
+    import semantic_rails.runtime as runtime_module
+
+    source = next(row for row in granted_runtime._config.metric_recipes if row.id == CUSTOMERS)
+    granted_runtime._config.metric_recipes.append(replace(source, id="metric.sales.customer"))
+    public = {"code": "PUBLIC_NOTICE", "message": CUSTOMERS, "object_ids": [CUSTOMERS]}
+    monkeypatch.setattr(runtime_module, "_compiled_warnings", lambda *args: [public])
+    assert granted_runtime.validate(query())["warnings"] == [public]
+
+
 def test_restricted_catalog_reuses_compact_limit_full_and_filter_contract(granted_runtime, request):
     runtime = granted_runtime
     source = next(row for row in runtime.config.metric_recipes if row.id == CUSTOMERS)

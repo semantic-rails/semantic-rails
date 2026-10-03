@@ -8,10 +8,10 @@ the full package remains immutable and private to compilation.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any
 
 from .ast import child_groups, every_filter, normalize_query
@@ -21,6 +21,11 @@ from .expressions import MetricRecipeRefExpr, collect_object_references
 from .policies import enforce_query_policies, withheld_rank_order
 from .request_context import RequestContext, context_from_policy_context
 from .request_payload import checked_discover_kinds, unknown_discover_kinds_error
+from .runtime_parts.responses import (
+    apply_response_verbosity,
+    resolve_sql_profile,
+    resolve_verbosity,
+)
 from .schema import PackageConfig
 
 
@@ -119,16 +124,14 @@ class ResourceAccess:
             binding = None
             if query is not None:
                 binding = bind_query(self.config, None, query)
-                order = withheld_rank_order(
+                binding = withheld_rank_order(
                     self.config,
                     binding,
+                    rebind=lambda query: bind_query(self.config, None, query),
                     environment=self.context.environment,
                     audience=self.context.audience,
                     roles=self.context.roles,
                 )
-                if order is not None:
-                    query = {**query, "order_by": order}
-                    binding = bind_query(self.config, None, query)
                 references = set(binding.object_ids)
             else:
                 references.update(bind_metadata_objects(self.config, object_ids))
@@ -432,6 +435,44 @@ def _restricted_plan(
     }
 
 
+def _granted_warnings(
+    access: ResourceAccess, warnings: list[dict[str, Any]], permitted: set[str]
+) -> list[dict[str, Any]]:
+    """Keep diagnostics only when all named objects, including in prose, are granted."""
+    config = access.config
+    hidden = {
+        row.id
+        for rows in (
+            config.entities,
+            config.dimensions,
+            config.temporal_roles,
+            config.relationships,
+            config.value_domains,
+            config.measures,
+            config.metric_recipes,
+            config.segments,
+            config.semantic_policies,
+            config.semantic_caveats,
+            config.aggregate_relations,
+        )
+        for row in rows
+        if row.id not in permitted
+    }
+    hidden_ids = (
+        re.compile(
+            r"(?<![\w.:-])(?:" + "|".join(re.escape(value) for value in hidden) + r")(?![\w.:-])"
+        )
+        if hidden
+        else None
+    )
+    return [
+        warning
+        for warning in warnings
+        if set(warning.get("object_ids", [])) <= permitted
+        and (hidden_ids is None or hidden_ids.search(json.dumps(warning, default=str)) is None)
+    ]
+
+
 def run_authorized_operation(
     operation: Callable[..., Any], runtime: Any, args: tuple[Any, ...], kwargs: dict[str, Any]
 ) -> Any:
@@ -444,7 +485,18 @@ def run_authorized_operation(
     try:
         if name in {"validate", "compile", "query"}:
             access.enforce_query(payload)
-            result = operation(runtime, *args, **kwargs)
+            # Ask the runtime for its descriptors even for a minimal grant response, then
+            # apply the caller's verbosity after projecting the redacted runtime result.
+            runtime_payload = (
+                {**payload, "verbosity": "compact"}
+                if resolve_verbosity(payload) == "minimal"
+                else payload
+            )
+            result = (
+                operation(runtime, runtime_payload, *args[1:], **kwargs)
+                if args
+                else operation(runtime, **{**kwargs, "payload": runtime_payload})
+            )
             if not result.get("ok", False):
                 first: dict[str, Any] = next(iter(result.get("errors") or []), {})
                 raise _public_error(SemanticLayerError(str(first.get("code", "INVALID_QUERY")), ""))
@@ -472,31 +524,32 @@ def run_authorized_operation(
                     # Fixed engine strings that name no objects.
                     "assumptions",
                     "time_shape",
+                    "withheld",
+                    "warnings",
                 }
             }
-            from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL, output_columns
-
-            # Reuse the engine's descriptor builder even when minimal verbosity
-            # omitted it. It uses the authorized query, not expanded recipes.
-            columns = output_columns(
-                access.config,
-                {
-                    "explain": SimpleNamespace(normalized_query=normalize_query(payload).to_dict()),
-                    "logical_plan": SimpleNamespace(
-                        time={"window_total": result.get("time_shape") == TIME_SHAPE_WINDOW_TOTAL}
-                    ),
-                },
-            )
             permitted = set(access.context.metric_allowlist or ()) | set(
                 access.context.dimension_allowlist or ()
             )
+            if "withheld" in result:
+                response["withheld"] = [
+                    object_id for object_id in result["withheld"] if object_id in permitted
+                ]
+            response["warnings"] = _granted_warnings(access, result.get("warnings", []), permitted)
+            if resolve_verbosity(payload) == "minimal":
+                response = apply_response_verbosity(
+                    response,
+                    verbosity="minimal",
+                    sql_profile=resolve_sql_profile(payload),
+                    kind="execute" if name == "query" else name,
+                )
             response["output_columns"] = [
                 {
                     key: value
                     for key, value in column.items()
                     if key in {"field", "semantic_id", "display_label", "sql_alias", "type"}
                 }
-                for column in columns
+                for column in result.get("output_columns", [])
                 if column.get("semantic_id") in permitted
             ]
             return response

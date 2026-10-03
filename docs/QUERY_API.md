@@ -1091,7 +1091,8 @@ Response keys:
 - `assumptions`
 - `time_shape` (only `"window_total"`, when the window was one total)
 - `withheld` (only for a rank by values a `withhold_values` policy withholds: the withheld
-  objects, whose column `rows` leave out)
+  objects, whose column `rows`, `column_types` and `output_columns` leave out; retained at
+  minimal verbosity and under resource grants)
 - `policy_effects`
 - `provenance_summary`
 
