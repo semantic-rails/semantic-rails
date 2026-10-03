@@ -502,12 +502,13 @@ def test_a_semi_additive_measure_keeps_the_rows_with_no_match(tmp_path):
         pytest.param("=", "operating", "= 'operating'", 3, id="equals"),
         # A row with no roster match has no role: like a NULL role, it isn't "not operating".
         pytest.param("!=", "operating", "<> 'operating'", 1, id="not-equals"),
-        # No row matches, so there is nothing to count: NULL, where raw SQL counts 0.
+        # No row matches, but boardings have data elsewhere: the count of nothing is 0, as
+        # raw SQL counts.
         pytest.param(
             "NOT IN",
             ["operating", "deadhead"],
             "NOT IN ('operating', 'deadhead')",
-            None,
+            0,
             id="not-in",
         ),
     ],
@@ -521,7 +522,7 @@ def test_filters_on_a_looked_up_column_follow_sql_null_rules(
 
     assert got == expected
     reference = gold(f"SELECT NULL, COUNT(*) FROM boardings AS b WHERE {SQL_ROLE} {sql}")
-    assert got == (reference[None] or None)
+    assert got == reference[None]
 
 
 # Check-ins that lead to a boarding by the same person within a day. Check-ins 2 (no person)
@@ -659,6 +660,7 @@ def test_the_dialect_decides_the_lookup_join_type(package, warehouse):
         "select": [{"as": "value", "expression": {"measure": "measure.crew.boarding_count"}}],
         "group_by": [CITY],
         "where": [{"field": ROLE, "op": "IS NULL"}],
+        "observation_scope": "query",  # the leaf's joins alone, without a dataset probe's
     }
 
     sql = " ".join(compile_query(config, Registry(config), query)["sql"].split())

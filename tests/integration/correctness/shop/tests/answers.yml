@@ -1860,7 +1860,7 @@ tests:
   shop/absent_filter_reads_null:
     kind: query_matches_snapshot
     expect: answer
-    why: Freeze the declared inputs and independent reference for absent filter reads null.
+    why: Dataset observation finds order amounts and keys elsewhere, so the absent store filter reads 0 for revenue and orders.
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id
       - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
@@ -1882,9 +1882,9 @@ tests:
       - field: dimension.shop_order_store_id
         op: '='
         value: zzz
-    reference_sql: SELECT SUM(amount), NULLIF(COUNT(*), 0) FROM orders WHERE store_id = 'zzz'
+    reference_sql: SELECT CASE WHEN COUNT(*) > 0 THEN SUM(amount) WHEN EXISTS (SELECT 1 FROM orders WHERE amount IS NOT NULL) THEN 0 END, COUNT(*) FROM orders WHERE store_id = 'zzz'
     expected_rows:
-      - {revenue: null, orders: null}
+      - {revenue: 0, orders: 0}
   shop/absent_filtered_input_beside_an_observed_one:
     kind: query_matches_snapshot
     expect: answer
@@ -2897,7 +2897,7 @@ tests:
   shop/child_filter-conditional_aggregates_of_nothing:
     kind: query_matches_snapshot
     expect: answer
-    why: Freeze the declared inputs and independent reference for child filter conditional aggregates of nothing.
+    why: The child filter keeps no store-b rows, but both conditional measures have store-b data in the dataset, so they read 0.
     cites:
       - tests/integration/correctness/shop/models/refunds.yml#model.dimensions.refund_type
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
@@ -2945,11 +2945,14 @@ tests:
         op: '='
         value: shipping
     reference_sql: |-
-      SELECT SUM(CASE WHEN o.store_id = 'b' THEN o.amount END),
-                NULLIF(COUNT(CASE WHEN o.store_id = 'b' THEN 1 END), 0)
+      SELECT CASE WHEN COUNT(CASE WHEN o.store_id = 'b' THEN 1 END) > 0
+                  THEN SUM(CASE WHEN o.store_id = 'b' THEN o.amount END)
+                  WHEN EXISTS (SELECT 1 FROM orders WHERE store_id = 'b' AND amount IS NOT NULL)
+                  THEN 0 END,
+                COUNT(CASE WHEN o.store_id = 'b' THEN 1 END)
               FROM orders AS o WHERE EXISTS (SELECT 1 FROM refunds AS r WHERE r.order_id = o.order_id AND r.refund_type = 'shipping')
     expected_rows:
-      - {revenue: null, orders: null}
+      - {revenue: 0, orders: 0}
   shop/utc-march_bounds_by_day:
     kind: query_matches_snapshot
     expect: answer
@@ -6885,3 +6888,32 @@ tests:
       - {temporal_role.shop_customer_signed_up_at__month: '2024-04-01T00:00:00', rate: null}
       - {temporal_role.shop_customer_signed_up_at__month: '2024-05-01T00:00:00', rate: 1}
       - {temporal_role.shop_customer_signed_up_at__month: '2024-06-01T00:00:00', rate: 0.5}
+  shop/absent_filter_reads_null_in_query_scope:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Query observation finds no order amount or key inside the absent store filter, so both measures stay NULL.
+    cites:
+      - tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
+      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
+      - docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union
+      - docs/QUERY_IR_SCHEMA.md#wherefilter
+    tags: [null-vs-zero]
+    variant: utc_authored
+    query:
+      select:
+      - expression:
+          measure: measure.shop.revenue
+        as: revenue
+      - expression:
+          measure: measure.shop.order_count
+        as: orders
+      where:
+      - field: dimension.shop_order_store_id
+        op: '='
+        value: zzz
+      observation_scope: query
+    reference_sql: SELECT SUM(amount), NULLIF(COUNT(*), 0) FROM orders WHERE store_id = 'zzz'
+    expected_rows:
+      - {revenue: null, orders: null}

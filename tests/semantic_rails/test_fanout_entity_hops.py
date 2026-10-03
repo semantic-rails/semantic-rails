@@ -273,7 +273,9 @@ def _measure(name: str, aggregation: str = "", alias: str = "") -> dict[str, Any
 def _run(package: Path, query: dict[str, Any], *, validate: bool = False) -> dict[str, Any]:
     engine = Runtime.from_path(str(package))
     try:
-        payload = {"version": 1, **query}
+        # The references are plain SQL, where a sum of no rows is NULL, as under the query
+        # scope; test_observation_scope covers the dataset scope on these leaves.
+        payload = {"version": 1, "observation_scope": "query", **query}
         return engine.validate(payload) if validate else engine.query(payload)
     finally:
         engine.close()
@@ -695,7 +697,8 @@ def test_clickhouse_keeps_supported_lookups_beside_a_child_filter(
 ) -> None:
     config = load_package_config(str(package))
     config = replace(config, package=replace(config.package, warehouse="clickhouse"))
-    query = {"version": 1, "select": [_measure("order_count")], **lookup}
+    query = {"version": 1, "observation_scope": "query", "select": [_measure("order_count")]}
+    query.update(lookup)  # a plain-SQL reference: the query scope, as in _run
     if bound_filter:
         expression = {
             "kind": "aggregate",
@@ -916,6 +919,7 @@ def test_a_conditional_aggregate_takes_the_same_child_route_rule(
         "version": 1,
         "select": [{"expression": expression, "as": "value"}],
         "where": [{"field": "dimension.diamond_district_category", "op": "=", "value": "premium"}],
+        "observation_scope": "query",  # a plain-SQL reference, as in _run
     }
     config = load_package_config(str(diamond_package))
     with pytest.raises(SemanticLayerError) as caught:
@@ -1888,7 +1892,8 @@ def test_each_dialect_renders_the_de_duplicated_leaf(
 ) -> None:
     config = load_package_config(str(package))
     config = replace(config, package=replace(config.package, warehouse=warehouse))
-    sql = compile_query(config, Registry(config), {"version": 1, **SHAPES[shape]})["sql"]
+    query = {"version": 1, "observation_scope": "query", **SHAPES[shape]}  # as in _run
+    sql = compile_query(config, Registry(config), query)["sql"]
     templates = CLICKHOUSE_SQL if warehouse == "clickhouse" and shape != "grouped" else DIALECT_SQL
     value = (
         "leaf_1__leaf_1_entity_rows.__entity_value" if warehouse == "clickhouse" else "orders.total"
@@ -1905,5 +1910,6 @@ def test_remote_dialects_render_the_filter_as_correlated_exists(
 ) -> None:
     config = load_package_config(str(package))
     config = replace(config, package=replace(config.package, warehouse=warehouse))
-    sql = compile_query(config, Registry(config), {"version": 1, **FILTERED_SUM})["sql"]
+    query = {"version": 1, "observation_scope": "query", **FILTERED_SUM}  # as in _run
+    sql = compile_query(config, Registry(config), query)["sql"]
     assert sql == DIALECT_SQL["filtered"]

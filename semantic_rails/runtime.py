@@ -34,7 +34,7 @@ from .acceleration.routing import (
     aggregate_routing_enabled,
     parse_aggregate_routing,
 )
-from .ast import normalize_query, rewrite_select_shorthand
+from .ast import every_filter, normalize_query, rewrite_select_shorthand
 from .cache import (
     CachedCompilation,
     CompiledSqlCache,
@@ -45,6 +45,13 @@ from .cache import (
 from .catalog_search import CatalogSearchIndex
 from .caveats import caveat_warnings
 from .compiler import BoundQuery, NonAdditiveRefusal, bind_query, compile_query, read_routes
+from .compiler_parts.empty_groups import (
+    GUARDED_BASE,
+    base_reads,
+    observation_scope,
+    observed_outside_filters,
+    sql_nodes,
+)
 from .compiler_parts.paths import _leaf_time_role
 from .config import (
     SEED_KIND_EXTERNAL,
@@ -73,6 +80,7 @@ from .diagnostics import (
     enrich_object_not_found,
     enrich_path_not_found,
     exception_issue,
+    filter_value_miss,
     history_warning_payload,
     provenance_summary,
     rewrite_warning_payload,
@@ -1277,14 +1285,18 @@ def _stock_key_gap_warnings(compiled) -> list[dict[str, Any]]:
     ]
 
 
-def _no_data_in_scope_warnings(compiled, rows, *, excluded_outputs=()) -> list[dict[str, Any]]:
+def _no_data_in_scope_warnings(
+    compiled, rows, *, excluded_outputs=(), dataset: bool = False, runtime=None, payload=None
+) -> list[dict[str, Any]]:
     """Say when a measure that reads 0 for empty groups had no data at all, so it read NULL.
 
     A sum, count or distinct count is 0 in a group with no rows only while its measure has
     data somewhere in scope; with none, every group reads NULL. A misspelled filter value
     produces exactly that, so the answer names the outputs that came back NULL on every row
     (or, when nothing came back and no time bounds explain it, every such output). One
-    warning covers them all, and it needs no query beyond the answer.
+    warning covers them all. When observation looks outside the query's filters
+    (``dataset``), an empty answer says nothing about the measure's data elsewhere, and
+    populated NULLs are unknown amounts unless the settlement's own probes found no data.
     """
     outputs = {
         item["output"]: item
@@ -1300,10 +1312,81 @@ def _no_data_in_scope_warnings(compiled, rows, *, excluded_outputs=()) -> list[d
             for name, item in outputs.items()
             if all(row.get(name) is None for row in rows)
         }
+    elif dataset:
+        return []
     elif window.get("start") is not None or window.get("end") is not None:
         return []  # a window with no rows is EMPTY_RESULT_WINDOW's to explain
     elif compiled["logical_plan"].query.get("metric_filters"):
         return []  # a metric filter may have removed every group that holds data
+    if not outputs:
+        return []
+    if dataset and runtime is not None:
+        from .relation_pipelines import attach_relation_ctes
+        from .renderer import render_select_for_profile
+        from .sql_ast import SqlField, SqlIdentifier, SqlJoin, SqlParameter, SqlSelect, SqlTableRef
+        from .sql_preparation import finalize_parameters
+
+        ctes = {cte.name: cte for cte in compiled["sql_ast"].ctes}
+        guard = ctes.get(GUARDED_BASE)
+        projection = ctes["projected"].query if "projected" in ctes else compiled["sql_ast"]
+        if guard is not None:
+            by_alias = {
+                field.alias: {
+                    node.parts[0]
+                    for node in sql_nodes(field.expression)
+                    if isinstance(node, SqlIdentifier) and node.parts[0].startswith("observed_")
+                }
+                for field in guard.query.select
+            }
+            by_output = {
+                field.alias: set().union(
+                    *(by_alias.get(a, set()) for a in base_reads(field.expression))
+                )
+                for field in projection.select
+                if field.alias in outputs
+            }
+            probes = sorted(set().union(*by_output.values()))
+            if probes:
+                # Reuse exactly the observation the settlement emitted, including authored
+                # conditions and row filters, rather than interpreting returned NULLs.
+                probe = SqlSelect(
+                    select=[SqlField(SqlIdentifier([name, "seen"]), name) for name in probes],
+                    from_table=SqlTableRef(probes[0]),
+                    joins=[SqlJoin("CROSS", SqlTableRef(name)) for name in probes[1:]],
+                    ctes=[
+                        cte
+                        for name, cte in ctes.items()
+                        if name in probes or name in {f"{p}_rows" for p in probes}
+                    ],
+                )
+                probe = attach_relation_ctes(runtime._config, probe)
+                dialect = dialect_for_warehouse(runtime.warehouse)
+                prepared = replace(
+                    dialect.prepare_query(render_select_for_profile(probe, dialect=dialect)),
+                    parameters=tuple(
+                        node.slot
+                        for cte in probe.ctes
+                        for node in sql_nodes(cte.query)
+                        if isinstance(node, SqlParameter)
+                    ),
+                )
+                prepared = finalize_parameters(prepared, runtime._config.package.connection.kind)
+                with runtime._query_lock:
+                    seen = _adapter_query(
+                        runtime._get_adapter(),
+                        prepared,
+                        limits=_normalize_query_limits(
+                            (payload or {}).get("limits"), _time_zone(runtime._config, compiled)
+                        ),
+                        policy_context=_policy_context(payload or {}),
+                    )
+                outputs = {
+                    name: item
+                    for name, item in outputs.items()
+                    if not by_output.get(name)
+                    or not seen
+                    or any(not seen[0].get(p) for p in by_output[name])
+                }
     if not outputs:
         return []
     return [
@@ -1321,6 +1404,93 @@ def _no_data_in_scope_warnings(compiled, rows, *, excluded_outputs=()) -> list[d
             object_ids=[measure for item in outputs.values() for measure in item["measures"]],
         )
     ]
+
+
+def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str, Any]]:
+    """Under the dataset scope, say when a where value matches no row of its dimension.
+
+    There a misspelled ``product = 'appels'`` reads a confident 0, so each string ``=`` or
+    ``IN`` literal gets one existence probe under warehouse equality, under
+    the caller's policy context, so it never sees a row the caller's row filter hides. A miss
+    reads the values the caller can see for the closest one, as package validation does. The
+    ``query`` scope already reads such a filter as NULL with ``NO_DATA_IN_SCOPE``.
+    """
+    from .runtime_parts.limits import max_valid_values_limit
+
+    config = runtime._config
+    query = compiled["logical_plan"].query
+    if observation_scope(query, config) != "dataset":
+        return []
+    dimensions = {row.id: row for row in config.dimensions}
+    probe = {"version": 1, "select": [], "observation_scope": "query"}
+    for key in ("policy_context", "limits", "request_id"):
+        if key in payload:
+            probe[key] = payload[key]
+
+    def values(field: str, where: list[dict[str, Any]], limit: int) -> list[str] | None:
+        try:
+            result = runtime.query({**probe, "group_by": [field], "where": where, "limit": limit})
+        except SemanticLayerError:
+            return None
+        return [str(row[field]) for row in result["rows"] if row.get(field) is not None]
+
+    misses: list[dict[str, Any]] = []
+    unverified: list[dict[str, Any]] = []
+    for item in every_filter(query.get("where")):
+        field, raw = str(item["field"]), item.get("value")
+        literals = [v for v in (raw if isinstance(raw, list) else [raw]) if isinstance(v, str)]
+        op = str(item.get("op", "=")).upper()
+        if not literals or field not in dimensions or op not in {"=", "IN"}:
+            continue
+        for literal in literals:
+            found = (
+                values(field, [{"field": field, "op": "=", "value": literal}], 1)
+                if dimensions[field].groupable
+                else None
+            )
+            if found is None:
+                unverified.append({"dimension": field, "value": literal})
+            elif not found:
+                misses.append({"dimension": field, "value": literal})
+    limit = max_valid_values_limit()
+    known: dict[str, list[str]] = {}
+    for miss in misses:
+        if miss["dimension"] not in known:
+            # A full page may hide the value meant, so it suggests nothing.
+            page = values(miss["dimension"], [], limit) or []
+            known[miss["dimension"]] = page if len(page) < limit else []
+        message, suggestion = filter_value_miss(
+            "This query", miss["dimension"], miss["value"], known[miss["dimension"]]
+        )
+        miss.update(message=message, suggestion=suggestion)
+    warnings = []
+    if misses:
+        warnings.append(
+            semantic_issue(
+                code="FILTER_VALUE_NOT_FOUND",
+                message="; ".join(miss.pop("message") for miss in misses),
+                severity="warning",
+                stage="execution",
+                details={"filters": misses},
+                object_ids=sorted({miss["dimension"] for miss in misses}),
+            )
+        )
+    if unverified:
+        warnings.append(
+            semantic_issue(
+                code="FILTER_VALUE_UNVERIFIED",
+                message="; ".join(
+                    f"Filter values for {field} could not be verified: "
+                    + ", ".join(repr(v["value"]) for v in unverified if v["dimension"] == field)
+                    for field in sorted({v["dimension"] for v in unverified})
+                ),
+                severity="warning",
+                stage="execution",
+                details={"filters": unverified},
+                object_ids=sorted({v["dimension"] for v in unverified}),
+            )
+        )
+    return warnings
 
 
 def _measure_validity_warnings(config, logical_plan) -> list[dict[str, Any]]:
@@ -2464,8 +2634,14 @@ class Runtime:
             "warnings": [
                 *_compiled_warnings(self._config, compiled, payload),
                 *_no_data_in_scope_warnings(
-                    compiled, rows, excluded_outputs=_withheld_columns(policy_effects)
+                    compiled,
+                    rows,
+                    excluded_outputs=_withheld_columns(policy_effects),
+                    dataset=observed_outside_filters(compiled["logical_plan"].query, self._config),
+                    runtime=self,
+                    payload=payload,
                 ),
+                *_filter_value_warnings(self, compiled, payload),
                 *limits_warnings,
                 *self._seed_warnings,
             ],

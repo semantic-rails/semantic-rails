@@ -1151,6 +1151,20 @@ def _object_catalog_ids(config: PackageConfig) -> list[str]:
     return list(dict.fromkeys(ids))
 
 
+def filter_value_miss(
+    subject: str, dimension: str, literal: str, values: Iterable[str]
+) -> tuple[str, str | None]:
+    """The message for a filter literal that matches no value in the data, and the closest
+    value in any case, for package validation and a query's own filters alike."""
+    folded = {value.casefold(): value for value in values}
+    close = get_close_matches(literal.casefold(), list(folded), n=1)
+    suggestion = folded[close[0]] if close else None
+    return (
+        f"{subject} filters {dimension} on {literal!r}, which matches no value in the data"
+        + (f"; did you mean {suggestion!r}?" if suggestion else "")
+    ), suggestion
+
+
 def object_id_suggestions(
     config: PackageConfig,
     missing_id: str,

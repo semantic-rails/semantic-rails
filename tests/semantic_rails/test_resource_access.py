@@ -780,6 +780,33 @@ def test_grant_responses_project_listed_warnings(
     assert result["warnings"] == ([listed] if object_ids == [CUSTOMERS] else [])
 
 
+@pytest.mark.parametrize("code", ["FILTER_VALUE_NOT_FOUND", "FILTER_VALUE_UNVERIFIED"])
+@pytest.mark.parametrize("object_ids", [[DIMENSION], [DIMENSION, SECRET_DIMENSION]])
+def test_grant_responses_project_filter_guard_warnings(
+    granted_runtime, monkeypatch, code, object_ids
+):
+    import semantic_rails.runtime as runtime_module
+
+    listed = {
+        "code": code,
+        "severity": "warning",
+        "stage": "execution",
+        "message": "Filter value 'busines' could not be verified.",
+        "object_ids": object_ids,
+        "details": {"filters": [{"dimension": DIMENSION, "value": "busines"}]},
+    }
+    if code == "FILTER_VALUE_NOT_FOUND":
+        listed["message"] = "Filter value 'busines' was not found; did you mean 'business'?"
+        listed["details"]["filters"][0]["suggestion"] = "business"
+    monkeypatch.setattr(
+        runtime_module,
+        "_compiled_warnings",
+        lambda *args: [{**listed, "future_metadata": {"object_id": SECRET_DIMENSION}}],
+    )
+    result = granted_runtime.query(query(verbosity="full"))
+    assert result["warnings"] == ([listed] if object_ids == [DIMENSION] else [])
+
+
 def test_restricted_catalog_reuses_compact_limit_full_and_filter_contract(granted_runtime, request):
     runtime = granted_runtime
     source = next(row for row in runtime.config.metric_recipes if row.id == CUSTOMERS)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import Any
 
 from ..ast import normalize_query
@@ -19,6 +18,18 @@ from ..errors import SemanticLayerError
 from ..policies import hidden_object_ids, row_filters_for_context, withheld_measure_ids
 from ..request_context import context_from_policy_context
 from ..runtime import Runtime, runtime_request_scope
+from ..runtime_parts.limits import (
+    MAX_VALID_VALUES_LIMIT as MAX_VALID_VALUES_LIMIT,
+)
+from ..runtime_parts.limits import (
+    MAX_VALID_VALUES_OFFSET as MAX_VALID_VALUES_OFFSET,
+)
+from ..runtime_parts.limits import (
+    max_valid_values_limit as max_valid_values_limit,
+)
+from ..runtime_parts.limits import (
+    max_valid_values_offset as max_valid_values_offset,
+)
 from ..schema import MeasureConfig, PackageConfig
 from ..temporal_support import validate_temporal_support
 from .path_coverage import (
@@ -28,30 +39,11 @@ from .path_coverage import (
     _value_domain_for_dimension,
 )
 
+
 # Hard ceilings on caller-controlled pagination. allow_live_query turns
 # limit/offset into a real warehouse scan, so unbounded values let any
 # caller force arbitrarily expensive queries on every transport. Operators
 # can raise the ceilings via the env vars.
-MAX_VALID_VALUES_LIMIT = 1_000
-MAX_VALID_VALUES_OFFSET = 100_000
-
-
-def _env_cap(name: str, default: int) -> int:
-    try:
-        value = int(os.environ.get(name, ""))
-    except ValueError:
-        return default
-    return value if value > 0 else default
-
-
-def max_valid_values_limit() -> int:
-    return _env_cap("SEMANTIC_RAILS_MAX_VALID_VALUES_LIMIT", MAX_VALID_VALUES_LIMIT)
-
-
-def max_valid_values_offset() -> int:
-    return _env_cap("SEMANTIC_RAILS_MAX_VALID_VALUES_OFFSET", MAX_VALID_VALUES_OFFSET)
-
-
 def _policy_context(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     context = dict((payload or {}).get("policy_context", {}) or {})
     return context_from_policy_context(context).to_policy_context()

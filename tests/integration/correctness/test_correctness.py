@@ -399,12 +399,21 @@ def _empty_group_cases(revenue: dict[str, Any], orders: dict[str, Any]) -> Itera
         "SELECT refund_type, SUM(tax_amount), SUM(goods_amount) + SUM(tax_amount) FROM refunds"
         " GROUP BY 1",
     )
-    # A filter that matches nothing: a sum and a count of nothing read NULL, not 0.
+    # A filter that matches nothing: amounts and orders have data elsewhere in the dataset, so
+    # a sum and a count of nothing read 0 (the default dataset scope).
     absent = [{"field": STORE, "op": "=", "value": "zzz"}]
     yield Case(
-        "absent_filter_reads_null",
+        "absent_filter_reads_null",  # retain the frozen case ID when the default answer changes
         "utc_authored",
         {"select": [revenue, orders], "where": absent},
+        "SELECT CASE WHEN COUNT(*) > 0 THEN SUM(amount) WHEN EXISTS (SELECT 1 FROM orders"
+        " WHERE amount IS NOT NULL) THEN 0 END, COUNT(*) FROM orders WHERE store_id = 'zzz'",
+    )
+    # ...and NULL when observation is judged inside the query's filters.
+    yield Case(
+        "absent_filter_reads_null_in_query_scope",
+        "utc_authored",
+        {"select": [revenue, orders], "where": absent, "observation_scope": "query"},
         "SELECT SUM(amount), NULLIF(COUNT(*), 0) FROM orders WHERE store_id = 'zzz'",
     )
     # ...also beside an input that has data: only the input that has none reads NULL.
@@ -658,7 +667,8 @@ def _child_filter_cases() -> Iterator[Case]:
         FROM orders AS o WHERE {has_refund("shipping")} GROUP BY 1
         """,
     )
-    # No store b order has a shipping refund: a sum and a count of nothing read NULL, not 0.
+    # No store b order has a shipping refund, but store b orders and amounts exist elsewhere in
+    # the dataset: a sum and a count of nothing read 0.
     yield Case(
         "child_filter-conditional_aggregates_of_nothing",
         "utc_authored",
@@ -670,8 +680,11 @@ def _child_filter_cases() -> Iterator[Case]:
             "where": refunded("shipping"),
         },
         f"""
-        SELECT SUM(CASE WHEN o.store_id = 'b' THEN o.amount END),
-          NULLIF(COUNT(CASE WHEN o.store_id = 'b' THEN 1 END), 0)
+        SELECT CASE WHEN COUNT(CASE WHEN o.store_id = 'b' THEN 1 END) > 0
+            THEN SUM(CASE WHEN o.store_id = 'b' THEN o.amount END)
+            WHEN EXISTS (SELECT 1 FROM orders WHERE store_id = 'b' AND amount IS NOT NULL)
+            THEN 0 END,
+          COUNT(CASE WHEN o.store_id = 'b' THEN 1 END)
         FROM orders AS o WHERE {has_refund("shipping")}
         """,
     )

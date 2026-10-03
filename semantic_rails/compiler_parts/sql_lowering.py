@@ -127,6 +127,7 @@ from .empty_groups import (
     expr_resolves_to_zero,
     guard_empty_groups,
     has_nested_case,
+    observes_dataset,
     reads_every_row,
     record_leaf_scope,
     record_zero_output,
@@ -472,6 +473,10 @@ def _needs_time_scope(plan: LogicalPlan, config: PackageConfig) -> bool:
     )
 
 
+# What a measure plans paths for itself: its filter and expression, never the query's filters.
+_AUTHORED_PURPOSES = frozenset({"aggregate_if", "measure_expr", "metric_filter"})
+
+
 def _record_time_scope(
     plan: LogicalPlan,
     config: PackageConfig,
@@ -512,6 +517,44 @@ def _record_time_scope(
                 bounded=bool(plan.time.get("start") or plan.time.get("end")),
             ),
         )
+
+
+def _dataset_scope(row: MeasurePlan, config: PackageConfig) -> LeafScope | None:
+    """A sum or count's own rows under its authored conditions (its filter, its CASE, the joins
+    they need), without the query's filters or window: what ``dataset`` observation probes,
+    whichever leaf answers. None for a condition on a metric predicate, a fan-out or a hop
+    valid over time, which the probe can't read, and for a nested CASE, whose settlement
+    can't tell unknown amounts from no rows: the guard then refuses."""
+    from ..compiler import _path_has_temporal_validity
+
+    bound = row.bound_measure
+    measure = _measure_index(config)[bound.measure_id]
+    paths = [s for s in row.path_selections if s.purpose in _AUTHORED_PURPOSES]
+    if (
+        not resolves_to_zero(bound.aggregation, measure)
+        or measure.lookup_from
+        or has_nested_case(measure)
+        or _bound_metric_predicates(bound)
+        or any(
+            s.analysis.get("status") != "ok" or _path_has_temporal_validity(s.chosen_path, config)
+            for s in paths
+        )
+    ):
+        return None
+    override = getattr(measure, "source_relation", "") or ""
+    where = []
+    for item in _bound_filter_clauses(bound, config):
+        expr, _ = _direct_dimension_source_expr(
+            measure.entity, str(item["field"]), config, source_relation_override=override
+        ) or _resolve_dimension_expr(str(item["field"]), config)
+        where.append(_value_filter_condition(expr, item))
+    relation = _measure_source_relation(measure, _entity_index(config)[measure.entity])
+    return LeafScope(
+        from_table=SqlTableRef(name=relation),
+        joins=tuple(_joins_for_paths(measure.entity, paths, config, measure_entity=measure.entity)),
+        where=tuple(where),
+        value=SqlCall("COUNT", [_config_expr_to_sql(measure.expr, measure, config)]),
+    )
 
 
 def _is_window_total_key(expr: Any, time_alias: str) -> bool:
@@ -5565,6 +5608,10 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     row_counts = _row_count_names(plan, taken)
     refuse_shared_names(row_counts.values(), taken)
     conversion_exprs = _conversion_exprs_for_plan(plan, config)
+    # Under the dataset scope, each measure's own rows, which the query's where filters never
+    # cut. A query metric predicate selects the rows measured, which no such probe reads.
+    observed: dict[str, LeafScope] = {}
+    probing = guard_empty and observes_dataset() and not _query_metric_predicates(plan)
     if plan.measure_plans or conversion_exprs:
         leaf_ctes: list[SqlCte] = []
         measure_groups = _measure_plan_groups(plan, config)
@@ -5575,6 +5622,9 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 # A folded group shares one scan, so its filters cut every leaf in it.
                 with cut_owners(*(row.bound_measure.alias for row in measure_group)):
                     leaf_select = _measure_group_leaf_select(plan, measure_group, config)
+                    for row in measure_group if probing else ():
+                        if (scope := _dataset_scope(row, config)) is not None:
+                            observed[row.bound_measure.alias] = scope
                 emitted = {field.alias for field in leaf_select.select}
                 rows.update(
                     (row.bound_measure.alias, row_counts[row.bound_measure.alias])
@@ -5792,6 +5842,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 },
                 time_key=time_alias if _emits_time_coverage(plan, config) else "",
                 dialect=_dialect(config),
+                observed=observed,
             )
         )
         base_table = SqlTableRef(name=GUARDED_BASE, alias="base")

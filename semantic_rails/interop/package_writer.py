@@ -30,7 +30,7 @@ from ..config_parts.package_loader import _slug
 from ..errors import SemanticLayerError
 from ..expressions import expr_to_dict
 from ..package_snapshot import semantic_payload
-from ..schema import PackageConfig
+from ..schema import OBSERVATION_SCOPES, PackageConfig
 
 # Authored keys for compiled fields whose names differ.
 _RENAMES = {
@@ -269,6 +269,8 @@ class _Writer:
             if getattr(config, f"{name}_contract"):
                 defaults = documents["package.yml"].setdefault("defaults", {})
                 defaults[name] = getattr(config, f"{name}_contract")
+        if (scope := config.package.observation_scope) != OBSERVATION_SCOPES[0]:
+            documents["package.yml"].setdefault("defaults", {})["observation_scope"] = scope
         return documents
 
 
@@ -329,7 +331,7 @@ def write_package(
         differences = _differences(semantic_payload(config), loaded.semantic)
         differences += [
             f"package {name}"
-            for name in ("connection", "seed", "default_db")
+            for name in ("connection", "seed", "default_db", "observation_scope")
             if getattr(config.package, name) != getattr(loaded.config.package, name)
         ]
         if differences:

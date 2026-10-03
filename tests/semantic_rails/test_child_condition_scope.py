@@ -277,6 +277,22 @@ def _run(package: Path, query: dict[str, Any], *, validate: bool = False) -> dic
         engine.close()
 
 
+@pytest.mark.parametrize("match", ["any", "none"])
+def test_a_misspelled_child_value_is_named(package: Path, match: str) -> None:
+    response = _run(
+        package,
+        _query(
+            [
+                {"child": ITEM, "match": match, "where": [{**BEVERAGE, "value": "beverag"}]},
+            ]
+        ),
+    )
+    (warning,) = [w for w in response["warnings"] if w["code"] == "FILTER_VALUE_NOT_FOUND"]
+    assert warning["details"]["filters"] == [
+        {"dimension": TYPE, "value": "beverag", "suggestion": "beverage"},
+    ]
+
+
 def _normal(rows: Any) -> list[tuple[Any, ...]]:
     return sorted(
         (
@@ -1223,7 +1239,8 @@ def _clickhouse(package: Path) -> Any:
 
 def test_clickhouse_answers_any_with_its_distinct_parent_leaf(package: Path) -> None:
     config = _clickhouse(package)
-    sql = compile_query(config, Registry(config), _query(SAME_ROW))["sql"]
+    query = {**_query(SAME_ROW), "observation_scope": "query"}  # the leaf, without a probe
+    sql = compile_query(config, Registry(config), query)["sql"]
     assert sql == CLICKHOUSE_SQL
     duckdb_sql = sql.removesuffix("\nSETTINGS join_use_nulls = 1")
     assert _reference(package, duckdb_sql) == _customers(package, SAME_ROW_SQL) == [(2,)]

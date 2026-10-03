@@ -199,8 +199,8 @@ valid-value lookups are unavailable for restricted grants. Plans contain portabl
 IR; each subsequent request must independently resolve its trusted grants. Restricted
 compile/query results retain SQL and result rows but omit package-wide diagnostics,
 dependency descriptions, and related-object suggestions. Grant responses carry only
-listed engine diagnostics (`NO_DATA_IN_SCOPE` and `VALUES_WITHHELD`) whose named objects
-are all granted. Requests cannot replace the
+listed engine diagnostics (`NO_DATA_IN_SCOPE`, `VALUES_WITHHELD`, `FILTER_VALUE_NOT_FOUND`,
+and `FILTER_VALUE_UNVERIFIED`) whose named objects are all granted. Requests cannot replace the
 resolved grants with top-level or nested `policy_context` claims over HTTP or hosted MCP.
 
 Restricted responses reuse the ordinary catalog formatter and output-column builder.
@@ -1170,7 +1170,13 @@ The response `warnings` array can carry these non-error signals:
   `start`/`end` window nor a metric filter explains it. Such a
   measure reads `0` in an empty group only where it has data in scope; here it has none, so it
   is `NULL`. `details.outputs` names the outputs. It never fires on a clipped (`truncated`)
-  result. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
+  result, nor, under `observation_scope: "dataset"`, on an empty answer to a filtered query.
+  See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
+- `FILTER_VALUE_NOT_FOUND` — fires on `execute` under `observation_scope: "dataset"` (the
+  default) when a string `=` or `IN` `where` value matches no row of its dimension that the
+  caller can read: there a sum reads `0`, which a misspelled value shouldn't produce silently.
+  One warning per query; `details.filters` lists each `dimension`, `value` and the closest
+  `suggestion`.
 - `MIXED_TIME_ROLES` — fires on `validate`, `compile` and `execute` when a query with no
   `time` block selects measures of different entities or governed metrics with differing
   sets of real time roles, mixing at least two distinct roles. Undated measures are ignored;
