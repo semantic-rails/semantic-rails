@@ -311,18 +311,27 @@ reads a window the question states as a comma, while the draft still reads its g
 the comma: "repair cost by incident name, incident" grouped by Incident name alone is not ready,
 as two incidents can share a name, and neither is "repair cost by incident name, last month and
 incident". It also checks terms after `by` with a comma, tab or newline, after `per`,
-`each`, `for each` or `every`, and before `level` or `grain` (including `at the store id level`).
-Lists joined by commas, `and`, `&` or repeated grouping clauses are checked, as are the nouns
-before `by` in `top`, `highest` and `lowest` rankings. A suffix list such as "customer type and
-store name level" requires both groupings. A declared name such as "Severity level" or "Sends
-per account" does not introduce an extra grouping. Repeated descriptions of one uniquely named
-dimension share an additional obligation; legacy lists, ambiguous terms and unknown terms
-retain their obligations. Pieces consisting only of connector words add none.
-Each additional term records its source span. This broader reader adds obligations only to
-the dropped-grouping check; planning and
-the checks that authorize a draft's groupings retain their existing readers. Existing holds
-remain holds, including a complete grouping phrasing planning does not already authorize.
-The check only holds a plan; it never changes a draft or makes one ready.
+`each`, `for each` or `every`, in lists joined by commas, `and`, `&` or repeated clauses, and
+the nouns before `by` in `top`, `highest` and `lowest` rankings. Each term records its source
+span. Pieces consisting only of connector words add none, and a marker inside a declared name
+("Sends per account") opens no clause.
+A `level`, `levels`, `grain` or `grains` word outside every declared name holds the plan unless
+every grouping the question names is grouped. This check reads which declared names the
+question holds, not how the phrase is built, so a plural, a repeated "at" or a separator
+changes nothing: "revenue at customer type and at store name levels" needs both Customer type
+and Store name. A dimension the question names (its label, the last part of its name or an
+alias, as whole words) needs its own id in `group_by`; an entity needs one of the stand-ins
+described below. A name doesn't count inside a longer declared name ("customer type" is not
+also the entity Customer) or inside a phrase naming the query's clock ("order date"), and
+neither does a declared value or a dimension the draft's `where` pins to one value (`=`, or `IN`
+with one value). The word before each level word must end the name of a dimension, an entity
+or a clock: "revenue at region level" with no Region is not ready, nor is "revenue at the
+level". A declared "Severity level" dimension or "Stock level" measure triggers nothing. Some
+complete plans are held on purpose: in "revenue at store level for customer types new and
+repeat", "customer types" is no declared name, so the entity Customer must be grouped.
+These readers add obligations only to the dropped-grouping check; planning and the checks that
+authorize a draft's groupings retain their existing readers. The check only holds a plan; it
+never changes a draft or makes one ready.
 A listed grouping that names an entity is satisfied only by that entity's own key
 dimension, or by the single declared dimension of that entity whose own words name it, and an
 entity with a composite key is never satisfied. A term names an entity only with every word of

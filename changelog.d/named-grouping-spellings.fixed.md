@@ -1,5 +1,5 @@
 - Hold plans that drop a requested grouping expressed with a comma or whitespace
-  after `by`, with `per` or `for each`, or with `level` or `grain`.
-- Check every item in grouping lists before `level` or `grain`, including when filters
-  consume the same dimensions. Complete plans keep readiness when a grouping is described
-  twice or `level`, `grain`, or `per` is part of a declared object name.
+  after `by`, or with `per`, `each`, `for each` or `every`.
+- Hold a plan whose question has a `level`, `levels`, `grain` or `grains` word outside every
+  declared name until every dimension and entity the question names is grouped, however the
+  list is spelled. A declared name such as `Severity level` or `Stock level` triggers nothing.
