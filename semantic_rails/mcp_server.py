@@ -365,7 +365,7 @@ def refuse_stdio(
             if error.details:
                 data["details"] = dict(error.details)
             reply = _jsonrpc_error(message_id, -32603, str(error), data=data)
-            output_stream.write(json.dumps(reply, sort_keys=True) + "\n")
+            output_stream.write(json.dumps(reply, sort_keys=True, default=str) + "\n")
             output_stream.flush()
 
 

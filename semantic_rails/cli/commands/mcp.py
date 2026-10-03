@@ -76,12 +76,21 @@ def cmd_mcp_stdio(args: argparse.Namespace) -> None:
                 raise SemanticLayerError("INVALID_CONFIG", str(exc)) from exc
             adapter = SemanticLayerMCPAdapter(runtime)
             adapter.list_tools()
-    except SemanticLayerError as exc:
+    except Exception as exc:
+        error = (
+            exc
+            if isinstance(exc, SemanticLayerError)
+            else SemanticLayerError(
+                "INTERNAL_ERROR",
+                str(exc),
+                details={"exception_type": type(exc).__name__, "exception_message": str(exc)},
+            )
+        )
         if runtime is not None:
             runtime.close()
         if source_path:
-            exc.details.setdefault("config_path", source_path)
-        refuse_stdio(exc)
+            error.details.setdefault("config_path", source_path)
+        refuse_stdio(error)
         raise SystemExit(1) from exc
     try:
         serve_mcp_stdio(adapter)

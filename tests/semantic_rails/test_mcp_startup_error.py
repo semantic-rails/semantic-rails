@@ -129,6 +129,69 @@ def test_missing_package_path_returns_structured_startup_error(tmp_path: Path) -
         assert "does not exist" in reply["error"]["message"]
 
 
+@pytest.mark.parametrize(
+    ("relative_path", "keys", "value", "code", "details"),
+    [
+        (
+            "models/core/orders.yml",
+            ("model", "times"),
+            ["ordered_at"],
+            "INTERNAL_ERROR",
+            {
+                "exception_type": "AttributeError",
+                "exception_message": "'list' object has no attribute 'items'",
+            },
+        ),
+        (
+            "package.yml",
+            ("schema_version",),
+            yaml.safe_load(".inf"),
+            "INTERNAL_ERROR",
+            {
+                "exception_type": "OverflowError",
+                "exception_message": "cannot convert float infinity to integer",
+            },
+        ),
+        (
+            "metrics/extensions/advanced_metrics.yml",
+            ("metrics", "sales.session_to_order_conversion_rate_7d", "expression", "matching_mode"),
+            yaml.safe_load("2026-10-03"),
+            "CONVERSION_MATCHING_MODE_REQUIRED",
+            {"received_value": "2026-10-03"},
+        ),
+    ],
+    ids=["list-times", "infinite-schema-version", "date-matching-mode"],
+)
+def test_unexpected_package_values_return_structured_startup_error(
+    tmp_path: Path,
+    relative_path: str,
+    keys: tuple[str, ...],
+    value: Any,
+    code: str,
+    details: dict[str, Any],
+) -> None:
+    package = copy_package_config(tmp_path, "jaffle_shop", writable=True)
+    path = package / relative_path
+    raw = yaml.safe_load(path.read_text())
+    target = raw
+    for key in keys[:-1]:
+        target = target[key]
+    target[keys[-1]] = value
+    path.write_text(yaml.safe_dump(raw, sort_keys=False))
+
+    proc, replies = _stdio(package)
+
+    assert proc.returncode == 1
+    for reply in replies:
+        error = reply["error"]
+        assert error["code"] == -32603
+        assert error["data"]["code"] == code
+        assert error["data"]["details"]["config_path"] == str(package)
+        for key, expected in details.items():
+            assert error["data"]["details"][key] == expected
+        assert error["message"] in proc.stderr
+
+
 def test_valid_package_keeps_handshake_and_tools(tmp_path: Path) -> None:
     package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
 
