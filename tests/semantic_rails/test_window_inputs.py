@@ -204,6 +204,7 @@ def test_same_named_key_on_another_source_cannot_feed_a_window(config, qualifier
 
 
 @pytest.mark.parametrize("kind", ["rolling", "cumulative", "period_to_date"])
+@pytest.mark.parametrize("measure_id", [REVENUE["measure"], ORDERS["measure"]])
 @pytest.mark.parametrize(
     ("op", "factor", "literal_first"),
     [
@@ -213,24 +214,27 @@ def test_same_named_key_on_another_source_cannot_feed_a_window(config, qualifier
     ],
 )
 def test_literal_scaling_preserves_windowed_totals(
-    runtime_factory, kind, op, factor, literal_first
+    runtime_factory, kind, measure_id, op, factor, literal_first
 ):
     runtime = runtime_factory("jaffle_shop")
     try:
         literal = {"kind": "literal", "value": factor}
+        input_expr = {"measure": measure_id}
         expression = {
             "kind": "arithmetic",
             "op": op,
-            "left": literal if literal_first else REVENUE,
-            "right": REVENUE if literal_first else literal,
+            "left": literal if literal_first else input_expr,
+            "right": input_expr if literal_first else literal,
         }
-        original = runtime.query(query(window(REVENUE, kind)))["rows"]
-        scaled = runtime.query(query(window(expression, kind)))["rows"]
+        original = runtime.query(query(window(input_expr, kind)))["rows"]
+        result = runtime.query(query(window(expression, kind)))
+        assert "SUM(base.m1) OVER" in result["rendered_sql"]
+        scaled = result["rows"]
         assert original and len(scaled) == len(original)
         for before, after in zip(original, scaled, strict=True):
             assert before[f"{ROLE}__month"] == after[f"{ROLE}__month"]
             expected = before["value"] * factor if op == "multiply" else before["value"] / factor
-            assert after["value"] == pytest.approx(expected)
+            assert float(after["value"]) == pytest.approx(expected)
     finally:
         runtime.close()
 

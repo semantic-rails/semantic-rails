@@ -293,15 +293,25 @@ def _compile_offset_window_expr(
                 table_alias=table_alias,
             )
     parts = _summing_window_parts(expr.input, config, construct=expr.kind)
-    sums = [
-        SqlWindow(
+
+    def sum_part(part: SemanticExpr) -> SqlExpr:
+        # Constants scale the completed total, rather than becoming another windowed part.
+        if isinstance(part, ArithmeticExpr):
+            if part.op in {"multiply", "divide"} and isinstance(part.right, LiteralExpr):
+                factor = compile_input(part.right)
+                if part.op == "divide":
+                    factor = SqlCall("NULLIF", [factor, SqlLiteral(0)])
+                return SqlBinary(sum_part(part.left), "*" if part.op == "multiply" else "/", factor)
+            if part.op == "multiply" and isinstance(part.left, LiteralExpr):
+                return SqlBinary(compile_input(part.left), "*", sum_part(part.right))
+        return SqlWindow(
             function=SqlCall("SUM", [compile_input(part)]),
             partition_by=partition_by,
             order_by=order_by,
             frame=frame or "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
         )
-        for part in parts
-    ]
+
+    sums = [sum_part(part) for part in parts]
     if len(sums) == 2:
         return SqlBinary(sums[0], "/", SqlCall("NULLIF", [sums[1], SqlLiteral(0)]))
     return sums[0]
