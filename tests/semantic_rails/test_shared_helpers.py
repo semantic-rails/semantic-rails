@@ -8,6 +8,7 @@ import pytest
 from semantic_rails import atomic_files
 from semantic_rails.architect_scaffold import dump_project_yaml
 from semantic_rails.architect_service import ArchitectProject
+from semantic_rails.cli.common import _package_id_from_yaml
 from semantic_rails.config_validation import PackageReference
 from semantic_rails.local_config import init_local_profile
 from semantic_rails.mcp_manager import save_mcp_registry
@@ -85,6 +86,7 @@ def test_repl_yaml_round_trip_preserves_boolean_like_strings(tmp_path: Path):
     )
     ref = PackageReference(str(tmp_path))
     project = ArchitectProject(tmp_path)
+    assert _package_id_from_yaml(tmp_path) == "on"
     assert _model_entity_defaults(project, "events")["primary_key"] == ["no", "on"]
     assert _authoring_namespace(project) == "on"
     package = _package_block(ref)
