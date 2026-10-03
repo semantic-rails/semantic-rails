@@ -88,6 +88,19 @@ def _row_marker(expr: Any) -> Any:
     return SqlCase([SqlCaseWhen(item.condition, SqlLiteral(1)) for item in expr.whens])
 
 
+def _sum_else_zero_folds(expr: SqlCase, aggregation: str) -> bool:
+    """Whether a SUM's ``ELSE 0`` folds away, as it did before unknown amounts stayed NULL."""
+    from .empty_groups import earlier_settlement_applies
+
+    other = expr.else_expr
+    return (
+        earlier_settlement_applies()
+        and aggregation.lower() == "sum"
+        and isinstance(other, SqlLiteral)
+        and other.value == 0
+    )
+
+
 def _maybe_conditional_aggregate(expr: Any, aggregation: str, dialect: SqlDialect) -> Any | None:
     """If ``expr`` is the canonical ``CASE WHEN cond THEN body END``
     shape that ``aggregate_if`` produces (one when, no else — or an
@@ -108,8 +121,14 @@ def _maybe_conditional_aggregate(expr: Any, aggregation: str, dialect: SqlDialec
       jaffle_shop / hand-authored idiom (orders.yml uses this 4× to
       count rows where a flag is true, with body = key column and
       explicit ``else: literal null``).
+    - ``SUM(CASE WHEN cond THEN body ELSE 0 END)`` — the mf2sr
+      ``sum_boolean`` idiom, only under the earlier settlement
+      (``empty_groups.earlier_settlement``), whose guard reads the
+      NULL of a group with no matching row as 0.
     """
-    if not (isinstance(expr, SqlCase) and is_conditional_case(expr)) or len(expr.whens) != 1:
+    if not isinstance(expr, SqlCase) or len(expr.whens) != 1:
+        return None
+    if not (is_conditional_case(expr) or _sum_else_zero_folds(expr, aggregation)):
         return None
     agg = aggregation.lower()
     condition, body = expr.whens[0].condition, expr.whens[0].result

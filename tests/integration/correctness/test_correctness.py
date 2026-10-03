@@ -892,7 +892,9 @@ def _cases() -> Iterator[Case]:
         fill=True,
     )
 
-    # Distributions of per-order revenue, alone and beside window siblings.
+    # Distributions of per-order revenue, alone and beside window siblings. Every branch beside
+    # a distribution keeps the earlier settlement: store a's May, whose only amount is
+    # unknown, reads 0 where revenue has data in scope.
     for name, revenue_alias, median_alias in (
         ("distribution_marker_own_output", "agent_branch_1__rows", "median"),
         ("distribution_marker_other_output", "revenue", "agent_branch_1__rows"),
@@ -907,7 +909,7 @@ def _cases() -> Iterator[Case]:
                     _distribution("median", median_alias),
                     group_by=[STORE] if by_store else [],
                 ),
-                _by("month", f"SUM(o.amount), {MEDIAN}", store=by_store),
+                _by("month", f"COALESCE(SUM(o.amount), 0), {MEDIAN}", store=by_store),
             )
     for function in ("median", "avg", "min", "max", "sum"):
         reference = MEDIAN if function == "median" else f"{function.upper()}(o.amount)"

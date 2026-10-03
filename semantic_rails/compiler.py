@@ -71,10 +71,11 @@ from .compiler_parts.dependencies import (
 from .compiler_parts.empty_groups import (
     ZERO_MEASURE_CLASSES,
     absent_entities_gate,
+    earlier_settlement,
+    earlier_settlement_applies,
     expr_resolves_to_zero,
     recording_zero_outputs,
     require_settled_source,
-    unknown_sums_read_zero,
 )
 from .compiler_parts.grain_recovery import mixed_grain_pairing_enrichment
 from .compiler_parts.indexes import (
@@ -2495,9 +2496,11 @@ def _predicate_ctes_and_join(
     without_rows = _predicate_includes_entities_without_rows(predicate, config)
     # Over several measures an entity's value is NULL where one operand is unknown, though the
     # others have data, and the gate below would read that as no data in scope. So that
-    # source reads an operand's unknown amounts as 0 where its measure has data in scope.
+    # source keeps the earlier settlement, which reads an operand's unknown amounts as 0
+    # where its measure has data in scope; a source beside a distribution keeps it too.
     several = without_rows and not _predicate_reads_one_measure(predicate.input, config)
-    with unknown_sums_read_zero(several):
+    with earlier_settlement(several):
+        earlier = earlier_settlement_applies()
         predicate_sql = _compile_predicate_source_ast(config, mini_query)
     source_name, set_name = _predicate_sql_names(predicate, index, scope)
     source_cte = SqlCte(
@@ -2528,11 +2531,11 @@ def _predicate_ctes_and_join(
         config=config,
     )
     if without_rows:
-        # The set holds the entities that fail the threshold, and, for one measure, those whose
-        # value is unknown (NULL: their rows have no values), which meets no threshold. Never
-        # coalesce the value: the source is settled like any query, so only an entity it
-        # doesn't list has no rows, and with no settled value at all the gate below drops
-        # every row.
+        # The set holds the entities that fail the threshold, and, unless the source keeps the
+        # earlier settlement, those whose value is unknown (NULL: their rows have no values),
+        # which meets no threshold. Never coalesce the value: the source is settled like any
+        # query, so only an entity it doesn't list has no rows, and with no settled value at
+        # all the gate below drops every row.
         value = SqlIdentifier(parts=["predicate_source", "__predicate_value"])
         where_condition = build_filter_condition(
             value,
@@ -2540,7 +2543,7 @@ def _predicate_ctes_and_join(
             predicate.value,
             path="metric_predicate",
         )
-        if not several:
+        if not earlier:
             where_condition = SqlBinary(where_condition, "OR", SqlIsNull(value))
     set_query = SqlSelect(
         select=select_fields,

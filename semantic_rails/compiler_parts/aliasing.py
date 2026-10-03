@@ -26,11 +26,6 @@ from ..sql_ast import (
 )
 
 
-def rows_alias(alias: str) -> str:
-    """The leaf column counting the rows a measure read in each group (see ``empty_groups``)."""
-    return f"{alias}__rows"
-
-
 @dataclass(frozen=True)
 class AliasRegistry:
     aliases: dict[str, str]
@@ -53,13 +48,8 @@ class AliasRegistry:
                 else f"{plan.time['temporal_role']}__{plan.time['grain']}"
             )
             aliases[time_alias] = "t"
-        # A caller may name an output like a hidden row count: that name stays the caller's,
-        # in the projection and its ORDER BY, and the row count keeps its own name.
-        public = {*plan.group_by, *plan.post_aggregation_exprs}
         for index, alias in enumerate(list(dict.fromkeys(measure_aliases)), start=1):
             aliases[alias] = f"m{index}"
-            if rows_alias(alias) not in public:
-                aliases[rows_alias(alias)] = f"m{index}_rows"
         for index, alias in enumerate(list(dict.fromkeys(metric_filter_aliases)), start=1):
             aliases[alias] = f"p{index}"
         return cls(aliases=aliases)

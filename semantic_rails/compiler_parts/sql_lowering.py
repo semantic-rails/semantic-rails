@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
@@ -43,6 +43,7 @@ from ..expressions import (
     RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    collect_column_refs,
     expr_to_dict,
     expression_field,
 )
@@ -84,7 +85,7 @@ from ..sql_ast import (
     SqlWindow,
     build_filter_condition,
 )
-from .aliasing import AliasRegistry, alias_select, rows_alias
+from .aliasing import AliasRegistry, alias_select
 from .bind import (
     _aggregation_expr,
     _bind_scoped_aggregate,
@@ -113,12 +114,14 @@ from .empty_groups import (
     LeafScope,
     base_reads,
     counts_rows,
+    earlier_settlement,
     expr_resolves_to_zero,
     guard_empty_groups,
     reads_every_row,
     record_leaf_scope,
     record_zero_output,
     recording_leaf_scopes,
+    refuse_shared_names,
     refuse_unsettled,
     require_time_scopes,
     sql_nodes,
@@ -1285,48 +1288,20 @@ def _lower_agent_dag_to_sql(
             "data are omitted).",
         )
     key_aliases = _query_key_aliases(plan)
-    zero = zero_outputs(plan, config) if guard_empty else {}
     branch_ctes: list[SqlCte] = []
     output_aliases: list[str] = []
-    branch_columns: list[list[str]] = []
-    # A branch settled its own groups, so its row is the count the combine's guard reads:
-    # NULL only where the branch has no row for the group.
-    rows: dict[str, str] = {}
-    branch_queries: list[tuple[str, SqlSelect]] = []
-    for alias, expr_payload in plan.post_aggregation_exprs.items():
+    for index, (alias, expr_payload) in enumerate(plan.post_aggregation_exprs.items(), start=1):
         expr = _parse_public_expr(expr_payload)
+        branch_name = f"agent_branch_{index}"
         branch_query = (
             _distribution_select(expr, alias=alias, plan=plan, config=config)
             if isinstance(expr, DistributionExpr)
             else _single_expression_branch_select(expr, alias=alias, plan=plan, config=config)
         )
-        branch_queries.append((alias, branch_query))
-    # Reserve every branch's columns before allocating hidden markers, including columns
-    # projected by later branches. SQL identifiers can compare without regard to case.
-    used_aliases = {alias.casefold() for alias in [*key_aliases, *plan.post_aggregation_exprs]}
-    used_aliases.update(
-        field.alias.casefold() for _, query in branch_queries for field in query.select
-    )
-    for index, (alias, branch_query) in enumerate(branch_queries, start=1):
-        branch_name = f"agent_branch_{index}"
-        columns = [alias]
-        if alias in zero:
-            marker = f"{branch_name}__rows"
-            suffix = 2
-            while marker.casefold() in used_aliases:
-                marker = f"{branch_name}__rows_{suffix}"
-                suffix += 1
-            used_aliases.add(marker.casefold())
-            rows[alias] = marker
-            columns.append(rows[alias])
-            branch_query = replace(
-                branch_query, select=[*branch_query.select, SqlField(SqlLiteral(1), rows[alias])]
-            )
         branch_ctes.append(
             SqlCte(name=branch_name, query=_namespace_sql_select(branch_query, f"{branch_name}__"))
         )
         output_aliases.append(alias)
-        branch_columns.append(columns)
 
     if not branch_ctes:
         raise SemanticLayerError(
@@ -1346,7 +1321,7 @@ def _lower_agent_dag_to_sql(
 
     combined_name = branch_ctes[0].name
     combine_ctes: list[SqlCte] = []
-    available_aliases = list(branch_columns[0])
+    available_aliases = [output_aliases[0]]
     for index, branch in enumerate(branch_ctes[1:], start=2):
         left_alias = "left_side"
         right_alias = "right_side"
@@ -1358,9 +1333,11 @@ def _lower_agent_dag_to_sql(
         select_fields.extend(
             SqlField(SqlIdentifier(parts=[left_alias, item]), item) for item in available_aliases
         )
-        select_fields.extend(
-            SqlField(SqlIdentifier(parts=[right_alias, item]), item)
-            for item in branch_columns[index - 1]
+        select_fields.append(
+            SqlField(
+                SqlIdentifier(parts=[right_alias, output_aliases[index - 1]]),
+                output_aliases[index - 1],
+            )
         )
         combine_ctes.append(
             SqlCte(
@@ -1387,15 +1364,13 @@ def _lower_agent_dag_to_sql(
             )
         )
         combined_name = next_name
-        available_aliases.extend(branch_columns[index - 1])
+        available_aliases.append(output_aliases[index - 1])
 
     # A branch that has no row for a group leaves its output NULL in the combine: settle
     # those outputs again over the combined result, the same way each branch did.
     guard_ctes: list[SqlCte] = []
-    if zero:
-        guard_ctes.extend(
-            guard_empty_groups(combined_name, key_aliases, output_aliases, zero, rows=rows)
-        )
+    if guard_empty and (zero := zero_outputs(plan, config)):
+        guard_ctes.extend(guard_empty_groups(combined_name, key_aliases, output_aliases, zero))
         combined_name = GUARDED_BASE
 
     final_source = "agent_projected"
@@ -4433,15 +4408,92 @@ def build_performance_plan(
     )
 
 
+_row_count_columns: ContextVar[Mapping[str, str] | None] = ContextVar(
+    "row_count_columns", default=None
+)
+
+
+@contextmanager
+def naming_row_counts(names: Mapping[str, str]) -> Iterator[None]:
+    """Name the row count of each leaf lowered in this block (``_row_count_names``); a nested
+    compile names its own."""
+    token = _row_count_columns.set(names)
+    try:
+        yield
+    finally:
+        _row_count_columns.reset(token)
+
+
+def _names_in_use(plan: LogicalPlan, config: PackageConfig) -> set[str]:
+    """Every name a hidden row count must not take, case-folded as SQL may compare them: the
+    query's outputs, grouping keys and internal aliases, every column the package's models
+    declare, and every column the query's measures read."""
+    measures = {row.bound_measure.measure_id for row in plan.measure_plans}
+    filters = len(list(plan.query.get("metric_filters", []) or []))
+    names = [
+        *_query_key_aliases(plan),
+        *plan.post_aggregation_exprs,
+        *(row.bound_measure.alias for row in plan.measure_plans),
+        *(_metric_filter_alias(index) for index in range(filters)),
+        *(
+            ref.column
+            for row in config.measures
+            if row.id in measures
+            for ref in collect_column_refs(row.expr)
+        ),
+        *(
+            column
+            for row in config.entities
+            for column in [row.primary_key, *row.key, *row.identifiers]
+            + [column for columns in row.foreign_keys.values() for column in columns]
+        ),
+        *(row.column for row in config.dimensions),
+        *(
+            column
+            for row in config.relationships
+            for column in (row.source_column, row.target_column)
+        ),
+        *(
+            column
+            for row in config.aggregate_relations
+            for column in [
+                row.time_column,
+                *row.measure_columns.values(),
+                *row.dimension_columns.values(),
+            ]
+        ),
+        *(column for row in config.relations for column in row.columns),
+    ]
+    return {str(name).casefold() for name in names if name}
+
+
+def _row_count_names(plan: LogicalPlan, taken: Collection[str]) -> dict[str, str]:
+    """Each measure's row-count column, by its alias: ``m<i>_rows`` beside the ``m<i>`` the
+    alias registry gives the measure, renamed until it takes no name in ``taken``. The registry
+    rewrites every identifier it names, so it never names these, nor any physical column."""
+    taken = set(taken)
+    names: dict[str, str] = {}
+    aliases = dict.fromkeys(row.bound_measure.alias for row in plan.measure_plans)
+    for index, alias in enumerate(aliases, start=1):
+        name, suffix = f"m{index}_rows", 2
+        while name.casefold() in taken:
+            name, suffix = f"m{index}_rows_{suffix}", suffix + 1
+        taken.add(name.casefold())
+        names[alias] = name
+    return names
+
+
 def _row_markers(measure_plan: MeasurePlan, measure: Any, value_expr: Any) -> list[tuple[Any, str]]:
     """The per-row marker a zero-settled sum's leaf counts, and the column the count goes in.
 
-    The guard reads 0 only where that count is 0 (see ``empty_groups``); counts need none.
+    The guard reads 0 only where that count is 0 (see ``empty_groups``); counts need none. A
+    leaf lowered outside ``naming_row_counts`` counts nothing, and the guard refuses its sum.
     """
     bound = measure_plan.bound_measure
-    if not counts_rows(bound.aggregation, measure):
+    name = (_row_count_columns.get() or {}).get(bound.alias)
+    if name is None or not counts_rows(bound.aggregation, measure):
         return []
-    return [(_row_marker(value_expr), rows_alias(bound.alias))]
+    return [(_row_marker(value_expr), name)]
 
 
 def _rows_fields(measure_plan: MeasurePlan, measure: Any, value_expr: Any) -> list[SqlField]:
@@ -5194,19 +5246,26 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     if anchored_select is not None:
         return _tier_internal_aliases(plan, anchored_select, measure_aliases=[])
     if _plan_requires_agent_dag_lowering(plan):
-        return _lower_agent_dag_to_sql(plan, config, guard_empty)
+        # Arithmetic beside a distribution settles each branch, then their combine, before
+        # it can tell an operand's unknown amounts from its empty groups: every branch keeps
+        # the earlier settlement.
+        with earlier_settlement():
+            return _lower_agent_dag_to_sql(plan, config, guard_empty)
 
     key_aliases = _query_key_aliases(plan)
     measure_aliases: list[str] = []
     # Each sum's count of the rows it read, by measure alias: only those its leaf emitted, so
     # the guard refuses a sum whose leaf can't tell no rows from rows of unknown values.
     rows: dict[str, str] = {}
+    taken = _names_in_use(plan, config)
+    row_counts = _row_count_names(plan, taken)
+    refuse_shared_names(row_counts.values(), taken)
     conversion_exprs = _conversion_exprs_for_plan(plan, config)
     if plan.measure_plans or conversion_exprs:
         leaf_ctes: list[SqlCte] = []
         measure_groups = _measure_plan_groups(plan, config)
         # A window on the request's own query hides data outside it: keep what each leaf reads.
-        with recording_leaf_scopes() as scopes:
+        with recording_leaf_scopes() as scopes, naming_row_counts(row_counts):
             for measure_group in measure_groups:
                 cte_name = measure_group[0].cte_name
                 # A folded group shares one scan, so its filters cut every leaf in it.
@@ -5214,9 +5273,9 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                     leaf_select = _measure_group_leaf_select(plan, measure_group, config)
                 emitted = {field.alias for field in leaf_select.select}
                 rows.update(
-                    (row.bound_measure.alias, rows_alias(row.bound_measure.alias))
+                    (row.bound_measure.alias, row_counts[row.bound_measure.alias])
                     for row in measure_group
-                    if rows_alias(row.bound_measure.alias) in emitted
+                    if row_counts[row.bound_measure.alias] in emitted
                 )
                 if (
                     guard_empty

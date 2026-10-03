@@ -1,10 +1,11 @@
 """Settle additive empty groups once, below projection: observed and loaded means 0.
 
 A sum reads 0 only in a group where it read no rows; rows whose values are all NULL are
-unknown and stay NULL (a metric predicate over several measures, under a threshold that 0
-passes, keeps reading them as 0: ``unknown_sums_read_zero``). Probes and coverage respect
-row filters. Projection bypasses and sums without a row count refuse with
-EMPTY_GROUPS_UNSETTLED. Stocks and non-additive values remain NULL.
+unknown and stay NULL. A query with a distribution branch, and a metric predicate's source
+over several measures under a threshold that 0 passes, keep the earlier settlement, which
+reads them as 0 (``earlier_settlement``). Probes and coverage respect row filters.
+Projection bypasses and sums without a row count refuse with EMPTY_GROUPS_UNSETTLED. Stocks
+and non-additive values remain NULL.
 """
 
 from __future__ import annotations
@@ -68,9 +69,10 @@ def resolves_to_zero(
 def counts_rows(aggregation: str, measure: MeasureConfig | None) -> bool:
     """Whether the measure's leaf counts the rows it reads in each group, beside its value.
 
-    A sum settles to 0 only where that count is 0; a count is already 0 there.
+    A sum settles to 0 only where that count is 0; a count is already 0 there. Under the
+    earlier settlement no leaf counts its rows.
     """
-    if measure is None or not resolves_to_zero(aggregation, measure):
+    if _earlier_settlement.get() or measure is None or not resolves_to_zero(aggregation, measure):
         return False
     return (aggregation or measure.default_aggregation).lower() not in _COUNTING
 
@@ -153,20 +155,28 @@ def record_leaf_scope(alias: str, scope: LeafScope) -> None:
         scopes[alias] = scope
 
 
-_unknown_sums_read_zero: ContextVar[bool] = ContextVar("unknown_sums_read_zero", default=False)
+_earlier_settlement: ContextVar[bool] = ContextVar("earlier_settlement", default=False)
 
 
 @contextmanager
-def unknown_sums_read_zero(enabled: bool) -> Iterator[None]:
-    """While ``enabled``, the guard reads a NULL sum as 0 wherever its measure has data in
-    scope, whether its group has no rows or only rows of unknown amounts, and needs no row
-    count. Only a metric predicate's source over several measures turns it on, under a
-    threshold that 0 passes (see ``_predicate_ctes_and_join``); it is off by default."""
-    token = _unknown_sums_read_zero.set(enabled)
+def earlier_settlement(enabled: bool = True) -> Iterator[None]:
+    """While ``enabled``, lower as before unknown amounts stayed NULL, byte for byte: the guard
+    reads a NULL sum as 0 wherever its measure has data in scope, whether its group has no
+    rows or only rows of unknown amounts, so no leaf counts its rows; a sum's CASE with ELSE 0
+    folds to its condition, and a rollup may answer a CASE measure. A query with a
+    distribution branch turns it on for every branch (``_lower_query_to_sql``), and so does a
+    metric predicate's source over several measures under a threshold that 0 passes
+    (``_predicate_ctes_and_join``). It is off by default, and a nested block never turns it
+    off."""
+    token = _earlier_settlement.set(enabled or _earlier_settlement.get())
     try:
         yield
     finally:
-        _unknown_sums_read_zero.reset(token)
+        _earlier_settlement.reset(token)
+
+
+def earlier_settlement_applies() -> bool:
+    return _earlier_settlement.get()
 
 
 def guard_empty_groups(
@@ -186,7 +196,7 @@ def guard_empty_groups(
     the sum reads 0 only where that count is NULL (the group has no row of the measure) or
     0, never where its rows' values are all NULL. A sum without one is refused, as are
     scopes and ``time_key`` without a dialect with time coverage. Inside
-    ``unknown_sums_read_zero`` a NULL sum reads 0 wherever its measure has data in scope.
+    ``earlier_settlement`` a NULL sum reads 0 wherever its measure has data in scope.
     """
     if (scopes or time_key) and not (dialect is not None and dialect.has_time_coverage):
         raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})
@@ -226,20 +236,19 @@ def guard_empty_groups(
                         ctes.append(SqlCte(name=name, query=coverage_select(scope, dialect)))
                         joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
                     seen = SqlBinary(seen, "AND", _loaded_bucket(time_key, name))
-            if aggregation not in _COUNTING:
-                fill = seen
-                if not _unknown_sums_read_zero.get():
-                    if alias not in rows:
-                        raise _unsettled_error({"measures": [alias], "missing": "row_count"})
-                    # A populated sum always survives; a NULL one is 0 only if it read no rows.
-                    count = SqlIdentifier(parts=["base", rows[alias]])
-                    empty = SqlBinary(SqlIsNull(count), "OR", SqlBinary(count, "=", SqlLiteral(0)))
-                    fill = SqlBinary(seen, "AND", empty)
+            if aggregation not in _COUNTING and not _earlier_settlement.get():
+                if alias not in rows:
+                    raise _unsettled_error({"measures": [alias], "missing": "row_count"})
+                # A populated sum always survives; a NULL one is 0 only if it read no rows.
+                count = SqlIdentifier(parts=["base", rows[alias]])
+                empty = SqlBinary(SqlIsNull(count), "OR", SqlBinary(count, "=", SqlLiteral(0)))
+                fill = SqlBinary(seen, "AND", empty)
                 value = SqlCall("COALESCE", [value, SqlCase([SqlCaseWhen(fill, SqlLiteral(0))])])
             elif scope is not None:
-                # A zero count records no observation. A positive count always survives;
-                # coverage gates only the empty-group substitution.
-                value = SqlCall("NULLIF", [value, SqlLiteral(0)])
+                # A zero count records no observation. A positive count or populated sum
+                # always survives; coverage gates only the empty-group substitution.
+                if aggregation in _COUNTING:
+                    value = SqlCall("NULLIF", [value, SqlLiteral(0)])
                 value = SqlCall("COALESCE", [value, SqlCase([SqlCaseWhen(seen, SqlLiteral(0))])])
             else:
                 value = SqlCase(
@@ -343,6 +352,15 @@ def reads_guarded_base(select: SqlSelect) -> bool:
 def require_settled_source(source: SqlSelect, details: Mapping[str, Any]) -> None:
     if not reads_guarded_base(source):
         raise _unsettled_error(details)
+
+
+def refuse_shared_names(row_counts: Iterable[str], taken: Collection[str]) -> None:
+    """Refuse row counts named like each other or like a name in ``taken`` (case-folded): the
+    guard could read the wrong column, or a rewrite of the name reach a physical column."""
+    folded = [name.casefold() for name in row_counts]
+    shared = sorted({name for name in folded if name in taken or folded.count(name) > 1})
+    if shared:
+        raise _unsettled_error({"row_counts_named_like": shared})
 
 
 def _unsettled_error(details: Mapping[str, Any]) -> SemanticLayerError:

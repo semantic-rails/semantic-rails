@@ -382,7 +382,6 @@ def test_a_lowering_path_that_skips_the_guard_is_refused(
         "filled_series",
         "window_total",
         "sum_of_two_measures",
-        "beside_a_distribution",
     ],
 )
 def test_a_leaf_that_skips_the_row_count_is_refused(
@@ -460,6 +459,9 @@ def shop(shop_package: Path) -> Iterator[Runtime]:
 def test_branch_row_markers_never_shadow_projected_values(
     shop: Runtime, revenue_alias: str, median_alias: str, by_store: bool
 ) -> None:
+    """Outputs named like a branch's former hidden markers keep their values. Beside a
+    distribution the earlier settlement applies: store a's May, whose only amount is unknown,
+    reads 0 where revenue has data in scope."""
     distribution = {
         "kind": "distribution",
         "function": "median",
@@ -481,7 +483,7 @@ def test_branch_row_markers_never_shadow_projected_values(
     gold = _gold(
         shop,
         f"SELECT {'store_id' if by_store else 'NULL'} AS s, "
-        "date_trunc('month', ordered_at) AS month, SUM(amount) AS revenue, "
+        "date_trunc('month', ordered_at) AS month, COALESCE(SUM(amount), 0) AS revenue, "
         "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount) AS median "
         f"FROM orders GROUP BY {'1, 2' if by_store else '2'}",
     )
@@ -489,14 +491,150 @@ def test_branch_row_markers_never_shadow_projected_values(
         (row["s"], str(row["month"])[:7]): (row["revenue"], row["median"]) for row in gold
     }
     if by_store:
-        assert got[("a", "2024-05")] == (None, None)
+        assert got[("a", "2024-05")] == (0, None)
     else:
         assert got[(None, "2023-11")] == (15, 7.5)
 
 
+# Goods plus shipping refunds beside the median order, without order 7: each refunded order
+# has goods or shipping, never both, so every refund group reads one unknown operand.
+REFUNDS_BESIDE_A_MEDIAN = {
+    "version": 1,
+    "select": _select(
+        total={"kind": "arithmetic", "op": "add", "left": SHOP_GOODS, "right": SHOP_SHIPPING},
+        median={
+            "kind": "distribution",
+            "function": "median",
+            "over": {"kind": "entity_value", "entity": "entity.shop_order", "input": SHOP_REVENUE},
+        },
+    ),
+    "group_by": [SHOP_STORE],
+    "time": SHOP_MONTH,
+    "where": [{"field": SHOP_ORDER, "op": "!=", "value": 7}],
+}
+
+
+def test_arithmetic_beside_a_distribution_keeps_its_empty_groups_zero(shop: Runtime) -> None:
+    """Beside a distribution, every branch keeps the earlier settlement: an operand's unknown
+    amounts read 0 where its measure has data in scope, so a group with no refunds at all
+    (store a's November) is 0, not NULL."""
+    response = shop.query(REFUNDS_BESIDE_A_MEDIAN)
+    month = f"{SHOP_MONTH['temporal_role']}__month"
+    got = {(row[SHOP_STORE], str(row[month])[:7]): row["total"] for row in typed_rows(response)}
+    assert got[("a", "2023-11")] == 0
+    # Orders 2 (goods 5 + 1), 4 (shipping 3) and 6 (goods 4); every other group has none.
+    refunded = {("b", "2023-11"): 6, ("a", "2024-01"): 3, ("a", "2024-03"): 4}
+    assert got == {key: refunded.get(key, 0) for key in got}
+    assert len(got) == 10
+
+
+# The same query's SQL at the commit before unknown amounts stayed NULL, unchanged.
+REFUNDS_BESIDE_A_MEDIAN_SQL = """WITH agent_branch_1__leaf_1 AS (
+SELECT
+  orders.store_id AS g1,
+  DATE_TRUNC('month', CAST(orders.ordered_at AS TIMESTAMP)) AS t,
+  SUM(refunds.goods_amount) AS m1,
+  SUM(refunds.shipping_amount) AS m2
+FROM refunds
+INNER JOIN orders ON refunds.order_id = orders.order_id
+WHERE
+  refunds.order_id != 7
+GROUP BY
+  orders.store_id,
+  DATE_TRUNC('month', CAST(orders.ordered_at AS TIMESTAMP))
+),
+agent_branch_1__guarded_base AS (
+SELECT
+  base.g1 AS g1,
+  base.t AS t,
+  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1,
+  CASE WHEN COUNT(base.m2) OVER () > 0 THEN COALESCE(base.m2, 0) END AS m2
+FROM agent_branch_1__leaf_1 AS base
+),
+agent_branch_1 AS (
+SELECT
+  base.g1 AS "dimension.shop_order_store_id",
+  base.t AS "temporal_role.shop_order_ordered_at__month",
+  base.m1 + base.m2 AS total
+FROM agent_branch_1__guarded_base AS base
+),
+agent_branch_2__median__entity_values__leaf_1 AS (
+SELECT
+  orders.store_id AS g1,
+  orders.order_id AS g2,
+  DATE_TRUNC('month', CAST(orders.ordered_at AS TIMESTAMP)) AS t,
+  SUM(orders.amount) AS m1
+FROM orders
+WHERE
+  orders.order_id != 7
+GROUP BY
+  orders.store_id,
+  orders.order_id,
+  DATE_TRUNC('month', CAST(orders.ordered_at AS TIMESTAMP))
+),
+agent_branch_2__median__entity_values AS (
+SELECT
+  base.g1 AS "dimension.shop_order_store_id",
+  base.g2 AS "dimension.shop_order_id",
+  base.t AS "temporal_role.shop_order_ordered_at__month",
+  base.m1 AS __entity_value
+FROM agent_branch_2__median__entity_values__leaf_1 AS base
+),
+agent_branch_2 AS (
+SELECT
+  agent_branch_2__median__entity_values."dimension.shop_order_store_id" AS "dimension.shop_order_store_id",
+  agent_branch_2__median__entity_values."temporal_role.shop_order_ordered_at__month" AS "temporal_role.shop_order_ordered_at__month",
+  MEDIAN(agent_branch_2__median__entity_values.__entity_value) AS median
+FROM agent_branch_2__median__entity_values
+GROUP BY
+  agent_branch_2__median__entity_values."dimension.shop_order_store_id",
+  agent_branch_2__median__entity_values."temporal_role.shop_order_ordered_at__month"
+),
+agent_combined_2 AS (
+SELECT
+  COALESCE(left_side."dimension.shop_order_store_id", right_side."dimension.shop_order_store_id") AS "dimension.shop_order_store_id",
+  COALESCE(CAST(left_side."temporal_role.shop_order_ordered_at__month" AS TIMESTAMP), CAST(right_side."temporal_role.shop_order_ordered_at__month" AS TIMESTAMP)) AS "temporal_role.shop_order_ordered_at__month",
+  left_side.total AS total,
+  right_side.median AS median
+FROM agent_branch_1 AS left_side
+FULL OUTER JOIN agent_branch_2 AS right_side ON left_side."dimension.shop_order_store_id" IS NOT DISTINCT FROM right_side."dimension.shop_order_store_id" AND CAST(left_side."temporal_role.shop_order_ordered_at__month" AS TIMESTAMP) IS NOT DISTINCT FROM CAST(right_side."temporal_role.shop_order_ordered_at__month" AS TIMESTAMP)
+),
+guarded_base AS (
+SELECT
+  base."dimension.shop_order_store_id" AS "dimension.shop_order_store_id",
+  base."temporal_role.shop_order_ordered_at__month" AS "temporal_role.shop_order_ordered_at__month",
+  CASE WHEN COUNT(base.total) OVER () > 0 THEN COALESCE(base.total, 0) END AS total,
+  base.median AS median
+FROM agent_combined_2 AS base
+),
+agent_projected AS (
+SELECT
+  base."dimension.shop_order_store_id" AS "dimension.shop_order_store_id",
+  base."temporal_role.shop_order_ordered_at__month" AS "temporal_role.shop_order_ordered_at__month",
+  base.total AS total,
+  base.median AS median
+FROM guarded_base AS base
+)
+SELECT
+  agent_projected."dimension.shop_order_store_id" AS "dimension.shop_order_store_id",
+  agent_projected."temporal_role.shop_order_ordered_at__month" AS "temporal_role.shop_order_ordered_at__month",
+  agent_projected.total AS total,
+  agent_projected.median AS median
+FROM agent_projected
+ORDER BY
+  "temporal_role.shop_order_ordered_at__month" ASC,
+  "dimension.shop_order_store_id" ASC"""
+
+
+def test_a_query_beside_a_distribution_lowers_as_it_did_before(shop_package: Path) -> None:
+    config = load_package_config(str(shop_package))
+    compiled = compile_query(config, Registry(config), REFUNDS_BESIDE_A_MEDIAN)
+    assert compiled["sql"] == REFUNDS_BESIDE_A_MEDIAN_SQL
+
+
 def test_an_output_named_like_a_row_count_keeps_its_name_in_order_by(shop: Runtime) -> None:
-    """The leaf's hidden row count is renamed internally; a caller's alias of the same name is
-    the caller's, so ordering by it orders by the output, not by an internal column."""
+    """The leaf's hidden row count has a name of its own; a caller's alias like the measure's
+    leaf alias plus ``__rows`` is the caller's, so ordering by it orders by the output."""
     alias = "leaf__measure_shop_revenue__sum__rows"
     response = shop.query(
         {
@@ -511,6 +649,77 @@ def test_an_output_named_like_a_row_count_keeps_its_name_in_order_by(shop: Runti
         shop, "SELECT store_id AS s, SUM(amount) AS revenue FROM orders GROUP BY 1 ORDER BY 2 DESC"
     )
     assert got == [(row["s"], row["revenue"]) for row in gold] == [("a", 43), ("b", 25), (None, 6)]
+
+
+def _renamed_amount(root: Path, extra: str) -> Runtime:
+    """The shop with its amount column named like revenue's leaf alias plus ``__rows`` (and,
+    with ``extra``, a column ``m1_rows`` holding 100 on every order), read by revenue."""
+    package = _write_variant(root, "utc_authored")
+    seed = package / "data" / "seed.sql"
+    statements = [f"ALTER TABLE orders RENAME COLUMN amount TO {RENAMED_AMOUNT}"]
+    if extra:
+        statements += [
+            "ALTER TABLE orders ADD COLUMN m1_rows INTEGER",
+            "UPDATE orders SET m1_rows = 100",
+        ]
+    seed.write_text(seed.read_text(encoding="utf-8") + "".join(f"\n{item};" for item in statements))
+    config = load_package_config(str(package))
+    column = parse_config_expression({"kind": "column", "column": RENAMED_AMOUNT})
+    config = replace(
+        config,
+        aggregate_relations=[],
+        measures=[
+            replace(row, expr=column) if row.id == SHOP_REVENUE["measure"] else row
+            for row in config.measures
+        ],
+    )
+    return Runtime.from_config(config, source_path=str(package))
+
+
+RENAMED_AMOUNT = "leaf__measure_shop_revenue__sum__rows"
+EVERY_M1_ROWS = {
+    "kind": "aggregate_if",
+    "aggregation": "sum",
+    "condition": {**IN_STORE_A, "op": "!="},
+    "value": {"kind": "column", "column": "m1_rows", "entity": "entity.shop_order"},
+}
+
+
+@pytest.mark.parametrize("extra", ["", "unrelated", "read"])
+def test_a_physical_column_named_like_a_row_count_is_read_as_itself(
+    tmp_path: Path, extra: str
+) -> None:
+    """No rewrite reaches a physical column: revenue reads its own column, whatever it is
+    named, and never ``m1_rows``. The hidden row count takes a name no column the query reads
+    has, so beside a sum of ``m1_rows`` it is ``m1_rows_2``."""
+    rt = _renamed_amount(tmp_path, extra)
+    try:
+        items = {"revenue": SHOP_REVENUE, **({"other": EVERY_M1_ROWS} if extra == "read" else {})}
+        response = rt.query({"version": 1, "select": _select(**items)})
+        (row,) = typed_rows(response)
+        assert row["revenue"] == 74
+        if extra == "read":  # store b's orders 2, 5, 9 and 10
+            assert row["other"] == 400
+        sql = response["rendered_sql"]
+        assert f"orders.{RENAMED_AMOUNT}" in sql
+        assert ("AS m1_rows_2" in sql) is (extra == "read")
+    finally:
+        rt.close()
+
+
+def test_a_row_count_named_like_another_column_is_refused(
+    config: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Force the bypass: name the row count like the query's output, and the check refuses."""
+    monkeypatch.setattr(
+        sql_lowering,
+        "_row_count_names",
+        lambda plan, taken: {row.bound_measure.alias: "Revenue" for row in plan.measure_plans},
+    )
+    with pytest.raises(SemanticLayerError) as raised:
+        compile_query(config, Registry(config), {"version": 2, **SHAPES["single_measure"]})
+    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
+    assert raised.value.details["row_counts_named_like"] == ["revenue"]
 
 
 @pytest.mark.parametrize("else_value", [None, 0, 2])
