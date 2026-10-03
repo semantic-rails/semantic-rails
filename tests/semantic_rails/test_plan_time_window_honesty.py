@@ -217,7 +217,16 @@ def test_mcp_plan_offers_no_runnable_draft_without_the_window(
         mcp.close()
     for refused in (plan, long_plan):
         assert refused["status"] == "low_confidence"
-        assert refused["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
+        if refused is long_plan:
+            # Grouping is still parsed beyond the time limit, so the unknown store
+            # attribute and unresolved window are both reported.
+            assert refused["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+            assert {gap["kind"] for gap in refused["why"]["details"]["gaps"]} == {
+                "store_grouping_unrealized",
+                "time_window_unresolved",
+            }
+        else:
+            assert refused["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
         rows = [refused["best"], *refused.get("alternatives", []), *refused.get("blocked", [])]
         assert all("query_ir" not in row for row in rows)
         assert "validate" not in refused.get("next", {})

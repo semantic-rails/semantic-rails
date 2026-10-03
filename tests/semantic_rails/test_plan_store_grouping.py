@@ -164,8 +164,10 @@ def test_long_store_grouping_matches_monthly_reference_sql(jaffle: Runtime) -> N
     assert query["group_by"] == [JAFFLE_STORE]
     assert query["time"] == ORDER_WINDOW
     [selected] = query["select"]
+    time_column = f"{ORDER_WINDOW['temporal_role']}__month"
     actual = sorted(
-        (row["time"], row[JAFFLE_STORE], row[selected["as"]]) for row in jaffle.query(query)["rows"]
+        (row[time_column][:10], row[JAFFLE_STORE], row[selected["as"]])
+        for row in jaffle.query(query)["rows"]
     )
     reference = (
         jaffle._get_adapter()
@@ -207,7 +209,8 @@ def test_store_filter_cannot_replace_requested_grouping(
     assert plan["status"] == "low_confidence"
     assert plan["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
     gaps = plan["why"]["details"]["gaps"]
-    assert any(gap["kind"] == "store_grouping_unrealized" for gap in gaps)
+    [gap] = [gap for gap in gaps if gap["kind"] == "store_grouping_unrealized"]
+    assert gap["actual"]["caller_group_by"] == group_by
     assert "execute" not in plan["next"].get("ready_for", [])
 
 

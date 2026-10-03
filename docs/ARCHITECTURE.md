@@ -414,7 +414,9 @@ Important planner behaviors:
   time-window parser's input limit. Unknown, ambiguous or omitted attributes return
   `PLAN_INTENT_COVERAGE_GAP` without execute readiness. Mentioning stores in a total,
   such as "how many stores are open", does not add store grouping; a store filter
-  cannot stand in for a requested grouping
+  cannot stand in for a requested grouping. An explicit caller `group_by` must
+  include the requested store attribute. "Number of stores open by store" is a
+  count at the requested store grouping
 - safe mixed-grain cases compile via leaf pre-aggregation rewrites
 - exact aggregate relations can be selected for compatible time-grain measure
   leaves; routed leaves expose `aggregate_relation_id` and physical/performance

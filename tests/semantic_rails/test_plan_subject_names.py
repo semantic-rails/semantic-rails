@@ -168,24 +168,24 @@ CUSTOMERS = "measure.jaffle.customer_count"
             None,
             ["items"],
         ),
-        # The draft groups by store, which the question doesn't ask for: not one number.
+        # A store count remains a total when the question requests no store grouping.
         (
             "number of stores open",
             "measure.jaffle.open_store_count_eop",
-            ["dimension.jaffle_store_name"],
-            ["number"],
+            None,
+            [],
         ),
         (
             "number of stores open by month",
             "measure.jaffle.open_store_count_eop",
-            ["dimension.jaffle_store_name"],
-            ["number"],
+            None,
+            [],
         ),
         (
             "number of stores open by year",
             "measure.jaffle.open_store_count_eop",
-            ["dimension.jaffle_store_name"],
-            ["number"],
+            None,
+            [],
         ),
     ],
 )
