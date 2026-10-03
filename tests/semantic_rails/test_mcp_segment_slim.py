@@ -86,13 +86,21 @@ def test_minimal_response_answers_without_compiler_plans(
 
 
 @pytest.mark.parametrize("action", ACTIONS)
-def test_full_response_on_request(adapter: SemanticLayerMCPAdapter, action: str) -> None:
+def test_full_response_keeps_plans_when_the_budget_allows(
+    adapter: SemanticLayerMCPAdapter, action: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS", "10000000")
     full = adapter.call_tool("segment", {**ARGUMENTS[action], "verbosity": "full"})
     slim = adapter.call_tool("segment", {**ARGUMENTS[action], "verbosity": "minimal"})
-    assert {"explain", "logical_plan"} <= set(full)
-    # "compact", the whole-response level on other tools, means the same here.
+    assert "logical_plan" not in full
+    assert full["explain"]["logical_plan"]
+    # Compact leaves out compiler plans even when they would fit.
     compact = adapter.call_tool("segment", {**ARGUMENTS[action], "verbosity": "compact"})
-    assert set(compact) == set(full)
+    assert compact["ok"]
+    assert (
+        not {"explain", "logical_plan", "sql_plan", "physical_plan", "performance_plan"}
+        & compact.keys()
+    )
     assert len(str(slim)) < len(str(full)) / 3
 
 
