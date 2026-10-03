@@ -893,6 +893,22 @@ def _cases() -> Iterator[Case]:
     )
 
     # Distributions of per-order revenue, alone and beside window siblings.
+    for name, revenue_alias, median_alias in (
+        ("distribution_marker_own_output", "agent_branch_1__rows", "median"),
+        ("distribution_marker_other_output", "revenue", "agent_branch_1__rows"),
+    ):
+        for by_store in (False, True):
+            yield Case(
+                f"{name}{'_by_store' if by_store else ''}",
+                "utc_authored",
+                _ask(
+                    "month",
+                    _item(REVENUE, revenue_alias),
+                    _distribution("median", median_alias),
+                    group_by=[STORE] if by_store else [],
+                ),
+                _by("month", f"SUM(o.amount), {MEDIAN}", store=by_store),
+            )
     for function in ("median", "avg", "min", "max", "sum"):
         reference = MEDIAN if function == "median" else f"{function.upper()}(o.amount)"
         query = _ask("month", _distribution(function, function))

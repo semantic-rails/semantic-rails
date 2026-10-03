@@ -284,12 +284,7 @@ def test_dialect_hook_skipped_for_multi_when_case_expressions():
 
 
 # ---------------------------------------------------------------------------
-# Detector extension — ELSE NULL and ELSE 0 patterns.
-#
-# Real-world configs and the mf2sr translator emit explicit ELSE branches
-# that are semantically equivalent to no-else. The detector folds them so
-# every fixture that uses the legacy CASE WHEN idiom benefits from native
-# COUNT_IF / SUM_IF on Snowflake without any YAML or translator change.
+# ELSE NULL can fold; non-NULL ELSE values remain contributing rows.
 # ---------------------------------------------------------------------------
 
 
@@ -330,54 +325,18 @@ def test_dialect_hook_folds_else_null_for_sum_to_portable_case():
     assert folded.whens[0].condition == cond and folded.whens[0].result == body
 
 
-def test_dialect_hook_folds_else_zero_for_sum_to_portable_case():
-    """mf2sr's `sum_boolean` and count-fallback paths emit
-    ``SUM(CASE WHEN cond THEN 1 ELSE 0 END)`` — 0 contributes nothing to
-    a SUM, so the detector folds the ELSE away. With no native SUM_IF on
-    Snowflake the lowering is the portable else-less CASE.
-    """
+@pytest.mark.parametrize("aggregation", ["sum", "count", "avg", "min", "max"])
+def test_dialect_hook_preserves_explicit_else_zero(aggregation):
+    """An explicit zero must remain even when the matching body is NULL."""
     cond = SqlBinary(SqlLiteral("flag"), "=", SqlLiteral(True))
     case_with_zero_else = SqlCase(
         whens=[SqlCaseWhen(condition=cond, result=SqlLiteral(1))],
         else_expr=SqlLiteral(0),
     )
     sf = SnowflakeDialect()
-    result = _aggregation_expr(case_with_zero_else, "sum", dialect=sf)
-    assert isinstance(result, SqlCall) and result.name == "SUM"
-    folded = result.args[0]
-    assert isinstance(folded, SqlCase) and folded.else_expr is None
-
-
-def test_dialect_hook_does_not_fold_else_zero_for_count():
-    """``COUNT(CASE WHEN cond THEN 1 ELSE 0 END)`` counts every row
-    (0 is non-null), so it is NOT equivalent to ``COUNT_IF(cond)``.
-    The detector must skip this pattern to preserve semantics.
-    """
-    cond = SqlBinary(SqlLiteral("flag"), "=", SqlLiteral(True))
-    case_with_zero_else = SqlCase(
-        whens=[SqlCaseWhen(condition=cond, result=SqlLiteral(1))],
-        else_expr=SqlLiteral(0),
-    )
-    sf = SnowflakeDialect()
-    result = _aggregation_expr(case_with_zero_else, "count", dialect=sf)
-    # NOT COUNT_IF — falls through to plain COUNT(CASE …).
-    assert isinstance(result, SqlCall) and result.name == "COUNT"
-    assert isinstance(result.args[0], SqlCase)
-
-
-def test_dialect_hook_does_not_fold_else_zero_for_avg():
-    """``AVG(CASE WHEN cond THEN x ELSE 0 END)`` would mix zeros into
-    the population, changing the average. Reject the fold for AVG/MIN/MAX.
-    """
-    cond = SqlBinary(SqlLiteral("flag"), "=", SqlLiteral(True))
-    case_with_zero_else = SqlCase(
-        whens=[SqlCaseWhen(condition=cond, result=SqlLiteral("x"))],
-        else_expr=SqlLiteral(0),
-    )
-    sf = SnowflakeDialect()
-    result = _aggregation_expr(case_with_zero_else, "avg", dialect=sf)
-    assert isinstance(result, SqlCall) and result.name == "AVG"
-    assert isinstance(result.args[0], SqlCase)
+    result = _aggregation_expr(case_with_zero_else, aggregation, dialect=sf)
+    assert isinstance(result, SqlCall) and result.name == aggregation.upper()
+    assert result.args == [case_with_zero_else]
 
 
 def test_dialect_hook_does_not_fold_arbitrary_else_literal():

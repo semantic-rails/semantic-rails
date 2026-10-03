@@ -70,63 +70,33 @@ def _freeze_payload(value: Any) -> str:
     return json.dumps(value, sort_keys=True, default=str)
 
 
-def _else_clause_collapses_to_no_else(else_expr: Any, aggregation: str) -> bool:
-    """Decide whether an explicit ELSE branch is semantically equivalent
-    to no ELSE for the given aggregation, so the single-branch CASE
-    pattern can still be folded to the native conditional-aggregate.
-
-    Equivalence rules (proof by case analysis):
-
-    - ``ELSE NULL`` is equivalent to no ELSE for every aggregation that
-      ignores NULLs (count, count_distinct, sum, avg, min, max, median,
-      percentile — i.e. every aggregation we route through this hook).
-      A NULL contribution is identical to the row being absent.
-
-    - For SUM only, ``ELSE 0`` is also equivalent: 0 contributes nothing
-      to a SUM result. This matches the mf2sr-generated ``sum_boolean``
-      idiom (``SUM(CASE WHEN cond THEN 1 ELSE 0 END)``) and the
-      count-fallback path in mf2sr/translate.py.
-
-    - For COUNT, ``ELSE 0`` is NOT equivalent — ``COUNT(CASE WHEN cond
-      THEN 1 ELSE 0 END)`` counts every row (0 is non-null), giving the
-      total row count rather than the count of matching rows.
-
-    - For AVG/MIN/MAX, ``ELSE 0`` would skew the result (zeros enter the
-      population), so reject those too.
-    """
-    if else_expr is None:
-        return True
-    if not isinstance(else_expr, SqlLiteral):
-        return False
-    if else_expr.value is None:
-        return True
-    return aggregation.lower() == "sum" and else_expr.value == 0
-
-
-def _conditional_parts(expr: Any, aggregation: str) -> tuple[Any, Any] | None:
+def _conditional_parts(expr: Any) -> tuple[Any, Any] | None:
     """``(condition, body)`` when an aggregate of ``expr`` reads only the rows where the
-    condition holds (the shapes ``_maybe_conditional_aggregate`` lists), else ``None``."""
+    condition holds, else ``None``. Only no ELSE or ELSE NULL can exclude other rows:
+    even ELSE 0 contributes a known value when every matching body is NULL."""
     if (
         not isinstance(expr, SqlCase)
         or len(expr.whens) != 1
-        or not _else_clause_collapses_to_no_else(expr.else_expr, aggregation)
+        or (
+            expr.else_expr is not None
+            and not (isinstance(expr.else_expr, SqlLiteral) and expr.else_expr.value is None)
+        )
     ):
         return None
     return expr.whens[0].condition, expr.whens[0].result
 
 
-def _row_marker(expr: Any, aggregation: str) -> Any:
+def _row_marker(expr: Any) -> Any:
     """1 on each row an aggregate of ``expr`` reads, NULL on the rest: a conditional aggregate
     reads only the rows its condition keeps (``aggregate_if``), any other every row."""
-    parts = _conditional_parts(expr, aggregation)
+    parts = _conditional_parts(expr)
     return SqlLiteral(1) if parts is None else SqlCase([SqlCaseWhen(parts[0], SqlLiteral(1))])
 
 
 def _maybe_conditional_aggregate(expr: Any, aggregation: str, dialect: SqlDialect) -> Any | None:
     """If ``expr`` is the canonical ``CASE WHEN cond THEN body END``
     shape that ``aggregate_if`` produces (one when, no else — or an
-    ELSE branch that collapses to equivalent NULL/0 semantics for the
-    aggregation), delegate to ``dialect.conditional_aggregate`` so
+    ELSE NULL), delegate to ``dialect.conditional_aggregate`` so
     dialects with a native form (Snowflake ``COUNT_IF`` / ``SUM_IF``,
     BigQuery ``COUNTIF``, Postgres ``FILTER (WHERE …)``) can emit it.
     Returns ``None`` if the pattern doesn't apply — the caller falls
@@ -143,12 +113,8 @@ def _maybe_conditional_aggregate(expr: Any, aggregation: str, dialect: SqlDialec
       jaffle_shop / hand-authored idiom (orders.yml uses this 4× to
       count rows where a flag is true, with body = key column and
       explicit ``else: literal null``).
-    - ``SUM(CASE WHEN cond THEN body ELSE 0 END)`` — the mf2sr
-      ``sum_boolean`` and count-fallback idiom (translate.py
-      lines 498-512 and 562-582). COUNT with ``ELSE 0`` is *not*
-      folded because it counts every row.
     """
-    parts = _conditional_parts(expr, aggregation)
+    parts = _conditional_parts(expr)
     if parts is None:
         return None
     agg = aggregation.lower()

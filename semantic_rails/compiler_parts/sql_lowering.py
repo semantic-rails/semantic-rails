@@ -1292,17 +1292,32 @@ def _lower_agent_dag_to_sql(
     # A branch settled its own groups, so its row is the count the combine's guard reads:
     # NULL only where the branch has no row for the group.
     rows: dict[str, str] = {}
-    for index, (alias, expr_payload) in enumerate(plan.post_aggregation_exprs.items(), start=1):
+    branch_queries: list[tuple[str, SqlSelect]] = []
+    for alias, expr_payload in plan.post_aggregation_exprs.items():
         expr = _parse_public_expr(expr_payload)
-        branch_name = f"agent_branch_{index}"
         branch_query = (
             _distribution_select(expr, alias=alias, plan=plan, config=config)
             if isinstance(expr, DistributionExpr)
             else _single_expression_branch_select(expr, alias=alias, plan=plan, config=config)
         )
+        branch_queries.append((alias, branch_query))
+    # Reserve every branch's columns before allocating hidden markers, including columns
+    # projected by later branches. SQL identifiers can compare without regard to case.
+    used_aliases = {alias.casefold() for alias in [*key_aliases, *plan.post_aggregation_exprs]}
+    used_aliases.update(
+        field.alias.casefold() for _, query in branch_queries for field in query.select
+    )
+    for index, (alias, branch_query) in enumerate(branch_queries, start=1):
+        branch_name = f"agent_branch_{index}"
         columns = [alias]
         if alias in zero:
-            rows[alias] = f"{branch_name}__rows"
+            marker = f"{branch_name}__rows"
+            suffix = 2
+            while marker.casefold() in used_aliases:
+                marker = f"{branch_name}__rows_{suffix}"
+                suffix += 1
+            used_aliases.add(marker.casefold())
+            rows[alias] = marker
             columns.append(rows[alias])
             branch_query = replace(
                 branch_query, select=[*branch_query.select, SqlField(SqlLiteral(1), rows[alias])]
@@ -4426,7 +4441,7 @@ def _row_markers(measure_plan: MeasurePlan, measure: Any, value_expr: Any) -> li
     bound = measure_plan.bound_measure
     if not counts_rows(bound.aggregation, measure):
         return []
-    return [(_row_marker(value_expr, "sum"), rows_alias(bound.alias))]
+    return [(_row_marker(value_expr), rows_alias(bound.alias))]
 
 
 def _rows_fields(measure_plan: MeasurePlan, measure: Any, value_expr: Any) -> list[SqlField]:

@@ -444,6 +444,112 @@ def shop(shop_package: Path) -> Iterator[Runtime]:
         rt.close()
 
 
+@pytest.mark.parametrize(
+    ("revenue_alias", "median_alias"),
+    [
+        ("agent_branch_1__rows", "median"),
+        ("revenue", "agent_branch_1__rows"),
+        ("revenue", "AGENT_BRANCH_1__ROWS"),
+        ("agent_branch_1__rows", "agent_branch_1__rows_2"),
+    ],
+)
+@pytest.mark.parametrize("by_store", [False, True])
+def test_branch_row_markers_never_shadow_projected_values(
+    shop: Runtime, revenue_alias: str, median_alias: str, by_store: bool
+) -> None:
+    distribution = {
+        "kind": "distribution",
+        "function": "median",
+        "over": {"kind": "entity_value", "entity": "entity.shop_order", "input": SHOP_REVENUE},
+    }
+    response = shop.query(
+        {
+            "version": 1,
+            "select": _select(**{revenue_alias: SHOP_REVENUE, median_alias: distribution}),
+            "group_by": [SHOP_STORE] if by_store else [],
+            "time": SHOP_MONTH,
+        }
+    )
+    month = f"{SHOP_MONTH['temporal_role']}__month"
+    got = {
+        (row.get(SHOP_STORE), str(row[month])[:7]): (row[revenue_alias], row[median_alias])
+        for row in typed_rows(response)
+    }
+    gold = _gold(
+        shop,
+        f"SELECT {'store_id' if by_store else 'NULL'} AS s, "
+        "date_trunc('month', ordered_at) AS month, SUM(amount) AS revenue, "
+        "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY amount) AS median "
+        f"FROM orders GROUP BY {'1, 2' if by_store else '2'}",
+    )
+    assert got == {
+        (row["s"], str(row["month"])[:7]): (row["revenue"], row["median"]) for row in gold
+    }
+    if by_store:
+        assert got[("a", "2024-05")] == (None, None)
+    else:
+        assert got[(None, "2023-11")] == (15, 7.5)
+
+
+@pytest.mark.parametrize("else_value", [None, 0, 2])
+@pytest.mark.parametrize("by_store", [False, True])
+def test_case_sum_preserves_explicit_else_contributions(
+    shop_package: Path, else_value: int | None, by_store: bool
+) -> None:
+    config = load_package_config(str(shop_package))
+    expression = parse_config_expression(
+        {
+            "kind": "case",
+            "whens": [{"when": IN_STORE_A, "then": {"kind": "column", "column": "amount"}}],
+            "else": {"kind": "literal", "value": else_value},
+        }
+    )
+    config = replace(
+        config,
+        aggregate_relations=[],
+        measures=[
+            replace(row, expr=expression) if row.id == SHOP_REVENUE["measure"] else row
+            for row in config.measures
+        ],
+    )
+    rt = Runtime.from_config(config, source_path=str(shop_package))
+    try:
+        response = rt.query(
+            {
+                "version": 1,
+                "select": _select(revenue=SHOP_REVENUE),
+                "group_by": [SHOP_STORE] if by_store else [],
+                "time": SHOP_MONTH,
+            }
+        )
+        month = f"{SHOP_MONTH['temporal_role']}__month"
+        got = {
+            (row.get(SHOP_STORE), str(row[month])[:7]): row["revenue"]
+            for row in typed_rows(response)
+        }
+        literal = "NULL" if else_value is None else str(else_value)
+        # ELSE NULL has no contributing row where the condition fails, so its empty sum
+        # settles to 0. Explicit non-NULL ELSE values remain in the ordinary SQL sum.
+        value = f"SUM(CASE WHEN store_id = 'a' THEN amount ELSE {literal} END)"
+        if else_value is None:
+            value = (
+                f"CASE WHEN COUNT(CASE WHEN store_id = 'a' THEN 1 END) = 0 THEN 0 ELSE {value} END"
+            )
+        gold = _gold(
+            rt,
+            f"SELECT {'store_id' if by_store else 'NULL'} AS s, "
+            f"date_trunc('month', ordered_at) AS month, {value} AS revenue "
+            f"FROM orders GROUP BY {'1, 2' if by_store else '2'}",
+        )
+        assert got == {(row["s"], str(row["month"])[:7]): row["revenue"] for row in gold}
+        if by_store:
+            assert got[("a", "2024-05")] is None
+        else:
+            assert got[(None, "2024-05")] == else_value
+    finally:
+        rt.close()
+
+
 def test_a_conditional_sum_is_zero_only_where_no_row_meets_its_condition(shop: Runtime) -> None:
     store_a = {
         "kind": "aggregate_if",

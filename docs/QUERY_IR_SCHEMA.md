@@ -741,6 +741,10 @@ month that mixes NULL and known amounts sums the known ones. A conditional sum
 (`aggregate_if`, or an aggregate with a `filter`) reads only the rows that meet its condition: a group
 whose rows all fail it has none and reads `0`, and one whose matching rows all have a NULL
 amount reads `NULL`. Filled or not, a group reads the same.
+A sum of a single-branch `CASE` with no `ELSE` or `ELSE NULL` follows that
+conditional rule. An explicit non-NULL `ELSE`, including `ELSE 0`, contributes on
+nonmatching rows: a matching NULL amount plus a nonmatching zero sums to `0`, while
+a group with only matching NULL amounts remains `NULL`.
 
 - **Arithmetic** settles each operand first, then combines them. An operand that is unknown
   or has no data in scope is `NULL`, and so is the result: `goods + shipping` by refund type
