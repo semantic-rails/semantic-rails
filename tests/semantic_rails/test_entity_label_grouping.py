@@ -295,6 +295,52 @@ def test_store_grouping_keeps_identity_unless_label_is_requested(
         runtime.close()
 
 
+@pytest.mark.parametrize("entity_label", ["Geo", "Region", "Geography"])
+@pytest.mark.parametrize("explicit_label", [False, True], ids=["entity", "display-dimension"])
+def test_geography_grouping_keeps_identity_unless_label_is_requested(
+    tmp_path, entity_label, explicit_label
+):
+    path = _package(tmp_path)
+    raw = yaml.safe_load(path.read_text())
+    raw["graph"]["entities"]["incident"]["label"] = entity_label
+    raw["models"]["incidents"]["dimensions"]["name"]["label"] = "Geo code"
+    raw["models"]["incidents"]["dimensions"]["incident_id"] = {
+        "as": KEY,
+        "kind": "id",
+        "label": "Geo id",
+    }
+    path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    term = "geo code" if explicit_label else entity_label.lower()
+    expected = [LABEL] if explicit_label else [KEY, LABEL]
+    columns = "incident_name" if explicit_label else "incident_id, incident_name"
+    expected_rows = [("Leak", 30)] if explicit_label else [(1, "Leak", 10), (2, "Leak", 20)]
+    runtime = Runtime.from_path(str(path))
+    try:
+        plan = plan_payload(runtime, intent=f"repair cost by {term}")
+        query = plan["best"]["query_ir"]
+        assert query["group_by"] == expected
+        rows = typed_rows(runtime.query(query))
+        with duckdb.connect(":memory:") as reference:
+            reference.execute(
+                "CREATE TABLE incidents AS SELECT * FROM read_csv_auto(?)",
+                [str(tmp_path / "data/incidents.csv")],
+            )
+            assert (
+                sorted(
+                    reference.execute(
+                        f"SELECT {columns}, SUM(repair_cost) FROM incidents GROUP BY {columns}"
+                    ).fetchall()
+                )
+                == expected_rows
+            )
+        measure_alias = query["select"][0]["as"]
+        assert sorted(tuple(row[key] for key in [*expected, measure_alias]) for row in rows) == (
+            expected_rows
+        )
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize("intent", ["revenue by store", "top stores by revenue"])
 def test_package_without_entity_labels_keeps_store_grouping(intent):
     config = load_package_config(resolve_repo_path("configs/semantic_rails/jaffle_shop"))

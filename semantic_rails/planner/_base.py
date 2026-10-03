@@ -1468,26 +1468,30 @@ def _maybe_group_by(
     terms = _runtime_composition_terms(text)
     target_set = {term for term in target_terms if term}
     group_by: list[tuple[str, str]] = []
-    # A package that declares entity labels resolves every store term like any other term, so
-    # each one keeps or drops the entity's identity on its own.
-    store_shortcut = not any(row.label_dimension for row in config.entities)
-    if terms & {"segment", "segments"} and ("customer" in terms or "historical" in terms):
+    # Packages with entity labels resolve every grouping term through dimension lookup and
+    # label expansion, without hard-coded grouping shortcuts.
+    shortcuts = not any(row.label_dimension for row in config.entities)
+    if (
+        shortcuts
+        and terms & {"segment", "segments"}
+        and ("customer" in terms or "historical" in terms)
+    ):
         dim = _object_by_id(config.dimensions, "dimension.jaffle_customer_history_segment")
         if dim is not None:
             group_by.append((dim.id, ""))
-    if store_shortcut and "store" in terms:
+    if shortcuts and "store" in terms:
         dim = _dimension(config, ["store", "name"])
         if dim is not None:
             group_by.append((dim.id, ""))
-    if any(term in lowered for term in ("geo", "geography", "region", "parent")):
+    if shortcuts and any(term in lowered for term in ("geo", "geography", "region", "parent")):
         dim = _dimension(config, ["geo"], prefer_parent="parent" in lowered)
         if dim is not None:
             group_by.append((dim.id, ""))
     for term in _requested_grouping_terms(text):
         term_tokens = set(_tokens(term))
         if (
-            "geo" in term_tokens
-            or (store_shortcut and "store" in term_tokens)
+            (shortcuts and "geo" in term_tokens)
+            or (shortcuts and "store" in term_tokens)
             or _is_temporal_grouping_term(term)
             or _names_time_axis(term, clock)
             or _term_matches_value_domain(config, term)
