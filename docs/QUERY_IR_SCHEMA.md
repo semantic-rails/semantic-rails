@@ -261,7 +261,7 @@ functions must use their semantic expression forms instead of `call`.
 `INVALID_EXPRESSION_AST` with `details.allowed` equal to the warehouse's
 accepted set, including `CAST`.
 
-Common names: `ABS`, `CAST`, `CEIL`, `CEILING`, `COALESCE`, `CONCAT`, `EXP`,
+Common names: `ABS`, `CAST`, `CEIL`, `CEILING`, `COALESCE`, `CONCAT`, `DATE_DIFF`, `EXP`,
 `FLOOR`, `LENGTH`, `LN`, `LOG`, `LOWER`, `NULLIF`, `POWER`, `REPLACE`, `ROUND`,
 `SQRT`, `SUBSTR`, `SUBSTRING`, `TRIM`, `UPPER`.
 
@@ -278,6 +278,46 @@ Common names: `ABS`, `CAST`, `CEIL`, `CEILING`, `COALESCE`, `CONCAT`, `EXP`,
 Use each warehouse's scalar argument signatures. For example, Athena `LOG`
 takes a base and a value. Engine-generated SQL has a separate function list;
 it does not advertise functions that a client can call.
+
+Portable date differences use exactly three args:
+
+```json
+{"kind":"call","name":"DATE_DIFF","args":[
+  {"kind":"literal","value":"day"},
+  {"kind":"column","column":"opened_at","entity":"entity.order"},
+  {"kind":"column","column":"closed_at","entity":"entity.order"}
+]}
+```
+
+The first arg must be a string literal unit: `minute`, `hour`, `day`, `week`,
+`month`, `quarter` or `year` (case-insensitive). The result is end minus start,
+counting calendar unit boundaries rather than elapsed durations. The `week`
+exception is the calendar day difference divided by seven, truncated toward
+zero; it does not count Sunday or Monday week boundaries.
+
+BigQuery converts both endpoints to `DATETIME` before taking the difference.
+For `TIMESTAMP` endpoints, calendar boundaries are counted in UTC, so
+23:00 on January 1 to 01:00 on January 3 returns two days, preserving NULLs.
+
+| Warehouse | Supported units | Refused units |
+| --- | --- | --- |
+| DuckDB, MotherDuck, DuckLake, Postgres, Databricks | `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year` | None |
+| Snowflake, BigQuery, ClickHouse | `minute`, `hour`, `day`, `month`, `quarter`, `year` | `week` |
+| Athena | None | `minute`, `hour`, `day`, `week`, `month`, `quarter`, `year` |
+
+Athena's native function counts complete elapsed units; Snowflake, BigQuery and
+ClickHouse count calendar week boundaries. Those calls return
+`INVALID_EXPRESSION_AST` with an unsupported-function message naming the
+warehouse and unit, including in `validate` mode and package loading.
+
+For supported calls, if either endpoint is NULL, the result is NULL and is
+excluded from averages, never replaced with zero. ClickHouse casts both endpoints
+to `Nullable(DateTime64(6))` so this holds even with `cast_keep_nullable=0`, while
+preserving pre-1970 dates: `1950-01-01` to `2024-01-01` is 74 years. The same
+shape works in query selects, package measure expressions and `aggregate_if`
+values. Wrong arity, non-literal units and unknown units return
+`INVALID_EXPRESSION_AST`, including in `validate` mode, with the required shape
+and recognized units.
 
 Numeric conversion uses exactly two args:
 
@@ -314,7 +354,7 @@ conditional aggregates and post-aggregation expressions.
 
 Scalar-call argument types and overload resolution are checked by the warehouse
 at execution, for query, package and relation-pipeline expressions alike.
-Compilation checks the allowed function name and CAST shape without inferring
+Compilation checks the allowed function name and CAST/DATE_DIFF shapes without inferring
 argument categories from literals, dimensions or nested calls. Use CAST when an
 explicit conversion is required. Warehouse execution failures use the stable
 `QUERY_EXECUTION_ERROR` code and remain redacted.

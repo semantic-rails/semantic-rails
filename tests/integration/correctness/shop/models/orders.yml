@@ -16,6 +16,12 @@ model:
       accumulation: {kind: flow}, rollup: additive}
     average_order: {label: Average order, kind: aggregate, expr: amount, default_agg: avg,
       value_type: currency}
+    average_days_to_close:
+      label: Average days to close
+      kind: aggregate
+      default_agg: avg
+      expr: {kind: call, name: DATE_DIFF, args: [{kind: literal, value: day},
+        {kind: column, column: ordered_at}, {kind: column, column: closed_at}]}
     smallest_order: {label: Smallest order, kind: aggregate, expr: amount, default_agg: min,
       value_type: currency}
     largest_order: {label: Largest order, kind: aggregate, expr: amount, default_agg: max,
