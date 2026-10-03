@@ -1,15 +1,17 @@
 """plan isn't ready when its draft leaves out a question word that names a catalog object.
 
 The invariant: every question word that names something in the catalog (a word of an object's
-id, name, label or aliases) is consumed by the draft, by the names of an object it uses, a filter
-value, a time phrase it read, or as a framing word. A description never consumes a word. A draft
-that leaves one over dropped a grouping or answers about another subject, so plan keeps it in
-``best`` and returns ``low_confidence``.
+label or aliases, or of the last dotted part of its id or name outside its own namespaces) is
+consumed by the draft: by the own words of an object it selects, a filter value, a time phrase it
+read, or as a framing word. A synonym, a typo, a namespace, a description or an object the draft
+doesn't select never consumes one. A draft that leaves one over dropped a grouping or answers
+about another subject, so plan keeps it in ``best`` and returns ``low_confidence``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -117,33 +119,86 @@ def test_a_dropped_grouping_is_not_ready(jaffle: Runtime) -> None:
     )
 
 
-@pytest.mark.parametrize(
-    ("name", "label", "intent", "grouping", "terms"),
-    [
-        ("states", "States", "revenue by states, status", "dimension.states", ["status"]),
-        ("sales", "", "revenue by store, sales", STORE, ["sales"]),
-    ],
-)
-def test_exact_catalog_names_survive_typos_and_other_objects_namespaces(
-    jaffle: Runtime, name: str, label: str, intent: str, grouping: str, terms: list[str]
-) -> None:
+@contextmanager
+def _with_store_dimensions(jaffle: Runtime, *dimensions: tuple[str, str, str]) -> Iterator[Runtime]:
+    """Jaffle with more Store dimensions, each (name, label, column), without aliases."""
+
     config = jaffle.config
     store = next(row for row in config.dimensions if row.id == STORE)
-    dimension = replace(
-        store, id=f"dimension.{name}", name=name, label=label, aliases=[], description=""
-    )
+    added = [
+        replace(
+            store,
+            id=f"dimension.{name}",
+            name=name,
+            label=label,
+            aliases=[],
+            description="",
+            column=column,
+        )
+        for name, label, column in dimensions
+    ]
     runtime = Runtime.from_config(
-        replace(config, dimensions=[*config.dimensions, dimension]), source_path=jaffle.source_path
+        replace(config, dimensions=[*config.dimensions, *added]), source_path=jaffle.source_path
     )
     try:
+        yield runtime
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("dimensions", "intent", "grouping", "terms"),
+    [
+        # "status" (Membership status) is one typo from "states".
+        (
+            [("states", "States", "store_name")],
+            "revenue by states, status",
+            "dimension.states",
+            ["status"],
+        ),
+        # "sales" is this dimension's whole name, and only a namespace elsewhere (metric.sales.*).
+        ([("sales", "", "store_name")], "revenue by store, sales", STORE, ["sales"]),
+        # The draft's own metric sits in that namespace: metric.sales.aov_usd, named
+        # jaffle.sales_aov_usd.
+        ([("sales", "", "store_id")], "aov by store, sales", STORE, ["sales"]),
+        # The planner reads "sent" as a synonym of "received"; here each names its own dimension.
+        (
+            [("received", "Received", "store_name"), ("sent", "Sent", "store_id")],
+            "revenue by received, sent",
+            "dimension.received",
+            ["sent"],
+        ),
+    ],
+)
+def test_one_catalog_name_never_consumes_another(
+    jaffle: Runtime,
+    dimensions: list[tuple[str, str, str]],
+    intent: str,
+    grouping: str,
+    terms: list[str],
+) -> None:
+    with _with_store_dimensions(jaffle, *dimensions) as runtime:
         payload = plan_payload(runtime, intent=intent)
 
         _not_ready(payload, terms)
         assert payload["best"]["query_ir"]["group_by"] == [grouping]
         assert payload["why"]["details"]["dropped_groupings"] == terms
         assert unconsumed_catalog_words(runtime, intent, payload["best"]["query_ir"]) == terms
-    finally:
-        runtime.close()
+
+
+def test_spelling_a_selected_id_uses_its_namespace_only_there(jaffle: Runtime) -> None:
+    aov_by_store = {
+        "version": 2,
+        "select": [{"as": "aov", "expression": {"metric": "metric.sales.aov_usd"}}],
+        "group_by": [STORE],
+    }
+    with _with_store_dimensions(jaffle, ("sales", "", "store_id")) as runtime:
+        intent = "metric.sales.aov_usd by store, sales"
+
+        assert unconsumed_catalog_words(runtime, intent, aov_by_store) == ["sales"]
+        assert (
+            unconsumed_catalog_words(runtime, "metric.sales.aov_usd by store", aov_by_store) == []
+        )
 
 
 @pytest.mark.parametrize(
@@ -153,6 +208,10 @@ def test_exact_catalog_names_survive_typos_and_other_objects_namespaces(
         ("revenue with cumulative", ["cumulative"]),
         # Revenue isn't the customer count.
         ("how many customers ordered in 2017", ["customers"]),
+        # Revenue's Order entity isn't an object the draft selects, so it consumes no word: not a
+        # dropped grouping by order, nor "orders", which names the Orders measure.
+        ("revenue by store, order", ["order"]),
+        ("revenue from orders", ["orders"]),
     ],
 )
 def test_a_word_naming_an_object_the_draft_does_not_use_is_not_ready(

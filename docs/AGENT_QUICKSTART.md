@@ -162,9 +162,11 @@ executing it.
 Statuses are:
 
 - `ok`: the best draft validated, no check found part of the question it leaves out, and every
-  number, clock or zone word, and word that names a catalog object (in an id, name, label or
-  alias; never only a description) in the question is used by the draft. `warnings` can still name
-  other question words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
+  number, clock or zone word, and word that names a catalog object (in a label or alias, or the
+  last dotted part of an id or name outside its namespaces; never only a description) in the
+  question is used by the draft: by an object it selects, a filter value or a time phrase, never
+  a synonym or a typo. `warnings` can still name other question words the draft doesn't use
+  (`PLAN_UNMATCHED_TERMS`).
 - `low_confidence`: a draft exists, but validation failed, the draft leaves out part of the
   question (`why` names it, for example `PLAN_INTENT_COVERAGE_GAP`, or `TIME_WINDOW_UNRESOLVED`,
   which returns no `query_ir`: pass the window, temporal role and grain in `query.time` and

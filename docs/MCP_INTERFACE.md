@@ -212,14 +212,22 @@ draft includes it.
 framing words (including verbs and function words such as "dated", "placed", "only", "using"),
 time phrases the planner read, and numbers the draft carries (a limit, a threshold, the
 window's year), come back as a `PLAN_UNMATCHED_TERMS` warning with up to eight of them in
-`details.terms`. The draft uses a word in the id, name, label or aliases of an object it uses (a
-measure's entity and time role included) or in a filter value; descriptions and topics never use a word.
-An exact catalog-name word takes precedence over typo matching. Only the last dotted part of
-an id or name counts as an object name; a namespace in another identifier cannot hide it.
-A word that names a catalog object the draft doesn't use is not a warning: it makes the plan
+`details.terms`. For the warning, the draft uses a word in the id, name, label or aliases of an
+object it uses (a measure's entity and time role included), allowing a plural or one typo, or in
+a filter value; descriptions and topics never use a word. A word that names a catalog object is
+held to a stricter rule, and one the draft doesn't consume is not a warning: it makes the plan
 `low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`, since the draft dropped a grouping
 ("by store, customer type and product type" grouped by store; `why.details.dropped_groupings`
-names it) or answers about another subject. Other words stay warnings; check them before executing.
+names it) or answers about another subject. A word names an object when it is a word of the
+object's label or aliases, or of the last dotted part of its id or name outside the object's own
+namespaces ("sales" in `metric.sales.aov_usd` names nothing); a plural counts as its singular.
+Only the draft consumes one: by the label, aliases, id or name of an object it selects (an id the
+question spells out whole consumes its namespaces too), a value it filters on or that value's
+declared names, a time phrase, or as a framing word. A synonym, a typo, a namespace, a
+description or an object the draft doesn't select (a measure's entity included) never does. So
+`plan` may hold back a right draft ("revenue from orders": Orders is a measure), but never calls
+one ready that drops a grouping the question names. Other words stay warnings; check them before
+executing.
 A number, or a clock or zone word, the draft doesn't carry is not a warning: it makes the plan
 `low_confidence` (below), since the draft dropped an hour, a range or a
 threshold. Two words or more that no catalog object has, the first straight after "for",
