@@ -220,7 +220,19 @@ def valid_values_payload(
         }
     if not allow_live_query:
         hint_message = _valid_values_lookup_hint(False)
+        call_arguments = {
+            "dimension_id": dimension_id,
+            "allow_live_query": True,
+            "query": query or {},
+            "search": search,
+            "limit": limit,
+            "offset": offset,
+            "include_counts": include_counts,
+        }
         return {
+            "ok": False,
+            "status": "needs_live_query",
+            "next_call": {"tool": "valid-values", "arguments": call_arguments},
             "dimension": dimension_id,
             "values": [],
             "total_count": 0,

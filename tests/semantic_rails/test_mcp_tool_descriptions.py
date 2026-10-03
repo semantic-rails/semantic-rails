@@ -98,8 +98,9 @@ def test_execute_description_shapes_and_empty_select_validate(runtime_factory):
     ):
         assert kind in execute_desc
     assert "ratio: per-order sum / order count" in execute_desc
-    assert "arithmetic adds measures" in execute_desc
-    assert "aggregate_if: conditional count" in execute_desc
+    assert "arithmetic composes scalar or aggregate expressions" in execute_desc
+    assert "aggregation: avg" in execute_desc
+    assert "{kind: call, name: date_diff, args: [...]}" in execute_desc
     assert "select may be empty: group_by alone lists rows" in execute_desc
     assert "a query that already ran needs no validate" in execute_desc
     from semantic_rails.mcp import SemanticLayerMCPAdapter

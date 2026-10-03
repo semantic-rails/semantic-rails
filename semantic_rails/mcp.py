@@ -32,6 +32,7 @@ from .diagnostics import (
     semantic_issue,
 )
 from .errors import SemanticLayerError
+from .mcp_query import normalize_arguments, normalize_query_spellings, normalize_routes
 from .mcp_session import MCPQuerySession
 from .metadata import (
     _slim_discover_minimal,
@@ -185,9 +186,9 @@ POLICY_CONTEXT_SCHEMA: dict[str, Any] = {
 }
 
 QUERY_SCHEMA: dict[str, Any] = {
-    "type": "object",
+    "type": ["object", "string"],
     "description": (
-        "Semantic Layer Query IR: select [{expression: {measure: '<id>'}, as: '<alias>'}], "
+        "Semantic Layer Query IR (object or JSON-encoded object): select [{expression: {measure: '<id>'}, as: '<alias>'}], "
         "group_by ['<dimension_id>'], where [{field: '<dimension_id>', op: '=', value: ...}]. "
         "Unknown keys rejected as "
         "INVALID_QUERY (offenders under details.unsupported_keys)."
@@ -619,19 +620,19 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="execute",
         description=(
-            "Run Query IR: plan's best.query_ir (call plan first) or your "
-            "fix of it. time.end is exclusive. Returns at most "
-            "max_rows rows; a capped one reports truncated and total_row_count. "
-            "'validate' checks; 'sql' adds rendered_sql; "
-            "neither runs. 'query' is a JSON object; 'run' costs "
-            "warehouse time. validate checks a query before it runs; a query that already ran "
-            "needs no validate. select may be empty: group_by alone lists rows. "
+            "Run plan's best.query_ir (call plan first). time.end is exclusive. "
+            "'validate' checks; 'sql' adds rendered_sql; neither runs. "
+            "query: object or JSON string; run queries the warehouse; "
+            "a query that already ran needs no validate. "
+            "select may be empty: group_by alone lists rows. "
             "IR: select[]={expression:{...},as}, group_by[]=[<dim>,...], "
             "where[]={field,op,value}, order_by[]={field,direction}. select.expression:\n"
             "{aggregation, measure} | {metric} | "
             "{kind: prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|arithmetic|...}\n"
             "ratio: per-order sum / order count.\n"
-            "arithmetic adds measures; aggregate_if: conditional count.\n"
+            "arithmetic composes scalar or aggregate expressions; aggregate_if aggregates "
+            "condition/value: {kind: aggregate_if, aggregation: avg, condition: {...}, "
+            "value: {kind: call, name: date_diff, args: [...]}}.\n"
             "Empty groups: 0 if data exists (observation_scope=query: in filters)."
         ),
         input_schema=_schema(
@@ -1879,7 +1880,12 @@ class SemanticLayerMCPAdapter:
         ``session`` enables advisory repeat hints for calls in that session.
         """
 
+        normalized: list[str] = []
+        args_dict: dict[str, Any] = {}
+
         def finish(response: dict[str, Any]) -> dict[str, Any]:
+            if normalized:
+                response["normalized"] = normalized
             if request_context is not None:
                 response["request_context"] = request_context_payload(request_context)
                 if request_context.request_id:
@@ -1889,7 +1895,7 @@ class SemanticLayerMCPAdapter:
             with contextlib.suppress(SemanticLayerError):
                 # Response shaping needs query/options only, never another identity resolution.
                 shaped_query = build_query_payload(
-                    arguments if isinstance(arguments, Mapping) else {},
+                    args_dict,
                     object_payload=_object_argument,
                     policy_context={},
                 )
@@ -1897,9 +1903,7 @@ class SemanticLayerMCPAdapter:
                     shaped_query["verbosity"] = MCP_DEFAULT_QUERY_VERBOSITY
             compact = resolve_verbosity(shaped_query) == "compact"
             sql_required = not (
-                name == "execute"
-                and isinstance(arguments, Mapping)
-                and str(arguments.get("mode") or "run").strip().lower() == "run"
+                name == "execute" and str(args_dict.get("mode") or "run").strip().lower() == "run"
             )
             response = _bound_response(
                 response,
@@ -1958,9 +1962,44 @@ class SemanticLayerMCPAdapter:
                     sanitized,
                 )
             )
+        try:
+            decoded, normalized = normalize_arguments(
+                arguments or {},
+                (_KNOWN_ARGS.get(name, frozenset()) - QUERY_INPUT_KEYS) | frozenset({"request_id"}),
+            )
+        except SemanticLayerError as exc:
+            sanitized = _arguments_with_trusted_context(
+                {}, request_context, inject_policy_context=policy_aware
+            )
+            return finish(self._error_response(exc, sanitized))
         args_dict = _arguments_with_trusted_context(
-            arguments, request_context, inject_policy_context=policy_aware
+            decoded, request_context, inject_policy_context=policy_aware
         )
+        try:
+            nested_query = isinstance(args_dict.get("query"), dict)
+            if nested_query or (name == "execute" and "query" not in args_dict):
+                query = normalize_query_spellings(
+                    args_dict["query"] if nested_query else args_dict, normalized
+                )
+                if nested_query:
+                    args_dict["query"] = query
+                else:
+                    args_dict = query
+                routes = query.get("route_decisions")
+                route_query = query
+                if isinstance(routes, list) and any(isinstance(row, str) for row in routes):
+                    route_query = _query_payload(
+                        _strip_execute_transport_args(
+                            {key: value for key, value in args_dict.items() if key != "mode"}
+                        )
+                        if name == "execute"
+                        else args_dict
+                    )
+                routed = normalize_routes(route_query, normalized, self.runtime.validate)
+                if "route_decisions" in routed:
+                    query["route_decisions"] = routed["route_decisions"]
+        except SemanticLayerError as exc:
+            return finish(self._error_response(exc, args_dict))
         handler = self._tool_handlers.get(name)
         available_tools = {tool["name"] for tool in self.list_tools()}
         if handler is None or name not in available_tools:
