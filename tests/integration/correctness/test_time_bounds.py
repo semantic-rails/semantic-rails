@@ -340,3 +340,56 @@ def test_converted_date_bounds_include_both_local_days(request, backend_name, va
     expected = backend.reference(reference)
     assert sorted(row[-1] for row in expected) == ([30] if shape == "total" else [10, 20])
     _assert_rows(expected, [tuple(r.values()) for r in typed_rows(result)], shape)
+
+
+@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
+@pytest.mark.parametrize(
+    "clock,measure", [("local_day", "local_amount"), ("source_day", "day_amount")]
+)
+def test_entity_only_predicate_window_refuses_timezone_conversion(
+    request, backend_name, clock, measure
+):
+    backend = _backend(request, backend_name)
+    role = f"temporal_role.shop_clock_edge_{clock}"
+    amount = {"measure": f"measure.shop.{measure}"}
+    query = {
+        "select": [_item(amount, "v")],
+        "time": {
+            "temporal_role": role,
+            "grain": "day",
+            "start": "2024-06-30",
+            "end": "2024-07-01T23:00:00",
+        },
+        "metric_filters": [
+            {
+                "expression": {
+                    "kind": "metric_predicate",
+                    "entity": "entity.shop_clock_edge",
+                    "input": amount,
+                    "scope_mode": "entity_only",
+                    "time_alignment": "query_window",
+                    "op": ">=",
+                    "value": 1,
+                },
+                "op": "=",
+                "value": True,
+            }
+        ],
+    }
+    runtime = backend.runtimes["utc_implicit"]
+    if clock == "local_day":
+        with pytest.raises(SemanticLayerError) as caught:
+            runtime.query(query)
+        assert caught.value.code == "WINDOWED_TIME_FILTER_UNSUPPORTED"
+        assert role in str(caught.value)
+        assert caught.value.details["temporal_role"] == role
+    else:
+        result = runtime.query(query)
+        expected = backend.reference(
+            "SELECT CAST(source_day AS TIMESTAMP), SUM(amount) FROM clock_edges "
+            "WHERE source_day >= DATE '2024-06-30' AND source_day <= DATE '2024-07-01' GROUP BY 1"
+        )
+        assert len(expected) == 1
+        assert expected[0][0].date() == date(2024, 7, 1)
+        assert expected[0][1] == 10
+        _assert_rows(expected, [tuple(r.values()) for r in typed_rows(result)], clock)

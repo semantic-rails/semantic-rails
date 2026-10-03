@@ -2445,10 +2445,23 @@ def _predicate_scope(
 
 
 def _predicate_window_filters(time: dict[str, Any], config: PackageConfig) -> list[dict[str, Any]]:
-    """A predicate's ungrained window uses the same bounds as every source scan."""
+    """Build raw-column window filters only for roles without timezone conversion."""
     from .compiler_parts.sql_lowering import _source_time_window
 
     role = _temporal_role_index(config)[str(time["temporal_role"])]
+    column_tz = str(role.column_timezone or "").strip()
+    target_tz = str(role.timezone or "").strip()
+    if column_tz and target_tz and column_tz != target_tz:
+        raise SemanticLayerError(
+            "WINDOWED_TIME_FILTER_UNSUPPORTED",
+            f"Entity-only predicate time windows do not support timezone conversion for "
+            f"temporal role '{role.id}'; use an unconverted role.",
+            details={
+                "temporal_role": role.id,
+                "column_timezone": column_tz,
+                "timezone": target_tz,
+            },
+        )
     column = SqlIdentifier(parts=[role.dimension])
     filters = []
     for bound in _source_time_window(column, time, config):
