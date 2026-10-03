@@ -256,8 +256,8 @@ def test_a_conditional_aggregate_condition_is_never_an_allowed_field(config, mon
 
 
 @pytest.mark.parametrize("placement", ["select", "metric_filter"])
-def test_an_inline_filter_on_an_ungoverned_sibling_is_its_own(config, placement):
-    """A filter on another measure's leaf does not cut the governed measure."""
+def test_an_inline_filter_on_a_sibling_counts_when_query_wide(config, monkeypatch, placement):
+    """A select sibling keeps its own cut; metric_filters govern the whole query."""
     filtered_orders = {"kind": "aggregate", "measure": ORDERS, "filter": {"all": [RETURNING]}}
     query = _select({"measure": REVENUE})
     if placement == "select":
@@ -267,10 +267,82 @@ def test_an_inline_filter_on_an_ungoverned_sibling_is_its_own(config, placement)
     query["group_by"] = [STORE_NAME]
     engine = _constrained(config, {"allowed_where": [STORE_NAME]}, REVENUE)
     try:
+        if placement == "metric_filter":
+            violations = _assert_denied_before_output(engine, monkeypatch, query)
+            assert violations == [
+                {
+                    "kind": "disallowed_where",
+                    "disallowed": [CUSTOMER_TYPE],
+                    "allowed": [STORE_NAME],
+                    "source": "inline_expression",
+                }
+            ]
+            return
         result = engine.validate(query)
         assert result["ok"], result["errors"]
     finally:
         engine.close()
+
+
+FILTERED_ORDERS = {"kind": "aggregate", "measure": ORDERS, "filter": {"all": [RETURNING]}}
+RETURNING_CUSTOMER = {
+    "kind": "metric_predicate",
+    "entity": CUSTOMER,
+    "input": FILTERED_ORDERS,
+    "scope_mode": "entity_only",
+    "op": ">",
+    "value": 0,
+}
+WHOLE_QUERY_FILTERS = {
+    "aggregate_predicate": _select(
+        {
+            "kind": "aggregate",
+            "measure": REVENUE,
+            "filter": {"all": [{"expression": RETURNING_CUSTOMER}]},
+        }
+    ),
+    "scoped_predicate": _select(
+        {"kind": "scoped_aggregate", "measure": REVENUE, "predicates": [RETURNING_CUSTOMER]}
+    ),
+    "metric_filter_predicate": _select(
+        {"measure": REVENUE},
+        metric_filters=[{"expression": RETURNING_CUSTOMER, "op": ">", "value": 0}],
+    ),
+    "conversion_base": _select(
+        {
+            "kind": "conversion",
+            "base": {
+                "kind": "aggregate",
+                "measure": "measure.jaffle.session_starts",
+                "filter": {"all": [RETURNING]},
+            },
+            "converted": {"measure": ORDERS},
+            "entity": CUSTOMER,
+            "window": {"unit": "day", "value": 28},
+            "matching_mode": "first_converted_after_base",
+        }
+    ),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(WHOLE_QUERY_FILTERS))
+def test_nested_filter_counts_for_the_governed_outer_measure(config, monkeypatch, shape):
+    query = WHOLE_QUERY_FILTERS[shape]
+    assert compiler.compile_query(config, None, query)["sql"]
+    governed = ORDERS if shape == "conversion_base" else REVENUE
+    engine = _constrained(config, {"allowed_where": [STORE_NAME]}, governed)
+    try:
+        violations = _assert_denied_before_output(engine, monkeypatch, query)
+    finally:
+        engine.close()
+    assert violations == [
+        {
+            "kind": "disallowed_where",
+            "disallowed": [CUSTOMER_TYPE],
+            "allowed": [STORE_NAME],
+            "source": "inline_expression",
+        }
+    ]
 
 
 def test_an_inline_filter_on_an_allowed_field_still_answers(tmp_path):
