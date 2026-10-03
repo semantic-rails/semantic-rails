@@ -690,15 +690,15 @@ def _validate_non_additive_sums(
             continue
         aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
         key = list(measure.row_grain or []) or list(_entity_index(config)[measure.entity].key or [])
-        if aggregation not in {"sum", "last_value", "first_value"}:
-            continue
         if measure.lookup_from:
             # One carried total per output row: its via foreign key, or its own row, is fixed.
             single_valued = _single_valued_columns(measure, bound, query, config)
             via_key = lookup_links(measure, config)[0]
             via_columns = via_key.source_columns or [via_key.source_column]
             if not (set(via_columns) <= single_valued or set(key) <= single_valued):
-                _raise_unproven_lookup(measure, via_columns, config)
+                _raise_non_additive_sum(measure, "parent_lookup", via_columns, config)
+            continue
+        if aggregation not in {"sum", "last_value", "first_value"}:
             continue
         required = key
         if measure.measure_class == "semi_additive":
@@ -736,7 +736,17 @@ def _raise_non_additive_sum(
         for dimension in config.dimensions
         if dimension.entity == measure.entity and dimension.column in missing
     ]
-    if missing:
+    if missing and measure.lookup_from:
+        dimensions = _entity_key_dimension_ids(measure.lookup_via, config)
+        hint = (
+            f"Group by, or filter with = to one value, the key of '{measure.lookup_via}' (the "
+            "lookup's via), or each column of the measure's own key."
+        )
+        message = (
+            f"Measure '{measure.id}' carries one total per '{measure.lookup_via}' onto each of "
+            f"its rows, and this query would add more than one of them into an output row. {hint}"
+        )
+    elif missing:
         key = "series key" if measure.measure_class == "semi_additive" else "key"
         statistics = [
             name for name in ("avg", "min", "max", "median") if name in measure.allowed_aggregations
@@ -766,27 +776,6 @@ def _raise_non_additive_sum(
         },
         columns=missing,
         dimensions=dimensions,
-    )
-
-
-def _raise_unproven_lookup(
-    measure: MeasureConfig, columns: list[str], config: PackageConfig
-) -> None:
-    hint = (
-        f"Group by, or filter with = to one value, the key of '{measure.lookup_via}' (the "
-        "lookup's via), or each column of the measure's own key."
-    )
-    raise NonAdditiveRefusal(
-        f"Measure '{measure.id}' carries one total per '{measure.lookup_via}' onto each of its "
-        f"rows, and this query would add more than one of those totals into an output row. {hint}",
-        details={
-            "measure_id": measure.id,
-            "unsupported_construct": "non_additive_sum",
-            "construct": "parent_lookup",
-            "recovery_hints": [{"kind": "stay_at_stored_grain", "message": hint}],
-        },
-        columns=columns,
-        dimensions=_entity_key_dimension_ids(measure.lookup_via, config),
     )
 
 
