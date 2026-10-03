@@ -169,7 +169,7 @@ def test_error_envelopes_are_minimal_by_default(runtime_factory, mode: str) -> N
         envelope = adapter.call_tool("execute", {"query": bad_query, "mode": mode})
         assert envelope["ok"] is False
         assert envelope.get("errors"), "structured errors must survive minimal gating"
-        assert envelope.get("recovery_hints"), (
+        assert envelope["errors"][0].get("recovery_hints"), (
             "recovery_hints must survive minimal gating — that is the loop-repair signal"
         )
         for key in _HEAVY_KEYS:

@@ -14,6 +14,7 @@ Two contracts:
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -59,14 +60,7 @@ def _trigger_unknown_mcp_tool(adapter: SemanticLayerMCPAdapter) -> dict[str, Any
 
 
 def _trigger_unknown_mcp_prompt(adapter: SemanticLayerMCPAdapter) -> dict[str, Any]:
-    # get_prompt returns a structured envelope directly (not raise) when
-    # the prompt is unknown. Normalize into the audit's expected shape.
-    result = adapter.get_prompt("nonexistent_prompt", {})
-    if "recovery_hints" not in result:
-        # Errors list is populated from `error.recovery_hints`.
-        error = dict(result.get("error", {}) or {})
-        result["recovery_hints"] = list(error.get("recovery_hints", []) or [])
-    return result
+    return adapter.get_prompt("nonexistent_prompt", {})
 
 
 def _trigger_unknown_mcp_resource(adapter: SemanticLayerMCPAdapter) -> dict[str, Any]:
@@ -80,9 +74,6 @@ def _trigger_unknown_mcp_resource(adapter: SemanticLayerMCPAdapter) -> dict[str,
     if not text:
         return {"ok": False, "errors": [], "recovery_hints": []}
     parsed = dict(json.loads(text) or {})
-    if "recovery_hints" not in parsed:
-        error = dict(parsed.get("error", {}) or {})
-        parsed["recovery_hints"] = list(error.get("recovery_hints", []) or [])
     return parsed
 
 
@@ -115,6 +106,13 @@ def test_mcp_advertised_error_codes_produce_structured_envelopes(runtime_factory
         # as a different code if the registry shape changes).
         first = errors[0]
         _assert_envelope_shape(first)
+        assert result["error"] == {key: first[key] for key in ("code", "message")}
+        assert "recovery_hints" not in result
+        serialized = json.dumps(result)
+        for issue in errors:
+            assert "recovery_hints" not in issue.get("details", {})
+            for hint in issue["recovery_hints"]:
+                assert serialized.count(json.dumps(hint["message"])) == 1
         if code in {"OBJECT_NOT_FOUND", "INVALID_MCP_ARGUMENTS", "UNKNOWN_MCP_TOOL"}:
             assert first["code"] == code, (
                 f"expected code={code}, got {first['code']}: {first.get('message')}"
@@ -150,7 +148,7 @@ def test_mcp_handler_bare_exception_surfaces_as_internal_error(runtime_factory) 
         first = errors[0]
         assert first["code"] == "INTERNAL_ERROR"
         assert "KeyError" in first["message"]
-        hints = list(result.get("recovery_hints", []) or [])
+        hints = list(first.get("recovery_hints", []) or [])
         assert hints, "INTERNAL_ERROR envelope must carry recovery_hints"
         # Hint must point at the bug tracker so the surface is at
         # least actionable.
@@ -198,7 +196,7 @@ def test_mcp_jsonrpc_bare_exception_surfaces_as_structured_envelope(runtime_fact
         assert errors
         first = errors[0]
         assert first["code"] == "INTERNAL_ERROR"
-        hints = list(structured.get("recovery_hints", []) or [])
+        hints = list(first.get("recovery_hints", []) or [])
         assert hints
     finally:
         runtime.close()

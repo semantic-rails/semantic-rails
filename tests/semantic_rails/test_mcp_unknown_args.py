@@ -79,7 +79,7 @@ def _expect_warn_or_reject_for_bogus_key(
     if tool_name in _STRICT_REJECT_TOOLS:
         assert out["ok"] is False
         assert out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-        details = out["error"].get("details", {}) or {}
+        details = out["errors"][0].get("details", {}) or {}
         unknown = details.get("unknown_keys") or []
         assert bogus_key in unknown, (
             f"{tool_name}: expected {bogus_key!r} in unknown_keys, got {unknown}"
@@ -132,7 +132,7 @@ def test_known_typo_returns_closest_match(runtime_factory, tool_name: str) -> No
         adapter.close()
     if tool_name in _STRICT_REJECT_TOOLS:
         assert out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-        closest = (out["error"].get("details") or {}).get("closest_matches") or []
+        closest = (out["errors"][0].get("details") or {}).get("closest_matches") or []
         assert expected_match in closest, (
             f"{tool_name}: expected {expected_match!r} in closest_matches, got {closest}"
         )

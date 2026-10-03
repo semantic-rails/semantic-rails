@@ -850,7 +850,7 @@ def test_mcp_execute_with_string_query_returns_wrap_query_hint(runtime_factory, 
         adapter.close()
     assert out["ok"] is False
     assert out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-    hints = out["recovery_hints"]
+    hints = out["errors"][0]["recovery_hints"]
     assert hints, "recovery_hints must be non-empty for INVALID_MCP_ARGUMENTS"
     assert any(h.get("kind") == "wrap_query_as_object" for h in hints)
     wrap_hint = next(h for h in hints if h.get("kind") == "wrap_query_as_object")
@@ -866,7 +866,7 @@ def test_mcp_discover_with_bad_limit_returns_integer_hint(runtime_factory):
     finally:
         adapter.close()
     assert out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-    hints = out["recovery_hints"]
+    hints = out["errors"][0]["recovery_hints"]
     assert hints
     assert any(h.get("kind") == "use_integer" for h in hints)
     assert any("limit" in h["message"] for h in hints)
@@ -880,7 +880,7 @@ def test_mcp_discover_with_object_kinds_returns_array_hint(runtime_factory):
     finally:
         adapter.close()
     assert out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-    hints = out["recovery_hints"]
+    hints = out["errors"][0]["recovery_hints"]
     assert hints
     assert any(h.get("kind") == "use_string_or_array" for h in hints)
 
@@ -893,7 +893,7 @@ def test_mcp_unknown_tool_returns_available_tool_hint(runtime_factory):
     finally:
         adapter.close()
     assert out["error"]["code"] == "UNKNOWN_MCP_TOOL"
-    hints = out["recovery_hints"]
+    hints = out["errors"][0]["recovery_hints"]
     assert hints
     hint = hints[0]
     assert hint["kind"] == "use_available_tool"
@@ -909,7 +909,7 @@ def test_mcp_unknown_prompt_returns_available_prompt_hint(runtime_factory):
     finally:
         adapter.close()
     assert out["error"]["code"] == "UNKNOWN_MCP_PROMPT"
-    hints = out["error"]["recovery_hints"]
+    hints = out["errors"][0]["recovery_hints"]
     assert hints
     assert hints[0]["kind"] == "use_available_prompt"
     assert hints[0]["available_prompts"]
@@ -924,7 +924,7 @@ def test_mcp_unknown_resource_returns_available_resource_hint(runtime_factory):
         adapter.close()
     payload = out["payload"]
     assert payload["error"]["code"] == "UNKNOWN_MCP_RESOURCE"
-    hints = payload["error"]["recovery_hints"]
+    hints = payload["errors"][0]["recovery_hints"]
     assert hints
     assert hints[0]["kind"] == "use_available_resource"
     assert hints[0]["available_resources"]
@@ -999,7 +999,8 @@ def test_mcp_jsonrpc_error_envelope_populates_top_level_closest_valid_query(runt
         adapter.close()
     structured = result["result"]["structuredContent"]
     assert any(
-        dict(h.get("closest_valid_query", {}) or {}) for h in structured.get("recovery_hints", [])
+        dict(h.get("closest_valid_query", {}) or {})
+        for h in structured["errors"][0].get("recovery_hints", [])
     ), "expected at least one hint to carry a closest_valid_query template"
 
 

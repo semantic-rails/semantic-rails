@@ -140,15 +140,15 @@ def test_invalid_kinds_are_refused_not_searched(
     out = adapter.call_tool("discover", {"terms": terms, "kinds": kinds})
     assert out["ok"] is False
     assert out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-    assert out["error"]["details"]["field"] == "kinds"
+    assert out["errors"][0]["details"]["field"] == "kinds"
     assert NO_MATCH not in str(out)
     assert not _ids(out)
 
 
 def test_refusal_names_the_valid_kinds(adapter: SemanticLayerMCPAdapter) -> None:
     out = adapter.call_tool("discover", {"terms": "revenue", "kinds": ["metirc"]})
-    assert out["error"]["details"]["unknown_kinds"] == ["metirc"]
-    assert out["error"]["details"]["valid_kinds"] == sorted(DISCOVER_RANKED_KINDS)
+    assert out["errors"][0]["details"]["unknown_kinds"] == ["metirc"]
+    assert out["errors"][0]["details"]["valid_kinds"] == sorted(DISCOVER_RANKED_KINDS)
 
 
 def test_misspelled_kind_argument_never_claims_a_closed_world(
@@ -216,20 +216,20 @@ def test_refusal_hint_for_an_unknown_kind_names_the_valid_kinds(
     adapter: SemanticLayerMCPAdapter,
 ) -> None:
     out = adapter.call_tool("discover", {"terms": "revenue", "kinds": ["metirc"]})
-    hints = out["recovery_hints"]
+    hints = out["errors"][0]["recovery_hints"]
     (hint,) = [h for h in hints if h["kind"] == "use_valid_kind"]
     assert "['metirc']" in hint["message"]
     assert all(kind in hint["message"] for kind in DISCOVER_RANKED_KINDS)
     assert hint["details"]["valid_kinds"] == sorted(DISCOVER_RANKED_KINDS)
     assert not [h for h in hints if h["kind"] == "use_string_or_array"]
-    assert "argument_type" not in out["error"]["details"]
+    assert "argument_type" not in out["errors"][0]["details"]
 
 
 def test_refusal_hint_for_a_malformed_kinds_value_still_teaches_the_encodings(
     adapter: SemanticLayerMCPAdapter,
 ) -> None:
     out = adapter.call_tool("discover", {"terms": "revenue", "kinds": {"oops": True}})
-    hints = out["recovery_hints"]
+    hints = out["errors"][0]["recovery_hints"]
     (hint,) = [h for h in hints if h["kind"] == "use_string_or_array"]
     assert "JSON array in a string" in hint["message"]
     assert not [h for h in hints if h["kind"] == "use_valid_kind"]
@@ -311,7 +311,7 @@ def test_resource_grant_mode_mcp_refusal_keeps_its_recovery_hint(
         "discover", {"terms": "revenue", "kinds": kinds, "policy_context": _granted(runtime)}
     )
     assert out["ok"] is False and out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-    (hint,) = [h for h in out["recovery_hints"] if h["kind"] == "use_valid_kind"]
+    (hint,) = [h for h in out["errors"][0]["recovery_hints"] if h["kind"] == "use_valid_kind"]
     assert hint["details"]["valid_kinds"] == sorted(GRANT_DISCOVER_KINDS)
     assert NO_MATCH not in str(out)
     # Following the hint must work on the same transport: no hint names a refused kind.
@@ -353,7 +353,8 @@ def test_resource_grant_mode_refuses_a_ranked_kind_the_grant_cannot_produce(
 ) -> None:
     out = _grant_discover(runtime, adapter, transport, ["measure"])
     assert out["ok"] is False and out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-    assert out["error"]["details"]["valid_kinds"] == sorted(GRANT_DISCOVER_KINDS)
+    issue = out["errors"][0] if transport == "mcp" else out["error"]
+    assert issue["details"]["valid_kinds"] == sorted(GRANT_DISCOVER_KINDS)
 
 
 def test_grant_catalog_keeps_its_shape(runtime: Any) -> None:
@@ -384,9 +385,10 @@ def test_resource_grant_mode_listing_refuses_a_kind_it_cannot_produce(
         "discover", {"terms": "", "kinds": kinds, "policy_context": _granted(runtime)}
     )
     assert out["ok"] is False and out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-    assert out["error"]["details"]["valid_kinds"] == sorted(GRANT_DISCOVER_KINDS)
+    issue = out["errors"][0]
+    assert issue["details"]["valid_kinds"] == sorted(GRANT_DISCOVER_KINDS)
     assert "catalog" not in out
-    (hint,) = [h for h in out["recovery_hints"] if h["kind"] == "use_valid_kind"]
+    (hint,) = [h for h in out["errors"][0]["recovery_hints"] if h["kind"] == "use_valid_kind"]
     assert hint["details"]["valid_kinds"] == sorted(GRANT_DISCOVER_KINDS)
     # Following the hint on the same call shape lists that kind's ids.
     for kind in hint["details"]["valid_kinds"]:
@@ -402,7 +404,7 @@ def test_listing_hint_outside_grant_mode_names_only_kinds_it_can_list(
 ) -> None:
     out = adapter.call_tool("discover", {"terms": "", "kinds": ["bogus"]})
     assert out["ok"] is False and out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-    (hint,) = [h for h in out["recovery_hints"] if h["kind"] == "use_valid_kind"]
+    (hint,) = [h for h in out["errors"][0]["recovery_hints"] if h["kind"] == "use_valid_kind"]
     for kind in hint["details"]["valid_kinds"]:
         followed = adapter.call_tool("discover", {"terms": "", "kinds": [kind]})
         assert followed["ok"] is True and f"{kind}_ids" in followed["catalog"], kind
