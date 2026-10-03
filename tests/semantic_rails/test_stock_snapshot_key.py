@@ -333,7 +333,6 @@ def test_a_series_holding_an_as_of_clock_refuses(
     if isinstance(answers[ROLE], list):
         # The warning names the clock that answers.
         assert all(ROLE in row["message"] for row in flagged)
-    runtime.close()
 
 
 def test_an_event_clock_in_the_key_still_identifies_a_series(tmp_path: Path) -> None:

@@ -1,22 +1,15 @@
 """One immutable seed per pytest worker, including direct conftest imports."""
 
-from __future__ import annotations
-
-import hashlib
 import os
 import stat
 from pathlib import Path
 
 from semantic_rails.config import load_package_config, resolve_repo_path
 from semantic_rails.db import build_seed_database
+from tests.semantic_rails.dbt_warehouse import file_digest
 
 _root: Path | None = None
-_seeds: dict[str, tuple[Path, int, bytes]] = {}
-
-
-def _digest(path: Path) -> bytes:
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").digest()
+_seeds: dict[str, tuple[Path, int, str]] = {}
 
 
 def start(basetemp: Path) -> None:
@@ -45,7 +38,7 @@ def seed_for(package_id: str) -> Path | None:
             os.replace(tmp, path)
         finally:
             Path(tmp).unlink(missing_ok=True)
-        _seeds[package_id] = (path, path.stat().st_ino, _digest(path))
+        _seeds[package_id] = (path, path.stat().st_ino, file_digest(path))
     return _seeds[package_id][0]
 
 
@@ -56,7 +49,7 @@ def verify() -> None:
             unchanged = (
                 info.st_ino == inode
                 and stat.S_IMODE(info.st_mode) == 0o444
-                and _digest(path) == digest
+                and file_digest(path) == digest
             )
         except OSError:
             unchanged = False

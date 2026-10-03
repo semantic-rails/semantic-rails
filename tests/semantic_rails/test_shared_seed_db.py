@@ -65,14 +65,13 @@ def test_verify_detects_changed_seed(tmp_path, monkeypatch, change):
     path.write_bytes(b"seed")
     path.chmod(0o444)
     monkeypatch.setattr(
-        shared_seed, "_seeds", {"test": (path, path.stat().st_ino, shared_seed._digest(path))}
+        shared_seed, "_seeds", {"test": (path, path.stat().st_ino, file_digest(path))}
     )
     shared_seed.verify()
     if change == "inode":
-        replacement = tmp_path / "replacement"
-        replacement.write_bytes(b"seed")
-        replacement.chmod(0o444)
-        os.replace(replacement, path)
+        path.rename(tmp_path / "old")
+        path.write_bytes(b"seed")
+        path.chmod(0o444)
     else:
         path.chmod(0o644)
         if change == "hash":
@@ -82,7 +81,10 @@ def test_verify_detects_changed_seed(tmp_path, monkeypatch, change):
         shared_seed.verify()
 
 
-def test_no_preseed_outside_pytest(tmp_path, monkeypatch):
+def test_optional_preseed_and_unique_temps(tmp_path, tmp_path_factory, monkeypatch):
+    path = tmp_path_factory.mktemp("reuse")
+    path.rmdir()
+    assert tmp_path_factory.mktemp("reuse") != path
     monkeypatch.setattr(shared_seed, "_root", None)
     package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
     assert not (package / "jaffle_shop.duckdb").exists()
