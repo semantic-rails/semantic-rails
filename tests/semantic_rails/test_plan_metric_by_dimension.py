@@ -10,12 +10,14 @@ intent shape. It must:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
 from semantic_rails.expressions import AggregateExpr, ColumnRefExpr
 from semantic_rails.planner import compose
+from semantic_rails.planner.generators import _choose_group_dimensions
 from semantic_rails.schema import (
     DimensionConfig,
     EntityConfig,
@@ -209,3 +211,41 @@ def test_top_n_group_by_phrase_uses_after_by_as_measure_target() -> None:
     assert query["limit"] == 5
     assert result.intent_ir.subjects[0].id == "measure.claim_paid_amount"
     assert "five" not in result.intent_ir.unresolved
+
+
+@pytest.mark.parametrize(
+    ("singular", "plural"),
+    [
+        ("product type", "product types"),
+        ("category", "categories"),
+        ("address", "addresses"),
+        ("status", "statuses"),
+    ],
+)
+def test_regular_plural_groupings_resolve_the_singular_dimension(singular, plural) -> None:
+    dimension = DimensionConfig(
+        id="dimension.claim." + singular.replace(" ", "_"),
+        entity="entity.claim",
+        column=singular.replace(" ", "_"),
+        data_type="string",
+        label=singular.title(),
+    )
+    config = _claims_config()
+    config = replace(config, dimensions=[*config.dimensions, dimension])
+    runtime = SimpleNamespace(_config=config)
+    for grouping in (singular, plural):
+        intent = f"claim paid amount by {grouping}"
+        result = compose(runtime, intent)
+        assert result.draft is not None
+        assert result.draft.query["group_by"] == [dimension.id]
+
+
+def test_fallback_singular_and_plural_groupings_resolve_the_same_dimension(runtime_factory) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        for grouping in ("product type", "product types"):
+            assert _choose_group_dimensions(runtime, {}, f"item revenue by {grouping}") == [
+                "dimension.jaffle_product_type"
+            ]
+    finally:
+        runtime.close()

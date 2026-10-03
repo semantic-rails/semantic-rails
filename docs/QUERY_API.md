@@ -1036,6 +1036,12 @@ filter: `=` for one value and `in` for several. This yields one total or one
 combined ranking; no grouping is added for those values. A per-value breakdown
 needs an explicit grouping in the question (for example, "by store") or the
 caller's `group_by`.
+Singular and regular plural grouping names resolve to the same dimension when
+the singular form is in the catalog. For example, "top 3 product types by item
+revenue for Brooklyn and Philadelphia" groups by product type and uses both
+stores in one membership filter. Catalog fallback reuses a caller grouping
+that already covers the requested dimension instead of appending another
+grouping for the same phrase.
 Caller filter rows stay as written, in their original order, with only string
 field IDs stripped of surrounding whitespace. Their operators and values are
 preserved, and generated rows are appended unless identical rows already exist.

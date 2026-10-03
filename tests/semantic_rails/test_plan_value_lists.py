@@ -10,7 +10,11 @@ import duckdb
 import pytest
 
 from semantic_rails.planner import compose, plan_payload
-from semantic_rails.planner.generators import _draft_for_choice, _normalize_value_filters
+from semantic_rails.planner.generators import (
+    _draft_for_choice,
+    _matched_value_rows,
+    _normalize_value_filters,
+)
 from semantic_rails.planner.plan import _merge_partial_query
 
 STORE = "dimension.jaffle_store_name"
@@ -369,20 +373,53 @@ def test_unrelated_caller_inclusions_are_preserved_and_refused(
     assert "execute" not in payload["next"].get("ready_for", [])
 
 
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("grouping", ["product type", "product types"])
+@pytest.mark.parametrize("separator", ["from", "and"])
 def test_ranked_named_values_execute_one_combined_top_three(
-    runtime_factory,
+    runtime_factory, monkeypatch, path, grouping, separator
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
-    intent = "top 3 product type by item revenue for Brooklyn from Philadelphia"
+    intent = f"top 3 {grouping} by item revenue for Brooklyn {separator} Philadelphia"
+    partial = (
+        {
+            "select": [
+                {
+                    "as": "item_revenue_usd",
+                    "expression": {"measure": CHOICE["id"], "aggregation": "sum"},
+                }
+            ],
+            "group_by": [PRODUCT_TYPE],
+            "order_by": [{"field": "item_revenue_usd", "direction": "DESC"}],
+            "limit": 3,
+        }
+        if path == "fallback"
+        else None
+    )
+    before = deepcopy(partial)
+    _force_fallback(runtime, monkeypatch, intent, path)
     try:
-        payload = plan_payload(runtime, intent=intent)
+        payload = plan_payload(runtime, intent=intent, partial_query=partial)
+        assert partial == before
         assert payload["status"] == "ok", payload.get("why")
+        assert "execute" in payload["next"].get("ready_for", [])
         query = payload["best"]["query_ir"]
-        assert query["group_by"] == [PRODUCT_TYPE]
-        assert query["limit"] == 3
-        filters = _keeping(query, STORE)
-        assert len(filters) == 1 and filters[0]["op"] == "in"
-        assert set(filters[0]["value"]) == {"Brooklyn", "Philadelphia"}
+        assert {
+            **query,
+            "where": [{**row, "value": sorted(row["value"])} for row in query["where"]],
+        } == {
+            "version": 1 if path == "fallback" else 2,
+            "select": [
+                {
+                    "as": "item_revenue_usd",
+                    "expression": {"measure": CHOICE["id"], "aggregation": "sum"},
+                }
+            ],
+            "group_by": [PRODUCT_TYPE],
+            "order_by": [{"field": "item_revenue_usd", "direction": "DESC"}],
+            "limit": 3,
+            "where": [{"field": STORE, "op": "in", "value": ["Brooklyn", "Philadelphia"]}],
+        }
         rows = runtime.query(query)["rows"]
         actual = [(row[PRODUCT_TYPE], row["item_revenue_usd"]) for row in rows]
         runtime.close()
@@ -398,65 +435,6 @@ def test_ranked_named_values_execute_one_combined_top_three(
         assert [value for _, value in actual] == pytest.approx([value for _, value in expected])
     finally:
         runtime.close()
-
-
-@pytest.mark.parametrize(
-    ("path", "intent", "expected_values"),
-    [
-        pytest.param(
-            "primary",
-            "top 3 product types by item revenue for Brooklyn and Philadelphia",
-            "Brooklyn",
-            id="unresolved-plural-grouping",
-        ),
-        pytest.param(
-            "fallback",
-            "top 3 product types by item revenue for Brooklyn and Philadelphia",
-            "Brooklyn",
-            id="unresolved-compound-values",
-        ),
-    ],
-)
-def test_ranked_value_lists_refuse_unresolved_intent_without_widening_filters(
-    runtime_factory, monkeypatch, path, intent, expected_values
-) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    partial = None
-    if path == "fallback":
-        partial = {
-            "select": [
-                {
-                    "as": "item_revenue_usd",
-                    "expression": {"measure": CHOICE["id"], "aggregation": "sum"},
-                }
-            ],
-            "group_by": [PRODUCT_TYPE],
-            "order_by": [{"field": "item_revenue_usd", "direction": "DESC"}],
-            "limit": 3,
-        }
-    _force_fallback(runtime, monkeypatch, intent, path)
-    try:
-        payload = plan_payload(runtime, intent=intent, partial_query=partial)
-    finally:
-        runtime.close()
-    query = payload["best"]["query_ir"]
-    assert query["limit"] == 3
-    assert STORE not in query["group_by"]
-    assert len(query["where"]) == 1
-    row = query["where"][0]
-    assert row["field"] == STORE
-    if isinstance(expected_values, list):
-        assert row["op"] == "in"
-        assert len(row["value"]) == len(expected_values)
-        assert set(row["value"]) == set(expected_values)
-    else:
-        assert row == {"field": STORE, "op": "=", "value": expected_values}
-    assert payload["status"] == "low_confidence", {
-        "query": query,
-        "ready_for": payload["next"].get("ready_for", []),
-        "why": payload.get("why"),
-    }
-    assert "execute" not in payload["next"].get("ready_for", [])
 
 
 @pytest.mark.parametrize("caller_has_list", [False, True])
@@ -549,33 +527,12 @@ def test_supplied_ranking_does_not_add_named_value_grouping(runtime_factory, mon
         runtime.close()
 
 
-@pytest.mark.parametrize("path", ["primary", "fallback"])
-@pytest.mark.parametrize("caller_filter", [False, True])
-def test_unranked_lowercase_shared_phrase_stays_fail_safe(
-    runtime_factory, monkeypatch, path, caller_filter
-) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    intent = "item revenue for brooklyn and philadelphia"
-    where = [{"field": STORE, "op": "=", "value": "Brooklyn"}] if caller_filter else []
-    _force_fallback(runtime, monkeypatch, intent, path)
-    try:
-        payload = plan_payload(runtime, intent=intent, partial_query={"where": where})
-    finally:
-        runtime.close()
-    query = payload["best"]["query_ir"]
-    assert not query.get("group_by")
-    assert query["where"][: len(where)] == where
-    assert _keeping(query, STORE) == [{"field": STORE, "op": "=", "value": "Brooklyn"}]
-    assert payload["status"] == "low_confidence", payload.get("why")
-    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-    assert "filter_values_unrealized" in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
-    assert "execute" not in payload["next"].get("ready_for", [])
-
-
 @pytest.mark.parametrize(
     ("path", "intent"),
     [
         ("mixed-case-draft", "item revenue for Brooklyn and Philadelphia"),
+        ("primary", "item revenue for brooklyn and philadelphia"),
+        ("fallback", "item revenue for brooklyn and philadelphia"),
         ("primary", "item revenue for Brooklyn from Philadelphia"),
         ("fallback", "item revenue for Brooklyn from Philadelphia"),
         ("primary", "item revenue for Brooklyn, Philadelphia"),
@@ -643,3 +600,44 @@ def test_empty_caller_where_does_not_raise(runtime_factory, monkeypatch, path, w
     assert payload["status"] == "ok", payload.get("why")
     product_dimension = "dimension.jaffle_product_type" if path == "fallback" else PRODUCT_TYPE
     assert payload["best"]["query_ir"]["group_by"] == [product_dimension]
+
+
+@pytest.mark.parametrize(
+    "values", [["Brooklyn", "Philadelphia"], ["Brooklyn", "Philadelphia", "New Orleans"]]
+)
+def test_compound_discovery_keeps_each_named_value_and_its_span(runtime_factory, values) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    intent = "item revenue for " + ", ".join(values[:-1]) + " and " + values[-1]
+    try:
+        query = {"select": [{"expression": {"measure": CHOICE["id"]}}]}
+        matched = _matched_value_rows(runtime, query, intent)
+        assert {row["value"] for row in matched} == set(values)
+        assert all(row["dimension_id"] == STORE for row in matched)
+        for row in matched:
+            start, end = row["matched_span"]
+            assert intent[start:end] == row["value"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("grouping", ["product type", "product types"])
+@pytest.mark.parametrize(
+    "authored_groups", [[PRODUCT_TYPE], [PRODUCT_TYPE, "dimension.jaffle_product_type"]]
+)
+def test_fallback_preserves_authored_groups_and_adds_only_uncovered_groupings(
+    runtime_factory, grouping, authored_groups
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    partial = {"group_by": authored_groups}
+    before = deepcopy(partial)
+    try:
+        query = _draft_for_choice(
+            runtime,
+            intent=f"item revenue by {grouping} and store name",
+            partial_query=partial,
+            choice=CHOICE,
+        ).query
+        assert query["group_by"] == [*authored_groups, STORE]
+        assert partial == before
+    finally:
+        runtime.close()
