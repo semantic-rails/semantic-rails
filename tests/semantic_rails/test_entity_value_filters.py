@@ -138,7 +138,7 @@ def test_valid_value_filter_matches_reference_sql(engine, tagged, dimension_filt
     sql = "SELECT AVG(order_total_cents / 100.0) FROM jaffle_order WHERE order_total_cents / 100.0 > 1"
     if dimension_filter:
         sql += " AND customer_order_number > 1"
-    with duckdb.connect(str(engine._config.package.default_db), read_only=True) as db:
+    with duckdb.connect(engine.db_path, read_only=True) as db:
         reference = db.execute(sql).fetchone()[0]
     assert actual == pytest.approx(reference)
 
