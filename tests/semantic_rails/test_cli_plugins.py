@@ -35,7 +35,12 @@ def _install(site: Path, name: str, source: str) -> None:
 def _cli(site: Path, *args: str, **env: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "semantic_rails", *args],
-        env={**os.environ, "PYTHONPATH": str(site), "SEMANTIC_RAILS_HOME": str(site), **env},
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(filter(None, [str(site), os.getenv("PYTHONPATH")])),
+            "SEMANTIC_RAILS_HOME": str(site),
+            **env,
+        },
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,

@@ -27,6 +27,7 @@ from .audit import emit_audit_event
 from .catalog_service import resolve_catalog
 from .diagnostics import enrich_object_not_found, exception_issue, semantic_issue
 from .errors import SemanticLayerError
+from .mcp_session import MCPQuerySession
 from .metadata import (
     build_options_payload,
     catalog_payload,
@@ -1743,12 +1744,14 @@ class SemanticLayerMCPAdapter:
         arguments: Mapping[str, Any] | None = None,
         *,
         request_context: RequestContext | None = None,
+        session: MCPQuerySession | None = None,
     ) -> dict[str, Any]:
         """Call one MCP tool.
 
         ``request_context`` is supplied only by remote transports after their
         authentication boundary. Omitting it preserves the stdio/in-process
         contract where the caller is trusted to provide policy context.
+        ``session`` enables advisory repeat hints for calls in that session.
         """
 
         def finish(response: dict[str, Any]) -> dict[str, Any]:
@@ -1756,6 +1759,16 @@ class SemanticLayerMCPAdapter:
                 response["request_context"] = request_context_payload(request_context)
                 if request_context.request_id:
                     response["request_id"] = request_context.request_id
+            if session is not None and (arguments is None or isinstance(arguments, Mapping)):
+                query = None
+                if name == "execute" and response.get("ok") is True:
+                    with contextlib.suppress(SemanticLayerError):
+                        query = _query_payload(
+                            _strip_execute_transport_args(
+                                {key: value for key, value in args_dict.items() if key != "mode"}
+                            )
+                        )
+                session.annotate(self, name, args_dict, response, query=query)
             emit_audit_event(
                 "mcp_tool",
                 tool=name,
@@ -2470,6 +2483,7 @@ def create_optional_fastmcp_server(
     """
 
     server = _mcp_server_class()(server_name, instructions=adapter.instructions)
+    session = MCPQuerySession()
     for definition in adapter.list_tools():
         name = str(definition["name"])
         description = str(definition["description"])
@@ -2478,7 +2492,7 @@ def create_optional_fastmcp_server(
             tool_name: str, tool_description: str
         ) -> Callable[[dict[str, Any] | None], str]:
             def _tool(arguments: dict[str, Any] | None = None) -> str:
-                return json_text(adapter.call_tool(tool_name, arguments or {}))
+                return json_text(adapter.call_tool(tool_name, arguments or {}, session=session))
 
             _tool.__name__ = f"semantic_rails_{tool_name.replace('-', '_')}"
             _tool.__doc__ = tool_description

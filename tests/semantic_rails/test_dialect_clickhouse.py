@@ -30,7 +30,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
 from semantic_rails.renderer import render_expr
 from semantic_rails.schema import ConnectionSpec, PackageMeta
-from semantic_rails.sql_ast import SqlIdentifier
+from semantic_rails.sql_ast import SqlIdentifier, SqlLiteral
 
 DIALECT = ClickHouseDialect()
 
@@ -80,18 +80,39 @@ def test_null_safe_eq_renders_spaceship_operator():
     assert rendered.replace("(", "").replace(")", "") == "a <=> b"
 
 
-def test_portable_defaults_kept_for_date_diff_date_add_and_conditional_aggregate():
-    # Verified live on ClickHouse 24.8: DATE_DIFF('unit', s, e) and
-    # DATE_ADD(date, INTERVAL n UNIT) aliases work with DuckDB
-    # (boundary-crossing, Monday-week) semantics — so no override.
+def test_date_diff_nullable_casts_and_portable_date_add_and_conditional_aggregate():
+    # Nullable timestamp targets preserve missing endpoints independently of settings.
     diff = render_expr(DIALECT.date_diff("day", _ident("s"), _ident("e")))
-    assert diff == "DATE_DIFF('day', CAST(s AS TIMESTAMP), CAST(e AS TIMESTAMP))"
+    assert (
+        diff
+        == "DATE_DIFF('day', CAST(s AS Nullable(DateTime64(6))), CAST(e AS Nullable(DateTime64(6))))"
+    )
     from semantic_rails.sql_ast import SqlLiteral
 
     add = render_expr(DIALECT.date_add("day", SqlLiteral(3), _ident("d")))
     assert add == "DATE_ADD(d, INTERVAL (3) DAY)"
     agg = render_expr(DIALECT.conditional_aggregate("count", _ident("cond"), None))
     assert agg == "COUNT(CASE WHEN cond THEN 1 END)"
+
+
+@pytest.mark.parametrize(
+    "start,end",
+    [
+        ("1950-01-01", "2024-01-01"),
+        ("2024-01-01", "1950-01-01"),
+        (None, "1950-01-01"),
+        ("1950-01-01", None),
+        (None, None),
+    ],
+)
+def test_authored_date_diff_preserves_pre_epoch_and_nullable_endpoints(start, end):
+    rendered = render_expr(
+        DIALECT.scalar_call("DATE_DIFF", [SqlLiteral("year"), SqlLiteral(start), SqlLiteral(end)])
+    )
+    assert rendered == (
+        f"DATE_DIFF('year', CAST({render_expr(SqlLiteral(start))} AS Nullable(DateTime64(6))), "
+        f"CAST({render_expr(SqlLiteral(end))} AS Nullable(DateTime64(6))))"
+    )
 
 
 def test_window_lag_emulates_lag_with_argmin_over_bounded_frame():
