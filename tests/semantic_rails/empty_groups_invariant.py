@@ -3,7 +3,8 @@
 Every sum, count and distinct count a projection reads comes from ``guarded_base``, and no
 other ``COALESCE(<measure>, 0)`` turns a NULL into 0. Each sum there also reads the count of
 the rows it read in the group, so it fills 0 only where there were none, except beside a
-distribution, which keeps the earlier settlement. Shared by the unit
+distribution, which keeps the earlier settlement. Under the dataset scope, a filtered query's
+measures are each observed by a probe of their own rows. Shared by the unit
 tests and the differential correctness corpus, so both hold every query they compile to it.
 """
 
@@ -16,6 +17,7 @@ from semantic_rails.compiler_parts.empty_groups import (
     GUARDED_BASE,
     base_reads,
     has_nested_case,
+    observed_outside_filters,
     sql_nodes,
     zero_aliases,
     zero_outputs,
@@ -104,3 +106,15 @@ def assert_settled_in_one_place(compiled: dict[str, Any], config: PackageConfig)
             f"{GUARDED_BASE} reads a row count for {len(counted)} measures, "
             f"expected one for each of its {len(sums)} sums"
         )
+        # Judged across the dataset, each one is observed by a probe of its own measure's
+        # rows: the first row of a scan apart from the query's leaves.
+        if observed_outside_filters(plan.query, config):
+            probes = {cte.name: cte.query for cte in select.ctes}
+            for field in settled:
+                (probe,) = {
+                    node.parts[0]
+                    for node in sql_nodes(field.expression)
+                    if isinstance(node, SqlIdentifier) and node.parts[0].startswith("observed_")
+                }
+                rows = probes[f"{probe}_rows"]
+                assert isinstance(rows, SqlSelect) and rows.limit == 1 and rows.observation_scan

@@ -314,6 +314,12 @@ SHAPES = {
         "time": {"temporal_role": ORDER_TIME, "grain": "month"},
     },
     "distribution_alone": {"select": _select(median=DISTRIBUTION)},
+    "filtered_by_store": {
+        "select": _select(revenue=REVENUE, orders=ORDERS, items=ITEMS),
+        "group_by": [ORDER_ID],
+        "where": [{"field": STORE, "op": "=", "value": "Philadelphia"}],
+        "time": {"temporal_role": ORDER_TIME, "start": "2017-04-01", "end": "2017-04-08"},
+    },
     "window_total": {
         "select": _select(revenue=REVENUE, orders=ORDERS),
         "time": {"temporal_role": ORDER_TIME, "start": "2017-04-01", "end": "2017-05-01"},
@@ -383,6 +389,24 @@ def test_every_sum_and_count_a_projection_reads_comes_from_the_guard(
 ) -> None:
     compiled = compile_query(config, Registry(config), {"version": 2, **SHAPES[shape]})
     assert_settled_in_one_place(compiled, config)
+
+
+@pytest.mark.parametrize(
+    ("patched", "value"), [("_dataset_scope", None), ("observes_dataset", False)]
+)
+def test_a_settle_path_that_skips_the_observation_scope_is_refused(
+    config: Any, monkeypatch: pytest.MonkeyPatch, patched: str, value: Any
+) -> None:
+    """Force the bypass: lowering probes no measure's own rows, or never asks for the scope,
+    while the guard reads it. The filtered query is refused, never judged inside its filters."""
+    query = {"version": 2, **SHAPES["filtered_by_store"]}
+    compile_query(config, Registry(config), {**query, "observation_scope": "query"})
+    monkeypatch.setattr(sql_lowering, patched, lambda *args: value)
+    with pytest.raises(SemanticLayerError) as raised:
+        compile_query(config, Registry(config), query)
+    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
+    assert raised.value.details["observation_scope"] == "dataset"
+    assert "observation_scope 'query'" in str(raised.value)
 
 
 @pytest.mark.parametrize(
