@@ -10,3 +10,5 @@
 - Withheld ranks sort NULL values and group keys consistently across warehouses, so
   ascending reverses descending exactly. Their diagnostics exclude withheld values;
   resource-granted responses retain the withholding notice and redacted output descriptors.
+- Resource-granted responses expose only listed engine diagnostics for granted objects,
+  omitting semantic caveat metadata and summaries.

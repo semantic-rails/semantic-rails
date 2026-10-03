@@ -8,7 +8,6 @@ the full package remains immutable and private to compilation.
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -435,43 +434,29 @@ def _restricted_plan(
     }
 
 
-def _granted_warnings(
-    access: ResourceAccess, warnings: list[dict[str, Any]], permitted: set[str]
-) -> list[dict[str, Any]]:
-    """Keep diagnostics only when all named objects, including in prose, are granted."""
-    config = access.config
-    hidden = {
-        row.id
-        for rows in (
-            config.entities,
-            config.dimensions,
-            config.temporal_roles,
-            config.relationships,
-            config.value_domains,
-            config.measures,
-            config.metric_recipes,
-            config.segments,
-            config.semantic_policies,
-            config.semantic_caveats,
-            config.aggregate_relations,
-        )
-        for row in rows
-        if row.id not in permitted
-    }
-    hidden_ids = (
-        re.compile(
-            r"(?<![\w.-])(?:"
-            + "|".join(re.escape(value) for value in hidden)
-            + r")(?![\w-]|\.[\w-])"
-        )
-        if hidden
-        else None
-    )
+_GRANTED_WARNING_KEYS = {
+    # runtime.py _no_data_in_scope_warnings: fixed text, caller output aliases,
+    # and the warning's own object_ids; details contains only those output aliases.
+    "NO_DATA_IN_SCOPE": frozenset(
+        {"code", "severity", "stage", "message", "object_ids", "details"}
+    ),
+    # runtime.py _withhold_values: fixed text, the warning's own object_ids,
+    # and the caller's order alias; details repeats those objects and that alias.
+    "VALUES_WITHHELD": frozenset({"code", "severity", "stage", "message", "object_ids", "details"}),
+}
+
+
+def _granted_warnings(warnings: list[dict[str, Any]], permitted: set[str]) -> list[dict[str, Any]]:
+    """Expose only listed engine diagnostics whose named objects are all granted."""
     return [
-        warning
+        {
+            key: value
+            for key, value in warning.items()
+            if key in _GRANTED_WARNING_KEYS[warning["code"]]
+        }
         for warning in warnings
-        if set(warning.get("object_ids", [])) <= permitted
-        and (hidden_ids is None or hidden_ids.search(json.dumps(warning, default=str)) is None)
+        if warning.get("code") in _GRANTED_WARNING_KEYS
+        and set(warning.get("object_ids", [])) <= permitted
     ]
 
 
@@ -537,7 +522,7 @@ def run_authorized_operation(
                 response["withheld"] = [
                     object_id for object_id in result["withheld"] if object_id in permitted
                 ]
-            response["warnings"] = _granted_warnings(access, result.get("warnings", []), permitted)
+            response["warnings"] = _granted_warnings(result.get("warnings", []), permitted)
             if resolve_verbosity(payload) == "minimal":
                 response = apply_response_verbosity(
                     response,

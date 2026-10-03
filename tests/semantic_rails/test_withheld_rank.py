@@ -14,9 +14,7 @@ from typing import Any
 
 import pytest
 
-from semantic_rails.ast import normalize_query
 from semantic_rails.compiler import bind_query
-from semantic_rails.compiler_parts.bind import lift_conditional_aggregates
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
@@ -171,15 +169,6 @@ REFUSALS = {
         },
         "value_dependency",
     ),
-    "aggregate_if": (_select(_value(CONDITIONAL)), "INVALID_EXPRESSION_AST"),
-    "lifted_aggregate_if": (
-        _select(_value(CONDITIONAL)),
-        "INVALID_EXPRESSION_AST",
-    ),
-    "segment_where": (
-        {"where": [{"segment": "segment.jaffle.high_value_customers"}]},
-        "INVALID_EXPRESSION_AST",
-    ),
     "metric_filter": (
         {"metric_filters": [{"expression": {"measure": REVENUE}, "op": ">", "value": 1000}]},
         "value_dependency",
@@ -217,6 +206,13 @@ REFUSALS = {
 }
 
 
+# These shapes are rejected as invalid IR before any policy runs.
+INEXPRESSIBLE = {
+    "aggregate_if": _select(_value(CONDITIONAL)),
+    "segment_where": {"where": [{"segment": "segment.jaffle.high_value_customers"}]},
+}
+
+
 def _codes(engine: Runtime, query: dict[str, Any]) -> list[tuple[str, Any]]:
     """The code and details of validate, compile, execute and MCP execute."""
     report = engine.validate(query)
@@ -227,27 +223,33 @@ def _codes(engine: Runtime, query: dict[str, Any]) -> list[tuple[str, Any]]:
         outcomes.append((exc.value.code, exc.value.details))
     mcp = SemanticLayerMCPAdapter(engine)
     tool = mcp.call_tool("execute", {"query": query, "mode": "run"})
-    outcomes.append((tool["error"]["code"], tool["error"].get("details", {})))
+    issue = tool["errors"][0]
+    outcomes.append((issue["code"], issue.get("details", {})))
     return outcomes
 
 
 @pytest.mark.parametrize("name", REFUSALS)
-def test_every_other_use_is_refused_on_every_surface(engine, name, request):
+def test_every_other_use_is_refused_on_every_surface(engine, name):
     patch, reason = REFUSALS[name]
     query = {**RANK, **patch}
-    if name == "lifted_aggregate_if":
-        lifted, measures = lift_conditional_aggregates(normalize_query(query), engine._config)
-        config = replace(engine._config, measures=[*engine._config.measures, *measures.values()])
-        engine = Runtime.from_config(config, source_path=engine.source_path)
-        request.addfinalizer(engine.close)
-        query = {**lifted.to_dict(), "policy_context": SALES}
     for code, details in _codes(engine, query):
-        if reason.startswith("INVALID_"):
-            assert code == reason
-            continue
         assert code == "POLICY_DENIED"
         assert details["reason"] == f"withheld_{reason}"
         assert REVENUE in details["withheld_objects"] or LIFETIME in details["withheld_objects"]
+
+
+@pytest.mark.parametrize("name", INEXPRESSIBLE)
+@pytest.mark.parametrize("with_policy", [False, True])
+def test_invalid_ir_is_refused_independently_of_policy(package, name, with_policy):
+    config = replace(
+        load_package_config(str(package)), semantic_policies=[_policy()] if with_policy else []
+    )
+    runtime = Runtime.from_config(config, source_path=str(package))
+    try:
+        for code, _ in _codes(runtime, {**RANK, **INEXPRESSIBLE[name]}):
+            assert code == "INVALID_EXPRESSION_AST"
+    finally:
+        runtime.close()
 
 
 def test_rank_returns_keys_only_and_flips_with_the_direction(engine):
