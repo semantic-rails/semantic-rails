@@ -508,6 +508,8 @@ def test_forcing_a_qualification_draft_through_fallback_still_holds(
         "daily order volume from customers with at least 10 orders in that month",
         "monthly order volume for customers that made more than 10 purchases in that month",
         "monthly orders from customers who made more than 10 purchases in that month",
+        "What is the daily order volume for customers who made more than 10 purchases in that month?",
+        "What is the monthly order volume for customers who made more than 10 purchases in that month?",
     ],
 )
 def test_qualification_check_only_downgrades_scalar_cohort_answers(
