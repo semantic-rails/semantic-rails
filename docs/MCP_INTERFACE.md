@@ -346,9 +346,9 @@ also keep the top N of the entity the question ranks. It ranks the entity when t
 ("top 3 stores", "which 3 stores") is not a time unit and reads every `group_by` dimension, as
 above (an entity's key and its label). When the question ranks nothing, a ranking the caller's
 `partial_query` states (its `limit`, over its own `group_by`) traces to it unless a grain splits
-its rows. A ranking of the entity whose rows a traced grain splits
-("top 3 stores by revenue at month level", "top 3 stores by monthly revenue") would keep the top
-3 store-months, so it is held with `why.code="PLAN_RANKING_PERIOD_AMBIGUOUS"` and a
+its rows. A ranking of the entity whose rows a traced grain splits ("top 3 stores by revenue at
+month level", "top 3 stores by monthly revenue") would keep the top 3 store-months, so it is
+held with `why.code="PLAN_RANKING_PERIOD_AMBIGUOUS"` and a
 `why.details.clarification` that asks which ranking the question means. Its option
 `top_overall` carries a `query_ir` for the top N on their total over the draft's window (its
 `calendar_id` kept), and a `breakdown.query_ir` to run with a `where` filter on
