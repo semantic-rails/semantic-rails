@@ -13,7 +13,6 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,10 +35,8 @@ from semantic_rails.planner.faithfulness import (
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.runtime import Runtime
-from tests.semantic_rails.result_helpers import typed_rows
 
 STORE = "dimension.jaffle_store_name"
-ORDER_TIME = "temporal_role.jaffle_order_time"
 
 
 @pytest.fixture()
@@ -120,70 +117,15 @@ def _not_ready(payload: dict[str, Any], terms: list[str]) -> None:
     assert "ready_for" not in payload["next"]
 
 
-def _first_grouping_only(query: dict[str, Any], grouping: str) -> dict[str, Any]:
-    """The draft's select grouped by ``grouping`` alone: a draft that dropped the rest."""
-
-    return {"version": 2, "select": query["select"], "group_by": [grouping]}
-
-
-def _held(payload: dict[str, Any], code: str) -> None:
-    assert payload["status"] == "low_confidence", payload.get("why")
-    assert payload["why"]["code"] == code
-    assert "ready_for" not in payload["next"]
-
-
-_REVENUE_SQL = "SUM(o.order_total_cents / 100.0)"
-
-
-def _assert_reference_rows(
-    runtime: Runtime, query: dict[str, Any], keys: dict[str, str], totals: dict[str, str]
-) -> None:
-    """The query's rows equal reference SQL over the seed. ``keys`` maps each grouping column
-    to its SQL and ``totals`` each selected column to its SQL, over jaffle_order ``o`` joined to
-    jaffle_store ``s`` and jaffle_customer ``c``."""
-
-    def cell(value: Any) -> str:
-        return value.date().isoformat() if isinstance(value, datetime) else str(value)
-
-    assert [select["as"] for select in query["select"]] == list(totals)
-    rows = sorted(
-        (*(cell(row[key]) for key in keys), *(float(row[alias]) for alias in totals))
-        for row in typed_rows(runtime.query(query))
-    )
-    connection = duckdb.connect(runtime.db_path, read_only=True)
-    try:
-        reference = connection.execute(
-            f"SELECT {', '.join([*keys.values(), *totals.values()])} FROM jaffle_order o "
-            "LEFT JOIN jaffle_store s ON o.store_id = s.store_id "
-            "LEFT JOIN jaffle_customer c ON o.customer_id = c.customer_id GROUP BY ALL"
-        ).fetchall()
-    finally:
-        connection.close()
-    expected = sorted(
-        (*(cell(key) for key in row[: len(keys)]), *(float(total) for total in row[len(keys) :]))
-        for row in reference
-    )
-    assert rows
-    assert [row[: len(keys)] for row in rows] == [row[: len(keys)] for row in expected]
-    assert [row[len(keys) :] for row in rows] == [
-        pytest.approx(row[len(keys) :]) for row in expected
-    ]
-
-
 def test_a_dropped_grouping_is_not_ready(jaffle: Runtime) -> None:
-    intent = "revenue by store, customer type and product type"
-    payload = plan_payload(jaffle, intent=intent)
+    payload = plan_payload(jaffle, intent="revenue by store, customer type and product type")
 
-    # The draft groups by all three, which validation refuses; the alternative that validates
-    # changes the target and grouping.
-    _held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
-    store_only = _first_grouping_only(payload["best"]["query_ir"], STORE)
-    words = unconsumed_catalog_words(jaffle, intent, store_only)
-    assert words == ["customer", "type", "product"]
-    why = plan_module._unconsumed_catalog_why(intent, words)
-    assert why is not None
-    assert why["details"]["dropped_groupings"] == ["customer type", "product type"]
-    assert why["message"].startswith("The draft drops the grouping by customer type, product type")
+    _not_ready(payload, ["customer", "type", "product"])
+    assert payload["best"]["query_ir"]["group_by"] == [STORE]
+    assert payload["why"]["details"]["dropped_groupings"] == ["customer type", "product type"]
+    assert payload["why"]["message"].startswith(
+        "The draft drops the grouping by customer type, product type"
+    )
 
 
 @contextmanager
@@ -214,45 +156,26 @@ def _with_store_dimensions(jaffle: Runtime, *dimensions: tuple[str, str, str]) -
 
 
 @pytest.mark.parametrize(
-    ("dimensions", "intent", "code", "group_by", "terms", "totals"),
+    ("dimensions", "intent", "grouping", "terms"),
     [
-        # "status" (Membership status) is one typo from "states". The draft groups by both, and
-        # validation refuses Membership status for revenue.
+        # "status" (Membership status) is one typo from "states".
         (
             [("states", "States", "store_name")],
             "revenue by states, status",
-            "VALIDATION_FAILED",
-            ["dimension.states", "dimension.jaffle_membership_status"],
+            "dimension.states",
             ["status"],
-            {},
         ),
         # "sales" is this dimension's whole name, and only a namespace elsewhere (metric.sales.*).
-        (
-            [("sales", "", "store_name")],
-            "revenue by store, sales",
-            None,
-            [STORE, "dimension.sales"],
-            ["sales"],
-            {"revenue_usd": _REVENUE_SQL},
-        ),
+        ([("sales", "", "store_name")], "revenue by store, sales", STORE, ["sales"]),
         # The draft's own metric sits in that namespace: metric.sales.aov_usd, named
         # jaffle.sales_aov_usd.
-        (
-            [("sales", "", "store_id")],
-            "aov by store, sales",
-            None,
-            [STORE, "dimension.sales"],
-            ["sales"],
-            {"aov_usd": f"{_REVENUE_SQL} / COUNT(DISTINCT o.order_id)"},
-        ),
+        ([("sales", "", "store_id")], "aov by store, sales", STORE, ["sales"]),
         # The planner reads "sent" as a synonym of "received"; here each names its own dimension.
         (
             [("received", "Received", "store_name"), ("sent", "Sent", "store_id")],
             "revenue by received, sent",
-            "PLAN_UNMATCHED_TERMS",
-            ["dimension.received"],
+            "dimension.received",
             ["sent"],
-            {},
         ),
     ],
 )
@@ -260,30 +183,16 @@ def test_one_catalog_name_never_consumes_another(
     jaffle: Runtime,
     dimensions: list[tuple[str, str, str]],
     intent: str,
-    code: str | None,
-    group_by: list[str],
+    grouping: str,
     terms: list[str],
-    totals: dict[str, str],
 ) -> None:
     with _with_store_dimensions(jaffle, *dimensions) as runtime:
         payload = plan_payload(runtime, intent=intent)
-        query = payload["best"]["query_ir"]
 
-        if code is None:
-            assert payload["status"] == "ok", payload.get("why")
-            assert "execute" in payload["next"]["ready_for"]
-            [(name, _, column)] = dimensions
-            keys = {STORE: "s.store_name", f"dimension.{name}": f"s.{column}"}
-            _assert_reference_rows(runtime, query, keys, totals)
-        else:
-            _held(payload, code)
-        assert query["group_by"] == group_by
-        # A draft that groups by the first term alone leaves the second's word over.
-        first_only = _first_grouping_only(query, group_by[0])
-        assert unconsumed_catalog_words(runtime, intent, first_only) == terms
-        if code == "PLAN_UNMATCHED_TERMS":
-            assert payload["why"]["details"]["terms"] == terms
-            assert payload["why"]["details"]["dropped_groupings"] == terms
+        _not_ready(payload, terms)
+        assert payload["best"]["query_ir"]["group_by"] == [grouping]
+        assert payload["why"]["details"]["dropped_groupings"] == terms
+        assert unconsumed_catalog_words(runtime, intent, payload["best"]["query_ir"]) == terms
 
 
 def test_spelling_a_selected_id_uses_its_namespace_only_there(jaffle: Runtime) -> None:
@@ -373,55 +282,17 @@ def test_light_verbs_do_not_hide_unknown_modifiers(jaffle: Runtime, verb: str) -
     )
 
 
-@pytest.mark.parametrize(
-    ("name", "code"),
-    [
-        ("period", None),
-        ("show", None),
-        # "Date" also names Calendar day; the draft that validates changes the grouping.
-        ("date", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
-    ],
-)
+@pytest.mark.parametrize("name", ["period", "show", "date"])
 def test_a_cadence_or_request_word_never_consumes_a_dropped_catalog_name(
-    jaffle: Runtime, name: str, code: str | None
+    jaffle: Runtime, name: str
 ) -> None:
     # The same framing remains valid when it names no extra catalog object.
     assert plan_payload(jaffle, intent="show monthly revenue by store")["status"] == "ok"
     with _with_store_dimensions(jaffle, (name, name.title(), "store_id")) as runtime:
         assert plan_payload(runtime, intent="monthly revenue by store")["status"] == "ok"
-        listed = f"monthly revenue by store, {name}"
-        payload = plan_payload(runtime, intent=listed)
-        # The comma lists the name as a second grouping.
-        if code is None:
-            assert payload["status"] == "ok", payload.get("why")
-            query = payload["best"]["query_ir"]
-            assert query["group_by"] == [STORE, f"dimension.{name}"]
-            assert query["time"] == {"temporal_role": ORDER_TIME, "grain": "month"}
-            _assert_reference_rows(
-                runtime,
-                query,
-                {
-                    STORE: "s.store_name",
-                    f"dimension.{name}": "s.store_id",
-                    f"{ORDER_TIME}__month": "CAST(DATE_TRUNC('month', o.ordered_at) AS DATE)",
-                },
-                {"revenue_usd": _REVENUE_SQL},
-            )
-        else:
-            _held(payload, code)
-        # A monthly draft grouped by store alone leaves the name over: "monthly" never reads it.
-        store_only = {
-            "version": 2,
-            "select": [
-                {
-                    "as": "revenue_usd",
-                    "expression": {"measure": "measure.jaffle.revenue_usd", "aggregation": "sum"},
-                }
-            ],
-            "group_by": [STORE],
-            "time": {"temporal_role": ORDER_TIME, "grain": "month"},
-        }
-        assert unconsumed_catalog_words(runtime, listed, store_only) == [name]
+        payload = plan_payload(runtime, intent=f"monthly revenue by store, {name}")
+        _not_ready(payload, [name])
+        assert payload["best"]["query_ir"]["group_by"] == [STORE]
         for intent in (
             "revenue by store by order date",
             "monthly revenue by order date",
@@ -657,9 +528,13 @@ def test_a_count_reads_only_its_number_of(
         ("revenue with cumulative", ["cumulative"]),
         # Revenue isn't the customer count.
         ("how many customers ordered in 2017", ["customers"]),
-        # "revenue from orders": "orders" names the Orders measure, and Revenue's Order entity
-        # isn't an object the draft selects, so it consumes no word.
+        # Revenue's Order entity isn't an object the draft selects, so it consumes no word: not a
+        # dropped grouping by order, nor "orders", which names the Orders measure.
+        ("revenue by store, order", ["order"]),
         ("revenue from orders", ["orders"]),
+        # A framing word that names an object (Calendar day's "date", Order time) counts too: only
+        # a time grain the draft carries reads it, and these drafts carry none.
+        ("revenue by store, date", ["date"]),
         ("orders by store, time", ["time"]),
         # A plural the planner doesn't fold still names Membership status.
         ("revenue by store, statuses", ["statuses"]),
@@ -669,29 +544,6 @@ def test_a_word_naming_an_object_the_draft_does_not_use_is_not_ready(
     jaffle: Runtime, intent: str, terms: list[str]
 ) -> None:
     _not_ready(plan_payload(jaffle, intent=intent), terms)
-
-
-@pytest.mark.parametrize(
-    ("intent", "code", "terms"),
-    [
-        # The draft groups by store and a converted-order id, which validation refuses; the
-        # alternative that validates changes the target and grouping. Revenue's Order entity
-        # consumes no word, so "order" stays a grouping the store-only draft drops.
-        ("revenue by store, order", "PLAN_FALLBACK_SEMANTIC_DRIFT", ["order"]),
-        # A framing word that names an object (Calendar day's "date") counts too: the draft groups
-        # by Calendar day, which validation refuses for revenue.
-        ("revenue by store, date", "VALIDATION_FAILED", ["date"]),
-    ],
-)
-def test_a_second_listed_grouping_reaches_the_draft(
-    jaffle: Runtime, intent: str, code: str, terms: list[str]
-) -> None:
-    payload = plan_payload(jaffle, intent=intent)
-
-    _held(payload, code)
-    assert payload["best"]["query_ir"]["group_by"][0] == STORE
-    store_only = _first_grouping_only(payload["best"]["query_ir"], STORE)
-    assert unconsumed_catalog_words(jaffle, intent, store_only) == terms
 
 
 def test_a_description_that_negates_the_word_does_not_answer_it(billing: Runtime) -> None:
@@ -724,29 +576,12 @@ def test_an_unknown_word_only_a_description_holds_is_not_ready(billing: Runtime)
 def test_every_draft_goes_through_the_one_gate(
     jaffle: Runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Another pattern's draft, which groups by both listed terms.
-    intent = "food revenue vs drink revenue by store, customer type"
-    comparison = plan_payload(jaffle, intent=intent)
-    assert comparison["best"]["pattern"] == "inline_comparison"
-    assert comparison["status"] == "ok", comparison.get("why")
-    assert comparison["best"]["query_ir"]["group_by"] == [STORE, "dimension.jaffle_customer_type"]
-    # The comparison pattern buckets by month, as it does for "by store and customer type".
-    assert comparison["best"]["query_ir"]["time"] == {"temporal_role": ORDER_TIME, "grain": "month"}
-    _assert_reference_rows(
-        jaffle,
-        comparison["best"]["query_ir"],
-        {
-            STORE: "s.store_name",
-            "dimension.jaffle_customer_type": "c.customer_type",
-            f"{ORDER_TIME}__month": "CAST(DATE_TRUNC('month', o.ordered_at) AS DATE)",
-        },
-        {
-            "food_revenue_usd": "SUM(o.food_revenue_cents / 100.0)",
-            "drink_revenue_usd": "SUM(o.drink_revenue_cents / 100.0)",
-        },
+    # Another pattern's draft.
+    comparison = plan_payload(
+        jaffle, intent="food revenue vs drink revenue by store, customer type"
     )
-    store_only = {**comparison["best"]["query_ir"], "group_by": [STORE], "order_by": []}
-    assert unconsumed_catalog_words(jaffle, intent, store_only) == ["customer", "type"]
+    assert comparison["best"]["pattern"] == "inline_comparison"
+    _not_ready(comparison, ["customer", "type"])
 
     # The catalog fallback's draft, for a question no pattern realizes.
     monkeypatch.setattr(
