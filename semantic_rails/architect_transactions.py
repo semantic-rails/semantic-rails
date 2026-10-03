@@ -428,7 +428,8 @@ class ProjectTransaction:
         """Whether a completed create_project receipt recorded these exact file bytes.
 
         Receipts are the transaction's existing provenance. Missing or unreadable
-        receipts cannot prove a model is still the generated scaffold.
+        receipts or receipts without scaffold hashes cannot prove a model is
+        still the generated scaffold.
         """
         for path in self._receipt_root.glob("*.json"):
             if path.is_symlink():
@@ -445,38 +446,19 @@ class ProjectTransaction:
                 ):
                     continue
                 scaffold_files = payload.get("scaffold_files")
-                if scaffold_files is not None:
-                    matches = (
-                        isinstance(scaffold_files, dict)
-                        and all(
-                            scaffold_files.get(name) == f"sha256:{_digest(content)}"
-                            for name, content in files.items()
-                        )
-                        and all(
-                            isinstance(name, str)
-                            and isinstance(digest, str)
-                            and self._matches_receipt_file(name, digest)
-                            for name, digest in scaffold_files.items()
-                        )
-                    )
-                else:
-                    # A legacy receipt can be promoted only when its effective
-                    # changes prove all queried files and still match disk.
-                    changes = {row["path"]: row for row in report["changes"]}
-                    matches = all(
-                        changes.get(name, {}).get("content_encoding") == "utf-8"
-                        and changes[name].get("proposed_content", "").encode("utf-8") == content
-                        and changes[name].get("after_sha256") == f"sha256:{_digest(content)}"
+                if (
+                    isinstance(scaffold_files, dict)
+                    and all(
+                        scaffold_files.get(name) == f"sha256:{_digest(content)}"
                         for name, content in files.items()
-                    ) and all(
-                        isinstance(name, str)
-                        and (digest is None or isinstance(digest, str))
-                        and self._matches_receipt_file(name, digest)
-                        for name, digest in (
-                            (row["path"], row.get("after_sha256")) for row in report["changes"]
-                        )
                     )
-                if matches:
+                    and all(
+                        isinstance(name, str)
+                        and isinstance(digest, str)
+                        and self._matches_receipt_file(name, digest)
+                        for name, digest in scaffold_files.items()
+                    )
+                ):
                     return True
             except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError):
                 continue
