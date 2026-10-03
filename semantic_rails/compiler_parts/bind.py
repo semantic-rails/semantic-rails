@@ -255,6 +255,13 @@ def _measure_required_entities(measure: MeasureConfig, config: PackageConfig) ->
 
 
 def _config_expr_to_sql(expr: SemanticExpr, measure: MeasureConfig, config: PackageConfig) -> Any:
+    if measure.lookup_from:
+        # Its expr is the key to its parent; only the parent_lookup leaf reads its value.
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            f"Lookup measure '{measure.id}' is read only through its parent_lookup leaf.",
+            details={"measure_id": measure.id, "unsupported_construct": "parent_lookup"},
+        )
     with measure_objects(measure.id):
         return _config_expr_to_sql_inner(expr, measure, config)
 

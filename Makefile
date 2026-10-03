@@ -1,6 +1,6 @@
 .PHONY: install lint format typecheck complexity contracts-check changelog-check clean-transient \
 	release-check packages test-backend test warehouses-up warehouses-down test-integration \
-	test-postgres
+	test-postgres answers
 
 # The locked dev environment CI installs; --locked fails on a stale uv.lock.
 install:
@@ -63,6 +63,9 @@ warehouses-down:
 # Every test here carries the `integration` marker (tests/integration/conftest.py).
 test-integration:
 	uv run pytest -q tests/integration
+
+answers:
+	uv run pytest -q tests/integration/correctness/test_answers.py
 
 # Differential correctness suite (tests/integration/correctness): DuckDB always, plus a
 # throwaway Postgres 16 in Docker (removed afterwards; the Postgres checks skip without Docker).

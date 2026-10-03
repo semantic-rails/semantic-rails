@@ -131,6 +131,7 @@ from .compiler_parts.temporal import (
     _validate_query_temporal_bindings,
     _validate_restrictive_time_semantics,
 )
+from .config_parts.lookup_measures import lookup_links
 from .config_parts.route_rows import (
     RouteRowError,
     check_route_row,
@@ -573,6 +574,16 @@ def _single_valued_columns(
     measure's own ``date`` clock at ``grain: day``. Metric, measure and segment
     filters never count: they don't split the output rows.
     """
+    if measure.lookup_from:
+        child, source = lookup_links(measure, config)
+        for link in (child, source):
+            chosen, _ = resolve_path(config, start=link.source_entity, target=measure.lookup_via)
+            if chosen != [link.id]:
+                # A via key reached by another route cannot prove the leaf's direct FK fixed,
+                # even if the child's own key is grouped. Recheck configs that bypassed load.
+                _raise_non_additive_sum(
+                    measure, "parent_lookup", child.source_columns or [child.source_column], config
+                )
     dimensions = _dimension_index(config)
     pinned = set(query.group_by)
     for item in plain_filters(query.where):  # a child group pins no output row's value
@@ -635,6 +646,8 @@ def _validate_non_additive_sums(
     roots += [item.expression for item in query.metric_filters if item.expression is not None]
     for bound in bound_measures:
         roots.extend(_bound_metric_predicates(bound))
+    for bound in bound_measures:
+        _refuse_time_on_lookup(measures[bound.measure_id], bound, roots, config, query)
     wrapped = {
         measure_id: construct
         for root in roots
@@ -688,6 +701,14 @@ def _validate_non_additive_sums(
             continue
         aggregation = str(bound.aggregation or measure.default_aggregation or "").lower()
         key = list(measure.row_grain or []) or list(_entity_index(config)[measure.entity].key or [])
+        if measure.lookup_from:
+            # One carried total per output row: its via foreign key, or its own row, is fixed.
+            single_valued = _single_valued_columns(measure, bound, query, config)
+            via_key = lookup_links(measure, config)[0]
+            via_columns = via_key.source_columns or [via_key.source_column]
+            if not (set(via_columns) <= single_valued or set(key) <= single_valued):
+                _raise_non_additive_sum(measure, "parent_lookup", via_columns, config)
+            continue
         if aggregation not in {"sum", "last_value", "first_value"}:
             continue
         required = key
@@ -726,7 +747,17 @@ def _raise_non_additive_sum(
         for dimension in config.dimensions
         if dimension.entity == measure.entity and dimension.column in missing
     ]
-    if missing:
+    if missing and measure.lookup_from:
+        dimensions = _entity_key_dimension_ids(measure.lookup_via, config)
+        hint = (
+            f"Group by, or filter with = to one value, the key of '{measure.lookup_via}' (the "
+            "lookup's via), or each column of the measure's own key."
+        )
+        message = (
+            f"Measure '{measure.id}' carries one total per '{measure.lookup_via}' onto each of "
+            f"its rows, and this query would add more than one of them into an output row. {hint}"
+        )
+    elif missing:
         key = "series key" if measure.measure_class == "semi_additive" else "key"
         statistics = [
             name for name in ("avg", "min", "max", "median") if name in measure.allowed_aggregations
@@ -757,6 +788,67 @@ def _raise_non_additive_sum(
         columns=missing,
         dimensions=dimensions,
     )
+
+
+# A lookup carries its source's all-time total, so no time axis may bucket, shift or add it.
+_LOOKUP_TIME_EXPRS = (
+    CumulativeExpr,
+    RollingExpr,
+    PeriodToDateExpr,
+    OffsetWindowExpr,
+    PriorPeriodExpr,
+    ConversionExpr,
+)
+
+
+def _refuse_time_on_lookup(
+    measure: MeasureConfig,
+    bound: BoundMeasure,
+    roots: list[Any],
+    config: PackageConfig,
+    query: NormalizedQuery,
+) -> None:
+    """A query's time selects a lookup's own rows by its own clock, and does nothing else."""
+    if not measure.lookup_from:
+        return
+    requested = query.time.temporal_role if query.time is not None else ""
+    reason = ""
+    if requested and _leaf_time_role(bound, query, config) != requested:
+        reason = f"time '{requested}' is not a clock of the measure's own rows"
+    elif measure.id in query.temporal_role_overrides:
+        reason = "a temporal role override would retime it"
+    elif any(measure.id in _measures_inside(root, _LOOKUP_TIME_EXPRS, config) for root in roots):
+        reason = "a window, prior period or conversion would bucket, shift or add it over time"
+    if reason:
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            f"Measure '{measure.id}' carries its source's all-time total per "
+            f"'{measure.lookup_via}'; {reason}. Filter or bucket by a clock of its own rows, "
+            "which selects the rows and leaves the carried total unchanged.",
+            details={"measure_id": measure.id, "unsupported_construct": "lookup_time"},
+        )
+
+
+def _measures_inside(
+    expr: Any, kinds: tuple[type, ...], config: PackageConfig, inside: bool = False
+) -> set[str]:
+    """Measures read anywhere under a construct of ``kinds``, recipes expanded."""
+    inside = inside or isinstance(expr, kinds)
+    found: set[str] = set()
+    if inside and isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
+        found.add(expr.measure)
+    if isinstance(expr, MetricRecipeRefExpr):
+        recipe = _recipe_index(config).get(expr.metric_recipe)
+        return found | (
+            _measures_inside(recipe.expression, kinds, config, inside) if recipe else set()
+        )
+    if is_dataclass(expr):
+        for item in fields(expr):
+            value = getattr(expr, item.name)
+            for child in value if isinstance(value, list) else [value]:
+                if is_dataclass(child):
+                    found |= _measures_inside(child, kinds, config, inside)
+    return found
 
 
 def _path_can_project_count_key_from_rewrite_anchor(
@@ -1361,7 +1453,28 @@ def _hop_steps(
     query: NormalizedQuery,
 ) -> list[RewriteStep]:
     """Disclose how a leaf crosses its one-to-many hops, so REWRITE_APPLIED reports it."""
-    entity = _measure_index(config)[bound.measure_id].entity
+    measure = _measure_index(config)[bound.measure_id]
+    entity = measure.entity
+    if measure.lookup_from:
+        child, source = lookup_links(measure, config)
+        return [
+            RewriteStep(
+                kind="parent_lookup",
+                status="applied",
+                measure_id=bound.measure_id,
+                reason=(
+                    f"'{measure.lookup_from}' is totalled per '{measure.lookup_via}' over all "
+                    f"time and repeated on each '{entity}' row of it, never added across two; "
+                    "the query's filters and time select those rows only."
+                ),
+                details={
+                    "from": measure.lookup_from,
+                    "via": measure.lookup_via,
+                    "path": [child.id],
+                    "source_path": [source.id],
+                },
+            )
+        ]
     crossed = {
         row.target_entity: list(row.chosen_path)
         for row in path_selections
@@ -4502,6 +4615,8 @@ def _plan_query(
             )
             if crossing == "fanout_dedup":
                 rewrite_strategy = "fanout_dedup"
+            if measures[bound.measure_id].lookup_from:
+                rewrite_strategy = "parent_lookup"
             # Every leaf that crosses a one-to-many hop says how.
             rewrite_steps.extend(_hop_steps(crossing, bound, path_selections, config, query))
             aggregate_relation_id, aggregate_relation_rejections = _select_aggregate_relation(

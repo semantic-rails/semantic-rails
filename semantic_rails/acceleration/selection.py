@@ -91,6 +91,8 @@ def _leaf_rollup_blocker(
     """Why no rollup can answer this measure leaf exactly, whichever rollup it is."""
     if not aggregate_routing_enabled():
         return ROUTING_OFF
+    if _measure_index(config)[bound.measure_id].lookup_from:
+        return "parent_lookup"  # its value is another measure's total per parent, not a column
     if _bound_metric_predicates(bound) or any(
         isinstance(item.expression, MetricPredicateExpr) for item in query.metric_filters
     ):

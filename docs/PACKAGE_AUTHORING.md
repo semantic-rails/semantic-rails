@@ -1231,6 +1231,66 @@ rollup, or `rollup: precomputed` when the variant stores the final value for
 the requested grain. Unsupported or missing rollup semantics force the planner
 back to the raw model relation.
 
+#### Lookup measures
+
+A lookup carries a parent's total onto each of its child rows: a coverage's premium on
+every claim made against it. It takes exactly three keys:
+
+```yaml
+# models/claims.yml (claims and premiums both reference coverage)
+measures:
+  coverage_premium:
+    kind: lookup
+    from: premium_amount    # a measure on another model, totalled per `via` key
+    via: coverage           # the parent entity
+```
+
+The loader copies `value_type` and `currency` from `from`. The value is one total
+per parent, never re-aggregated, so it allows only `sum`, is `additive: false` and has
+a flow accumulation. Authoring `expr`, an aggregation, `additive`, `accumulation`,
+`value_type` or `currency` on a lookup is `INVALID_CONFIG`.
+
+The invariant: a carried total appears at most once per output row's `via` key. It is
+never added across two parents, or repeated over the child's own child rows.
+
+- An output row must hold one parent: group by or pin (`=`) the `via` entity's key, or
+  every column of the measure's own key. Anything coarser is refused with `ROLLUP_UNSAFE`
+  (`details.construct: parent_lookup`), and `project validate` probes the measure grouped by
+  the `via` key.
+- Grouping or filtering by a child of the child (a claim's lines) is refused with
+  `MIXED_GRAIN_INVALID`, and so is a filter on a dimension of the source model.
+  Windows, distributions and metric predicates over a lookup are refused too.
+- A NULL foreign key reads NULL. A parent with no source rows reads 0 when the source
+  holds a value elsewhere in scope, and NULL (with `NO_DATA_IN_SCOPE`) when it holds
+  none; an `avg`, `min` or `max` source reads NULL for it.
+- The source is compiled as its own query, so its access policies apply. The lookup's
+  direct relationship is also a bound dependency: denying or redacting it refuses
+  validate, compile and query with `POLICY_DENIED` before rendering or execution. A row filter
+  allows one relation per query, so a lookup under any row filter is refused with
+  `POLICY_DENIED`.
+- Time: the carried value is the parent's all-time total. A query's `where`, `time`
+  window and buckets on the child's own clocks select child rows, and leave the value
+  unchanged. Bucketing by the source's clock, prior-period, cumulative, rolling and
+  period-to-date wrappers, and `temporal_role_overrides` on a lookup are refused with
+  `REWRITE_NOT_SUPPORTED` (`details.unsupported_construct: lookup_time`).
+
+The load refuses a lookup with `INVALID_CONFIG`, naming the key at fault, when:
+
+- `from` is a stock, an entity count, `additive: false` or another lookup;
+- `via` is a time entity;
+- `via` has a composite key, even when both relationships cover every key column;
+- `via` isn't the target of exactly one direct, untimed many-to-one relationship
+  covering its whole key, both from the child's entity and from the source's entity;
+- a `graph.path_preferences` route for the child-to-`via` or source-to-`via` pair uses
+  a path other than that direct relationship. A recorded direct route is allowed.
+
+The guard also refuses a different resolved route with `ROLLUP_UNSAFE` if the configuration
+bypasses these load checks. Lookup measures support only the direct relationships and a
+single-column `via` key.
+
+Each answer carries a `parent_lookup` rewrite step (`REWRITE_APPLIED`) naming `from`, `via`
+and the relationships it used. Interchange export leaves lookups out as unsupported.
+
 ## Metrics
 
 Metrics codify governed access patterns. Each metric carries a `kind:` that
