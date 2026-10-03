@@ -29,8 +29,12 @@ from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
 from ._base import (
+    _is_temporal_grouping_term,
+    _names_time_axis,
+    _object_by_id,
     _requested_grouping_terms,
     _runtime_composition_terms,
+    _term_matches_value_domain,
     _time_window,
     _with_fiscal_calendar,
 )
@@ -300,8 +304,9 @@ def plan_payload(
     )
     unmatched = unmatched_intent_terms(runtime, intent_str, best_draft.query) if best_ok else []
     # The readiness invariants: every numeral and clock word in the question, and every word
-    # that names a catalog object, is consumed by something the draft carries. Otherwise an
-    # hour, a range, a threshold, a grouping or the asked-for subject was dropped.
+    # that names a catalog object, is consumed by something the draft carries, and every
+    # grouping it lists has a dimension of its own. Otherwise an hour, a range, a threshold, a
+    # grouping or the asked-for subject was dropped.
     value_why = (
         (
             _unconsumed_terms_why(unconsumed_terms(runtime, intent_str, best_draft.query))
@@ -312,6 +317,7 @@ def plan_payload(
                 unconsumed_unknown_words(runtime, intent_str, best_draft.query),
                 set(intent_ir.unresolved),
             )
+            or _dropped_grouping_why(runtime, intent_str, best_draft.query)
         )
         if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
         else None
@@ -645,13 +651,12 @@ def _unconsumed_catalog_why(question: str, words: list[str]) -> dict[str, Any] |
     """Explain a draft that leaves out a question word naming a catalog object.
 
     A word inside a grouping the question asks for ("by store, customer type and product type")
-    means the draft dropped that grouping, and the message says so. A comma in the list reads as
-    "and" here: the grouping parse stops at a comma, which is how the draft lost the rest.
+    means the draft dropped that grouping, and the message says so.
     """
 
     if not words:
         return None
-    listed = _requested_grouping_terms(re.sub(r"\s*,\s*(?:and\s+)?", " and ", question))
+    listed = _requested_grouping_terms(question)
     dropped = [term for term in listed if set(words) & set(re.findall(r"[^\W_]+", term))]
     terms = words[:8]  # as many as the warning names
     message = (
@@ -673,6 +678,65 @@ def _unconsumed_catalog_why(question: str, words: list[str]) -> dict[str, Any] |
                     "Find what these words name with discover, add it to best.query_ir (a "
                     "group_by for a grouping, the select for a measure), then validate; or ask "
                     "again without those words."
+                ),
+            }
+        ],
+    }
+
+
+def _dropped_grouping_why(
+    runtime: Any, question: str, query: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Explain a draft that groups by fewer dimensions than the question lists groupings.
+
+    Each grouping the question lists ("by incident name, incident") needs its own dimension in
+    the draft's group_by. A clock term ("by month", "by order date", "by fiscal quarter" on the
+    fiscal calendar) is the time block's and a term naming a declared value is a filter, so
+    neither needs one. A count can't say which grouping the draft dropped, so the why names
+    every one that needs a dimension.
+    """
+
+    config = runtime._config
+    time = query.get("time") if isinstance(query.get("time"), dict) else {}
+    # The time block's clock: its temporal role, and the calendar it buckets on.
+    clocks = [
+        str(row.label or "")
+        for row in [
+            _object_by_id(config.temporal_roles, time.get("temporal_role")),
+            *(
+                row
+                for row in config.entities
+                if row.calendar_id and row.calendar_id == time.get("calendar_id")
+            ),
+        ]
+        if row is not None
+    ]
+    terms = [
+        term
+        for term in _requested_grouping_terms(question)
+        if not (
+            _is_temporal_grouping_term(term)
+            or any(_names_time_axis(term, clock) for clock in clocks)
+            or _term_matches_value_domain(config, term)
+        )
+    ]
+    grouped = [item for item in list(query.get("group_by") or []) if item]
+    if len(grouped) >= len(terms):
+        return None
+    return {
+        "code": "PLAN_UNMATCHED_TERMS",
+        "message": (
+            f"The draft groups by {len(grouped)} dimension(s) but the question lists "
+            f"{len(terms)} groupings: {', '.join(terms)}. It drops at least one of them, so "
+            "plan doesn't call it ready."
+        ),
+        "details": {"terms": terms, "dropped_groupings": terms},
+        "recovery_hints": [
+            {
+                "kind": "use_named_objects",
+                "message": (
+                    "Find a dimension for each grouping with discover, add the missing ones to "
+                    "best.query_ir group_by, then validate; or ask again without those groupings."
                 ),
             }
         ],

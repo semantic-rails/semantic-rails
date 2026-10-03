@@ -1361,7 +1361,7 @@ def _requested_grouping_spans(text: str) -> list[tuple[int, int]]:
 
     lowered = str(text or "").lower()
     top_by_match = re.search(
-        r"^\s*top\s+([a-z0-9 _-]+?)\s+by\s+([a-z0-9 _-]+?)(?:[.?!,;]|$)",
+        r"^\s*top\s+([a-z0-9 _,-]+?)\s+by\s+([a-z0-9 _-]+?)(?:[.?!,;]|$)",
         lowered,
     )
     match: re.Match[str] | None
@@ -1370,7 +1370,7 @@ def _requested_grouping_spans(text: str) -> list[tuple[int, int]]:
         raw_terms = _strip_leading_rank_count(match.group(1).strip())
     else:
         match = re.search(
-            r"\bby ([a-z0-9 _-]+?)(?:\s+(?:where|for|from|in|with|during|over|having|who|that)\b|[.?!,;]|$)",
+            r"\bby ([a-z0-9 _,-]+?)(?:\s+(?:where|for|from|in|with|during|over|having|who|that)\b|[.?!;]|$)",
             lowered,
         )
         raw_terms = match.group(1).strip() if match else ""
@@ -1380,7 +1380,8 @@ def _requested_grouping_spans(text: str) -> list[tuple[int, int]]:
     spans: list[tuple[int, int]] = []
     start = 0
     cuts = [
-        (part.start(), part.end()) for part in re.finditer(r"\s*(?:,| and | & | by )\s*", raw_terms)
+        (part.start(), part.end())
+        for part in re.finditer(r"\s*(?:,\s*and |,| and | & | by )\s*", raw_terms)
     ]
     for end, next_start in [*cuts, (len(raw_terms), len(raw_terms))]:
         term = raw_terms[start:end]

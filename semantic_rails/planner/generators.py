@@ -393,13 +393,14 @@ def _requested_grouping_terms(text: str) -> list[str]:
         raw_terms = re.sub(rf"^\s*{_RANK_COUNT_RE}\s+", "", top_by_match.group(1).strip())
     else:
         by_match = re.search(
-            r"\bby ([a-z0-9 _-]+?)(?:\s+(?:where|for|from|in|with|during|over|last|this|current|next|prior|having|who|that)\b|[.?!,;]|$)",
+            r"\bby ([a-z0-9 _,-]+?)(?:\s+(?:where|for|from|in|with|during|over|last|this|current|next|prior|having|who|that)\b|[.?!;]|$)",
             lowered,
         )
         raw_terms = by_match.group(1).strip() if by_match else ""
     if not raw_terms:
         return []
-    return [term.strip() for term in re.split(r"\s*(?:,| and | & )\s*", raw_terms) if term.strip()]
+    parts = re.split(r"\s*(?:,\s*and |,| and | & )\s*", raw_terms)
+    return [term.strip() for term in parts if term.strip()]
 
 
 def _is_temporal_grouping_term(term: str) -> bool:
