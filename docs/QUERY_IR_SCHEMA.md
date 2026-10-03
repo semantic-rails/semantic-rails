@@ -850,23 +850,8 @@ unless the join yields NULLs, so every ClickHouse statement ends with
 
 ## What an answer covers
 
-Two answers are right but easy to misread, so the response says what they cover. Neither
+Some answers are right but easy to misread, so the response says what they cover. This never
 changes the SQL or the rows.
-
-**Which rows an average runs over.** An `avg`, `min`, `max`, `median` or `percentile` of a
-measure runs over the measure's own rows. When the output doesn't group by a parent of those
-rows, `assumptions` says so: `avg(measure.jaffle.item_revenue_usd) averages over Item rows`
-grouped by customer, because the orders between items and customers are not in the output (with
-no `group_by`, any declared many-to-one parent counts). The average of item rows is not the
-per-order average. For an `avg`, the entry adds the per-parent average as a ratio to select
-instead, when the package has a measure that counts that parent's key (on the query's time role,
-if the query has one):
-`{"kind":"ratio","numerator":{"kind":"aggregate","measure":"measure.jaffle.item_revenue_usd","aggregation":"sum"},"denominator":{"kind":"aggregate","measure":"measure.jaffle.order_count"}}`.
-An `aggregate_if` gets the entry with no ratio. A measure inside an expression (arithmetic,
-`ratio`, `case`) gets the entry like a bare one; inside a metric it doesn't, since the metric is
-the package's own definition, and inside an `entity_value`, a distribution, a conversion or a
-metric predicate it doesn't either, since those aggregate at their own grain. The minimal
-response keeps `assumptions`.
 
 **Facts on different clocks.** With no `start`, `end` or `range` and no `grain`, each measure
 sums all of its own history. When the selects read measures of two or more entities dated by
@@ -875,7 +860,9 @@ different time roles (a measure with no time role is its own clock), the respons
 sessions by session start, grouped by customer, cover different periods, so their ratio is not
 a rate over one period. Add a window (each measure then covers it on its own clock) or a grain,
 or read them separately. `details.clocks` lists each measure's `subject` and `temporal_roles`.
-A metric counts as one clock, with every role it combines: alone it never warns, since the
+A measure inside an expression (`ratio`, arithmetic, `case`, `aggregate_if`) counts like a bare
+one; one inside a conversion or a metric predicate keeps that expression's own time rules. A
+metric counts as one clock, with every role it combines: alone it never warns, since the
 package defined it, and beside a measure or metric on another clock it does. Measures that
 share a role, and measures of one entity, never warn.
 

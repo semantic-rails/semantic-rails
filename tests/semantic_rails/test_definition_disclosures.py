@@ -1,10 +1,9 @@
-"""Say when a row mixes facts on different clocks, and what an average averages over.
+"""Say when a row mixes facts on different clocks.
 
-Both answers are right but read as something else. Orders and storefront sessions grouped by
+Orders (dated by order time) and storefront sessions (dated by session start) grouped by
 customer, with no window, each count all of their own history, so a ratio of the two is not a
-rate over one period: the answer carries ``MIXED_TIME_ROLES``. An ``avg`` of item revenue grouped
-by customer averages item rows, not orders: the answer's ``assumptions`` say so and give the
-per-order average as a ratio. Neither changes the numbers.
+rate over one period. The answer is right but reads as one, so it carries ``MIXED_TIME_ROLES``.
+The warning never changes the numbers.
 """
 
 from __future__ import annotations
@@ -17,7 +16,6 @@ from semantic_rails import runtime as runtime_module
 from semantic_rails.runtime import Runtime
 
 CUSTOMER = "dimension.jaffle_customer_id"
-STORE = "dimension.jaffle_store_name"
 ORDER_TIME = "temporal_role.jaffle_order_time"
 SESSION_TIME = "temporal_role.jaffle_session_started_at"
 DELIVERED_TIME = "temporal_role.jaffle_lifecycle_delivered_at"
@@ -33,15 +31,6 @@ metrics:
     numerator: order_count
     denominator: session_starts
 """
-ITEM_REVENUE_BY_ORDER = (
-    '{"kind":"ratio","numerator":{"kind":"aggregate","measure":"measure.jaffle.item_revenue_usd",'
-    '"aggregation":"sum"},"denominator":{"kind":"aggregate","measure":"measure.jaffle.order_count"}}'
-)
-REVENUE_BY_CUSTOMER = (
-    '{"kind":"ratio","numerator":{"kind":"aggregate","measure":"measure.jaffle.revenue_usd",'
-    '"aggregation":"sum"},"denominator":{"kind":"aggregate",'
-    '"measure":"measure.jaffle.customer_count"}}'
-)
 
 
 @pytest.fixture(scope="module")
@@ -59,16 +48,15 @@ def runtime(tmp_path_factory):
     runtime.close()
 
 
-def _agg(measure: str, aggregation: str = "") -> dict[str, Any]:
-    out = {"kind": "aggregate", "measure": f"measure.jaffle.{measure}"}
-    return {**out, "aggregation": aggregation} if aggregation else out
+def _agg(measure: str) -> dict[str, Any]:
+    return {"kind": "aggregate", "measure": f"measure.jaffle.{measure}"}
 
 
-def _query(*selects: dict[str, Any], group_by=(CUSTOMER,), **extra: Any) -> dict[str, Any]:
+def _query(*selects: dict[str, Any], **extra: Any) -> dict[str, Any]:
     return {
         "version": 2,
         "select": [{"expression": expr, "as": f"v{index}"} for index, expr in enumerate(selects)],
-        "group_by": list(group_by),
+        "group_by": [CUSTOMER],
         **extra,
     }
 
@@ -78,7 +66,8 @@ def _mixed(out: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 ORDERS, SESSIONS = _agg("order_count"), _agg("session_starts")
-SESSION_WINDOW = {"temporal_role": SESSION_TIME, "grain": "month"}
+SESSION_MONTHS = {"temporal_role": SESSION_TIME, "grain": "month"}
+# An aggregate_if has no time role of its own.
 SESSIONS_IF = {
     "kind": "aggregate_if",
     "aggregation": "count",
@@ -92,17 +81,6 @@ SESSIONS_IF = {
         },
         "right": {"kind": "literal", "value": "1"},
     },
-}
-FOOD_ITEMS_IF_AVG = {
-    "kind": "aggregate_if",
-    "aggregation": "avg",
-    "condition": {
-        "kind": "comparison",
-        "op": "=",
-        "left": {"kind": "column", "column": "product_type", "entity": "entity.jaffle_item"},
-        "right": {"kind": "literal", "value": "jaffle"},
-    },
-    "value": {"kind": "column", "column": "item_revenue_cents", "entity": "entity.jaffle_item"},
 }
 
 
@@ -131,10 +109,10 @@ def test_two_facts_on_different_clocks_with_no_window_get_one_warning(runtime, m
     [
         # A window covers one period on each fact's own clock.
         _query(
-            ORDERS, SESSIONS, time={**SESSION_WINDOW, "start": "2016-09-01", "end": "2016-10-01"}
+            ORDERS, SESSIONS, time={**SESSION_MONTHS, "start": "2016-09-01", "end": "2016-10-01"}
         ),
         # With a time grain each row is one period, not all of history.
-        _query(ORDERS, SESSIONS, time=SESSION_WINDOW),
+        _query(ORDERS, SESSIONS, time=SESSION_MONTHS),
         # Items and orders share the order's clock.
         _query(_agg("item_revenue_usd"), ORDERS),
         # One fact.
@@ -151,14 +129,33 @@ def test_no_mixed_clock_warning(runtime, query):
 @pytest.mark.parametrize(
     ("selects", "clocks"),
     [
-        # Inside one select expression, as a ratio or as arithmetic.
+        # Inside one select expression: a ratio, arithmetic or a case.
         (
             [{"kind": "ratio", "numerator": ORDERS, "denominator": SESSIONS}],
-            ["measure.jaffle.order_count by", "measure.jaffle.session_starts by"],
+            [f"measure.jaffle.order_count by {ORDER_TIME}", "measure.jaffle.session_starts by"],
         ),
         (
             [{"kind": "arithmetic", "op": "subtract", "left": ORDERS, "right": SESSIONS}],
-            ["measure.jaffle.order_count by", "measure.jaffle.session_starts by"],
+            [f"measure.jaffle.order_count by {ORDER_TIME}", "measure.jaffle.session_starts by"],
+        ),
+        (
+            [
+                {
+                    "kind": "case",
+                    "whens": [
+                        {
+                            "when": {
+                                "kind": "comparison",
+                                "op": ">",
+                                "left": SESSIONS,
+                                "right": {"kind": "literal", "value": 0},
+                            },
+                            "then": ORDERS,
+                        }
+                    ],
+                }
+            ],
+            [f"measure.jaffle.order_count by {ORDER_TIME}", "measure.jaffle.session_starts by"],
         ),
         # An aggregate_if over sessions has no time role, so it is its own clock.
         ([ORDERS, SESSIONS_IF], ["aggregate_if(count, …) has no time role"]),
@@ -171,7 +168,7 @@ def test_no_mixed_clock_warning(runtime, query):
             ],
         ),
     ],
-    ids=["ratio", "arithmetic", "aggregate-if", "governed-metric"],
+    ids=["ratio", "arithmetic", "case", "aggregate-if", "governed-metric"],
 )
 def test_measures_inside_a_select_expression_are_disclosed_too(runtime, selects, clocks):
     [warning] = _mixed(runtime.query(_query(*selects)))
@@ -179,133 +176,17 @@ def test_measures_inside_a_select_expression_are_disclosed_too(runtime, selects,
     assert all(clock in warning["message"] for clock in clocks)
 
 
-def test_an_average_of_item_rows_by_customer_names_them_and_the_per_order_ratio(runtime):
-    out = runtime.query(_query(_agg("item_revenue_usd", "avg")))
-
-    assert out["assumptions"] == [
-        "avg(measure.jaffle.item_revenue_usd) averages over Item rows; for a per-Order average "
-        f"select {ITEM_REVENUE_BY_ORDER}."
-    ]
-    # Minimal responses keep it: it changes what the number means.
-    minimal = runtime.query({**_query(_agg("item_revenue_usd", "avg")), "verbosity": "minimal"})
-    assert minimal["assumptions"] == out["assumptions"]
-
-
-def test_the_hinted_ratio_is_the_per_order_average(runtime):
-    import json
-
-    hinted = runtime.query(_query(json.loads(ITEM_REVENUE_BY_ORDER)))
-    independent = runtime._get_adapter().query(
-        "SELECT o.customer_id, AVG(COALESCE(t.item_total, 0)) AS per_order "
-        "FROM jaffle_order AS o LEFT JOIN ("
-        "SELECT order_id, SUM(item_revenue_cents) / 100.0 AS item_total "
-        "FROM jaffle_item GROUP BY order_id) AS t ON t.order_id = o.order_id "
-        "GROUP BY o.customer_id"
-    )
-
-    expected = {row["customer_id"]: row["per_order"] for row in independent}
-    answered = {row[CUSTOMER]: row["v0"] for row in hinted["rows"] if row["v0"] is not None}
-    assert len(expected) > 100
-    assert answered == pytest.approx(expected)
-    # The item-row average differs from it.
-    averaged = runtime.query(_query(_agg("item_revenue_usd", "avg")))
-    item_rows = {row[CUSTOMER]: row["v0"] for row in averaged["rows"] if row["v0"] is not None}
-    assert item_rows != pytest.approx(expected)
-
-
-@pytest.mark.parametrize(
-    ("selects", "group_by", "assumptions"),
-    [
-        # Inside arithmetic: the same entry.
-        (
-            [
-                {
-                    "kind": "arithmetic",
-                    "op": "multiply",
-                    "left": _agg("item_revenue_usd", "avg"),
-                    "right": {"kind": "literal", "value": 100},
-                }
-            ],
-            [CUSTOMER],
-            [
-                f"avg(measure.jaffle.item_revenue_usd) averages over Item rows; for a per-Order "
-                f"average select {ITEM_REVENUE_BY_ORDER}."
-            ],
-        ),
-        # An aggregate_if has no measure id to sum, so it states the grain only.
-        ([FOOD_ITEMS_IF_AVG], [CUSTOMER], ["aggregate_if(avg, …) averages over Item rows."]),
-        # A maximum is taken over item rows; a per-order maximum is no ratio.
-        (
-            [_agg("item_revenue_usd", "max")],
-            [CUSTOMER],
-            ["max(measure.jaffle.item_revenue_usd) is taken over Item rows."],
-        ),
-        # With no grouping, each declared parent with a count of its key gets the ratio.
-        (
-            [_agg("item_revenue_usd", "avg")],
-            [],
-            [
-                f"avg(measure.jaffle.item_revenue_usd) averages over Item rows; for a per-Order "
-                f"average select {ITEM_REVENUE_BY_ORDER}."
-            ],
-        ),
-        # Customers have no parent.
-        ([_agg("lifetime_spend_before_tax_usd", "avg")], [], []),
-        # Nothing between orders and stores.
-        ([_agg("revenue_usd", "avg")], [STORE], []),
-        # A sum needs no disclosure.
-        ([_agg("item_revenue_usd")], [CUSTOMER], []),
-    ],
-    ids=["arithmetic", "aggregate-if", "max", "no-grouping", "no-parent", "direct-parent", "sum"],
-)
-def test_averaging_grain(runtime, selects, group_by, assumptions):
-    assert runtime.query(_query(*selects, group_by=group_by))["assumptions"] == assumptions
-
-
-@pytest.mark.parametrize(
-    ("time", "assumptions"),
-    [
-        # With no query time, every customer counts.
-        (
-            {},
-            [
-                "avg(measure.jaffle.revenue_usd) averages over Order rows; for a per-Customer "
-                f"average select {REVENUE_BY_CUSTOMER}."
-            ],
-        ),
-        # Customers are counted by their first order, not by the order time this query reads.
-        (
-            {
-                "time": {
-                    "temporal_role": ORDER_TIME,
-                    "grain": "year",
-                    "start": "2017-01-01",
-                    "end": "2018-01-01",
-                }
-            },
-            ["avg(measure.jaffle.revenue_usd) averages over Order rows."],
-        ),
-    ],
-    ids=["no-time", "order-time"],
-)
-def test_a_per_parent_ratio_counts_parents_on_the_querys_time_role(runtime, time, assumptions):
-    out = runtime.query(_query(_agg("revenue_usd", "avg"), group_by=[], **time))
-
-    assert out["assumptions"] == assumptions
-
-
-def test_disclosures_never_change_the_answer(runtime, monkeypatch):
-    queries = [_query(ORDERS, SESSIONS), _query(_agg("item_revenue_usd", "avg"))]
-    disclosed = [runtime.query(query) for query in queries]
-    assert [len(_mixed(disclosed[0])), len(disclosed[1]["assumptions"])] == [1, 1]
+def test_the_warning_never_changes_the_answer(runtime, monkeypatch):
+    query = _query(ORDERS, SESSIONS)
+    before = runtime.query(query)
+    assert len(_mixed(before)) == 1
     monkeypatch.setattr(runtime_module, "mixed_time_role_warnings", lambda *_: [])
-    monkeypatch.setattr(runtime_module, "averaging_grain_assumptions", lambda *_: [])
 
-    for query, before in zip(queries, disclosed, strict=True):
-        after = runtime.query(query)
-        assert _mixed(after) == [] and after["assumptions"] == []
-        assert after["rendered_sql"] == before["rendered_sql"]
-        assert _by_customer(after["rows"]) == _by_customer(before["rows"])
+    after = runtime.query(query)
+
+    assert _mixed(after) == []
+    assert after["rendered_sql"] == before["rendered_sql"]
+    assert _by_customer(after["rows"]) == _by_customer(before["rows"])
 
 
 def _by_customer(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

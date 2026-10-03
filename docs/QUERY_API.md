@@ -439,11 +439,6 @@ period instead. Queries that need a time axis, such as a rolling or prior-period
 metric predicate (including one in an aggregate's `filter` or a metric recipe), and a `time` block
 with no window are not collapsed.
 
-An `avg`, `min`, `max`, `median` or `percentile` of a measure whose rows have a parent the output
-doesn't group by also gets an `assumptions` entry naming the rows it runs over, with the
-per-parent average as a ratio for an `avg` when the package counts that parent; see
-[What an answer covers](QUERY_IR_SCHEMA.md#what-an-answer-covers).
-
 `policy_context` is optional and scopes visibility, access, and metric-constraint policies for metadata, validation, and query routes.
 
 ### Request `limits` block (optional)

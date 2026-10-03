@@ -379,9 +379,7 @@ def test_every_kind_of_measure_returns_the_window_total(runtime: Runtime, case: 
     for key, row_values in want.items():
         assert got[key] == pytest.approx(row_values), key
     assert response["row_count"] == len(gold)  # one row per group, never one per timestamp
-    assert "one total" in response["assumptions"][0]
-    # An ungrouped average or median of order rows also says which rows it runs over.
-    assert len(response["assumptions"]) == 1 + (case in {"avg", "median"})
+    assert len(response["assumptions"]) == 1 and "one total" in response["assumptions"][0]
     assert not {"UNGRAINED_TIME_PROJECTION", "UNGRAINED_GROUPED_TIME_PROJECTION"} & set(
         _codes(response)
     )
