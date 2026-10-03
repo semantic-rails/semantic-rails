@@ -28,12 +28,18 @@ from ..ast import every_filter, is_child_group, rewrite_select_shorthand
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
-from ._base import _requested_grouping_terms, _time_window, _with_fiscal_calendar
+from ._base import (
+    _requested_grouping_terms,
+    _runtime_composition_terms,
+    _time_window,
+    _with_fiscal_calendar,
+)
 from .faithfulness import (
     intent_faithfulness_why,
     intent_subject_why,
     unconsumed_catalog_words,
     unconsumed_terms,
+    unconsumed_unknown_words,
     unmatched_intent_terms,
 )
 from .generators import blocked_object_not_found, fallback_drafts
@@ -302,7 +308,10 @@ def plan_payload(
             or _unconsumed_catalog_why(
                 intent_str, unconsumed_catalog_words(runtime, intent_str, best_draft.query)
             )
-            or _dropped_value_why(intent_str, unmatched, catalog_tokens, set(intent_ir.unresolved))
+            or _dropped_value_why(
+                unconsumed_unknown_words(runtime, intent_str, best_draft.query),
+                set(intent_ir.unresolved),
+            )
         )
         if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
         else None
@@ -670,39 +679,29 @@ def _unconsumed_catalog_why(question: str, words: list[str]) -> dict[str, Any] |
     }
 
 
-def _dropped_value_why(
-    question: str, unmatched: list[str], catalog_tokens: frozenset[str], unresolved: set[str]
-) -> dict[str, Any] | None:
-    """A ``why`` when the question restricts to names the catalog doesn't know and the draft
-    doesn't filter on: "for tangaroo and vanilla ice", "from doctor stew and mel-bun".
+def _dropped_value_why(unconsumed: list[str], unresolved: set[str]) -> dict[str, Any] | None:
+    """Unknown words left unresolved by the intent parse make the draft not ready.
 
-    Two words or more, the first straight after for/from/of/with, each one the draft accounts
-    for nowhere, no catalog object has and the intent parse couldn't place. A single word
-    ("YoY", "decile"), one the catalog has or one further into a clause stays a
-    ``PLAN_UNMATCHED_TERMS`` warning.
+    The parse records a word as it normalizes it ("messages" as "message", "sent" as
+    "received"), so membership compares that form; the message names the question's spelling.
     """
 
-    unknown = [term for term in unmatched if term not in catalog_tokens and term in unresolved]
-    lowered = question.lower()
-    if len(unknown) < 2 or not any(
-        re.search(rf"\b(?:for|from|of|with)\s+(?:the\s+)?{re.escape(term)}\b", lowered)
-        for term in unknown
-    ):
+    unknown = [term for term in unconsumed if _runtime_composition_terms(term) & unresolved]
+    if not unknown:
         return None
     return {
         "code": "PLAN_UNMATCHED_TERMS",
         "message": (
-            f"The question restricts to words that match nothing in the catalog "
-            f"({', '.join(unknown)}), and the draft doesn't filter on them, so it answers a "
-            "wider question."
+            f"The question has words that match nothing in the catalog and the draft "
+            f"doesn't consume: {', '.join(unknown)}. So plan doesn't call it ready."
         ),
-        "details": {"terms": unknown},
+        "details": {"terms": unknown, "kind": "filter_values_unrealized"},
         "recovery_hints": [
             {
                 "kind": "add_missing_condition",
                 "message": (
                     "Find the values with valid_values, add the filter to best.query_ir, "
-                    "then validate."
+                    "then validate; or ask again without those words."
                 ),
             }
         ],

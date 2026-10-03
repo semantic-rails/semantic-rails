@@ -11,16 +11,20 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any
 
 from .ast import child_groups, every_filter, normalize_query
 from .compiler import bind_metadata_objects, bind_query
 from .errors import ERROR_CODES, SemanticLayerError, query_execution_error
 from .expressions import MetricRecipeRefExpr, collect_object_references
-from .policies import enforce_query_policies
+from .policies import enforce_query_policies, withheld_rank_order
 from .request_context import RequestContext, context_from_policy_context
 from .request_payload import checked_discover_kinds, unknown_discover_kinds_error
+from .runtime_parts.responses import (
+    apply_response_verbosity,
+    resolve_sql_profile,
+    resolve_verbosity,
+)
 from .schema import PackageConfig
 
 
@@ -119,6 +123,14 @@ class ResourceAccess:
             binding = None
             if query is not None:
                 binding = bind_query(self.config, None, query)
+                binding = withheld_rank_order(
+                    self.config,
+                    binding,
+                    rebind=lambda query: bind_query(self.config, None, query),
+                    environment=self.context.environment,
+                    audience=self.context.audience,
+                    roles=self.context.roles,
+                )
                 references = set(binding.object_ids)
             else:
                 references.update(bind_metadata_objects(self.config, object_ids))
@@ -422,6 +434,32 @@ def _restricted_plan(
     }
 
 
+_GRANTED_WARNING_KEYS = {
+    # runtime.py _no_data_in_scope_warnings: fixed text, caller output aliases,
+    # and the warning's own object_ids; details contains only those output aliases.
+    "NO_DATA_IN_SCOPE": frozenset(
+        {"code", "severity", "stage", "message", "object_ids", "details"}
+    ),
+    # runtime.py _withhold_values: fixed text, the warning's own object_ids,
+    # and the caller's order alias; details repeats those objects and that alias.
+    "VALUES_WITHHELD": frozenset({"code", "severity", "stage", "message", "object_ids", "details"}),
+}
+
+
+def _granted_warnings(warnings: list[dict[str, Any]], permitted: set[str]) -> list[dict[str, Any]]:
+    """Expose only listed engine diagnostics whose named objects are all granted."""
+    return [
+        {
+            key: value
+            for key, value in warning.items()
+            if key in _GRANTED_WARNING_KEYS[warning["code"]]
+        }
+        for warning in warnings
+        if warning.get("code") in _GRANTED_WARNING_KEYS
+        and set(warning.get("object_ids", [])) <= permitted
+    ]
+
+
 def run_authorized_operation(
     operation: Callable[..., Any], runtime: Any, args: tuple[Any, ...], kwargs: dict[str, Any]
 ) -> Any:
@@ -434,7 +472,18 @@ def run_authorized_operation(
     try:
         if name in {"validate", "compile", "query"}:
             access.enforce_query(payload)
-            result = operation(runtime, *args, **kwargs)
+            # Ask the runtime for its descriptors even for a minimal grant response, then
+            # apply the caller's verbosity after projecting the redacted runtime result.
+            runtime_payload = (
+                {**payload, "verbosity": "compact"}
+                if resolve_verbosity(payload) == "minimal"
+                else payload
+            )
+            result = (
+                operation(runtime, runtime_payload, *args[1:], **kwargs)
+                if args
+                else operation(runtime, **{**kwargs, "payload": runtime_payload})
+            )
             if not result.get("ok", False):
                 first: dict[str, Any] = next(iter(result.get("errors") or []), {})
                 raise _public_error(SemanticLayerError(str(first.get("code", "INVALID_QUERY")), ""))
@@ -462,31 +511,32 @@ def run_authorized_operation(
                     # Fixed engine strings that name no objects.
                     "assumptions",
                     "time_shape",
+                    "withheld",
+                    "warnings",
                 }
             }
-            from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL, output_columns
-
-            # Reuse the engine's descriptor builder even when minimal verbosity
-            # omitted it. It uses the authorized query, not expanded recipes.
-            columns = output_columns(
-                access.config,
-                {
-                    "explain": SimpleNamespace(normalized_query=normalize_query(payload).to_dict()),
-                    "logical_plan": SimpleNamespace(
-                        time={"window_total": result.get("time_shape") == TIME_SHAPE_WINDOW_TOTAL}
-                    ),
-                },
-            )
             permitted = set(access.context.metric_allowlist or ()) | set(
                 access.context.dimension_allowlist or ()
             )
+            if "withheld" in result:
+                response["withheld"] = [
+                    object_id for object_id in result["withheld"] if object_id in permitted
+                ]
+            response["warnings"] = _granted_warnings(result.get("warnings", []), permitted)
+            if resolve_verbosity(payload) == "minimal":
+                response = apply_response_verbosity(
+                    response,
+                    verbosity="minimal",
+                    sql_profile=resolve_sql_profile(payload),
+                    kind="execute" if name == "query" else name,
+                )
             response["output_columns"] = [
                 {
                     key: value
                     for key, value in column.items()
                     if key in {"field", "semantic_id", "display_label", "sql_alias", "type"}
                 }
-                for column in columns
+                for column in result.get("output_columns", [])
                 if column.get("semantic_id") in permitted
             ]
             return response

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, replace
@@ -45,6 +45,7 @@ from ..expressions import (
     RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    collect_column_refs,
     expr_to_dict,
     expression_field,
 )
@@ -99,6 +100,8 @@ from .bind import (
     _expression_alias,
     _freeze_payload,
     _parse_public_expr,
+    _row_marker,
+    earlier_settlement,
 )
 from .conversion import _conversion_leaf_cte
 from .dependencies import (
@@ -120,12 +123,16 @@ from .empty_groups import (
     absent_entities_gate,
     base_reads,
     carried_zero_lookups,
+    counts_rows,
     expr_resolves_to_zero,
     guard_empty_groups,
+    has_nested_case,
+    reads_every_row,
     record_leaf_scope,
     record_zero_output,
     recording_leaf_scopes,
     recording_zero_outputs,
+    refuse_shared_names,
     refuse_unsettled,
     require_settled_source,
     require_time_scopes,
@@ -1149,6 +1156,17 @@ def _aggregate_relation_leaf_select(
     aggregate: AggregateRelationConfig,
     config: PackageConfig,
 ) -> SqlSelect:
+    nested = [
+        row.bound_measure.measure_id
+        for row in measure_plans
+        if has_nested_case(_measure_index(config)[row.bound_measure.measure_id])
+    ]
+    if nested:
+        raise SemanticLayerError(
+            "EMPTY_GROUPS_UNSETTLED",
+            "A measure containing a nested CASE cannot read a rollup.",
+            details={"measures": nested, "aggregate_relation": aggregate.id},
+        )
     record_rollup_scan(aggregate.id)
     select_fields: list[SqlField] = []
     group_fields: list[Any] = []
@@ -1190,10 +1208,11 @@ def _aggregate_relation_leaf_select(
                 _aggregate_relation_filter_expr(aggregate, dict(item), path="measure_filter")
             )
         aggregation = recombine_aggregation(aggregate, measure_id)
+        held = _column_ref(aggregate.relation, column)
         select_fields.append(
             SqlField(
                 _aggregation_expr(
-                    _column_ref(aggregate.relation, column),
+                    held,
                     aggregation,
                     parameters=measure_plan.bound_measure.aggregation_params,
                     dialect=_dialect(config),
@@ -1201,6 +1220,11 @@ def _aggregate_relation_leaf_select(
                 measure_plan.bound_measure.alias,
             )
         )
+        # Each rollup row stands for base rows of its group, but can't say which of them met
+        # a CASE measure's condition: that measure gets no row count (routing keeps it off).
+        measure = _measure_index(config)[measure_id]
+        if reads_every_row(measure):
+            select_fields.extend(_rows_fields(measure_plan, measure, held))
 
     return SqlSelect(
         select=select_fields,
@@ -2135,6 +2159,8 @@ def _fanout_dedup_leaf_select(
     entity = entities[measure.entity]
     table = _measure_owned_relation(measure, entities)
     rows_name = f"{measure_plan.cte_name}_entity_rows"
+    # Each de-duplicated row carries its own row marker, which the group counts.
+    markers = _row_markers(measure_plan, measure, value_expr)
     rows = SqlSelect(
         select=[
             *(
@@ -2143,6 +2169,7 @@ def _fanout_dedup_leaf_select(
             ),
             *key_fields,
             SqlField(value_expr, "__entity_value"),
+            *(SqlField(marker, "__entity_rows") for marker, _ in markers),
         ],
         from_table=SqlTableRef(name=table),
         joins=joins,
@@ -2161,6 +2188,12 @@ def _fanout_dedup_leaf_select(
         select=[
             *(SqlField(expr, field.alias) for expr, field in zip(group, key_fields, strict=True)),
             SqlField(value, measure_plan.bound_measure.alias),
+            *(
+                SqlField(
+                    SqlCall("COUNT", [SqlIdentifier(parts=[rows_name, "__entity_rows"])]), alias
+                )
+                for _, alias in markers
+            ),
         ],
         from_table=SqlTableRef(name=rows_name),
         group_by=group,
@@ -2338,6 +2371,7 @@ def _fanout_filter_leaf_select(
                 ),
                 measure_plan.bound_measure.alias,
             ),
+            *_rows_fields(measure_plan, measure, value_expr),
         ],
         from_table=SqlTableRef(name=_measure_owned_relation(measure, _entity_index(config))),
         joins=[*joins, *([calendar_join] if calendar_join is not None else [])],
@@ -2638,6 +2672,13 @@ def _source_rollup_leaf_select(
     if time_alias and time_expr is not None:
         preagg_fields[time_alias] = time_expr
 
+    markers = _row_markers(measure_plan, measure, leaf_value_expr)
+    taken = {alias.casefold() for alias in preagg_fields}
+    taken.update(alias.casefold() for _, alias in markers)
+    value_alias, suffix = "__source_value", 2
+    while value_alias.casefold() in taken:
+        value_alias, suffix = f"__source_value_{suffix}", suffix + 1
+
     preagg_select_fields = [SqlField(expr, alias) for alias, expr in preagg_fields.items()]
     preagg_select_fields.append(
         SqlField(
@@ -2647,8 +2688,11 @@ def _source_rollup_leaf_select(
                 parameters=measure_plan.bound_measure.aggregation_params,
                 dialect=dialect_for_warehouse(config.package.warehouse),
             ),
-            "__source_value",
+            value_alias,
         )
+    )
+    preagg_select_fields.extend(
+        SqlField(SqlCall("COUNT", [marker]), alias) for marker, alias in markers
     )
     preagg_group_fields = list(preagg_fields.values())
 
@@ -2668,7 +2712,11 @@ def _source_rollup_leaf_select(
         final_select_fields.append(SqlField(expr, time_alias))
         final_group_fields.append(expr)
     final_select_fields.append(
-        SqlField(SqlCall("SUM", [SqlIdentifier(parts=[rollup_name, "__source_value"])]), leaf_alias)
+        SqlField(SqlCall("SUM", [SqlIdentifier(parts=[rollup_name, value_alias])]), leaf_alias)
+    )
+    final_select_fields.extend(
+        SqlField(SqlCall("SUM", [SqlIdentifier(parts=[rollup_name, alias])]), alias)
+        for _, alias in markers
     )
 
     return SqlSelect(
@@ -2973,6 +3021,7 @@ def _measure_leaf_select(
             leaf_alias,
         )
     )
+    select_fields.extend(_rows_fields(measure_plan, measure, leaf_value_expr))
     leaf = SqlSelect(
         ctes=predicate_ctes,
         select=select_fields,
@@ -4622,6 +4671,107 @@ def build_performance_plan(
     )
 
 
+_row_count_columns: ContextVar[Mapping[str, str] | None] = ContextVar(
+    "row_count_columns", default=None
+)
+
+
+@contextmanager
+def naming_row_counts(names: Mapping[str, str]) -> Iterator[None]:
+    """Name the row count of each leaf lowered in this block (``_row_count_names``); a nested
+    compile names its own."""
+    token = _row_count_columns.set(names)
+    try:
+        yield
+    finally:
+        _row_count_columns.reset(token)
+
+
+def _names_in_use(plan: LogicalPlan, config: PackageConfig) -> set[str]:
+    """Every name a hidden row count must not take, case-folded as SQL may compare them: the
+    query's outputs, grouping keys and internal aliases, every column the package's models
+    declare, and every column the query's measures read."""
+    measures = {row.bound_measure.measure_id for row in plan.measure_plans}
+    filters = len(list(plan.query.get("metric_filters", []) or []))
+    names = [
+        *_query_key_aliases(plan),
+        *plan.post_aggregation_exprs,
+        *(row.bound_measure.alias for row in plan.measure_plans),
+        *(_metric_filter_alias(index) for index in range(filters)),
+        *(
+            ref.column
+            for row in config.measures
+            if row.id in measures
+            for ref in collect_column_refs(row.expr)
+        ),
+        *(
+            column
+            for row in config.entities
+            for column in [row.primary_key, *row.key, *row.identifiers]
+            + [column for columns in row.foreign_keys.values() for column in columns]
+        ),
+        *(row.column for row in config.dimensions),
+        *(
+            column
+            for row in config.relationships
+            for column in (
+                row.source_column,
+                row.target_column,
+                *row.source_columns,
+                *row.target_columns,
+            )
+        ),
+        *(
+            column
+            for row in config.aggregate_relations
+            for column in [
+                row.time_column,
+                *row.measure_columns.values(),
+                *row.dimension_columns.values(),
+            ]
+        ),
+        *(column for row in config.relations for column in row.columns),
+    ]
+    return {str(name).casefold() for name in names if name}
+
+
+def _row_count_names(plan: LogicalPlan, taken: Collection[str]) -> dict[str, str]:
+    """Each measure's row-count column, by its alias: ``m<i>_rows`` beside the ``m<i>`` the
+    alias registry gives the measure, renamed until it takes no name in ``taken``. The registry
+    rewrites every identifier it names, so it never names these, nor any physical column."""
+    taken = set(taken)
+    names: dict[str, str] = {}
+    aliases = dict.fromkeys(row.bound_measure.alias for row in plan.measure_plans)
+    for index, alias in enumerate(aliases, start=1):
+        name, suffix = f"m{index}_rows", 2
+        while name.casefold() in taken:
+            name, suffix = f"m{index}_rows_{suffix}", suffix + 1
+        taken.add(name.casefold())
+        names[alias] = name
+    return names
+
+
+def _row_markers(measure_plan: MeasurePlan, measure: Any, value_expr: Any) -> list[tuple[Any, str]]:
+    """The per-row marker a zero-settled sum's leaf counts, and the column the count goes in.
+
+    The guard reads 0 only where that count is 0 (see ``empty_groups``); counts need none. A
+    leaf lowered outside ``naming_row_counts`` counts nothing, and the guard refuses its sum.
+    """
+    bound = measure_plan.bound_measure
+    name = (_row_count_columns.get() or {}).get(bound.alias)
+    if name is None or not counts_rows(bound.aggregation, measure):
+        return []
+    return [(_row_marker(value_expr), name)]
+
+
+def _rows_fields(measure_plan: MeasurePlan, measure: Any, value_expr: Any) -> list[SqlField]:
+    """Beside a sum's value: how many of the group's rows it read."""
+    return [
+        SqlField(SqlCall("COUNT", [marker]), alias)
+        for marker, alias in _row_markers(measure_plan, measure, value_expr)
+    ]
+
+
 def _measure_group_leaf_select(
     plan: LogicalPlan, measure_plans: list[MeasurePlan], config: PackageConfig
 ) -> SqlSelect:
@@ -4710,10 +4860,11 @@ def _measure_group_leaf_select(
             order_expr = _column_ref(
                 _measure_dim_relation(measure, time_dim, entities), time_dim.column
             )
+        value_expr = _config_expr_to_sql(measure.expr, measure, config)
         select_fields.append(
             SqlField(
                 _aggregation_expr(
-                    _config_expr_to_sql(measure.expr, measure, config),
+                    value_expr,
                     measure_plan.bound_measure.aggregation,
                     order_expr=order_expr,
                     parameters=measure_plan.bound_measure.aggregation_params,
@@ -4722,6 +4873,7 @@ def _measure_group_leaf_select(
                 measure_plan.bound_measure.alias,
             )
         )
+        select_fields.extend(_rows_fields(measure_plan, measure, value_expr))
 
     joins = list(
         _joins_for_paths(
@@ -5398,21 +5550,37 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     if anchored_select is not None:
         return _tier_internal_aliases(plan, anchored_select, measure_aliases=[])
     if _plan_requires_agent_dag_lowering(plan, config):
-        return _lower_agent_dag_to_sql(plan, config, guard_empty)
+        # Arithmetic beside a distribution settles each branch, then their combine, before
+        # it can tell an operand's unknown amounts from its empty groups: every branch keeps
+        # the earlier settlement.
+        with earlier_settlement():
+            return _lower_agent_dag_to_sql(plan, config, guard_empty)
 
     key_aliases = _query_key_aliases(plan)
     measure_aliases: list[str] = []
+    # Each sum's count of the rows it read, by measure alias: only those its leaf emitted, so
+    # the guard refuses a sum whose leaf can't tell no rows from rows of unknown values.
+    rows: dict[str, str] = {}
+    taken = _names_in_use(plan, config)
+    row_counts = _row_count_names(plan, taken)
+    refuse_shared_names(row_counts.values(), taken)
     conversion_exprs = _conversion_exprs_for_plan(plan, config)
     if plan.measure_plans or conversion_exprs:
         leaf_ctes: list[SqlCte] = []
         measure_groups = _measure_plan_groups(plan, config)
         # A window on the request's own query hides data outside it: keep what each leaf reads.
-        with recording_leaf_scopes() as scopes:
+        with recording_leaf_scopes() as scopes, naming_row_counts(row_counts):
             for measure_group in measure_groups:
                 cte_name = measure_group[0].cte_name
                 # A folded group shares one scan, so its filters cut every leaf in it.
                 with cut_owners(*(row.bound_measure.alias for row in measure_group)):
                     leaf_select = _measure_group_leaf_select(plan, measure_group, config)
+                emitted = {field.alias for field in leaf_select.select}
+                rows.update(
+                    (row.bound_measure.alias, row_counts[row.bound_measure.alias])
+                    for row in measure_group
+                    if row_counts[row.bound_measure.alias] in emitted
+                )
                 if (
                     guard_empty
                     and plan_is_root()
@@ -5451,7 +5619,15 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             f"conversion_leaf_{index + 1}" for index in range(len(conversion_aliases))
         ]
         source_alias_groups = [
-            [row.bound_measure.alias for row in group] for group in measure_groups
+            [
+                *(row.bound_measure.alias for row in group),
+                *(
+                    rows[row.bound_measure.alias]
+                    for row in group
+                    if row.bound_measure.alias in rows
+                ),
+            ]
+            for group in measure_groups
         ] + [[alias] for alias in conversion_aliases]
         combined_name = combine_sources[0]
         available_aliases = list(source_alias_groups[0])
@@ -5505,7 +5681,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
             ctes=[*leaf_ctes, *combine_ctes],
             select=[
                 SqlField(SqlIdentifier(parts=["base", alias]), alias)
-                for alias in [*key_aliases, *measure_aliases]
+                for alias in [*key_aliases, *measure_aliases, *rows.values()]
             ],
             from_table=SqlTableRef(name=combined_name, alias="base"),
         )
@@ -5581,7 +5757,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
         joins.append(
             SqlJoin(join_type="LEFT", table=SqlTableRef(name="leaf_base"), on=join_condition)
         )
-        for alias in measure_aliases:
+        for alias in [*measure_aliases, *rows.values()]:
             filled_fields.append(SqlField(SqlIdentifier(parts=["leaf_base", alias]), alias))
         ctes.append(
             SqlCte(
@@ -5608,6 +5784,12 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 measure_aliases,
                 zero,
                 scopes,
+                rows=rows,
+                earlier={
+                    row.bound_measure.alias
+                    for row in plan.measure_plans
+                    if has_nested_case(_measure_index(config)[row.bound_measure.measure_id])
+                },
                 time_key=time_alias if _emits_time_coverage(plan, config) else "",
                 dialect=_dialect(config),
             )

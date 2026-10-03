@@ -8,6 +8,7 @@ picks the top result would hallucinate.
 
 from __future__ import annotations
 
+from semantic_rails.planner import plan_payload
 from tests.plan_candidate_envelope import plan_candidate_envelope
 
 
@@ -78,6 +79,19 @@ def test_plan_prefers_revenue_usd_over_drink_revenue_for_generic_intent(
             "top 3 stores by revenue in the most recent full month",
             "revenue by store",
         ):
+            plan = plan_payload(runtime, intent=intent)
+            if "recent full" in intent:
+                assert plan["status"] == "low_confidence"
+                assert plan["why"]["details"] == {
+                    "terms": ["recent", "full"],
+                    "kind": "filter_values_unrealized",
+                }
+                assert "ready_for" not in plan["next"]
+                assert (
+                    plan["best"]["query_ir"]["select"][0]["expression"]["measure"]
+                    == "measure.jaffle.revenue_usd"
+                )
+                continue
             payload = plan_candidate_envelope(runtime, intent=intent, limit=10)
             candidates = list(payload.get("candidates", []) or [])
             assert candidates, f"expected candidates for: {intent}"

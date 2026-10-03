@@ -623,7 +623,7 @@ lookup, and during policy evaluation. Release labels belong in `config.label`.
 | --- | --- |
 | `package_release` | omitted or `label` |
 | `object_visibility` | `hidden`, `visible` (required) |
-| `object_access` | `deny`, `redact` (required) |
+| `object_access` | `deny`, `redact`, `withhold_values` (required) |
 | `protected_object` | omitted or `protected` |
 | `metric_constraint` | omitted or `constrain` |
 | `row_filter` | omitted |
@@ -648,6 +648,8 @@ action checks. Action text is trimmed and lowercased; kind names must match exac
   columns with no declared dimension remain allowed. While any `object_access`
   or `object_visibility` policy is declared, it may not read another entity's column
   that no dimension declares (`POLICY_DENIED`, reason `column_without_dimension`).
+  `action: withhold_values` lets the scoped caller rank by a metric or measure without
+  seeing its values ("the 3 biggest accounts in EMEA"); see below.
 - **`protected_object`** — pins an object as protected in the named
   environments; `promote-package` and `impact-report` treat changes to
   protected objects as release-gated.
@@ -732,6 +734,48 @@ semantic_policies:
     attribute: customer_id
     rationale: Each customer sees only their own orders.
 ```
+
+### Ranking by withheld values
+
+```yaml
+semantic_policies:
+  - id: policy.revenue_rank_only
+    kind: object_access
+    action: withhold_values
+    object_ids: [metric.revenue]
+    roles: [sales]
+    config: {max_rank: 10}
+```
+
+A `withhold_values` policy answers one shape: a grouped query that selects the governed
+metric or measure directly (no wrapper, aggregation or time-role override) and names it
+first in `order_by`, then every group key (and the time bucket) in the same direction, with
+a `limit` of at most `config.max_rank` (an integer from 1 to 100; default 10). When
+`order_by` names only the metric, the engine adds the group keys. Dimension filters and
+time windows work as usual. The response's `rows` hold the group keys only: the metric's
+column is removed from `rows`, `column_types` and `output_columns`. A top-level `withheld`
+lists the withheld objects, and one `VALUES_WITHHELD` warning says the rows are ordered by
+them. Because ties are ordered by the keys in the rank's direction, ascending is the exact
+reverse of descending, so flipping it cannot tell a tie from a strict order. Every order
+key has a portable NULL indicator in that same direction: NULLs sort first on ascending
+and last on descending, for both the ranked value and nullable group keys.
+
+Every other use is refused with `POLICY_DENIED`, `details.withheld_objects`, a `reason`
+and a recovery hint naming the accepted shape, on validate, compile, execute and MCP:
+selecting it in any expression, metric or measure that reads it (ratios, arithmetic,
+comparisons, prior period, rolling and other windows), ordering by such an expression, a
+`where`, `metric_filters` or threshold reading it, a segment defined on it, `export`, a
+missing or larger `limit`, and other tie orders. Dependencies are the compiler's own, so a
+derived metric cannot stand in for the withheld one. Compiled SQL still contains the
+metric's expression; values come only from the warehouse and never appear in errors,
+warnings or explain output. Data-dependent diagnostics exclude withheld outputs before
+reading row values, including whether they are NULL; permitted outputs keep their
+diagnostics. Any unresolved filter or threshold dependency refuses with reason
+`withheld_unproven`. Resource-granted responses retain `withheld`, warnings naming only
+granted objects, and the runtime's output descriptors after the withheld column is removed.
+`valid-values` never anchors a live lookup on a withheld
+measure, or on one a withheld metric reads. As with `deny`, a policy on a metric does not
+govern its measures when they are selected directly: list them too.
 
 The annotated policy example lives in
 [configs/semantic_rails/jaffle_shop/policies.yml](../configs/semantic_rails/jaffle_shop/policies.yml);

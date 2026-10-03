@@ -277,17 +277,27 @@ object's label or aliases, or of the last dotted part of its id or name outside 
 namespaces ("sales" in `metric.sales.aov_usd` names nothing); a plural counts as its singular.
 Only the draft consumes one: by the label, aliases, id or name of an object it selects (an id the
 question spells out whole consumes its namespaces too), a value it filters on or that value's
-declared names, a time grain it carries (its unit, "time", "date" and "period"), a count it
-carries ("number of"), or a time phrase it read; only function words ("of", "at") are exempt. A
+declared names, a time grain it carries (only its unit and its "-ly" form), a prior-period
+shift's trigger phrase, one grouping that names the query's clock at the planned grain (a
+second one, as in "by order month and order date", is not consumed), "number of" for a
+selected count-valued measure when the draft has no grouping, or a recorded time phrase or
+honored clause.
+Stopwords are exempt unless they are exact catalog names. Regular plurals are recognized
+and consumed using the same forms; "-es" applies only after s, x, z, ch or sh. A
 synonym, a typo, a namespace, a description, a framing word or an object the draft doesn't select
 (a measure's entity included) never does. So `plan` may hold back a right draft ("revenue from
 orders": Orders is a measure), but never calls one ready that drops a grouping the question
-names. Other words stay warnings; check them before executing.
+names. Words that name no catalog object also make the plan `low_confidence` when the draft
+doesn't consume them, they aren't stopwords or number words, and `intent_ir.unresolved`
+still holds them. This returns `why.code="PLAN_UNMATCHED_TERMS"` with
+`why.details={"terms": [...], "kind": "filter_values_unrealized"}` and an
+`add_missing_condition` hint: find values with `valid_values`, add the filter, then validate,
+or ask again without those words. A single unknown value such as "Brooklyn" blocks readiness
+when the package declares no value domain for it; plan never guesses its dimension or queries
+the warehouse to resolve it. Other unmatched words stay warnings; check them before executing.
 A number, or a clock or zone word, the draft doesn't carry is not a warning: it makes the plan
 `low_confidence` (below), since the draft dropped an hour, a range or a
-threshold. Two words or more that no catalog object has, the first straight after "for",
-"from", "of" or "with", make it `low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`
-instead: "for tangaroo and vanilla ice" is a filter the draft dropped. Every measure a
+threshold. Every measure a
 question lists ("item revenue and orders in Q1 2017") is in the draft's select list or the
 plan is `low_confidence` with a `multiple_subjects_unrealized` gap naming the ones it left
 out. For a measure by a dimension, a measure the question names in full outranks a shorter one
@@ -866,7 +876,7 @@ Request `compact` or `full` for the complete analysis details.
 | `INVALID_MCP_ARGUMENTS` | Tool arguments don't match the input_schema; `recovery_hints` carries the corrected shape. |
 | `RESULT_TOO_LARGE` | `execute` rows would exceed the response character limit; nothing is returned. `message` says what would fit; see `details.max_result_chars`. |
 | `WINDOW_TOTAL_UNSUPPORTED` | A `time` window with no `grain` would return one total, but part of the query still groups by the raw time column, so the result can't be one row per group. Nothing is returned. Set `time.grain`, or remove `time.start` and `time.end`. |
-| `EMPTY_GROUPS_UNSETTLED` | The compiler built a query that reads a sum or count without settling its empty groups, so a group with no rows would read `NULL` instead of `0`. An engine defect, not a query error; nothing is returned. `details.measures` names them. |
+| `EMPTY_GROUPS_UNSETTLED` | The compiler built a query that reads a sum or count without settling its empty groups, so a group with no rows would read `NULL` instead of `0`, or a sum missing a required row count, so a group whose amounts are all unknown could read `0`. A measure containing a nested CASE forced onto a rollup is also refused (`details.aggregate_relation`). An engine defect, not a query error; nothing is returned. `details.measures` names them, or `details.row_counts_named_like` a row count named like another column. |
 | `INTERNAL_ERROR` | Bare exception reached the boundary; retry once and file a bug if it recurs. |
 
 ### Worked Example Envelopes

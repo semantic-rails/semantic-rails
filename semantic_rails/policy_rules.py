@@ -11,11 +11,13 @@ from .schema import SemanticPolicyConfig
 POLICY_ACTIONS = {
     "package_release": {"": "label", "label": "label"},
     "object_visibility": {"hidden": "hidden", "visible": "visible"},
-    "object_access": {"deny": "deny", "redact": "redact"},
+    "object_access": {"deny": "deny", "redact": "redact", "withhold_values": "withhold_values"},
     "protected_object": {"": "protected", "protected": "protected"},
     "metric_constraint": {"": "constrain", "constrain": "constrain"},
     "row_filter": {"": ""},
 }
+DEFAULT_MAX_RANK = 10
+MAX_RANK = 100
 
 
 def policy_config(policy: SemanticPolicyConfig) -> dict[str, Any]:
@@ -49,4 +51,18 @@ def policy_action(policy: SemanticPolicyConfig) -> str:
             f"policy '{policy.id}' of kind {policy.kind!r} has unsupported action {action!r}. "
             f"Allowed actions: {', '.join(repr(value) for value in allowed)}.",
         )
+    if allowed[action] == "withhold_values":
+        withheld_max_rank(policy)
     return allowed[action]
+
+
+def withheld_max_rank(policy: SemanticPolicyConfig) -> int:
+    """The most rows a rank by a withheld object may return: ``config.max_rank``, 1 to 100."""
+    value = policy_config(policy).get("max_rank", DEFAULT_MAX_RANK)
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_RANK:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"policy '{policy.id}' max_rank must be an integer from 1 to {MAX_RANK}; "
+            f"got {value!r}.",
+        )
+    return value
