@@ -5321,7 +5321,7 @@ def _bind_query(
     # policy_context carries caller metadata and is never read as expressions;
     # every other request key, including unrecognized ones, is shape-checked.
     validate_expression_shapes(
-        {key: value for key, value in payload.items() if key != "policy_context"}
+        {key: value for key, value in payload.items() if key != "policy_context"}, path="query"
     )
     plan = plan_query(config, registry, payload)
     config = resolve_compile_config(plan, config)

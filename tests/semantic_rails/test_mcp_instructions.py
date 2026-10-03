@@ -76,6 +76,9 @@ def test_initialize_sends_the_workflow_once(adapter: SemanticLayerMCPAdapter) ->
     for tool in MINIMAL_ARGUMENTS:
         assert f"{tool}" in instructions, tool
     assert "policy_context" not in instructions
+    assert "jaffle" not in instructions
+    assert 'pass verbosity "compact" or "full"' not in instructions
+    assert "omitted_fields" in instructions
     assert "the query adds no time window or filter" in instructions
     assert "metric definitions and package policies still apply" in instructions
 
@@ -166,7 +169,7 @@ def test_initialize_does_not_disclose_hidden_package_ids(adapter, grant) -> None
         for object_id in hidden:
             assert object_id not in str(discover)
             assert object_id not in instructions
-        assert "(measure.jaffle.revenue_usd, dimension.jaffle_store_name)" in instructions
+        assert "(measure.sales.revenue, dimension.store_name)" in instructions
     finally:
         served.close()
 

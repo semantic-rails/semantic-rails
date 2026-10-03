@@ -1,0 +1,11 @@
+model:
+  id: account_days
+  relation: account_days
+  entities: {account_day: {}}
+  dimensions:
+    plan: {kind: categorical}
+  times:
+    snapshot_day: {column: snapshot_day, kind: date, class: as_of_time, default: true}
+  measures:
+    seats: {kind: aggregate, expr: seats, value_type: count,
+      accumulation: {kind: stock, snapshot: end_of_period}}

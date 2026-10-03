@@ -359,12 +359,12 @@ def test_failed_runs_are_not_recorded_as_successful_answers(
 ) -> None:
     session = MCPQuerySession()
     adapter.replace_tool_handler("execute", lambda _: {"ok": False, "row_count": 7})
-    failed = adapter.call_tool("execute", {"query": QUERY}, session=session)
-    adapter.replace_tool_handler("execute", lambda _: {"ok": True, "row_count": 0})
+    adapter.call_tool("execute", {"query": QUERY}, session=session)
+    adapter.replace_tool_handler("execute", lambda _: {"ok": True, "row_count": 0, "rows": []})
     validated = adapter.call_tool("execute", {"query": QUERY, "mode": "validate"}, session=session)
     _no_hints(validated)
     succeeded = adapter.call_tool("execute", {"query": QUERY}, session=session)
-    assert succeeded["same_as"] == failed["request_id"]
+    _no_hints(succeeded)
     compiled = adapter.call_tool("execute", {"query": QUERY, "mode": "sql"}, session=session)
     assert compiled["already_ran"] == {"request_id": succeeded["request_id"], "row_count": 0}
 
@@ -451,12 +451,13 @@ def test_unfingerprintable_arguments_cannot_match() -> None:
         _no_hints(response)
 
 
-def test_empty_arguments_and_errors_also_have_repeat_hints(
+def test_empty_arguments_have_repeat_hints_but_errors_do_not(
     adapter: SemanticLayerMCPAdapter,
 ) -> None:
     session = MCPQuerySession()
     first = adapter.call_tool("discover", session=session)
     assert adapter.call_tool("discover", session=session)["same_as"] == first["request_id"]
-    failed = adapter.call_tool("inspect", {"object_id": "missing"}, session=session)
+    adapter.call_tool("inspect", {"object_id": "missing"}, session=session)
     repeat = adapter.call_tool("inspect", {"object_id": "missing"}, session=session)
-    assert repeat["ok"] is False and repeat["same_as"] == failed["request_id"]
+    assert repeat["ok"] is False
+    _no_hints(repeat)

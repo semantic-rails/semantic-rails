@@ -50,6 +50,8 @@ def test_validate_accepts_canonical_anchor_window_shape(runtime_factory):
         hints = first.get("recovery_hints") or []
         pending = [h for h in hints if h.get("kind") == "feature_pending_sql_lowering"]
         assert pending, f"expected feature_pending_sql_lowering hint, got {hints!r}"
+        assert "anchor-offset column" in pending[0]["message"]
+        assert "docs/" not in pending[0]["message"]
     finally:
         runtime.close()
 
