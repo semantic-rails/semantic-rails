@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -131,6 +132,44 @@ def _held(payload: dict[str, Any], code: str) -> None:
     assert "ready_for" not in payload["next"]
 
 
+_REVENUE_SQL = "SUM(o.order_total_cents / 100.0)"
+
+
+def _assert_reference_rows(
+    runtime: Runtime, query: dict[str, Any], keys: dict[str, str], totals: dict[str, str]
+) -> None:
+    """The query's rows equal reference SQL over the seed. ``keys`` maps each grouping column
+    to its SQL and ``totals`` each selected column to its SQL, over jaffle_order ``o`` joined to
+    jaffle_store ``s`` and jaffle_customer ``c``."""
+
+    def cell(value: Any) -> str:
+        return value.date().isoformat() if isinstance(value, datetime) else str(value)
+
+    assert [select["as"] for select in query["select"]] == list(totals)
+    rows = sorted(
+        (*(cell(row[key]) for key in keys), *(float(row[alias]) for alias in totals))
+        for row in typed_rows(runtime.query(query))
+    )
+    connection = duckdb.connect(runtime.db_path, read_only=True)
+    try:
+        reference = connection.execute(
+            f"SELECT {', '.join([*keys.values(), *totals.values()])} FROM jaffle_order o "
+            "LEFT JOIN jaffle_store s ON o.store_id = s.store_id "
+            "LEFT JOIN jaffle_customer c ON o.customer_id = c.customer_id GROUP BY ALL"
+        ).fetchall()
+    finally:
+        connection.close()
+    expected = sorted(
+        (*(cell(key) for key in row[: len(keys)]), *(float(total) for total in row[len(keys) :]))
+        for row in reference
+    )
+    assert rows
+    assert [row[: len(keys)] for row in rows] == [row[: len(keys)] for row in expected]
+    assert [row[len(keys) :] for row in rows] == [
+        pytest.approx(row[len(keys) :]) for row in expected
+    ]
+
+
 def test_a_dropped_grouping_is_not_ready(jaffle: Runtime) -> None:
     intent = "revenue by store, customer type and product type"
     payload = plan_payload(jaffle, intent=intent)
@@ -175,7 +214,7 @@ def _with_store_dimensions(jaffle: Runtime, *dimensions: tuple[str, str, str]) -
 
 
 @pytest.mark.parametrize(
-    ("dimensions", "intent", "code", "group_by", "terms"),
+    ("dimensions", "intent", "code", "group_by", "terms", "totals"),
     [
         # "status" (Membership status) is one typo from "states". The draft groups by both, and
         # validation refuses Membership status for revenue.
@@ -185,6 +224,7 @@ def _with_store_dimensions(jaffle: Runtime, *dimensions: tuple[str, str, str]) -
             "VALIDATION_FAILED",
             ["dimension.states", "dimension.jaffle_membership_status"],
             ["status"],
+            {},
         ),
         # "sales" is this dimension's whole name, and only a namespace elsewhere (metric.sales.*).
         (
@@ -193,6 +233,7 @@ def _with_store_dimensions(jaffle: Runtime, *dimensions: tuple[str, str, str]) -
             None,
             [STORE, "dimension.sales"],
             ["sales"],
+            {"revenue_usd": _REVENUE_SQL},
         ),
         # The draft's own metric sits in that namespace: metric.sales.aov_usd, named
         # jaffle.sales_aov_usd.
@@ -202,6 +243,7 @@ def _with_store_dimensions(jaffle: Runtime, *dimensions: tuple[str, str, str]) -
             None,
             [STORE, "dimension.sales"],
             ["sales"],
+            {"aov_usd": f"{_REVENUE_SQL} / COUNT(DISTINCT o.order_id)"},
         ),
         # The planner reads "sent" as a synonym of "received"; here each names its own dimension.
         (
@@ -210,6 +252,7 @@ def _with_store_dimensions(jaffle: Runtime, *dimensions: tuple[str, str, str]) -
             "PLAN_UNMATCHED_TERMS",
             ["dimension.received"],
             ["sent"],
+            {},
         ),
     ],
 )
@@ -220,6 +263,7 @@ def test_one_catalog_name_never_consumes_another(
     code: str | None,
     group_by: list[str],
     terms: list[str],
+    totals: dict[str, str],
 ) -> None:
     with _with_store_dimensions(jaffle, *dimensions) as runtime:
         payload = plan_payload(runtime, intent=intent)
@@ -228,6 +272,9 @@ def test_one_catalog_name_never_consumes_another(
         if code is None:
             assert payload["status"] == "ok", payload.get("why")
             assert "execute" in payload["next"]["ready_for"]
+            [(name, _, column)] = dimensions
+            keys = {STORE: "s.store_name", f"dimension.{name}": f"s.{column}"}
+            _assert_reference_rows(runtime, query, keys, totals)
         else:
             _held(payload, code)
         assert query["group_by"] == group_by
@@ -326,32 +373,6 @@ def test_light_verbs_do_not_hide_unknown_modifiers(jaffle: Runtime, verb: str) -
     )
 
 
-def _assert_monthly_store_revenue(runtime: Runtime, query: dict[str, Any], store_id: str) -> None:
-    """The query's rows equal monthly revenue by store name and ``store_id`` (a Store dimension
-    on the store_id column), from reference SQL over the seed."""
-
-    rows = sorted(
-        (str(row[STORE]), str(row[store_id]), str(row[f"{ORDER_TIME}__month"])[:10], row[alias])
-        for row in typed_rows(runtime.query(query))
-        for alias in [query["select"][0]["as"]]
-    )
-    connection = duckdb.connect(runtime.db_path, read_only=True)
-    try:
-        reference = connection.execute(
-            "SELECT s.store_name, s.store_id, CAST(DATE_TRUNC('month', o.ordered_at) AS DATE), "
-            "SUM(o.order_total_cents / 100.0) FROM jaffle_order o "
-            "JOIN jaffle_store s ON o.store_id = s.store_id GROUP BY ALL"
-        ).fetchall()
-    finally:
-        connection.close()
-    expected = sorted(
-        (str(name), str(key), str(month), total) for name, key, month, total in reference
-    )
-    assert rows
-    assert [row[:3] for row in rows] == [row[:3] for row in expected]
-    assert [float(row[3]) for row in rows] == pytest.approx([float(row[3]) for row in expected])
-
-
 @pytest.mark.parametrize(
     ("name", "code"),
     [
@@ -376,7 +397,16 @@ def test_a_cadence_or_request_word_never_consumes_a_dropped_catalog_name(
             query = payload["best"]["query_ir"]
             assert query["group_by"] == [STORE, f"dimension.{name}"]
             assert query["time"] == {"temporal_role": ORDER_TIME, "grain": "month"}
-            _assert_monthly_store_revenue(runtime, query, f"dimension.{name}")
+            _assert_reference_rows(
+                runtime,
+                query,
+                {
+                    STORE: "s.store_name",
+                    f"dimension.{name}": "s.store_id",
+                    f"{ORDER_TIME}__month": "CAST(DATE_TRUNC('month', o.ordered_at) AS DATE)",
+                },
+                {"revenue_usd": _REVENUE_SQL},
+            )
         else:
             _held(payload, code)
         # A monthly draft grouped by store alone leaves the name over: "monthly" never reads it.
@@ -700,6 +730,21 @@ def test_every_draft_goes_through_the_one_gate(
     assert comparison["best"]["pattern"] == "inline_comparison"
     assert comparison["status"] == "ok", comparison.get("why")
     assert comparison["best"]["query_ir"]["group_by"] == [STORE, "dimension.jaffle_customer_type"]
+    # The comparison pattern buckets by month, as it does for "by store and customer type".
+    assert comparison["best"]["query_ir"]["time"] == {"temporal_role": ORDER_TIME, "grain": "month"}
+    _assert_reference_rows(
+        jaffle,
+        comparison["best"]["query_ir"],
+        {
+            STORE: "s.store_name",
+            "dimension.jaffle_customer_type": "c.customer_type",
+            f"{ORDER_TIME}__month": "CAST(DATE_TRUNC('month', o.ordered_at) AS DATE)",
+        },
+        {
+            "food_revenue_usd": "SUM(o.food_revenue_cents / 100.0)",
+            "drink_revenue_usd": "SUM(o.drink_revenue_cents / 100.0)",
+        },
+    )
     store_only = {**comparison["best"]["query_ir"], "group_by": [STORE], "order_by": []}
     assert unconsumed_catalog_words(jaffle, intent, store_only) == ["customer", "type"]
 
