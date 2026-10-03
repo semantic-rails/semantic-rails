@@ -20,7 +20,7 @@ model:
   dimensions:
     customer_id:
       label: Historical customer id
-      kind: id
+      kind: categorical
     customer_segment:
       as: dimension.jaffle_customer_history_segment
       label: Customer segment
