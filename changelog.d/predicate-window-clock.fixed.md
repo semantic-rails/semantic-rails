@@ -2,3 +2,5 @@
   input clocks with `INVALID_TEMPORAL_BINDING` and candidate clocks to choose from.
   Measure defaults and bindings inside a metric advertising several clocks do not
   resolve the ambiguity; recovery guidance distinguishes direct measure and metric inputs.
+- A window-aligned metric predicate input whose own pin or measure override excludes
+  the chosen window clock is refused with `INVALID_TEMPORAL_BINDING`.

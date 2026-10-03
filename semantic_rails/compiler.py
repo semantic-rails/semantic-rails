@@ -2293,6 +2293,58 @@ def _cross_clock_predicate_error(
     )
 
 
+def _validate_predicate_metric_clocks(
+    predicate: MetricPredicateExpr,
+    query: NormalizedQuery,
+    config: PackageConfig,
+    predicate_temporal_role: str,
+) -> None:
+    """Advertised metric clocks cannot override the input's own temporal bindings."""
+    recipes = _recipe_index(config)
+
+    def validate(expr: Any) -> None:
+        if isinstance(expr, MetricRecipeRefExpr):
+            recipe = recipes.get(expr.metric_recipe)
+            if recipe is None:
+                raise SemanticLayerError(
+                    "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
+                )
+            if recipe.compatible_temporal_roles:
+                bound_roles = _expr_compatible_temporal_roles(recipe.expression, config, query)
+                if bound_roles and predicate_temporal_role not in bound_roles:
+                    clocks = sorted(bound_roles)
+                    raise SemanticLayerError(
+                        "INVALID_TEMPORAL_BINDING",
+                        f"Metric predicate input '{expr.metric_recipe}' is bound to "
+                        f"{', '.join(clocks)}, excluding window clock '{predicate_temporal_role}'",
+                        details={
+                            "requested": predicate_temporal_role,
+                            "compatible": clocks,
+                            "predicate": expr_to_dict(predicate),
+                            "recovery_hints": [
+                                {
+                                    "code": "CHOOSE_PREDICATE_CLOCK",
+                                    "message": (
+                                        f"The input is bound to {', '.join(clocks)}; set "
+                                        "query.time.temporal_role to it, or omit time_alignment "
+                                        "to apply the predicate over all time."
+                                    ),
+                                }
+                            ],
+                        },
+                    )
+            validate(recipe.expression)
+            return
+        if is_dataclass(expr):
+            for item in fields(expr):
+                value = getattr(expr, item.name)
+                for child in value if isinstance(value, list) else [value]:
+                    if is_dataclass(child):
+                        validate(child)
+
+    validate(predicate.input)
+
+
 def _predicate_time_spec(
     predicate: MetricPredicateExpr, query: NormalizedQuery, config: PackageConfig
 ) -> dict[str, Any] | None:
@@ -2352,6 +2404,7 @@ def _predicate_time_spec(
                             "predicate": expr_to_dict(predicate),
                         },
                     )
+            _validate_predicate_metric_clocks(predicate, query, config, predicate_temporal_role)
             return {
                 "temporal_role": predicate_temporal_role,
                 "output_temporal_role": "",
@@ -2385,6 +2438,7 @@ def _predicate_time_spec(
         if predicate.time_alignment != "same_query_period" or len(compatible_roles) != 1:
             raise _cross_clock_predicate_error(predicate, query, compatible_roles)
         predicate_temporal_role = next(iter(compatible_roles))
+    _validate_predicate_metric_clocks(predicate, query, config, predicate_temporal_role)
     outer_grain = str(query.time.grain or "").lower()
     predicate_grain = str(predicate.time_grain or outer_grain or "").lower()
     if predicate.time_grain:

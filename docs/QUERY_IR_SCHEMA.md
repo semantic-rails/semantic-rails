@@ -426,6 +426,8 @@ those clocks; set `query.time.temporal_role` to one of the listed clocks. For ei
 input, omit `time_alignment` to apply the predicate over all time. A compatible
 query clock is retained. A model's default time supplies the clock only when the
 measure does not declare its own `times` list.
+A window-aligned metric predicate input whose own pin or measure override excludes
+the chosen window clock is refused with `INVALID_TEMPORAL_BINDING`.
 
 Ordinary `metric_filters` evaluate aggregated expressions at the grain the query
 returns, after grouping. A `metric_predicate` instead evaluates its input at its
