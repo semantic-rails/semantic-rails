@@ -2,11 +2,11 @@
 
 ``MIXED_TIME_ROLES`` (a warning) reads the compiled plan's select expressions and never changes
 the SQL or the rows: the selects read measures of two or more entities dated by different time
-roles, and the query has no time block, so each measure covers all of its own
-history. A measure with no time role is its own clock. A governed metric counts as one clock,
-however many it combines: the package defined it, so it warns only beside a measure or metric on
-another clock. Measures inside conversions and metric predicates keep their own time rules, so
-the warning doesn't read them.
+roles, and the query has no time block. Each period is read on its own role's clock, and
+measure-level filters can bound it. Undated measures are not clocks. A governed metric counts
+as one clock, however many it combines: the package defined it, so it warns only beside a
+measure or metric on another clock. Measures inside conversions and metric predicates keep
+their own time rules, so the warning doesn't read them.
 """
 
 from __future__ import annotations
@@ -65,7 +65,6 @@ class _Clock:
     subject: str  # how the message names it
     source: str  # the measure's entity, or the governed metric
     roles: tuple[str, ...]
-    clocks: frozenset[str]  # its time roles, and each measure with none as its own clock
 
 
 def _clock(
@@ -87,7 +86,6 @@ def _clock(
     else:
         return None
     roles: set[str] = set()
-    clocks: set[str] = set()
     for part in parts:
         if (part_measure := measures.get(part.measure)) is None:
             continue
@@ -96,27 +94,23 @@ def _clock(
             part_measure,
             part.temporal_role,
             plan.query.get("temporal_role_overrides") or {},
-            str(plan.time.get("temporal_role") or ""),
+            "",
         )
         roles.update([role] if role else [])
-        clocks.add(role or part_measure.id)
-    if not clocks:
+    if not roles:
         return None
-    return _Clock(object_id, subject, source, tuple(sorted(roles)), frozenset(clocks))
+    return _Clock(object_id, subject, source, tuple(sorted(roles)))
 
 
 def _clock_text(clock: _Clock) -> str:
-    if not clock.roles:
-        return f"{clock.subject} has no time role"
-    unclocked = ["no time role"] if len(clock.clocks) > len(clock.roles) else []
-    return f"{clock.subject} by {' and '.join([*clock.roles, *unclocked])}"
+    return f"{clock.subject} by {' and '.join(clock.roles)}"
 
 
 def mixed_time_role_warnings(config: PackageConfig, plan: LogicalPlan) -> list[dict[str, Any]]:
-    """One ``MIXED_TIME_ROLES`` warning when selects without a time block mix entities' clocks.
+    """One ``MIXED_TIME_ROLES`` warning when selects without a time block mix real time roles.
 
-    A time block bounds or projects time, including raw timestamps with only a role,
-    so that answer must not be described as covering all of each measure's history.
+    Undated measures are ignored. Different nonempty role sets establish at least two
+    distinct real roles. Filters may bound each measure's period independently.
     """
     if plan.time:
         return []
@@ -129,15 +123,15 @@ def mixed_time_role_warnings(config: PackageConfig, plan: LogicalPlan) -> list[d
             if (clock := _clock(leaf, measures, recipes, plan)) is not None:
                 found[clock] = None
     rows = list(found)
-    if not any(a.source != b.source and a.clocks != b.clocks for a in rows for b in rows):
+    if not any(a.source != b.source and a.roles != b.roles for a in rows for b in rows):
         return []
     return [
         semantic_issue(
             code=MIXED_TIME_ROLES,
             message=(
                 "These measures are dated by different time roles: "
-                f"{'; '.join(_clock_text(clock) for clock in rows)}. With no window each covers "
-                "all of its own history; read them separately."
+                f"{'; '.join(_clock_text(clock) for clock in rows)}. "
+                "Each period is read on its own role's clock."
             ),
             severity="warning",
             stage="planning",
