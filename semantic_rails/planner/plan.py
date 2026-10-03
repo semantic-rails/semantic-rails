@@ -29,6 +29,7 @@ from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
 from ._base import (
+    _grouping_matches,
     _is_temporal_grouping_term,
     _names_time_axis,
     _object_by_id,
@@ -303,10 +304,7 @@ def plan_payload(
         else None
     )
     unmatched = unmatched_intent_terms(runtime, intent_str, best_draft.query) if best_ok else []
-    # The readiness invariants: every numeral and clock word in the question, and every word
-    # that names a catalog object, is consumed by something the draft carries, and every
-    # grouping it lists has a dimension of its own. Otherwise an hour, a range, a threshold, a
-    # grouping or the asked-for subject was dropped.
+    # Every listed non-clock, non-value grouping must match its own group_by dimension.
     value_why = (
         (
             _unconsumed_terms_why(unconsumed_terms(runtime, intent_str, best_draft.query))
@@ -687,13 +685,14 @@ def _unconsumed_catalog_why(question: str, words: list[str]) -> dict[str, Any] |
 def _dropped_grouping_why(
     runtime: Any, question: str, query: dict[str, Any]
 ) -> dict[str, Any] | None:
-    """Explain a draft that groups by fewer dimensions than the question lists groupings.
+    """Every listed non-clock, non-value grouping must match its own group_by dimension.
 
     Each grouping the question lists ("by incident name, incident") needs its own dimension in
     the draft's group_by. A clock term ("by month", "by order date", "by fiscal quarter" on the
     fiscal calendar) is the time block's and a term naming a declared value is a filter, so
-    neither needs one. A count can't say which grouping the draft dropped, so the why names
-    every one that needs a dimension.
+    neither needs one. Match declared dimension words or an entity's declared key; unrelated
+    dimensions never stand in for a listed grouping. Report only terms left unmatched by a
+    one-to-one assignment.
     """
 
     config = runtime._config
@@ -714,24 +713,54 @@ def _dropped_grouping_why(
     ]
     terms = [
         term
-        for term in _requested_grouping_terms(question)
+        for term in _requested_grouping_terms(question, config=config)
         if not (
             _is_temporal_grouping_term(term)
             or any(_names_time_axis(term, clock) for clock in clocks)
             or _term_matches_value_domain(config, term)
         )
     ]
-    grouped = [item for item in list(query.get("group_by") or []) if item]
-    if len(grouped) >= len(terms):
+    grouped = [
+        row
+        for item in dict.fromkeys(query.get("group_by") or [])
+        if (row := _object_by_id(config.dimensions, item)) is not None
+    ]
+    candidates = [
+        [
+            index
+            for index, dimension in enumerate(grouped)
+            if _grouping_matches(term, dimension)
+            or any(
+                dimension.entity == entity.id
+                and dimension.column in entity.key
+                and _grouping_matches(term, entity, entity=True)
+                for entity in config.entities
+            )
+        ]
+        for term in terms
+    ]
+    assigned: dict[int, int] = {}
+
+    def assign(term_index: int, seen: set[int]) -> bool:
+        for dimension_index in candidates[term_index]:
+            if dimension_index in seen:
+                continue
+            seen.add(dimension_index)
+            if dimension_index not in assigned or assign(assigned[dimension_index], seen):
+                assigned[dimension_index] = term_index
+                return True
+        return False
+
+    dropped = [term for index, term in enumerate(terms) if not assign(index, set())]
+    if not dropped:
         return None
     return {
         "code": "PLAN_UNMATCHED_TERMS",
         "message": (
-            f"The draft groups by {len(grouped)} dimension(s) but the question lists "
-            f"{len(terms)} groupings: {', '.join(terms)}. It drops at least one of them, so "
-            "plan doesn't call it ready."
+            f"The draft drops the grouping by {', '.join(dropped)} that the question asks for: "
+            "each listed grouping needs its own matching dimension, so plan doesn't call it ready."
         ),
-        "details": {"terms": terms, "dropped_groupings": terms},
+        "details": {"terms": dropped, "dropped_groupings": dropped},
         "recovery_hints": [
             {
                 "kind": "use_named_objects",

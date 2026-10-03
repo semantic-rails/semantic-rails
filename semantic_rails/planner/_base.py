@@ -1351,12 +1351,29 @@ def _strip_leading_rank_count(raw: str) -> str:
     return re.sub(rf"^\s*(?:\d+|{rank_words})\s+", "", raw, count=1).strip()
 
 
-def _requested_grouping_terms(text: str) -> list[str]:
+def _grouping_matches(term: str, row: Any, *, entity: bool = False) -> bool:
+    """Match content words to declared names, never substring scores or synonyms."""
+
+    names = (
+        [row.name, row.label]
+        if entity
+        else [row.id, _last_token(row.name), row.label, *(row.aliases or [])]
+    )
+    words = set(re.findall(r"[^\W_]+", " ".join(names).lower()))
+    # Regular plurals name the same object; other synonym mappings do not.
+    words |= {word + "s" for word in words} | {
+        word[:-1] + "ies" for word in words if word.endswith("y")
+    }
+    content = set(re.findall(r"[^\W_]+", term.lower())) - _NAME_CONNECTORS
+    return bool(content and content <= words)
+
+
+def _requested_grouping_terms(text: str, *, config: Any = None) -> list[str]:
     lowered = str(text or "").lower()
-    return [lowered[start:end] for start, end in _requested_grouping_spans(text)]
+    return [lowered[start:end] for start, end in _requested_grouping_spans(text, config=config)]
 
 
-def _requested_grouping_spans(text: str) -> list[tuple[int, int]]:
+def _requested_grouping_spans(text: str, *, config: Any = None) -> list[tuple[int, int]]:
     """Record exactly where the existing grouping parser reads each term."""
 
     lowered = str(text or "").lower()
@@ -1379,6 +1396,7 @@ def _requested_grouping_spans(text: str) -> list[tuple[int, int]]:
     offset = match.start(1) + match.group(1).find(raw_terms)
     spans: list[tuple[int, int]] = []
     start = 0
+    after_comma = False
     cuts = [
         (part.start(), part.end())
         for part in re.finditer(r"\s*(?:,\s*and |,| and | & | by )\s*", raw_terms)
@@ -1386,8 +1404,24 @@ def _requested_grouping_spans(text: str) -> list[tuple[int, int]]:
     for end, next_start in [*cuts, (len(raw_terms), len(raw_terms))]:
         term = raw_terms[start:end]
         if term.strip():
+            if (
+                after_comma
+                and config is not None
+                and not (
+                    _is_temporal_grouping_term(term.strip())
+                    or any(_names_time_axis(term, row.label) for row in config.temporal_roles)
+                    or any(
+                        row.calendar_id and _names_time_axis(term, row.label)
+                        for row in config.entities
+                    )
+                    or any(_grouping_matches(term, row) for row in config.dimensions)
+                    or any(_grouping_matches(term, row, entity=True) for row in config.entities)
+                )
+            ):
+                break
             low = start + len(term) - len(term.lstrip())
             spans.append((offset + low, offset + low + len(term.strip())))
+        after_comma = "," in raw_terms[end:next_start]
         start = next_start
     return spans
 
@@ -1464,7 +1498,7 @@ def _maybe_group_by(
         dim = _dimension(config, ["geo"], prefer_parent="parent" in lowered)
         if dim is not None:
             group_by.append(dim.id)
-    for term in _requested_grouping_terms(text):
+    for term in _requested_grouping_terms(text, config=config):
         term_tokens = set(_tokens(term))
         if (
             term_tokens & {"store", "geo"}

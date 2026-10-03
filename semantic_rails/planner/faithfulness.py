@@ -2323,7 +2323,7 @@ def _unconsumed_words(
     if clock and time.get("grain") == _explicit_grain(text, clock):
         clock_spans = [
             (start, end)
-            for start, end in _requested_grouping_spans(text)
+            for start, end in _requested_grouping_spans(text, config=runtime._config)
             if _names_time_axis(lowered[start:end], clock)
         ]
         # The time block carries one clock grouping. With a second ("by order month and order

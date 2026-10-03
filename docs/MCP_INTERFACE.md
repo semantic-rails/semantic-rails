@@ -271,8 +271,14 @@ object it uses (a measure's entity and time role included), allowing a plural or
 a filter value; descriptions and topics never use a word. A word that names a catalog object is
 held to a stricter rule, and one the draft doesn't consume is not a warning: it makes the plan
 `low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`, since the draft dropped a grouping
-("by store, customer type and product type" grouped by store; `why.details.dropped_groupings`
-names it) or answers about another subject. A word names an object when it is a word of the
+("by customer type, order" grouped by Store name and Customer type;
+`why.details.dropped_groupings` lists only "order") or answers about another subject. Each
+listed grouping, apart from clock terms and declared values, must match its own `group_by`
+dimension through declared name words or the named entity's declared key; unrelated
+dimensions cannot stand in for it. A comma continues the grouping list only when the next
+piece names a dimension, entity or clock term; otherwise it ends the clause. A grain phrase
+such as "at week grain" or "month level" sets the grain on the measure's own clock.
+A word names an object when it is a word of the
 object's label or aliases, or of the last dotted part of its id or name outside the object's own
 namespaces ("sales" in `metric.sales.aov_usd` names nothing); a plural counts as its singular.
 Only the draft consumes one: by the label, aliases, id or name of an object it selects (an id the
@@ -482,7 +488,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `<TOOL>_UNKNOWN_ARG` | every tool but `segment` | Unknown argument (on `discover`, incl. `term`/`kind` typos); the value was ignored |
 | `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain; flip `allow_live_query=true` to probe |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
-| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, when one names a catalog object, or when two or more are names the catalog doesn't have |
+| `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, when one names a catalog object, when a listed non-clock, non-value grouping has no matching dimension of its own (`details.dropped_groupings` lists only unmatched terms), or when two or more are names the catalog doesn't have |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
 | `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain and no `start`/`end` window, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |

@@ -1,4 +1,4 @@
-"""plan never answers with fewer groupings than the question lists.
+"""Every listed grouping has its own matching dimension before plan is ready.
 
 The invariant: every grouping the question lists that isn't a clock term ("by month", "by order
 date") or a declared value has a dimension in the draft's group_by, or plan doesn't call the draft
@@ -9,6 +9,7 @@ incidents can share a name; grouping by the name alone would add their costs int
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ from semantic_rails.planner.faithfulness import unconsumed_catalog_words
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.runtime import Runtime
+from semantic_rails.schema import DimensionConfig
 from tests.semantic_rails.result_helpers import typed_rows
 
 INCIDENT_ID = "dimension.upkeep_incident_incident_id"
@@ -166,7 +168,7 @@ def test_a_draft_that_drops_a_listed_grouping_is_not_ready(
     runtime = upkeep("incident", "repair")
     intent = "repair cost by incident name, incident"
     # Every word of the question is consumed: "incident" by Incident name's own words. Only the
-    # count of groupings shows that the draft drops one.
+    # one-to-one correspondence shows that the draft drops one.
     draft = RuntimeCompositionDraft(
         query={
             "version": 2,
@@ -195,11 +197,121 @@ def test_a_draft_that_drops_a_listed_grouping_is_not_ready(
     assert "ready_for" not in payload["next"]
     assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
     assert payload["why"]["details"] == {
-        "terms": ["incident name", "incident"],
-        "dropped_groupings": ["incident name", "incident"],
+        "terms": ["incident"],
+        "dropped_groupings": ["incident"],
     }
     # Run anyway, it would add both incidents into one row.
     assert typed_rows(runtime.query(draft.query)) == [{INCIDENT_NAME: "Leak", "repair_cost": 30}]
+
+
+def test_an_unrelated_dimension_never_masks_a_dropped_order_grouping(jaffle: Runtime) -> None:
+    payload = plan_payload(jaffle, intent="order count by customer type, order for Brooklyn store")
+    connection = duckdb.connect(jaffle.db_path, read_only=True)
+    try:
+        reference = connection.execute(
+            "SELECT c.customer_type, o.order_id, COUNT(DISTINCT o.order_id) "
+            "FROM jaffle_order o "
+            "JOIN jaffle_customer c ON o.customer_id = c.customer_id "
+            "JOIN jaffle_store s ON o.store_id = s.store_id "
+            "WHERE s.store_name = 'Brooklyn' GROUP BY 1, 2"
+        ).fetchall()
+    finally:
+        connection.close()
+    assert len(reference) == 21_465
+    assert {row[2] for row in reference} == {1}
+    assert payload["status"] == "low_confidence"
+    assert "execute" not in payload["next"].get("ready_for", [])
+    assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+    assert payload["why"]["details"]["dropped_groupings"] == ["order"]
+    assert payload["best"]["query_ir"]["group_by"] == [STORE, CUSTOMER_TYPE]
+    assert len(typed_rows(jaffle.query(payload["best"]["query_ir"]))) == 2
+
+
+def test_a_forced_store_grouping_cannot_stand_in_for_order(
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    intent = "order count by customer type, order for Brooklyn store"
+    draft = RuntimeCompositionDraft(
+        query={
+            "version": 2,
+            "select": [
+                {"as": "order_count", "expression": {"measure": "measure.jaffle.order_count"}}
+            ],
+            "group_by": [STORE, CUSTOMER_TYPE],
+            "where": [{"field": STORE, "op": "=", "value": "Brooklyn"}],
+        },
+        resolved=[],
+        rationale=[],
+        interpreted_intent={},
+    )
+    monkeypatch.setattr(
+        plan_module,
+        "compose",
+        lambda runtime, text: CompositionResult(
+            intent_ir=parse_intent(runtime, text), draft=draft, pattern="test"
+        ),
+    )
+    assert unconsumed_catalog_words(jaffle, intent, draft.query) == []
+    payload = plan_payload(jaffle, intent=intent)
+    assert payload["best"]["validation_ok"] is True
+    assert payload["status"] == "low_confidence"
+    assert "execute" not in payload["next"].get("ready_for", [])
+    assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+    assert payload["why"]["details"]["dropped_groupings"] == ["order"]
+
+
+@pytest.mark.parametrize(
+    ("intent", "status", "groups", "window"),
+    [
+        ("revenue by store, last month", "ok", [STORE], "month"),
+        ("revenue by month, last year", "ok", [], "year"),
+        ("revenue by store, sorted by revenue", "low_confidence", [STORE], None),
+    ],
+)
+def test_a_comma_before_a_trailing_clause_keeps_the_original_plan(
+    jaffle: Runtime, intent: str, status: str, groups: list[str], window: str | None
+) -> None:
+    payload = plan_payload(jaffle, intent=intent)
+    assert payload["status"] == status, payload.get("why")
+    query = payload["best"]["query_ir"]
+    assert query.get("group_by", []) == groups
+    # The grouping clause ends at the comma, including for a held sort request.
+    assert _requested_grouping_terms(intent, config=jaffle._config) == [
+        "month" if "by month" in intent else "store"
+    ]
+    if window is None:
+        assert not query.get("time")
+        assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+        assert payload["why"]["details"]["terms"] == ["sorted"]
+        return
+    assert "execute" in payload["next"]["ready_for"]
+    assert query["time"] == {
+        "temporal_role": ORDER_TIME,
+        "grain": "month",
+        "range": {"last": {"unit": window, "value": 1}},
+    }
+    rows = typed_rows(jaffle.query({**query, "policy_context": {"now": "2017-04-15"}}))
+    fields = [*groups, f"{ORDER_TIME}__month"]
+    group_sql = "s.store_name, " if groups else ""
+    start, end = ("2017-03-01", "2017-04-01") if window == "month" else ("2016-01-01", "2017-01-01")
+    connection = duckdb.connect(jaffle.db_path, read_only=True)
+    try:
+        reference = connection.execute(
+            f"SELECT {group_sql}DATE_TRUNC('month', o.ordered_at), "
+            "SUM(o.order_total_cents / 100.0) FROM jaffle_order o "
+            "JOIN jaffle_store s ON o.store_id = s.store_id "
+            "WHERE o.ordered_at >= ? AND o.ordered_at < ? "
+            + ("GROUP BY 1, 2 ORDER BY 1, 2" if groups else "GROUP BY 1 ORDER BY 1"),
+            [start, end],
+        ).fetchall()
+    finally:
+        connection.close()
+    assert reference
+    actual = sorted(
+        tuple(row[field] for field in fields) + (float(row["revenue_usd"]),) for row in rows
+    )
+    assert [row[:-1] for row in actual] == [row[:-1] for row in reference]
+    assert [row[-1] for row in actual] == pytest.approx([float(row[-1]) for row in reference])
 
 
 def test_a_grouping_named_by_the_measure_word_is_not_dropped(
@@ -388,9 +500,99 @@ def test_a_grain_phrase_is_the_clocks_grain(
     ],
 )
 def test_a_comma_separates_grouping_terms(
-    parse: Callable[[str], list[str]], intent: str, terms: list[str]
+    jaffle: Runtime, parse: Callable[[str], list[str]], intent: str, terms: list[str]
 ) -> None:
-    assert parse(intent) == terms
-    assert [intent[start:end] for start, end in _requested_grouping_spans(intent)] == (
-        _requested_grouping_terms(intent)
+    actual = (
+        _requested_grouping_terms(intent, config=jaffle._config)
+        if parse is _requested_grouping_terms
+        else parse(intent)
     )
+    assert actual == terms
+    assert [
+        intent[start:end] for start, end in _requested_grouping_spans(intent, config=jaffle._config)
+    ] == _requested_grouping_terms(intent, config=jaffle._config)
+
+
+@pytest.mark.parametrize(
+    ("intent", "terms"),
+    [
+        ("revenue by store, the customer type", ["store", "the customer type"]),
+        ("revenue by store, order date", ["store", "order date"]),
+        ("revenue by store, at week grain", ["store", "at week grain"]),
+        ("revenue by store, 2017", ["store"]),
+        ("revenue by store, nonsense, customer type", ["store"]),
+        ("revenue by store, last month and customer type", ["store"]),
+    ],
+)
+def test_only_a_named_grouping_continues_past_a_comma(
+    jaffle: Runtime, intent: str, terms: list[str]
+) -> None:
+    assert _requested_grouping_terms(intent, config=jaffle._config) == terms
+    assert [
+        intent[start:end] for start, end in _requested_grouping_spans(intent, config=jaffle._config)
+    ] == terms
+
+
+@pytest.mark.parametrize(
+    ("term", "changes", "matched"),
+    [
+        ("the case", {"label": "Case"}, True),
+        ("case", {"id": "dimension.case"}, True),
+        ("case", {"name": "support.case"}, True),
+        ("case", {"aliases": ["Case"]}, True),
+        ("case", {"label": "Showcase"}, False),
+        ("case number", {"label": "Case"}, False),
+        ("case", {"description": "Case"}, False),
+        ("case", {"topics": ["Case"]}, False),
+        ("purchase", {"label": "Order"}, False),
+        ("sent", {"label": "Received"}, False),
+    ],
+)
+def test_grouping_correspondence_uses_only_declared_name_words(
+    upkeep: Callable[[str, str], Runtime], term: str, changes: dict[str, Any], matched: bool
+) -> None:
+    runtime = upkeep("incident", "repair")
+    dimension = replace(
+        DimensionConfig(
+            "dimension.neutral", runtime._config.entities[0].id, "incident_name", "string"
+        ),
+        **changes,
+    )
+    runtime._config = replace(runtime._config, dimensions=[dimension])
+    query = {"group_by": [dimension.id]}
+    why = plan_module._dropped_grouping_why(runtime, f"repair cost by {term}", query)
+    assert (why is None) is matched
+    assert _requested_grouping_terms(
+        f"repair cost by incident, {term}", config=runtime._config
+    ) == (["incident", term] if matched else ["incident"])
+    if why:
+        assert why["code"] == "PLAN_UNMATCHED_TERMS"
+        assert why["details"]["dropped_groupings"] == [term]
+
+
+@pytest.mark.parametrize("column", ["incident_id", "incident_name"])
+def test_an_entity_name_matches_its_declared_key_only(
+    upkeep: Callable[[str, str], Runtime], column: str
+) -> None:
+    runtime = upkeep("incident", "repair")
+    dimension = DimensionConfig(
+        "dimension.reference", runtime._config.entities[0].id, column, "string"
+    )
+    runtime._config = replace(runtime._config, dimensions=[dimension])
+    why = plan_module._dropped_grouping_why(
+        runtime, "repair cost by incident", {"group_by": [dimension.id]}
+    )
+    assert (why is None) is (column == "incident_id")
+
+
+def test_repeating_one_dimension_never_satisfies_two_listed_groupings(
+    upkeep: Callable[[str, str], Runtime],
+) -> None:
+    runtime = upkeep("incident", "repair")
+    why = plan_module._dropped_grouping_why(
+        runtime,
+        "repair cost by incident name, incident",
+        {"group_by": [INCIDENT_NAME, INCIDENT_NAME, "dimension.unknown"]},
+    )
+    assert why is not None
+    assert why["details"]["dropped_groupings"] == ["incident"]
