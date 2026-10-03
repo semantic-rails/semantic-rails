@@ -5,6 +5,14 @@ runtime that serves `/api/v1/*`. The canonical implementation remains the in-pro
 `SemanticLayerMCPAdapter`. The ASGI app serves stateless MCP Streamable HTTP at `/mcp`, while the
 CLI retains packaged stdio and legacy HTTP/SSE transports for local compatibility.
 
+For `semantic-rails mcp stdio`, stdout contains only newline-delimited JSON-RPC messages;
+startup diagnostics go to stderr. If the selected package cannot load, `initialize`
+returns a JSON-RPC error with the engine's message, stable code in `error.data.code`,
+and selected package directory or YAML file in `error.data.details.config_path`.
+Existing engine details (such as the relationship and suggested fix) are preserved.
+The server answers requests with that refusal until the client disconnects, then
+exits with status 1. Fix the package and restart the server before querying it.
+
 ## Streamable HTTP Endpoint
 
 A self-hosted ASGI process exposes:

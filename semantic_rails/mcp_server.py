@@ -361,7 +361,10 @@ def refuse_stdio(
         except (AttributeError, json.JSONDecodeError):
             continue
         if message_id is not None:
-            reply = _jsonrpc_error(message_id, -32603, str(error), data={"code": error.code})
+            data: dict[str, Any] = {"code": error.code}
+            if error.details:
+                data["details"] = dict(error.details)
+            reply = _jsonrpc_error(message_id, -32603, str(error), data=data)
             output_stream.write(json.dumps(reply, sort_keys=True) + "\n")
             output_stream.flush()
 
