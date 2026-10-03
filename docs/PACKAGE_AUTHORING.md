@@ -935,6 +935,9 @@ the model's `entities:` block whose name matches the model and which has no
 explicit graph binding. It back-fills implicit graph bindings from the resolved
 identity. Declaration order never selects the primary; loading fails with
 `INVALID_CONFIG` if it cannot be resolved or two graph entities bind to one model.
+If multiple entity keys match the grain, bind the model in the graph or set
+`entity:`; otherwise loading fails with `INVALID_CONFIG` naming the model and
+matching entities.
 Two models claiming the same unbound graph entity also fail with `INVALID_CONFIG`
 naming both models. An explicit graph `model:` binding fixes primary identity
 independently of an authored `grain:`. That grain describes measure rows and may

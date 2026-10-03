@@ -180,10 +180,15 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
         # Explicit bindings and authored identity precede grain and name matching.
         primary_entity = str(model.get("entity", "") or "").strip()
         if not primary_entity and grain_cols:
-            for ent_name, cols in effective_cols.items():
-                if cols == grain_cols:
-                    primary_entity = ent_name
-                    break
+            matches = sorted(name for name, cols in effective_cols.items() if cols == grain_cols)
+            if len(matches) > 1:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"model '{model_id}' grain {grain_cols} matches multiple entity keys: "
+                    f"{', '.join(matches)}; bind the model in the graph or set entity:",
+                )
+            if matches:
+                primary_entity = matches[0]
         # Empty blocks retain the graph's existing model-name default.
         if (
             not primary_entity
