@@ -1562,84 +1562,19 @@ def _named_grouping_spans(text: str, config: Any) -> list[tuple[int, int]]:
             if separator:
                 cursor = start + separator.end()
                 after_comma = "," in separator.group()
-
-    # A suffix clause has no opening marker. Read the longest declared noun
-    # suffix before "level"/"grain", retaining its exact span. An unknown noun
-    # remains an obligation rather than disappearing.
-    listed_spans = list(spans)
-    for match in re.finditer(r"(?P<noun>[a-z0-9\s_,&-]+?)\s+(?:level|grain)\b", lowered):
-        start, end = match.span("noun")
-        markers = list(
-            re.finditer(r"\b(?:at|by|per|each|every)(?:\s+(?:the\s+)?|$)", match.group("noun"))
-        )
-        if markers:
-            start += markers[-1].end()
-        phrase = lowered[start : match.end()]
-        if (
-            named(phrase)
-            or any(_grouping_matches(phrase, row) for row in config.measures)
-            or any(low <= start and match.end() <= high for low, high in listed_spans)
-        ):
-            continue
-        cursor = start
-        for separator in [*re.finditer(r",\s*(?:and\b)?|\band\b|&", lowered[start:end]), None]:
-            stop = start + separator.start() if separator else end
-            piece = lowered[cursor:stop]
-            low = cursor + len(piece) - len(piece.lstrip())
-            high = cursor + len(piece.rstrip())
-            if set(re.findall(r"[^\W_]+", lowered[low:high])) - _NAME_CONNECTORS:
-                for word in re.finditer(r"\S+", lowered[low:high]):
-                    tail = low + word.start()
-                    if named(lowered[tail:high]):
-                        spans.append((tail, high))
-                        break
-                else:
-                    spans.append((low, high))
-            if separator:
-                cursor = start + separator.end()
     return sorted(set(spans))
 
 
 def _named_grouping_terms(text: str, config: Any) -> list[str]:
     """Add obligations to the legacy list without removing any of its holds."""
 
-    from .plan import _entity_grouping_dimensions, _reads_grouping  # noqa: WPS433
-
-    def dimensions(term: str) -> set[str]:
-        ids = _entity_grouping_dimensions(config, term)
-        if ids:
-            # A whole entity has a key stand-in too. Repeated descriptions
-            # resolve to its named dimension only when that reading is unique;
-            # two named dimensions must retain both obligations.
-            clocks = {row.dimension for row in config.temporal_roles}
-            named = {
-                row.id
-                for entity in config.entities
-                if len(entity.key) == 1 and _names_whole_entity(term, entity)
-                for row in config.dimensions
-                if row.groupable
-                and row.entity == entity.id
-                and row.column not in entity.key
-                and row.id not in clocks
-                and _grouping_matches(term, row)
-            }
-            if named:
-                return named
-        return {
-            row.id for row in config.dimensions if row.groupable and _reads_grouping(term, ids, row)
-        }
-
     terms = _listed_grouping_terms(text, config)
     legacy = {" ".join(item.split()) for item in terms}
     lowered = str(text or "").lower()
     for start, end in _named_grouping_spans(text, config):
         term = " ".join(lowered[start:end].split())
-        if term in legacy:
-            continue
-        ids = dimensions(term)
-        if len(ids) == 1 and any(dimensions(earlier) == ids for earlier in terms):
-            continue
-        terms.append(term)
+        if term not in legacy:
+            terms.append(term)
     return terms
 
 

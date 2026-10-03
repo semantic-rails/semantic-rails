@@ -27,6 +27,7 @@ from tests.semantic_rails.test_plan_unasked_groupings import _CASES
 from tests.semantic_rails.test_plan_value_lists import _force_fallback
 
 STORE = "dimension.jaffle_store_name"
+STORE_ID_JAFFLE = "dimension.jaffle_store_id"
 CUSTOMER_TYPE = "dimension.jaffle_customer_type"
 STORE_ID = "dimension.retail_store_id"
 STORE_NAME = "dimension.retail_store_name"
@@ -123,15 +124,31 @@ _PHRASINGS = [
     "group by\n{noun}",
 ]
 
+# Plurals, separators and a repeated "at" don't change which groupings the list names.
+_SUFFIX_LISTS = [
+    f"revenue at customer type{separator}store name {word}"
+    for word in ["level", "levels", "grain", "grains"]
+    for separator in [" and ", " & ", ", ", " and at ", ", at ", " & at "]
+]
+
 
 @pytest.mark.parametrize("phrasing", _PHRASINGS)
 def test_each_spelling_records_the_exact_named_term(
     jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, phrasing: str
 ) -> None:
     question = "revenue " + phrasing.format(noun="customer type")
+    # A level or grain word isn't read as a clause: it makes every named grouping required.
+    level = "level" in phrasing or "grain" in phrasing
+    named = [] if level else ["customer type"]
     spans = _named_grouping_spans(question, jaffle._config)
-    assert [question[start:end] for start, end in spans] == ["customer type"]
-    assert _named_grouping_terms(question, jaffle._config) == ["customer type"]
+    assert [question[start:end] for start, end in spans] == named
+    assert _named_grouping_terms(question, jaffle._config) == named
+    unmet = plan_module._level_groupings_unmet(jaffle._config, question, {"group_by": []})
+    assert unmet == (["customer type"] if level else [])
+    assert (
+        plan_module._level_groupings_unmet(jaffle._config, question, {"group_by": [CUSTOMER_TYPE]})
+        == []
+    )
     _compare_base(jaffle, monkeypatch, question)
 
 
@@ -151,7 +168,7 @@ def test_each_spelling_records_the_exact_named_term(
         ("lowest five stores by revenue", ["stores"]),
         ("top 5 stores, customers by revenue", ["stores", "customers"]),
         ("revenue by, store name, nonsense, customer type", ["store name"]),
-        ("revenue at mystery level", ["mystery"]),
+        ("revenue at mystery level", []),
         ("revenue per mystery", ["mystery"]),
         ("revenue byproduct", []),
         ("revenue for each of the last 3 months", []),
@@ -177,6 +194,7 @@ def _compare_base(
     after = plan_payload(runtime, intent=question, partial_query=partial)
     with monkeypatch.context() as base:
         base.setattr(plan_module, "_named_grouping_terms", _listed_grouping_terms)
+        base.setattr(plan_module, "_level_groupings_unmet", lambda *args: [])
         before = plan_payload(runtime, intent=question, partial_query=partial)
     # Both paths generate exactly the same draft. Only readiness may change.
     assert after["best"] == before["best"]
@@ -371,6 +389,16 @@ def test_store_question_outcomes_only_gain_holds(
         "revenue by store name sorted by revenue",
         "revenue by customer type, store name",
         "revenue by customer type; by store name",
+        *_SUFFIX_LISTS,
+        "revenue last month customer type level",
+        "revenue, customer type level",
+        "revenue and orders store level",
+        "revenue at store name level for customer type new",
+        "revenue at store level for customer types new and repeat",
+        "revenue at store name level for each store",
+        "revenue by store name for each store",
+        "revenue at region level",
+        "revenue at the level",
     ],
 )
 def test_filtered_store_controls_only_gain_holds(
@@ -399,47 +427,43 @@ def test_store_key_catalog_controls_only_gain_holds(
         assert before["status"] == after["status"] == "low_confidence"
 
 
-@pytest.mark.parametrize("separator", [" and ", " & ", ", "])
+@pytest.mark.parametrize("question", _SUFFIX_LISTS)
 def test_complete_suffix_list_matches_reference_sql(
-    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, separator: str
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, question: str
 ) -> None:
-    question = f"revenue at customer type{separator}store name level"
     partial = {
         "group_by": [STORE, CUSTOMER_TYPE],
         "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "IN", "value": ["new", "repeat"]}],
     }
     before, complete = _compare_base(jaffle, monkeypatch, question, partial)
-    assert before["status"] == complete["status"] == "ok", complete.get("why")
-    assert "execute" in complete["next"]["ready_for"]
+    if "grain" in question:
+        # A non-clock grain phrase is already held by lexical coverage, and stays held.
+        assert before["status"] == complete["status"] == "low_confidence"
+    else:
+        assert before["status"] == complete["status"] == "ok", complete.get("why")
+        assert "execute" in complete["next"]["ready_for"]
     query = complete["best"]["query_ir"]
-    with duckdb.connect(":memory:") as connection:
-        seed_path = str(jaffle.db_path).replace("'", "''")
-        connection.execute(f"ATTACH '{seed_path}' AS seed (READ_ONLY)")
-        for table in ["jaffle_order", "jaffle_customer", "jaffle_store"]:
-            connection.execute(f"CREATE TABLE {table} AS SELECT * FROM seed.{table}")
-        reference = connection.execute(
-            "SELECT s.store_name, c.customer_type, SUM(o.order_total_cents / 100.0) "
-            "FROM jaffle_order o JOIN jaffle_customer c USING (customer_id) "
-            "JOIN jaffle_store s USING (store_id) "
-            "WHERE s.store_name IN ('Brooklyn', 'Philadelphia') "
-            "AND c.customer_type IN ('new', 'repeat') GROUP BY 1, 2 ORDER BY 1, 2"
-        ).fetchall()
-        cursor = connection.execute(jaffle.compile(query)["rendered_sql"])
-        columns = [column[0] for column in cursor.description]
-        rows = [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
-        actual = [(row[STORE], row[CUSTOMER_TYPE], row[query["select"][0]["as"]]) for row in rows]
+    assert plan_module._dropped_grouping_why(jaffle, question, query) is None
+    reference = _in_memory_reference(
+        jaffle,
+        "SELECT s.store_name, c.customer_type, SUM(o.order_total_cents / 100.0) "
+        "FROM jaffle_order o JOIN jaffle_customer c USING (customer_id) "
+        "JOIN jaffle_store s USING (store_id) "
+        "WHERE s.store_name IN ('Brooklyn', 'Philadelphia') "
+        "AND c.customer_type IN ('new', 'repeat') GROUP BY 1, 2 ORDER BY 1, 2",
+    )
+    actual = _in_memory_rows(jaffle, query, [STORE, CUSTOMER_TYPE])
     assert len(actual) == len(reference) == 4
     assert sorted(actual) == reference
     assert [row[2] for row in reference] == pytest.approx([90.48, 259334.37, 6.36, 486461.82])
-    assert _named_grouping_terms(question, jaffle._config) == ["customer type", "store name"]
+    assert plan_module._level_groupings_unmet(jaffle._config, question, query) == []
 
 
-@pytest.mark.parametrize("separator", [" and ", " & ", ", "])
+@pytest.mark.parametrize("question", _SUFFIX_LISTS)
 @pytest.mark.parametrize("missing", [STORE, CUSTOMER_TYPE])
 def test_suffix_list_holds_when_either_grouping_is_dropped(
-    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, separator: str, missing: str
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, question: str, missing: str
 ) -> None:
-    question = f"revenue at customer type{separator}store name level"
     filters = [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "IN", "value": ["new", "repeat"]}]
     _, native = _compare_base(jaffle, monkeypatch, question, {"where": filters})
     assert "execute" not in native["next"].get("ready_for", [])
@@ -465,10 +489,180 @@ def test_suffix_list_holds_when_either_grouping_is_dropped(
     assert dropped["best"]["validation_ok"] is True
     assert dropped["status"] == "low_confidence"
     assert dropped["why"]["code"] == "PLAN_UNMATCHED_TERMS"
-    assert dropped["why"]["details"]["dropped_groupings"] == [
-        "store name" if missing == STORE else "customer type"
-    ]
+    name = "store name" if missing == STORE else "customer type"
+    why = plan_module._dropped_grouping_why(jaffle, question, dropped["best"]["query_ir"])
+    assert why is not None
+    assert why["details"]["dropped_groupings"] == [name]
+    if "grain" not in question:
+        assert dropped["why"]["details"]["dropped_groupings"] == [name]
     assert "execute" not in dropped["next"].get("ready_for", [])
+
+
+@pytest.mark.parametrize("prefix", ["show ", "total ", "what is "])
+def test_level_in_a_measure_name_asks_for_no_level(
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, prefix: str
+) -> None:
+    config = replace(
+        jaffle._config,
+        measures=[
+            replace(row, label="Stock level", aliases=["Stock level"])
+            if row.id == "measure.jaffle.revenue_usd"
+            else row
+            for row in jaffle._config.measures
+        ],
+    )
+    runtime = Runtime.from_config(config, source_path=jaffle.source_path)
+    try:
+        question = f"{prefix}stock level by store name"
+        before, complete = _compare_base(runtime, monkeypatch, question)
+        assert before["status"] == complete["status"] == "ok", complete.get("why")
+        assert "execute" in complete["next"]["ready_for"]
+        query = complete["best"]["query_ir"]
+        assert query["group_by"] == [STORE]
+        assert query["select"][0]["expression"]["measure"] == "measure.jaffle.revenue_usd"
+        assert plan_module._level_groupings_unmet(runtime._config, question, query) == []
+    finally:
+        runtime.close()
+
+
+_BOTH_MEASURES = [
+    {"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}},
+    {"as": "order_count", "expression": {"measure": "measure.jaffle.order_count"}},
+]
+
+
+@pytest.mark.parametrize(
+    ("question", "partial", "name"),
+    [
+        ("revenue last month customer type level", {"group_by": [CUSTOMER_TYPE]}, "customer type"),
+        ("revenue, customer type level", {"group_by": [CUSTOMER_TYPE]}, "customer type"),
+        (
+            "revenue and orders store level",
+            {"group_by": [STORE], "select": _BOTH_MEASURES},
+            "store",
+        ),
+    ],
+)
+def test_measure_words_before_a_level_add_no_grouping(
+    jaffle: Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    question: str,
+    partial: dict[str, Any],
+    name: str,
+) -> None:
+    before, complete = _compare_base(jaffle, monkeypatch, question, partial)
+    assert before["status"] == complete["status"] == "ok", complete.get("why")
+    assert "execute" in complete["next"]["ready_for"]
+    query = complete["best"]["query_ir"]
+    assert query["group_by"] == partial["group_by"]
+    assert plan_module._level_groupings_unmet(jaffle._config, question, query) == []
+    assert plan_module._level_groupings_unmet(
+        jaffle._config, question, {**query, "group_by": []}
+    ) == [name]
+
+
+@pytest.mark.parametrize(
+    ("pin", "ready"),
+    [
+        ({"op": "=", "value": "new"}, True),
+        ({"op": "IN", "value": ["new"]}, True),
+        ({"op": "IN", "value": ["new", "repeat"]}, False),
+    ],
+)
+def test_only_a_one_value_filter_stands_in_for_a_named_grouping(
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, pin: dict[str, Any], ready: bool
+) -> None:
+    question = "revenue at store name level for customer type new"
+    draft = RuntimeCompositionDraft(
+        query={
+            "version": 2,
+            "select": [
+                {"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}
+            ],
+            "group_by": [STORE],
+            "where": [{"field": CUSTOMER_TYPE, **pin}],
+        },
+        resolved=[],
+        rationale=[],
+        interpreted_intent={},
+    )
+    monkeypatch.setattr(
+        plan_module,
+        "compose",
+        lambda runtime, text: CompositionResult(intent_ir=parse_intent(runtime, text), draft=draft),
+    )
+    before, after = _compare_base(jaffle, monkeypatch, question, {"group_by": [STORE]})
+    assert before["status"] == "ok"
+    query = after["best"]["query_ir"]
+    if not ready:
+        # The draft adds repeat customers to the answer the question limits to new ones.
+        assert after["status"] == "low_confidence"
+        assert after["why"]["details"]["dropped_groupings"] == ["customer type"]
+        assert "execute" not in after["next"].get("ready_for", [])
+        return
+    assert after["status"] == "ok", after.get("why")
+    assert "execute" in after["next"]["ready_for"]
+    assert sorted(_in_memory_rows(jaffle, query, [STORE])) == _in_memory_reference(
+        jaffle,
+        "SELECT s.store_name, SUM(o.order_total_cents / 100.0) "
+        "FROM jaffle_order o JOIN jaffle_customer c USING (customer_id) "
+        "JOIN jaffle_store s USING (store_id) "
+        "WHERE c.customer_type = 'new' GROUP BY 1 ORDER BY 1",
+    )
+
+
+@pytest.mark.parametrize(
+    ("question", "group_by", "unmet"),
+    [
+        # No level word outside a declared name: nothing is read.
+        ("revenue by store name", [], []),
+        # An entity takes a stand-in: its key, or its one dimension that names it.
+        ("revenue at store level", [STORE], []),
+        ("revenue at store level", [STORE_ID_JAFFLE], []),
+        ("revenue at store level", [CUSTOMER_TYPE], ["store"]),
+        ("revenue at customer level", [CUSTOMER_TYPE], ["customer"]),
+        ("revenue at customer level", ["dimension.jaffle_customer_id"], []),
+        # Every named grouping counts, wherever the question names it.
+        ("revenue at store name level for each customer type", [STORE], ["customer type"]),
+        # A clock term needs no dimension; an unknown noun is unmet.
+        ("revenue at month level", [], []),
+        ("revenue at region level", [], ["region"]),
+        ("revenue at mystery levels", [], ["mystery"]),
+        ("revenue at the level", [], ["revenue"]),
+        ("level of revenue", [], ["level"]),
+        # A plural that isn't a declared name holds rather than guesses.
+        ("revenue at customer types level", [CUSTOMER_TYPE], ["customer", "types"]),
+    ],
+)
+def test_level_words_need_every_named_grouping(
+    jaffle: Runtime, question: str, group_by: list[str], unmet: list[str]
+) -> None:
+    query = {"group_by": group_by}
+    assert plan_module._level_groupings_unmet(jaffle._config, question, query) == unmet
+
+
+def _in_memory_reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
+    return _in_memory(runtime, sql)[1]
+
+
+def _in_memory_rows(
+    runtime: Runtime, query: dict[str, Any], dimensions: list[str]
+) -> list[tuple[Any, ...]]:
+    columns, rows = _in_memory(runtime, runtime.compile(query)["rendered_sql"])
+    alias = query["select"][0]["as"]
+    return [tuple(row[columns.index(item)] for item in [*dimensions, alias]) for row in rows]
+
+
+def _in_memory(runtime: Runtime, sql: str) -> tuple[list[str], list[tuple[Any, ...]]]:
+    """Run SQL on in-memory copies of the order, customer and store tables."""
+
+    with duckdb.connect(":memory:") as connection:
+        seed_path = str(runtime.db_path).replace("'", "''")
+        connection.execute(f"ATTACH '{seed_path}' AS seed (READ_ONLY)")
+        for table in ["jaffle_order", "jaffle_customer", "jaffle_store"]:
+            connection.execute(f"CREATE TABLE {table} AS SELECT * FROM seed.{table}")
+        cursor = connection.execute(sql)
+        return [column[0] for column in cursor.description], cursor.fetchall()
 
 
 def test_repeated_description_of_one_grouping_stays_ready(
