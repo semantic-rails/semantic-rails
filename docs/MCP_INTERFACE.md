@@ -310,7 +310,15 @@ This check reads past a comma when the next piece names a dimension, an entity o
 reads a window the question states as a comma, while the draft still reads its groupings up to
 the comma: "repair cost by incident name, incident" grouped by Incident name alone is not ready,
 as two incidents can share a name, and neither is "repair cost by incident name, last month and
-incident". The check only holds a plan; it never changes a draft or makes one ready. A listed grouping that names an entity is satisfied only by that entity's own key
+incident". It also checks terms after `by` with a comma, tab or newline, after `per`,
+`each`, `for each` or `every`, and before `level` or `grain` (including `at the store id level`).
+Lists joined by commas, `and`, `&` or repeated grouping clauses are checked, as are the nouns
+before `by` in `top`, `highest` and `lowest` rankings. Each additional term records its source
+span. This broader reader adds obligations only to the dropped-grouping check; planning and
+the checks that authorize a draft's groupings retain their existing readers. Existing holds
+remain holds, including a complete grouping phrasing planning does not already authorize.
+The check only holds a plan; it never changes a draft or makes one ready.
+A listed grouping that names an entity is satisfied only by that entity's own key
 dimension, or by the single declared dimension of that entity whose own words name it, and an
 entity with a composite key is never satisfied. A term names an entity only with every word of
 its label ("customer" names Customer, not Customer history), and a declared time, such as Store

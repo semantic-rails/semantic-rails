@@ -34,6 +34,7 @@ from ._base import (
     _grouping_matches,
     _is_temporal_grouping_term,
     _listed_grouping_terms,
+    _named_grouping_terms,
     _names_time_axis,
     _names_whole_entity,
     _object_by_id,
@@ -772,7 +773,7 @@ def _listed_dimension_terms(config: Any, question: str, query: dict[str, Any]) -
     clocks = _query_clocks(config, query)
     return [
         term
-        for term in _listed_grouping_terms(question, config)
+        for term in _named_grouping_terms(question, config)
         if not (
             _is_temporal_grouping_term(term)
             or any(_names_time_axis(term, clock) for clock in clocks)
