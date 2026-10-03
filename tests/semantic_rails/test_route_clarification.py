@@ -1675,3 +1675,97 @@ def test_live_valid_values_without_a_query_measure_explains_the_missing_anchor(
         )
     assert refused.value.code == "NO_VALID_VALUES_SOURCE"
     assert refused.value.details == {"attempts": []}
+
+
+@pytest.mark.parametrize("shape", list(SHAPES))
+@pytest.mark.parametrize("spelling", ["id", "option"])
+def test_mcp_route_option_spellings_match_reference_sql(tmp_path, shape, spelling):
+    query, columns, _, expected = SHAPES[shape]
+    adapter = SemanticLayerMCPAdapter(Runtime.from_path(str(_write_package(tmp_path))))
+    try:
+        refusal = adapter.call_tool("execute", {"query": query})
+        issue = refusal["errors"][0]
+        assert issue["code"] == "AMBIGUOUS_PATH", refusal
+        clarification = issue["details"]["clarification"]
+        assert all("clarification" not in hint for hint in issue.get("recovery_hints", []))
+        for option in clarification["options"]:
+            selected = option["id"] if spelling == "id" else option
+            out = adapter.call_tool("execute", {"query": {**query, "route_decisions": [selected]}})
+            assert out["ok"], out
+            assert _rows(out, columns) == _gold(expected[option["id"]][2])
+            assert out["normalized"]
+    finally:
+        adapter.close()
+
+
+def test_mcp_unknown_route_option_refuses_with_offered_ids(tmp_path):
+    adapter = SemanticLayerMCPAdapter(Runtime.from_path(str(_write_package(tmp_path))))
+    try:
+        out = adapter.call_tool(
+            "execute", {"query": {**BALANCE_BY_DISTRICT, "route_decisions": ["unknown"]}}
+        )
+        assert not out["ok"], out
+        issue = out["errors"][0]
+        assert issue["code"] == "INVALID_QUERY"
+        assert issue["details"]["closest_matches"] == ["branch_district", "owner_district"]
+    finally:
+        adapter.close()
+
+
+@pytest.mark.parametrize("spelling", ["id", "option"])
+def test_mcp_route_spellings_cannot_bypass_row_policy(tmp_path, monkeypatch, spelling):
+    pkg = _write_package(tmp_path)
+    option = _refusal(pkg, BALANCE_BY_DISTRICT).details["clarification"]["options"][0]
+    config = replace(
+        load_package_config(str(pkg)),
+        semantic_policies=[
+            SemanticPolicyConfig(
+                id="policy.bank.owner",
+                kind="row_filter",
+                config={
+                    "dimension": "dimension.bank_owner_name",
+                    "attribute": "owner",
+                    "type": "string",
+                },
+            )
+        ],
+    )
+    runtime = Runtime.from_config(config, source_path=str(pkg))
+    monkeypatch.setattr(
+        runtime, "_get_adapter", lambda: pytest.fail("A refused route must not execute SQL")
+    )
+    adapter = SemanticLayerMCPAdapter(runtime)
+    try:
+        out = adapter.call_tool(
+            "execute",
+            {
+                "query": {
+                    **BALANCE_BY_DISTRICT,
+                    "route_decisions": [option["id"] if spelling == "id" else option],
+                }
+            },
+            request_context=RequestContext(attributes={"owner": "Ann"}),
+        )
+        assert not out["ok"], out
+        assert out["errors"][0]["code"] == "POLICY_DENIED", out
+    finally:
+        adapter.close()
+
+
+def test_mcp_conflicting_route_option_refuses(tmp_path):
+    pkg = _write_package(tmp_path)
+    option = _refusal(pkg, BALANCE_BY_DISTRICT).details["clarification"]["options"][0]
+    adapter = SemanticLayerMCPAdapter(Runtime.from_path(str(pkg)))
+    try:
+        out = adapter.call_tool(
+            "execute",
+            {
+                "query": {
+                    **BALANCE_BY_DISTRICT,
+                    "route_decisions": [{**option, "relationship_path": OWNER_ROUTE}],
+                }
+            },
+        )
+        assert not out["ok"] and out["errors"][0]["code"] == "INVALID_QUERY", out
+    finally:
+        adapter.close()

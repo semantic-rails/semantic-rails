@@ -675,7 +675,6 @@ def recovery_hints_for_error(
                     details.get("hint")
                     or "Choose a more specific grouping, filter, or root entity to break the path ambiguity."
                 ),
-                "clarification": dict(details.get("clarification", {}) or {}),
             },
         ]
     if code == "FANOUT_UNSAFE":

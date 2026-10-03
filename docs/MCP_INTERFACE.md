@@ -212,6 +212,18 @@ returns member rows, the preview and member counts, and the derived query. `verb
 returns the whole response with compiler plans. Minimal responses still include query and
 segment policy effects, warnings, errors, and actionable recovery hints when present.
 
+MCP accepts a `query` object or a JSON string encoding that object. Tool arguments
+placed inside it are lifted; conflicting tool options refuse with
+`INVALID_QUERY`. Query IR's `verbosity` and `sql_profile` retain inner precedence. The response's `normalized` list reports each spelling change:
+`eq`/`equals` → `=`, `neq` → `!=`, `gt`/`gte`/`lt`/`lte` → `>`/`>=`/`<`/`<=`,
+and `is_not_null` → `IS NOT NULL`; arithmetic `sub`/`mul`/`div` →
+`subtract`/`multiply`/`divide` (`add` is already canonical). Arithmetic `operands`
+or `terms` with at least two expressions fold left, including subtraction and
+division. Mixing operand shapes refuses. An unaliased `{dimension: "<id>"}` in
+`select` (also with `kind: dimension|group|ref`) moves to `group_by`; a custom output alias refuses rather than losing it.
+Unknown ids in a dimension-only list query return `OBJECT_NOT_FOUND`, with
+closest visible matches.
+
 `execute` accepts either `{"query": {...}}` or Query IR fields at the top level. Metadata tools
 accept the same request fields documented in [QUERY_API.md](QUERY_API.md), including optional
 `policy_context`.
@@ -575,7 +587,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `DISCOVER_IDS_TRUNCATED` | `discover` | Empty `terms` listed one page of ids and more remain; `details.next_offset` is the next page |
 | `DISCOVER_TERMS_COERCED` | `discover` | `terms` was a non-string (int/float/bool); coerced to a string |
 | `<TOOL>_UNKNOWN_ARG` | every tool but `segment` | Unknown argument (on `discover`, incl. `term`/`kind` typos); the value was ignored |
-| `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain; flip `allow_live_query=true` to probe |
+| `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain: `ok: false`, `status: needs_live_query`, and `next_call` gives the exact opt-in `valid-values` call with `allow_live_query=true`. No warehouse lookup runs by default; a declared empty domain remains a successful empty result |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
 | `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, when one names a catalog object, when a listed non-clock, non-value grouping has no matching dimension of its own (`details.dropped_groupings` lists only unmatched terms) or may be a dimension of any of several other entities (`details.ambiguous_groupings`), or when two or more are names the catalog doesn't have |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
@@ -930,7 +942,7 @@ expression kind names the received kind and its request path (for example,
 | `AMBIGUOUS_ALIAS` | Alias resolves to multiple semantic objects; pick one from `details.candidates`. |
 | `AMBIGUOUS_CHILD_SCOPE` | Plain filters on one child entity across a one-to-many hop don't say which child rows they mean: two or more positive ones (the same row or separate ones), or one negated one ("has a row that is not X" or "has no row that is X"). `details.clarification.options` holds both readings, each as the query's whole rewritten `where`; resend one. Offered only when both answer for this caller. |
 | `PLAN_UNMATCHED_TERMS` | A grouping option also carries `group_by` and `order_by` to apply with its complete `where` for one unclear term. With several, in `best.query_ir` remove each chosen option's `replaces` IDs from `group_by` and their `order_by` entries, add its `id`, keep `group_by` sorted, then validate. When two terms could replace the same grouping, plan offers no options; ask the user. |
-| `AMBIGUOUS_PATH` | Several routes between root entity and target can answer differently and the package records none (`details.reason: route_decision_required`). `details.clarification` asks which one the question means (`question`) and lists one option per route: its `meaning` in business words, its `relationship_path`, and its `decision` row. Ask the person, then resend with that `decision` in `route_decisions` (this query only), or record it with Architect `record_route_decision` (the package default; an option's `conflicts_with` names the package rows to change first). |
+| `AMBIGUOUS_PATH` | Several routes between root entity and target can answer differently and the package records none (`details.reason: route_decision_required`). `details.clarification` asks which one the question means (`question`) and lists one option per route: its `meaning` in business words, its `relationship_path`, and its `decision` row. Ask the person, then resend with that `decision`, the whole option, or its id in `route_decisions`. An id must uniquely answer the current query's clarification; unknown or ambiguous ids return `INVALID_QUERY` with offered ids in `closest_matches`. The clarification appears once in the error's details. Route and policy guards apply to every shape. A query decision applies to this query only; record it with Architect `record_route_decision` (the package default; an option's `conflicts_with` names the package rows to change first). |
 | `DUPLICATE_OUTPUT_ALIAS` | Two projected columns share an alias; rename one. |
 | `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. For a measure restriction, `details.aggregation` records the rejected value and the hint's `aggregation_received` and `allowed` mirror `details.aggregation` and `details.allowed`; the hint lists only those allowed values and offers omitting `aggregation` when `details.default_aggregation` belongs to `details.allowed`, naming that default. Parameter errors disclose the required parameter schema. |
 | `INVALID_TEMPORAL_ROLE` | Unknown temporal role; pick one from `details.compatible_temporal_roles`. |

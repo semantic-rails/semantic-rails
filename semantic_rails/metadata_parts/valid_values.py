@@ -16,7 +16,7 @@ from ..compiler_parts.bind import lift_conditional_aggregates
 from ..compiler_parts.grain_recovery import _query_measure_ids
 from ..errors import SemanticLayerError
 from ..policies import hidden_object_ids, row_filters_for_context, withheld_measure_ids
-from ..request_context import context_from_policy_context
+from ..request_context import context_from_policy_context, without_trusted_attributes
 from ..runtime import Runtime, runtime_request_scope
 from ..runtime_parts.limits import (
     MAX_VALID_VALUES_LIMIT as MAX_VALID_VALUES_LIMIT,
@@ -220,7 +220,19 @@ def valid_values_payload(
         }
     if not allow_live_query:
         hint_message = _valid_values_lookup_hint(False)
+        call_arguments = {
+            "dimension_id": dimension_id,
+            "allow_live_query": True,
+            "query": without_trusted_attributes(query or {}),
+            "search": search,
+            "limit": limit,
+            "offset": offset,
+            "include_counts": include_counts,
+        }
         return {
+            "ok": False,
+            "status": "needs_live_query",
+            "next_call": {"tool": "valid-values", "arguments": call_arguments},
             "dimension": dimension_id,
             "values": [],
             "total_count": 0,

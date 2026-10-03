@@ -3345,9 +3345,16 @@ def _query_target_entities(query: NormalizedQuery, config: PackageConfig) -> dic
     temporal_roles = _temporal_role_index(config)
     targets: dict[str, str] = {}
     for dim_id in query.group_by:
+        if dim_id not in dimensions:
+            raise SemanticLayerError(
+                "OBJECT_NOT_FOUND",
+                f"Unknown dimension '{dim_id}'",
+                details={"dimension": dim_id},
+            )
         targets.setdefault(dimensions[dim_id].entity, "group_by")
     for item in refuse_child_groups(query.where, "in a query without a measure"):
-        targets.setdefault(dimensions[item.field].entity, "where")
+        dim = _checked_where_dimension(item, dimensions, _measure_index(config))
+        targets.setdefault(dim.entity, "where")
     if query.time is not None:
         role = temporal_roles.get(query.time.temporal_role)
         if role is None:
