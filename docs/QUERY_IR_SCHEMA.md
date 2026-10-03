@@ -691,11 +691,13 @@ A clock declared as `kind: date` applies the calendar spine's whole-day rule
 to its source rows too: `start` includes its local day, and an exclusive `end`
 after midnight includes its local day. An end at exact midnight excludes that
 day. Offset-bearing bounds use the role's zone. An empty or reversed interval
-includes no days. After `column_timezone` conversion, the comparison uses the
-converted local date, including an anchored population or snapshot on a different
-query time axis. Entity-only predicate windows on roles requiring timezone
-conversion are refused with `WINDOWED_TIME_FILTER_UNSUPPORTED`; use an unconverted
-role for those predicates. Timestamp clocks retain precise half-open bounds.
+includes no days. A DATE clock enters `column_timezone` conversion as a naive
+midnight timestamp in that storage zone, independent of the session zone. The
+comparison then uses the converted local date, including an anchored population
+or snapshot on a different query time axis. Entity-only predicate windows on roles
+requiring timezone conversion are refused with `WINDOWED_TIME_FILTER_UNSUPPORTED`;
+use an unconverted role for those predicates. Timestamp clocks retain precise
+half-open bounds.
 
 ## PolicyContext
 

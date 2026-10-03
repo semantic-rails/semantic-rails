@@ -3,15 +3,19 @@
 from dataclasses import replace
 from datetime import UTC, date, datetime
 
+import duckdb
 import pytest
 
 from semantic_rails import ast
 from semantic_rails.compiler import _compile_query_sql_ast
+from semantic_rails.compiler_parts.sql_lowering import _apply_role_timezone
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.metadata import _query_state
 from semantic_rails.metadata_parts.valid_values import _query_state as values_query_state
+from semantic_rails.renderer import render_expr
 from semantic_rails.runtime import Runtime
+from semantic_rails.sql_ast import SqlCall, SqlIdentifier
 
 ROLE = "temporal_role.jaffle_order_time"
 
@@ -23,6 +27,42 @@ def config():
         original,
         temporal_roles=[replace(r, timezone="America/New_York") for r in original.temporal_roles],
     )
+
+
+@pytest.mark.parametrize("warehouse", ["duckdb", "postgres"])
+@pytest.mark.parametrize("session_zone", ["UTC", "America/New_York", "America/Los_Angeles"])
+def test_converted_date_uses_a_naive_timestamp_input(config, warehouse, session_zone):
+    role = replace(next(r for r in config.temporal_roles if r.id == ROLE), column_timezone="UTC")
+    config = replace(
+        config,
+        package=replace(config.package, warehouse=warehouse),
+        dimensions=[
+            replace(d, data_type="date") if d.id == role.dimension else d for d in config.dimensions
+        ],
+    )
+    converted = _apply_role_timezone(SqlIdentifier(parts=["source_day"]), role, config)
+    assert isinstance(converted, SqlCall)
+    source_conversion = converted.args[1]
+    assert isinstance(source_conversion, SqlCall)
+    source_input = render_expr(source_conversion.args[1])
+    events = (
+        "(VALUES (DATE '2024-07-01', 10), (DATE '2024-07-02', 20)) AS events(source_day, amount)"
+    )
+    with duckdb.connect(":memory:") as connection:
+        connection.execute(f"SET TimeZone = '{session_zone}'")
+        # Postgres can coerce a bare DATE to TIMESTAMPTZ for timezone().
+        # Verify the emitted input type locally, where DuckDB's overload differs.
+        assert connection.execute(
+            f"SELECT TYPEOF({source_input}) FROM {events} LIMIT 1"
+        ).fetchone() == ("TIMESTAMP",)
+        actual = connection.execute(
+            f"SELECT CAST({render_expr(converted)} AS DATE), amount FROM {events} ORDER BY 1"
+        ).fetchall()
+        reference = connection.execute(
+            "SELECT CAST(((CAST(source_day AS TIMESTAMP) AT TIME ZONE 'UTC') "
+            f"AT TIME ZONE 'America/New_York') AS DATE), amount FROM {events} ORDER BY 1"
+        ).fetchall()
+    assert actual == reference == [(date(2024, 6, 30), 10), (date(2024, 7, 1), 20)]
 
 
 def _query(**time):

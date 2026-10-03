@@ -557,13 +557,17 @@ def _apply_role_timezone(raw_expr: Any, role: Any, config: PackageConfig) -> Any
 
     The wrap is applied to ``raw_expr`` before any ``date_trunc`` and before
     use in WHERE filter comparisons, so truncation and filtering happen in
-    the target zone.
+    the target zone. DATE clocks enter the conversion as naive midnight
+    timestamps so warehouse overloads cannot read them as session-zone instants.
     """
     column_tz = str(getattr(role, "column_timezone", "") or "").strip()
     target_tz = str(getattr(role, "timezone", "") or "").strip()
     if not column_tz or not target_tz or column_tz == target_tz:
         return raw_expr
-    return _dialect(config).convert_timezone(column_tz, target_tz, raw_expr)
+    dialect = _dialect(config)
+    if _dimension_index(config)[role.dimension].data_type == "date":
+        raw_expr = dialect.timestamp_cast(raw_expr)
+    return dialect.convert_timezone(column_tz, target_tz, raw_expr)
 
 
 def _metric_filter_alias(index: int) -> str:
