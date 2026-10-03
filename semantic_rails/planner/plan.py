@@ -813,7 +813,9 @@ def _time_of(query: dict[str, Any]) -> dict[str, Any]:
 _LEVEL_WORD_RE = re.compile(r"\b(?:levels?|grains?)\b")
 
 
-def _declared_name_spans(config: Any, lowered: str) -> dict[tuple[int, int], list[Any]]:
+def _declared_name_spans(
+    config: Any, lowered: str, *, underscores: bool = False
+) -> dict[tuple[int, int], list[Any]]:
     """Where the question names a declared dimension, measure, metric recipe or entity, with
     the objects each span names, as ``(kind, row)``.
 
@@ -836,7 +838,8 @@ def _declared_name_spans(config: Any, lowered: str) -> dict[tuple[int, int], lis
                 words = re.findall(r"[^\W_]+", str(name).lower())
                 if not words:
                     continue
-                pattern = r"\b" + r"\s+".join(map(re.escape, words)) + r"\b"
+                separator = r"[\s_]+" if underscores and kind != "value" else r"\s+"
+                pattern = r"\b" + separator.join(map(re.escape, words)) + r"\b"
                 for match in re.finditer(pattern, lowered):
                     found.setdefault(match.span(), []).append((kind, row))
     return {
@@ -847,6 +850,22 @@ def _declared_name_spans(config: Any, lowered: str) -> dict[tuple[int, int], lis
 
 
 def _level_groupings_unmet(config: Any, question: str, query: dict[str, Any]) -> list[str]:
+    """Add underscore-name obligations without removing any existing readiness hold."""
+
+    return list(
+        dict.fromkeys(
+            term
+            for underscores in (False, True)
+            for term in _level_groupings_with_names(
+                config, question, query, underscores=underscores
+            )
+        )
+    )
+
+
+def _level_groupings_with_names(
+    config: Any, question: str, query: dict[str, Any], *, underscores: bool
+) -> list[str]:
     """The groupings a question asking for a level or grain names that the draft doesn't
     group by.
 
@@ -867,7 +886,7 @@ def _level_groupings_unmet(config: Any, question: str, query: dict[str, Any]) ->
     lowered = str(question or "").lower()
     if not _LEVEL_WORD_RE.search(lowered):
         return []
-    spans = _declared_name_spans(config, lowered)
+    spans = _declared_name_spans(config, lowered, underscores=underscores)
     triggers = [
         match
         for match in _LEVEL_WORD_RE.finditer(lowered)

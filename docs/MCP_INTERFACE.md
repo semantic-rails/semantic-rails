@@ -321,7 +321,10 @@ question holds, not how the phrase is built, so a plural, a repeated "at" or a s
 changes nothing: "revenue at customer type and at store name levels" needs both Customer type
 and Store name. A dimension the question names (its label, the last part of its name or an
 alias, as whole words) needs its own id in `group_by`; an entity needs one of the stand-ins
-described below. A name doesn't count inside a longer declared name ("customer type" is not
+described below. The guard also reads these dimension and entity names with underscores,
+spaces and case variants: `customer_type` names Customer type. These extra matches only add
+holds; an existing hold remains even when the extra spelling names a complete grouping.
+A name doesn't count inside a longer declared name ("customer type" is not
 also the entity Customer) or inside a phrase naming the query's clock ("order date"), and
 neither does a declared value or a dimension the draft's `where` pins to one value (`=`, or `IN`
 with one value). The word before each level word must end the name of a dimension, an entity
