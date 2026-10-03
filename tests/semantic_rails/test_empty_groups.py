@@ -1142,7 +1142,12 @@ def shop_with_net(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Runtime]
     config = load_package_config(str(package))
     recipes = {
         NET: NET_INLINE,
-        NET_HUNDREDTHS: {"kind": "arithmetic", "op": "divide", "left": {"metric": NET}, "right": HUNDRED},
+        NET_HUNDREDTHS: {
+            "kind": "arithmetic",
+            "op": "divide",
+            "left": {"metric": NET},
+            "right": HUNDRED,
+        },
     }
     config = replace(
         config,
@@ -1191,7 +1196,10 @@ def test_a_summing_window_refuses_a_metric_inside_its_input(
     issue = shop_with_net.validate(query)["errors"][0]
     with pytest.raises(SemanticLayerError) as raised:
         shop_with_net.query(query)
-    for code, details in [(issue["code"], issue["details"]), (raised.value.code, raised.value.details)]:
+    for code, details in [
+        (issue["code"], issue["details"]),
+        (raised.value.code, raised.value.details),
+    ]:
         assert code == "ROLLUP_UNSAFE"
         assert details["unsupported_construct"] == "nested_metric_window_input"
         assert details["construct"] == kind
