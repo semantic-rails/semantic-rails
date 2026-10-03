@@ -460,7 +460,9 @@ def _granted_warnings(
     }
     hidden_ids = (
         re.compile(
-            r"(?<![\w.:-])(?:" + "|".join(re.escape(value) for value in hidden) + r")(?![\w.:-])"
+            r"(?<![\w.-])(?:"
+            + "|".join(re.escape(value) for value in hidden)
+            + r")(?![\w-]|\.[\w-])"
         )
         if hidden
         else None

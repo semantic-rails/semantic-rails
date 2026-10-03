@@ -698,6 +698,8 @@ def test_grant_warnings_name_only_granted_objects(
     hidden = [
         {**public, "object_ids": [AOV]},
         {**public, "message": AOV},
+        {**public, "message": f"{AOV}: unavailable"},
+        {**public, "message": f"Unavailable for {AOV}."},
         {**public, "details": {"related_objects": [SECRET_DIMENSION]}},
         {**public, "recovery_hints": [{"object_id": "measure.jaffle.revenue_usd"}]},
         {**public, "object_ids": ["metric.unknown"]},
