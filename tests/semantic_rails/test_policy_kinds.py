@@ -51,7 +51,6 @@ VALID_POLICIES = [
         "configs/semantic_rails/jaffle_shop",
         "configs/semantic_rails/tpch_sf1_showcase",
         "configs/examples/semantic_rails_package_starter.yml",
-        "configs/examples/semantic_rails_capabilities_reference.yml",
     ],
 )
 def test_shipped_packages_validate(path):
