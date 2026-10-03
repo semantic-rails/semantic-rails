@@ -53,7 +53,11 @@ def nowhere(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 
     work = tmp_path / "work"
     work.mkdir()
-    env = dict(os.environ, SEMANTIC_RAILS_HOME=str(tmp_path / "home"), PYTHONPATH=str(REPO_ROOT))
+    env = dict(
+        os.environ,
+        SEMANTIC_RAILS_HOME=str(tmp_path / "home"),
+        PYTHONPATH=os.pathsep.join(filter(None, [str(REPO_ROOT), os.getenv("PYTHONPATH")])),
+    )
     env.pop("NO_COLOR", None)
     monkeypatch.chdir(work)
     monkeypatch.setenv("SEMANTIC_RAILS_HOME", env["SEMANTIC_RAILS_HOME"])

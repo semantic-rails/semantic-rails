@@ -68,6 +68,7 @@ def accepted_call_names(warehouse: str = "duckdb") -> frozenset[str]:
             "CEILING",
             "COALESCE",
             "CONCAT",
+            "DATE_DIFF",
             "EXP",
             "FLOOR",
             "LENGTH",
@@ -126,6 +127,29 @@ def validate_call_name(name: str, warehouse: str = "duckdb") -> str:
             },
         )
     return normalized
+
+
+def call_date_diff_unit(value: Any, *, arg_count: int, warehouse: str) -> str:
+    """Refuse invalid shapes and nonportable units before dialect lowering."""
+    if arg_count == 3 and isinstance(value, str):
+        unit = value.strip().lower()
+        if unit in CONVERSION_WINDOW_UNITS:
+            if warehouse == "athena" or (
+                unit == "week" and warehouse in {"snowflake", "bigquery", "clickhouse"}
+            ):
+                raise SemanticLayerError(
+                    "INVALID_EXPRESSION_AST",
+                    f"Unsupported DATE_DIFF for warehouse '{warehouse}' and unit '{unit}': "
+                    "the warehouse's date difference does not match the portable semantics.",
+                    details={"function": "DATE_DIFF", "warehouse": warehouse, "unit": unit},
+                )
+            return unit
+    raise SemanticLayerError(
+        "INVALID_EXPRESSION_AST",
+        "DATE_DIFF requires exactly three args: a string literal unit, start, end; "
+        "supported units: " + ", ".join(CONVERSION_WINDOW_UNITS),
+        details={"supported_units": list(CONVERSION_WINDOW_UNITS), "required_args": 3},
+    )
 
 
 @dataclass(frozen=True)
@@ -479,7 +503,7 @@ def validate_expression_shapes(value: Any) -> None:
 
 
 def validate_expression_calls(value: Any, config: PackageConfig) -> None:
-    """Validate call names and CAST shapes; argument types belong to the warehouse.
+    """Validate call names and portable shapes; argument types belong to the warehouse.
 
     Literal data, metadata and parameters remain opaque.
     """
@@ -497,6 +521,14 @@ def validate_expression_calls(value: Any, config: PackageConfig) -> None:
                 if len(value.args) == 2 and isinstance(value.args[1], LiteralExpr)
                 else None,
                 config.package.warehouse,
+            )
+        elif name == "DATE_DIFF":
+            call_date_diff_unit(
+                value.args[0].value
+                if value.args and isinstance(value.args[0], LiteralExpr)
+                else None,
+                arg_count=len(value.args),
+                warehouse=config.package.warehouse,
             )
     if is_dataclass(value) and not isinstance(value, type):
         for item in fields(value):

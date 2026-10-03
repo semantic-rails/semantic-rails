@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .errors import SemanticLayerError
-from .expressions import call_cast_type, validate_call_name
+from .expressions import call_cast_type, call_date_diff_unit, validate_call_name
 from .sql_ast import (
     SqlBinary,
     SqlCall,
@@ -101,6 +101,18 @@ class SqlDialect:
             raise SemanticLayerError(
                 "INVALID_EXPRESSION_AST", "Scalar calls do not support distinct"
             )
+        if name == "DATE_DIFF":
+            unit = call_date_diff_unit(
+                args[0].value if args and isinstance(args[0], SqlLiteral) else None,
+                arg_count=len(args),
+                warehouse=self.name,
+            )
+            start, end = args[1], args[2]
+            if self.name == "bigquery":
+                # Force calendar boundaries in UTC, including TIMESTAMP endpoints;
+                # unwrapped TIMESTAMPs select BigQuery's elapsed-duration overload.
+                start, end = SqlCast(start, "DATETIME"), SqlCast(end, "DATETIME")
+            return self.date_diff(unit, start, end)
         if name != "CAST":
             return SqlCall(name, args)
         value = args[1].value if len(args) == 2 and isinstance(args[1], SqlLiteral) else None
@@ -793,8 +805,8 @@ class BigQueryDialect(SqlDialect):
 
     def date_diff(self, unit: str, start_expr: Any, end_expr: Any) -> Any:
         # BigQuery reverses the portable order: DATETIME_DIFF(end,
-        # start, unit) — END FIRST. Boundary-crossing semantics match
-        # DuckDB's date_diff.
+        # start, unit) — END FIRST. Week boundaries differ from DuckDB,
+        # so authored week calls are refused by the scalar-call guard.
         return SqlCall(
             "DATETIME_DIFF",
             [
@@ -963,10 +975,11 @@ class AthenaDialect(SqlDialect):
     ``date_diff('unit', start, end)``, ``IS NOT DISTINCT FROM``.
 
     The portable defaults already match Trino for ``date_trunc``
-    (``DATE_TRUNC('month', CAST(.. AS TIMESTAMP))``), ``date_diff``
-    (``DATE_DIFF('unit', start, end)`` with a lowercase unit string),
-    null-safe equality (``IS NOT DISTINCT FROM``), and the conditional
-    aggregate CASE form. Overrides cover ``DATE_ADD('unit', n, ts)``
+    (``DATE_TRUNC('month', CAST(.. AS TIMESTAMP))``), null-safe equality
+    (``IS NOT DISTINCT FROM``), and the conditional aggregate CASE form.
+    Native ``date_diff`` counts complete elapsed units, so authored
+    portable ``DATE_DIFF`` calls are refused by the scalar-call guard.
+    Overrides cover ``DATE_ADD('unit', n, ts)``
     (Trino rejects the INTERVAL form), ``MIN_BY``/``MAX_BY``, and the
     percentile family — Trino has NO exact ``PERCENTILE_CONT``
     aggregate and ``APPROX_PERCENTILE`` is a t-digest sketch, so
@@ -1108,15 +1121,28 @@ class ClickHouseDialect(SqlDialect):
       ``null_safe_eq`` (temporal joins, entity-hop joins, snapshot
       joins). The portable ``IS NOT DISTINCT FROM`` is equally
       JOIN-ON-only on ClickHouse, so ``<=>`` is the native spelling.
-    - ``DATE_DIFF('unit', start, end)`` / ``DATE_ADD(date, INTERVAL n
-      UNIT)`` aliases work as-is with boundary-crossing semantics and
-      Monday-start weeks (DuckDB parity), so the portable defaults
-      stand.
+    - ``DATE_DIFF('unit', start, end)`` needs explicitly nullable DateTime64
+      endpoint casts to preserve NULLs and pre-1970 dates. Its Monday-start
+      week boundaries differ from DuckDB, so
+      authored week calls are refused by the scalar-call guard.
+      ``DATE_ADD(date, INTERVAL n UNIT)`` uses the portable default.
     - Conditional aggregates keep the portable ``CASE`` default —
       ClickHouse ``COUNT``/``SUM`` skip NULLs correctly.
     """
 
     name: str = "clickhouse"
+
+    def date_diff(self, unit: str, start_expr: Any, end_expr: Any) -> Any:
+        # DateTime64 preserves pre-1970 dates; Nullable preserves NULL even with
+        # cast_keep_nullable=0.
+        return SqlCall(
+            "DATE_DIFF",
+            [
+                SqlLiteral(unit),
+                SqlCast(start_expr, "Nullable(DateTime64(6))"),
+                SqlCast(end_expr, "Nullable(DateTime64(6))"),
+            ],
+        )
 
     # No day_series override: it was withheld because an unmatched LEFT JOIN field reads 0
     # rather than NULL. Every compiled statement now sets join_use_nulls, but a generated
@@ -1301,13 +1327,16 @@ SNOWFLAKE_NATIVE_DIRECT_AUTH_OPTIONS: tuple[str, ...] = (
 
 # Experimental ADBC path: password or PKCS #8 key-pair auth only.
 SNOWFLAKE_ADBC_CONNECTION_OPTIONS: tuple[str, ...] = (
+    "account",
     "account_env",
+    "user",
     "user_env",
     "password_env",
     "password_file",
     "private_key_file",
     "private_key_env",
     "private_key_passphrase_env",
+    "private_key_passphrase_file",
     "database",
     "schema",
     "warehouse",
@@ -1523,14 +1552,17 @@ def snowflake_adbc_connect_errors(options: dict[str, Any]) -> tuple[str, ...]:
     """Check authored credential sources without reading environment variables or files."""
     keys = {normalize_connection_option_name(str(key)) for key in options}
     errors = [
-        f"snowflake_adbc requires {key}" for key in ("account_env", "user_env") if key not in keys
+        f"snowflake_adbc requires {key} or {key}_env"
+        for key in ("account", "user")
+        if not keys & {key, f"{key}_env"}
     ]
     has_password = bool(keys & {"password_env", "password_file"})
     has_key = bool(keys & {"private_key_env", "private_key_file"})
     if has_password == has_key:
         errors.append("snowflake_adbc requires exactly one password or PKCS #8 key source")
-    if "private_key_passphrase_env" in keys and not has_key:
-        errors.append("snowflake_adbc private_key_passphrase_env requires a key source")
+    for key in ("private_key_passphrase_env", "private_key_passphrase_file"):
+        if key in keys and not has_key:
+            errors.append(f"snowflake_adbc {key} requires a key source")
     return tuple(errors)
 
 

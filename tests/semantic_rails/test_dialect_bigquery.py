@@ -12,6 +12,7 @@ import types
 from dataclasses import replace
 from typing import Any
 
+import duckdb
 import pytest
 
 from semantic_rails.compiler import compile_query
@@ -24,9 +25,18 @@ from semantic_rails.db_parts.bigquery import (
 from semantic_rails.dialects import BigQueryDialect, dialect_for_warehouse, warehouse_connector
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
-from semantic_rails.renderer import render_expr
+from semantic_rails.renderer import render_expr, render_select
 from semantic_rails.schema import ConnectionSpec, PackageMeta, SeedSpec
-from semantic_rails.sql_ast import SqlBinary, SqlIdentifier, SqlLiteral
+from semantic_rails.sql_ast import (
+    SqlBinary,
+    SqlCast,
+    SqlCte,
+    SqlField,
+    SqlIdentifier,
+    SqlLiteral,
+    SqlSelect,
+    SqlTableRef,
+)
 from semantic_rails.sql_preparation import _bigquery_compat_sql, _safe_field_name
 
 DIALECT = BigQueryDialect()
@@ -74,6 +84,78 @@ def test_date_diff_puts_end_first():
 def test_date_diff_supports_compiler_units(unit: str):
     sql = render_expr(DIALECT.date_diff(unit, _col("a"), _col("b")))
     assert sql == f"DATETIME_DIFF(b, a, {unit.upper()})"
+
+
+@pytest.mark.parametrize(
+    "unit,start,end,expected",
+    [
+        pytest.param("day", "2024-01-01 23:00:00", "2024-01-03 01:00:00", 2, id="midnight"),
+        pytest.param("day", "2024-01-03 01:00:00", "2024-01-01 23:00:00", -2, id="reversed"),
+        pytest.param("day", None, "2024-01-03 01:00:00", None, id="null-start"),
+        pytest.param("day", "2024-01-01 23:00:00", None, None, id="null-end"),
+        pytest.param("day", None, None, None, id="null-both"),
+        pytest.param("month", "2024-01-31 23:00:00", "2024-02-01 01:00:00", 1, id="month"),
+        pytest.param("quarter", "2024-03-31 23:00:00", "2024-04-01 01:00:00", 1, id="quarter"),
+        pytest.param("year", "2023-12-31 23:00:00", "2024-01-01 01:00:00", 1, id="year"),
+        pytest.param("hour", "2024-01-01 23:59:00", "2024-01-02 00:01:00", 1, id="hour"),
+        pytest.param("minute", "2024-01-01 23:59:59", "2024-01-02 00:00:01", 1, id="minute"),
+    ],
+)
+def test_authored_date_diff_normalizes_timestamp_columns(unit, start, end, expected):
+    # A typed CTE exercises physical TIMESTAMP endpoints, including typed NULLs.
+    # BigQuery's unwrapped TIMESTAMP overload counts elapsed units instead.
+    endpoints = SqlCte(
+        "endpoints",
+        SqlSelect(
+            select=[
+                SqlField(SqlCast(SqlLiteral(start), "TIMESTAMP"), "opened_at"),
+                SqlField(SqlCast(SqlLiteral(end), "TIMESTAMP"), "closed_at"),
+            ]
+        ),
+    )
+    args = [SqlLiteral(unit), _col("e", "opened_at"), _col("e", "closed_at")]
+    query = SqlSelect(
+        ctes=[endpoints],
+        select=[SqlField(DIALECT.scalar_call("DATE_DIFF", args), "delta")],
+        from_table=SqlTableRef("endpoints", "e"),
+    )
+    sql = render_select(query)
+    assert (
+        f"DATETIME_DIFF(CAST(e.closed_at AS DATETIME), CAST(e.opened_at AS DATETIME), {unit.upper()}) AS delta"
+        in sql
+    )
+    # Execute only the DuckDB reference, never substitute it for BigQuery execution.
+    reference = replace(
+        query,
+        select=[SqlField(dialect_for_warehouse("duckdb").scalar_call("DATE_DIFF", args), "delta")],
+    )
+    with duckdb.connect() as conn:
+        assert conn.execute(render_select(reference)).fetchall() == [(expected,)]
+
+
+def test_authored_date_diff_normalizes_datetime_columns():
+    endpoints = SqlCte(
+        "endpoints",
+        SqlSelect(
+            select=[
+                SqlField(SqlCast(SqlLiteral("2024-01-01 23:00:00"), "DATETIME"), "opened_at"),
+                SqlField(SqlCast(SqlLiteral("2024-01-03 01:00:00"), "DATETIME"), "closed_at"),
+            ]
+        ),
+    )
+    args = [SqlLiteral("day"), _col("e", "opened_at"), _col("e", "closed_at")]
+    query = SqlSelect(
+        ctes=[endpoints],
+        select=[SqlField(DIALECT.scalar_call("DATE_DIFF", args), "delta")],
+        from_table=SqlTableRef("endpoints", "e"),
+    )
+    sql = render_select(query)
+    assert "CAST('2024-01-01 23:00:00' AS DATETIME) AS opened_at" in sql
+    assert "CAST('2024-01-03 01:00:00' AS DATETIME) AS closed_at" in sql
+    assert (
+        "DATETIME_DIFF(CAST(e.closed_at AS DATETIME), CAST(e.opened_at AS DATETIME), DAY) AS delta"
+        in sql
+    )
 
 
 def test_date_add_renders_parenthesized_interval():

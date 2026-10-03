@@ -418,11 +418,6 @@ def _catalog_objects(catalog: dict[str, Any], *, selected: str) -> list[dict[str
 def _planned_query(plan: dict[str, Any]) -> dict[str, Any]:
     best = dict(plan.get("best", {}) or {})
     query = best.get("query_ir")
-    if isinstance(query, dict):
-        return dict(query)
-    next_payload = dict(plan.get("next", {}) or {})
-    validate = dict(next_payload.get("validate", {}) or {})
-    query = validate.get("query")
     return dict(query) if isinstance(query, dict) else {}
 
 

@@ -43,12 +43,15 @@ from .architect_transactions import (
     ProjectTransaction,
     project_revision,
 )
+from .config_parts.route_rows import RouteRowError, check_route_row, entity_references
 from .config_validation import PackageReference, parse_config_report
 from .dialects import connection_option_errors, warehouse_connector
 from .errors import SemanticLayerError
 from .expressions import expr_to_dict
+from .fanout import package_route, pair_routes, route_reading
 from .package_snapshot import load_package_snapshot
 from .package_tools import impact_report
+from .schema import PackageConfig, PathPreferenceConfig
 from .yaml_loader import safe_load as yaml_safe_load
 
 _INVENTORY_KINDS = {
@@ -1421,7 +1424,7 @@ class ArchitectProject:
                     details={"model": model_row.key},
                 )
             entities = dict(model.get("entities", {}) or {})
-            # The loader reads the block's first entity as the model's own.
+            # Keep the source first for readability; the loader resolves its primary identity.
             model["entities"] = {
                 source: entities.get(source) or {},
                 **{name: spec for name, spec in entities.items() if name not in {source, target}},
@@ -1495,6 +1498,122 @@ class ArchitectProject:
                     "cardinality": kind,
                 }
             },
+            prepare_updates=prepare,
+        )
+        return ArchitectMutation(
+            report=outcome.report,
+            project_path=self.project_path,
+            _snapshots=outcome.snapshots,
+            _active=bool(outcome.snapshots),
+        )
+
+    def record_route_decision(
+        self,
+        *,
+        source_entity: str,
+        target_entity: str,
+        relationship_path: list[str],
+        label: str = "",
+        validate_after: bool = True,
+        expected_revision: str | None = None,
+        idempotency_key: str | None = None,
+        dry_run: bool = False,
+    ) -> ArchitectMutation:
+        """Record which route a question between two entities means, as the package default:
+        the pair's row in the ``path_preferences`` list the loader reads (a top-level one in
+        ``package.yml`` wins over ``graph.path_preferences``). It replaces every row for exactly
+        the pair, however its entities are spelled, and never a row for the reverse pair. An
+        ``AMBIGUOUS_PATH`` option's ``decision`` is such a row.
+
+        Under the transaction lock, the row is checked by the loader's rules, then the changed
+        package is loaded and must resolve the pair to exactly the recorded route. Otherwise it
+        is ``INVALID_CONFIG`` (the loader's error, naming any row it disagrees with) and nothing
+        is written. The report adds ``replaced`` (the row in effect before, or None) and
+        ``summary``, one plain sentence for a review.
+        """
+        expected, key = self._mutation_identity(expected_revision, idempotency_key)
+        row: dict[str, Any] = {
+            "source_entity": str(source_entity or "").strip(),
+            "target_entity": str(target_entity or "").strip(),
+            "relationship_path": [hop.strip() for hop in _as_list(relationship_path)],
+            **({"label": str(label).strip()} if str(label or "").strip() else {}),
+        }
+        metadata: dict[str, Any] = {"route_decision": row}
+
+        def prepare(_: str) -> tuple[list[ProjectFileUpdate], None]:
+            config = load_package_snapshot(str(self.project_path)).config
+            keys = {item.key: item.object_id for item in self._raw_inventory()["entities"]}
+            entities = entity_references(config.entities, keys)
+            try:
+                decision = check_route_row(
+                    row, entities=entities, relationships=config.relationships
+                )
+            except RouteRowError as exc:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"route decision {exc}",
+                    details={"reason": "invalid_route_decision", "route_decision": row},
+                ) from None
+            pair = (decision.source_entity, decision.target_entity)
+            # The loader reads a top-level list over graph.path_preferences, and graph.yml's
+            # graph block over package.yml's.
+            path = self._target_path("package.yml")
+            if (
+                "path_preferences" not in _yaml_load(path)
+                and self._target_path("graph.yml").exists()
+            ):
+                path = self._target_path("graph.yml")
+            documents = self._load_documents(path)
+            document = holder = documents[path]
+            if "path_preferences" not in document:
+                holder = document["graph"] = dict(document.get("graph", {}) or {})
+            rows = list(holder.get("path_preferences", []) or [])
+            matches = [
+                position
+                for position, existing in enumerate(rows)
+                if isinstance(existing, dict)
+                and tuple(entities.get(str(existing.get(end, "")).strip()) for end in _PIN_ENDS)
+                == pair
+            ]
+            metadata["replaced"] = deepcopy(rows[matches[-1]]) if matches else None
+            rows = [existing for position, existing in enumerate(rows) if position not in matches]
+            rows.insert(matches[0] if matches else len(rows), row)
+            holder["path_preferences"] = rows
+            updates = self._file_updates(documents)
+            transaction = ProjectTransaction(self.project_path, workspace_root=self.workspace_root)
+            with transaction.virtual_project(updates) as proposed:
+                try:
+                    changed = load_package_snapshot(str(proposed)).config
+                except SemanticLayerError as exc:
+                    message = str(exc).replace(str(proposed), str(self.project_path))
+                    raise SemanticLayerError(exc.code, message, details=exc.details) from None
+            try:
+                route = list(package_route(changed, start=pair[0], target=pair[1]).routes[0])
+            except SemanticLayerError:
+                route = []
+            if route != decision.relationship_path:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"route decision for {pair[0]} -> {pair[1]} would not take effect: the "
+                    "changed package resolves the pair another way",
+                    details={"reason": "route_decision_not_in_effect", "route_decision": row},
+                )
+            metadata["summary"] = _route_decision_summary(config, decision)
+            return updates, None
+
+        outcome = ProjectTransaction(self.project_path, workspace_root=self.workspace_root).apply(
+            (),
+            expected_revision=expected,
+            idempotency_key=key,
+            intent={
+                "operation": "record_route_decision",
+                "expected_revision": expected,
+                **row,
+            },
+            dry_run=dry_run,
+            validate_after=validate_after,
+            success_status="recorded",
+            metadata=metadata,
             prepare_updates=prepare,
         )
         return ArchitectMutation(
@@ -1904,11 +2023,9 @@ class ArchitectProject:
         except Exception:  # the parse gate reports a package that doesn't load
             return
         before, after = configs
-        entity_ids = {
-            **{row.name: row.id for row in before.entities},
-            **{row.key: row.object_id for row in raw["entities"]},
-            **{row.id: row.id for row in before.entities},
-        }
+        entity_ids = entity_references(
+            before.entities, {row.key: row.object_id for row in raw["entities"]}
+        )
         relationship_ids: dict[str, str] = {}
         for rel in before.relationships:
             relationship_ids[rel.id] = rel.id
@@ -2584,6 +2701,22 @@ def _merge_named_objects(
             dropped += [f"{block}.{name}.{field}" for field in old if field not in spec]
         merged[name] = deepcopy(spec)
     return merged
+
+
+def _route_decision_summary(config: PackageConfig, decision: PathPreferenceConfig) -> str:
+    """One plain sentence for a review: what the pair now means, and its other meanings."""
+    start, target = decision.source_entity, decision.target_entity
+    entities = {entity.id: entity.label or entity.name for entity in config.entities}
+    start_label, target_label = entities.get(start, start), entities.get(target, target)
+    meaning = decision.label or route_reading(config, start, decision.relationship_path)
+    others = [
+        route_reading(config, start, path)
+        for path in pair_routes(config, start, target)
+        if path != list(decision.relationship_path)
+    ]
+    article = "an" if start_label[:1].lower() in set("aeiou") else "a"
+    summary = f"For {article} {start_label}, '{target_label}' now means {meaning}."
+    return f"{summary} Other meanings: {'; '.join(others)}." if others else summary
 
 
 def _replaced(current: dict[str, Any], spec: dict[str, Any]) -> dict[str, Any]:

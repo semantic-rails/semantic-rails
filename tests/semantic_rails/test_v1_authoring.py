@@ -15,7 +15,9 @@ from typing import Any
 import pytest
 import yaml
 
+from semantic_rails.architect_service import ArchitectProject
 from semantic_rails.config import load_package_config
+from semantic_rails.config_parts.package_loader import normalize_package
 from semantic_rails.config_validation import validate_runtime_package
 from semantic_rails.errors import SemanticLayerError
 from tests.semantic_rails.conftest import copy_package_config
@@ -175,6 +177,513 @@ def test_as_with_wrong_namespace_overrides_auto_derived(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Section 2: model.entities: block authoring sugar
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "entities_block", [None, {}, {"device": {}}, {"reading": {}, "device": {}}]
+)
+@pytest.mark.parametrize("with_relationship", [False, True])
+def test_graph_entity_never_borrows_another_entity_key(
+    tmp_path: Path, entities_block: dict | None, with_relationship: bool
+) -> None:
+    reading_model = {"relation": "readings"}
+    if entities_block is not None:
+        reading_model["entities"] = entities_block
+    pkg = _write_synthetic_package(
+        tmp_path / "readings",
+        graph_entities={
+            "reading": {"model": "readings"},
+            "device": {"model": "devices", "key": "device_id"},
+        },
+        models={"readings": reading_model, "devices": {"relation": "devices"}},
+        graph_relationships={"reading_device": {"entities": ["reading", "device"]}}
+        if with_relationship
+        else None,
+    )
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(pkg))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert "graph entity 'reading' must declare key" in str(exc.value)
+    assert "model 'readings'" in str(exc.value)
+
+
+@pytest.mark.parametrize("own_first", [False, True])
+@pytest.mark.parametrize("key_source", ["graph", "grain", "primary"])
+def test_graph_binding_selects_primary_independently_of_entity_order(
+    tmp_path: Path, own_first: bool, key_source: str
+) -> None:
+    block = {"reading": {}, "device": {}} if own_first else {"device": {}, "reading": {}}
+    model: dict[str, Any] = {"id": "readings", "relation": "readings", "entities": block}
+    reading = {"model": "readings"}
+    if key_source == "graph":
+        reading["key"] = "reading_id"
+    elif key_source == "grain":
+        model["grain"] = ["reading_id"]
+    else:
+        model["keys"] = {"primary": ["reading_id"]}
+    pkg = _write_synthetic_package(
+        tmp_path / "readings",
+        graph_entities={
+            "reading": reading,
+            "device": {"model": "devices", "key": "device_id"},
+        },
+        models={
+            "readings": model,
+            "devices": {"id": "devices", "relation": "devices", "entities": {"device": {}}},
+        },
+        graph_relationships={"reading_device": {"entities": ["reading", "device"]}},
+    )
+    if key_source == "grain":
+        errors = validate_runtime_package(pkg)
+        assert not any("grain" in error for error in errors), errors
+    config = load_package_config(str(pkg))
+    entity = next(e for e in config.entities if e.id == "entity.synth_reading")
+    assert entity.key == ["reading_id"]
+    assert entity.foreign_keys == {"device": ["device_id"]}
+    assert [(r.id, r.source_entity, r.target_entity) for r in config.relationships] == [
+        ("relationship.reading_device", "entity.synth_reading", "entity.synth_device")
+    ]
+
+
+def test_structured_primary_key_resolves_implicit_binding(tmp_path: Path) -> None:
+    pkg = _write_synthetic_package(
+        tmp_path / "structured_primary",
+        graph_entities={"reading": {"key": ["reading_id"]}},
+        models={
+            "readings": {
+                "relation": "readings",
+                "entities": {"reading": {}},
+                "keys": {"primary": {"columns": ["reading_id"], "role": "unique"}},
+            }
+        },
+    )
+    config = load_package_config(str(pkg))
+    assert [(entity.id, entity.key, entity.table) for entity in config.entities] == [
+        ("entity.synth_reading", ["reading_id"], "readings")
+    ]
+
+
+def test_empty_entities_block_preserves_name_binding_and_own_grain(tmp_path: Path) -> None:
+    pkg = _write_synthetic_package(
+        tmp_path / "empty_entities",
+        graph_entities={"reading": {}},
+        models={"reading": {"relation": "readings", "entities": {}, "grain": ["reading_id"]}},
+    )
+    config = load_package_config(str(pkg))
+    assert [(entity.id, entity.key, entity.table) for entity in config.entities] == [
+        ("entity.synth_reading", ["reading_id"], "readings")
+    ]
+
+
+@pytest.mark.parametrize("primary_source", ["entity", "grain"])
+def test_name_binding_refuses_another_entitys_primary_key(
+    tmp_path: Path, primary_source: str
+) -> None:
+    model: dict[str, Any] = {"relation": "readings", "entities": {"device": {}}}
+    model[primary_source] = "device" if primary_source == "entity" else ["device_id"]
+    pkg = _write_synthetic_package(
+        tmp_path / "name_binding_conflict",
+        package_extra={"schema_strict": True},
+        graph_entities={"reading": {}, "device": {"model": "devices", "key": "device_id"}},
+        models={"reading": model, "devices": {"relation": "devices"}},
+    )
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(pkg))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert all(f"'{name}'" in str(exc.value) for name in ("reading", "device"))
+    assert "model 'reading'" in str(exc.value)
+
+
+@pytest.mark.parametrize("with_entities", [False, True])
+@pytest.mark.parametrize("reverse_models", [False, True])
+def test_two_models_cannot_claim_an_unbound_entity(
+    tmp_path: Path, with_entities: bool, reverse_models: bool
+) -> None:
+    models = {
+        name: {"entity": "reading", "relation": name} for name in ("readings", "other_readings")
+    }
+    if with_entities:
+        for model in models.values():
+            model["entities"] = {"reading": {}}
+    if reverse_models:
+        models = dict(reversed(list(models.items())))
+    pkg = _write_synthetic_package(
+        tmp_path / "duplicate_claims",
+        graph_entities={"reading": {"key": "reading_id"}},
+        models=models,
+    )
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(pkg))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert all(f"'{name}'" in str(exc.value) for name in ("reading", "readings", "other_readings"))
+
+
+def test_whitespace_in_graph_model_binding_preserves_relationship(tmp_path: Path) -> None:
+    pkg = _write_synthetic_package(
+        tmp_path / "normalized_binding",
+        graph_entities={
+            "reading": {"model": "readings ", "key": "reading_id"},
+            "device": {"model": " devices", "key": "device_id"},
+        },
+        models={
+            "readings": {
+                "entity": "reading",
+                "relation": "readings",
+                "keys": {"foreign": {"device": ["device_id"]}},
+            },
+            "devices": {"relation": "devices"},
+        },
+        graph_relationships={"reading_device": {"entities": ["reading", "device"]}},
+    )
+    config = load_package_config(str(pkg))
+    assert [(r.id, r.source_entity, r.target_entity) for r in config.relationships] == [
+        ("relationship.reading_device", "entity.synth_reading", "entity.synth_device")
+    ]
+
+
+@pytest.mark.parametrize("second_model", ["device", "sensors"])
+@pytest.mark.parametrize("with_entities", [False, True])
+def test_implicit_bindings_preserve_authored_entity_relations(
+    tmp_path: Path, second_model: str, with_entities: bool
+) -> None:
+    models = {
+        "reading": {"entity": "device", "relation": "devices", "keys": {"primary": ["id"]}},
+        second_model: {"entity": "reading", "relation": "readings", "keys": {"primary": ["id"]}},
+    }
+    if with_entities:
+        for model in models.values():
+            model["entities"] = {"reading": {}, "device": {}}
+    pkg = _write_synthetic_package(
+        tmp_path / "implicit_identity",
+        graph_entities={"reading": {"key": "id"}, "device": {"key": "id"}},
+        models=models,
+    )
+    config = load_package_config(str(pkg))
+    assert {entity.id: entity.table for entity in config.entities} == {
+        "entity.synth_reading": "readings",
+        "entity.synth_device": "devices",
+    }
+
+
+@pytest.mark.parametrize("primary_source", ["grain", "name"])
+def test_implicit_binding_resolves_grain_before_model_name(
+    tmp_path: Path, primary_source: str
+) -> None:
+    reading_model: dict[str, Any] = {
+        "relation": "devices" if primary_source == "grain" else "readings",
+        "entities": {"device": {}, "reading": {}},
+    }
+    if primary_source == "grain":
+        reading_model["grain"] = ["device_id"]
+    second_entity = "reading" if primary_source == "grain" else "device"
+    pkg = _write_synthetic_package(
+        tmp_path / "implicit_resolution",
+        graph_entities={"reading": {"key": "reading_id"}, "device": {"key": "device_id"}},
+        models={
+            "reading": reading_model,
+            "other": {"entity": second_entity, "relation": f"{second_entity}s"},
+        },
+    )
+    config = load_package_config(str(pkg))
+    assert {entity.id: entity.table for entity in config.entities} == {
+        "entity.synth_reading": "readings",
+        "entity.synth_device": "devices",
+    }
+
+
+def test_explicit_binding_does_not_prevent_other_identity_backfill(tmp_path: Path) -> None:
+    pkg = _write_synthetic_package(
+        tmp_path / "mixed_bindings",
+        graph_entities={
+            "reading": {"model": "readings", "key": "reading_id"},
+            "device": {"key": "device_id"},
+        },
+        models={
+            "readings": {"relation": "readings", "entities": {"reading": {}}},
+            "sensors": {"entity": "device", "relation": "devices"},
+        },
+    )
+    config = load_package_config(str(pkg))
+    assert {entity.id: entity.table for entity in config.entities} == {
+        "entity.synth_reading": "readings",
+        "entity.synth_device": "devices",
+    }
+
+
+@pytest.mark.parametrize("explicit_binding", [False, True])
+def test_final_bindings_refuse_two_entities_on_one_model(
+    tmp_path: Path, explicit_binding: bool
+) -> None:
+    reading: dict[str, Any] = {"key": "reading_id"}
+    if explicit_binding:
+        reading["model"] = "readings"
+    pkg = _write_synthetic_package(
+        tmp_path / "final_binding_collision",
+        graph_entities={"reading": reading, "readings": {"key": "other_id"}},
+        models={"readings": {"entity": "reading", "relation": "readings"}},
+    )
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(pkg))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert "primary home of both graph entities" in str(exc.value)
+    assert all(f"'{name}'" in str(exc.value) for name in ("readings", "reading"))
+
+
+def test_name_fallback_cannot_select_an_explicitly_bound_entity(tmp_path: Path) -> None:
+    pkg = _write_synthetic_package(
+        tmp_path / "reserved_identity",
+        graph_entities={"reading": {"model": "readings", "key": "reading_id"}},
+        models={
+            "reading": {"relation": "other_readings", "entities": {"reading": {}}},
+            "readings": {"relation": "readings"},
+        },
+    )
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(pkg))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert "model 'reading' must identify its primary entity" in str(exc.value)
+
+
+@pytest.mark.parametrize("entities_block", [None, {}, {"device": {}}])
+def test_explicit_binding_refuses_conflicting_identity_without_primary_resolution(
+    tmp_path: Path, entities_block: dict | None
+) -> None:
+    model: dict[str, Any] = {"entity": "device", "relation": "readings"}
+    if entities_block is not None:
+        model["entities"] = entities_block
+    pkg = _write_synthetic_package(
+        tmp_path / "conflicting_identity",
+        graph_entities={"reading": {"model": "readings", "key": "reading_id"}},
+        models={"readings": model},
+    )
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(pkg))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert all(f"'{name}'" in str(exc.value) for name in ("readings", "reading", "device"))
+
+
+def test_null_model_kind_accepts_authored_graph_relationship(tmp_path: Path) -> None:
+    pkg = _write_synthetic_package(
+        tmp_path / "null_kind",
+        graph_entities={
+            "reading": {"model": "readings", "key": "reading_id"},
+            "device": {"model": "devices", "key": "device_id"},
+        },
+        models={
+            "readings": {
+                "kind": None,
+                "relation": "readings",
+                "entities": {"reading": {}, "device": {}},
+            },
+            "devices": {"kind": None, "relation": "devices"},
+        },
+        graph_relationships={"reading_device": {"entities": ["reading", "device"]}},
+    )
+    config = load_package_config(str(pkg))
+    assert [(edge.id, edge.source_entity, edge.target_entity) for edge in config.relationships] == [
+        ("relationship.reading_device", "entity.synth_reading", "entity.synth_device")
+    ]
+
+
+def test_graph_model_cannot_be_primary_for_two_entities(tmp_path: Path) -> None:
+    pkg = _write_synthetic_package(
+        tmp_path / "conflicting_bindings",
+        graph_entities={
+            "reading": {"model": "readings", "key": "reading_id"},
+            "device": {"model": "readings", "key": "device_id"},
+        },
+        models={"readings": {"relation": "readings", "entities": {"device": {}}}},
+    )
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(pkg))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert all(f"'{name}'" in str(exc.value) for name in ("readings", "reading", "device"))
+
+
+@pytest.mark.parametrize("customer_first", [False, True])
+@pytest.mark.parametrize("identity", [None, "binding", "entity", "single_match"])
+def test_shared_entity_keys_require_explicit_primary_identity(
+    tmp_path: Path, customer_first: bool, identity: str | None
+) -> None:
+    names = ["customer", "supplier"] if customer_first else ["supplier", "customer"]
+    graph_entities = {name: {"key": ["id"]} for name in names}
+    graph_entities["supplier"]["model"] = "supplier"
+    model: dict[str, Any] = {
+        "id": "parties",
+        "relation": "parties",
+        "grain": ["id"],
+        "entities": {name: {} for name in names},
+        "dimensions": {"label": {"column": "label", "kind": "categorical"}},
+        "measures": {"party_count": {"kind": "entity_count", "entity_key": ["id"]}},
+    }
+    if identity == "binding":
+        graph_entities["customer"]["model"] = "parties"
+    elif identity == "entity":
+        model["entity"] = "customer"
+    elif identity == "single_match":
+        graph_entities["supplier"]["key"] = ["supplier_id"]
+    pkg = _write_synthetic_package(
+        tmp_path / "shared_keys",
+        graph_entities=graph_entities,
+        models={
+            "parties": model,
+            "supplier": {
+                "id": "supplier",
+                "entity": "supplier",
+                "relation": "suppliers",
+                "grain": ["id"],
+            },
+        },
+    )
+    if identity is None:
+        message = (
+            "model 'parties' grain ['id'] matches multiple entity keys: customer, supplier; "
+            "bind the model in the graph or set entity:"
+        )
+        with pytest.raises(SemanticLayerError) as exc:
+            load_package_config(str(pkg))
+        assert exc.value.code == "INVALID_CONFIG"
+        assert str(exc.value) == message
+        assert any(message in error for error in validate_runtime_package(pkg))
+    else:
+        config = load_package_config(str(pkg))
+        customer = next(
+            entity for entity in config.entities if entity.id == "entity.synth_customer"
+        )
+        assert customer.table == "parties"
+        assert customer.key == ["id"]
+
+
+def test_architect_mutation_rolls_back_when_grain_remains_ambiguous(tmp_path: Path) -> None:
+    pkg = _write_synthetic_package(
+        tmp_path / "ambiguous_edit",
+        graph_entities={"customer": {"key": ["id"]}, "supplier": {"key": ["id"]}},
+        models={
+            "parties": {
+                "id": "parties",
+                "relation": "parties",
+                "grain": ["id"],
+                "entities": {"customer": {}, "supplier": {}},
+            },
+            "supplier": {"entity": "supplier", "relation": "suppliers", "grain": ["id"]},
+        },
+    )
+    original = (pkg / "models" / "supplier.yml").read_bytes()
+    project = ArchitectProject(pkg, workspace_root=tmp_path)
+    report = project.upsert_model(
+        model_id="supplier", entity_key="supplier", relation="updated_suppliers", primary_key=["id"]
+    ).report
+
+    assert report["changes"]
+    assert report["status"] == "rolled_back_after_parse_error"
+    assert report["parse"]["ok"] is False
+    assert any(
+        error["code"] == "INVALID_CONFIG"
+        and (
+            "model 'parties' grain ['id'] matches multiple entity keys: customer, supplier; "
+            "bind the model in the graph or set entity:"
+        )
+        in error["message"]
+        for error in report["parse"]["errors"]
+    )
+    assert (pkg / "models" / "supplier.yml").read_bytes() == original
+
+
+@pytest.mark.parametrize("customer_first", [False, True])
+@pytest.mark.parametrize("key_source", ["graph", "expr", "primary"])
+def test_ambiguous_grain_cannot_fall_back_to_model_name(
+    customer_first: bool, key_source: str
+) -> None:
+    names = ["customer", "supplier"] if customer_first else ["supplier", "customer"]
+    model: dict[str, Any] = {
+        "entities": {name: {} for name in names},
+        "grain": ["id"],
+    }
+    if key_source == "expr":
+        model["entities"] = {name: {"expr": "id"} for name in names}
+    elif key_source == "primary":
+        model.pop("grain")
+        model["keys"] = {"primary": {"columns": ["id"]}}
+    raw = {
+        "graph": {
+            "entities": {
+                name: {"key": [f"{name}_id" if key_source == "expr" else "id"]} for name in names
+            }
+        },
+        "models": {"customer": model},
+    }
+    with pytest.raises(SemanticLayerError) as exc:
+        normalize_package(raw)
+    assert exc.value.code == "INVALID_CONFIG"
+    assert str(exc.value) == (
+        "model 'customer' grain ['id'] matches multiple entity keys: customer, supplier; "
+        "bind the model in the graph or set entity:"
+    )
+
+
+@pytest.mark.parametrize(
+    "package_path",
+    [
+        "configs/semantic_rails/jaffle_shop",
+        "configs/semantic_rails/tpch_sf1_showcase",
+        "configs/examples/semantic_rails_package_starter.yml",
+    ],
+)
+def test_bundled_packages_resolve_primary_entities(package_path: str) -> None:
+    assert load_package_config(str(REPO_ROOT / package_path)).entities
+
+
+def test_model_primary_is_not_chosen_by_declaration_order(tmp_path: Path) -> None:
+    pkg = _write_synthetic_package(
+        tmp_path / "unresolved_primary",
+        models={"widgets": {"relation": "widgets", "entities": {"widget": {}}}},
+    )
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(pkg))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert "model 'widgets' must identify its primary entity" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "relationship",
+    [
+        {"entities": ["missing", "widget"]},
+        {"entities": ["widget", "missing"]},
+        {"entities": ["orphan", "widget"], "via": "widget_id"},
+        {"entities": ["widget"]},
+        {"entities": "widget"},
+        {"from": "widget", "to": "widget"},
+        {},
+        None,
+        "widget",
+    ],
+)
+def test_unattachable_graph_relationship_is_refused(tmp_path: Path, relationship: Any) -> None:
+    pkg = _write_synthetic_package(
+        tmp_path / "unattachable",
+        graph_relationships={"unattachable_edge": relationship},
+    )
+    # An unbound model must not make an unknown graph entity attachable.
+    _write_yaml(
+        pkg / "models" / "orphan.yml",
+        {"models": {"orphan": {"entity": "orphan", "relation": "orphan"}}},
+    )
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(pkg))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert "unattachable_edge" in str(exc.value)
+
+
+def test_graph_relationships_must_be_a_mapping(tmp_path: Path) -> None:
+    pkg = _write_synthetic_package(tmp_path / "invalid_relationship_block")
+    graph_path = pkg / "graph.yml"
+    graph = yaml.safe_load(graph_path.read_text(encoding="utf-8"))
+    graph["graph"]["relationships"] = [{"entities": ["widget", "widget"]}]
+    _write_yaml(graph_path, graph)
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(pkg))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert "graph.relationships must be a mapping" in str(exc.value)
 
 
 def test_model_entities_block_translates_to_legacy_shape(tmp_path: Path) -> None:

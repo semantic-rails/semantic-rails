@@ -453,7 +453,11 @@ def test_repl_banner_says_which_prompts_are_in_use(monkeypatch: pytest.MonkeyPat
 def _journey(script: str, *args: str, **env: str) -> str:
     proc = subprocess.run(
         [sys.executable, "-c", script, *args],
-        env={**os.environ, "PYTHONPATH": str(REPO_ROOT), **env},
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO_ROOT), os.getenv("PYTHONPATH")])),
+            **env,
+        },
         capture_output=True,
         text=True,
         timeout=120,

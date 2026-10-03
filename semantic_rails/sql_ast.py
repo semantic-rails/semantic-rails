@@ -264,7 +264,9 @@ def normalize_sql_date_part(part: str) -> str:
 
 def normalize_sql_cast_type_name(type_name: str) -> str:
     # Nullable targets preserve NULL on ClickHouse regardless of session settings.
-    nullable = re.fullmatch(r"Nullable\((Float64|Int64|String|DECIMAL\(\d+,\d+\))\)", type_name)
+    nullable = re.fullmatch(
+        r"Nullable\((Float64|Int64|String|DateTime|DateTime64\(6\)|DECIMAL\(\d+,\d+\))\)", type_name
+    )
     if nullable:
         return type_name
     normalized = _compact_token(type_name).upper()
@@ -326,6 +328,8 @@ class SqlBinary:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "op", normalize_sql_binary_operator(self.op))
+        if self.op in {"IS", "IS NOT"} and isinstance(self.right, SqlLiteral):
+            validate_single_value_filter_shape(self.op, self.right.value, path="expression")
         if self.op in _NULL_LITERAL_GUARDED_OPS and (
             is_null_literal(self.left) or is_null_literal(self.right)
         ):
@@ -609,6 +613,7 @@ def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "w
       list compiles to constant FALSE / TRUE (vacuous membership)
       instead of erroring.
     - ``IS NULL`` / ``IS NOT NULL`` ignore ``value`` entirely.
+    - ``IS`` / ``IS NOT`` accept only null or boolean values.
     - ``value: null`` with any other op follows
       :func:`build_comparison_condition`, like every comparison with a
       null literal.
@@ -706,8 +711,26 @@ def build_negation(arg: SqlExpr) -> SqlExpr:
 
 
 def validate_single_value_filter_shape(op: Any, value: Any, *, path: str = "where") -> None:
-    """Reject a list before dimension type checks for scalar comparisons."""
+    """Check scalar operands before dimension type checks and SQL construction."""
     op_normalized = _compact_token(str(op or "=")).upper()
+    if op_normalized in {"IS", "IS NOT"} and value is not None and not isinstance(value, bool):
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"{path}: op '{op_normalized}' accepts only NULL, TRUE or FALSE",
+            details={
+                "path": path,
+                "op": op_normalized,
+                "recovery_hints": [
+                    {
+                        "code": "USE_EQUALITY_FOR_SCALAR",
+                        "message": (
+                            "Use '=' / '!=' to compare other values; "
+                            "'IS' / 'IS NOT' accept only NULL, TRUE or FALSE."
+                        ),
+                    }
+                ],
+            },
+        )
     if op_normalized in {"IN", "NOT IN", "IS NULL", "IS NOT NULL"} or not isinstance(
         value, (list, tuple)
     ):

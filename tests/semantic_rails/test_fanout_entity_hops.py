@@ -200,6 +200,7 @@ Q4_2016 = {"temporal_role": ROLE, "grain": "quarter", "start": "2016-10-01", "en
 IN_Q4 = "o.ordered_at >= TIMESTAMP '2016-10-01' AND o.ordered_at < TIMESTAMP '2017-01-01'"
 BEVERAGE = {"field": TYPE, "op": "=", "value": "beverage"}
 WEB = {"field": CHANNEL, "op": "=", "value": "web"}
+HOT_ITEM = {"field": HOT, "op": "=", "value": True}
 FILTERED_SUM = {
     "select": [{"expression": {"measure": "measure.hop.revenue"}, "as": "revenue"}],
     "where": [BEVERAGE],
@@ -475,6 +476,51 @@ def test_time_bounded_child_filter_keeps_window_observation(
     sql = result["rendered_sql"]
     assert "EXISTS (" in sql and "SELECT DISTINCT" not in sql
     # Rewritten fanout leaves retain observation inside the window, including filled buckets.
+    assert "coverage_" not in sql and sql.count("FROM orders") == 1
+
+
+@pytest.mark.parametrize("match", ["any", "none"])
+@pytest.mark.parametrize("fill", [False, True], ids=["bounded", "filled"])
+def test_time_bounded_child_groups_keep_window_observation(
+    package: Path, match: str, fill: bool
+) -> None:
+    """A child group lowers in the same semi-join leaf as a flat child filter."""
+    query = {
+        "select": [{"expression": {"measure": "measure.hop.revenue"}, "as": "revenue"}],
+        "where": [{"child": "entity.hop_item", "match": match, "where": [BEVERAGE, HOT_ITEM]}],
+        "time": {
+            "temporal_role": ROLE,
+            "grain": "month",
+            "start": "2016-10-01",
+            "end": "2017-04-01",
+            "fill": fill,
+        },
+    }
+    negation = "NOT " if match == "none" else ""
+    matching = f"""
+        SELECT DATE_TRUNC('month', o.ordered_at) AS month, SUM(o.total) AS revenue
+        FROM orders o
+        WHERE o.ordered_at >= TIMESTAMP '2016-10-01'
+          AND o.ordered_at < TIMESTAMP '2017-04-01'
+          AND {negation}EXISTS (SELECT 1 FROM order_items i WHERE i.order_id = o.order_id
+                                AND i.product_type = 'beverage' AND i.is_hot)
+        GROUP BY month
+    """
+    reference = matching
+    if fill:
+        reference = f"""
+            WITH matching AS ({matching})
+            SELECT months.month, COALESCE(matching.revenue, 0)
+            FROM GENERATE_SERIES(TIMESTAMP '2016-10-01', TIMESTAMP '2017-03-01',
+                                 INTERVAL '1 month') AS months(month)
+            LEFT JOIN matching USING (month)
+        """
+    result = _run(package, query)
+    assert _normal(tuple(row.values()) for row in typed_rows(result)) == _reference(
+        package, reference
+    )
+    sql = result["rendered_sql"]
+    assert f"{negation}EXISTS (" in sql and "SELECT DISTINCT" not in sql
     assert "coverage_" not in sql and sql.count("FROM orders") == 1
 
 
@@ -820,7 +866,8 @@ def test_new_child_filter_paths_require_one_candidate_or_a_pin(
             "west",
         ),
     ]
-    assert caught.value.details["candidates"] == [path for path, _, _ in routes]
+    options = caught.value.details["clarification"]["options"]
+    assert [option["relationship_path"] for option in options] == [path for path, _, _ in routes]
     # Seed once; pinning must select the authored route even when it is longer.
     _run(diamond_package, {"select": [{"expression": {"measure": "measure.diamond.amount"}}]})
     for path, expected, branch in routes:
@@ -1256,25 +1303,13 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
         # Order revenue by product type: split over the items, or each order's full total?
         ({"select": [_measure("revenue")], "group_by": [TYPE]}, "is ambiguous across"),
         ({"select": [_measure("revenue", "avg")], "group_by": [TYPE]}, "is ambiguous across"),
-        # "Orders without a beverage" and "orders with a non-beverage item" differ.
-        (_where("!=", "beverage"), NEGATED),
-        (_where("<>", "beverage"), NEGATED),
-        (_where("NOT IN", ["beverage"]), NEGATED),
-        (_where("NOT LIKE", "bev%"), NEGATED),
-        (_where("IS DISTINCT FROM", "beverage"), NEGATED),
-        (_where("IS NOT", "beverage"), NEGATED),
-        (_where("IS NULL", None), NEGATED),
-        (_where("=", None), NEGATED),
-        (_where("=", False, HOT), NEGATED),
-        (_where("=", "false", HOT), NEGATED),
-        (_where("in", [False], HOT), NEGATED),
+        # A measure's own filter has no child scope to state (query filters do: see below).
         (_bound_filter({"field": TYPE, "op": "!=", "value": "beverage"}), NEGATED),
+        # A negated test with no exact complement has no 'none' reading to offer.
+        (_where("IS DISTINCT FROM", "beverage"), NEGATED),
+        (_where("NOT ILIKE", "bev%"), NEGATED),
         # At most one condition may cross a one-to-many hop: with two, one row may have to meet
-        # both, or any rows each. On one child, on siblings under a shared hop, or both groups.
-        (
-            {"select": [_measure("revenue")], "where": [BEVERAGE, {**BEVERAGE, "value": "jaffle"}]},
-            TWO_CONDITIONS,
-        ),
+        # both, or any rows each. On siblings under a shared hop, or both groups.
         ({**GROUPED_COUNT, "where": [{"field": HOT, "op": "=", "value": True}]}, TWO_CONDITIONS),
         (
             {**GROUPED_COUNT, "where": [{"field": CATEGORY, "op": "=", "value": "hot"}]},
@@ -1300,8 +1335,6 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
         ),
         ({"select": [_measure("customer_count")], "group_by": [TYPE, METHOD]}, TWO_CONDITIONS),
         # On a boolean only "= true" reads one way.
-        (_where("<", True, HOT), NEGATED),
-        (_where("<=", False, HOT), NEGATED),
         (_bound_filter({"field": HOT, "op": "<", "value": True}), NEGATED),
         (_bound_filter({"field": HOT, "op": "=", "value": 0}), NEGATED),
         # orders -> customer -> sessions: many-to-many through the customer.
@@ -1330,8 +1363,6 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
         ),
         # A conditional aggregate, alone or inside a ratio, refuses what its measure refuses.
         (_conditional(OWN_REVENUE_IF, group_by=[TYPE]), "is ambiguous across"),
-        (_conditional(OWN_REVENUE_IF, where=[{**BEVERAGE, "op": "!="}]), NEGATED),
-        (_conditional(OWN_SHARE, where=[{**BEVERAGE, "op": "NOT IN", "value": ["x"]}]), NEGATED),
         (_conditional(OWN_REVENUE_IF, where=[BEVERAGE, WEB]), TWO_CONDITIONS),
         (
             _conditional(
@@ -1349,26 +1380,14 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
     ids=[
         "sum",
         "avg",
-        "not_equal",
-        "angle_not_equal",
-        "not_in",
-        "not_like",
-        "is_distinct_from",
-        "is_not_value",
-        "is_null",
-        "equals_null",
-        "boolean_false",
-        "boolean_false_text",
-        "boolean_in_false",
         "measure_filter",
-        "two_filters_one_child",
+        "is_distinct_from",
+        "not_ilike",
         "group_and_filter_one_child",
         "group_and_filter_through_a_lookup",
         "sibling_filters",
         "group_and_sibling_filter",
         "sibling_groups",
-        "boolean_less_than_true",
-        "boolean_at_most_false",
         "measure_filter_boolean_less_than_true",
         "measure_filter_boolean_zero",
         "many_to_many",
@@ -1377,8 +1396,6 @@ TWO_CONDITIONS = "both cross a one-to-many hop"
         "non_additive",
         "cumulative",
         "conditional_grouped_sum",
-        "conditional_not_equal",
-        "conditional_ratio_not_in",
         "conditional_two_filters",
         "conditional_ratio_group_and_filter",
         "conditional_many_to_many",
@@ -1391,6 +1408,123 @@ def test_ambiguous_shapes_stay_refused(package: Path, query: dict[str, Any], rea
     assert error["code"] == "MIXED_GRAIN_INVALID"
     assert reason in error["why_invalid"]
     assert error["recovery_hints"]
+
+
+def _has_item(condition: str) -> str:
+    return f"EXISTS (SELECT 1 FROM order_items i WHERE i.order_id = o.order_id AND {condition})"
+
+
+def _negations(any_not: str, none: str) -> dict[str, str]:
+    return {"any_not": _has_item(any_not), "none": "NOT " + _has_item(none)}
+
+
+@pytest.mark.parametrize(
+    ("query", "readings"),
+    [
+        # "Orders without a beverage" and "orders with a non-beverage item" differ.
+        (
+            _where("!=", "beverage"),
+            _negations("i.product_type != 'beverage'", "i.product_type = 'beverage'"),
+        ),
+        (
+            _where("<>", "beverage"),
+            _negations("i.product_type <> 'beverage'", "i.product_type = 'beverage'"),
+        ),
+        (
+            _where("NOT IN", ["beverage"]),
+            _negations("i.product_type NOT IN ('beverage')", "i.product_type IN ('beverage')"),
+        ),
+        (
+            _where("NOT LIKE", "bev%"),
+            _negations("i.product_type NOT LIKE 'bev%'", "i.product_type LIKE 'bev%'"),
+        ),
+        (
+            _where("IS NULL", None),
+            _negations("i.product_type IS NULL", "i.product_type IS NOT NULL"),
+        ),
+        (_where("=", None), _negations("i.product_type IS NULL", "i.product_type IS NOT NULL")),
+        # On a boolean only "= true" reads one way.
+        (_where("=", False, HOT), _negations("i.is_hot = false", "i.is_hot != false")),
+        (_where("=", "false", HOT), _negations("i.is_hot = false", "i.is_hot != false")),
+        (_where("in", [False], HOT), _negations("i.is_hot IN (false)", "i.is_hot NOT IN (false)")),
+        (_where("<", True, HOT), _negations("i.is_hot < true", "i.is_hot >= true")),
+        (_where("<=", False, HOT), _negations("i.is_hot <= false", "i.is_hot > false")),
+        # One item that is both, or a beverage and some jaffle?
+        (
+            {"select": [_measure("revenue")], "where": [BEVERAGE, {**BEVERAGE, "value": "jaffle"}]},
+            {
+                "same_row": _has_item("i.product_type = 'beverage' AND i.product_type = 'jaffle'"),
+                "separate_rows": _has_item("i.product_type = 'beverage'")
+                + " AND "
+                + _has_item("i.product_type = 'jaffle'"),
+            },
+        ),
+    ],
+    ids=[
+        "not_equal",
+        "angle_not_equal",
+        "not_in",
+        "not_like",
+        "is_null",
+        "equals_null",
+        "boolean_false",
+        "boolean_false_text",
+        "boolean_in_false",
+        "boolean_less_than_true",
+        "boolean_at_most_false",
+        "two_filters_one_child",
+    ],
+)
+def test_query_filters_that_leave_the_child_scope_unsaid_ask_for_it(
+    package: Path, query: dict[str, Any], readings: dict[str, str]
+) -> None:
+    """Each reading is offered as a whole where list, which then answers as its reference."""
+    error = _refusal(package, query)
+    assert error["code"] == "AMBIGUOUS_CHILD_SCOPE"
+    offered = error["details"]["clarification"]["options"]
+    assert [option["id"] for option in offered] == list(readings)
+    for option in offered:
+        reference = f"SELECT SUM(o.total) FROM orders o WHERE {readings[option['id']]}"
+        resent = {**query, "where": option["where"]}
+        assert _rows(package, resent) == _reference(package, reference), option["id"]
+
+
+@pytest.mark.parametrize(
+    ("query", "reference", "readings"),
+    [
+        (
+            _conditional(OWN_REVENUE_IF, where=[{**BEVERAGE, "op": "!="}]),
+            "SELECT SUM(CASE WHEN o.customer_id = 10 THEN o.total END) FROM orders o WHERE {}",
+            _negations("i.product_type != 'beverage'", "i.product_type = 'beverage'"),
+        ),
+        (
+            _conditional(OWN_SHARE, where=[{**BEVERAGE, "op": "NOT IN", "value": ["x"]}]),
+            "SELECT COUNT(DISTINCT CASE WHEN o.customer_id = 10 THEN o.order_id END) * 1.0 "
+            "/ COUNT(DISTINCT o.order_id) FROM orders o WHERE {}",
+            _negations("i.product_type NOT IN ('x')", "i.product_type IN ('x')"),
+        ),
+    ],
+    ids=["conditional_not_equal", "conditional_ratio_not_in"],
+)
+def test_a_conditional_aggregate_asks_about_a_negated_child_filter_too(
+    package: Path, query: dict[str, Any], reference: str, readings: dict[str, str]
+) -> None:
+    """Every leaf of an expression reads the child scope the same way, operand by operand."""
+    error = _refusal(package, query)
+    assert error["code"] == "AMBIGUOUS_CHILD_SCOPE"
+    offered = error["details"]["clarification"]["options"]
+    assert [option["id"] for option in offered] == list(readings)
+    for option in offered:
+        resent = {**query, "where": option["where"]}
+        expected = _reference(package, reference.format(readings[option["id"]]))
+        assert _rows(package, resent) == expected, option["id"]
+
+
+@pytest.mark.parametrize("op", ["IS", "IS NOT"])
+def test_invalid_is_operand_is_refused_before_hop_analysis(package: Path, op: str) -> None:
+    error = _refusal(package, _where(op, "beverage"))
+    assert error["code"] == "INVALID_QUERY"
+    assert error["recovery_hints"][0]["code"] == "USE_EQUALITY_FOR_SCALAR"
 
 
 def test_positive_null_and_boolean_tests_mean_exists(package: Path) -> None:

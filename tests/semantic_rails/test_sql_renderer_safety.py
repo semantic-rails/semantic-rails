@@ -41,6 +41,33 @@ def _unsafe_instance(cls: type[Any], **attrs: Any) -> Any:
     return obj
 
 
+def test_nullable_datetime64_cast_renders_exact_supported_type():
+    assert render_expr(SqlCast(_col(), "Nullable(DateTime64(6))")) == (
+        "CAST(source.amount AS Nullable(DateTime64(6)))"
+    )
+
+
+@pytest.mark.parametrize(
+    "type_name",
+    [
+        "Nullable(DateTime64(3))",
+        "Nullable(DateTime64(6, 'UTC'))",
+        "Nullable(DateTime64(6)); DROP TABLE sensitive; --)",
+        "Nullable(DateTime64(6)) --",
+        "Nullable(DateTime64(6))\n",
+    ],
+)
+@pytest.mark.parametrize("bypass_constructor", [False, True])
+def test_nullable_datetime64_cast_rejects_unapproved_spellings(type_name, bypass_constructor):
+    with pytest.raises(SemanticLayerError) as exc:
+        if bypass_constructor:
+            render_expr(_unsafe_instance(SqlCast, expr=_col(), type_name=type_name))
+        else:
+            SqlCast(_col(), type_name)
+    assert exc.value.code == "INVALID_EXPRESSION_AST"
+    assert exc.value.details["token_kind"] == "cast"
+
+
 @pytest.mark.parametrize(
     ("token_kind", "factory"),
     [

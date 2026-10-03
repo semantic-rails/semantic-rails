@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
-from ..ast import _relative_range_bounds
+from ..ast import _relative_range_bounds, is_child_group
 from ..errors import SemanticLayerError
 from ._base import (
     _BOUNDARY_BEFORE_RE,
@@ -1550,6 +1550,12 @@ def _field_predicates(query: dict[str, Any]) -> dict[str, _FieldConstraints]:
 
     out: dict[str, _FieldConstraints] = {}
     for node in list(query.get("where") or []):
+        if is_child_group(node):
+            # A child group's conditions cut child rows, a scope of its own: unproven here.
+            for condition in list(node.get("where") or []):
+                if isinstance(condition, dict) and isinstance(condition.get("field"), str):
+                    out.setdefault(condition["field"], _FieldConstraints()).uncertain = True
+            continue
         if not isinstance(node, dict) or not isinstance(node.get("field"), str):
             continue
         name = node["field"]
@@ -1733,6 +1739,8 @@ def _query_has_negative_semantics(query: dict[str, Any]) -> bool:
     for node in _dict_nodes(query):
         kind = str(node.get("kind", "") or "").casefold()
         if kind in {"not", "not_in", "not_between"} or node.get("negated") is True:
+            return True
+        if is_child_group(node) and node.get("match") == "none":
             return True
         op = " ".join(str(node.get("op", "") or "").upper().split())
         if op in _NEGATIVE_OPS:
