@@ -3,7 +3,9 @@
 The invariant: every grouping the question lists that isn't a clock term ("by month", "by order
 date") or a declared value has a dimension in the draft's group_by, or plan doesn't call the draft
 ready. A comma separates groupings as "and" does, so "by incident name, incident" lists two. Two
-incidents can share a name; grouping by the name alone would add their costs into one row.
+incidents can share a name; grouping by the name alone would add their costs into one row. A
+grouping that names an entity has only that entity's key dimension, or its single declared
+dimension whose own words name it; an entity with a composite key has none.
 """
 
 from __future__ import annotations
@@ -77,9 +79,7 @@ def _upkeep(path: Path, noun: str, measure: str, *, revisions: bool = False) -> 
             },
         },
         "graph.yml": {
-            "graph": {
-                "entities": {noun: {"key": key, "model": f"{noun}s", "label": title}}
-            }
+            "graph": {"entities": {noun: {"key": key, "model": f"{noun}s", "label": title}}}
         },
         f"models/{noun}s.yml": {
             "model": {

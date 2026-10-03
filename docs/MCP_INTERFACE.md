@@ -274,9 +274,15 @@ held to a stricter rule, and one the draft doesn't consume is not a warning: it 
 ("by customer type, order" grouped by Store name and Customer type;
 `why.details.dropped_groupings` lists only "order") or answers about another subject. Each
 listed grouping, apart from clock terms and declared values, must match its own `group_by`
-dimension through declared name words or the named entity's declared key; unrelated
-dimensions cannot stand in for it. A comma continues the grouping list only when the next
-piece names a dimension, entity or clock term; otherwise it ends the clause. A grain phrase
+dimension. A listed grouping that names an entity is satisfied only by that entity's own key
+dimension, or by the single declared dimension of that entity whose own words name it. An
+entity with a composite key is never satisfied by the guard, so the plan is not ready. A
+grouping whose words all belong to an entity's label or name matches nothing else, and it
+names an entity only with every word of that entity's label ("customer" names Customer, not
+Customer history); a declared time, such as Store opened at, never stands in for its entity.
+Any other grouping matches a dimension whose own words name it: its label, its aliases and the
+last part of its name, not the prefix of its id. A comma continues the grouping list only when
+the next piece names a dimension, entity or clock term; otherwise it ends the clause. A grain phrase
 such as "at week grain" or "month level" sets the grain on the measure's own clock.
 A word names an object when it is a word of the
 object's label or aliases, or of the last dotted part of its id or name outside the object's own

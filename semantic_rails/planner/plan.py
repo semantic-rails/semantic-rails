@@ -706,9 +706,7 @@ def _entity_grouping_dimensions(config: Any, term: str) -> set[str] | None:
         named = [
             row.id
             for row in owned
-            if row.column != entity.key[0]
-            and row.id not in clocks
-            and _grouping_matches(term, row)
+            if row.column != entity.key[0] and row.id not in clocks and _grouping_matches(term, row)
         ]
         if len(named) == 1:
             allowed |= set(named)
