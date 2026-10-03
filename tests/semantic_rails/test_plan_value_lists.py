@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from dataclasses import replace
 from typing import Any
@@ -16,6 +17,7 @@ from semantic_rails.planner.generators import (
     _normalize_value_filters,
 )
 from semantic_rails.planner.plan import _merge_partial_query
+from semantic_rails.schema import SemanticPolicyConfig
 
 STORE = "dimension.jaffle_store_name"
 PRODUCT_TYPE = "dimension.jaffle_item_product_type"
@@ -376,8 +378,10 @@ def test_unrelated_caller_inclusions_are_preserved_and_refused(
     assert "execute" not in payload["next"].get("ready_for", [])
 
 
-@pytest.mark.parametrize("path", ["primary", "fallback"])
-@pytest.mark.parametrize("grouping", ["product type", "product types"])
+@pytest.mark.parametrize(
+    ("path", "grouping"),
+    [("primary", "product type"), ("fallback", "product type"), ("fallback", "product types")],
+)
 @pytest.mark.parametrize("separator", ["from", "and"])
 def test_ranked_named_values_keep_exact_groupings_and_combined_totals(
     runtime_factory, monkeypatch, path, grouping, separator
@@ -451,6 +455,28 @@ def test_ranked_named_values_keep_exact_groupings_and_combined_totals(
         assert [value for _, value in actual] == pytest.approx([value for _, value in expected])
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize("separator", ["from", "and"])
+def test_ranked_plural_grouping_stays_unresolved_with_both_named_values(
+    runtime_factory, separator
+) -> None:
+    # The primary planner doesn't read a plural grouping name as its singular.
+    runtime = runtime_factory("jaffle_shop")
+    intent = f"top 3 product types by item revenue for Brooklyn {separator} Philadelphia"
+    try:
+        payload = plan_payload(runtime, intent=intent)
+    finally:
+        runtime.close()
+    query = payload["best"]["query_ir"]
+    assert payload["status"] == "low_confidence", payload.get("why")
+    assert "execute" not in payload["next"].get("ready_for", [])
+    assert query["limit"] == 3
+    assert PRODUCT_TYPE not in query["group_by"]
+    assert STORE not in query["group_by"]
+    assert [{**row, "value": sorted(row["value"])} for row in query["where"]] == [
+        {"field": STORE, "op": "in", "value": ["Brooklyn", "Philadelphia"]}
+    ]
 
 
 @pytest.mark.parametrize("caller_has_list", [False, True])
@@ -909,3 +935,83 @@ def _with_districts(runtime, monkeypatch) -> None:
         runtime, "_config", replace(runtime._config, dimensions=[*dimensions.values(), *districts])
     )
 
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "primary",
+        pytest.param(
+            "fallback",
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason="Fallback discovery reads a plural as its singular and keeps the first "
+                "available match.",
+            ),
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "intent",
+    [
+        "item revenue by districts",
+        "item revenue by the districts",
+        "item revenue by their districts",
+        "item revenue by each districts",
+    ],
+)
+def test_plural_grouping_matching_several_dimensions_is_not_execute_ready(
+    runtime_factory, monkeypatch, path, intent
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    _with_districts(runtime, monkeypatch)
+    _force_fallback(runtime, monkeypatch, intent, path)
+    try:
+        payload = plan_payload(runtime, intent=intent)
+    finally:
+        runtime.close()
+    assert payload["status"] == "low_confidence", payload.get("why")
+    assert "execute" not in payload["next"].get("ready_for", [])
+    if path == "primary":
+        assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+        assert payload["why"]["details"]["terms"] == ["districts"]
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize(
+    ("intent", "caller"),
+    [("item revenue by districts", None), ("item revenue by district", [PRODUCT_TYPE])],
+)
+def test_plan_output_never_names_a_hidden_grouping_dimension(
+    runtime_factory, monkeypatch, path, intent, caller
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    _with_districts(runtime, monkeypatch)
+    hidden = SemanticPolicyConfig(
+        id="policy.test.hide_store_district",
+        kind="object_visibility",
+        object_ids=[STORE_DISTRICT],
+        action="hidden",
+    )
+    policies = [*runtime._config.semantic_policies, hidden]
+    monkeypatch.setattr(runtime, "_config", replace(runtime._config, semantic_policies=policies))
+    _force_fallback(runtime, monkeypatch, intent, path)
+    partial = {"group_by": caller} if caller else None
+    try:
+        payloads = {
+            detail: plan_payload(runtime, intent=intent, partial_query=partial, detail=detail)
+            for detail in ("query", "best", "full", "debug")
+        }
+    finally:
+        runtime.close()
+    for payload in payloads.values():
+        text = json.dumps(payload, default=str)
+        assert STORE_DISTRICT not in text
+        assert "store district" not in text.lower()
+    if caller:
+        # A grouping added beside the caller's group_by is still held for clarification.
+        payload = payloads["best"]
+        assert payload["status"] == "low_confidence", payload.get("why")
+        assert "execute" not in payload["next"].get("ready_for", [])
+        gap = payload["why"]["details"]["gaps"][0]
+        assert gap["kind"] == "ambiguous_grouping"
+        assert gap["actual"]["dimension_ids"] == [CUSTOMER_DISTRICT, PRODUCT_TYPE]

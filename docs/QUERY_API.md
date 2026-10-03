@@ -1040,21 +1040,10 @@ filter: `=` for one value and `in` for several. This yields one total or one
 combined ranking; no grouping is added for those values. A per-value breakdown
 needs an explicit grouping in the question (for example, "by store") or the
 caller's `group_by`.
-Singular and regular plural grouping names resolve to the same dimension when
-the singular form is in the catalog. For example, "top 3 product types by item
-revenue for Brooklyn and Philadelphia" groups by product type and uses both
-stores in one membership filter. Catalog fallback resolves each requested
-grouping before deduplicating by dimension ID.
-A plural grouping that matches only when read as its singular must resolve to
-one dimension. When several dimensions reachable from the measure's entity have
-every word of the singular in their ID, name, label or aliases, the plan is
-ready only if the draft groups by the one of them on the measure's own entity.
-Otherwise the plan keeps the draft's grouping and returns `low_confidence` with
-an `ambiguous_grouping` gap that lists the matching dimension IDs and a
-`clarify_grouping` hint naming them. For example, "item revenue by districts"
-in a package with both a store district and a customer district isn't ready,
-while "item revenue by product types" groups by the item's own product type.
-A matching dimension the caller passes in `group_by` counts as chosen.
+For example, "top 3 product type by item revenue for Brooklyn and
+Philadelphia" groups by product type and uses both stores in one membership
+filter. Catalog fallback resolves each requested grouping before deduplicating
+by dimension ID.
 When the caller passes `group_by` and the draft adds a grouping dimension the
 caller didn't pass, the plan is not ready to execute: the plan keeps both
 groupings in `group_by` and returns `low_confidence` with an
@@ -1064,10 +1053,6 @@ a caller dimension or asks for another one. For example, "item revenue by store"
 with `group_by: ["dimension.jaffle_item_product_type"]` keeps both the product
 type and store groupings. To execute, pass every intended grouping dimension ID
 in `group_by`, here both IDs.
-Fallback discovery uses the user's words, folding regular plurals without
-substituting planner synonyms (for example, "region" stays "region"). Neither
-path folds a plural that the planner already reads as one of its own words,
-such as "orders" or "customers".
 Caller filter rows stay as written, in their original order, with only string
 field IDs stripped of surrounding whitespace. Their operators and values are
 preserved, and generated rows are appended unless identical rows already exist.
