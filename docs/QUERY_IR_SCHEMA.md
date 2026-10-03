@@ -853,13 +853,14 @@ unless the join yields NULLs, so every ClickHouse statement ends with
 Some answers are right but easy to misread, so the response says what they cover. This never
 changes the SQL or the rows.
 
-**Facts on different clocks.** With no `start`, `end` or `range` and no `grain`, each measure
+**Facts on different clocks.** With no `time` block, each measure
 sums all of its own history. When the selects read measures of two or more entities dated by
 different time roles (a measure with no time role is its own clock), the response carries one
 `MIXED_TIME_ROLES` warning that names each measure's role: orders by order time and storefront
 sessions by session start, grouped by customer, cover different periods, so their ratio is not
-a rate over one period. Add a window (each measure then covers it on its own clock) or a grain,
-or read them separately. `details.clocks` lists each measure's `subject` and `temporal_roles`.
+a rate over one period. Read them separately. A `time` block, including a role without bounds
+or a grain, suppresses this all-history warning. `details.clocks` lists each measure's
+`subject` and `temporal_roles`.
 A measure inside an expression (`ratio`, arithmetic, `case`, `aggregate_if`) counts like a bare
 one; one inside a conversion or a metric predicate keeps that expression's own time rules. A
 metric counts as one clock, with every role it combines: alone it never warns, since the

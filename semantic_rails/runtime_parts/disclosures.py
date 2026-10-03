@@ -2,7 +2,7 @@
 
 ``MIXED_TIME_ROLES`` (a warning) reads the compiled plan's select expressions and never changes
 the SQL or the rows: the selects read measures of two or more entities dated by different time
-roles, and the query has no window and no time grain, so each measure covers all of its own
+roles, and the query has no time block, so each measure covers all of its own
 history. A measure with no time role is its own clock. A governed metric counts as one clock,
 however many it combines: the package defined it, so it warns only beside a measure or metric on
 another clock. Measures inside conversions and metric predicates keep their own time rules, so
@@ -113,13 +113,12 @@ def _clock_text(clock: _Clock) -> str:
 
 
 def mixed_time_role_warnings(config: PackageConfig, plan: LogicalPlan) -> list[dict[str, Any]]:
-    """One ``MIXED_TIME_ROLES`` warning when unwindowed, ungrained selects mix entities' clocks.
+    """One ``MIXED_TIME_ROLES`` warning when selects without a time block mix entities' clocks.
 
-    With a window each measure covers the same period on its own clock, and with a time grain
-    each row is one period, so neither answer covers all of a measure's history.
+    A time block bounds or projects time, including raw timestamps with only a role,
+    so that answer must not be described as covering all of each measure's history.
     """
-    time = plan.time
-    if time.get("start") is not None or time.get("end") is not None or time.get("grain"):
+    if plan.time:
         return []
     # The package's measures plus this query's aggregate_if measures.
     measures = {**{row.id: row for row in config.measures}, **plan.synthetic_measures}
@@ -138,7 +137,7 @@ def mixed_time_role_warnings(config: PackageConfig, plan: LogicalPlan) -> list[d
             message=(
                 "These measures are dated by different time roles: "
                 f"{'; '.join(_clock_text(clock) for clock in rows)}. With no window each covers "
-                "all of its own history; add a window, or read them separately."
+                "all of its own history; read them separately."
             ),
             severity="warning",
             stage="planning",

@@ -1,7 +1,7 @@
 """Say when a row mixes facts on different clocks.
 
 Orders (dated by order time) and storefront sessions (dated by session start) grouped by
-customer, with no window, each count all of their own history, so a ratio of the two is not a
+customer, with no time block, each count all of their own history, so a ratio of the two is not a
 rate over one period. The answer is right but reads as one, so it carries ``MIXED_TIME_ROLES``.
 The warning never changes the numbers.
 """
@@ -10,9 +10,11 @@ from __future__ import annotations
 
 from typing import Any
 
+import duckdb
 import pytest
 
 from semantic_rails import runtime as runtime_module
+from semantic_rails.db import DuckDBAdapter
 from semantic_rails.runtime import Runtime
 
 CUSTOMER = "dimension.jaffle_customer_id"
@@ -66,6 +68,7 @@ def _mixed(out: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 ORDERS, SESSIONS = _agg("order_count"), _agg("session_starts")
+RATIO = {"kind": "ratio", "numerator": ORDERS, "denominator": SESSIONS}
 SESSION_MONTHS = {"temporal_role": SESSION_TIME, "grain": "month"}
 # An aggregate_if has no time role of its own.
 SESSIONS_IF = {
@@ -93,7 +96,7 @@ def test_two_facts_on_different_clocks_with_no_window_get_one_warning(runtime, m
     assert warning["message"] == (
         "These measures are dated by different time roles: measure.jaffle.order_count by "
         f"{ORDER_TIME}; measure.jaffle.session_starts by {SESSION_TIME}. With no window each "
-        "covers all of its own history; add a window, or read them separately."
+        "covers all of its own history; read them separately."
     )
     assert warning["details"] == {
         "clocks": [
@@ -107,10 +110,18 @@ def test_two_facts_on_different_clocks_with_no_window_get_one_warning(runtime, m
 @pytest.mark.parametrize(
     "query",
     [
-        # A window covers one period on each fact's own clock.
+        # Bounds without a grain must suppress the all-history warning too.
         _query(
-            ORDERS, SESSIONS, time={**SESSION_MONTHS, "start": "2016-09-01", "end": "2016-10-01"}
+            RATIO,
+            time={"temporal_role": SESSION_TIME, "start": "2016-09-01", "end": "2016-10-01"},
         ),
+        _query(
+            RATIO,
+            time={"temporal_role": SESSION_TIME, "range": {"last": {"unit": "month", "value": 1}}},
+            policy_context={"now": "2016-10-01T00:00:00Z"},
+        ),
+        # A role alone groups by raw timestamp, not all of history.
+        _query(RATIO, time={"temporal_role": SESSION_TIME}),
         # With a time grain each row is one period, not all of history.
         _query(ORDERS, SESSIONS, time=SESSION_MONTHS),
         # Items and orders share the order's clock.
@@ -120,7 +131,7 @@ def test_two_facts_on_different_clocks_with_no_window_get_one_warning(runtime, m
         # A governed metric over two clocks, alone, is the package's own definition.
         _query({"metric": ORDERS_PER_SESSION}),
     ],
-    ids=["window", "grain", "shared-role", "one-fact", "governed-metric"],
+    ids=["window", "range", "role-only", "grain", "shared-role", "one-fact", "governed-metric"],
 )
 def test_no_mixed_clock_warning(runtime, query):
     assert _mixed(runtime.query(query)) == []
@@ -174,6 +185,44 @@ def test_measures_inside_a_select_expression_are_disclosed_too(runtime, selects,
     [warning] = _mixed(runtime.query(_query(*selects)))
 
     assert all(clock in warning["message"] for clock in clocks)
+    assert "add a window" not in warning["message"]
+
+
+def test_role_only_ratio_covers_each_timestamp_not_all_history(runtime, tmp_path):
+    # Use the real package semantics with three orders and two sessions for one customer.
+    isolated = Runtime.from_config(runtime.config, source_path=runtime.source_path)
+    db_path = str(tmp_path / "ratio.duckdb")
+    with duckdb.connect(db_path) as connection:
+        connection.execute("CREATE TABLE jaffle_customer AS SELECT 'c1' AS customer_id")
+        connection.execute("""
+            CREATE TABLE jaffle_order AS
+            SELECT * FROM (VALUES
+                ('o1', 'c1', TIMESTAMP '2016-01-01'),
+                ('o2', 'c1', TIMESTAMP '2016-01-02'),
+                ('o3', 'c1', TIMESTAMP '2016-01-02')
+            ) AS t(order_id, customer_id, ordered_at)
+        """)
+        connection.execute("""
+            CREATE TABLE jaffle_storefront_session AS
+            SELECT * FROM (VALUES
+                ('s1', 'c1', TIMESTAMP '2016-01-01'),
+                ('s2', 'c1', TIMESTAMP '2016-01-02')
+            ) AS t(session_id, customer_id, started_at)
+        """)
+    isolated.set_adapter(DuckDBAdapter(db_path))
+    try:
+        timed_query = _query(RATIO, time={"temporal_role": SESSION_TIME})
+        timed = isolated.query(timed_query)
+        total = isolated.query(_query(RATIO))
+
+        assert sorted(row["v0"] for row in timed["rows"]) == [1.0, 2.0]
+        assert [row["v0"] for row in total["rows"]] == [1.5]
+        assert _mixed(timed) == []
+        assert len(_mixed(total)) == 1
+        assert _mixed(isolated.validate(timed_query)) == []
+        assert _mixed(isolated.compile(timed_query)) == []
+    finally:
+        isolated.close()
 
 
 def test_the_warning_never_changes_the_answer(runtime, monkeypatch):

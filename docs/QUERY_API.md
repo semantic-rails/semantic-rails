@@ -1150,7 +1150,7 @@ The response `warnings` array can carry these non-error signals:
   is `NULL`. `details.outputs` names the outputs. It never fires on a clipped (`truncated`)
   result. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
 - `MIXED_TIME_ROLES` — fires on `validate`, `compile` and `execute` when a query with no
-  `start`, `end` or `range` and no `grain` selects measures of two or more entities dated by
+  `time` block selects measures of two or more entities dated by
   different time roles (a measure with no time role is its own clock; a metric is one clock), so
   each covers all of its own history. The message names each measure's role, and
   `details.clocks` lists each `subject` with its `temporal_roles`. See
