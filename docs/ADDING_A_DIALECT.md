@@ -102,6 +102,8 @@ or `password_file`. Optional locators are `database`, `schema`, `warehouse` and
 `role`; a named Snowflake connector profile is not used. Key-pair authentication
 instead uses `private_key_env` or `private_key_file` containing PEM PKCS #8 text,
 with optional `private_key_passphrase_env` or `private_key_passphrase_file`.
+Passphrase files preserve whitespace except for one optional trailing LF (`\n`)
+or CRLF (`\r\n`); other `*_file` secrets still strip surrounding whitespace.
 Both encrypted and unencrypted keys are mapped to the driver's in-memory PKCS #8
 options. Exactly one password or
 key source is required. Package loading, config reports and guided setup validate

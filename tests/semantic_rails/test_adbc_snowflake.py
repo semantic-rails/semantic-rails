@@ -328,6 +328,57 @@ def test_literal_locators_and_file_secrets_without_environment(monkeypatch, tmp_
 
 
 @pytest.mark.parametrize(
+    ("passphrase", "terminator"),
+    [
+        (" synthetic-passphrase ", ""),
+        (" synthetic-passphrase ", "\n"),
+        (" synthetic-passphrase ", "\r\n"),
+        (" synthetic-passphrase \n", "\n"),
+        (" synthetic-passphrase \r\n", "\r\n"),
+        (" synthetic-passphrase \r", ""),
+        (" synthetic\r\npassphrase ", "\n"),
+    ],
+)
+def test_passphrase_file_matches_environment_and_decrypts_pkcs8(
+    monkeypatch, tmp_path, passphrase, terminator
+):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    encrypted = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.BestAvailableEncryption(passphrase.encode("utf-8")),
+    )
+    key_file = tmp_path / "key.pem"
+    key_file.write_bytes(encrypted)
+    passphrase_file = tmp_path / "passphrase"
+    passphrase_file.write_bytes((passphrase + terminator).encode("utf-8"))
+    monkeypatch.setenv("TEST_PASSPHRASE", passphrase)
+    options = {"account": "test-account", "user": "test-user", "private_key_file": str(key_file)}
+    resolved = []
+    for source, value in (("env", "TEST_PASSPHRASE"), ("file", str(passphrase_file))):
+        adapter = AdbcAdapter(
+            {**options, f"private_key_passphrase_{source}": value}, profile=SNOWFLAKE_PROFILE
+        )
+        connect_options = adapter._snowflake_connect_options()
+        adapter.close()
+        password = connect_options[
+            "adbc.snowflake.sql.client_option.jwt_private_key_pkcs8_password"
+        ]
+        decrypted = serialization.load_pem_private_key(
+            connect_options["adbc.snowflake.sql.client_option.jwt_private_key_pkcs8_value"].encode(
+                "utf-8"
+            ),
+            password=password.encode("utf-8"),
+        )
+        assert decrypted.public_key().public_numbers() == key.public_key().public_numbers()
+        resolved.append(password)
+    assert resolved == [passphrase, passphrase]
+
+
+@pytest.mark.parametrize(
     ("key", "value"),
     [
         ("driver_path", "../../package-driver.dylib"),

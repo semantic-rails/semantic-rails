@@ -514,6 +514,8 @@ With `use_high_precision=true`, scale-0 `NUMBER` columns come back typed `decima
 Account and user may be literals (`account`, `user`) or env-indirected
 (`account_env`, `user_env`); the optional key passphrase may use
 `private_key_passphrase_env` or `private_key_passphrase_file`.
+Passphrase files preserve whitespace except for one optional trailing LF (`\n`)
+or CRLF (`\r\n`); other `*_file` secrets still strip surrounding whitespace.
 Package loading checks both locators, exactly one password or key source, and a
 key source when a passphrase is authored, without reading credentials;
 `connection.name` is refused for this kind.
