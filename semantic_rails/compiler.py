@@ -75,6 +75,7 @@ from .compiler_parts.empty_groups import (
     ZERO_MEASURE_CLASSES,
     absent_entities_gate,
     expr_resolves_to_zero,
+    observing,
     recording_zero_outputs,
     require_settled_source,
 )
@@ -5178,6 +5179,7 @@ def _bind_query(
         recording_stock_key_gaps() as stock_key_gaps,
         recording_zero_outputs() as zero_outputs,
         recording_route_choices() as route_choices,
+        observing(plan.query, config),
     ):
         _record_bound_plan(plan, config, leaves.leaves)
         sql_ast = attach_relation_ctes(config, lower_to_sql(plan, config))

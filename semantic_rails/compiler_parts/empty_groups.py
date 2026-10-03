@@ -6,6 +6,9 @@ over several measures under a threshold that 0 passes, keep the earlier settleme
 reads them as 0 (``earlier_settlement``). Probes and coverage respect row filters.
 Projection bypasses and sums without a row count refuse with EMPTY_GROUPS_UNSETTLED. Stocks
 and non-additive values remain NULL.
+
+``observation_scope`` says where "observed" is judged: ``dataset`` (the default) in the
+measure's own rows under its authored conditions, ``query`` inside the query's filters too.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from ..expressions import (
     ArithmeticExpr,
     CaseExpr,
     MeasureRefExpr,
+    MetricPredicateExpr,
     MetricRecipeRefExpr,
     SemanticExpr,
 )
@@ -190,6 +194,43 @@ def record_leaf_scope(alias: str, scope: LeafScope) -> None:
         scopes[alias] = scope
 
 
+def observation_scope(query: Mapping[str, Any], config: PackageConfig) -> str:
+    """The one reader of the option: the query's own value, else the package default."""
+    return str(query.get("observation_scope") or config.package.observation_scope)
+
+
+def observed_outside_filters(query: Mapping[str, Any], config: PackageConfig) -> bool:
+    """Whether observation looks outside the query's own filters: under ``dataset``, when a
+    where filter or a metric predicate could hide a measure's rows. A time window is judged
+    the same way in either scope."""
+    return observation_scope(query, config) == "dataset" and (
+        bool(query.get("where"))
+        or any(
+            isinstance(_parse_public_expr(dict(item["expression"])), MetricPredicateExpr)
+            for item in query.get("metric_filters") or []
+            if item.get("expression")
+        )
+    )
+
+
+_dataset_observation: ContextVar[bool] = ContextVar("dataset_observation", default=False)
+
+
+@contextmanager
+def observing(query: Mapping[str, Any], config: PackageConfig) -> Iterator[None]:
+    """While the request's own query lowers, its guard judges observation as it says."""
+    token = _dataset_observation.set(observed_outside_filters(query, config))
+    try:
+        yield
+    finally:
+        _dataset_observation.reset(token)
+
+
+def observes_dataset() -> bool:
+    """Whether the guard being built settles the request's own outputs under ``dataset``."""
+    return _dataset_observation.get() and plan_is_root()
+
+
 def guard_empty_groups(
     source: str,
     keys: Iterable[str],
@@ -201,6 +242,7 @@ def guard_empty_groups(
     earlier: Collection[str] = (),
     time_key: str = "",
     dialect: Any = None,
+    observed: Mapping[str, LeafScope] | None = None,
 ) -> list[SqlCte]:
     """Settle measures centrally, with untimed observation and loaded coverage guards.
 
@@ -210,14 +252,24 @@ def guard_empty_groups(
     scopes and ``time_key`` without a dialect with time coverage. Inside
     ``earlier_settlement`` a NULL sum reads 0 wherever its measure has data in scope. Aliases
     in ``earlier`` use that same rule individually for measures containing a nested CASE.
+
+    Under the ``dataset`` scope, the request's own outputs are observed where ``observed``
+    (each measure's own rows under its authored conditions, never the query's filters) holds
+    a value; an output without one is refused, never judged inside the filters.
     """
     if (scopes or time_key) and not (dialect is not None and dialect.has_time_coverage):
         raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})
     rows = rows or {}
+    measures = list(measures)
+    observed = observed or {}
+    dataset = observes_dataset()
+    if dataset and (unobserved := [a for a in measures if a in zero and a not in observed]):
+        raise _unobserved_error(unobserved)
     fields_ = [SqlField(SqlIdentifier(parts=["base", key]), key) for key in keys]
     ctes: list[SqlCte] = []
     joins: list[SqlJoin] = []
     coverage: dict[str, str] = {}
+    probes: dict[str, str] = {}
     for alias in measures:
         value: Any = SqlIdentifier(parts=["base", alias])
         aggregation = zero.get(alias)
@@ -230,8 +282,17 @@ def guard_empty_groups(
                 SqlLiteral(0),
             )
             scope = (scopes or {}).get(alias)
+            if dataset:
+                probe = _seen_outside_window(observed[alias]).query
+                name = probes.get(repr(probe))
+                if name is None:
+                    name = probes[repr(probe)] = f"observed_{len(probes) + 1}"
+                    ctes.extend(_dataset_probe_ctes(name, probe))
+                    joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
+                found = SqlBinary(SqlIdentifier(parts=[name, "seen"]), ">", SqlLiteral(0))
+                seen = SqlBinary(seen, "OR", found)
             if scope is not None:
-                if scope.bounded:
+                if scope.bounded and not dataset:
                     seen = SqlBinary(seen, "OR", _seen_outside_window(scope))
                 if time_key and scope.bucket is not None:
                     loaded = repr(
@@ -301,6 +362,17 @@ def _seen_outside_window(scope: LeafScope) -> SqlExists:
             observation_scan=True,
         )
     )
+
+
+def _dataset_probe_ctes(name: str, probe: SqlSelect) -> list[SqlCte]:
+    """The probe's first row, counted into one row the guard cross-joins: plain CTEs that
+    every warehouse runs, and the scan stops at the first row it finds."""
+    rows = f"{name}_rows"
+    count = SqlCall("COUNT", [SqlIdentifier(parts=[rows, "seen"])])
+    return [
+        SqlCte(name=rows, query=probe),
+        SqlCte(name=name, query=SqlSelect([SqlField(count, "seen")], SqlTableRef(name=rows))),
+    ]
 
 
 def _loaded_bucket(time_key: str, coverage: str) -> SqlBinary:
@@ -378,6 +450,17 @@ def refuse_shared_names(row_counts: Iterable[str], taken: Collection[str]) -> No
     shared = sorted({name for name in folded if name in taken or folded.count(name) > 1})
     if shared:
         raise _unsettled_error({"row_counts_named_like": shared})
+
+
+def _unobserved_error(aliases: list[str]) -> SemanticLayerError:
+    return SemanticLayerError(
+        "EMPTY_GROUPS_UNSETTLED",
+        f"Can't tell whether {', '.join(aliases)} has data outside this query's filters (an "
+        "authored condition reads another table, or this query shape settles its groups "
+        "apart), so its empty groups can't read 0 or NULL. Resend with observation_scope "
+        "'query' to judge them inside the filters.",
+        details={"measures": aliases, "observation_scope": "dataset"},
+    )
 
 
 def _unsettled_error(details: Mapping[str, Any]) -> SemanticLayerError:

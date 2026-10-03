@@ -34,7 +34,7 @@ from .acceleration.routing import (
     aggregate_routing_enabled,
     parse_aggregate_routing,
 )
-from .ast import normalize_query, rewrite_select_shorthand
+from .ast import normalize_query, plain_filters, rewrite_select_shorthand
 from .cache import (
     CachedCompilation,
     CompiledSqlCache,
@@ -45,6 +45,7 @@ from .cache import (
 from .catalog_search import CatalogSearchIndex
 from .caveats import caveat_warnings
 from .compiler import BoundQuery, NonAdditiveRefusal, bind_query, compile_query, read_routes
+from .compiler_parts.empty_groups import observation_scope, observed_outside_filters
 from .compiler_parts.paths import _leaf_time_role
 from .config import (
     SEED_KIND_EXTERNAL,
@@ -73,6 +74,7 @@ from .diagnostics import (
     enrich_object_not_found,
     enrich_path_not_found,
     exception_issue,
+    filter_value_miss,
     history_warning_payload,
     provenance_summary,
     rewrite_warning_payload,
@@ -1236,14 +1238,16 @@ def _stock_key_gap_warnings(compiled) -> list[dict[str, Any]]:
     ]
 
 
-def _no_data_in_scope_warnings(compiled, rows) -> list[dict[str, Any]]:
+def _no_data_in_scope_warnings(compiled, rows, *, dataset: bool = False) -> list[dict[str, Any]]:
     """Say when a measure that reads 0 for empty groups had no data at all, so it read NULL.
 
     A sum, count or distinct count is 0 in a group with no rows only while its measure has
     data somewhere in scope; with none, every group reads NULL. A misspelled filter value
     produces exactly that, so the answer names the outputs that came back NULL on every row
     (or, when nothing came back and no time bounds explain it, every such output). One
-    warning covers them all, and it needs no query beyond the answer.
+    warning covers them all, and it needs no query beyond the answer. When observation
+    looks outside the query's filters (``dataset``), an empty answer is those filters' and
+    says nothing about the measure's data elsewhere.
     """
     outputs = {item["output"]: item for item in list(compiled.get("zero_outputs") or [])}
     window = compiled["logical_plan"].time
@@ -1255,6 +1259,8 @@ def _no_data_in_scope_warnings(compiled, rows) -> list[dict[str, Any]]:
             for name, item in outputs.items()
             if all(row.get(name) is None for row in rows)
         }
+    elif dataset:
+        return []
     elif window.get("start") is not None or window.get("end") is not None:
         return []  # a window with no rows is EMPTY_RESULT_WINDOW's to explain
     elif compiled["logical_plan"].query.get("metric_filters"):
@@ -1274,6 +1280,72 @@ def _no_data_in_scope_warnings(compiled, rows) -> list[dict[str, Any]]:
             stage="execution",
             details={"outputs": list(outputs)},
             object_ids=[measure for item in outputs.values() for measure in item["measures"]],
+        )
+    ]
+
+
+def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str, Any]]:
+    """Under the dataset scope, say when a where value matches no row of its dimension.
+
+    There a misspelled ``product = 'appels'`` reads a confident 0, so each string ``=`` or
+    ``IN`` filter gets one probe: a query of the dimension's values on those literals, under
+    the caller's policy context, so it never sees a row the caller's row filter hides. A miss
+    reads the values the caller can see for the closest one, as package validation does. The
+    ``query`` scope already reads such a filter as NULL with ``NO_DATA_IN_SCOPE``.
+    """
+    from .metadata_parts.valid_values import max_valid_values_limit
+
+    config = runtime._config
+    query = compiled["logical_plan"].query
+    if observation_scope(query, config) != "dataset":
+        return []
+    strings = {row.id for row in config.dimensions if row.data_type == "string"}
+    probe = {"version": 1, "select": [], "observation_scope": "query"}
+    if payload.get("policy_context"):
+        probe["policy_context"] = payload["policy_context"]
+
+    def values(field: str, where: list[dict[str, Any]], limit: int) -> list[str] | None:
+        try:
+            result = runtime.query({**probe, "group_by": [field], "where": where, "limit": limit})
+        except SemanticLayerError:
+            return None
+        return [str(row[field]) for row in result["rows"] if row.get(field) is not None]
+
+    misses: list[dict[str, Any]] = []
+    for item in plain_filters(query.get("where")):
+        field, raw = str(item["field"]), item.get("value")
+        literals = [v for v in (raw if isinstance(raw, list) else [raw]) if isinstance(v, str)]
+        op = str(item.get("op", "=")).upper()
+        if not literals or field not in strings or op not in {"=", "IN"}:
+            continue
+        found = values(field, [{"field": field, "op": "IN", "value": literals}], len(literals))
+        # A warehouse that compares without case returns the stored spelling.
+        seen = {value.casefold() for value in found or []}
+        if found is not None:
+            misses.extend(
+                {"dimension": field, "value": v} for v in literals if v.casefold() not in seen
+            )
+    if not misses:
+        return []
+    limit = max_valid_values_limit()
+    known: dict[str, list[str]] = {}
+    for miss in misses:
+        if miss["dimension"] not in known:
+            # A full page may hide the value meant, so it suggests nothing.
+            page = values(miss["dimension"], [], limit) or []
+            known[miss["dimension"]] = page if len(page) < limit else []
+        message, suggestion = filter_value_miss(
+            "This query", miss["dimension"], miss["value"], known[miss["dimension"]]
+        )
+        miss.update(message=message, suggestion=suggestion)
+    return [
+        semantic_issue(
+            code="FILTER_VALUE_NOT_FOUND",
+            message="; ".join(miss.pop("message") for miss in misses),
+            severity="warning",
+            stage="execution",
+            details={"filters": misses},
+            object_ids=sorted({miss["dimension"] for miss in misses}),
         )
     ]
 
@@ -2416,7 +2488,12 @@ class Runtime:
             "errors": [],
             "warnings": [
                 *_compiled_warnings(self._config, compiled, payload),
-                *_no_data_in_scope_warnings(compiled, rows),
+                *_no_data_in_scope_warnings(
+                    compiled,
+                    rows,
+                    dataset=observed_outside_filters(compiled["logical_plan"].query, self._config),
+                ),
+                *_filter_value_warnings(self, compiled, payload),
                 *limits_warnings,
                 *self._seed_warnings,
             ],
