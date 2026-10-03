@@ -243,6 +243,29 @@ def offered_rows(
     return offered, conflicts
 
 
+def _shortest_path(
+    graph: dict[str, list[tuple[str, str]]],
+    start: str,
+    target: str,
+    hop_limit: int,
+    excluded: str | None = None,
+) -> tuple[str, ...] | None:
+    pending: deque[tuple[str, tuple[str, ...]]] = deque([(start, ())])
+    seen = {start}
+    while pending:
+        node, path = pending.popleft()
+        if node == target:
+            return path
+        if len(path) >= hop_limit:
+            continue
+        for neighbor, rel_id in graph.get(node, []):
+            if rel_id == excluded or neighbor in seen:
+                continue
+            seen.add(neighbor)
+            pending.append((neighbor, (*path, rel_id)))
+    return None
+
+
 def _has_multiple_routes(
     graph: dict[str, list[tuple[str, str]]], start: str, target: str, hop_limit: int
 ) -> bool:
@@ -251,25 +274,10 @@ def _has_multiple_routes(
     must omit at least one of those relationships. At most ``hop_limit + 1`` BFS scans,
     each visiting an entity once; cycles and parallel relationships need no special case.
     """
-
-    def shortest_path(excluded: str | None = None) -> tuple[str, ...] | None:
-        pending: deque[tuple[str, tuple[str, ...]]] = deque([(start, ())])
-        seen = {start}
-        while pending:
-            node, path = pending.popleft()
-            if node == target:
-                return path
-            if len(path) >= hop_limit:
-                continue
-            for neighbor, rel_id in graph.get(node, []):
-                if rel_id == excluded or neighbor in seen:
-                    continue
-                seen.add(neighbor)
-                pending.append((neighbor, (*path, rel_id)))
-        return None
-
-    path = shortest_path()
-    return path is not None and any(shortest_path(rel_id) is not None for rel_id in path)
+    path = _shortest_path(graph, start, target, hop_limit)
+    return path is not None and any(
+        _shortest_path(graph, start, target, hop_limit, rel_id) is not None for rel_id in path
+    )
 
 
 def resolve_path(
@@ -402,6 +410,74 @@ def _resolve_uncached(config: PackageConfig, start: str, target: str) -> RouteRe
             ),
         },
     )
+
+
+def _has_unique_inherited_route(
+    config: PackageConfig, start: str, target: str, hop_limit: int
+) -> bool:
+    """Count at most two agreeing simple routes, pruning a disagreeing prefix."""
+    analysis = get_package_analysis(config)
+
+    def routes(entities: list[str], path: list[str]) -> Iterator[None]:
+        if entities[-1] == target:
+            yield None
+            return
+        if len(path) >= hop_limit:
+            return
+        for neighbor, rel_id in analysis.graph.get(entities[-1], []):
+            if neighbor in entities:
+                continue
+            following, extended = [*entities, neighbor], [*path, rel_id]
+            if disagreeing_row(following, extended, analysis.route_rows) is None:
+                yield from routes(following, extended)
+
+    found = routes([start], [])
+    sentinel = object()
+    return next(found, sentinel) is None and next(found, sentinel) is sentinel
+
+
+def eligible_path_targets(config: PackageConfig, *, start: str) -> list[str]:
+    """Proven resolvable targets without building or caching route refusal envelopes.
+
+    One hop-bounded BFS excludes unreachable unpinned targets. Pins and unique functional
+    direct routes then need no further search. Without inherited rows, other targets
+    need at most ``hop_limit + 1`` BFS scans. With rows, a prefix-pruned search stops
+    at the second agreeing route. Neither search writes caches or builds refusals.
+    """
+    analysis = get_package_analysis(config)
+    hop_limit = package_hop_limit(config)
+    pending = deque([(start, 0)])
+    reachable = {start}
+    while pending:
+        node, hops = pending.popleft()
+        if hops >= hop_limit:
+            continue
+        for neighbor, _rel_id in analysis.graph.get(node, []):
+            if neighbor not in reachable:
+                reachable.add(neighbor)
+                pending.append((neighbor, hops + 1))
+    direct: dict[str, list[list[str]]] = {}
+    if hop_limit >= 1:
+        for target, rel_id in analysis.graph.get(start, []):
+            if target != start and hop_is_functional(analysis.relationships[rel_id], start):
+                direct.setdefault(target, []).append([rel_id])
+    eligible: list[str] = []
+    for target in sorted(analysis.entities):
+        if target == start:
+            continue
+        if (start, target) in analysis.path_preferences:
+            eligible.append(target)
+        elif target not in reachable:
+            continue
+        elif len(direct.get(target, [])) == 1:
+            # The start's unique own key wins before inherited decisions.
+            eligible.append(target)
+        elif analysis.route_rows:
+            if _has_unique_inherited_route(config, start, target, hop_limit):
+                eligible.append(target)
+        elif not _has_multiple_routes(analysis.graph, start, target, hop_limit):
+            eligible.append(target)
+    return eligible
 
 
 def build_hop_profile(
