@@ -1027,6 +1027,25 @@ dimensions are withheld. Naming a hidden dimension has the same outcome as namin
 an absent dimension; a draft that bypasses the visibility check is refused with
 `OBJECT_NOT_FOUND` without naming the dimension.
 
+When a grouping word names available dimensions on several entities and none
+belongs to the selected measure's root entity, planning holds the draft with
+`low_confidence` and `PLAN_UNMATCHED_TERMS`. This applies to primary planning
+and catalog fallback, including fallback's plural matches. The reason lists
+`ambiguous_groupings` and `details.clarification.options`, with one validated
+option per visible candidate dimension. Each option names its `id`, `label`
+and grouping `term`, and carries `group_by`, `where` and `order_by`. Apply
+those three fields to `best.query_ir`, then validate or execute the chosen
+reading. Filters and unrelated groupings are preserved; dimension sort fields
+follow the chosen grouping. For example, "item revenue by district" asks
+whether Store district or Customer district is intended.
+
+A root-owned matching dimension takes precedence: a draft using another
+entity's match instead is held with `PLAN_UNMATCHED_TERMS`. Planning keeps
+that draft for inspection rather than changing its business meaning. A
+caller-supplied `group_by` settles a shared non-root grouping only when the
+draft adds no competing match. No heuristic match alone makes a held draft
+ready.
+
 Validate or execute `best.query_ir` directly. `next` carries `ready_for` and optional
 `valid_values` calls, without duplicating the query. For `detail="best"`, fallback drift
 reasons use slot paths in `best.trace.intent_slots` and `why.details.fallback_slots`

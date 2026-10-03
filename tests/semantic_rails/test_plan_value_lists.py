@@ -223,7 +223,7 @@ def test_caller_filter_stays_as_written_beside_named_values(
     finally:
         runtime.close()
     assert partial == before
-    expected_status = "ok" if isinstance(value, list) else "low_confidence"
+    expected_status = "ok" if isinstance(value, list) and path == "primary" else "low_confidence"
     assert payload["status"] == expected_status, payload.get("why")
     query = payload["best"]["query_ir"]
     assert len(query["where"]) == 2
@@ -318,7 +318,10 @@ def test_caller_only_intersection_keeps_filters_and_executed_rows(
     _force_fallback(runtime, monkeypatch, intent, path)
     try:
         payload = plan_payload(runtime, intent=intent, partial_query=partial)
-        assert payload["status"] == "ok", payload.get("why")
+        # Fallback's Product type belongs to Product, rather than the measure's Item.
+        assert payload["status"] == ("ok" if path == "primary" else "low_confidence"), payload.get(
+            "why"
+        )
         query = payload["best"]["query_ir"]
         assert query["where"] == [{**row, "field": STORE} for row in where]
         assert partial == before
@@ -639,7 +642,9 @@ def test_empty_caller_where_does_not_raise(runtime_factory, monkeypatch, path, w
         payload = plan_payload(runtime, intent=INTENT, partial_query={"where": where})
     finally:
         runtime.close()
-    assert payload["status"] == "ok", payload.get("why")
+    assert payload["status"] == ("ok" if path == "primary" else "low_confidence"), payload.get(
+        "why"
+    )
     product_dimension = "dimension.jaffle_product_type" if path == "fallback" else PRODUCT_TYPE
     assert payload["best"]["query_ir"]["group_by"] == [product_dimension]
 
@@ -973,14 +978,9 @@ def test_plural_grouping_matching_several_dimensions_is_not_execute_ready(
     assert payload["status"] == "low_confidence", payload.get("why")
     assert "execute" not in payload["next"].get("ready_for", [])
     assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
-    if path == "primary":
-        assert payload["why"]["details"]["terms"] == ["districts"]
-    else:
-        # Fallback discovery reads a plural as its singular and keeps the first available
-        # match, Customer district. Plan holds that pick: the district may as well be the
-        # store's, and "their districts" or "each districts" isn't any dimension's own words.
-        assert payload["best"]["query_ir"]["group_by"] == [CUSTOMER_DISTRICT]
-        assert payload["why"]["details"]["terms"] == [intent.split(" by ", 1)[1]]
+    assert payload["why"]["details"]["terms"] == [intent.split(" by ", 1)[1]]
+    assert payload["why"]["details"]["ambiguous_groupings"] == [intent.split(" by ", 1)[1]]
+    assert payload["why"]["recovery_hints"][0]["kind"] == "clarify_grouping"
 
 
 @pytest.mark.parametrize("path", ["primary", "fallback"])

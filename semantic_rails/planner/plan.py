@@ -49,7 +49,7 @@ from .faithfulness import (
     unconsumed_unknown_words,
     unmatched_intent_terms,
 )
-from .generators import blocked_object_not_found, fallback_drafts
+from .generators import _grouping_term_matches, blocked_object_not_found, fallback_drafts
 from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
 from .visibility import (
@@ -327,9 +327,21 @@ def plan_payload(
     # hour, a range, a threshold, a grouping or the asked-for subject was dropped. Last, every
     # grouping the question lists, apart from clock terms and declared values, has its own
     # group_by dimension; that check only holds a draft, it never changes one.
+    grouping_why = (
+        _dropped_grouping_why(runtime, intent_str, best_draft.query, partial_query)
+        if best_ok
+        else None
+    )
     value_why = (
         (
             _unconsumed_terms_why(unconsumed_terms(runtime, intent_str, best_draft.query))
+            # A shared grouping needs options even when fallback discovery consumed
+            # words the primary parser did not (for example "their districts").
+            or (
+                grouping_why
+                if (grouping_why or {}).get("details", {}).get("clarification")
+                else None
+            )
             or _unconsumed_catalog_why(
                 intent_str, unconsumed_catalog_words(runtime, intent_str, best_draft.query)
             )
@@ -337,7 +349,7 @@ def plan_payload(
                 unconsumed_unknown_words(runtime, intent_str, best_draft.query),
                 set(intent_ir.unresolved),
             )
-            or _dropped_grouping_why(runtime, intent_str, best_draft.query, partial_query)
+            or grouping_why
         )
         if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
         else None
@@ -796,31 +808,48 @@ def _dropped_grouping_why(
         for item in dict.fromkeys(query.get("group_by") or [])
         if (row := _object_by_id(config.dimensions, item)) is not None
     ]
-    stand_ins = [_entity_grouping_dimensions(config, term) for term in terms]
+    visible = visible_dimensions(config)
+    stand_ins = [
+        _entity_grouping_dimensions(replace(config, dimensions=visible), term) for term in terms
+    ]
 
     def reads(term: str, ids: set[str] | None, row: Any) -> bool:
         return _grouping_matches(term, row) if ids is None else row.id in ids
 
     chosen = set((partial_query or {}).get("group_by") or [])
 
-    def unsettled(term: str, ids: set[str] | None) -> bool:
+    matches: list[list[Any]] = []
+    for term, ids in zip(terms, stand_ins, strict=True):
+        named = [row for row in visible if row.groupable and reads(term, ids, row)]
+        if not named and ids is None:
+            # Discovery recognizes additional words/plurals. They may establish an
+            # ambiguity, but never satisfy a grouping the strict guard cannot read.
+            discovered = set(_grouping_term_matches(runtime, query, term, limit=len(visible)) or [])
+            named = [row for row in visible if row.groupable and row.id in discovered]
+        matches.append(named)
+
+    def unsettled(term: str, ids: set[str] | None, named: list[Any]) -> bool:
         """Dimensions of two or more entities, none the measure's own, may be the grouping, and
         the caller's group_by doesn't say which: it names none, or the draft added one."""
 
-        entities = {
-            row.entity for row in config.dimensions if row.groupable and reads(term, ids, row)
-        }
+        entities = {row.entity for row in named}
         picked = {row.id for row in grouped if reads(term, ids, row)}
         return len(entities) > 1 and root not in entities and not (picked and picked <= chosen)
 
-    ambiguous = [term for term, ids in zip(terms, stand_ins, strict=True) if unsettled(term, ids)]
+    ambiguous = [
+        term
+        for term, ids, named in zip(terms, stand_ins, matches, strict=True)
+        if unsettled(term, ids, named)
+    ]
     candidates = [
         [
             index
             for index, dimension in enumerate(grouped)
-            if term not in ambiguous and reads(term, ids, dimension)
+            if term not in ambiguous
+            and reads(term, ids, dimension)
+            and (not any(row.entity == root for row in named) or dimension.entity == root)
         ]
-        for term, ids in zip(terms, stand_ins, strict=True)
+        for term, ids, named in zip(terms, stand_ins, matches, strict=True)
     ]
     assigned: dict[int, int] = {}
 
@@ -839,6 +868,33 @@ def _dropped_grouping_why(
         return None
     unclear = [term for term in dropped if term in ambiguous]
     missing = [term for term in dropped if term not in ambiguous]
+    clarification: dict[str, Any] = {}
+    if unclear:
+        options = []
+        for term, named in zip(terms, matches, strict=True):
+            if term not in unclear:
+                continue
+            matching_ids = {row.id for row in named}
+            for row in sorted(named, key=lambda row: row.id):
+                patch = {
+                    "group_by": [
+                        item for item in query.get("group_by", []) if item not in matching_ids
+                    ]
+                    + [row.id],
+                    "where": query.get("where", []),
+                    "order_by": [
+                        {**item, "field": row.id} if item.get("field") in matching_ids else item
+                        for item in query.get("order_by", [])
+                    ],
+                }
+                if _validate_query(runtime, {**query, **patch}, partial_query).get("ok"):
+                    options.append({"id": row.id, "label": row.label, "term": term, **patch})
+        clarification = {
+            "clarification": {
+                "question": "Which dimension does each ambiguous grouping mean?",
+                "options": options,
+            }
+        }
     messages = [
         *(
             [
@@ -866,15 +922,16 @@ def _dropped_grouping_why(
             "terms": dropped,
             "dropped_groupings": missing,
             **({"ambiguous_groupings": unclear} if unclear else {}),
+            **clarification,
         },
         "recovery_hints": [
             {
-                "kind": "use_named_objects",
+                "kind": "clarify_grouping" if unclear else "use_named_objects",
                 "message": (
                     "Find a dimension for each grouping with discover, add the missing ones to "
                     "best.query_ir group_by, then validate; or ask again without those groupings."
                     + (
-                        ' Name the entity of an ambiguous one ("customer name", not "name").'
+                        " Apply an option's group_by, where and order_by to best.query_ir, then validate."
                         if unclear
                         else ""
                     )

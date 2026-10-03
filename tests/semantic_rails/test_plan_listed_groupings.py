@@ -411,8 +411,11 @@ def test_a_window_inside_the_list_never_drops_a_later_grouping(jaffle: Runtime) 
             "order count by name",
             {"terms": ["name"], "dropped_groupings": [], "ambiguous_groupings": ["name"]},
         ),
-        # After a comma the draft has no name grouping, and the catalog-word check holds it.
-        ("order count by month, name", {"terms": ["name"], "dropped_groupings": ["name"]}),
+        # After a comma the draft has no name grouping; it still offers the shared meanings.
+        (
+            "order count by month, name",
+            {"terms": ["name"], "dropped_groupings": [], "ambiguous_groupings": ["name"]},
+        ),
     ],
 )
 def test_a_grouping_naming_dimensions_of_other_entities_is_never_a_pick(
@@ -425,7 +428,9 @@ def test_a_grouping_naming_dimensions_of_other_entities_is_never_a_pick(
     assert payload["status"] == "low_confidence"
     assert "execute" not in payload["next"].get("ready_for", [])
     assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
-    assert payload["why"]["details"] == details
+    assert {
+        key: value for key, value in payload["why"]["details"].items() if key != "clarification"
+    } == details
 
 
 @pytest.mark.parametrize(
@@ -466,7 +471,7 @@ def test_only_the_measures_own_entity_or_the_caller_settles_a_shared_grouping(
     assert (why is not None) is ambiguous
     if why:
         assert why["code"] == "PLAN_UNMATCHED_TERMS"
-        assert why["details"] == {
+        assert {key: value for key, value in why["details"].items() if key != "clarification"} == {
             "terms": [term],
             "dropped_groupings": [],
             "ambiguous_groupings": [term],
@@ -847,8 +852,8 @@ _BEFORE = [
     _Before("revenue by item in 2017", OK, held=True),
     _Before("order count by month, customer id", UNMATCHED),
     _Before("item revenue by month, name", UNMATCHED),
-    _Before("item revenue by name", OK),
-    _Before("item revenue by month and name", OK),
+    _Before("item revenue by name", OK, held=True),
+    _Before("item revenue by month and name", OK, held=True),
     _Before("order count by month, name", OK, group_by=(STORE,)),
     _Before("order count by month, name", OK, group_by=(CUSTOMER_NAME,)),
     *(
@@ -864,7 +869,7 @@ _BEFORE = [
     ),
     # Store district is hidden.
     _Before("item revenue by districts", UNMATCHED, package="hidden_district"),
-    _Before("item revenue by districts", OK, held=True, package="hidden_district", fallback=True),
+    _Before("item revenue by districts", OK, package="hidden_district", fallback=True),
     *(
         _Before(
             "item revenue by district",
@@ -1059,5 +1064,5 @@ def test_the_check_only_holds_a_plan_that_was_ready(
         assert after["why"]["code"] == UNMATCHED
     else:
         assert after["status"] == before["status"]
-        assert after.get("why") == before.get("why")
+        assert _outcome(after) == _outcome(before)
         assert after["next"] == before["next"]
