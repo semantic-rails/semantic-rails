@@ -220,8 +220,8 @@ numbered in the rewritten `select`: an unaliased expression after it gets a defa
 |---|---|
 | `{ "metric": "..." }` as the select item itself, with no `expression` wrapper (plus optional `as`) | `{ "expression": {"kind": "metric", "metric": "..."}, "as": ... }` |
 | `{ "measure": "...", "aggregation": "sum" }` as the select item itself (`aggregation` optional, plus optional `as`) | `{ "expression": {"kind": "measure", ...}, "as": ... }` |
-| `{ "dimension": "..." }` as the whole select item (no `as`) | that id added to `group_by[]`, whatever it already holds |
-| `{ "expression": { "dimension": "..." } }` as the whole select item (no `as`), when `group_by` is empty or already lists it | that id on `group_by[]` |
+| `{ "dimension": "..." }` as the whole select item (no `as`, optional `kind: dimension\|group\|ref`) | that id added to `group_by[]`, whatever it already holds |
+| `{ "expression": { "dimension": "..." } }` as the whole select item (no `as`, optional `kind: dimension\|group\|ref` inside `expression`), when `group_by` is empty or already lists it | that id on `group_by[]` |
 
 Everything else is refused with `INVALID_EXPRESSION_AST`, and the message shows the canonical
 form: an item naming more than one of `metric`, `measure` and `dimension`, a dimension item

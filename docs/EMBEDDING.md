@@ -197,6 +197,8 @@ allowlists and the resource-access checks run inside the built-in handlers, not 
 `call_tool`. A replacement receives the trusted `policy_context` in its arguments, and the
 host is responsible for applying it. To keep the engine's checks, read the built-in with
 `adapter.tool_handlers[name]` before replacing it, and call that from your handler.
+Nested `call_tool` calls resolve their own trusted context and tool error envelope,
+then restore the outer call's context when they return.
 
 ## Package authoring
 

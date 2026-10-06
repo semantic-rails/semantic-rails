@@ -1093,13 +1093,23 @@ def _rewrite_select_item(
         if named:
             raise _reject_select_row(row, idx, f"has 'expression' and also {named}")
         expression = row["expression"]
-        if not isinstance(expression, dict) or set(expression) != {"dimension"}:
+        if (
+            not isinstance(expression, dict)
+            or set(expression) - {"kind"} != {"dimension"}
+            or expression.get("kind", "dimension") not in ("dimension", "group", "ref")
+        ):
             return row, "", None
         dim_id = str(expression["dimension"] or "").strip()
-        # With other group_by entries, adding this one would be a guess: the
-        # expression parser keeps its MOVE_DIMENSION_TO_GROUP_BY error for that.
-        if not dim_id or (group_by and dim_id not in group_by):
+        if not dim_id:
             return row, "", None
+        # With other group_by entries, adding this one would be a guess.
+        if group_by and dim_id not in group_by:
+            raise _reject_select_row(
+                row,
+                idx,
+                "names a dimension absent from the existing group_by",
+                hint_code="MOVE_DIMENSION_TO_GROUP_BY",
+            )
         extra = sorted(set(row) - {"expression"})
         if extra:
             raise _reject_select_row(
@@ -1110,7 +1120,9 @@ def _rewrite_select_item(
             )
         return None, dim_id, _note(path, row, {"group_by": [dim_id]})
     if "dimension" in row:
-        extra = sorted(set(row) - {"dimension"})
+        extra = sorted(set(row) - {"dimension", "kind"})
+        if "kind" in row and row["kind"] not in ("dimension", "group", "ref"):
+            extra.append("kind")
         if extra:
             raise _reject_select_row(
                 row,
