@@ -395,20 +395,29 @@ def test_label_shared_without_parenthetical_clarifies(runtime_factory, question:
 
 
 @pytest.mark.parametrize(
-    ("question", "subject"),
+    ("question", "subject", "status"),
     [
-        ("rolling 7-day revenue", "measure.jaffle.rolling_7d_revenue_usd"),
-        ("revenue MTD", "measure.jaffle.revenue_mtd_usd"),
+        ("rolling 7-day revenue", "measure.jaffle.rolling_7d_revenue_usd", "low_confidence"),
+        ("revenue MTD", "measure.jaffle.revenue_mtd_usd", "ok"),
     ],
 )
-def test_label_without_parenthetical_never_selects(runtime_factory, question: str, subject: str):
+def test_label_without_parenthetical_never_selects(
+    runtime_factory, question: str, subject: str, status: str
+):
     runtime = runtime_factory("jaffle_shop")
     try:
         plan = plan_payload(runtime, intent=question)
     finally:
         runtime.close()
-    assert plan["status"] == "ok", plan
-    assert "ready_for" in plan["next"], plan
+    assert plan["status"] == status, plan
+    if status == "low_confidence":
+        assert "ready_for" not in plan["next"], plan
+        assert plan["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP", plan
+        assert "subject_window_mismatch" in [
+            gap["kind"] for gap in plan["why"]["details"]["gaps"]
+        ], plan
+    else:
+        assert "execute" in plan["next"]["ready_for"], plan
     select = plan["best"]["query_ir"]["select"]
     assert [item["expression"].get("measure") for item in select] == [subject]
 
