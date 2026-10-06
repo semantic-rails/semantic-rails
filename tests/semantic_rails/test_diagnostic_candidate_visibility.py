@@ -577,3 +577,44 @@ def test_time_axis_alternative_does_not_bypass_visibility(package_config_factory
         enrich_diagnostic_candidates(exc, config, hidden_ids=hidden_ids), stage="validate"
     )
     assert ("temporal_role.secret" in json.dumps(issue)) == (hidden_ids == frozenset())
+
+
+@pytest.mark.parametrize("hidden_ids", [frozenset(), frozenset({ORDER_TIME}), None])
+def test_route_refusal_filters_hidden_time_axis_recovery(package_config_factory, hidden_ids):
+    from semantic_rails.diagnostics import enrich_diagnostic_candidates
+
+    config, _ = package_config_factory("jaffle_shop")
+    relationship = config.relationships[0]
+    option = {
+        "relationship_path": [relationship.id],
+        "meaning": "a visible route",
+        "decision": {
+            "source_entity": relationship.source_entity,
+            "target_entity": relationship.target_entity,
+            "relationship_path": [relationship.id],
+        },
+    }
+    exc = SemanticLayerError(
+        "AMBIGUOUS_PATH",
+        "Ambiguous grouping",
+        details={
+            "start": relationship.source_entity,
+            "target": relationship.target_entity,
+            "reason": "route_decision_required",
+            "clarification": {"kind": "route", "question": "Which route?", "options": [option]},
+            "time_axis_recovery": {
+                "temporal_role": ORDER_TIME,
+                "grain": "day",
+                "closest_valid_query": {"time": {"temporal_role": ORDER_TIME, "grain": "day"}},
+            },
+        },
+    )
+    issue = exception_issue(
+        enrich_diagnostic_candidates(exc, config, hidden_ids=hidden_ids), stage="validate"
+    )
+    assert len(issue["details"]["clarification"]["options"]) == (0 if hidden_ids is None else 1)
+    assert (ORDER_TIME in json.dumps(issue["details"])) == (hidden_ids == frozenset())
+    assert (ORDER_TIME in json.dumps(issue["recovery_hints"])) == (hidden_ids == frozenset())
+    assert (ORDER_TIME in json.dumps(issue.get("closest_valid_query"))) == (
+        hidden_ids == frozenset()
+    )

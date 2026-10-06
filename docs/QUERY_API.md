@@ -1312,7 +1312,10 @@ The response `warnings` array can carry these non-error signals:
   and details. Route clarifications, conflict rows, inherited-row notes, and
   plan candidates name only routes whose relationships and every waypoint
   are visible to the caller. If visibility cannot be resolved under an
-  `object_visibility` policy, route identifiers and notes are withheld.
+  `object_visibility` policy, route identifiers and package-route notes are withheld.
+  If the query's chosen route is hidden or its visibility is unresolved,
+  `ROUTE_CHOSEN_BY_QUERY` remains at every verbosity with the message
+  "a route chosen by this query", without `details.row` or `details.meaning`.
   Filtering every clarification option still returns `AMBIGUOUS_PATH`, with
   a message asking the caller to contact their admin; it never selects the
   remaining visible route automatically. These projections do not change

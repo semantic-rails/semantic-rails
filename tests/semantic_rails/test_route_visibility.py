@@ -7,10 +7,11 @@ import pytest
 
 from semantic_rails.config import load_package_config
 from semantic_rails.embedding import RequestContext
+from semantic_rails.fanout import visible_route
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.mcp_server import handle_jsonrpc_message
 from semantic_rails.runtime import Runtime
-from semantic_rails.schema import SemanticPolicyConfig
+from semantic_rails.schema import RelationshipConfig, SemanticPolicyConfig
 from tests.semantic_rails import test_route_clarification as diamond
 from tests.semantic_rails import test_route_precedence as precedence
 
@@ -241,3 +242,137 @@ def test_related_route_rows_are_visible_before_they_are_named(tmp_path, tool, ve
     finally:
         adapter.close()
         runtime.close()
+
+
+@pytest.mark.parametrize("tool", ["execute", "validate", "compile"])
+@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
+def test_multi_measure_routes_check_every_relationship_endpoint(tmp_path, tool, verbosity):
+    pkg = diamond._write_package(tmp_path)
+    seed = pkg / "data" / "seed.sql"
+    seed.write_text(
+        seed.read_text() + "ALTER TABLE accounts ADD COLUMN district_id INTEGER; "
+        "UPDATE accounts SET district_id = b.district_id FROM branches b "
+        "WHERE accounts.branch_id = b.branch_id;"
+    )
+    base = load_package_config(str(pkg))
+    config = replace(
+        base,
+        relationships=[
+            replace(
+                relationship,
+                source_entity=diamond.DISTRICT,
+                target_entity=diamond.OWNER,
+                source_column="district_id",
+                target_column="home_district_id",
+                source_columns=["district_id"],
+                target_columns=["home_district_id"],
+                cardinality="1:N",
+            )
+            if relationship.id == diamond.OWNER_ROUTE[1]
+            else relationship
+            for relationship in base.relationships
+        ]
+        + [
+            RelationshipConfig(
+                id="relationship.accounts_district",
+                source_entity=diamond.ACCOUNT,
+                target_entity=diamond.DISTRICT,
+                source_column="district_id",
+                target_column="district_id",
+                cardinality="N:1",
+                safety="safe",
+            )
+        ],
+        semantic_policies=[
+            SemanticPolicyConfig(
+                id="policy.hide_owner",
+                kind="object_visibility",
+                action="hidden",
+                object_ids=[diamond.OWNER],
+                audiences=["reader"],
+            )
+        ],
+    )
+    query = {
+        **diamond.BALANCE_BY_DISTRICT,
+        "select": [
+            {"expression": {"measure": "measure.bank.budget"}, "as": "budget"},
+            *diamond.BALANCE_BY_DISTRICT["select"],
+        ],
+    }
+    runtime = Runtime.from_config(config, source_path=str(pkg))
+    adapter = SemanticLayerMCPAdapter(runtime)
+    try:
+        for audience in ("author", "reader", "author"):
+            out, channels = _mcp(adapter, tool, query, verbosity, audience)
+            assert out["ok"] is True, out
+            direct = getattr(runtime, {"execute": "query"}.get(tool, tool))(
+                {
+                    **query,
+                    "verbosity": verbosity,
+                    "policy_context": RequestContext(audience=audience).to_policy_context(),
+                }
+            )
+            assert direct["ok"] is True, direct
+            for channel in (*channels, json.dumps(direct)):
+                for relationship in diamond.OWNER_ROUTE:
+                    if audience == "reader":
+                        assert relationship not in channel
+                    elif verbosity != "minimal":
+                        assert relationship in channel
+            if tool == "execute":
+                assert diamond._rows(out, ["dimension.bank_district_name", "budget", "v"]) == (
+                    diamond._gold(
+                        "SELECT d.district_name, d.budget, COALESCE(SUM(a.balance), 0) "
+                        "FROM districts d LEFT JOIN branches b USING (district_id) "
+                        "LEFT JOIN accounts a USING (branch_id) GROUP BY 1, 2"
+                    )
+                )
+    finally:
+        adapter.close()
+        runtime.close()
+
+
+@pytest.mark.parametrize("tool", ["validate", "compile"])
+@pytest.mark.parametrize(
+    "literal", [{"path": "hello"}, {"relationship_id": "hello"}, {"candidate_paths": ["x"]}]
+)
+def test_route_projection_preserves_literal_objects(tmp_path, tool, literal):
+    pkg = diamond._write_package(tmp_path)
+    config = replace(
+        load_package_config(str(pkg)),
+        semantic_policies=[
+            SemanticPolicyConfig(
+                id="policy.hide_owner",
+                kind="object_visibility",
+                action="hidden",
+                object_ids=[diamond.OWNER],
+                audiences=["reader"],
+            )
+        ],
+    )
+    query = {
+        **diamond.BALANCE_BY_DISTRICT,
+        "select": [
+            *diamond.BALANCE_BY_DISTRICT["select"],
+            {"expression": {"kind": "literal", "value": literal}, "as": "x"},
+        ],
+        "route_decisions": [{**diamond.DIAMOND_ROW, "relationship_path": diamond.BRANCH_ROUTE}],
+        "policy_context": RequestContext(audience="reader").to_policy_context(),
+        "verbosity": "full",
+    }
+    runtime = Runtime.from_config(config, source_path=str(pkg))
+    try:
+        out = getattr(runtime, tool)(query)
+        assert out["ok"] is True, out
+        assert out["logical_plan"]["query"]["select"][1]["expression"]["value"] == literal
+        assert out["explain"]["normalized_query"]["select"][1]["expression"]["value"] == literal
+        assert out["logical_plan"]["post_aggregation_exprs"]["x"]["value"] == literal
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("hidden_ids", [frozenset(), frozenset({diamond.OWNER}), None])
+def test_unknown_relationship_visibility_fails_closed(tmp_path, hidden_ids):
+    config = load_package_config(str(diamond._write_package(tmp_path)))
+    assert not visible_route(config, diamond.ACCOUNT, ["relationship.unknown"], hidden_ids)

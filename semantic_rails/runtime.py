@@ -421,6 +421,14 @@ def _route_notes(
         start, target, path = row["source_entity"], row["target_entity"], row["relationship_path"]
         decided.add((start, target))
         if not visible(start, path):
+            notes.append(
+                semantic_issue(
+                    code="ROUTE_CHOSEN_BY_QUERY",
+                    message="a route chosen by this query",
+                    severity="info",
+                    stage="planning",
+                )
+            )
             continue
         details: dict[str, Any] = {
             "row": {key: row[key] for key in _ROUTE_ROW_KEYS},

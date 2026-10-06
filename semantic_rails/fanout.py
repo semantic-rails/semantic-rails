@@ -30,9 +30,15 @@ def visible_route(
     config: PackageConfig, start: str, path: Sequence[str], hidden_ids: frozenset[str] | None
 ) -> bool:
     """Disclose a route only when its relationships and every waypoint are visible."""
+    relationships = get_package_analysis(config).relationships
+    entities = {start} if not path else set()
+    for relationship_id in path:
+        relationship = relationships.get(relationship_id)
+        if relationship is None:
+            return False
+        entities.update((relationship.source_entity, relationship.target_entity))
     if hidden_ids is None:
         return not any(policy.kind == "object_visibility" for policy in config.semantic_policies)
-    entities = walk_entities(get_package_analysis(config).relationships, start, path)
     return not hidden_ids.intersection([*path, *entities])
 
 

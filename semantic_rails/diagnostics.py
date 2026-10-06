@@ -1155,6 +1155,7 @@ def enrich_diagnostic_candidates(
 ) -> SemanticLayerError:
     """Filter compiler-supplied catalog alternatives before hints become text."""
     details = dict(exc.details or {})
+    message = str(exc)
     if (
         exc.code == "AMBIGUOUS_PATH"
         and details.get("start")
@@ -1185,7 +1186,6 @@ def enrich_diagnostic_candidates(
             clarification["question"] = message
             details = {"reason": details["reason"], "hint": message}
         details["clarification"] = clarification
-        return SemanticLayerError(exc.code, message, details=details)
     if exc.code == "AMBIGUOUS_ALIAS":
         rows = details.get("candidates", [])
         candidate_ids = [row["id"] if isinstance(row, dict) else row for row in rows]
@@ -1232,7 +1232,9 @@ def enrich_diagnostic_candidates(
     ):
         details.pop("time_axis_recovery")
     return (
-        exc if details == exc.details else SemanticLayerError(exc.code, str(exc), details=details)
+        exc
+        if details == exc.details and message == str(exc)
+        else SemanticLayerError(exc.code, message, details=details)
     )
 
 
