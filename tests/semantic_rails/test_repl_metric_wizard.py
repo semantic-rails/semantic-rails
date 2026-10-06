@@ -1022,7 +1022,7 @@ def test_another_filter_dimension_or_measure_asks_for_new_values(tmp_path: Path)
     assert metric["expression"]["filter"] == _one_filter(
         "dimension.shop_order_status", "IN", ["completed"]
     )
-    assert _values(project, "m") == [10.0]
+    assert _values(project, "m") == [10.0, 0.0, 0.0]
     _repl(project, "undo", None, undo)
     assert _path(project, "m").read_bytes() == created
 
@@ -1035,7 +1035,7 @@ def test_another_filter_dimension_or_measure_asks_for_new_values(tmp_path: Path)
     _assert_has(script.offered, {"Filter by": "", "Values": [], "Result type": "Count"})
     assert metric["expression"]["aggregation"] == "count_distinct"
     _assert_has(metric, {"value_type": "count", "currency": ABSENT})
-    assert _values(project, "m") == [1]
+    assert _values(project, "m") == [1, 0, 0]
 
 
 # Expressions stay as authored, even where a recipe could write them, until
