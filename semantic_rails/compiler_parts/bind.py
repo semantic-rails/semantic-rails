@@ -95,11 +95,11 @@ _earlier_settlement: ContextVar[bool] = ContextVar("earlier_settlement", default
 
 @contextmanager
 def earlier_settlement(enabled: bool = True) -> Iterator[None]:
-    """While ``enabled``, lower as before unknown amounts stayed NULL, byte for byte: the guard
+    """While ``enabled``, settle as before unknown amounts stayed NULL: the guard
     (``empty_groups``) reads a NULL sum as 0 wherever its measure has data in scope, whether
-    its group has no rows or only rows of unknown amounts, so no leaf counts its rows; a sum's
-    CASE with ELSE 0 folds to its condition, and a rollup may answer a CASE measure. A query
-    with a distribution branch turns it on for every branch (``_lower_query_to_sql``), and so
+    its group has no rows or only rows of unknown amounts, so no leaf counts its rows;
+    a rollup may answer a CASE measure. A query with a distribution branch turns it on for
+    every branch (``_lower_query_to_sql``), and so
     does a metric predicate's source over several measures under a threshold that 0 passes
     (``_predicate_ctes_and_join``). It is off by default, and a nested block never turns it
     off."""
@@ -112,17 +112,6 @@ def earlier_settlement(enabled: bool = True) -> Iterator[None]:
 
 def earlier_settlement_applies() -> bool:
     return _earlier_settlement.get()
-
-
-def _sum_else_zero_folds(expr: SqlCase, aggregation: str) -> bool:
-    """Whether a SUM's ``ELSE 0`` folds away, as it did before unknown amounts stayed NULL."""
-    other = expr.else_expr
-    return (
-        earlier_settlement_applies()
-        and aggregation.lower() == "sum"
-        and isinstance(other, SqlLiteral)
-        and other.value == 0
-    )
 
 
 def _maybe_conditional_aggregate(expr: Any, aggregation: str, dialect: SqlDialect) -> Any | None:
@@ -145,14 +134,10 @@ def _maybe_conditional_aggregate(expr: Any, aggregation: str, dialect: SqlDialec
       jaffle_shop / hand-authored idiom (orders.yml uses this 4× to
       count rows where a flag is true, with body = key column and
       explicit ``else: literal null``).
-    - ``SUM(CASE WHEN cond THEN body ELSE 0 END)`` — the mf2sr
-      ``sum_boolean`` idiom, only under the earlier settlement
-      (``earlier_settlement``), whose guard reads the
-      NULL of a group with no matching row as 0.
     """
     if not isinstance(expr, SqlCase) or len(expr.whens) != 1:
         return None
-    if not (is_conditional_case(expr) or _sum_else_zero_folds(expr, aggregation)):
+    if not is_conditional_case(expr):
         return None
     agg = aggregation.lower()
     condition, body = expr.whens[0].condition, expr.whens[0].result

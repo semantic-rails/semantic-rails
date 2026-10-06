@@ -176,7 +176,7 @@ def test_a_stdio_client_pinned_to_v1_gets_the_refusal(
 
     monkeypatch.setenv("SEMANTIC_RAILS_MCP_INTERFACE", "v1")
     monkeypatch.setattr(
-        mcp_commands, "_package_ref_from_args", lambda _args: PackageReference(runtime.source_path)
+        mcp_commands, "_ref_from_args", lambda _args: PackageReference(runtime.source_path)
     )
 
     def load_runtime(_ref: PackageReference) -> Any:

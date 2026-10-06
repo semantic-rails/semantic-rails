@@ -27,10 +27,10 @@ from collections.abc import Iterable
 from dataclasses import asdict
 from typing import Any
 
+from ..catalog_search import normalize_search_value
 from ..errors import SemanticLayerError
 from ..fanout import analyze_fanout, resolve_path, route_label
 from ..schema import PackageConfig
-from .relevance import _norm
 
 
 def _relationships_by_id(config: PackageConfig) -> dict[str, Any]:
@@ -134,13 +134,16 @@ def _filter_value_rows(
 ) -> tuple[list[dict[str, Any]], int, bool]:
     filtered = list(values)
     if search:
-        search_norm = _norm(search)
+        search_norm = normalize_search_value(search)
         filtered = [
             row
             for row in filtered
-            if search_norm in _norm(str(row.get("label", "")))
-            or search_norm in _norm(str(row.get("value", "")))
-            or any(search_norm in _norm(alias) for alias in row.get("aliases", []) or [])
+            if search_norm in normalize_search_value(str(row.get("label", "")))
+            or search_norm in normalize_search_value(str(row.get("value", "")))
+            or any(
+                search_norm in normalize_search_value(alias)
+                for alias in row.get("aliases", []) or []
+            )
         ]
     total = len(filtered)
     sliced = filtered[offset : offset + limit]

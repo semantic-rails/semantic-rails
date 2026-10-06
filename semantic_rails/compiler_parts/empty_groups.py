@@ -9,6 +9,9 @@ and non-additive values remain NULL.
 
 ``observation_scope`` says where "observed" is judged: ``dataset`` (the default) in the
 measure's own rows under its authored conditions, ``query`` inside the query's filters too.
+For a top-level conditional operand, a supported source probe judges whether the relation
+has rows, even if none ever meets the condition, for an output whose bucket the loaded-bucket
+check gates or that has no time bucket; matching rows with NULL amounts stay NULL.
 """
 
 from __future__ import annotations
@@ -235,6 +238,7 @@ def guard_empty_groups(
     time_key: str = "",
     dialect: Any = None,
     observed: Mapping[str, LeafScope] | None = None,
+    bucketed: bool = True,
 ) -> list[SqlCte]:
     """Settle measures centrally, with untimed observation and loaded coverage guards.
 
@@ -247,7 +251,12 @@ def guard_empty_groups(
 
     Under the ``dataset`` scope, the request's own outputs are observed where ``observed``
     (each measure's own rows under its authored conditions, never the query's filters) holds
-    a value; an output without one is refused, never judged inside the filters.
+    a value. An output without a probe is refused, never judged inside the filters. Bounded
+    scopes observe outside the window the same way. A top-level conditional operand is also
+    observed where its probe has a row, even if none meets the condition, but only for an
+    output whose bucket the loaded-bucket check gates (``time_key`` and the scope's bucket)
+    or that has no time bucket (``bucketed=False``: one total over its scope). Earlier
+    settlement retains its value-based observation.
     """
     if (scopes or time_key) and not (dialect is not None and dialect.has_time_coverage):
         raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})
@@ -274,8 +283,12 @@ def guard_empty_groups(
                 SqlLiteral(0),
             )
             scope = (scopes or {}).get(alias)
+            gated = bool(time_key) and scope is not None and scope.bucket is not None
+            # Source rows settle a never-matched condition only where the loaded-bucket check
+            # below gates the output's bucket, or where the output has no time bucket.
+            source_rows = gated or not bucketed
             if dataset:
-                probe = _seen_outside_window(observed[alias]).query
+                probe = _seen_outside_window(observed[alias], source_rows=source_rows).query
                 name = probes.get(repr(probe))
                 if name is None:
                     name = probes[repr(probe)] = f"observed_{len(probes) + 1}"
@@ -285,8 +298,17 @@ def guard_empty_groups(
                 seen = SqlBinary(seen, "OR", found)
             if scope is not None:
                 if scope.bounded and not dataset:
-                    seen = SqlBinary(seen, "OR", _seen_outside_window(scope))
-                if time_key and scope.bucket is not None:
+                    seen = SqlBinary(
+                        seen,
+                        "OR",
+                        _seen_outside_window(
+                            scope,
+                            source_rows=source_rows
+                            and alias not in earlier
+                            and not earlier_settlement_applies(),
+                        ),
+                    )
+                if gated:
                     loaded = repr(
                         (
                             scope.from_table,
@@ -331,7 +353,7 @@ def guard_empty_groups(
     return [*ctes, SqlCte(name=GUARDED_BASE, query=guard)]
 
 
-def _seen_outside_window(scope: LeafScope) -> SqlExists:
+def _seen_outside_window(scope: LeafScope, *, source_rows: bool = False) -> SqlExists:
     if (
         not isinstance(scope.value, SqlCall)
         or scope.value.name not in {"SUM", "COUNT", "COUNT_IF", "COUNTIF"}
@@ -349,7 +371,13 @@ def _seen_outside_window(scope: LeafScope) -> SqlExists:
             select=[SqlField(SqlLiteral(1), "seen")],
             from_table=replace(scope.from_table),
             joins=list(scope.joins),
-            where=[*scope.where, observed],
+            # A top-level conditional additive operand can be measured as zero even
+            # when it never matched. Its row count still protects matching NULL sums.
+            # Keep every scope filter and leave unsupported/earlier settlement alone.
+            where=[
+                *scope.where,
+                *([] if source_rows and is_conditional_case(operand) else [observed]),
+            ],
             limit=1,
             observation_scan=True,
         )

@@ -2,6 +2,80 @@ fixture:
   tables: [orders, refunds, signups, dim_fiscal, customer_history, account_days]
   data_sha256: 9c846589d4cc8d72b7e3f7bd19ea9d9a21ef246a87d6de79fe4727ea578223e5
 tests:
+  shop/net-growth-from-a-never-matched-count:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Three store a orders minus a conditional count with no match anywhere is three.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.store_a_orders, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      select:
+        - {as: a, expression: {measure: measure.shop.store_a_orders}}
+        - {as: absent, expression: {measure: measure.shop.huge_order_count}}
+        - as: net
+          expression: {kind: arithmetic, op: subtract, left: {measure: measure.shop.store_a_orders}, right: {measure: measure.shop.huge_order_count}}
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2023-11-01', end: '2024-02-01'}
+    expected_rows: [{a: 3, absent: 0, net: 3}]
+    reference_sql: |
+      SELECT a, absent, a - absent FROM (
+        SELECT COUNT(CASE WHEN store_id = 'a' THEN order_id END) AS a,
+          COUNT(CASE WHEN amount >= 1000 THEN order_id END) AS absent
+        FROM orders WHERE ordered_at >= TIMESTAMP '2023-11-01' AND ordered_at < TIMESTAMP '2024-02-01'
+      ) counts
+  shop/distribution-sum-preserves-an-explicit-else-zero:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A nonmatching order contributes a measured zero before the per-customer values are summed.
+    cites: [tests/integration/correctness/shop/models/orders.yml#model.measures.store_a_amount, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query:
+      select:
+        - as: total
+          expression:
+            kind: distribution
+            function: sum
+            over: {kind: entity_value, entity: entity.shop_customer, input: {measure: measure.shop.store_a_amount}}
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: week, start: '2023-11-20', end: '2023-11-27'}
+    expected_rows: [{temporal_role.shop_order_ordered_at__week: '2023-11-20T00:00:00', total: 0}]
+    reference_sql: |
+      SELECT week, SUM(value) FROM (
+        SELECT date_trunc('week', ordered_at) AS week, customer_id,
+          SUM(CASE WHEN store_id = 'a' THEN amount ELSE 0 END) AS value
+        FROM orders WHERE ordered_at >= TIMESTAMP '2023-11-20' AND ordered_at < TIMESTAMP '2023-11-27'
+        GROUP BY 1, 2
+      ) per_customer GROUP BY 1
+  shop/window-total-observes-a-conditional-count-outside-the-window:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Store b has orders elsewhere in the loaded range, so its absent orders in this window read zero and the difference is one.
+    cites: &conditional_window_cites [tests/integration/correctness/shop/models/orders.yml#model.measures.store_a_orders, tests/integration/correctness/shop/models/orders.yml#model.measures.store_b_orders, docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0]
+    tags: [null-vs-zero, time-window]
+    query: &conditional_window
+      select:
+        - {as: a, expression: {measure: measure.shop.store_a_orders}}
+        - {as: b, expression: {measure: measure.shop.store_b_orders}}
+        - as: net
+          expression: {kind: arithmetic, op: subtract, left: {measure: measure.shop.store_a_orders}, right: {measure: measure.shop.store_b_orders}}
+      time: {temporal_role: temporal_role.shop_order_ordered_at, start: '2023-11-27', end: '2023-12-04'}
+    expected_rows: &conditional_window_rows [{a: 1, b: 0, net: 1}]
+    reference_sql: &conditional_window_sql |
+      SELECT a, b, a - b FROM (
+        SELECT COUNT(CASE WHEN store_id = 'a' THEN order_id END) AS a,
+          COUNT(CASE WHEN store_id = 'b' THEN order_id END) AS b
+        FROM orders WHERE ordered_at >= TIMESTAMP '2023-11-27' AND ordered_at < TIMESTAMP '2023-12-04'
+      ) counts
+  shop/relative-window-total-observes-a-conditional-count-outside-the-window:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The last complete week uses the same observation and coverage rule as explicit bounds.
+    cites: *conditional_window_cites
+    tags: [null-vs-zero, time-window]
+    query:
+      <<: *conditional_window
+      time: {temporal_role: temporal_role.shop_order_ordered_at, range: {last: {unit: week, value: 1}}}
+      policy_context: {now: '2023-12-04T00:00:00+00:00'}
+    expected_rows: *conditional_window_rows
+    reference_sql: *conditional_window_sql
   shop/top-stores-with-cutoff-ties:
     kind: query_matches_snapshot
     expect: answer

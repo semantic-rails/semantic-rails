@@ -12,13 +12,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from ..config import list_package_paths, package_root_for_source
 from ..config_validation import PackageReference, resolve_package_reference
 from ..errors import SemanticLayerError
 from ..local_config import resolve_local_package_path
 from ..runtime import Runtime
+from ..yaml_loader import safe_load as yaml_safe_load
 
 # The only bundled package offered when a person runs a command without choosing one.
 DEMO_PACKAGE_ID = "jaffle_shop"
@@ -73,19 +72,21 @@ def _repl_color(text: str, code: str, *, enabled: bool) -> str:
 
 
 def _add_optional_reference_args(
-    parser: argparse.ArgumentParser, package_choices: list[str]
+    parser: argparse.ArgumentParser, package_choices: list[str], *, required: bool = False
 ) -> None:
-    source = parser.add_mutually_exclusive_group(required=False)
+    source = parser.add_mutually_exclusive_group(required=required)
+    suffix = " Mutually exclusive with --path." if required else ""
     source.add_argument(
         "--package",
         choices=package_choices,
-        default="",
-        help="Registered package id from configs/semantic_rails/.",
+        default=None if required else "",
+        help="Registered package id from configs/semantic_rails/." + suffix,
     )
     source.add_argument(
         "--path",
         default="",
-        help="Path to a package directory or single-file YAML.",
+        help="Path to a package directory or single-file YAML."
+        + (" Mutually exclusive with --package." if required else ""),
     )
 
 
@@ -221,7 +222,7 @@ def _package_id_from_yaml(source_path: str | Path) -> str:
     if package_yml.is_dir():
         package_yml = package_yml / "package.yml"
     try:
-        payload = yaml.safe_load(package_yml.read_text(encoding="utf-8")) or {}
+        payload = yaml_safe_load(package_yml.read_text(encoding="utf-8")) or {}
     except Exception:
         return ""
     if not isinstance(payload, dict):
@@ -275,13 +276,6 @@ def _prompt_choice(label: str, *, choices: list[str], default: str) -> str:
         if value in choices:
             return value
         print(f"Choose one of: {choice_text}")
-
-
-def _slug(value: str, *, fallback: str = "semantic_project") -> str:
-    out = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or "")).strip("_")
-    while "__" in out:
-        out = out.replace("__", "_")
-    return out or fallback
 
 
 _TITLE_ACRONYMS = {"mom": "MoM", "qoq": "QoQ", "wow": "WoW", "yoy": "YoY"}
@@ -406,7 +400,7 @@ def _add_response_detail_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _runtime_from_package_or_path(args: argparse.Namespace) -> Runtime:
-    return _runtime_from_ref(_package_ref_from_args(args))
+    return _runtime_from_ref(_ref_from_args(args))
 
 
 def _add_package_or_path_args(parser: argparse.ArgumentParser, package_choices: list[str]) -> None:
@@ -423,59 +417,12 @@ def _add_package_or_path_args(parser: argparse.ArgumentParser, package_choices: 
     )
 
 
-def _add_optional_package_or_path_args(
-    parser: argparse.ArgumentParser, package_choices: list[str]
-) -> None:
-    source = parser.add_mutually_exclusive_group(required=False)
-    source.add_argument(
-        "--package",
-        choices=package_choices,
-        default="",
-        help="Registered package id from configs/semantic_rails/.",
-    )
-    source.add_argument(
-        "--path",
-        default="",
-        help="Path to a package directory or single-file YAML.",
-    )
-
-
-def _required_ref_from_args(args: argparse.Namespace) -> PackageReference:
-    return _package_ref_from_args(args)
-
-
 def _optional_ref_from_args(args: argparse.Namespace) -> PackageReference | None:
     package = str(getattr(args, "package", "") or "").strip()
     path = str(getattr(args, "path", "") or "").strip()
     if not package and not path:
         return None
     return resolve_package_reference(package_id=package, path=path)
-
-
-def _default_mcp_ref() -> PackageReference:
-    return _default_cli_ref()
-
-
-def _default_cli_ref() -> PackageReference:
-    # Runtime commands print JSON (and `mcp stdio` owns stdin), so they never
-    # prompt: without a chosen package they stop with guidance.
-    return default_package_ref(interactive=False)
-
-
-def _package_ref_from_args(args: argparse.Namespace) -> PackageReference:
-    """Resolve the package once for every package-aware CLI command.
-
-    Explicit ``--path``/``--package`` always wins. Otherwise use the
-    nearest package directory, then the opted-in local profile. Nothing
-    falls back to a bundled package: without a choice the command fails
-    with guidance instead of answering from sample data.
-    """
-
-    package = str(getattr(args, "package", "") or "").strip()
-    path = str(getattr(args, "path", "") or "").strip()
-    if package or path:
-        return resolve_package_reference(package_id=package, path=path)
-    return _default_cli_ref()
 
 
 def _source_arg_from_runtime(runtime: Runtime, *, prefer_path: bool) -> str:
@@ -488,17 +435,3 @@ def _source_arg_from_ref(ref: PackageReference) -> str:
     if ref.package_id:
         return f"--package {shlex.quote(ref.package_id)}"
     return f"--path {shlex.quote(ref.source_path)}"
-
-
-def _add_config_reference_args(parser: argparse.ArgumentParser, package_choices: list[str]) -> None:
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument(
-        "--package",
-        choices=package_choices,
-        help="Registered package id from configs/semantic_rails/. Mutually exclusive with --path.",
-    )
-    source.add_argument(
-        "--path",
-        default="",
-        help="Path to a package directory or single-file YAML. Mutually exclusive with --package.",
-    )
