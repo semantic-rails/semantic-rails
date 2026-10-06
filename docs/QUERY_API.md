@@ -1064,7 +1064,10 @@ instant) is read in each zone; a naive `now` is already local. A draft is `ok`
 only when the question's window reads the same days in the selected temporal
 role's zone as in the planning zone; otherwise plan holds with
 `TIME_WINDOW_UNRESOLVED`, names the window phrases in
-`why.details.unresolved_phrases` and returns no `query_ir`. With `now` supplied,
+`why.details.unresolved_phrases` and returns no `query_ir`. The check covers every
+role a metric's legs are read on: a leg that can't read the selected role keeps its
+own, and `why.details.temporal_roles` names each such role whose zone reads other
+days, with its zone. With `now` supplied,
 a returned relative range (`time.range`) becomes the `time.start` and `time.end`
 that clock gives it in the role's zone, so the returned Query IR runs the window
 plan checked without `policy_context`. A caller bound is read only at a whole day
