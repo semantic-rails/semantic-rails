@@ -269,7 +269,6 @@ def test_every_json_schema_is_well_formed() -> None:
     jsonschema = _jsonschema()
     for name in (
         "package.v1.json",
-        "query_ir.preview.v2.json",
         "query_ir.v1.json",
         "semantic_contract.v1.json",
         "metric_portability.v1.json",

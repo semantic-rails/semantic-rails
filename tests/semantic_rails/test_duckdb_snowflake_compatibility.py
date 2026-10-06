@@ -121,7 +121,7 @@ EDGE_CASE_QUERIES = {
         "limit": 50,
     },
     "scoped_aggregate_contextual_predicate": {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "expression": {
@@ -145,7 +145,7 @@ EDGE_CASE_QUERIES = {
         "limit": 50,
     },
     "daily_scoped_aggregate_month_predicate": {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "expression": {

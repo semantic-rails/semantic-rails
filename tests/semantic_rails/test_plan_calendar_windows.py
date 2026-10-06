@@ -510,7 +510,7 @@ def test_only_the_callers_window_settles_an_unresolved_phrase(
 
     # A draft that carries a window of its own doesn't settle "since March 2017".
     bounded = {
-        "version": 2,
+        "version": 1,
         "select": [{"as": "order_count", "expression": {"measure": "measure.jaffle.order_count"}}],
         "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "year", **YEAR_2017},
     }

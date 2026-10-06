@@ -13,7 +13,7 @@
   "properties": {
     "version": {
       "type": "integer",
-      "description": "IR shape version. This stable v1 schema accepts version 1 only. Preview version 2 is published separately as query_ir.preview.v2.json.",
+      "description": "IR shape version. Version 1 is the only supported Query IR version.",
       "const": 1
     },
     "select": {

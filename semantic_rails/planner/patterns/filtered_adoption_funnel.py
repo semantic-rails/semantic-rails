@@ -42,7 +42,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         # eroded agent trust ("why does this one tool use a different
         # version?"). Snapshot tests pin behavior, not the version
         # number, so bumping is safe.
-        "version": 2,
+        "version": 1,
         "select": [{"as": "signup_to_send_28d", "expression": {"metric": metric.id}}],
     }
     if getattr(metric, "temporal_role", ""):

@@ -258,14 +258,14 @@ QUESTIONS = (
 )
 # The queries an agent composes for the three questions after discovery.
 Q1 = {
-    "version": 2,
+    "version": 1,
     "select": [{"as": "revenue_usd", "expression": REVENUE}],
     "time": _window("month", "2017-01-01", "2018-01-01"),
     "group_by": [STORE],
     "order_by": [{"field": "time", "direction": "ASC"}, {"field": STORE, "direction": "ASC"}],
 }
 Q2 = {
-    "version": 2,
+    "version": 1,
     "select": [{"as": "item_revenue_usd", "expression": ITEM_REVENUE}],
     "time": _window("year", "2017-01-01", "2018-01-01"),
     "group_by": [PRODUCT],
@@ -273,7 +273,7 @@ Q2 = {
     "limit": 5,
 }
 Q3 = {
-    "version": 2,
+    "version": 1,
     "select": [{"as": "aov_usd", "expression": {"metric": "metric.sales.aov_usd"}}],
     "time": _window("quarter", "2017-04-01", "2017-07-01"),
     "group_by": [STORE],

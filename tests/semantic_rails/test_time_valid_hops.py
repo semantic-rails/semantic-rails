@@ -616,7 +616,7 @@ def _order_conversion(
         **extra,
     }
     select = [{"as": "rate", "expression": conversion}]
-    return {"version": 2, "select": select, "group_by": list(group_by or [])}
+    return {"version": 1, "select": select, "group_by": list(group_by or [])}
 
 
 @pytest.mark.parametrize(
