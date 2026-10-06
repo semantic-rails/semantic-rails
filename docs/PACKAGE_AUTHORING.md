@@ -786,6 +786,7 @@ that must not see it.
   be resolved is restricted whenever anything is. The policy governs objects, not columns:
   list every measure that computes the sensitive value, since another measure over the
   same column (a filtered, windowed or rolled-up variant) is a separate object.
+  While any `visible_only` restriction applies to a caller, that caller cannot aggregate raw columns.
 - For an ineligible request, restricted objects are left out of `catalog`, `discover`,
   `build-options`, `plan`, other objects' `inspect` cards (related measures and metrics,
   companions, starter queries) and diagnostic suggestions; `inspect` of one, and `valid-values`

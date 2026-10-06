@@ -46,6 +46,7 @@ AOV = "metric.sales.aov_usd"
 SEGMENT = "segment.jaffle.revenue_customers"
 CUSTOMERS = "metric.sales.customer_count"
 STORE = "dimension.jaffle_store_name"
+RESTRICTED_DIMENSION = "dimension.jaffle_order_has_food_item"
 # Listed by the policy, then computed from them.
 RESTRICTED = (REVENUE_METRIC, REVENUE, AOV, SEGMENT)
 FINANCE_ONLY = {
@@ -145,6 +146,50 @@ BYPASSES = {
         **BY_STORE,
         "order_by": [{"field": "revenue", "direction": "DESC"}],
         "limit": 3,
+    },
+    "conditional_raw_value": {
+        "select": [
+            {
+                "expression": {
+                    "kind": "aggregate_if",
+                    "aggregation": "sum",
+                    "condition": {"kind": "literal", "value": True},
+                    "value": {
+                        "kind": "column",
+                        "entity": "entity.jaffle_order",
+                        "column": "order_total_cents",
+                    },
+                },
+                "as": "r",
+            }
+        ],
+        "group_by": [STORE],
+    },
+    "conditional_raw_condition": {
+        "select": [
+            {
+                "expression": {
+                    "kind": "aggregate_if",
+                    "aggregation": "count",
+                    "condition": {
+                        "kind": "comparison",
+                        "op": ">",
+                        "left": {
+                            "kind": "column",
+                            "entity": "entity.jaffle_order",
+                            "column": "order_total_cents",
+                        },
+                        "right": {"kind": "literal", "value": 0},
+                    },
+                },
+                "as": "r",
+            }
+        ],
+        "group_by": [STORE],
+    },
+    "restricted_dimension_filter": {
+        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
+        "where": [{"field": RESTRICTED_DIMENSION, "op": "=", "value": True}],
     },
 }
 
@@ -287,6 +332,42 @@ def test_cards_of_visible_objects_name_revenue_only_for_finance(engine, roles, e
     assert bool(named) is eligible, named
 
 
+@pytest.mark.parametrize(("roles", "eligible"), [(["support"], False), (["finance"], True)])
+def test_full_catalog_payload_filters_restricted_companions(tmp_path, roles, eligible):
+    root = copy_package_config(tmp_path, "jaffle_shop")
+    path = root / "package.yml"
+    data = yaml.safe_load(path.read_text())
+    data["package"]["schema_strict"] = False
+    _write(path, data)
+    # Keep only regular models in this non-strict catalog fixture.
+    (root / "models" / "core" / "daily_metrics.yml").unlink()
+    (root / "models" / "core" / "monthly_metrics.yml").unlink()
+    (root / "metrics" / "core" / "time_series_metrics.yml").unlink()
+    path = root / "models" / "core" / "orders.yml"
+    data = yaml.safe_load(path.read_text())
+    keys = ("comparison_peers", "clock_variants", "preferred_companion_metrics")
+    for key in keys:
+        data["model"]["measures"]["order_cost_usd"][key] = [REVENUE_METRIC, CUSTOMERS]
+    _write(path, data)
+    _write(root / "metrics" / "core" / "revenue.yml", EXTRA_METRIC)
+    _write(root / "policies.yml", {"semantic_policies": [FINANCE_ONLY]})
+    runtime = Runtime.from_path(str(root))
+    try:
+        catalog = catalog_payload(
+            runtime, view="full", verbosity="full", policy_context={"roles": roles}
+        )
+        assert (REVENUE_METRIC in _mentions(catalog)) is eligible
+        measure = next(
+            row for row in catalog["measures"] if row["id"] == "measure.jaffle.order_cost_usd"
+        )
+        for key in keys:
+            assert measure["payload"][key] == (
+                [REVENUE_METRIC, CUSTOMERS] if eligible else [CUSTOMERS]
+            )
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize("name", CONTEXTS)
 def test_intent_subjects_name_revenue_only_for_finance(engine, name):
     context, eligible = CONTEXTS[name]
@@ -302,15 +383,29 @@ def test_intent_subjects_name_revenue_only_for_finance(engine, name):
 
 @pytest.mark.parametrize("bypass", BYPASSES)
 @pytest.mark.parametrize("name", CONTEXTS)
-def test_every_query_reading_revenue_is_refused_outside_finance(engine, bypass, name):
+def test_every_query_reading_revenue_is_refused_outside_finance(engine, package, bypass, name):
     context, eligible = CONTEXTS[name]
     query = _with(BYPASSES[bypass], context)
-    if eligible:
-        assert engine.validate(query)["ok"] is True
-        return
-    for code, details in _refusals(engine, query):
-        assert code == "POLICY_DENIED"
-        assert set(details["blocked_objects"]) <= set(RESTRICTED)
+    runtime = (
+        _engine(
+            package,
+            {**FINANCE_ONLY, "object_ids": [*FINANCE_ONLY["object_ids"], RESTRICTED_DIMENSION]},
+        )
+        if bypass == "restricted_dimension_filter"
+        else engine
+    )
+    try:
+        if eligible:
+            assert runtime.validate(query)["ok"] is True
+            return
+        for code, details in _refusals(runtime, query):
+            assert code == "POLICY_DENIED"
+            assert set(details["blocked_objects"]) <= {*RESTRICTED, RESTRICTED_DIMENSION}
+            if bypass in {"conditional_raw_value", "conditional_raw_condition"}:
+                assert details["blocked_objects"] == []
+    finally:
+        if runtime is not engine:
+            runtime.close()
 
 
 @pytest.mark.parametrize("name", [name for name, (_, eligible) in CONTEXTS.items() if eligible])
@@ -319,6 +414,40 @@ def test_finance_gets_the_reference_number(engine, package, name):
     assert sorted((row[STORE], round(float(row["revenue"]), 2)) for row in rows) == _reference(
         package
     )
+
+
+@pytest.mark.parametrize("bypass", ["conditional_raw_value", "conditional_raw_condition"])
+@pytest.mark.parametrize("restricted", [True, False])
+def test_conditional_raw_columns_match_reference_when_unrestricted(package, bypass, restricted):
+    runtime = _engine(package, *([FINANCE_ONLY] if restricted else []))
+    context = {"roles": ["finance" if restricted else "support"]}
+    value = (
+        "SUM(o.order_total_cents)"
+        if bypass == "conditional_raw_value"
+        else "COUNT(CASE WHEN o.order_total_cents > 0 THEN 1 END)"
+    )
+    try:
+        rows = opened(runtime).query(_with(BYPASSES[bypass], context))["rows"]
+        with duckdb.connect(str(package / "jaffle_shop.duckdb"), read_only=True) as con:
+            expected = con.execute(
+                f"SELECT s.store_name, {value} FROM jaffle_order o "
+                "JOIN jaffle_store s ON s.store_id = o.store_id GROUP BY 1"
+            ).fetchall()
+        assert sorted((row[STORE], row["r"]) for row in rows) == sorted(expected)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("bypass", ["conditional_raw_value", "conditional_raw_condition"])
+def test_raw_conditional_aggregate_cannot_bypass_gate_without_binding(engine, bypass):
+    with pytest.raises(SemanticLayerError) as exc:
+        enforce_query_policies(engine._config, [], roles=["support"], query=BYPASSES[bypass])
+    assert exc.value.code == "POLICY_DENIED"
+    assert exc.value.details == {
+        "blocked_objects": [],
+        "policy_effects": [],
+        "policy_violations": [],
+    }
 
 
 @pytest.mark.parametrize("name", CONTEXTS)
@@ -388,6 +517,11 @@ SCOPES = {
         {"environments": ["production"]},
         {"environment": "production", "roles": ["finance"]},
         True,
+    ),
+    "prod_request_against_production_policy": (
+        {"environments": ["production"]},
+        {"environment": "prod"},
+        False,
     ),
 }
 

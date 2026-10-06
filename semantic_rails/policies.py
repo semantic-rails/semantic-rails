@@ -20,6 +20,7 @@ from .ast import every_filter, normalize_query, plain_filters
 from .compiler import BoundQuery, bind_metadata_objects, bind_query
 from .compiler_parts.indexes import get_package_analysis
 from .errors import SemanticLayerError
+from .expressions import collect_column_refs
 from .policy_rules import MAX_RANK, hidden_policy_ids, visible_only_listed, withheld_max_rank
 from .policy_rules import context_scope_matches as context_scope_matches
 from .policy_rules import policy_action as _policy_action
@@ -251,13 +252,25 @@ def enforce_query_policies(
     # visible_only is checked against everything the query reads, never policy by policy.
     restricted = restricted_object_ids(
         config, environment=environment, audience=audience, roles=roles
-    ) & {*object_ids, *(bound_object_ids(binding) if binding is not None else ())}
-    if restricted:
+    )
+    if restricted and binding is None and query is not None:
+        binding = bind_query(config, None, dict(query))
+    blocked = restricted & {
+        *object_ids,
+        *(bound_object_ids(binding) if binding is not None else ()),
+    }
+    # Caller-created measures have no authored object id to govern their raw columns.
+    raw_aggregate = bool(
+        restricted
+        and binding is not None
+        and any(collect_column_refs(row.expr) for row in binding.plan.synthetic_measures.values())
+    )
+    if blocked or raw_aggregate:
         raise SemanticLayerError(
             "POLICY_DENIED",
             "Query references a semantic object blocked by policy.",
             details={
-                "blocked_objects": sorted(restricted),
+                "blocked_objects": sorted(blocked),
                 "policy_effects": [],
                 "policy_violations": [],
             },

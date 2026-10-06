@@ -161,6 +161,8 @@ def visible_only_listed(
     environment never lifts a restriction). Eligible: one of ``roles`` when any are listed, and
     the audience when ``audiences`` are listed. An object listed by several policies needs all.
     """
+    if environment not in config.package.environments:
+        environment = ""
     listed: set[str] = set()
     for policy in config.semantic_policies:
         if policy_action(policy) != "visible_only":
