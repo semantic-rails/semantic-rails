@@ -904,7 +904,6 @@ def test_plan_acceptance_intents_return_ranked_valid_candidates(runtime_factory)
     intents = [
         "revenue by store last month",
         "monthly average order value by customer type",
-        "food vs drink revenue share by month",
         "end-of-month inventory levels by store",
         "monthly revenue from customers with at least 10 orders by store",
     ]
@@ -912,9 +911,8 @@ def test_plan_acceptance_intents_return_ranked_valid_candidates(runtime_factory)
         for intent in intents:
             # Wider candidate window: as the metric registry grew (direct
             # rolling/prior_period/period_to_date/derived demos), nearby
-            # share/ratio metrics for the "food vs drink" intent get
-            # ranked alongside more candidates. Bumping limit keeps the
-            # ≥3 invariant without weakening it.
+            # share/ratio metrics get ranked alongside more candidates.
+            # Bumping limit keeps the ≥3 invariant without weakening it.
             result = plan_candidate_envelope(
                 runtime,
                 intent=intent,

@@ -213,6 +213,7 @@ NARROWER = [
     ),
     (COMPARED, _selects(ORDERS, REVENUE), "comparison_unrealized", '"compared"'),
     ("Food revenue vs drink revenue last month", {}, "comparison_unrealized", '"vs"'),
+    ("food vs drink revenue share by month", {}, "comparison_unrealized", '"vs"'),
     ("Orders vs revenue by month", {}, "comparison_unrealized", '"vs"'),
     # One select twice is one value, and no other select names "orders": not Tax paid, not
     # Order cost (one word of its name), nor revenue on the order clock ("Order time").
