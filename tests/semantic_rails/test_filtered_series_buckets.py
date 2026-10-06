@@ -7,13 +7,19 @@ from types import SimpleNamespace
 import duckdb
 import pytest
 
+from semantic_rails.compiler import compile_query
 from semantic_rails.compiler_parts import sql_lowering
+from semantic_rails.compiler_parts.empty_groups import LeafScope, guard_empty_groups
 from semantic_rails.config import load_package_config
+from semantic_rails.dialects import dialect_for_warehouse
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_config_expression, parse_semantic_expression
+from semantic_rails.registry import Registry
+from semantic_rails.renderer import render_expr, render_select
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import MetricConfig
+from semantic_rails.sql_ast import SqlCall, SqlField, SqlIdentifier, SqlSelect, SqlTableRef
 from tests.integration.correctness.conftest import _write_variant
 from tests.semantic_rails.result_helpers import typed_rows
 from tests.semantic_rails.test_observation_scope import (
@@ -265,6 +271,73 @@ def test_a_diagnostic_cannot_read_through_a_metric_only_grant(series):
         assert warning["details"]["reason"] == "RESOURCE_ACCESS_DENIED"
     finally:
         runtime.close()
+
+
+DUCKDB = dialect_for_warehouse("duckdb")
+LOADED = LeafScope(
+    SqlTableRef("t"),
+    (),
+    (),
+    SqlCall("SUM", [SqlIdentifier(["t", "v"])]),
+    bucket=SqlIdentifier(["t", "b"]),
+    raw_time=SqlIdentifier(["t", "at"]),
+    now=DUCKDB.now(),
+)
+
+
+def _guard_sql(aggregation, retained, scopes, time_key):
+    ctes = guard_empty_groups(
+        "base",
+        ["t"],
+        ["v"],
+        {"v": aggregation},
+        scopes,
+        rows={"v": "v_rows"} if aggregation == "sum" else {},
+        time_key=time_key,
+        dialect=DUCKDB,
+        observed_buckets={"v"} if retained else (),
+    )
+    return render_select(
+        SqlSelect(
+            select=[SqlField(SqlIdentifier(["guarded_base", "v"]), "v")],
+            from_table=SqlTableRef("guarded_base"),
+            ctes=ctes,
+        )
+    )
+
+
+@pytest.mark.parametrize("aggregation", ["sum", "count"])
+@pytest.mark.parametrize(
+    ("scopes", "time_key"),
+    [(None, ""), ({"v": LOADED}, ""), ({"v": replace(LOADED, bucket=None)}, "t")],
+    ids=["no_scope", "no_coverage", "no_bucket"],
+)
+def test_an_ungated_retained_scope_emits_no_marker(aggregation, scopes, time_key):
+    # Without the loaded-bucket check, a retained leaf settles exactly as an unretained one.
+    ungated = _guard_sql(aggregation, True, scopes, time_key)
+    assert ungated == _guard_sql(aggregation, False, scopes, time_key)
+    assert ">= 0" not in ungated
+    gated = _guard_sql(aggregation, True, {"v": LOADED}, "t")
+    assert ">= 0" in gated and "coverage_1" in gated
+
+
+@pytest.mark.parametrize("kind", ["sum", "count"])
+@pytest.mark.parametrize("time", [{}, {"start": "2025-01-06", "end": "2025-03-31"}])
+def test_a_retained_series_reads_its_loaded_coverage_without_fill(series, kind, time):
+    compiled = compile_query(series.config, Registry(series.config), _query(kind, **time))
+    assert compiled["retained_filtered_series"]
+    assert "coverage_1" in compiled["sql"]
+
+
+@pytest.mark.parametrize("warehouse", ["snowflake", "bigquery"])
+def test_a_warehouse_without_coverage_retains_nothing(series, warehouse):
+    config = replace(series.config, package=replace(series.config.package, warehouse=warehouse))
+    compiled = compile_query(config, Registry(config), _query("sum", "query"))
+    assert compiled["retained_filtered_series"] == []
+    assert "coverage_" not in compiled["sql"]
+    # The authored filter stays in the leaf's WHERE, as before retention existed.
+    leaf = next(cte.query for cte in compiled["sql_ast"].ctes if cte.name == "leaf_1")
+    assert "sales.product = 'apple'" in [render_expr(clause) for clause in leaf.where]
 
 
 def test_forcing_a_conditional_operand_bypass_refuses(series, monkeypatch):

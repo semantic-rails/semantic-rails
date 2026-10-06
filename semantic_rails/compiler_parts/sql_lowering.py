@@ -455,15 +455,16 @@ def _time_bucket_expr(time: dict[str, Any], raw_expr: Any, config: PackageConfig
 def _emits_time_coverage(plan: LogicalPlan, config: PackageConfig) -> bool:
     """The one boundary for base time coverage: the guard emits it, routing refuses rollups.
 
-    A fill, a dense series or combined branches can show a bucket no leaf has, which reads 0
-    only inside the base's loaded range. Only DuckDB and Postgres execute that coverage.
+    A fill, a dense series or combined branches can show a bucket no leaf has, and a retained
+    filtered series one where its authored filter matched no row: each reads 0 only inside
+    the base's loaded range. Only DuckDB and Postgres execute that coverage.
     Branches are counted unrouted, so the answer never depends on routing.
     """
     if not plan.time or not _dialect(config).has_time_coverage:
         return False
     if plan.time.get("window_total"):
         return True
-    if _query_requires_dense_series(plan, config):
+    if _query_requires_dense_series(plan, config) or _retained_filtered_series(plan, config):
         return True
     unrouted = [replace(row, aggregate_relation_id="") for row in plan.measure_plans]
     return len(_measure_plan_groups(replace(plan, measure_plans=unrouted), config)) > 1
@@ -497,7 +498,8 @@ def _filtered_series_candidate(plan: LogicalPlan, row: MeasurePlan, config: Pack
 
 
 def _preserves_filtered_series(plan: LogicalPlan, row: MeasurePlan, config: PackageConfig) -> bool:
-    """Only plain, local-clock leaves can retain their source rows with a conditional operand.
+    """Only plain, local-clock leaves can retain their source rows with a conditional operand,
+    and only on a warehouse with loaded coverage, which alone lets a retained bucket read 0.
 
     Rewrites, predicate populations and earlier settlement keep their existing lowering.
     The runtime diagnoses their missing buckets through a separately authorized source query.
@@ -509,7 +511,8 @@ def _preserves_filtered_series(plan: LogicalPlan, row: MeasurePlan, config: Pack
         _leaf_time_role(row.bound_measure, normalize_query(plan.query), config)
     ]
     return bool(
-        row.rewrite_strategy == "direct"
+        _dialect(config).has_time_coverage
+        and row.rewrite_strategy == "direct"
         and plan_is_root()
         and not earlier_settlement_applies()
         and not row.aggregate_relation_id
@@ -525,6 +528,20 @@ def _preserves_filtered_series(plan: LogicalPlan, row: MeasurePlan, config: Pack
         and _dimension_index(config)[role.dimension].entity == measure.entity
         and _entity_in_terms_of_anchor_plan(plan, row, config) is None
     )
+
+
+def _retained_filtered_series(plan: LogicalPlan, config: PackageConfig) -> set[str]:
+    """The leaves that retain their source buckets: each leaf of a group whose leaves all can.
+
+    The one rule lowering, the guard and routing share: a plan that retains one emits loaded
+    coverage (``_emits_time_coverage``), which gates every retained bucket's 0.
+    """
+    return {
+        row.bound_measure.alias
+        for group in _measure_plan_groups(plan, config)
+        if all(_preserves_filtered_series(plan, row, config) for row in group)
+        for row in group
+    }
 
 
 def _filtered_series_operand(value: Any, conditions: list[Any]) -> Any:
@@ -5902,6 +5919,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     # cut. A query metric predicate selects the rows measured, which no such probe reads.
     observed: dict[str, LeafScope] = {}
     probing = guard_empty and observes_dataset() and not _query_metric_predicates(plan)
+    retained = _retained_filtered_series(plan, config)
     if plan.measure_plans or conversion_exprs:
         leaf_ctes: list[SqlCte] = []
         measure_groups = _measure_plan_groups(plan, config)
@@ -5912,8 +5930,8 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 # A folded group shares one scan, so its filters cut every leaf in it.
                 with cut_owners(*(row.bound_measure.alias for row in measure_group)):
                     leaf_select = _measure_group_leaf_select(plan, measure_group, config)
-                    if all(_preserves_filtered_series(plan, row, config) for row in measure_group):
-                        for row in measure_group:
+                    for row in measure_group:
+                        if row.bound_measure.alias in retained:
                             _require_filtered_series_operand(leaf_select, row, config)
                             record_retained_filtered_series(row.bound_measure.alias)
                     for row in measure_group if probing else ():
@@ -6137,12 +6155,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 time_key=time_alias if _emits_time_coverage(plan, config) else "",
                 dialect=_dialect(config),
                 observed=observed,
-                observed_buckets={
-                    row.bound_measure.alias
-                    for group in measure_groups
-                    if all(_preserves_filtered_series(plan, row, config) for row in group)
-                    for row in group
-                },
+                observed_buckets=retained,
                 bucketed=bool(plan.time),
             )
         )

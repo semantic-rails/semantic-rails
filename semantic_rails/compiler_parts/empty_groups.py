@@ -259,8 +259,9 @@ def guard_empty_groups(
     or that has no time bucket (``bucketed=False``: one total over its scope). Earlier
     settlement retains its value-based observation.
     ``observed_buckets`` names leaves whose conditional operand retained the pre-filter
-    source groups. Their non-NULL count (including 0) proves that specific bucket was
-    observed; the sum's matching-row count still prevents filling unknown amounts.
+    source groups. Where the loaded-bucket check gates the output, their non-NULL count
+    (including 0) proves that specific bucket was observed; the sum's matching-row count
+    still prevents filling unknown amounts. Ungated, a retained leaf gets no such proof.
     """
     if (scopes or time_key) and not (dialect is not None and dialect.has_time_coverage):
         raise _unsettled_error({"time_coverage": getattr(dialect, "name", "")})
@@ -305,12 +306,15 @@ def guard_empty_groups(
                 # A missing leaf beside another fact has NULL here and proves nothing.
                 if aggregation not in _COUNTING and alias not in rows:
                     raise _unsettled_error({"measures": [alias], "missing": "row_count"})
-                marker = (
-                    value
-                    if aggregation in _COUNTING
-                    else SqlIdentifier(parts=["base", rows[alias]])
-                )
-                seen = SqlBinary(seen, "OR", SqlBinary(marker, ">=", SqlLiteral(0)))
+                # Only the loaded-bucket check below can make that proof a 0: ungated, the
+                # leaf settles as if it retained nothing.
+                if gated:
+                    marker = (
+                        value
+                        if aggregation in _COUNTING
+                        else SqlIdentifier(parts=["base", rows[alias]])
+                    )
+                    seen = SqlBinary(seen, "OR", SqlBinary(marker, ">=", SqlLiteral(0)))
             if scope is not None:
                 if scope.bounded and not dataset:
                     seen = SqlBinary(
