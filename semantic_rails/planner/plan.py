@@ -25,7 +25,12 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from ..ast import every_filter, is_child_group, rewrite_select_shorthand
+from ..ast import (
+    _time_spec_from_payload,
+    every_filter,
+    is_child_group,
+    rewrite_select_shorthand,
+)
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
@@ -305,6 +310,7 @@ def plan_payload(
     time_why = (
         atemporal_why
         or _unresolved_time_why(intent_str, partial_query)
+        or _unclocked_window_why(runtime._config, intent_str, best_draft.query, partial_query)
         or _start_dropped_why(
             best.get("start_dropped")
             or _pattern_dropped_start(intent_str, best_draft.query, partial_query)
@@ -443,6 +449,14 @@ def plan_payload(
             if row is not best
         ][: max(0, int(limit or 1) - 1)]
         payload["blocked"] = blocked
+    # Every returned query runs the window plan checked, without the caller's clock.
+    for row in [payload["best"], *payload.get("alternatives", []), *blocked]:
+        if "query_ir" in row:
+            clocked = _with_query_clock(runtime._config, row["query_ir"], partial_query)
+            if clocked is None:
+                row.pop("query_ir")
+            else:
+                row["query_ir"] = clocked
     if any(
         (why or {}).get("code") == "TIME_WINDOW_UNRESOLVED" for why in (time_why, faithfulness_why)
     ):
@@ -1483,6 +1497,68 @@ def _start_dropped_why(start: Any) -> dict[str, Any] | None:
             {
                 "kind": "filter_rows_after_execution",
                 "message": f"Execute best.query_ir and keep the rows dated {start} or later.",
+            }
+        ],
+    }
+
+
+def _with_query_clock(
+    config: Any, query: dict[str, Any], partial_query: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """The query with a relative window as the dates the caller's clock gives it.
+
+    Query IR carries no ``policy_context`` (the merge drops it), so a returned ``time.range``
+    would run on the executing caller's clock. With ``policy_context.now`` supplied, the range
+    becomes the bounds execution computes from that clock in the role's zone. None when they
+    can't be computed.
+    """
+
+    context = (partial_query or {}).get("policy_context")
+    time = query.get("time")
+    if not (
+        isinstance(context, dict)
+        and context.get("now") not in (None, "")
+        and isinstance(time, dict)
+        and time.get("range")
+    ):
+        return query
+    try:
+        spec = _time_spec_from_payload(time, policy_context=context, config=config)
+    except (SemanticLayerError, ValueError, OverflowError):
+        return None
+    if spec is None or not spec.start or not spec.end:
+        return None
+    bounded = {key: value for key, value in time.items() if key != "range"}
+    return {**query, "time": {**bounded, "start": spec.start, "end": spec.end}}
+
+
+def _unclocked_window_why(
+    config: Any, intent: str, query: dict[str, Any], partial_query: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Hold a draft whose relative window can't take the supplied clock."""
+
+    if _with_query_clock(config, query, partial_query) is not None:
+        return None
+    lowered = intent.lower()
+    return {
+        "code": "TIME_WINDOW_UNRESOLVED",
+        "message": (
+            "The draft's relative window could not be bounded on policy_context.now, so plan "
+            "returns no query: run on another clock it would answer a different question."
+        ),
+        "details": {
+            "path": "time.range",
+            "unresolved_phrases": [
+                lowered[low:high].strip() for (low, high), _bounds in _time_window(intent).windows
+            ],
+        },
+        "recovery_hints": [
+            {
+                "kind": "provide_explicit_bounds",
+                "message": (
+                    "Pass query.time.start and query.time.end (end-exclusive) in the plan "
+                    "tool's query argument instead of a relative window."
+                ),
             }
         ],
     }

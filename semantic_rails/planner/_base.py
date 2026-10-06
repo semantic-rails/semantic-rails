@@ -652,7 +652,7 @@ def _single_bucket_grain(bounds: dict[str, Any]) -> str:
 def _time_spec(role: str, text: str, clock: str = "") -> dict[str, Any]:
     lowered = str(text or "").lower()
     grain = _explicit_grain(text, clock)
-    window = _time_window(text, timezone=time_timezone(role))
+    window = _time_window(text)
     if not grain and window.relative_unit:
         # A relative window ("last 7 days", "yesterday") buckets at its own
         # unit instead of the generic month default.

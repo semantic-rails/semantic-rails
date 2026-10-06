@@ -11,6 +11,7 @@ import duckdb
 import pytest
 
 from semantic_rails.ast import normalize_query
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.planner import plan_payload
 from semantic_rails.planner._base import _time_window
 from semantic_rails.planner.faithfulness import _window_agrees
@@ -114,22 +115,26 @@ metrics:
         runtime.close()
 
 
-@pytest.fixture()
-def wall_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+def _set_wall_clock(monkeypatch: pytest.MonkeyPatch, moment: datetime) -> None:
     class MachineDate(date):
         @classmethod
         def today(cls) -> date:
-            return cls(2031, 2, 12)
+            return cls(moment.year, moment.month, moment.day)
 
     monkeypatch.setattr("semantic_rails.planner._base.date", MachineDate)
 
     class MachineDatetime(datetime):
         @classmethod
         def now(cls, tz=None) -> datetime:
-            return cls(2031, 2, 12, 1, tzinfo=UTC)
+            return cls.combine(moment.date(), moment.timetz())
 
     monkeypatch.setattr("semantic_rails.planner._base.datetime", MachineDatetime)
     monkeypatch.setattr("semantic_rails.ast.datetime", MachineDatetime)
+
+
+@pytest.fixture()
+def wall_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_wall_clock(monkeypatch, datetime(2031, 2, 12, 1, tzinfo=UTC))
 
 
 @pytest.fixture()
@@ -146,40 +151,8 @@ def local_subscriptions(subscriptions: Runtime) -> Runtime:
     return subscriptions
 
 
-def test_today_executes_on_the_roles_local_date(local_subscriptions: Runtime) -> None:
-    context = {"now": "2026-10-05T01:00:00Z"}
-    plan = plan_payload(
-        local_subscriptions,
-        intent="new accounts today",
-        partial_query={"policy_context": context},
-    )
-    assert plan["status"] == "ok", plan.get("why")
-    query = plan["best"]["query_ir"]
-    assert (query["time"]["start"], query["time"]["end"]) == ("2026-10-04", "2026-10-05")
-    rows = local_subscriptions.query(query)["rows"]
-    with duckdb.connect(local_subscriptions.db_path, read_only=True) as connection:
-        gold = connection.execute(
-            "SELECT COUNT(DISTINCT event_id) FROM events WHERE kind = 'signup' "
-            "AND occurred_at >= DATE '2026-10-04' AND occurred_at < DATE '2026-10-05'"
-        ).fetchone()[0]
-    assert gold == 2
-    assert sum(row[query["select"][0]["as"]] for row in rows) == gold
-
-
-@pytest.mark.parametrize(
-    ("phrase", "now", "start", "end"),
-    [
-        ("today", "2026-10-05T01:00:00Z", "2026-10-04", "2026-10-05"),
-        ("yesterday", "2026-10-05T01:00:00Z", "2026-10-03", "2026-10-04"),
-        ("this week", "2026-10-05T01:00:00Z", "2026-09-28", "2026-10-05"),
-        ("this month", "2026-11-01T02:00:00Z", "2026-10-01", "2026-11-01"),
-        ("this quarter", "2026-10-01T02:00:00Z", "2026-07-01", "2026-10-01"),
-        ("this year", "2027-01-01T02:00:00Z", "2026-01-01", "2027-01-01"),
-        ("today", "2026-10-05T01:00:00", "2026-10-05", "2026-10-06"),
-        ("today", "2026-10-05", "2026-10-05", "2026-10-06"),
-    ],
-)
-def test_orders_windows_use_the_roles_zone(runtime_factory, phrase, now, start, end) -> None:
+@pytest.fixture()
+def local_orders(runtime_factory) -> Runtime:
     runtime = runtime_factory("jaffle_shop")
     runtime._config = replace(
         runtime._config,
@@ -187,23 +160,173 @@ def test_orders_windows_use_the_roles_zone(runtime_factory, phrase, now, start, 
             replace(role, timezone="America/New_York") for role in runtime._config.temporal_roles
         ],
     )
+    return runtime
+
+
+def _with_package_zone(runtime: Runtime, timezone: str) -> None:
+    snapshot = runtime._snapshot
+    runtime._snapshot = replace(
+        snapshot, _normalized={**snapshot.normalized, "defaults": {"time": {"timezone": timezone}}}
+    )
+
+
+def _signups(runtime: Runtime, start: str, end: str) -> int:
+    with duckdb.connect(runtime.db_path, read_only=True) as connection:
+        return connection.execute(
+            "SELECT COUNT(DISTINCT event_id) FROM events WHERE kind = 'signup' "
+            "AND occurred_at >= CAST(? AS DATE) AND occurred_at < CAST(? AS DATE)",
+            [start, end],
+        ).fetchone()[0]
+
+
+def _assert_zone_hold(plan: dict[str, Any], phrases: list[str]) -> None:
+    assert plan["status"] == "low_confidence"
+    assert plan["why"]["code"] == "TIME_WINDOW_UNRESOLVED", plan.get("why")
+    assert plan["why"]["details"]["unresolved_phrases"] == phrases
+    assert not plan.get("next", {}).get("ready_for")
+    assert not (plan.get("best") or {}).get("query_ir")
+    assert not any(
+        row.get("query_ir") for row in plan.get("alternatives", []) + plan.get("blocked", [])
+    )
+
+
+def test_today_is_held_where_the_roles_zone_reads_another_day(
+    local_subscriptions: Runtime,
+) -> None:
     plan = plan_payload(
-        runtime, intent=f"orders {phrase}", partial_query={"policy_context": {"now": now}}
+        local_subscriptions,
+        intent="new accounts today",
+        partial_query={"policy_context": {"now": "2026-10-05T01:00:00Z"}},
+    )
+    _assert_zone_hold(plan, ["today"])
+    details = plan["why"]["details"]
+    assert (details["timezone"], details["planning_timezone"]) == ("America/New_York", "UTC")
+
+
+def test_today_executes_where_both_zones_read_the_same_day(local_subscriptions: Runtime) -> None:
+    plan = plan_payload(
+        local_subscriptions,
+        intent="new accounts today",
+        partial_query={"policy_context": {"now": "2026-10-05T12:00:00Z"}},
     )
     assert plan["status"] == "ok", plan.get("why")
-    time = normalize_query(
-        {**plan["best"]["query_ir"], "policy_context": {"now": now}}, config=runtime._config
-    ).time
+    query = plan["best"]["query_ir"]
+    assert (query["time"]["start"], query["time"]["end"]) == ("2026-10-05", "2026-10-06")
+    rows = local_subscriptions.query(query)["rows"]
+    gold = _signups(local_subscriptions, "2026-10-05", "2026-10-06")
+    assert gold == 1
+    assert sum(row[query["select"][0]["as"]] for row in rows) == gold
+
+
+@pytest.mark.parametrize(
+    ("phrase", "now"),
+    [
+        ("today", "2026-10-05T01:00:00Z"),
+        ("yesterday", "2026-10-05T01:00:00Z"),
+        ("this week", "2026-10-05T01:00:00Z"),
+        ("this month", "2026-11-01T02:00:00Z"),
+        ("this quarter", "2026-10-01T02:00:00Z"),
+        ("this year", "2027-01-01T02:00:00Z"),
+    ],
+)
+def test_orders_windows_are_held_where_the_roles_zone_reads_other_days(
+    local_orders: Runtime, phrase: str, now: str
+) -> None:
+    plan = plan_payload(
+        local_orders, intent=f"orders {phrase}", partial_query={"policy_context": {"now": now}}
+    )
+    _assert_zone_hold(plan, [phrase])
+
+
+@pytest.mark.parametrize(
+    ("phrase", "now", "start", "end"),
+    [
+        ("today", "2026-10-05T12:00:00Z", "2026-10-05", "2026-10-06"),
+        ("yesterday", "2026-10-05T12:00:00Z", "2026-10-04", "2026-10-05"),
+        ("today", "2026-10-05T01:00:00", "2026-10-05", "2026-10-06"),
+        ("yesterday", "2026-10-05T01:00:00", "2026-10-04", "2026-10-05"),
+        ("today", "2026-10-05", "2026-10-05", "2026-10-06"),
+    ],
+)
+def test_orders_windows_run_as_returned_where_both_zones_agree(
+    local_orders: Runtime, phrase: str, now: str, start: str, end: str
+) -> None:
+    plan = plan_payload(
+        local_orders, intent=f"orders {phrase}", partial_query={"policy_context": {"now": now}}
+    )
+    assert plan["status"] == "ok", plan.get("why")
+    # The returned query runs without the caller's clock.
+    time = normalize_query(plan["best"]["query_ir"], config=local_orders._config).time
     assert (time.start, time.end) == (start, end)
 
 
-def test_default_instant_is_converted_to_the_roles_zone(
+def test_the_wall_clock_is_held_where_the_roles_zone_reads_another_day(
     local_subscriptions: Runtime, wall_clock: None
 ) -> None:
     plan = plan_payload(local_subscriptions, intent="new accounts today")
-    assert plan["status"] == "ok", plan.get("why")
+    _assert_zone_hold(plan, ["today"])
+
+
+def test_a_period_comparison_is_held_where_the_roles_zone_reads_another_year(
+    local_orders: Runtime,
+) -> None:
+    plan = plan_payload(
+        local_orders,
+        intent="monthly revenue this year compared to last year",
+        partial_query={"policy_context": {"now": "2027-01-01T02:00:00Z"}},
+    )
+    _assert_zone_hold(plan, ["this year"])
+
+
+def test_a_period_comparison_drops_its_start_where_both_zones_agree(local_orders: Runtime) -> None:
+    plan = plan_payload(
+        local_orders,
+        intent="monthly revenue this year compared to last year",
+        partial_query={"policy_context": {"now": "2026-07-01T12:00:00Z"}},
+    )
+    assert plan["status"] == "low_confidence"
+    assert plan["why"]["code"] == "TIME_WINDOW_START_DROPPED", plan.get("why")
+    assert plan["why"]["details"]["requested_start"] == "2026-01-01"
     time = plan["best"]["query_ir"]["time"]
-    assert (time["start"], time["end"]) == ("2031-02-11", "2031-02-12")
+    assert "start" not in time and time["end"] == "2027-01-01"
+
+
+@pytest.mark.parametrize("caller_window", [False, True])
+def test_a_package_zone_reading_is_held_where_the_role_reads_utc(
+    local_subscriptions: Runtime, caller_window: bool
+) -> None:
+    # Tokyo reads 2026-10-06; New York and UTC both read 2026-10-05.
+    _with_package_zone(local_subscriptions, "Asia/Tokyo")
+    window = {"time": {"start": "2026-10-05", "end": "2026-10-06"}} if caller_window else {}
+    plan = plan_payload(
+        local_subscriptions,
+        intent="new accounts today",
+        partial_query={"policy_context": {"now": "2026-10-05T16:00:00Z"}, **window},
+    )
+    _assert_zone_hold(plan, ["today"])
+    assert plan["why"]["details"]["planning_timezone"] == "Asia/Tokyo"
+
+
+def test_a_callers_range_is_held_where_the_roles_zone_reads_other_days(
+    subscriptions: Runtime,
+) -> None:
+    # "last month" reads September in UTC and Tokyo; the last 30 days end on October 1 in UTC
+    # but on October 2 in Tokyo.
+    subscriptions._config = replace(
+        subscriptions._config,
+        temporal_roles=[
+            replace(role, timezone="Asia/Tokyo") for role in subscriptions._config.temporal_roles
+        ],
+    )
+    plan = plan_payload(
+        subscriptions,
+        intent="new accounts last month",
+        partial_query={
+            "policy_context": {"now": "2026-10-01T16:00:00Z"},
+            "time": {"range": {"last": {"unit": "day", "value": 30}}},
+        },
+    )
+    _assert_zone_hold(plan, ["last month"])
 
 
 def test_before_role_selection_uses_the_package_default_zone(
@@ -302,13 +425,11 @@ def test_a_previously_held_explicit_local_window_stays_held(local_subscriptions:
             "time": {"start": "2026-10-04", "end": "2026-10-05"},
         },
     )
-    assert plan["status"] == "low_confidence"
-    assert plan["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-    assert not plan["next"].get("ready_for")
+    _assert_zone_hold(plan, ["today"])
 
 
 def test_local_fallback_uses_the_same_clock(
-    local_subscriptions: Runtime, monkeypatch: pytest.MonkeyPatch
+    local_subscriptions: Runtime, monkeypatch: pytest.MonkeyPatch, wall_clock: None
 ) -> None:
     from semantic_rails.planner.orchestrator import CompositionResult
 
@@ -319,11 +440,106 @@ def test_local_fallback_uses_the_same_clock(
     plan = plan_payload(
         local_subscriptions,
         intent="new accounts today",
-        partial_query={"policy_context": {"now": "2026-10-05T01:00:00Z"}},
+        partial_query={"policy_context": {"now": "2026-10-05T12:00:00Z"}},
     )
     assert plan["status"] == "ok", plan.get("why")
     time = plan["best"]["query_ir"]["time"]
-    assert (time["start"], time["end"]) == ("2026-10-04", "2026-10-05")
+    assert (time["start"], time["end"]) == ("2026-10-05", "2026-10-06")
+
+
+@pytest.mark.parametrize("detail", ["best", "full", "query", "debug"])
+def test_a_returned_relative_window_keeps_the_supplied_clock(
+    local_subscriptions: Runtime, monkeypatch: pytest.MonkeyPatch, detail: str
+) -> None:
+    _set_wall_clock(monkeypatch, datetime(2026, 10, 7, 12, tzinfo=UTC))
+    plan = plan_payload(
+        local_subscriptions,
+        intent="new accounts yesterday",
+        partial_query={"policy_context": {"now": "2026-10-05T12:00:00Z"}},
+        detail=detail,
+    )
+    assert plan["status"] == "ok", plan.get("why")
+    query = plan["best"]["query_ir"]
+    assert "range" not in query["time"] and "policy_context" not in query
+    # Run unchanged, without the clock it was planned on.
+    rows = local_subscriptions.query(query)["rows"]
+    with duckdb.connect(local_subscriptions.db_path, read_only=True) as connection:
+        gold = connection.execute(
+            "SELECT COUNT(DISTINCT event_id) FROM events WHERE kind='signup' "
+            "AND occurred_at >= DATE '2026-10-04' AND occurred_at < DATE '2026-10-05'"
+        ).fetchone()[0]
+    assert gold == 2
+    assert sum(row[query["select"][0]["as"]] for row in rows) == gold
+    assert not any(
+        "range" in (row.get("query_ir") or {}).get("time", {})
+        for row in plan.get("alternatives", []) + plan.get("blocked", [])
+    )
+
+
+def test_a_relative_window_the_clock_cannot_bound_is_held(
+    local_subscriptions: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unbounded(*_args: Any, **_kwargs: Any) -> Any:
+        raise SemanticLayerError("INVALID_QUERY", "unbounded")
+
+    monkeypatch.setattr("semantic_rails.planner.plan._time_spec_from_payload", unbounded)
+    plan = plan_payload(
+        local_subscriptions,
+        intent="new accounts yesterday",
+        partial_query={"policy_context": {"now": "2026-10-05T12:00:00Z"}},
+    )
+    _assert_zone_hold(plan, ["yesterday"])
+
+
+@pytest.mark.parametrize("detail", ["best", "full", "query", "debug"])
+def test_offset_bounds_on_another_local_day_are_held(
+    local_subscriptions: Runtime, detail: str
+) -> None:
+    # Both bounds fall on 2026-10-03 in New York.
+    plan = plan_payload(
+        local_subscriptions,
+        intent="new accounts today",
+        partial_query={
+            "policy_context": {"now": "2026-10-04T12:00:00Z"},
+            "time": {"start": "2026-10-04T01:00:00Z", "end": "2026-10-04T02:00:00Z"},
+        },
+        detail=detail,
+    )
+    assert plan["status"] == "low_confidence", plan.get("why")
+    assert plan["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    assert not plan.get("next", {}).get("ready_for")
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "ready"),
+    [
+        # In the role's offset the written date is the local date.
+        ("2026-10-04T00:00:00-04:00", "2026-10-04T23:59:59-04:00", True),
+        # Held as before: an end at midnight with an offset reads as one day later.
+        ("2026-10-04T00:00:00-04:00", "2026-10-05T00:00:00-04:00", False),
+    ],
+)
+def test_offset_bounds_in_the_roles_offset_keep_their_date(
+    local_subscriptions: Runtime, start: str, end: str, ready: bool
+) -> None:
+    plan = plan_payload(
+        local_subscriptions,
+        intent="new accounts today",
+        partial_query={
+            "policy_context": {"now": "2026-10-04T12:00:00Z"},
+            "time": {"start": start, "end": end},
+        },
+    )
+    if not ready:
+        assert plan["status"] == "low_confidence"
+        assert plan["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+        return
+    assert plan["status"] == "ok", plan.get("why")
+    query = plan["best"]["query_ir"]
+    rows = local_subscriptions.query(query)["rows"]
+    gold = _signups(local_subscriptions, "2026-10-04", "2026-10-05")
+    assert gold == 2
+    assert sum(row[query["select"][0]["as"]] for row in rows) == gold
 
 
 @pytest.mark.parametrize(
