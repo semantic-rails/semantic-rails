@@ -61,7 +61,6 @@ def test_validating_but_unfaithful_complex_plans_fail_closed(
         # The draft compares each month with the same month a year before: the question asks
         # for no month split.
         ("revenue vs prior year by store", "inline_period_shift", ["month"]),
-        ("revenue vs order count by store last quarter", "inline_comparison", []),
         ("orders by store and month", "metric_by_dimension_rollup", []),
         ("orders by store in Brooklyn", "metric_by_dimension_rollup", []),
         # "For stores that have ..." qualifies the stores; the draft also splits by store.
@@ -101,6 +100,23 @@ def test_faithfulness_gate_preserves_realized_and_supported_shapes(
         return
     assert payload["status"] == "ok", payload.get("why")
     assert payload["next"]["ready_for"] == ["execute"]
+
+
+def test_faithfulness_gate_keeps_a_comparison_with_no_prior_period(runtime_factory) -> None:
+    """The gate keeps the comparison's shape; with no prior-period select, the answer-shape
+    check holds it."""
+
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(runtime, intent="revenue vs order count by store last quarter")
+    finally:
+        runtime.close()
+
+    assert payload["best"]["pattern"] == "inline_comparison"
+    assert payload["status"] == "low_confidence"
+    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    assert _gap_kinds(payload) == {"comparison_unrealized"}
+    assert "ready_for" not in payload["next"]
 
 
 @pytest.mark.parametrize(

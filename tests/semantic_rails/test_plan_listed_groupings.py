@@ -1066,9 +1066,11 @@ def test_the_check_only_holds_a_plan_that_was_ready(
         runtime = _runtime_for(case, runtime_factory, upkeep, monkeypatch, stack)
         after = plan_payload(runtime, intent=case.intent, partial_query=partial_query)
         with monkeypatch.context() as without_check:
-            # They are the only readers of the listed groupings.
+            # They are the only readers of the listed groupings, with the answer-shape check
+            # after them, which only holds a plan (test_plan_answer_shape.py).
             without_check.setattr(plan_module, "_dropped_grouping_why", lambda *args: None)
             without_check.setattr(plan_module, "_unasked_grouping_why", lambda *args: None)
+            without_check.setattr(plan_module, "_answer_shape_why", lambda *args: None)
             before = plan_payload(runtime, intent=case.intent, partial_query=partial_query)
 
     # Without the checks, plan answers as it did before they existed.

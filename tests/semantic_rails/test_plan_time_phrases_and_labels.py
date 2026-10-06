@@ -534,7 +534,6 @@ def test_a_limit_or_threshold_is_read_where_the_question_states_it(
         ("top five stores by revenue", 5),
         ("the top 5 stores by revenue", 5),
         ("top 3 stores by orders", 3),
-        ("which 5 stores had the most orders", 5),
         ("top 5 stores by revenue in 2017", 5),
     ],
 )

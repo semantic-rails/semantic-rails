@@ -503,13 +503,10 @@ _CASES = [
     _Case("monthly revenue with YoY", OK),
     _Case("month over month revenue growth by month", OK),
     _Case("revenue by store in each month", OK),
-    _Case("revenue vs order count by store last quarter", OK),
     _Case("orders by store and month", OK),
-    _Case("food revenue vs drink revenue in Q1 2017 by store", OK),
     # A dimension the question asks for, or filters to values it names.
     _Case("revenue by store", OK),
     _Case("top stores by revenue", OK),
-    _Case("which 5 stores had the most orders", OK),
     _Case("revenue per store", OK),
     _Case("orders per store", OK),
     _Case("revenue for each store", OK),
@@ -519,6 +516,11 @@ _CASES = [
     # Held before, for another reason.
     _Case("top 3 stores by revenue in each month", GAP, GAP),
     _Case("revenue by store, last month and customer type", UNMATCHED, UNMATCHED),
+    # Held after them by the answer-shape check: a comparison with no prior-period select, and
+    # a listing by store name without the store's key.
+    _Case("revenue vs order count by store last quarter", OK, GAP),
+    _Case("food revenue vs drink revenue in Q1 2017 by store", OK, GAP),
+    _Case("which 5 stores had the most orders", OK, GAP),
     # A ranking split by a period the question names.
     _ranking("top 3 stores by revenue at month level"),
     _ranking("top 1 store by revenue at month level"),
@@ -590,9 +592,11 @@ def test_the_check_only_holds_a_plan_that_was_ready(
 ) -> None:
     after = plan_payload(jaffle, intent=case.intent)
     with monkeypatch.context() as without_checks:
-        # The two checks are the only readers of the listed groupings.
+        # The two checks are the only readers of the listed groupings, with the answer-shape
+        # check after them, which only holds a plan (test_plan_answer_shape.py).
         without_checks.setattr(plan_module, "_dropped_grouping_why", lambda *args: None)
         without_checks.setattr(plan_module, "_unasked_grouping_why", lambda *args: None)
+        without_checks.setattr(plan_module, "_answer_shape_why", lambda *args: None)
         before = plan_payload(jaffle, intent=case.intent)
 
     # Without them, plan answers as it did before; with them, the draft is the same.
