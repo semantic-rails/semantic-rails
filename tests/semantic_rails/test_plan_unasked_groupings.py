@@ -675,9 +675,11 @@ def test_the_check_only_holds_a_plan_that_was_ready(
 ) -> None:
     after = plan_payload(jaffle, intent=case.intent)
     with monkeypatch.context() as without_checks:
-        # The two checks are the only readers of the listed groupings.
+        # The two checks are the only readers of the listed groupings, with the answer-shape
+        # check after them, which only holds a plan (test_plan_answer_shape.py).
         without_checks.setattr(plan_module, "_dropped_grouping_why", lambda *args: None)
         without_checks.setattr(plan_module, "_unasked_grouping_why", lambda *args: None)
+        without_checks.setattr(plan_module, "_answer_shape_why", lambda *args: None)
         before = plan_payload(jaffle, intent=case.intent)
 
     # Without them, plan answers as it did before; with them, the draft is the same.
