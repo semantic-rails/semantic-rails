@@ -5,6 +5,8 @@
 - Share select-dimension shorthand and its normalization warning across query surfaces;
   refuse conflicting targets and wrapped dimensions beside other grouping dimensions.
   Keep MCP preprocessing inside the structured error boundary and refuse excessive nesting.
+- Resolve each nested MCP tool call's trusted context and error envelope independently,
+  restoring the outer context when it returns.
 - Remove duplicate `recovery_hints[].clarification`; the clarification remains in error
   details. Valid-values returns `ok: false` and `status: needs_live_query` without a declared
   domain unless live lookup is enabled; only MCP adds a `next_call` tool retry.

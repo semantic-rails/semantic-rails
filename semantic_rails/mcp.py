@@ -134,6 +134,9 @@ _MAX_RESULT_CHARS_ENV = "SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS"
 _TOOL_REQUEST_CONTEXT: ContextVar[RequestContext | None] = ContextVar(
     "semantic_rails_mcp_tool_request_context", default=None
 )
+_BUILTIN_TOOL_DISPATCH: ContextVar[bool] = ContextVar(
+    "semantic_rails_mcp_builtin_tool_dispatch", default=False
+)
 
 
 JSON_OBJECT_SCHEMA: dict[str, Any] = {
@@ -1808,6 +1811,7 @@ class SemanticLayerMCPAdapter:
             "execute": self._handle_execute_mode,
             "segment": self._handle_segment_action,
         }
+        self._builtin_tool_handlers = self._tool_handlers.copy()
 
     @property
     def instructions(self) -> str:
@@ -1845,7 +1849,7 @@ class SemanticLayerMCPAdapter:
         """
         if name not in self._tool_handlers:
             raise ValueError(f"Unknown MCP tool {name!r}; tools: {sorted(self._tool_handlers)}")
-        self._tool_handlers[name] = lambda arguments: self._guarded(arguments, handler)
+        self._tool_handlers[name] = handler
 
     def close(self) -> None:
         self.runtime.close()
@@ -1880,6 +1884,26 @@ class SemanticLayerMCPAdapter:
         ``session`` enables advisory repeat hints for calls in that session.
         """
 
+        # A new invocation owns its identity even when a host handler calls it
+        # from another tool. Isolate argument-error envelopes and finish too.
+        context_token = _TOOL_REQUEST_CONTEXT.set(None)
+        dispatch_token = _BUILTIN_TOOL_DISPATCH.set(False)
+        try:
+            return self._call_tool(
+                name, arguments, request_context=request_context, session=session
+            )
+        finally:
+            _BUILTIN_TOOL_DISPATCH.reset(dispatch_token)
+            _TOOL_REQUEST_CONTEXT.reset(context_token)
+
+    def _call_tool(
+        self,
+        name: str,
+        arguments: Mapping[str, Any] | None,
+        *,
+        request_context: RequestContext | None,
+        session: MCPQuerySession | None,
+    ) -> dict[str, Any]:
         normalized: list[str] = []
         args_dict: dict[str, Any] = {}
 
@@ -2031,7 +2055,12 @@ class SemanticLayerMCPAdapter:
                 routed = normalize_routes(route_query, normalized, self.runtime.validate)
                 if "route_decisions" in routed:
                     query["route_decisions"] = routed["route_decisions"]
-            return handler(args)
+            # Only this invocation's built-in handler may reuse the boundary.
+            token = _BUILTIN_TOOL_DISPATCH.set(handler is self._builtin_tool_handlers.get(name))
+            try:
+                return handler(args)
+            finally:
+                _BUILTIN_TOOL_DISPATCH.reset(token)
 
         response = self._guarded(args_dict, dispatch)
         if unknown_arg_warnings:
@@ -2291,8 +2320,9 @@ class SemanticLayerMCPAdapter:
     def _guarded(
         self, arguments: dict[str, Any], handler: Callable[[dict[str, Any]], dict[str, Any]]
     ) -> dict[str, Any]:
-        if _TOOL_REQUEST_CONTEXT.get() is not None:
-            # Dispatch owns the boundary; nested built-in handlers reuse its context.
+        if _BUILTIN_TOOL_DISPATCH.get():
+            # Consume dispatch's one-use marker before entering the builder.
+            _BUILTIN_TOOL_DISPATCH.set(False)
             return handler(arguments)
         started = time.perf_counter()
         token = None
