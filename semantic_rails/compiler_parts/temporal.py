@@ -921,9 +921,10 @@ def _clock_where_cuts(query: NormalizedQuery, config: PackageConfig) -> list[tup
     """The ``where`` conditions, child groups' included, that cut the query clock's rows other
     than from above: each with its path.
 
-    A condition reads the clock when its dimension is on the clock's column, on a column a
-    relationship pairs with it, or on a calendar (``kind: time``) entity that is the clock's own
-    or that is joined on the clock's column. Only an upper bound (``<``, ``<=``) on a date or
+    A condition reads the clock when its dimension is on the clock's column or on a column
+    connected to it through relationship column equalities, in either direction and at any
+    depth. Any dimension on a calendar (``kind: time``) entity reached by those equalities
+    reads the clock too. Only an upper bound (``<``, ``<=``) on a date or
     timestamp keeps every window's lookback rows, as ``time.end`` does; any other operator cuts
     them, and is returned.
     """
@@ -934,33 +935,35 @@ def _clock_where_cuts(query: NormalizedQuery, config: PackageConfig) -> list[tup
     clock = analysis.dimensions.get(role.dimension) if role is not None else None
     if clock is None:
         return []
+    # paths imports temporal; defer the shared orientation helper until planning runs.
+    from .paths import _pair_orientations
+
     clock_table = analysis.entities[clock.entity].table
+    clock_columns = {
+        (entity.id, clock.column) for entity in config.entities if entity.table == clock_table
+    }
+    neighbors: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    entity_pairs = {
+        tuple(sorted((rel.source_entity, rel.target_entity))) for rel in config.relationships
+    }
+    for source, target in entity_pairs:
+        for _rel, source_columns, target_columns in _pair_orientations(source, target, config):
+            for source_column, target_column in zip(source_columns, target_columns, strict=True):
+                left, right = (source, source_column), (target, target_column)
+                neighbors.setdefault(left, set()).add(right)
+                neighbors.setdefault(right, set()).add(left)
+    pending = list(clock_columns)
+    while pending:
+        for paired in neighbors.get(pending.pop(), set()):
+            if paired not in clock_columns:
+                clock_columns.add(paired)
+                pending.append(paired)
+    clock_entities = {entity for entity, _column in clock_columns}
 
     def reads_clock(dim: DimensionConfig) -> bool:
-        entity = analysis.entities[dim.entity]
-        if entity.table == clock_table and dim.column == clock.column:
-            return True
-        calendar = entity.kind == "time"
-        if calendar and dim.entity == clock.entity:
-            return True
-        for rel in config.relationships:
-            pairs = list(
-                zip(
-                    rel.source_columns or [rel.source_column],
-                    rel.target_columns or [rel.target_column],
-                    strict=True,
-                )
-            )
-            if (rel.source_entity, rel.target_entity) == (dim.entity, clock.entity):
-                pairs = [(clock_side, dim_side) for dim_side, clock_side in pairs]
-            elif (rel.source_entity, rel.target_entity) != (clock.entity, dim.entity):
-                continue
-            if any(
-                clock_side == clock.column and (calendar or dim_side == dim.column)
-                for clock_side, dim_side in pairs
-            ):
-                return True
-        return False
+        return (dim.entity, dim.column) in clock_columns or (
+            analysis.entities[dim.entity].kind == "time" and dim.entity in clock_entities
+        )
 
     conditions: list[tuple[str, Filter]] = []
     for index, item in enumerate(query.where):

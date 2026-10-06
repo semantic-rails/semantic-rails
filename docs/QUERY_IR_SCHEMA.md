@@ -269,9 +269,11 @@ period with `LAG` and keeps its existing input semantics.
 These windows read periods before the ones they return, so a cut from below would drop rows
 they need. With a `prior_period`, `rolling`, `period_to_date` or `cumulative` window in `select`
 or `metric_filters`, a bounded `time.start` refuses, and so does a `where` filter on the query's
-own clock: on its column, on a column a relationship pairs with it, or on a calendar
-(`kind: time`) entity joined on it, child groups included. Only an upper bound (`<`, `<=`) on a
-date or timestamp runs, as `time.end` does. The refusal is `WINDOWED_TIME_FILTER_UNSUPPORTED`
+own clock: on its column, on a column connected to it through relationship column equalities
+in either direction and across any number of joins, or on any dimension of a calendar
+(`kind: time`) entity reached by those equalities, child groups included. Recognition considers
+every declared relationship, regardless of the selected query route. Only an upper bound
+(`<`, `<=`) on a date or timestamp runs, as `time.end` does. The refusal is `WINDOWED_TIME_FILTER_UNSUPPORTED`
 or `CUMULATIVE_TIME_FILTER_UNSUPPORTED`; for a `where` filter, `details.where_path` names it.
 
 `period_to_date` currently supports only the default calendar. A non-default

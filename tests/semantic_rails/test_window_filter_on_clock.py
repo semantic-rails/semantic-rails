@@ -7,8 +7,8 @@ the previous day of 2026-09-14 read NULL instead of 99 per account, and a 7-day 
 a cumulative sum and a month-to-date sum on 2026-09-15 read 40 instead of 45, 75 and 75. Such a
 filter is now refused with the same codes and lookback, plus ``details.where_path``, whether it
 is on the clock's own dimension, another dimension on its column, or a calendar dimension
-joined on it. An upper bound alone still runs, as ``time.end`` does, and so does a filter on
-any other dimension.
+joined on it through one or more column equalities. An upper bound alone still runs, as
+``time.end`` does, and so does a filter on any other dimension.
 """
 
 from __future__ import annotations
@@ -34,6 +34,9 @@ CALENDAR_DAY = "dimension.fees_time_date_day"
 CALENDAR_WEEK = "dimension.fees_time_week_start"
 OCCURRED_AT = "dimension.fees_event_occurred_at"
 CHANNEL = "dimension.fees_event_channel"
+SECOND_CALENDAR_DAY = "dimension.fees_time2_date_day"
+LINKED_DATE = "dimension.fees_snapshot_label_observed_date"
+CALENDAR_ROLE = "temporal_role.fees_time_date_day"
 FEE = {"measure": "measure.fees.fee"}
 AMOUNT = {"measure": "measure.fees.amount"}
 PRIOR_DAY = {"kind": "prior_period", "input": FEE, "offset": {"unit": "day", "value": 1}}
@@ -67,6 +70,7 @@ def _load(connection: duckdb.DuckDBPyConnection) -> None:
         "date_trunc('week', d)::date as week_start "
         "from generate_series(date '2026-08-01', date '2026-10-31', interval 1 day) t(d)"
     )
+    connection.execute("create table calendar2 as select * from calendar")
 
 
 def _package(root: Path) -> Path:
@@ -146,6 +150,46 @@ def _reference(sql: str) -> list[tuple]:
 @pytest.fixture
 def runtime(tmp_path: Path) -> Iterator[Runtime]:
     runtime = Runtime.from_path(str(_package(tmp_path)))
+    yield runtime
+    runtime.close()
+
+
+@pytest.fixture
+def related_runtime(tmp_path: Path) -> Iterator[Runtime]:
+    package = _package(tmp_path)
+    graph = package / "graph.yml"
+    graph.write_text(
+        graph.read_text()
+        + "    time2: {kind: time, key: [date_day], model: calendar2, allowed_as_root: false}\n"
+        + "    snapshot_label: {key: [account_id, date_day], model: snapshot_labels}\n"
+    )
+    calendar = package / "models" / "calendar.yml"
+    calendar.write_text(
+        calendar.read_text().replace("entities: {time: {}}", "entities: {time: {}, time2: {}}")
+    )
+    (package / "models" / "calendar2.yml").write_text(
+        "model:\n"
+        "  id: calendar2\n"
+        "  relation: calendar2\n"
+        "  calendar_id: secondary\n"
+        "  entities: {time2: {}}\n"
+        "  times:\n"
+        "    date_day: {column: date_day, kind: date, class: calendar_time}\n"
+    )
+    # The clock is on the target side of this non-calendar, composite-key relationship.
+    (package / "models" / "snapshot_labels.yml").write_text(
+        "model:\n"
+        "  id: snapshot_labels\n"
+        "  relation: snapshot_labels\n"
+        "  entities: {snapshot_label: {}, account_day: {}}\n"
+        "  dimensions:\n"
+        "    observed_date: {column: date_day, kind: date}\n"
+    )
+    with duckdb.connect(str(package / "data" / "fees.duckdb")) as connection:
+        connection.execute(
+            "create table snapshot_labels as select account_id, date_day from account_day"
+        )
+    runtime = Runtime.from_path(str(package))
     yield runtime
     runtime.close()
 
@@ -400,3 +444,46 @@ def test_mcp_execute_returns_the_refusal_with_a_patch_for_the_filter(runtime: Ru
     hints = {hint["kind"]: hint for hint in error["recovery_hints"]}
     assert hints["drop_time_start"]["patch"] == {"remove": ["where[1]"]}
     assert hints["widen_time_window"]["suggested_start"] == "2026-09-13"
+
+
+@pytest.mark.parametrize(
+    ("field", "op"),
+    [
+        pytest.param(SECOND_CALENDAR_DAY, ">=", id="two-hop-lower-bound"),
+        pytest.param(SECOND_CALENDAR_DAY, "=", id="two-hop-pin"),
+        pytest.param(LINKED_DATE, ">=", id="reverse-non-calendar"),
+    ],
+)
+def test_a_related_clock_cut_refuses(related_runtime: Runtime, field: str, op: str) -> None:
+    cut = _cut(field, op, "2026-09-14")
+    with pytest.raises(SemanticLayerError) as caught:
+        related_runtime.query(_query(PRIOR_DAY, [cut], grouped=True))
+    assert caught.value.code == "WINDOWED_TIME_FILTER_UNSUPPORTED"
+    assert caught.value.details["where_path"] == "where[0]"
+    assert caught.value.details["where"] == cut
+
+
+def test_a_two_hop_calendar_upper_bound_matches_reference(related_runtime: Runtime) -> None:
+    query = _query(PRIOR_DAY, [_cut(SECOND_CALENDAR_DAY, "<=", "2026-09-14")], grouped=True)
+    reference = _reference(
+        "select a.account_id, a.date_day, p.fee from account_day a "
+        "left join account_day p on p.account_id = a.account_id and p.date_day = a.date_day - 1 "
+        "join calendar c on c.date_day = a.date_day "
+        "join calendar2 c2 on c2.date_day = c.date_day where c2.date_day <= '2026-09-14'"
+    )
+    assert _rows(related_runtime, query) == reference
+    assert [(account, value) for account, day, value in reference if day == date(2026, 9, 14)] == [
+        ("a", 99),
+        ("b", 99),
+        ("c", 99),
+    ]
+
+
+def test_monthly_snapshot_own_clock_cut_refuses(runtime: Runtime) -> None:
+    prior_month = {"kind": "prior_period", "input": FEE, "offset": {"unit": "month", "value": 1}}
+    query = _query(prior_month, [_cut(DAY, ">=", "2026-09-01")], grouped=True)
+    query["time"] = {"temporal_role": CALENDAR_ROLE, "grain": "month"}
+    with pytest.raises(SemanticLayerError) as caught:
+        runtime.query(query)
+    assert caught.value.code == "WINDOWED_TIME_FILTER_UNSUPPORTED"
+    assert caught.value.details["where_path"] == "where[0]"
