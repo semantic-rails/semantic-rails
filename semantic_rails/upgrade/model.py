@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
+from itertools import groupby
 from pathlib import Path
 from typing import Any, Literal
 
@@ -289,28 +290,36 @@ def plan(files: PackageFiles, rules: Iterable[Rule], choices: Mapping[str, str])
     if set(choices) - set(answered) - {files.choice_key(finding) for finding in pending}:
         raise SemanticLayerError("INVALID_CONFIG", "Unknown upgrade choice")
     reformatted = []
+    by_file: dict[str, list[Edit]] = {}
     for edit, _, _ in selected:
-        if edit.op == "archive":
-            result[edit.file] = None
-        elif edit.op == "create":
-            if edit.file in files.contents:
-                raise SemanticLayerError("INVALID_CONFIG", f"File '{edit.file}' already exists")
-            from ..architect_scaffold import dump_project_yaml
+        by_file.setdefault(edit.file, []).append(edit)
+    for file, file_edits in by_file.items():
+        for file_level, batch in groupby(
+            file_edits, key=lambda edit: edit.op in {"create", "archive"}
+        ):
+            if file_level:
+                for edit in batch:
+                    if edit.op == "archive":
+                        result[file] = None
+                        continue
+                    if file in files.contents or result.get(file) is not None:
+                        raise SemanticLayerError("INVALID_CONFIG", f"File '{file}' already exists")
+                    from ..architect_scaffold import dump_project_yaml
 
-            content = (
-                edit.value
-                if isinstance(edit.value, (str, bytes))
-                else dump_project_yaml(edit.value)
-            )
-            result[edit.file] = content.encode("utf-8") if isinstance(content, str) else content
-        else:
-            text = result.get(edit.file, files.contents.get(edit.file))
-            if text is None:
-                raise SemanticLayerError("INVALID_CONFIG", f"Missing file '{edit.file}'")
-            new, changed_style = apply_edits(text.decode("utf-8"), (edit,))
-            result[edit.file] = new.encode("utf-8")
-            if changed_style and edit.file not in reformatted:
-                reformatted.append(edit.file)
+                    content = (
+                        edit.value
+                        if isinstance(edit.value, (str, bytes))
+                        else dump_project_yaml(edit.value)
+                    )
+                    result[file] = content.encode("utf-8") if isinstance(content, str) else content
+            else:
+                text = result.get(file, files.contents.get(file))
+                if text is None:
+                    raise SemanticLayerError("INVALID_CONFIG", f"Missing file '{file}'")
+                new, changed_style = apply_edits(text.decode("utf-8"), batch)
+                result[file] = new.encode("utf-8")
+                if changed_style and file not in reformatted:
+                    reformatted.append(file)
     contents = {**files.contents, **result}
     updated = PackageFiles(
         files.source,

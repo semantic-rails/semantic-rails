@@ -392,3 +392,30 @@ def test_duplicate_finding_emission_conflicts(files):
     with pytest.raises(SemanticLayerError, match="Rules 'rewrite' and 'rewrite' conflict") as exc:
         plan(files, (rule,), {})
     assert exc.value.code == "CONFIG_CONFLICT"
+
+
+def test_planner_batches_shared_alias_edits(tmp_path):
+    source = tmp_path / "package.yml"
+    source.write_text("defaults: &shared {x: 1, y: 2}\nother: *shared\n")
+
+    def find(current):
+        if current.documents["package.yml"]["defaults"]["x"] == 1:
+            yield Finding(
+                "rewrite",
+                "package.yml",
+                1,
+                ("defaults",),
+                "Update shared values",
+                (
+                    Edit("package.yml", "replace", ("defaults", "x"), value=3),
+                    Edit("package.yml", "replace", ("other", "y"), value=4),
+                ),
+            )
+
+    rule = Rule("rewrite", "1.0", "same_meaning", "Update shared values", find)
+    result = plan(PackageFiles(source), (rule,), {})
+    assert safe_load(result.files["package.yml"]) == {
+        "defaults": {"x": 3, "y": 4},
+        "other": {"x": 3, "y": 4},
+    }
+    assert result.reformatted == ("package.yml",)

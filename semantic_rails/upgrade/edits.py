@@ -212,17 +212,29 @@ def _splice(text: str, root: Node, expected: Any, edit: Any) -> tuple[str, bool]
 def apply_edits(text: str, edits: Iterable[Any]) -> tuple[str, bool]:
     """Return edited YAML and its reformat flag; file-level edits belong to the caller."""
     reformatted = False
+    expected: Any = None
+    initialized = False
     for edit in edits:
         if edit.op in {"create", "archive"}:
             continue
         try:
             document, root = _document(text)
-            expected = _change(deepcopy(document), edit)
+            if not initialized:
+                expected = deepcopy(document)
+                initialized = True
+            expected = _change(expected, edit)
             if root is None:
                 raise ValueError("Cannot edit an empty document")
             result, fallback = _splice(text, root, expected, edit)
             if safe_load(result) != expected:
-                raise ValueError("YAML splice differs from the path edit")
+                result = (
+                    _render(expected, flow=True) + "\n"
+                    if getattr(root, "flow_style", False)
+                    else dump_project_yaml(expected)
+                )
+                fallback = True
+                if safe_load(result) != expected:
+                    raise ValueError("YAML rendering differs from the path edits")
         except (
             yaml.YAMLError,
             KeyError,

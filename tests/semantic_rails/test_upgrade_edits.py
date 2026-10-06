@@ -321,3 +321,18 @@ def test_blank_scalar_replacement(text, path, expected):
     result, reformatted = apply_edits(text, [Edit("", "replace", path, value="new")])
     assert safe_load(result) == expected and not reformatted
     assert result == text.replace("a:\n", "a: new\n").replace("-\n", "- new\n")
+
+
+@pytest.mark.parametrize(
+    "text", ["a: &shared {x: 1, y: 2}\nb: *shared\n", "{a: &shared {x: 1, y: 2}, b: *shared}\n"]
+)
+def test_edit_batch_preserves_alias_dict_semantics(text):
+    expected = deepcopy(safe_load(text))
+    expected["a"]["x"] = 3
+    expected["b"]["y"] = 4
+    result, reformatted = apply_edits(
+        text,
+        [Edit("", "replace", ("a", "x"), value=3), Edit("", "replace", ("b", "y"), value=4)],
+    )
+    assert safe_load(result) == expected
+    assert reformatted
