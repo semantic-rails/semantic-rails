@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 from contextlib import nullcontext
@@ -801,6 +802,8 @@ def test_validate_config_writes_compiled_manifest(tmp_path: Path):
 
     assert manifest_path.exists()
     assert manifest_path.parent.name == ".compiled"
+    for name in ("manifest.json", "sources.sha256"):
+        assert stat.S_IMODE((manifest_path.parent / name).stat().st_mode) == 0o644
     payload = json.loads(manifest_path.read_text())
     assert payload["schema_version"] == 1
     assert payload["fingerprint"]

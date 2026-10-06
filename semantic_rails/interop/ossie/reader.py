@@ -25,7 +25,6 @@ from ...config import (
     _suggested_aggregations,
     load_package_snapshot,
 )
-from ...config_parts.package_loader import _slug, _titleize
 from ...errors import SemanticLayerError
 from ...expressions import (
     AggregateExpr,
@@ -35,6 +34,8 @@ from ...expressions import (
     parse_config_expression,
     parse_semantic_expression,
 )
+from ...naming import slug as _slug
+from ...naming import title as _titleize
 from ...relation_pipelines import _semantic_expr_to_sql
 from ...renderer import render_expr
 from ...schema import ConnectionSpec, PackageConfig, PackageMeta, SeedSpec

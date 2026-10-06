@@ -1,4 +1,7 @@
-"""Shared authored names and display labels."""
+"""Shared authored names and display labels through :func:`slug` and :func:`title`.
+
+Both helpers preserve Unicode names and let callers choose an empty-name fallback.
+"""
 
 from __future__ import annotations
 

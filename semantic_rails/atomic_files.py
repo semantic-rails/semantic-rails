@@ -1,4 +1,8 @@
-"""Atomic replacement of local files."""
+"""Atomic local file replacement through :func:`atomic_write_bytes`.
+
+Writes flush to disk before replacement and remove temporary files on failure.
+Callers can set an explicit file mode for shared artifacts or private state.
+"""
 
 from __future__ import annotations
 
