@@ -59,7 +59,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         **({"where": [product_filter]} if product_filter is not None else {}),
     }
     query: dict[str, Any] = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "as": "pct_paying_logos_sent_push_and_sms"

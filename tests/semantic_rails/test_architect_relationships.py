@@ -99,7 +99,7 @@ def test_composite_key_and_an_existing_entry_whose_via_would_override(project):
     graph["graph"]["relationships"] = {
         "event_visit": {"entities": ["event", "visit"], "via": ["a", "b"], "safety": "safe"}
     }
-    project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph, sort_keys=False))
+    project.write_files([{"path": "graph.yml", "content": yaml.safe_dump(graph, sort_keys=False)}])
 
     project.upsert_relationship(from_entity="event", to_entity="visit", columns=["shop_id", "on"])
 
@@ -144,7 +144,7 @@ def _write_graph_relationships(project: ArchitectProject, relationships: dict) -
     """Write the authored graph with any explicitly recorded decisions."""
     graph = _file(project, "graph.yml")
     graph["graph"]["relationships"] = relationships
-    project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph, sort_keys=False))
+    project.write_files([{"path": "graph.yml", "content": yaml.safe_dump(graph, sort_keys=False)}])
     return _file(project, "graph.yml")
 
 

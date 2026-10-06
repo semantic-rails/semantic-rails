@@ -433,7 +433,7 @@ tool list's size.
 - `project_status`
 - `list_project_files`
 - `read_project_file`
-- `write_project_file`
+- `write_project_files`
 - `upsert_model`
 - `upsert_relationship`
 - `upsert_metric`
@@ -442,7 +442,6 @@ tool list's size.
 - `upsert_test`
 - `record_route_decision`
 - `preview_query`
-- `archive_project_file`
 - `remove_object`
 - `validate_project`
 - `diff_project`
@@ -476,17 +475,25 @@ validation returns `INVALID_CONFIG` with the missing relation names. A database 
 (for example dbt) declares `seed: {kind: external}` and is never created by the runtime. Snowflake validation can issue live queries through the configured Snow CLI
 connection. Use `mode=parse` for a no-query authoring check.
 
-All six mutation tools (`create_project`, raw write, the three upserts, and
-archive) use one engine-owned transaction layer:
+All mutation tools use one engine-owned transaction layer. `write_project_files` takes a
+nonempty `files` list of `{path, content, overwrite: true}` writes (overwrite defaults to true)
+or `{path, archive: true}` archives, plus `expected_revision`, `idempotency_key`, optional
+`reason` for archives, and `dry_run`. A change across files is one call, validated as a whole
+after all files are in place; either every change commits or every file is restored. Archives
+share `.architect/archive/<id>/` and an optional `ARCHIVE_REASON.txt`. Empty lists, duplicate
+paths, entries that both write and archive, missing archives, existing files with `overwrite: false`,
+and paths outside the project or under `.architect/` are refused without writes.
+
+The transaction contract is:
 
 - `project_status` computes a deterministic `sha256:` revision over authored
   project files. Internal transaction receipts, archives, locks, generated
   databases, and cache files are excluded.
 - `expected_revision` is required at the MCP boundary. A stale writer receives
   `CONFIG_CONFLICT` with both expected and current revisions; it never
-  overwrites an intervening edit. Writes sent together with one `expected_revision`
-  apply only the first, so send them one at a time, each with the `revision` the previous
-  write returned; the refusal's `details.retry` names the revision to resend with.
+  overwrites an intervening edit. Use one `write_project_files` call for a change across files.
+  Separate calls use the `revision` the previous write returned; the refusal's `details.retry` names the revision
+  to resend with.
 - `idempotency_key` is required and persisted as a hashed, workspace-local
   receipt. Retrying the identical mutation replays its result. Reusing the key
   for a different intent fails closed. For `create_project`, the transaction checks that receipt

@@ -55,7 +55,7 @@ def _query(window: str, *, bound: bool) -> dict[str, Any]:
         "base": {"kind": "aggregate", "measure": "measure.jaffle.session_starts"},
         "converted": {"kind": "aggregate", "measure": "measure.jaffle.order_count"},
     }
-    query: dict[str, Any] = {"version": 2, "select": [{"as": "rate", "expression": expression}]}
+    query: dict[str, Any] = {"version": 1, "select": [{"as": "rate", "expression": expression}]}
     if bound:
         expression["dimension_bindings"] = _BINDING
         query["group_by"] = ["dimension.jaffle_product_type"]

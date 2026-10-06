@@ -68,7 +68,7 @@ def _filtered_series_warnings(
             continue
         probed.add(source)
         probe = {
-            "version": 2,
+            "version": 1,
             "select": [
                 {
                     "expression": {"measure": bound.measure_id, "aggregation": bound.aggregation},

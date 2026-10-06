@@ -588,7 +588,7 @@ def test_mcp_denies_a_missing_attribute_and_audits_failures_without_values(mcp):
 def test_observation_and_coverage_never_see_another_customers_rows(runtime, tenant, window_total):
     count = {"measure": "measure.rf.s2_count"}
     query = {
-        "version": 2,
+        "version": 1,
         "select": [{"expression": REVENUE, "as": "revenue"}, {"expression": count, "as": "v"}],
         "time": {**MONTH, "start": "2026-01-01", "end": "2026-02-01"},
     }
@@ -629,7 +629,7 @@ def test_an_empty_tenant_never_borrows_another_tenants_observation(package):
     runtime = Runtime.from_path(str(package))
     adapter = runtime._get_adapter()
     query = {
-        "version": 2,
+        "version": 1,
         "select": [
             {"expression": REVENUE, "as": "v"},
             {"expression": {"measure": "measure.rf.order_count"}, "as": "n"},
@@ -652,7 +652,7 @@ def test_an_empty_tenant_never_borrows_another_tenants_observation(package):
 
 def test_every_tagged_probe_gets_both_policy_filters(runtime):
     query = {
-        "version": 2,
+        "version": 1,
         "select": [{"expression": REVENUE, "as": "v"}],
         "time": {**MONTH, "start": "2026-01-01", "end": "2026-02-01"},
     }

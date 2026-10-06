@@ -3,12 +3,12 @@
 The canonical, machine-readable contract for the Query IR payload accepted
 by `/api/v1/{validate,compile,query}` and the equivalent MCP tools
 lives at [`schemas/query_ir.v1.json`](../schemas/query_ir.v1.json). That stable
-schema accepts `version: 1` only. The separately versioned
-[`schemas/query_ir.preview.v2.json`](../schemas/query_ir.preview.v2.json)
-describes the enriched runtime preview used by planner outputs. Preview v2 may
-change before promotion to a stable major; consumers must opt into it
-explicitly. Both are JSON Schema Draft 2020-12 documents and ship inside the
-Python wheel under `semantic_rails.contracts`.
+schema accepts `version: 1` only. It is a JSON Schema Draft 2020-12
+document and ships inside the Python wheel under `semantic_rails.contracts`.
+Query IR `version: 2` is refused with `INVALID_QUERY` and
+`details.supported_versions: [1]`. To move a version 2 query to version 1,
+change only the version number: the two schemas had identical query shapes.
+This is a breaking change within 0.x; planner outputs also use version 1.
 
 The schema is regression-tested against every IR in the benchmark corpus
 and the comparison fixtures: see
@@ -18,7 +18,7 @@ and the comparison fixtures: see
 
 | Field | Type | Notes |
 |---|---|---|
-| `version` | `integer` | Pin the IR schema version. Stable v1 accepts only `1`; the separate preview-v2 schema accepts only `2`. |
+| `version` | `integer` | Pin the IR schema version. Only `1` is supported. |
 | `select` | `array` of `SelectItem` | Projected outputs. |
 | `group_by` | `array` of dimension ids | Grouping keys. |
 | `where` | `array` of `WhereFilter` | Dimension-level filters with shape `{field, op, value}` where `field` is a dimension id. See "WhereFilter" below for the op list and null semantics. Expression-shaped filters belong in `metric_filters`. |
@@ -48,7 +48,7 @@ planning and SQL generation.
 ### Removed: `path_policy`
 
 `path_policy` (`preference`, `ask_if_ambiguous`) is no longer a Query IR key,
-in v1 or preview v2. This is a breaking change made within v1: before 1.0 the
+in v1. This is a breaking change made within v1: before 1.0 the
 project follows Semantic Versioning's major-zero rule (see
 [CHANGELOG.md](../CHANGELOG.md)), under which a 0.x release may change the
 public API. The key never changed an answer. A query that still sends it is
@@ -265,6 +265,20 @@ before SQL executes. Ask for a ratio of windowed additive parts, or query the me
 own aggregation without a summing window. This rule also applies through derived
 metrics, metric filters, and every execution transport. `prior_period` reads one
 period with `LAG` and keeps its existing input semantics.
+
+These windows read periods before the ones they return, so a cut from below would drop rows
+they need. With a `prior_period`, `rolling`, `period_to_date` or `cumulative` window in `select`
+or `metric_filters`, a bounded `time.start` refuses, and so does a `where` filter, child groups
+included, on any temporal or calendar dimension, whether or not it is the query's clock. A
+dimension is temporal when it is a time role, has a `date`, `timestamp`, `datetime` or `time`
+kind, or is on a column of the same name, compared without case, on any table, as a temporal
+or calendar dimension or a column a relationship pairs with one, at any depth; a calendar
+dimension is any dimension of a `kind: time` entity. The rule follows types and column names,
+not the query's clock, so it may refuse a date that does not cut the window or a column of
+the same name on an unrelated table. Only an upper bound (`<`, `<=`) on a
+`date` or `timestamp` dimension runs, as `time.end` does. The refusal is
+`WINDOWED_TIME_FILTER_UNSUPPORTED` or `CUMULATIVE_TIME_FILTER_UNSUPPORTED`; for a `where`
+filter, `details.where_path` names it.
 
 `period_to_date` currently supports only the default calendar. A non-default
 `time.calendar_id`, or a time role bound to a non-default calendar, refuses with

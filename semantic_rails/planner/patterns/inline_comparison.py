@@ -127,7 +127,7 @@ def _coordinated_clock_comparison(
     if delivered is None or ordered is None:
         return None
     query = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "as": "delivered_revenue_usd",
@@ -238,7 +238,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         right_alias = f"{right_alias}_alt"
 
     query: dict[str, Any] = {
-        "version": 2,
+        "version": 1,
         "select": [
             {"as": left_alias, "expression": _expression(left_row, left_is_measure)},
             {"as": right_alias, "expression": _expression(right_row, right_is_measure)},

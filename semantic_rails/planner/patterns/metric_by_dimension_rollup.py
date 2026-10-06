@@ -184,7 +184,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         expression = {"metric": target_id}
 
     query: dict[str, Any] = {
-        "version": 2,
+        "version": 1,
         "select": [{"as": select_alias, "expression": expression}],
     }
     if time_spec is not None:
