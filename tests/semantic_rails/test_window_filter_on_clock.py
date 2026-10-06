@@ -589,6 +589,7 @@ def _edited_runtime(tmp_path: Path, edits: dict[str, dict[str, str] | str]) -> R
         connection.execute("update events set shipped_on = occurred_at::date + 1")
         connection.execute(SNAPSHOT_LABELS_TABLE)
         connection.execute("create table day_infos as select distinct date_day from account_day")
+        connection.execute("create table infos as select distinct date_day as info_day from account_day")
     return Runtime.from_path(str(package))
 
 
@@ -609,6 +610,42 @@ DAY_INFO = {
         "  entities: {day_info: {}}\n"
         "  dimensions:\n"
         "    label: {column: date_day, kind: categorical}\n"
+    ),
+}
+# The warehouse resolves an unquoted column name without case, so these name the clock. The
+# key column in capitals is declared, so the loader adds no key dimension with the clock's id.
+DAY_KEY_LINE = "    day_key: {column: DATE_DAY, kind: id}\n"
+DAY_INFO_IN_CAPITALS = {
+    "graph": {
+        GRAPH_ENTITIES: GRAPH_ENTITIES + "    day_info: {key: [DATE_DAY], model: day_infos}\n"
+    },
+    "account_days": {
+        **DAY_INFO["account_days"],
+        ACCOUNT_LINE: ACCOUNT_LINE + DAY_KEY_LINE,
+    },
+    "day_infos": DAY_INFO["day_infos"],
+}
+OCCURRED_LABEL = "dimension.fees_event_occurred_label"
+OCCURRED_LABEL_EDITS = {
+    "events": {
+        CHANNEL_LINE: CHANNEL_LINE + "    occurred_label: {column: OCCURRED_AT, kind: categorical}\n"
+    }
+}
+# A relationship from the clock's column, in capitals, to a column of another name.
+INFO = {
+    "graph": {GRAPH_ENTITIES: GRAPH_ENTITIES + "    info: {key: [info_day], model: infos}\n"},
+    "account_days": {
+        "entities: {account_day: {}, time: {}}": "entities: {account_day: {}, time: {}, "
+        "info: {expr: DATE_DAY}}",
+        ACCOUNT_LINE: ACCOUNT_LINE + DAY_KEY_LINE,
+    },
+    "infos": (
+        "model:\n"
+        "  id: infos\n"
+        "  relation: infos\n"
+        "  entities: {info: {}}\n"
+        "  dimensions:\n"
+        "    label: {column: info_day, kind: categorical}\n"
     ),
 }
 # id: graph and model edits, expression, field, operator. Each dimension is temporal by its
@@ -686,6 +723,47 @@ BY_TYPE = {
         ">=",
     ),
     "categorical-relating-the-clock": (DAY_INFO, PRIOR_DAY, "dimension.fees_day_info_label", ">="),
+    # A column is its name compared without case, on any table.
+    "clock-column-in-capitals": (
+        {
+            "account_days": {
+                ACCOUNT_LINE: ACCOUNT_LINE + "    label: {column: DATE_DAY, kind: categorical}\n"
+            }
+        },
+        PRIOR_DAY,
+        "dimension.fees_account_day_label",
+        ">=",
+    ),
+    "clock-column-in-mixed-case": (
+        {
+            "account_days": {
+                ACCOUNT_LINE: ACCOUNT_LINE + "    label: {column: Date_Day, kind: categorical}\n"
+            }
+        },
+        PRIOR_DAY,
+        "dimension.fees_account_day_label",
+        ">=",
+    ),
+    "rolling-clock-column-in-capitals": (OCCURRED_LABEL_EDITS, ROLLING, OCCURRED_LABEL, ">="),
+    "cumulative-clock-column-in-capitals": (
+        OCCURRED_LABEL_EDITS,
+        CUMULATIVE,
+        OCCURRED_LABEL,
+        ">=",
+    ),
+    "period-to-date-clock-column-in-capitals": (
+        OCCURRED_LABEL_EDITS,
+        MONTH_TO_DATE,
+        OCCURRED_LABEL,
+        ">=",
+    ),
+    "categorical-relating-the-clock-in-capitals": (
+        DAY_INFO_IN_CAPITALS,
+        PRIOR_DAY,
+        "dimension.fees_day_info_label",
+        ">=",
+    ),
+    "categorical-related-by-another-name": (INFO, PRIOR_DAY, "dimension.fees_info_label", ">="),
 }
 
 
@@ -702,7 +780,8 @@ def test_a_cut_of_a_temporal_dimension_refuses_by_type(
             runtime.query(_query(expression, [cut], grouped=expression is PRIOR_DAY))
     finally:
         runtime.close()
-    assert caught.value.code == "WINDOWED_TIME_FILTER_UNSUPPORTED"
+    code = "CUMULATIVE" if expression is CUMULATIVE else "WINDOWED"
+    assert caught.value.code == f"{code}_TIME_FILTER_UNSUPPORTED"
     assert caught.value.details["where_path"] == "where[0]"
     assert caught.value.details["where"] == cut
 
