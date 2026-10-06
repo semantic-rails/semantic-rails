@@ -366,9 +366,10 @@ that a draft filter keeps (`=` that value, or `IN` with it) holds the plan even 
 groups by it, since the filter may narrow the answer. `why.details.filter_inside_grouping` lists
 each such filter as `{"term", "field", "value"}`, `dropped_groupings` keeps the term, and the
 recovery hint asks the caller to confirm the value with the user or remove it from that field's
-filters in `best.query_ir.where`. This reading never reads hidden dimensions, entities,
-measures or metrics, so a hidden object answers exactly as an absent one. It only holds a plan;
-the draft and its filters are unchanged.
+filters in `best.query_ir.where`. This reading never reads a hidden dimension, entity, measure,
+metric, temporal role or calendar, so a hidden object answers exactly as an absent one: a hidden
+clock is no clock, and its words keep their obligation. It only holds a plan; the draft and its
+filters are unchanged.
 A listed grouping that names an entity is satisfied only by that entity's own key
 dimension, or by the single declared dimension of that entity whose own words name it, and an
 entity with a composite key is never satisfied. A term names an entity only with every word of
