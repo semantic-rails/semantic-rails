@@ -1070,12 +1070,13 @@ ending in an as-of cue (`2026-01-01 to now`) stays unresolved in full, and an
 unrepresentable closing-day bound also returns this hold rather than an exception.
 
 Planning also applies the caller's `policy_context`
-before matching or ranking dimensions, including catalog fallback and Intent IR
-groupings. Hidden dimensions are omitted from drafts, alternatives, diagnostics
-and composition hints in every detail mode. If visibility cannot be determined,
-dimensions are withheld. Naming a hidden dimension has the same outcome as naming
-an absent dimension; a draft that bypasses the visibility check is refused with
-`OBJECT_NOT_FOUND` without naming the dimension.
+before matching or ranking dimensions, measures and metrics, including catalog
+fallback and Intent IR groupings and subjects. Hidden objects are omitted from
+drafts, alternatives, diagnostics and composition hints in every detail mode. If
+visibility cannot be determined, they are withheld. Naming a hidden dimension has
+the same outcome as naming an absent dimension; a draft that reads a hidden object
+(a dimension, measure, metric, entity, relationship or temporal role) is refused with
+`OBJECT_NOT_FOUND` without naming it.
 
 When a grouping word names available dimensions on several entities and none
 belongs to the selected measure's root entity, planning holds the draft with

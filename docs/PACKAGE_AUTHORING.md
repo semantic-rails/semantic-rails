@@ -467,7 +467,11 @@ package:
 `promote-package --environment <name>` rejects undeclared environments with
 `INVALID_CONFIG` (`details.allowed_environments`), and policies that declare
 `environments:` only fire when `policy_context.environment` matches one of
-them. `validate-config` warns (advisory) when a package omits the block.
+them. A policy or caveat whose `environments:` names an environment the package
+doesn't declare (`prod` in a package declaring `production`), or that declares
+`environments:` in a package declaring none, fails to load with `INVALID_CONFIG`,
+because it would never apply. `validate-config` warns (advisory) when a package
+omits the block.
 
 Measures and curated metrics also accept a `meta:` block that drives advisory
 governance warnings:
@@ -632,7 +636,7 @@ lookup, and during policy evaluation. Release labels belong in `config.label`.
 | Kind | Allowed action |
 | --- | --- |
 | `package_release` | omitted or `label` |
-| `object_visibility` | `hidden`, `visible` (required) |
+| `object_visibility` | `hidden`, `visible_only` (required) |
 | `object_access` | `deny`, `redact`, `withhold_values` (required) |
 | `protected_object` | omitted or `protected` |
 | `metric_constraint` | omitted or `constrain` |
@@ -644,10 +648,11 @@ action checks. Action text is trimmed and lowercased; kind names must match exac
 - **`package_release`** — labels the package's release status. `config.label`
   (e.g. `stable`, `preview`) surfaces in the package manifest and discovery
   metadata; it gates nothing by itself.
-- **`object_visibility`** — hides matching objects from `catalog`, `discover`,
-  and `inspect` for the scoped audiences/environments/roles. `action: hidden` is the
-  useful value; a hidden measure cannot be discovered but a query that names
-  it directly is governed by `object_access`, not visibility.
+- **`object_visibility`** — `action: hidden` hides matching objects from `catalog`,
+  `discover`, and `inspect` for the scoped audiences/environments/roles, and refuses a
+  query that reads one with `POLICY_DENIED`. `action: visible_only` does the opposite:
+  it hides the objects, and everything computed from them, from every context it does
+  not name; see [Objects visible only to named roles](#objects-visible-only-to-named-roles).
 - **`object_access`** — enforced at query time. `action: deny` refuses the
   query with a structured policy error; `action: redact` executes but replaces
   the governed object's values in the result. An `aggregate_if` reads every
@@ -758,6 +763,54 @@ semantic_policies:
     attribute: customer_id
     rationale: Each customer sees only their own orders.
 ```
+
+### Objects visible only to named roles
+
+```yaml
+semantic_policies:
+  - id: policy.shop.revenue_finance_only
+    kind: object_visibility
+    action: visible_only
+    object_ids: [metric.shop.revenue, measure.shop.revenue_usd]
+    roles: [finance]
+    rationale: Revenue is visible only to the finance role.
+```
+
+A `visible_only` policy is an allow-list: its objects are visible only to the contexts it
+names, and hidden from everyone else, including a request with no roles at all. Use it for
+a sensitive object that should stay hidden until someone is given access ("a support role
+does not see revenue until it is named here"), where `hidden` would need to list every role
+that must not see it.
+
+- **Form.** `object_ids` (non-empty, each an existing object) and `roles`, `audiences` or
+  both (at least one name). `environments` is optional; no other key is accepted. Anything
+  else, including `action: visible` (no longer accepted), fails to load with
+  `INVALID_CONFIG`. An engine release without `visible_only` refuses to load such a
+  package, so a package using it never runs on an engine that would ignore it.
+- **In force** when `environments` is empty, lists the request's environment, or the
+  request carries no environment or one the package does not declare. A policy scoped to
+  `development` does not restrict a declared `production` request.
+- **Eligible** when the request has one of the listed `roles` (case-insensitive) if any
+  are listed, and the listed audience if `audiences` are listed. No roles, or a role the
+  policy doesn't list, is not eligible: a role the package never names grants nothing.
+- **Several policies** on one object must all be met; adding a policy never widens access.
+- **Everything computed from a restricted object is restricted too:** metrics that read
+  it (directly, through another metric, a filter or a metric filter), segments whose
+  basis metric, conditions or preview dimensions read it, value domains of a restricted
+  dimension, and relationships to a restricted entity. An object whose dependencies cannot
+  be resolved is restricted whenever anything is. The policy governs objects, not columns:
+  list every measure that computes the sensitive value, since another measure over the
+  same column (a filtered, windowed or rolled-up variant) is a separate object.
+  While any `visible_only` restriction applies to a caller, that caller cannot aggregate raw columns.
+- For an ineligible request, restricted objects are left out of `catalog`, `discover`,
+  `build-options`, `plan`, other objects' `inspect` cards (related measures and metrics,
+  companions, starter queries) and diagnostic suggestions; `inspect` of one, and `valid-values`
+  of a restricted dimension, answer `OBJECT_NOT_FOUND`; `validate`, `compile`, `execute`,
+  `valid-values` and the segment tools refuse any query that reads one, including through
+  an inline expression, a derived metric, a metric filter or an `order_by`, with
+  `POLICY_DENIED`.
+- `hidden`, `deny`, `redact` and `withhold_values` still apply to eligible requests:
+  explicit restrictions win.
 
 ### Ranking by withheld values
 

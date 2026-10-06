@@ -25,6 +25,7 @@ INVALID_POLICIES = [
     ("object_access", "", "unsupported action"),
     ("object_visibility", "deny", "unsupported action"),
     ("object_visibility", "", "unsupported action"),
+    ("object_visibility", "visible", "'visible_only'"),
     ("package_release", "deny", "unsupported action"),
     ("protected_object", "deny", "unsupported action"),
     ("metric_constraint", "deny", "unsupported action"),
@@ -35,7 +36,6 @@ VALID_POLICIES = [
     ("object_access", "redact"),
     ("object_access", "withhold_values"),
     ("object_visibility", "hidden"),
-    ("object_visibility", "visible"),
     ("package_release", ""),
     ("package_release", "label"),
     ("protected_object", ""),
@@ -70,10 +70,10 @@ def starter():
     return raw
 
 
-def write_policy_package(tmp_path, starter, strict, kind, action, location="action"):
+def write_policy_package(tmp_path, starter, strict, kind, action, location="action", **fields):
     raw = deepcopy(starter)
     raw["package"]["schema_strict"] = strict
-    policy = {"id": "policy.test", "kind": kind}
+    policy = {"id": "policy.test", "kind": kind, **fields}
     if location == "action":
         policy["action"] = action
     else:
@@ -122,7 +122,7 @@ def test_nested_policy_actions_are_validated(tmp_path, starter, location, action
 def test_directory_package_rejects_invalid_policy(tmp_path, starter, strict, kind, action, problem):
     path = tmp_path / "shop_starter"
     path.mkdir()
-    package_file = write_policy_package(path, starter, strict, "object_visibility", "visible")
+    package_file = write_policy_package(path, starter, strict, "object_visibility", "hidden")
     raw = yaml.safe_load(package_file.read_text(encoding="utf-8"))
     graph = raw.pop("graph")
     models = raw.pop("models")
@@ -215,3 +215,73 @@ def test_package_schema_has_a_closed_policy_kind_list(starter, kind):
         jsonschema.Draft202012Validator(load_contract("package.v1.json")).iter_errors(raw)
     )
     assert bool(errors) == (kind in {"object_acess", "plan_constraint"})
+
+
+VISIBLE_ONLY = {"object_ids": ["metric.shop.revenue_usd"], "roles": ["finance"]}
+MALFORMED_VISIBLE_ONLY = {
+    "no_roles_or_audiences": ({"object_ids": VISIBLE_ONLY["object_ids"]}, "roles and/or audiences"),
+    "blank_roles": ({**VISIBLE_ONLY, "roles": [" "]}, "roles and/or audiences"),
+    "empty_object_ids": ({**VISIBLE_ONLY, "object_ids": []}, "non-empty object_ids"),
+    "unknown_object_id": ({**VISIBLE_ONLY, "object_ids": ["metric.shop.revenue"]}, "unknown"),
+    "other_key": ({**VISIBLE_ONLY, "except_roles": ["support"]}, "except_roles"),
+}
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize("name", MALFORMED_VISIBLE_ONLY)
+def test_malformed_visible_only_policies_are_refused(tmp_path, starter, strict, name):
+    fields, problem = MALFORMED_VISIBLE_ONLY[name]
+    path = write_policy_package(
+        tmp_path, starter, strict, "object_visibility", "visible_only", **fields
+    )
+    errors = validate_runtime_package(path)
+    assert any(problem in error and "policy.test" in error for error in errors), errors
+    with pytest.raises(SemanticLayerError, match=problem) as exc:
+        load_package_config(str(path))
+    assert exc.value.code == "INVALID_CONFIG"
+
+
+@pytest.mark.parametrize("location", ["action", "visibility"])
+@pytest.mark.parametrize("scope", [{"roles": ["finance"]}, {"audiences": ["internal"]}])
+def test_visible_only_policy_loads(tmp_path, starter, location, scope):
+    fields = {"object_ids": VISIBLE_ONLY["object_ids"], **scope}
+    path = write_policy_package(
+        tmp_path, starter, True, "object_visibility", "visible_only", location, **fields
+    )
+    assert validate_runtime_package(path) == []
+    assert load_package_config(str(path)).semantic_policies[0].object_ids == fields["object_ids"]
+
+
+# name -> (package environments, the scoped row's section, its environments, refused)
+ENVIRONMENT_SCOPES = {
+    "policy_undeclared_name": (["production"], "semantic_policies", ["prod"], True),
+    "caveat_undeclared_name": (["production"], "semantic_caveats", ["prod"], True),
+    "policy_none_declared": ([], "semantic_policies", ["production"], True),
+    "caveat_none_declared": ([], "semantic_caveats", ["production"], True),
+    "policy_declared": (["production"], "semantic_policies", ["production"], False),
+    "caveat_declared": (["production"], "semantic_caveats", ["production"], False),
+    "policy_unscoped_none_declared": ([], "semantic_policies", [], False),
+    "caveat_unscoped_none_declared": ([], "semantic_caveats", [], False),
+}
+
+
+@pytest.mark.parametrize("name", ENVIRONMENT_SCOPES)
+def test_scoped_environments_must_be_declared_by_the_package(tmp_path, starter, name):
+    environments, section, scoped, refused = ENVIRONMENT_SCOPES[name]
+    raw = deepcopy(starter)
+    raw["package"]["environments"] = environments
+    row = (
+        {"id": "policy.test", "kind": "object_visibility", "action": "hidden"}
+        if section == "semantic_policies"
+        else {"id": "caveat.test", "kind": "data_quality", "message": "Late data."}
+    )
+    raw[section] = [{**row, "object_ids": ["metric.shop.revenue_usd"], "environments": scoped}]
+    path = tmp_path / "package.yml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    if not refused:
+        assert load_package_config(str(path))
+        return
+    with pytest.raises(SemanticLayerError, match="package.environments") as exc:
+        load_package_config(str(path))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert any("package.environments" in error for error in validate_runtime_package(path))

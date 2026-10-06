@@ -802,7 +802,7 @@ def _conversion_metadata(
             audience=str(policy_context.get("audience", "")),
             roles=policy_context.get("roles", []),
         )
-        if any(effect["action"] not in {"visible", "label"} for effect in effects):
+        if any(effect["action"] not in {"visible_only", "label"} for effect in effects):
             return {}
     units = "|".join(CONVERSION_WINDOW_UNITS)
     return {
@@ -870,6 +870,22 @@ def _predicate_metadata(
         else "none",
         "predicate_count": len(predicates),
     }
+
+
+_CARD_ID_LISTS = {
+    "related_curated_metrics",
+    "related_measures",
+    "comparison_peers",
+    "clock_variants",
+    "preferred_companion_metrics",
+}
+
+
+def _filter_card_ids(payload: dict[str, Any], hidden_ids: set[str]) -> None:
+    for key in _CARD_ID_LISTS & set(payload):
+        payload[key] = [item for item in payload[key] if item not in hidden_ids]
+    if payload.get("default_metric_id") in hidden_ids:
+        payload["default_metric_id"] = ""
 
 
 def _object_card(
@@ -1047,6 +1063,8 @@ def _object_card(
                 },
             }
         )
+    # A card names, and starts queries from, only objects this caller can see.
+    _filter_card_ids(base, hidden_ids)
     base["starter_query_patches"] = _starter_query_patches(
         runtime, object_id, partial_query, card=base
     )
@@ -1065,6 +1083,16 @@ def _summary_row(
     config = runtime._config
     payload = dict(obj.get("payload", {}) or {})
     payload.update(_metric_object_payload(config, str(obj["id"]), str(obj["kind"])))
+    context = _policy_context(partial_query)
+    _filter_card_ids(
+        payload,
+        hidden_object_ids(
+            config,
+            environment=str(context.get("environment", "")),
+            audience=str(context.get("audience", "")),
+            roles=context.get("roles", []),
+        ),
+    )
     if verbosity != "full":
         payload.pop("operational", None)
     availability = _availability_for_object(config, root_entity, str(obj["id"]), str(obj["kind"]))

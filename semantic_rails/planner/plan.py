@@ -75,7 +75,7 @@ from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
 from .time_reference import with_time_reference
 from .visibility import (
-    require_visible_dimensions,
+    require_visible_objects,
     visible_dimensions,
     visible_value_domains,
     with_dimension_visibility,
@@ -205,7 +205,7 @@ def plan_payload(
     if result.draft is not None:
         validate_temporal_support(runtime._config, result.draft.query)
     intent_ir = result.intent_ir
-    require_visible_dimensions(runtime._config, {}, intent_ir.to_dict().get("grouping", []))
+    require_visible_objects(runtime._config, {}, intent_ir.to_dict().get("grouping", []))
     draft_rows: list[tuple[Any, str]] = []
     blocked: list[dict[str, Any]] = []
     primary_query_keys: set[str] = set()
@@ -591,7 +591,7 @@ def _planned_row(
     merged_draft = replace(
         draft, query=_merge_partial_query(runtime._config, fiscal_query, partial_query)
     )
-    require_visible_dimensions(
+    require_visible_objects(
         runtime._config,
         merged_draft.query,
         merged_draft.resolved,
