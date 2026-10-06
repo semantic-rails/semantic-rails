@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -197,7 +197,7 @@ def _refusals(engine: Runtime, query: dict[str, Any]) -> list[tuple[str, dict[st
     return outcomes
 
 
-def _mentions(payload: Any) -> set[str]:
+def _mentions(payload: Any, ids: Iterable[str] = RESTRICTED) -> set[str]:
     """Restricted ids anywhere in a payload, except in other objects' authored descriptions."""
 
     def authored(node: Any) -> Any:
@@ -208,7 +208,7 @@ def _mentions(payload: Any) -> set[str]:
     text = json.dumps(authored(payload), default=str)
     return {
         object_id
-        for object_id in RESTRICTED
+        for object_id in ids
         if re.search(rf"(?<![\w.]){re.escape(object_id)}(?![\w.])", text)
     }
 
@@ -266,9 +266,25 @@ def test_metadata_surfaces_show_revenue_only_to_finance(engine, surface, name):
         assert _mentions(payload) & {REVENUE_METRIC, REVENUE}, surface
         return
     assert surface not in {"inspect", "valid_values"}, payload
-    assert not _mentions(payload), (surface, _mentions(payload))
+    named = _mentions(payload, hidden_object_ids(engine._config, roles=["support"]))
+    assert not named, (surface, named)
     if surface == "plan":
         assert payload["status"] != "ok" or "execute" not in payload["next"].get("ready_for", [])
+
+
+@pytest.mark.parametrize(("roles", "eligible"), [(["support"], False), (["finance"], True)])
+def test_cards_of_visible_objects_name_revenue_only_for_finance(engine, roles, eligible):
+    """Related measures and metrics, companions and starter queries on every other card."""
+    partial = {"policy_context": {"roles": roles}}
+    config = engine._config
+    restricted = hidden_object_ids(config, roles=["support"])
+    named: set[str] = set()
+    for rows in (config.entities, config.dimensions, config.measures, config.metric_recipes):
+        for row in rows:
+            if row.id not in restricted:
+                card = inspect_payload(engine, object_id=row.id, partial_query=partial)
+                named |= _mentions(card, restricted)
+    assert bool(named) is eligible, named
 
 
 @pytest.mark.parametrize("name", CONTEXTS)
@@ -482,6 +498,10 @@ def test_a_restricted_dimension_takes_its_values_and_domain_with_it(package, rol
     try:
         catalog = json.dumps(catalog_payload(runtime, view="full", policy_context=context))
         assert (domain in catalog) is eligible
+        found = discover_payload(
+            runtime, terms="Brooklyn store name", partial_query={"policy_context": context}
+        )
+        assert (STORE in json.dumps(found)) is eligible
         if eligible:
             assert valid_values_payload(runtime, dimension_id=STORE, query=_with({}, context))
             return

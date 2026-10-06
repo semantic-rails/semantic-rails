@@ -872,6 +872,15 @@ def _predicate_metadata(
     }
 
 
+_CARD_ID_LISTS = {
+    "related_curated_metrics",
+    "related_measures",
+    "comparison_peers",
+    "clock_variants",
+    "preferred_companion_metrics",
+}
+
+
 def _object_card(
     runtime: Runtime, object_id: str, partial_query: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -1047,6 +1056,11 @@ def _object_card(
                 },
             }
         )
+    # A card names, and starts queries from, only objects this caller can see.
+    for key in _CARD_ID_LISTS & set(base):
+        base[key] = [item for item in base[key] if item not in hidden_ids]
+    if base.get("default_metric_id") in hidden_ids:
+        base["default_metric_id"] = ""
     base["starter_query_patches"] = _starter_query_patches(
         runtime, object_id, partial_query, card=base
     )
