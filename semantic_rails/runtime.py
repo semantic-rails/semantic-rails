@@ -52,7 +52,6 @@ from .compiler_parts.empty_groups import (
     observed_outside_filters,
     sql_nodes,
 )
-from .compiler_parts.indexes import get_package_analysis
 from .compiler_parts.paths import _leaf_time_role
 from .config import (
     SEED_KIND_EXTERNAL,
@@ -66,7 +65,6 @@ from .config import (
     resolve_repo_path,
     semantic_rails_home,
 )
-from .config_parts.route_rows import walk_entities
 from .db import (
     Database,
     WarehouseAdapter,
@@ -101,6 +99,8 @@ from .fanout import (
     query_route_decisions,
     route_note,
     route_reading,
+    visible_route,
+    visible_route_rows,
 )
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
@@ -131,6 +131,7 @@ from .runtime_parts.responses import (
     resolve_sql_profile,
     resolve_verbosity,
 )
+from .runtime_parts.route_visibility import project_route_response
 from .scope import classify_question
 from .seed_provenance import (
     missing_duckdb_relations,
@@ -412,21 +413,23 @@ def _route_notes(
     notes: list[dict[str, Any]] = []
     decided: set[tuple[str, str]] = set()
     hidden_ids = diagnostic_hidden_object_ids(config, policy_context)
-    visibility_known = hidden_ids is not None or not any(
-        policy.kind == "object_visibility" for policy in config.semantic_policies
-    )
 
     def visible(start, path):
-        if not visibility_known:
-            return False
-        if not hidden_ids:
-            return True
-        entities = walk_entities(get_package_analysis(config).relationships, start, path)
-        return not hidden_ids.intersection([*path, *entities])
+        return visible_route(config, start, path, hidden_ids)
 
     for row in compiled.get("route_decisions") or []:
         start, target, path = row["source_entity"], row["target_entity"], row["relationship_path"]
         decided.add((start, target))
+        if not visible(start, path):
+            notes.append(
+                semantic_issue(
+                    code="ROUTE_CHOSEN_BY_QUERY",
+                    message="a route chosen by this query",
+                    severity="info",
+                    stage="planning",
+                )
+            )
+            continue
         details: dict[str, Any] = {
             "row": {key: row[key] for key in _ROUTE_ROW_KEYS},
             "replaced": row["replaced"],
@@ -495,6 +498,8 @@ def _route_notes(
         if resolution is None:
             continue
         route = list(resolution.routes[0])
+        if not visible(start, route):
+            continue
         details = {"route": route}
         if resolution.basis == "colocated_key":
             code, how = "ROUTE_COLOCATED_KEY", "own key"
@@ -505,15 +510,32 @@ def _route_notes(
                 [route for route in resolution.routes[1:] if visible(start, route)],
             )
             if conflicts:
-                details["conflicts_with"] = conflicts
+                details["conflicts_with"] = [
+                    {**conflict, "rows": visible_route_rows(config, conflict["rows"], hidden_ids)}
+                    for conflict in conflicts
+                ]
         elif resolution.basis == "inherited":
             code = "ROUTE_RECORDED"
-            how = "recorded for " + ", ".join(
-                f"{entity_label(config, source)} → {entity_label(config, end)}"
+            recorded = {
+                (row.source_entity, row.target_entity): row.relationship_path
+                for row in config.path_preferences
+            }
+            rows = [
+                (source, end)
                 for source, end in resolution.rows
+                if visible(source, recorded[(source, end)])
+            ]
+            how = (
+                "recorded for "
+                + ", ".join(
+                    f"{entity_label(config, source)} → {entity_label(config, end)}"
+                    for source, end in rows
+                )
+                if rows
+                else "recorded route"
             )
             details["rows"] = [
-                {"source_entity": source, "target_entity": end} for source, end in resolution.rows
+                {"source_entity": source, "target_entity": end} for source, end in rows
             ]
         else:
             code, how = "ROUTE_RECORDED", "recorded route"
@@ -2434,11 +2456,8 @@ class Runtime:
         # will each compile and the last writer wins — duplicate work but no
         # correctness issue (the LRU cache already deep-copies on get and put,
         # see cache.py:33,37).
-        # A certification can be revoked between requests, so a package with a rollup that
-        # requires one compiles every request.
-        cacheable = not any(row.requires_certification for row in self._config.aggregate_relations)
         with self._cache_lock:
-            cached = self._compile_cache.get(key) if cacheable else None
+            cached = self._compile_cache.get(key)
         if cached is not None:
             stats = {
                 **dict(cached.compiled.get("compile_stats", {}) or {}),
@@ -2461,9 +2480,8 @@ class Runtime:
             "compile_stats": stats,
             "explain": replace(compiled["explain"], compile_stats=stats),
         }
-        if cacheable:
-            with self._cache_lock:
-                self._compile_cache.put(key, CachedCompilation(compiled=compiled))
+        with self._cache_lock:
+            self._compile_cache.put(key, CachedCompilation(compiled=compiled))
         return compiled
 
     @runtime_request_scope
@@ -2534,6 +2552,9 @@ class Runtime:
                 out["compile_stats"] = dict(compiled.get("compile_stats", {}) or {})
                 out["performance_plan"] = asdict(compiled["performance_plan"])
             out["timing_ms"] = round((time.perf_counter() - started) * 1000, 3)
+            project_route_response(
+                out, self._config, diagnostic_hidden_object_ids(self._config, policy_context)
+            )
             return apply_response_verbosity(
                 out, verbosity=verbosity, sql_profile=sql_profile, kind="validate"
             )
@@ -2625,6 +2646,9 @@ class Runtime:
             **compile_response_metadata(self, payload, compiled),
         }
         _withhold_values(out, policy_effects)
+        project_route_response(
+            out, self._config, diagnostic_hidden_object_ids(self._config, policy_context)
+        )
         return apply_response_verbosity(
             out, verbosity=verbosity, sql_profile=sql_profile, kind="compile"
         )
@@ -2899,6 +2923,9 @@ class Runtime:
             out["physical_plan"] = asdict(compiled["physical_plan"])
             out["performance_plan"] = asdict(compiled["performance_plan"])
             out["compile_stats"] = dict(compiled.get("compile_stats", {}) or {})
+        project_route_response(
+            out, self._config, diagnostic_hidden_object_ids(self._config, policy_context)
+        )
         return apply_response_verbosity(
             out, verbosity=verbosity, sql_profile=sql_profile, kind="execute"
         )

@@ -1134,6 +1134,35 @@ def _aggregate_filter(raw: Any) -> dict[str, Any]:
     )
 
 
+def _entity_value_where(raw: Any) -> list[dict[str, Any]]:
+    """Only conditions on the per-entity value belong in this filter slot."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise SemanticLayerError(
+            "INVALID_QUERY", "entity_value.where must be a list of per-entity value filters"
+        )
+    filters: list[dict[str, Any]] = []
+    for index, item in enumerate(raw):
+        allowed = {"kind", "op", "value"}
+        unsupported = sorted(set(item) - allowed) if isinstance(item, dict) else []
+        if (
+            not isinstance(item, dict)
+            or unsupported
+            or item.get("kind", "value_filter") != "value_filter"
+        ):
+            path = f"entity_value.where[{index}]"
+            raise SemanticLayerError(
+                "INVALID_QUERY",
+                f"{path} must be a per-entity value filter with only 'op', 'value', "
+                "and optional 'kind': 'value_filter'. Put dimension filters in the "
+                "query's top-level 'where'.",
+                details={"path": path, "unsupported_keys": unsupported},
+            )
+        filters.append(dict(item))
+    return filters
+
+
 NULL_BEHAVIOR_REMOVED = (
     "`null_behavior` was removed; delete the key. Aggregation and observation_scope "
     "determine whether empty groups return NULL or zero."
@@ -2040,7 +2069,7 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
         return EntityValueExpr(
             entity=entity,
             input=parse_semantic_expression(expr.get("input"), context=context),
-            where=[dict(item) for item in list(expr.get("where", []) or [])],
+            where=_entity_value_where(expr.get("where")),
         )
     if kind == "distribution":
         over = parse_semantic_expression(expr.get("over"), context=context)

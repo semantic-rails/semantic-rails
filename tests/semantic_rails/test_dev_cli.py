@@ -122,36 +122,12 @@ def test_init_name_creates_split_package_by_default(tmp_path: Path) -> None:
     assert (project_path / "models" / "core" / "events.yml").is_file()
 
 
-def test_legacy_init_output_still_creates_single_file_package(tmp_path: Path) -> None:
-    target = tmp_path / "single_file_core"
-    payload = _run_json(
-        "init",
-        "--output",
-        str(target),
-        "--package-id",
-        "single_file_core",
-    )
-
-    assert payload["ok"] is True, payload
-    assert (target / "package.yml").is_file()
-    assert not (target / "graph.yml").exists()
-
-
-def test_single_file_flag_with_name_uses_legacy_scaffold(tmp_path: Path) -> None:
-    target = tmp_path / "named_single"
-    payload = _run_json(
-        "init",
-        "named_single",
-        "--single-file",
-        "--output",
-        str(target),
-        "--json",
-    )
-
-    assert payload["ok"] is True, payload
-    assert payload["package_id"] == "named_single"
-    assert (target / "package.yml").is_file()
-    assert not (target / "graph.yml").exists()
+@pytest.mark.parametrize("flag", ["--output", "--single-file", "--split"])
+def test_init_rejects_removed_scaffold_flags(tmp_path: Path, flag: str) -> None:
+    proc = _run_cli("init", "removed_scaffold", flag, "--workspace-root", str(tmp_path))
+    assert proc.returncode == 2
+    assert f"unrecognized arguments: {flag}" in proc.stderr
+    assert not (tmp_path / "removed_scaffold").exists()
 
 
 def test_project_list_discovers_packages_under_extra_root(tmp_path: Path) -> None:
@@ -681,7 +657,14 @@ def test_dbt_style_debug_ls_and_ask_commands_are_human_readable() -> None:
     every = _run_json("ls", "--package", "jaffle_shop", "--json")  # as that hint says
     assert every["truncated"] is False and len(every["objects"]) == every["count"] > 50
 
-    planned = _run_json("ask", "--package", "jaffle_shop", "monthly revenue by store", "--json")
+    refused = _run_cli("ask", "--package", "jaffle_shop", "monthly revenue by store", "--json")
+    assert refused.returncode == 1
+    report = json.loads(refused.stdout)
+    assert report["errors"][0]["code"] == "PLAN_UNMATCHED_TERMS"
+    assert report["ok"] is False
+    planned = _run_json(
+        "ask", "--package", "jaffle_shop", "monthly revenue by store name", "--json"
+    )
     assert planned["ok"] is True, planned
     assert planned["plan"]["pattern"]
     assert planned["query"]["group_by"] == ["dimension.jaffle_store_name"]
@@ -693,11 +676,16 @@ def test_ls_time_alias_and_ask_compile_have_real_output() -> None:
     assert "temporal_role." in times.stdout
     assert "0 time object" not in times.stdout
 
+    refused = _run_cli("ask", "--package", "jaffle_shop", "monthly revenue by store", "--json")
+    assert refused.returncode == 1
+    report = json.loads(refused.stdout)
+    assert report["errors"][0]["code"] == "PLAN_UNMATCHED_TERMS"
+    assert report["ok"] is False
     compiled = _run_json(
         "ask",
         "--package",
         "jaffle_shop",
-        "monthly revenue by store",
+        "monthly revenue by store name",
         "--compile",
         "--json",
     )

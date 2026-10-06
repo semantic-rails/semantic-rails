@@ -181,6 +181,10 @@ Statuses are:
   (otherwise `PLAN_RANKING_PERIOD_AMBIGUOUS`, with no runnable option: ask the user which
   ranking they mean, such as the top N overall or the top N in each period).
   `warnings` can still name other question words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
+  Parsed qualification drafts are held with `PLAN_INTENT_COVERAGE_GAP` until their cohort and
+  time scope can be proven; entity keys or key counts alone do not prove that scope.
+  Store groupings resolve through the catalog;
+  a bare "by store" may need clarification about the intended dimension.
   Request words such as "show" still count when they are exact catalog names. A time grain
   consumes its own unit and its "-ly" form; a grouping that names the query's clock at the
   planned grain ("by order date") is consumed. Other time words must occur inside a recorded

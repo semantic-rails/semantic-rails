@@ -21,13 +21,13 @@ You need [uv](https://docs.astral.sh/uv/getting-started/installation/). It fetch
 compatible Python (3.11 or newer) if your system Python is older.
 
 ```bash
-uvx semantic-rails ask --package jaffle_shop "revenue by store" --run
+uvx semantic-rails ask --package jaffle_shop "revenue by store name" --run
 ```
 
 `uvx` runs Semantic Rails without installing it; the next section shows how to install it.
 `--package` names a bundled sample package; pass your own package with `--path`.
 
-This plans the question against the synthetic Jaffle Shop sample, then validates,
+This groups revenue by store name in the synthetic Jaffle Shop sample, then validates,
 compiles and runs the plan on DuckDB. It prints how it interpreted the question, the
 rows and any warnings, then the Query IR. Check that interpretation before you rely on
 the numbers; see
