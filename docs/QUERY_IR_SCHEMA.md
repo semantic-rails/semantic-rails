@@ -1377,6 +1377,9 @@ Python callers receive JSON-ready values, including strings for dates and times.
 all verbosity levels and MCP record/column row formats. It is separate from
 `output_columns`, which describes semantic lineage and authored types.
 
+The base DuckDB installation includes support for fetching raw `TIMESTAMPTZ`
+values in dimension groups, ungrained time roles, and Architect column profiles.
+
 | Source value | JSON value | `column_types` metadata |
 |---|---|---|
 | Decimal column | Canonical decimal strings, without redundant fractional zeros, for every non-null cell | `{"type":"decimal"}` |
