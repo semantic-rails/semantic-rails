@@ -298,8 +298,8 @@ The preferred human-like query-building cascade is:
 - `physical_plan` (top-level at `verbosity: "full"`; the `compact` HTTP default keeps it nested under `explain`)
 - `performance_plan` (same gating as `physical_plan`)
 
-When package authors declare physical rollups with `model.variants:` or explicit
-`aggregate_relations:`, compile output also exposes routing decisions:
+When package authors declare physical rollups with `model.variants:`, compile
+output also exposes routing decisions:
 
 - `MeasurePlan.aggregate_relation_id` is set when a measure leaf was routed.
 - `logical_plan.measure_plans[].rewrite_strategy` is `aggregate_relation` for
@@ -313,7 +313,7 @@ When package authors declare physical rollups with `model.variants:` or explicit
 - `logical_plan.measure_plans[].aggregate_relation_rejections` maps each rejected
   rollup of the leaf's entity to a reason code, such as `missing_dimension`,
   `non_nesting_grain`, `time_bounds_not_aligned`, `timezone_mismatch`,
-  `calendar_mismatch`, `rollup_filter_not_implied`, `metric_predicate_filter`,
+  `calendar_mismatch`, `metric_predicate_filter`,
   `join_path_mismatch`, `aggregation_not_reaggregable`, `one_to_many_hop` (the
   leaf crosses a one-to-many hop, which a rollup would multiply) or
   `not_certified`. It is empty for a package without rollups.

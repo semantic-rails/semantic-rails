@@ -191,7 +191,7 @@ Relationship rules:
 ### AggregateRelation
 
 An exact physical rollup relation that can serve a compatible measure leaf.
-Authors usually define these through `model.variants:`; the loader normalizes
+Authors define these through `model.variants:`; the loader normalizes
 eligible non-transaction variants into this compiled shape.
 
 Current compiled fields:
