@@ -7,3 +7,4 @@
   month", or "2026-01-01 to now" are held with `TIME_WINDOW_UNRESOLVED`; unrepresentable
   closing-day bounds return the same hold. A caller bound is read only at a whole day, so a
   bound with another time of day, or a window whose start is not before its end, is held.
+  A window missing either bound is held too when the question states a window.

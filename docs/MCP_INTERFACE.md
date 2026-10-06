@@ -456,11 +456,13 @@ and no `next.ready_for`. So "between 9 and 17 on 15 March 2017", "from nine to f
 written as an ordinary word ("Pacific time", "London time", "local time") is not recognised by
 itself, so with no hour beside it the question reads as its day. A window in the draft
 (one you pass in `query.time`, or plan's own) consumes the date phrases plan resolved only if it
-agrees with them: each bound it carries is the earliest start or the latest end of the windows
-the question states ("15 March 2017" against 15 to 16 March agrees; against 1 June 2018, or
-against the whole of 2017, does not). Plan reads the bounds you pass only at whole days (a date,
-or 00:00 with no offset or a UTC one): a bound with another time of day, or a window whose start
-is not before its end, is held ("15 March 2017" against 12:00 to 13:00 on that day). If it disagrees, the draft is
+agrees with them: it carries both bounds, the earliest start and the latest end of the windows
+the question states ("15 March 2017" against 15 to 16 March agrees; against 1 June 2018, the
+whole of 2017, or a start of 15 March with no end, does not). Plan reads a window you pass only
+when it carries both bounds, each a date or 00:00 with no offset or a UTC one, and a bound with
+a zone designator only when that is the role zone's offset at that instant: a missing bound, a
+bound with another time of day, or a window whose start is not before its end, is held ("15
+March 2017" against 12:00 to 13:00 on that day). If it disagrees, the draft is
 `low_confidence` (`PLAN_INTENT_COVERAGE_GAP`, gap `time_window_unrealized`) and the phrase's
 numbers are left over. A window you pass in `query.time` is not held to a lone "previous
 month" when the draft carries a `prior_period` expression: that phrase is the comparison's offset,
