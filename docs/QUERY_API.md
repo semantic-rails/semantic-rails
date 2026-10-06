@@ -106,6 +106,10 @@ shapes (`aggregate`, `metric`, `prior_period`, `rolling`, `cumulative`, `ratio`,
 `conversion`, `distribution`, `aggregate_if`, `between`). Each entry is a
 `{name, description, example}` dict so agents can introspect the IR contract at
 runtime without parsing `schemas/query_ir.v1.json` out of band.
+The capability list advertises `agent_query_ir_v1`, the only accepted Query IR
+version. Queries with `version: 2` are refused with `INVALID_QUERY` and
+`supported_versions: [1]`. Python capability payloads and MCP discovery/catalog
+resources expose the same capability list.
 
 ## Request Context And API Key Shim
 
