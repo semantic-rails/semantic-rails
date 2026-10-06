@@ -474,13 +474,17 @@ def resolve_measure_temporal_role(
 
 
 def _opaque_expression_data(node: Mapping[str, Any], key: str) -> bool:
-    if key == "parameters":
+    if key in {"meta", "parameters"}:
         return True
     return key == "value" and (
         str(node.get("kind", "")).strip() in {"literal", "value_filter"}
         or "field" in node
         or "dimension" in node
     )
+
+
+def _expression_children(node: Mapping[str, Any]) -> Iterable[tuple[str, Any]]:
+    return ((key, child) for key, child in node.items() if not _opaque_expression_data(node, key))
 
 
 def _unsupported_expression_kind(kind: Any, path: str) -> SemanticLayerError:
@@ -503,9 +507,7 @@ def validate_expression_shapes(value: Any, *, path: str = "expression") -> None:
             or (kind.strip() and kind.strip() not in _reference_expression_kinds())
         ):
             raise _unsupported_expression_kind(raw_kind, path)
-        for key, child in value.items():
-            if _opaque_expression_data(value, key):
-                continue
+        for key, child in _expression_children(value):
             validate_expression_shapes(child, path=f"{path}.{key}")
     elif isinstance(value, (list, tuple)):
         for index, child in enumerate(value):
