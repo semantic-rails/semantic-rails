@@ -34,7 +34,6 @@ from .architect_scaffold import (
     project_scaffold_files,
     project_setup_questions,
     project_warehouse_options,
-    slug,
 )
 from .architect_transactions import (
     ABSENT_PROJECT_REVISION,
@@ -50,8 +49,11 @@ from .dialects import connection_option_errors, warehouse_connector
 from .errors import SemanticLayerError
 from .expressions import expr_to_dict
 from .fanout import package_route, pair_routes, route_reading
+from .naming import slug
+from .naming import title as _title
 from .package_snapshot import load_package_snapshot
 from .package_tools import impact_report
+from .route_census import resolve_pairs, route_census, route_changes
 from .schema import PackageConfig, PathPreferenceConfig
 from .yaml_loader import safe_load as yaml_safe_load
 
@@ -145,17 +147,6 @@ def _check_fields(kind: str, spec: dict[str, Any]) -> tuple[dict[str, Any], list
         if value is not None and not valid(value):
             problems.append(f"{name} must be {expected}")
     return fields, problems
-
-
-def _slug(value: str, *, fallback: str) -> str:
-    out = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or "")).strip("_")
-    while "__" in out:
-        out = out.replace("__", "_")
-    return out or fallback
-
-
-def _title(value: str) -> str:
-    return " ".join(part.capitalize() for part in str(value or "").replace("_", " ").split())
 
 
 def _as_list(value: Any) -> list[str]:
@@ -874,7 +865,7 @@ class ArchitectProject:
         if not models:
             raise SemanticLayerError("INVALID_CONFIG", "upsert_models needs at least one model")
         for field_name in ("model_id", "entity_key"):
-            names = [_slug(str(item.get(field_name) or ""), fallback="") for item in models]
+            names = [slug(str(item.get(field_name) or ""), fallback="") for item in models]
             repeated = sorted({name for name in names if names.count(name) > 1})
             if repeated:
                 raise SemanticLayerError(
@@ -1042,17 +1033,17 @@ class ArchitectProject:
         model_slug = (
             existing_model.key
             if existing_model is not None
-            else _slug(requested_model, fallback="model")
+            else slug(requested_model, fallback="model")
         )
         entity_slug = (
             existing_entity.key
             if existing_entity is not None
-            else _slug(requested_entity, fallback=model_slug)
+            else slug(requested_entity, fallback=model_slug)
         )
         model_path = (
             existing_model.source_path
             if existing_model is not None
-            else self._target_path(f"models/{_slug(group, fallback='core')}/{model_slug}.yml")
+            else self._target_path(f"models/{slug(group, fallback='core')}/{model_slug}.yml")
         )
         graph_path = (
             existing_entity.source_path
@@ -1262,9 +1253,9 @@ class ArchitectProject:
             if existing is not None
             else self._target_path(
                 # A new metric shares metrics/<file_name> when given.
-                f"metrics/{_slug(file_name.rsplit('.', 1)[0], fallback='core')}.yml"
+                f"metrics/{slug(file_name.rsplit('.', 1)[0], fallback='core')}.yml"
                 if file_name
-                else f"metrics/{_slug(group, fallback='core')}/{_slug(key, fallback='metric')}.yml"
+                else f"metrics/{slug(group, fallback='core')}/{slug(key, fallback='metric')}.yml"
             )
         )
         documents = self._load_documents(path)
@@ -1318,7 +1309,7 @@ class ArchitectProject:
             existing.source_path
             if existing is not None
             else self._target_path(
-                f"segments/{_slug(file_name.rsplit('.', 1)[0], fallback='core')}.yml"
+                f"segments/{slug(file_name.rsplit('.', 1)[0], fallback='core')}.yml"
             )
         )
         documents = self._load_documents(path)
@@ -1365,6 +1356,7 @@ class ArchitectProject:
         to_entity: str,
         columns: list[str],
         cardinality: str = "many_to_one",
+        keep_existing_routes: bool = False,
         validate_after: bool = True,
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
@@ -1378,7 +1370,9 @@ class ArchitectProject:
         packages read as a many-to-one relationship. ``one_to_one``, or an
         existing ``graph.relationships`` entry for the pair, also records the
         cardinality there. The project is checked under the transaction lock,
-        after receipt replay and the revision check.
+        after receipt replay and the revision check. ``keep_existing_routes=True``
+        records each moved pair's previous path in the same transaction and refuses
+        if any previous route outcome (including a refusal) would still change.
         """
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         source, target = str(from_entity or "").strip(), str(to_entity or "").strip()
@@ -1488,8 +1482,76 @@ class ArchitectProject:
                 documents[graph_path]["graph"] = {**graph, "relationships": relationships}
             elif graph_path != model_row.source_path:
                 documents.pop(graph_path)
-            return self._file_updates(documents), None
+            updates = self._file_updates(documents)
+            if keep_existing_routes:
+                transaction = ProjectTransaction(
+                    self.project_path, workspace_root=self.workspace_root
+                )
+                base = load_package_snapshot(str(self.project_path)).config
+                changed = self._proposed_config(transaction, updates)
+                rows = [
+                    {
+                        "source_entity": change["source_entity"],
+                        "target_entity": change["target_entity"],
+                        "relationship_path": change["base"]["relationship_path"],
+                    }
+                    for change in route_changes(base, changed)
+                    if "relationship_path" in change["base"]
+                ]
+                assumed = {
+                    (row["source_entity"], row["target_entity"])
+                    for row in route_census(base)["assumed"]
+                }
+                # Confirm newly ambiguous own-key routes too, even when their path
+                # did not move, so the explicit keep choice needs no further call.
+                rows.extend(
+                    {field: row[field] for field in _PIN_ENDS + ("relationship_path",)}
+                    for row in route_census(changed)["assumed"]
+                    if (row["source_entity"], row["target_entity"]) not in assumed
+                    and (row["source_entity"], row["target_entity"])
+                    not in {(item["source_entity"], item["target_entity"]) for item in rows}
+                )
+                if rows:
+                    updates, reports = self._prepare_route_decisions(
+                        transaction, changed, rows, updates
+                    )
+                # Preserve every previously answered pair. For refused pairs, allow the
+                # relationship's own outcome, but refuse any additional change from pins.
+                final = self._proposed_config(transaction, updates)
+                remaining = [
+                    change
+                    for change in route_changes(base, final)
+                    if "refused" not in change["base"]
+                ]
+                pin_changes = route_changes(changed, final)
+                base_outcomes = resolve_pairs(
+                    base, [(row["source_entity"], row["target_entity"]) for row in pin_changes]
+                )
+                remaining.extend(
+                    {**row, "base": outcome.shape()}
+                    for row in pin_changes
+                    if (
+                        outcome := base_outcomes[(row["source_entity"], row["target_entity"])]
+                    ).refused
+                )
+                if remaining:
+                    raise SemanticLayerError(
+                        "ROUTE_DECISION_NOT_RECORDED",
+                        "keep_existing_routes could not preserve every existing route outcome; "
+                        "nothing was written. Record explicit decisions instead.",
+                        details={"route_changes": remaining},
+                    )
+                metadata["kept_route_decisions"] = rows
+            return updates, None
 
+        metadata: dict[str, Any] = {
+            "relationship": {
+                "from_entity": source,
+                "to_entity": target,
+                "columns": foreign_key,
+                "cardinality": kind,
+            }
+        }
         outcome = ProjectTransaction(self.project_path, workspace_root=self.workspace_root).apply(
             (),
             expected_revision=expected,
@@ -1501,18 +1563,12 @@ class ArchitectProject:
                 "to_entity": target,
                 "columns": foreign_key,
                 "cardinality": kind,
+                **({"keep_existing_routes": True} if keep_existing_routes else {}),
             },
             dry_run=dry_run,
             validate_after=validate_after,
             success_status="upserted",
-            metadata={
-                "relationship": {
-                    "from_entity": source,
-                    "to_entity": target,
-                    "columns": foreign_key,
-                    "cardinality": kind,
-                }
-            },
+            metadata=metadata,
             prepare_updates=prepare,
         )
         return ArchitectMutation(
@@ -1522,13 +1578,88 @@ class ArchitectProject:
             _active=bool(outcome.snapshots),
         )
 
+    def _proposed_config(
+        self, transaction: ProjectTransaction, updates: list[ProjectFileUpdate]
+    ) -> PackageConfig:
+        with transaction.virtual_project(updates) as proposed:
+            try:
+                return load_package_snapshot(str(proposed)).config
+            except SemanticLayerError as exc:
+                message = str(exc).replace(str(proposed), str(self.project_path))
+                raise SemanticLayerError(exc.code, message, details=exc.details) from None
+
+    def _prepare_route_decisions(
+        self,
+        transaction: ProjectTransaction,
+        config: PackageConfig,
+        rows: list[dict[str, Any]],
+        updates: list[ProjectFileUpdate],
+    ) -> tuple[list[ProjectFileUpdate], list[dict[str, Any]]]:
+        """Stage every pair together, then require the complete package to honor each row."""
+        keys = {item.key: item.object_id for item in self._raw_inventory()["entities"]}
+        entities = entity_references(config.entities, keys)
+        decisions: list[PathPreferenceConfig] = []
+        reports = []
+        files = transaction.proposed_files(updates)
+        for row in rows:
+            try:
+                if not isinstance(row, dict):
+                    raise RouteRowError("must be an object")
+                if set(row) - {"source_entity", "target_entity", "relationship_path", "label"}:
+                    raise RouteRowError("contains unknown fields")
+                if not isinstance(row.get("relationship_path"), list):
+                    raise RouteRowError("relationship_path must be a list")
+                decision = check_route_row(
+                    row, entities=entities, relationships=config.relationships
+                )
+                pair = (decision.source_entity, decision.target_entity)
+                if pair in {(item.source_entity, item.target_entity) for item in decisions}:
+                    raise RouteRowError("declares the same entity pair more than once")
+            except RouteRowError as exc:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"route decision {exc}",
+                    details={"reason": "invalid_route_decision", "route_decision": row},
+                ) from None
+            update, replaced = route_rows_update(files, [row], replace_pair=pair, entities=entities)
+            files[update.relative_path] = update.content or b""
+            updates = [item for item in updates if item.relative_path != update.relative_path]
+            updates.append(update)
+            decisions.append(decision)
+            reports.append(
+                {
+                    "route_decision": row,
+                    "replaced": replaced,
+                    "summary": _route_decision_summary(config, decision),
+                }
+            )
+        changed = self._proposed_config(transaction, updates)
+        for row, decision in zip(rows, decisions, strict=True):
+            try:
+                route = list(
+                    package_route(
+                        changed, start=decision.source_entity, target=decision.target_entity
+                    ).routes[0]
+                )
+            except SemanticLayerError:
+                route = []
+            if route != decision.relationship_path:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"route decision for {decision.source_entity} -> {decision.target_entity} "
+                    "would not take effect: the changed package resolves the pair another way",
+                    details={"reason": "route_decision_not_in_effect", "route_decision": row},
+                )
+        return updates, reports
+
     def record_route_decision(
         self,
         *,
-        source_entity: str,
-        target_entity: str,
-        relationship_path: list[str],
+        source_entity: str | None = None,
+        target_entity: str | None = None,
+        relationship_path: list[str] | None = None,
         label: str = "",
+        decisions: list[dict[str, Any]] | None = None,
         validate_after: bool = True,
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
@@ -1545,7 +1676,10 @@ class ArchitectProject:
         is ``INVALID_CONFIG`` (the loader's error, naming any row it disagrees with) and nothing
         is written. The report adds ``replaced`` (the row in effect before, or None) and
         ``summary``, one plain sentence for a review, and every ``route_changes`` pair it moves,
-        including inherited pairs. No keep rows are added.
+        including inherited pairs. Alternatively pass a nonempty ``decisions`` list
+        instead of the single-pair fields: all rows are staged and validated together,
+        and the report's ``route_decisions`` lists each row's replacement and summary.
+        Duplicate pairs, conflicting rows, or any invalid row refuse the whole batch.
         """
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         row: dict[str, Any] = {
@@ -1554,46 +1688,33 @@ class ArchitectProject:
             "relationship_path": [hop.strip() for hop in _as_list(relationship_path)],
             **({"label": str(label).strip()} if str(label or "").strip() else {}),
         }
-        metadata: dict[str, Any] = {"route_decision": row}
+        if decisions is not None:
+            if (
+                source_entity is not None
+                or target_entity is not None
+                or relationship_path is not None
+                or label
+            ):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG", "Use decisions or single-pair fields, not both"
+                )
+            if not isinstance(decisions, list) or not decisions:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG", "decisions must be a nonempty list of route rows"
+                )
+            rows = deepcopy(decisions)
+        else:
+            rows = [row]
+        metadata: dict[str, Any] = {}
 
         def prepare(_: str) -> tuple[list[ProjectFileUpdate], None]:
             config = load_package_snapshot(str(self.project_path)).config
-            keys = {item.key: item.object_id for item in self._raw_inventory()["entities"]}
-            entities = entity_references(config.entities, keys)
-            try:
-                decision = check_route_row(
-                    row, entities=entities, relationships=config.relationships
-                )
-            except RouteRowError as exc:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"route decision {exc}",
-                    details={"reason": "invalid_route_decision", "route_decision": row},
-                ) from None
-            pair = (decision.source_entity, decision.target_entity)
             transaction = ProjectTransaction(self.project_path, workspace_root=self.workspace_root)
-            update, metadata["replaced"] = route_rows_update(
-                transaction.proposed_files(()), [row], replace_pair=pair, entities=entities
-            )
-            updates = [update]
-            with transaction.virtual_project(updates) as proposed:
-                try:
-                    changed = load_package_snapshot(str(proposed)).config
-                except SemanticLayerError as exc:
-                    message = str(exc).replace(str(proposed), str(self.project_path))
-                    raise SemanticLayerError(exc.code, message, details=exc.details) from None
-            try:
-                route = list(package_route(changed, start=pair[0], target=pair[1]).routes[0])
-            except SemanticLayerError:
-                route = []
-            if route != decision.relationship_path:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"route decision for {pair[0]} -> {pair[1]} would not take effect: the "
-                    "changed package resolves the pair another way",
-                    details={"reason": "route_decision_not_in_effect", "route_decision": row},
-                )
-            metadata["summary"] = _route_decision_summary(config, decision)
+            updates, reports = self._prepare_route_decisions(transaction, config, rows, [])
+            if decisions is None:
+                metadata.update(reports[0])
+            else:
+                metadata["route_decisions"] = reports
             return updates, None
 
         outcome = ProjectTransaction(self.project_path, workspace_root=self.workspace_root).apply(
@@ -1603,7 +1724,7 @@ class ArchitectProject:
             intent={
                 "operation": "record_route_decision",
                 "expected_revision": expected,
-                **row,
+                **({"decisions": rows} if decisions is not None else row),
             },
             dry_run=dry_run,
             validate_after=validate_after,
@@ -1651,7 +1772,7 @@ class ArchitectProject:
         existing = self._find_raw(
             [row for row in rows if _within(row.source_path, directory)], name
         )
-        stem = _slug(file_name.rsplit(".", 1)[0], fallback="core")
+        stem = slug(file_name.rsplit(".", 1)[0], fallback="core")
         path = existing.source_path if existing else self._target_path(f"{plural}/{stem}.yml")
         documents = self._load_documents(path)
         if existing is None and kind in documents[path]:
@@ -2108,131 +2229,105 @@ class ArchitectProject:
         ]
         return {**report["impact"], "changes": changes, "references": references}
 
-    def write_file(
+    def write_files(
         self,
+        files: list[dict[str, Any]],
         *,
-        relative_path: str,
-        content: str,
-        overwrite: bool = True,
-        validate_after: bool = True,
-        expected_revision: str | None = None,
-        idempotency_key: str | None = None,
-        dry_run: bool = False,
-    ) -> ArchitectMutation:
-        """Write one raw UTF-8 project file through the transaction boundary.
-
-        The file is checked after receipt replay, so a retried write replays.
-        """
-
-        expected, key = self._mutation_identity(expected_revision, idempotency_key)
-        path = self._target_path(relative_path)
-        relative = self._relative(path)
-        metadata = {"relative_path": relative, "target_file": relative}
-
-        def prepare(_: str) -> tuple[list[ProjectFileUpdate], None]:
-            if path.exists() and not overwrite:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    "Target file exists and overwrite=false",
-                    details={"relative_path": relative_path},
-                )
-            metadata["operation"] = "updated" if path.exists() else "created"
-            mode = (path.stat().st_mode & 0o777) if path.exists() else None
-            return [ProjectFileUpdate(relative, str(content).encode("utf-8"), mode)], None
-
-        outcome = ProjectTransaction(
-            self.project_path,
-            workspace_root=self.workspace_root,
-        ).apply(
-            (),
-            expected_revision=expected,
-            idempotency_key=key,
-            intent={
-                "operation": "write_project_file",
-                "expected_revision": expected,
-                "relative_path": relative,
-                "content": str(content),
-                "overwrite": overwrite,
-            },
-            dry_run=dry_run,
-            validate_after=validate_after,
-            success_status="written",
-            metadata=metadata,
-            prepare_updates=prepare,
-        )
-        return ArchitectMutation(
-            report=outcome.report,
-            project_path=self.project_path,
-            _snapshots=outcome.snapshots,
-            _active=bool(outcome.snapshots),
-        )
-
-    def archive_file(
-        self,
-        *,
-        relative_path: str,
         reason: str = "",
         validate_after: bool = True,
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
         dry_run: bool = False,
     ) -> ArchitectMutation:
-        """Archive one project file through an atomic move-like transaction.
-
-        The file is checked after receipt replay, so a retried archive replays.
-        """
-
+        """Write or archive package files together; check existence after receipt replay."""
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
-        source = self._target_path(relative_path)
-        source_relative = self._relative(source)
-        archive_id = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
-        destination_relative = f".architect/archive/{archive_id}/{source_relative}"
+        entries: dict[str, dict[str, Any]] = {}
+        if not isinstance(files, list) or not files:
+            raise SemanticLayerError("INVALID_MCP_ARGUMENTS", "files must be a nonempty list")
+        for entry in files:
+            if (
+                not isinstance(entry, dict)
+                or not _is_text(entry.get("path"))
+                or not (
+                    (set(entry) == {"path", "archive"} and entry["archive"] is True)
+                    or (
+                        {"path", "content"} <= set(entry) <= {"path", "content", "overwrite"}
+                        and isinstance(entry["content"], str)
+                        and isinstance(entry.get("overwrite", True), bool)
+                    )
+                )
+            ):
+                raise SemanticLayerError("INVALID_MCP_ARGUMENTS", "Invalid write or archive entry")
+            raw = entry["path"].strip().replace("\\", "/")
+            if Path(raw).is_absolute():
+                raise SemanticLayerError("INVALID_CONFIG", "A project-relative path is required")
+            relative = self._relative(self._target_path(raw))
+            if relative == "." or relative in entries or Path(relative).parts[0] == ".architect":
+                raise SemanticLayerError("INVALID_CONFIG", "Duplicate or reserved project path")
+            entries[relative] = entry
+        archive_root = f".architect/archive/{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}"
+        archived = {
+            path: f"{archive_root}/{path}" for path, e in entries.items() if e.get("archive")
+        }
 
         def prepare(_: str) -> tuple[list[ProjectFileUpdate], None]:
-            if not source.exists() or not source.is_file():
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    "File to archive does not exist",
-                    details={"relative_path": relative_path},
-                )
-            updates = [
-                ProjectFileUpdate(
-                    destination_relative, source.read_bytes(), source.stat().st_mode & 0o777
-                ),
-                ProjectFileUpdate(source_relative, None),
-            ]
-            if reason:
-                updates.append(
-                    ProjectFileUpdate(
-                        f".architect/archive/{archive_id}/ARCHIVE_REASON.txt",
-                        str(reason).encode("utf-8"),
+            updates = []
+            for relative, entry in entries.items():
+                path = self._target_path(relative)
+                if entry.get("archive"):
+                    if not path.is_file():
+                        raise SemanticLayerError("INVALID_CONFIG", "File to archive does not exist")
+                    updates.extend(
+                        [
+                            ProjectFileUpdate(
+                                archived[relative], path.read_bytes(), path.stat().st_mode & 0o777
+                            ),
+                            ProjectFileUpdate(relative, None),
+                        ]
                     )
+                else:
+                    if path.exists() and not entry.get("overwrite", True):
+                        raise SemanticLayerError(
+                            "INVALID_CONFIG", "Target file exists and overwrite=false"
+                        )
+                    mode = path.stat().st_mode & 0o777 if path.exists() else None
+                    updates.append(
+                        ProjectFileUpdate(relative, entry["content"].encode("utf-8"), mode)
+                    )
+            if archived and reason:
+                updates.append(
+                    ProjectFileUpdate(f"{archive_root}/ARCHIVE_REASON.txt", reason.encode("utf-8"))
+                )
+            if len({u.relative_path for u in updates}) != len(updates):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG", "Archive destination conflicts with reason file"
                 )
             return updates, None
 
-        outcome = ProjectTransaction(
-            self.project_path,
-            workspace_root=self.workspace_root,
-        ).apply(
+        outcome = ProjectTransaction(self.project_path, workspace_root=self.workspace_root).apply(
             (),
             expected_revision=expected,
             idempotency_key=key,
             intent={
-                "operation": "archive_project_file",
+                "operation": "write_project_files",
                 "expected_revision": expected,
-                "relative_path": source_relative,
+                "files": [
+                    {
+                        "path": path,
+                        "sha256": "archive"
+                        if e.get("archive")
+                        else hashlib.sha256(e["content"].encode("utf-8")).hexdigest(),
+                        "overwrite": e.get("overwrite", True),
+                    }
+                    for path, e in entries.items()
+                ],
                 "reason": reason,
             },
             dry_run=dry_run,
             validate_after=validate_after,
-            allow_internal_paths=True,
-            success_status="archived",
-            metadata={
-                "operation": "archived",
-                "relative_path": source_relative,
-                "source_file": source_relative,
-                "archived_to": destination_relative,
-            },
+            allow_internal_paths=bool(archived),
+            success_status="written",
+            metadata={"operation": "written", "files": list(entries), "archived_to": archived},
             prepare_updates=prepare,
         )
         return ArchitectMutation(
@@ -2743,8 +2838,8 @@ def _canonical_id(
     explicit = str(spec.get("as") or spec.get("id") or "").strip()
     if explicit:
         return explicit
-    key_slug = _slug(key, fallback=kind)
-    entity_slug = _slug(entity_key, fallback="model")
+    key_slug = slug(key, fallback=kind)
+    entity_slug = slug(entity_key, fallback="model")
     if kind == "entity":
         return f"entity.{namespace}_{key_slug}"
     if kind == "dimension":

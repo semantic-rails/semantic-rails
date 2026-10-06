@@ -46,10 +46,6 @@ def visible_route_rows(
     ]
 
 
-def build_graph(config: PackageConfig) -> dict[str, list[tuple[str, str]]]:
-    return {entity: list(edges) for entity, edges in get_package_analysis(config).graph.items()}
-
-
 def package_hop_limit(config: PackageConfig) -> int:
     """Hop ceiling for path enumeration: ``graph.path_policy.max_hops``,
     falling back to the package default. Every compiler call site that

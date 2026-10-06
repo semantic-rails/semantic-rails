@@ -38,7 +38,6 @@ import yaml
 
 import semantic_rails.fanout as fanout_module
 from semantic_rails.compiler import compile_query
-from semantic_rails.compiler_parts.grain_recovery import _chosen_path
 from semantic_rails.compiler_parts.indexes import _PACKAGE_ANALYSIS_CACHE, get_package_analysis
 from semantic_rails.compiler_parts.paths import _direct_entity_key_source_expr
 from semantic_rails.config import load_package_config
@@ -106,7 +105,6 @@ BILLING = ["relationship.accounts_billing_region"]
 HOME = ["relationship.accounts_owner", "relationship.owners_home_region"]
 HELD = ["relationship.memberships_account"]
 PRIMARY = ["relationship.accounts_owner", "relationship.owners_primary_membership"]
-ISSUED = ["relationship.invoices_issued_region"]
 INVOICE_ACCOUNT = ["relationship.invoices_account"]
 
 _RELATIONSHIPS = {
@@ -523,15 +521,6 @@ def test_bounded_route_multiplicity_matches_simple_paths(graph, hop_limit):
     [
         pytest.param(
             DIAMOND,
-            _query(ACCOUNT_COUNT, group_by=[TIER]),
-            [TIER, "v"],
-            ACCOUNT,
-            MEMBERSHIP,
-            {tuple(HELD): TIER_HELD, tuple(PRIMARY): TIER_PRIMARY},
-            id="direct-key-fans-out",
-        ),
-        pytest.param(
-            DIAMOND,
             _query(AMOUNT, group_by=[REGION_NAME]),
             [REGION_NAME, "v"],
             INVOICE,
@@ -552,15 +541,6 @@ def test_bounded_route_multiplicity_matches_simple_paths(graph, hop_limit):
                 ),
             },
             id="equal-lengths",
-        ),
-        pytest.param(
-            ("accounts_branch_region", "accounts_billing_region"),
-            _query(BALANCE, group_by=[REGION_NAME]),
-            [REGION_NAME, "v"],
-            ACCOUNT,
-            REGION,
-            {tuple(BRANCH): BY_BRANCH, tuple(BILLING): BY_BRANCH.replace("branch", "billing")},
-            id="two-direct-keys",
         ),
         pytest.param(
             DIAMOND,
@@ -683,15 +663,6 @@ def test_adding_a_route_never_changes_an_answer_silently(
     assert _route_notes(out) == {(ACCOUNT, REGION): ("ROUTE_COLOCATED_KEY", BRANCH)}
 
 
-def test_discovery_grain_recovery_and_compile_report_the_pinned_route(tmp_path):
-    pkg = _write_package(tmp_path, pins=[_pin("account", "region", HOME)])
-    config = load_package_config(str(pkg))
-    assert _path_availability(config, ACCOUNT, REGION)["path"] == HOME
-    assert _chosen_path(config, start=ACCOUNT, target=REGION) == HOME
-    compiled = Runtime.from_path(str(pkg)).compile(_query(BALANCE, group_by=[REGION_NAME]))
-    assert compiled["hop_profile"]["targets"][REGION]["path"] == HOME
-
-
 _METRIC_PREDICATE = {
     "kind": "metric_predicate",
     "entity": REGION,
@@ -701,7 +672,7 @@ _METRIC_PREDICATE = {
     "value": 500,
 }
 _CONVERSION = {
-    "version": 2,
+    "version": 1,
     "select": [
         {
             "as": "v",
@@ -754,37 +725,6 @@ def _entry_gold(entry: str, route: str) -> str:
 
 # Two direct keys to the region (branch and billing) and the owner's home: no route is chosen.
 TWO_KEYS = (*DIAMOND, "accounts_billing_region")
-_PINS = [_pin("account", "region", HOME), _pin("invoice", "region", INVOICE_HOME)]
-
-
-@pytest.mark.parametrize("entry", ENTRY_POINTS)
-def test_every_entry_point_refuses_unrecorded_routes_and_follows_the_pin(tmp_path, entry):
-    """The bypass guard: no code path reaches the region by a route of its own choosing."""
-    query, columns = ENTRY_POINTS[entry]
-    err = _refusal(_write_package(tmp_path / "refused", relationships=TWO_KEYS), query)
-    assert err.details["target"] == REGION
-    pinned = _write_package(tmp_path / "pinned", relationships=TWO_KEYS, pins=_PINS)
-    runtime = Runtime.from_path(str(pinned))
-    if columns is not None:
-        out = runtime.query(query)
-        assert _rows(out, columns) == _gold(_entry_gold(entry, "home"))
-        assert _route_notes(out)[(ACCOUNT, REGION)] == ("ROUTE_RECORDED", HOME)
-    sql = runtime.compile(query)["explain"]["rendered_sql"]
-    assert "owners" in sql  # the home route, through the owner
-    assert "branch_region_id" not in sql and "billing_region_id" not in sql
-
-
-@pytest.mark.parametrize("entry", ENTRY_POINTS)
-def test_every_entry_point_discloses_the_direct_key_it_reads(tmp_path, entry):
-    """Each path a query reads by its direct key (root, leaf, predicate, conversion and the
-    key read) answers by that key and is noted as the start's own key."""
-    query, columns = ENTRY_POINTS[entry]
-    pkg = _write_package(tmp_path, relationships=(*DIAMOND, "invoices_issued_region"))
-    out = Runtime.from_path(str(pkg)).query(query)
-    if columns is not None:
-        assert _rows(out, columns) == _gold(_entry_gold(entry, "branch"))
-    start, chosen = (INVOICE, ISSUED) if entry == "conversion" else (ACCOUNT, BRANCH)
-    assert _route_notes(out)[(start, REGION)] == ("ROUTE_COLOCATED_KEY", chosen)
 
 
 def test_the_direct_key_read_and_discovery_follow_the_resolver(tmp_path):

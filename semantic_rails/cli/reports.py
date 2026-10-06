@@ -619,6 +619,7 @@ def _validate_summary(report: dict[str, Any]) -> dict[str, Any]:
         "probes_total": int(summary.get("probes_total", 0) or 0),
         "passed": int(summary.get("passed", 0) or 0),
         "failed": int(summary.get("failed", 0) or 0),
+        "skipped": int(summary.get("skipped", 0) or 0),
     }
 
 

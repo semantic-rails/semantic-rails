@@ -3,12 +3,12 @@
 The canonical, machine-readable contract for the Query IR payload accepted
 by `/api/v1/{validate,compile,query}` and the equivalent MCP tools
 lives at [`schemas/query_ir.v1.json`](../schemas/query_ir.v1.json). That stable
-schema accepts `version: 1` only. The separately versioned
-[`schemas/query_ir.preview.v2.json`](../schemas/query_ir.preview.v2.json)
-describes the enriched runtime preview used by planner outputs. Preview v2 may
-change before promotion to a stable major; consumers must opt into it
-explicitly. Both are JSON Schema Draft 2020-12 documents and ship inside the
-Python wheel under `semantic_rails.contracts`.
+schema accepts `version: 1` only. It is a JSON Schema Draft 2020-12
+document and ships inside the Python wheel under `semantic_rails.contracts`.
+Query IR `version: 2` is refused with `INVALID_QUERY` and
+`details.supported_versions: [1]`. To move a version 2 query to version 1,
+change only the version number: the two schemas had identical query shapes.
+This is a breaking change within 0.x; planner outputs also use version 1.
 
 The schema is regression-tested against every IR in the benchmark corpus
 and the comparison fixtures: see
@@ -18,7 +18,7 @@ and the comparison fixtures: see
 
 | Field | Type | Notes |
 |---|---|---|
-| `version` | `integer` | Pin the IR schema version. Stable v1 accepts only `1`; the separate preview-v2 schema accepts only `2`. |
+| `version` | `integer` | Pin the IR schema version. Only `1` is supported. |
 | `select` | `array` of `SelectItem` | Projected outputs. |
 | `group_by` | `array` of dimension ids | Grouping keys. |
 | `where` | `array` of `WhereFilter` | Dimension-level filters with shape `{field, op, value}` where `field` is a dimension id. See "WhereFilter" below for the op list and null semantics. Expression-shaped filters belong in `metric_filters`. |
@@ -48,7 +48,7 @@ planning and SQL generation.
 ### Removed: `path_policy`
 
 `path_policy` (`preference`, `ask_if_ambiguous`) is no longer a Query IR key,
-in v1 or preview v2. This is a breaking change made within v1: before 1.0 the
+in v1. This is a breaking change made within v1: before 1.0 the
 project follows Semantic Versioning's major-zero rule (see
 [CHANGELOG.md](../CHANGELOG.md)), under which a 0.x release may change the
 public API. The key never changed an answer. A query that still sends it is
@@ -265,6 +265,20 @@ before SQL executes. Ask for a ratio of windowed additive parts, or query the me
 own aggregation without a summing window. This rule also applies through derived
 metrics, metric filters, and every execution transport. `prior_period` reads one
 period with `LAG` and keeps its existing input semantics.
+
+These windows read periods before the ones they return, so a cut from below would drop rows
+they need. With a `prior_period`, `rolling`, `period_to_date` or `cumulative` window in `select`
+or `metric_filters`, a bounded `time.start` refuses, and so does a `where` filter, child groups
+included, on any temporal or calendar dimension, whether or not it is the query's clock. A
+dimension is temporal when it is a time role, has a `date`, `timestamp`, `datetime` or `time`
+kind, or is on a column of the same name, compared without case, on any table, as a temporal
+or calendar dimension or a column a relationship pairs with one, at any depth; a calendar
+dimension is any dimension of a `kind: time` entity. The rule follows types and column names,
+not the query's clock, so it may refuse a date that does not cut the window or a column of
+the same name on an unrelated table. Only an upper bound (`<`, `<=`) on a
+`date` or `timestamp` dimension runs, as `time.end` does. The refusal is
+`WINDOWED_TIME_FILTER_UNSUPPORTED` or `CUMULATIVE_TIME_FILTER_UNSUPPORTED`; for a `where`
+filter, `details.where_path` names it.
 
 `period_to_date` currently supports only the default calendar. A non-default
 `time.calendar_id`, or a time role bound to a non-default calendar, refuses with
@@ -524,6 +538,21 @@ Supported `op` values (all compile end-to-end):
   looked-up dimension.
 - Objects are rejected — inline expression thresholds belong in
   `metric_filters` (`metric_predicate`).
+
+On a stock, a filter on an attribute reads each series' snapshot chosen for the period, as
+a `group_by` on it does, so `plan = basic` equals the basic row of the by-plan breakdown;
+this includes attributes reached through a key that changes between the series'
+snapshots. A filter on the stock's clock (the same entity and column) or a calendar
+(`kind: time`) dimension bounds time and applies before the choice. Other date or
+timestamp attributes refuse, as in `group_by`: `REWRITE_NOT_SUPPORTED`, with
+`details.reason: stock_filtered_by_date_attribute` and `details.dimension`. Conditions
+inside child groups and a measure's own filters follow the same rule
+(see [Measures](PACKAGE_AUTHORING.md#measures)). An entity-set share (a ratio of one stock or
+distinct count whose numerator alone adds metric predicates) keeps one snapshot per series
+per time bucket, so a `group_by` on the stock's clock, a calendar dimension or another date
+or timestamp dimension refuses: `REWRITE_NOT_SUPPORTED`, with
+`details.reason: entity_set_ratio_grouped_by_period` and `details.dimension`. Choose the
+period with `time.grain` instead.
 
 A positive child-dimension filter on a parent-grain measure means "parents with at
 least one matching child". It lowers to correlated `EXISTS`, so multiple matching
@@ -955,7 +984,8 @@ no rows reads one or the other, by one rule, in every query:
 |---|---|---|
 | `sum`, `count`, `count_distinct` over an additive, event-count or entity-count measure | `0` | `NULL` |
 | `avg`, `min`, `max`, `median`, `percentile` | `NULL` | `NULL` |
-| semi-additive measures (stocks), distinct populations, and measures with `additive: false` | `NULL` | `NULL` |
+| a stock that adds up its series (`last_value`, `first_value` or `sum`) grouped only by time | `0` in a period with snapshots, none passing the filters | `NULL` in a period with no snapshot |
+| other semi-additive measures (stocks), distinct populations, and measures with `additive: false` | `NULL` | `NULL` |
 
 A measure has data in scope when at least one of its rows in scope holds a value: a sum with a
 non-NULL amount, or a count above zero. The scope is the measure's own authored conditions
@@ -982,10 +1012,19 @@ query's time bounds (DuckDB and Postgres; see time coverage below). A `dataset` 
 `where` filter beside a metric predicate can't judge one apart from the other, so it is refused
 with `EMPTY_GROUPS_UNSETTLED`; send `observation_scope: "query"`.
 Where a measure has data in scope,
-a group with no rows reads `0`: a store with orders but no refunds has 0 refunds. Where it has
-none, every group reads `NULL`: with no refunds anywhere in scope, no store has "0 refunds",
-because nothing says refunds were recorded. An average, minimum or maximum of nothing is
+a group with no rows reads `0`: a store with orders but no refunds has 0 refunds. A conditional
+additive sum or count with a supported source probe also reads `0` when its condition never
+matches but its source relation has rows in scope, for an output whose time bucket is checked
+against the loaded range or that has no time bucket (see time coverage below). No source rows
+means `NULL` with `NO_DATA_IN_SCOPE`; matching rows whose amounts are all NULL still sum to `NULL`.
+An average, minimum or maximum of nothing is
 undefined, and a stock has no value for a period nobody observed, so neither is ever made zero.
+A stock that adds up its series is judged by period instead, where it chooses each series'
+snapshot: a period whose chosen snapshots all fail the `where` filters or the measure's own
+`filter` reads `0` ("paying workspaces on the enterprise plan today", with today's snapshots
+loaded and none on enterprise), and a period with no snapshot reads `NULL`. A metric
+predicate chooses the series measured, so a period where it keeps none reads `NULL`, as does
+one under `observation_scope: "query"` with no snapshot passing the filters.
 
 A group whose rows exist but whose amounts are all NULL is not empty: its amounts are unknown,
 so its sum reads `NULL`, as SQL's `SUM` does, while its count still counts the rows. A month
@@ -994,6 +1033,26 @@ month that mixes NULL and known amounts sums the known ones. A conditional sum
 (`aggregate_if`, or an aggregate with a `filter`) reads only the rows that meet its condition: a group
 whose rows all fail it has none and reads `0`, and one whose matching rows all have a NULL
 amount reads `NULL`. Filled or not, a group reads the same.
+For a plain additive time series with an authored dimension filter, on a warehouse that
+checks loaded coverage (DuckDB and Postgres), the source rows retain every observed bucket
+before that filter: a week with rows but no matches reads `0` only inside the loaded range,
+with or without `fill`, in both observation scopes. A bucket after the last loaded timestamp,
+such as one held only by a future-dated row, stays `NULL` under the coverage rules below, so
+filled and unfilled output agree. String `=` and `IN` literals in its aggregate
+filter use the same misspelling guard in both scopes: `FILTER_VALUE_NOT_FOUND` names values
+absent from their dimension, and `FILTER_VALUE_UNVERIFIED` names values whose existence
+cannot be checked under the caller's policies. Query `where` filters and policy row filters
+still restrict those source rows. A period with no source rows stays absent without `fill`;
+no calendar is generated. This applies to sums and counts on a local clock with no rewrite,
+using local dimensions or single-hop lookups, with only additive outputs, and preserves matching NULL amounts.
+Other shapes retain their existing lowering: warehouses without loaded coverage, rollups,
+fanout and parent-lookup rewrites, nonlocal clocks, predicate populations, non-additive
+sibling outputs, distribution branches, and conditional operands.
+For an additive filtered series on those paths, `FILTERED_SERIES_BUCKETS_DROPPED` names
+missing observed bucket/group keys found by a separately authorized source query. If that
+query is denied, fails, reaches its 1,001-row cap, or the answer has a limit or population
+filter, `FILTERED_SERIES_BUCKETS_UNVERIFIED` reports the reason without guessing the buckets.
+Non-additive metrics, including averages and ratios, keep their existing rows and NULL behavior.
 A window of a sum or difference windows each operand first, so an unknown goods amount
 drops only the goods, not that month's revenue.
 A summing window refuses a metric referenced inside its input, such as `net * 2` where `net`
@@ -1004,6 +1063,7 @@ branch or several: a group none of whose rows meets a branch reads `0`, and such
 never answered from a rollup. An explicit non-NULL `ELSE`, including `ELSE 0`, contributes
 on nonmatching rows, so every row is read: a matching NULL amount plus a nonmatching zero
 sums to `0`, while a group with only matching NULL amounts remains `NULL`.
+Explicit `ELSE` contributions are preserved inside distributions and metric predicates too.
 
 A measure with a `CASE` below its expression's top level, such as
 `CASE WHEN store_id = 'a' THEN amount END / 100.0`, keeps the earlier settlement
@@ -1019,9 +1079,8 @@ A query with a `distribution` output keeps the earlier settlement in every outpu
 a group's unknown amounts like no rows: there a sum is `0` in a group whose amounts are all
 NULL, wherever its measure has data in scope, and arithmetic settles each operand that way, so
 `goods + shipping` beside a median is `0` for a store with no refunds and a number for one
-whose refunds leave a column NULL. Its plan and SQL are the same as before unknown amounts
-stayed `NULL`. Its combined outputs have no probe of their own, so under `dataset` such a
-query with a `where` filter is refused the same way. So is one whose measure's authored
+whose refunds leave a column NULL. Its combined outputs have no probe of their own, so under
+`dataset` such a query with a `where` filter is refused the same way. So is one whose measure's authored
 condition reads a fan-out or a hop valid over time.
 A metric predicate's own per-entity values, a lookup's source and a distribution's branches
 are internal: they settle inside their own scope in both modes.
@@ -1029,7 +1088,9 @@ are internal: they settle inside their own scope in both modes.
 - **Arithmetic** settles each operand first, then combines them. An operand that is unknown
   or has no data in scope is `NULL`, and so is the result: `goods + shipping` by refund type
   is `NULL` for a type whose rows leave one of the columns NULL, and `revenue - refunds` is
-  `NULL` if refunds were never recorded. A ratio over an unknown numerator is `NULL`, which no
+  `NULL` if the refunds relation has no rows in scope. Where source rows settle it (below), a
+  never-matched conditional operand instead reads `0` before arithmetic, so a window total's
+  `3 - 0` reads `3` without `NO_DATA_IN_SCOPE`. A ratio over an unknown numerator is `NULL`, which no
   `metric_filters` threshold keeps. Division by zero is `NULL`.
 - **A `metric_predicate` applies the rule to every entity alike.** An operand reads `0` for an
   entity with no match where its measure has data somewhere in the predicate's scope, and
@@ -1050,9 +1111,9 @@ are internal: they settle inside their own scope in both modes.
   nested `CASE` keeps its earlier settlement inside a predicate too.
 - **Time coverage bounds zero filling.** Bounded plain time leaves check for observation
   outside the query's window under the same authored, query and policy row filters. For
-  fill, dense series and combined leaves, an empty bucket inside the base relation's loaded
-  range reads `0`; an empty bucket before its first loaded timestamp or after its last
-  reads `NULL`. Coverage uses the whole base relation under policy filters, ignoring
+  fill, dense series, combined leaves and retained filtered series (filled or not), an empty
+  bucket inside the base relation's loaded range reads `0`; an empty bucket before its first
+  loaded timestamp or after its last reads `NULL`. Coverage uses the whole base relation under policy filters, ignoring
   measure and query filters, and excludes future timestamps from its upper edge. The
   cutoff compares UTC instants: timezone-aware columns preserve their instant, and
   naive columns use their declared storage zone (`column_timezone`, then `timezone`,
@@ -1061,12 +1122,42 @@ are internal: they settle inside their own scope in both modes.
   highest of the leaf's own bucket. Coverage gates only
   zero substitution: populated sums and positive counts always survive, including
   NULL time keys and future-dated rows.
-  Filled, dense-series (rolling, prior-period) and combined plans, bounded or not, read
-  the base relation even when rollups are available, so routing cannot change their
+  A window total without a grain records the whole half-open `[start, end)` interval as one
+  bucket, with the same outside-window observation and loaded-range check. Conditional
+  sums and counts of a leaf that reads its clock from its own relation therefore read `0` in
+  a loaded window where they have no matches, whether or not their condition matched
+  elsewhere: the probe checks for a source row under the same scope filters and policy row
+  filters. A sum whose matching amounts are all NULL remains `NULL`. An empty source relation
+  or a window outside its loaded range remains `NULL` with `NO_DATA_IN_SCOPE`; under `dataset`
+  with a `where` filter, the warning follows the probe read described below, so a window
+  outside the loaded range reads `NULL` without it once the probe finds source rows. Relative
+  windows use their resolved bounds.
+  Window totals, filled, dense-series (rolling, prior-period) and combined plans, bounded or
+  not, read the base relation even when rollups are available, so routing cannot change their
   coverage answers. Other routed
   aggregates, nested, fanout and predicate sources retain the window observation test,
   except that a `dataset` query with a `where` filter probes each
   measure's rows untimed.
+  Source-row observation is supported for top-level conditional `CASE` operands (including
+  `aggregate_if`) in these bounded base leaves and in `dataset` probes. It settles a
+  never-matched operand to `0` only for an output whose bucket the same guard checks against
+  the loaded range, or for an output with no time bucket (one total over its scope). The
+  loaded-range check covers window totals, filled and dense series, combined leaves and
+  retained filtered series, each for a leaf that reads its clock from its own relation. Every
+  other output keeps value-based observation, so a never-matched operand reads `NULL` with
+  `NO_DATA_IN_SCOPE`:
+  - a grained series of a single leaf without a fill, dense series or retained filter, bounded
+    or not: a month or week of a window, including a future month held only by a placeholder
+    row;
+  - a leaf that reads its clock through a join, such as refunds on the order time, even in a
+    window total or a filled series;
+  - the grained buckets of a `dataset` query with a `where` filter that get no loaded-range
+    check, since its probe reads the measure's rows outside the window as well.
+
+  A condition lowered into a leaf's `WHERE` still restricts its probe. Paths without a source
+  probe, including predicate operands, lookup sources and distribution branches, and the
+  earlier settlement retain their existing value-based observation: a never-matched operand
+  stays `NULL`.
   Coverage uses data alone. Performance guidance includes the emitted observation and
   coverage reads as scans without request-window bounds; narrowing the requested window
   does not bound those reads.
@@ -1143,7 +1234,7 @@ is that measure's honest value for "no rows contributed":
 |---|---|---|
 | `sum` / `count` / `count_distinct` over an additive, event-count or entity-count measure | `0`, while the measure has data in scope; else `NULL` | Zero is the additive identity — summing no rows really is 0 — but only where the measure has data (see "Empty groups"). A bucket whose rows all have a NULL amount is not empty: its sum reads `NULL`, filled or not. |
 | `avg`, `min`, `max`, `median`, `percentile` | `NULL` | Undefined over no rows. A filled `0` would be a fabricated measurement — a `min` below every value actually observed. |
-| semi-additive measures (snapshots, period-to-date, rolling balances) | `NULL` | A snapshot for a period that was never observed is unknown, not empty. |
+| semi-additive measures (snapshots, period-to-date, rolling balances) | `NULL` | A snapshot for a period that was never observed is unknown, not empty. A period with snapshots that all fail the filters isn't filled: a stock that adds up its series reads `0` there (see "Empty groups"). |
 | ratios, conversion rates and other null-preserving expressions | `NULL` | A period with no denominator has no rate; `0` would read as a 0% rate. |
 
 A query with a `distribution` refuses `fill: true`; without fill, periods with no data are
@@ -1299,6 +1390,9 @@ Python callers receive JSON-ready values, including strings for dates and times.
 `column_types` maps each result field to its observed logical type and survives
 all verbosity levels and MCP record/column row formats. It is separate from
 `output_columns`, which describes semantic lineage and authored types.
+
+The base DuckDB installation includes support for fetching raw `TIMESTAMPTZ`
+values in dimension groups, ungrained time roles, and Architect column profiles.
 
 | Source value | JSON value | `column_types` metadata |
 |---|---|---|

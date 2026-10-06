@@ -18,6 +18,7 @@ import os
 import sys
 import types
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -138,8 +139,10 @@ class FakeCursor:
         if self._log.get("fail_query") and not sql.startswith("USE "):
             raise RuntimeError("boom: relation jaffle_order does not exist")
 
-    def fetchall(self):
-        return [(1, "x")]
+    def sql(self, sql: str, *, params):
+        assert params == []
+        self.execute(sql)
+        return SimpleNamespace(description=self.description, fetchall=lambda: [(1, "x")])
 
     def close(self) -> None:
         self._log["cursor_closed"] = True

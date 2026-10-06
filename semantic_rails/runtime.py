@@ -121,6 +121,7 @@ from .request_context import (
 )
 from .result_values import result_rows
 from .runtime_parts.disclosures import mixed_time_role_warnings
+from .runtime_parts.filtered_series import filtered_series_warnings
 from .runtime_parts.responses import (
     TIME_SHAPE_WINDOW_TOTAL,
     WINDOW_TOTAL_ASSUMPTION,
@@ -141,6 +142,7 @@ from .segments import build_segment_query, normalize_segment, strip_segment_prev
 from .sql_ast import SqlCall, SqlField, SqlIdentifier, SqlSelect, SqlTableRef
 from .sql_identifiers import plain_relation_parts
 from .sql_preparation import PreparedQuery, checked_parameter_values
+from .temporal_support import _date_key, _range_intersects
 
 __all__ = [
     "CachedCompilation",
@@ -152,35 +154,6 @@ __all__ = [
     "SemanticLayerError",
     "ValidationReport",
     "WarehouseAdapter",
-    "_KIND_PRESERVING_EXPRESSION_KINDS",
-    "_SQL_OUTLINE_KEYWORDS",
-    "_adapter_query",
-    "_collect_expr_object_ids",
-    "_compiled_expression_kind",
-    "_compiled_warnings",
-    "_crosses_boundary",
-    "_date_key",
-    "_debug_sql_authorized",
-    "_expression_normalized_away_warnings",
-    "_freshness_as_of",
-    "_freshness_by_leaf",
-    "_history_warnings",
-    "_input_expression_kind",
-    "_is_repo_managed_source",
-    "_measure_validity_warnings",
-    "_methodology_hints",
-    "_metric_payload",
-    "_normalize_query_limits",
-    "_operator_allows_debug_sql",
-    "_policy_context",
-    "_query_execution_error_details",
-    "_query_object_ids",
-    "_range_intersects",
-    "_scope_refusal",
-    "_serialise_dropped_expression",
-    "_sql_outline",
-    "_sql_summary",
-    "_walk_expr_payload",
     "apply_response_verbosity",
     "build_segment_query",
     "classify_question",
@@ -585,14 +558,6 @@ def _history_warnings(config, logical_plan) -> list[dict[str, Any]]:
     if not history_paths:
         return []
     return [history_warning_payload(paths=history_paths)]
-
-
-def _collect_expr_object_ids(expr_payload: dict[str, Any], config: Any = None) -> list[str]:
-    return collect_object_references(expr_payload, config)
-
-
-def _collect_spec_object_ids(spec: Any, config: Any = None) -> list[str]:
-    return collect_object_references(spec, config)
 
 
 def _query_object_ids(payload: dict[str, Any], config: Any = None) -> list[str]:
@@ -1367,16 +1332,6 @@ def _expression_normalized_away_warnings(
     return warnings
 
 
-def _date_key(value: Any) -> str:
-    return str(value or "").split("T", 1)[0].split(" ", 1)[0]
-
-
-def _range_intersects(start: str, end: str, window_start: str, window_end: str) -> bool:
-    lower_ok = not window_end or not start or start < window_end
-    upper_ok = not window_start or not end or end > window_start
-    return lower_ok and upper_ok
-
-
 def _crosses_boundary(start: str, end: str, window_start: str, window_end: str) -> bool:
     if window_start and start and start < window_start and (not end or end > window_start):
         return True
@@ -1538,19 +1493,25 @@ def _no_data_in_scope_warnings(
 
 
 def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str, Any]]:
-    """Under the dataset scope, say when a where value matches no row of its dimension.
+    """Probe string filter literals that can otherwise read a confident zero.
 
-    There a misspelled ``product = 'appels'`` reads a confident 0, so each string ``=`` or
-    ``IN`` literal gets one existence probe under warehouse equality, under
-    the caller's policy context, so it never sees a row the caller's row filter hides. A miss
-    reads the values the caller can see for the closest one, as package validation does. The
-    ``query`` scope already reads such a filter as NULL with ``NO_DATA_IN_SCOPE``.
+    Dataset-scoped where filters and retained series' aggregate filters use the
+    same existence probe under warehouse equality and the caller's policy context.
     """
+    from .compiler_parts.bind import _bound_filter_clauses
     from .runtime_parts.limits import max_valid_values_limit
 
     config = runtime._config
-    query = compiled["logical_plan"].query
-    if observation_scope(query, config) != "dataset":
+    plan = compiled["logical_plan"]
+    query = plan.query
+    filters = (
+        every_filter(query.get("where")) if observation_scope(query, config) == "dataset" else []
+    )
+    retained = set(compiled.get("retained_filtered_series", []))
+    for row in plan.measure_plans:
+        if row.bound_measure.alias in retained:
+            filters.extend(_bound_filter_clauses(row.bound_measure, config))
+    if not filters:
         return []
     dimensions = {row.id: row for row in config.dimensions}
     probe = {"version": 1, "select": [], "observation_scope": "query"}
@@ -1567,13 +1528,17 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
 
     misses: list[dict[str, Any]] = []
     unverified: list[dict[str, Any]] = []
-    for item in every_filter(query.get("where")):
+    checked: set[tuple[str, str]] = set()
+    for item in filters:
         field, raw = str(item["field"]), item.get("value")
         literals = [v for v in (raw if isinstance(raw, list) else [raw]) if isinstance(v, str)]
         op = str(item.get("op", "=")).upper()
         if not literals or field not in dimensions or op not in {"=", "IN"}:
             continue
         for literal in literals:
+            if (field, literal) in checked:
+                continue
+            checked.add((field, literal))
             found = (
                 values(field, [{"field": field, "op": "=", "value": literal}], 1)
                 if dimensions[field].groupable
@@ -2452,11 +2417,6 @@ class Runtime:
                 self._resolve_cache[key] = deepcopy(resolved)
             return deepcopy(self._resolve_cache[key])
 
-    def _query_fingerprint(self, payload: dict[str, Any]) -> str:
-        import json
-
-        return json.dumps(payload, sort_keys=True, default=str)
-
     def _compile(
         self,
         payload: dict[str, Any],
@@ -2477,9 +2437,7 @@ class Runtime:
             relation_profile=str(
                 self._config.package.connection.name or self._config.package.default_db or ""
             ),
-            render_profile=str(
-                payload.get("sql_profile", payload.get("render_profile", "audit")) or "audit"
-            ),
+            render_profile=str(payload.get("sql_profile", "audit") or "audit"),
             policy_context=dict(policy_context),
             aggregate_routing=aggregate_routing_enabled(),
         )
@@ -2842,6 +2800,11 @@ class Runtime:
             "trace",
         }
         out.update({key: value for key, value in metadata.items() if key in execute_keep})
+        out["warnings"].extend(
+            filtered_series_warnings(
+                self, compiled, payload, out["rows"], truncated=out["truncated"]
+            )
+        )
         # Data-sparseness diagnostic: when a query returns zero rows AND
         # the request applied a time filter, the most common cause is
         # "data not present in this window" — not a query bug. The

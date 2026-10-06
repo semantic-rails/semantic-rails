@@ -411,11 +411,11 @@ def _requested_grouping_terms(text: str) -> list[str]:
 
 
 def _is_temporal_grouping_term(term: str) -> bool:
-    from ..metadata_parts.relevance import _tokenize  # noqa: WPS433
+    from ..catalog_search import tokenize_search_value  # noqa: WPS433
 
     if term in {"day", "week", "month", "quarter", "year", "delivered month", "ordered month"}:
         return True
-    temporal_tokens = set(_tokenize(term))
+    temporal_tokens = set(tokenize_search_value(term))
     return bool(
         temporal_tokens
         and temporal_tokens.issubset(
@@ -438,9 +438,9 @@ def _is_temporal_grouping_term(term: str) -> bool:
 
 
 def _term_matches_value_domain(config: Any, term: str) -> bool:
-    from ..metadata_parts.relevance import _tokenize  # noqa: WPS433
+    from ..catalog_search import tokenize_search_value  # noqa: WPS433
 
-    term_tokens = set(_tokenize(term))
+    term_tokens = set(tokenize_search_value(term))
     if not term_tokens:
         return False
     for domain in visible_value_domains(config):
@@ -451,7 +451,7 @@ def _term_matches_value_domain(config: Any, term: str) -> bool:
                 *[str(alias) for alias in list(row.aliases or [])],
             ]
             for value in values:
-                value_tokens = set(_tokenize(value))
+                value_tokens = set(tokenize_search_value(value))
                 if value_tokens and value_tokens.issubset(term_tokens):
                     return True
     return False
@@ -572,13 +572,13 @@ def _apply_time_from_text(
 
 
 def _matched_value_rows(runtime: Any, query: dict[str, Any], text: str) -> list[dict[str, Any]]:
+    from ..catalog_search import tokenize_search_value  # noqa: WPS433
     from ..metadata import (  # noqa: WPS433
         _availability_for_object,
         _config_maps,
         _selection_context,
         discover_payload,
     )
-    from ..metadata_parts.relevance import _tokenize  # noqa: WPS433
 
     dimensions = visible_dimensions(runtime._config)
     if not dimensions:
@@ -623,7 +623,7 @@ def _matched_value_rows(runtime: Any, query: dict[str, Any], text: str) -> list[
 
     def _dimension_context_score(dim: Any, context: str) -> float:
         stopwords = {"a", "an", "the", "is", "are", "was", "were", "to", "of"}
-        context_tokens = set(_tokenize(context)) - stopwords
+        context_tokens = set(tokenize_search_value(context)) - stopwords
         if not context_tokens:
             return 0.0
         dim_tokens: set[str] = set()
@@ -633,7 +633,7 @@ def _matched_value_rows(runtime: Any, query: dict[str, Any], text: str) -> list[
             getattr(dim, "label", ""),
             getattr(dim, "description", ""),
         ):
-            dim_tokens.update(_tokenize(source))
+            dim_tokens.update(tokenize_search_value(source))
         overlap = context_tokens & dim_tokens
         score = float(len(overlap) * 8)
         label = str(getattr(dim, "label", "") or "").lower()
@@ -699,7 +699,7 @@ def _matched_value_rows(runtime: Any, query: dict[str, Any], text: str) -> list[
             continue
         if re.search(rf"(?<![a-z0-9]){re.escape(filter_term)}s?(?![a-z0-9])", selected_text):
             continue
-        tokens = _tokenize(filter_term)
+        tokens = tokenize_search_value(filter_term)
         if not tokens or len(tokens) > 3:
             continue
         if any(token.isdigit() for token in tokens):
@@ -824,7 +824,7 @@ def _intent_match_signal(
 ) -> float:
     """Return a 0..1 score that differentiates candidates for an intent."""
 
-    from ..metadata_parts.relevance import _derive_discovery_tokens, _tokenize  # noqa: WPS433
+    from ..catalog_search import derive_discovery_tokens, tokenize_search_value  # noqa: WPS433
 
     if not primary_object:
         return 0.0
@@ -832,13 +832,13 @@ def _intent_match_signal(
     label = str(primary_object.get("label", "") or "")
     name = str(primary_object.get("name", "") or "")
     description = str(primary_object.get("description", "") or "")
-    derived_terms = _derive_discovery_tokens(name, label, description)
-    intent_tokens = set(_tokenize(intent))
+    derived_terms = derive_discovery_tokens(name, label, description)
+    intent_tokens = set(tokenize_search_value(intent))
     if not intent_tokens:
         return 0.0
     haystack_tokens: set[str] = set()
     for source in (label, name, object_id):
-        haystack_tokens.update(_tokenize(source))
+        haystack_tokens.update(tokenize_search_value(source))
     haystack_tokens.update(derived_terms)
     if not haystack_tokens:
         return 0.0

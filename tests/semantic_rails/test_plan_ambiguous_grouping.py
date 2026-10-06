@@ -188,7 +188,7 @@ def test_strict_match_does_not_hide_a_discovered_meaning(shop, monkeypatch, path
 @pytest.mark.parametrize("shop", ["plural_store"], indirect=True)
 def test_discovery_only_match_does_not_satisfy_an_explicit_grouping(shop):
     query = {
-        "version": 2,
+        "version": 1,
         "select": [{"as": "revenue", "expression": {"measure": "measure.shop.item_revenue"}}],
         "group_by": [STORE],
     }
@@ -399,7 +399,7 @@ def test_discovery_cannot_widen_a_whole_dimension_name(shop, monkeypatch, term, 
     )
     monkeypatch.setattr(plan_module, "_grouping_term_matches", lambda *args, **kwargs: [STORE])
     query = {
-        "version": 2,
+        "version": 1,
         "select": [{"as": "revenue", "expression": {"measure": "measure.shop.item_revenue"}}],
         "group_by": [customer.id],
     }

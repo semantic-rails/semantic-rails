@@ -76,12 +76,13 @@ def test_planner_explain_shape_and_sql_rendering(package_config_factory):
     assert "alias_resolution" in compiled["explain"].__dict__
 
 
-def test_validate_rejects_unsupported_query_ir_version(runtime_factory):
+@pytest.mark.parametrize("version", [2, 3])
+def test_validate_rejects_unsupported_query_ir_version(runtime_factory, version):
     runtime = runtime_factory("jaffle_shop")
     try:
         report = runtime.validate(
             {
-                "version": 3,
+                "version": version,
                 "select": [
                     {
                         "expression": {"measure": "measure.jaffle.order_count"},
@@ -95,6 +96,7 @@ def test_validate_rejects_unsupported_query_ir_version(runtime_factory):
     assert report["ok"] is False
     assert report["errors"][0]["code"] == "INVALID_QUERY"
     assert report["errors"][0]["details"]["path"] == "version"
+    assert report["errors"][0]["details"]["supported_versions"] == [1]
 
 
 def test_invalid_temporal_role_is_reported_by_validate(runtime_factory):
@@ -1183,7 +1185,7 @@ def test_runtime_binary_expression_can_compose_mixed_clock_metric_primitives(
 def test_scoped_ratio_uses_cross_domain_metric_predicate_sets(package_config_factory):
     config, _ = package_config_factory("jaffle_shop")
     query = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "as": "inventory_from_ordering_stores_share",
@@ -1236,7 +1238,7 @@ def test_scoped_ratio_uses_cross_domain_metric_predicate_sets(package_config_fac
 def test_anchored_ratio_delays_dimension_joins_and_prunes_predicate_context(package_config_factory):
     config, _ = package_config_factory("jaffle_shop")
     query = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "as": "inventory_from_ordering_stores_share",
@@ -1288,7 +1290,7 @@ def test_anchored_ratio_uses_snowflake_qualify_for_snapshot_selection(package_co
     config, _ = package_config_factory("jaffle_shop")
     config = replace(config, package=replace(config.package, warehouse="snowflake"))
     query = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "as": "inventory_from_ordering_stores_share",
@@ -1340,7 +1342,7 @@ def test_anchored_ratio_uses_snowflake_qualify_for_snapshot_selection(package_co
 def test_distribution_rolls_snapshot_to_entity_before_percentile(package_config_factory):
     config, _ = package_config_factory("jaffle_shop")
     query = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "as": "p80_inventory",
@@ -2209,7 +2211,7 @@ def test_anchored_ratio_refuses_a_threshold_that_zero_satisfies(package_config_f
         "aggregation": "sum",
     }
     query = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "as": "inventory_from_idle_stores_share",
