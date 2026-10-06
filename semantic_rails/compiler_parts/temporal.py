@@ -962,7 +962,7 @@ def _clock_where_cuts(query: NormalizedQuery, config: PackageConfig) -> list[tup
     while added:
         added = False
         for pair in pairs:
-            if len(temporal_columns.intersection(pair)) == 1:
+            if temporal_columns.intersection(pair) and not temporal_columns.issuperset(pair):
                 temporal_columns.update(pair)
                 added = True
     conditions: list[tuple[str, Filter]] = []

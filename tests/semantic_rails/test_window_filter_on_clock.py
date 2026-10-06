@@ -717,3 +717,39 @@ def test_an_upper_bound_on_another_date_matches_reference(tmp_path: Path) -> Non
         runtime.close()
     reference = ROLLING_REFERENCE.format(cut="occurred_at::date + 1 <= date '2026-09-11'")
     assert rows == _reference(reference)
+
+
+@pytest.mark.timeout(10, method="signal")
+@pytest.mark.parametrize("expression", [FEE, PRIOR_DAY], ids=["plain", "prior-period"])
+@pytest.mark.parametrize("cut", [False, True], ids=["uncut", "lower-bound"])
+def test_same_table_temporal_relationship_terminates(
+    tmp_path: Path, expression: dict, cut: bool
+) -> None:
+    runtime = _edited_runtime(
+        tmp_path,
+        {
+            "graph": {GRAPH_ENTITIES: GRAPH_ENTITIES + SNAPSHOT_LABEL_ENTITY},
+            "snapshot_labels": SNAPSHOT_LABELS.replace(
+                "relation: snapshot_labels", "relation: account_day"
+            ),
+        },
+    )
+    query = _query(expression, [SINCE_14] if cut else [], grouped=True)
+    query["time"]["temporal_role"] = DAY_ROLE
+    try:
+        if cut and expression is PRIOR_DAY:
+            with pytest.raises(SemanticLayerError) as caught:
+                runtime.compile(query)
+            assert caught.value.code == "WINDOWED_TIME_FILTER_UNSUPPORTED"
+            assert caught.value.details["where_path"] == "where[0]"
+        else:
+            assert runtime.compile(query)["status"] == "ok"
+            reference = (
+                PRIOR_REFERENCE.format(cut="true")
+                if expression is PRIOR_DAY
+                else "select account_id, date_day, fee from account_day"
+                + (" where date_day >= '2026-09-14'" if cut else "")
+            )
+            assert _rows(runtime, query) == _reference(reference)
+    finally:
+        runtime.close()
