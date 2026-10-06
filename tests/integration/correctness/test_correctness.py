@@ -1027,6 +1027,37 @@ def _cases() -> Iterator[Case]:
         {"select": [seats], "group_by": [SEAT_DAY]},
         "SELECT a.snapshot_day, SUM(a.seats) FROM account_days AS a GROUP BY 1",
     )
+    # A filter on the plan reads the same closing snapshots: builder is the breakdown's builder
+    # row (account 2, not account 1's Wednesday too). A week with snapshots but none on builder
+    # reads 0, and a filled week with no snapshot reads NULL.
+    builder = "a.plan = 'builder'"
+    week = "date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP))"
+    yield Case(
+        "stock_filtered_by_changing_plan",
+        "utc_authored",
+        _ask(
+            "week",
+            seats,
+            role=SEAT_ROLE,
+            start="2024-01-01",
+            end="2024-01-22",
+            fill=True,
+            where=[{"field": PLAN, "op": "=", "value": "builder"}],
+        ),
+        f"""
+        SELECT g.b, CASE WHEN COUNT(CASE WHEN {builder} THEN 1 END) > 0
+            THEN SUM(CASE WHEN {builder} THEN a.seats END)
+          WHEN COUNT(a.b) > 0 THEN 0 END
+        FROM generate_series(TIMESTAMP '2024-01-01', TIMESTAMP '2024-01-15', INTERVAL '7 day')
+          AS g(b)
+        LEFT JOIN (
+          SELECT a.*, {week} AS b, ROW_NUMBER() OVER (
+            PARTITION BY a.account_id, {week} ORDER BY a.snapshot_day DESC) AS n
+          FROM account_days AS a
+        ) AS a ON a.b = g.b AND a.n = 1
+        GROUP BY 1
+        """,
+    )
 
 
 def _closing_seats(*, head: str = "") -> str:

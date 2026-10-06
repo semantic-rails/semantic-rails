@@ -127,6 +127,7 @@ from .empty_groups import (
     expr_resolves_to_zero,
     guard_empty_groups,
     has_nested_case,
+    observation_scope,
     observes_dataset,
     reads_every_row,
     record_leaf_scope,
@@ -1593,6 +1594,39 @@ def _and_conditions(conditions: list[Any]) -> Any:
     return current
 
 
+def _stock_period_split(temporal_role_id: str, dim_id: str, config: PackageConfig) -> bool:
+    """Only the stock's clock (same entity and column) or a calendar splits its periods."""
+    dimensions = _dimension_index(config)
+    dimension = dimensions.get(dim_id)
+    if dimension is None:
+        raise SemanticLayerError(
+            "OBJECT_NOT_FOUND", f"Unknown dimension '{dim_id}'", details={"dimension": dim_id}
+        )
+    role = _temporal_role_index(config).get(temporal_role_id)
+    clock = dimensions.get(role.dimension) if role is not None else None
+    return _entity_index(config)[dimension.entity].kind == "time" or (
+        clock is not None and (dimension.entity, dimension.column) == (clock.entity, clock.column)
+    )
+
+
+def _reads_chosen_snapshot(
+    measure, temporal_role_id: str, dim_id: str, config: PackageConfig
+) -> bool:
+    """Read attributes after choosing a stock snapshot; ambiguous date attributes refuse."""
+    if measure.measure_class != "semi_additive":
+        return False
+    if _stock_period_split(temporal_role_id, dim_id, config):
+        return False
+    if _dimension_index(config)[dim_id].data_type in {"date", "timestamp"}:
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            "Filtering a stock by a date or timestamp attribute is ambiguous. "
+            "Filter by the stock's clock or a calendar dimension instead.",
+            details={"reason": "stock_filtered_by_date_attribute", "dimension": dim_id},
+        )
+    return True
+
+
 def _semi_additive_leaf_select(
     *,
     key_fields: list[SqlField],
@@ -1604,6 +1638,8 @@ def _semi_additive_leaf_select(
     from_table: SqlTableRef,
     joins: list[SqlJoin],
     where_clauses: list[Any],
+    snapshot_filters: list[Any],
+    zero_unmatched: bool,
     window_choice: str,
     final_aggregation: str,
     aggregation_params: dict[str, Any],
@@ -1640,6 +1676,37 @@ def _semi_additive_leaf_select(
         SqlField(order_expr, "__snapshot_order"),
         SqlField(value_expr, "__snapshot_value"),
     ]
+    # `snapshot_filters` (on attributes, never on time) keep or drop each chosen snapshot,
+    # as a grouped attribute is read from it: marked here, applied after the choice. With
+    # `zero_unmatched`, grouped only by periods, a period whose chosen snapshots all fail
+    # them reads 0 (data of nothing); a period with no snapshot still reads NULL (no data).
+    if snapshot_filters:
+        kept = SqlCase(
+            [SqlCaseWhen(_and_conditions(snapshot_filters), SqlLiteral(1))], SqlLiteral(0)
+        )
+        base_fields.append(SqlField(kept, "__snapshot_kept"))
+    settles = bool(snapshot_filters) and zero_unmatched and set(key_aliases) <= set(period_aliases)
+    dialect = dialect_for_warehouse(warehouse)
+
+    def chosen_value(source: str) -> tuple[Any, list[Any]]:
+        """The leaf's value over the snapshots chosen in ``source``, and the filter on them."""
+        value: Any = SqlIdentifier(parts=[source, "__snapshot_value"])
+        flag = SqlIdentifier(parts=[source, "__snapshot_kept"])
+        kept_rows = [SqlBinary(flag, "=", SqlLiteral(1))] if snapshot_filters else []
+        if settles:
+            value = SqlCase([SqlCaseWhen(kept_rows[0], value)])
+        total = (
+            SqlCall("SUM", [value])
+            if final_aggregation in {"last_value", "first_value"}
+            else _aggregation_expr(
+                value, final_aggregation, parameters=aggregation_params, dialect=dialect
+            )
+        )
+        if not settles:
+            return total, kept_rows
+        none_kept = SqlBinary(SqlCall("MAX", [flag]), "=", SqlLiteral(0))
+        return SqlCase([SqlCaseWhen(none_kept, SqlLiteral(0))], total), []
+
     complete_fields = [
         *[
             SqlField(SqlIdentifier(parts=["snapshot_base", alias]), alias)
@@ -1654,7 +1721,6 @@ def _semi_additive_leaf_select(
         SqlIdentifier(parts=["snapshot_base", alias]) for alias in partition_aliases
     ]
 
-    dialect = dialect_for_warehouse(warehouse)
     if dialect.capabilities().get("qualify"):
         direction = "ASC" if window_choice == "first_value" else "DESC"
         snapshot_name = "snapshot_rows"
@@ -1663,17 +1729,7 @@ def _semi_additive_leaf_select(
             partition_by=[field.expression for field in period_fields] + list(row_grain_exprs),
             order_by=[SqlOrderTerm(expr=order_expr, direction=direction)],
         )
-        snapshot_value = SqlIdentifier(parts=[snapshot_name, "__snapshot_value"])
-        final_expr = (
-            SqlCall("SUM", [snapshot_value])
-            if final_aggregation in {"last_value", "first_value"}
-            else _aggregation_expr(
-                snapshot_value,
-                final_aggregation,
-                parameters=aggregation_params,
-                dialect=dialect,
-            )
-        )
+        final_expr, kept_rows = chosen_value(snapshot_name)
         return SqlSelect(
             ctes=[
                 *list(ctes or []),
@@ -1696,6 +1752,7 @@ def _semi_additive_leaf_select(
                 SqlField(final_expr, leaf_alias),
             ],
             from_table=SqlTableRef(name=snapshot_name),
+            where=kept_rows,
             group_by=[SqlIdentifier(parts=[snapshot_name, alias]) for alias in key_aliases],
         )
 
@@ -1716,17 +1773,7 @@ def _semi_additive_leaf_select(
     final_key_exprs: list[SqlExpr] = [
         SqlIdentifier(parts=["snapshot_base", alias]) for alias in key_aliases
     ]
-    snapshot_value = SqlIdentifier(parts=["snapshot_base", "__snapshot_value"])
-    final_expr = (
-        SqlCall("SUM", [snapshot_value])
-        if final_aggregation in {"last_value", "first_value"}
-        else _aggregation_expr(
-            snapshot_value,
-            final_aggregation,
-            parameters=aggregation_params,
-            dialect=dialect,
-        )
-    )
+    final_expr, kept_rows = chosen_value("snapshot_base")
     return SqlSelect(
         ctes=[
             *list(ctes or []),
@@ -1763,6 +1810,7 @@ def _semi_additive_leaf_select(
                 on=_and_conditions(join_conditions),
             )
         ],
+        where=kept_rows,
         group_by=final_key_exprs,
     )
 
@@ -2902,6 +2950,10 @@ def _measure_leaf_select(
         if measure_plan.rewrite_strategy == "fanout_dedup"
         else refuse_child_groups(query.get("where"), "in this measure's leaf")
     )
+    # The conditions a stock applies to the snapshot it chooses, not before choosing it: only
+    # its own leaf below takes them out of `where_clauses`.
+    snapshot_filters: list[Any] = []
+    stock_role = measure_plan.bound_measure.temporal_role
     for item in filters:
         expr, _ = _direct_dimension_source_expr(
             measure.entity,
@@ -2914,7 +2966,9 @@ def _measure_leaf_select(
             if semijoin and (dimensions[item["field"]].entity, "where") in crossing_filters
             else where_clauses
         )
-        target.append(_value_filter_condition(expr, item))
+        target.append(condition := _value_filter_condition(expr, item))
+        if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
+            snapshot_filters.append(condition)
     for item in _bound_filter_clauses(measure_plan.bound_measure, config):
         expr, _ = _direct_dimension_source_expr(
             measure.entity,
@@ -2927,7 +2981,9 @@ def _measure_leaf_select(
             if semijoin and (dimensions[item["field"]].entity, "metric_filter") in crossing_filters
             else where_clauses
         )
-        target.append(_value_filter_condition(expr, item))
+        target.append(condition := _value_filter_condition(expr, item))
+        if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
+            snapshot_filters.append(condition)
     untimed = list(where_clauses)
     if plan.time:
         where_clauses.extend(
@@ -3043,19 +3099,16 @@ def _measure_leaf_select(
             )
         # The query's time bucket, the stock's own clock and calendar dimensions split a
         # series into periods; any other grouped dimension is an attribute of the snapshot.
-        clock = temporal_roles[measure_plan.bound_measure.temporal_role].dimension
         period_aliases = [
             field.alias
             for field in select_fields
-            if field.alias in {time_alias, clock}
-            or field.expression == order_expr
-            or (
-                field.alias in dimensions
-                and entities[dimensions[field.alias].entity].kind == "time"
-            )
+            if field.alias == time_alias
+            or (field.alias in dimensions and _stock_period_split(stock_role, field.alias, config))
         ]
         for dim_id in plan.group_by:
-            if dim_id not in period_aliases and dimensions[dim_id].data_type in {
+            if not _stock_period_split(stock_role, dim_id, config) and dimensions[
+                dim_id
+            ].data_type in {
                 "date",
                 "timestamp",
             }:
@@ -3079,7 +3132,17 @@ def _measure_leaf_select(
                 name=_measure_source_relation(measure, entities[measure.entity])
             ),
             joins=joins,
-            where_clauses=where_clauses,
+            where_clauses=[
+                clause
+                for clause in where_clauses
+                if not any(clause is condition for condition in snapshot_filters)
+            ],
+            snapshot_filters=snapshot_filters,
+            # A stock that adds up its series; judged inside the query's filters
+            # (observation_scope: query), a period with no snapshot passing them has no data.
+            zero_unmatched=measure.additive
+            and measure_plan.bound_measure.aggregation in {"last_value", "first_value", "sum"}
+            and observation_scope(query, config) == "dataset",
             window_choice=window_choice,
             final_aggregation=measure_plan.bound_measure.aggregation,
             aggregation_params=dict(measure_plan.bound_measure.aggregation_params),
@@ -3295,10 +3358,23 @@ def _anchored_snapshot_ctes(
     plan: LogicalPlan,
     anchored: AnchoredEntitySetPlan,
     config: PackageConfig,
-) -> tuple[list[SqlCte], str, str]:
+) -> tuple[list[SqlCte], str, str, list[Any]]:
+    """The chosen snapshots, their CTE and time alias, and the condition that keeps one."""
     entities = _entity_index(config)
-    measure = _measure_index(config)[anchored.denominator_measure_plan.bound_measure.measure_id]
+    bound = anchored.denominator_measure_plan.bound_measure
+    measure = _measure_index(config)[bound.measure_id]
     source_table = _measure_owned_relation(measure, entities)
+    # One snapshot is chosen per series and time bucket only, so a grouped clock, calendar
+    # or other date would be read from that one snapshot, dropping the bucket's other periods.
+    for dim_id in plan.group_by:
+        period = _stock_period_split(bound.temporal_role, dim_id, config)
+        if period or _dimension_index(config)[dim_id].data_type in {"date", "timestamp"}:
+            raise SemanticLayerError(
+                "REWRITE_NOT_SUPPORTED",
+                "An entity-set ratio can't be grouped by a date, time or calendar dimension. "
+                "Use the query's time grain instead.",
+                details={"reason": "entity_set_ratio_grouped_by_period", "dimension": dim_id},
+            )
     (
         fields,
         partition_exprs,
@@ -3308,19 +3384,30 @@ def _anchored_snapshot_ctes(
         partition_aliases,
         leaf_time_role,
     ) = _snapshot_select_fields(plan, anchored, config)
-    where_clauses: list[Any] = []
-    source_filters = _source_local_filter_conditions(
-        measure.entity,
-        refuse_child_groups(plan.query.get("where"), "in an entity-set ratio"),
-        config,
+    filters = [
+        *refuse_child_groups(plan.query.get("where"), "in an entity-set ratio"),
+        *_bound_filter_clauses(bound, config),
+    ]
+    # As in a stock's own leaf (_semi_additive_leaf_select), a filter on an attribute keeps
+    # or drops the chosen snapshot; only one bounding time applies before the choice.
+    chosen = [
+        item
+        for item in filters
+        if _reads_chosen_snapshot(measure, bound.temporal_role, str(item["field"]), config)
+    ]
+    where_clauses: list[Any] = (
+        _source_local_filter_conditions(
+            measure.entity, [item for item in filters if item not in chosen], config
+        )
+        or []
     )
-    bound_filters = _source_local_filter_conditions(
-        measure.entity,
-        _bound_filter_clauses(anchored.denominator_measure_plan.bound_measure, config),
-        config,
-    )
-    where_clauses.extend(source_filters or [])
-    where_clauses.extend(bound_filters or [])
+    kept_rows: list[Any] = []
+    if chosen_conditions := _source_local_filter_conditions(measure.entity, chosen, config):
+        kept = SqlCase(
+            [SqlCaseWhen(_and_conditions(chosen_conditions), SqlLiteral(1))], SqlLiteral(0)
+        )
+        fields = [*fields, SqlField(kept, "__snapshot_kept")]
+        kept_rows = [SqlBinary(SqlIdentifier(["snapshot", "__snapshot_kept"]), "=", SqlLiteral(1))]
     if plan.time and raw_time_expr is not None:
         where_clauses.extend(
             _source_time_window(raw_time_expr, plan.time, config, role_id=leaf_time_role)
@@ -3354,6 +3441,7 @@ def _anchored_snapshot_ctes(
             ],
             snapshot_name,
             time_alias,
+            kept_rows,
         )
 
     base_name = f"{snapshot_name}_base"
@@ -3421,6 +3509,7 @@ def _anchored_snapshot_ctes(
         ],
         snapshot_name,
         time_alias,
+        kept_rows,
     )
 
 
@@ -3453,7 +3542,9 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
     base_predicate_sets = predicate_sets[:base_predicate_count]
     extra_predicate_sets = predicate_sets[base_predicate_count:]
 
-    snapshot_ctes, snapshot_name, time_alias = _anchored_snapshot_ctes(plan, anchored, config)
+    snapshot_ctes, snapshot_name, time_alias, kept_rows = _anchored_snapshot_ctes(
+        plan, anchored, config
+    )
     if project_is_cut():
         # This path returns before the normal projection loop. Both operands
         # consume the snapshot value; their predicates record separate cuts.
@@ -3472,6 +3563,23 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
     if time_alias:
         anchor_select_fields[time_alias] = SqlIdentifier(parts=["snapshot", time_alias])
     anchor_select_fields["__anchor_value"] = SqlIdentifier(parts=["snapshot", "__anchor_value"])
+    # Keep observed periods when every chosen snapshot fails an attribute filter, just as
+    # the stock leaf does. Base metric predicates still select the series measured first.
+    # Grouped only by periods means ungrouped here: _anchored_snapshot_ctes refuses the rest.
+    settles = (
+        bool(kept_rows)
+        and measure.additive
+        and measure_plan.bound_measure.aggregation == "sum"
+        and observation_scope(plan.query, config) == "dataset"
+        and not plan.group_by
+    )
+    if settles:
+        anchor_select_fields["__snapshot_kept"] = SqlIdentifier(
+            parts=["snapshot", "__snapshot_kept"]
+        )
+        anchor_select_fields["__anchor_value"] = SqlCase(
+            [SqlCaseWhen(_and_conditions(kept_rows), anchor_select_fields["__anchor_value"])]
+        )
 
     joins = _joins_for_paths(
         measure.entity,
@@ -3481,7 +3589,7 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
         time_spec=plan.time,
         table_overrides={measure.entity: "snapshot"},
     )
-    anchor_where: list[Any] = []
+    anchor_where: list[Any] = [] if settles else list(kept_rows)
     for predicate_set in base_predicate_sets:
         join_condition = _join_condition(
             predicate_set.key_aliases
@@ -3556,9 +3664,16 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
             ],
         )
         denominator_expr = SqlCall("SUM", [value_expr])
-    ratio_expr = SqlBinary(
+    ratio_expr: SqlExpr = SqlBinary(
         numerator_expr, "/", SqlCall("NULLIF", [denominator_expr, SqlLiteral(0)])
     )
+    if settles:
+        none_kept = SqlBinary(
+            SqlCall("MAX", [SqlIdentifier(parts=["anchor", "__snapshot_kept"])]),
+            "=",
+            SqlLiteral(0),
+        )
+        ratio_expr = SqlCase([SqlCaseWhen(none_kept, SqlLiteral(0))], ratio_expr)
 
     key_aliases = _query_key_aliases(plan)
     final_fields = [

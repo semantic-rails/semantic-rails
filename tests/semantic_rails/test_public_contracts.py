@@ -19,6 +19,7 @@ from semantic_rails.contracts.compatibility import (
 )
 from semantic_rails.contracts.generation import PUBLIC_SCHEMA_BASE, generated_artifacts
 from semantic_rails.errors import SemanticLayerError
+from tests.semantic_rails.dbt_warehouse import ORDER_COUNT_QUERY, write_orders_package
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 JAFFLE_SHOP = REPO_ROOT / "configs" / "semantic_rails" / "jaffle_shop"
@@ -263,10 +264,38 @@ def test_embedding_facade_exposes_supported_host_seams() -> None:
         "normalize_connection_options",
         "PackageReference",
         "validate_runtime_package",
+        "run_examples_report",
         "run_package_tests_report",
     }
     assert required.issubset(set(embedding.__all__))
     assert all(hasattr(embedding, name) for name in required)
+
+
+def test_embedding_facade_runs_passing_and_failing_package_examples(tmp_path: Path) -> None:
+    import semantic_rails.embedding as embedding
+
+    package = write_orders_package(tmp_path, schema="", with_customers=False)
+    examples_dir = package / "examples"
+    examples_dir.mkdir()
+    examples = {
+        name: {
+            "query": ORDER_COUNT_QUERY,
+            "expected_shape": {"min_rows": min_rows, "max_rows": min_rows},
+        }
+        for name, min_rows in [("passing", 1), ("failing", 2)]
+    }
+    (examples_dir / "orders.yml").write_text(
+        yaml.safe_dump({"examples": examples}), encoding="utf-8"
+    )
+
+    report = embedding.run_examples_report(embedding.resolve_package_reference(path=str(package)))
+
+    assert report["ok"] is False
+    assert report["summary"] == {"examples_total": 2, "passed": 1, "failed": 1}
+    assert {row["id"]: row["ok"] for row in report["examples"]} == {
+        "passing": True,
+        "failing": False,
+    }
 
 
 def test_export_contract_cli_prints_unwrapped_canonical_payload(monkeypatch, capsys) -> None:
