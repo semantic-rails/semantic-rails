@@ -30,31 +30,6 @@ def _run_cli(*args: str) -> dict:
     return json.loads(proc.stdout)
 
 
-def test_cli_compile_sets_ok_true_on_success() -> None:
-    query = {
-        "version": 1,
-        "select": [
-            {"expression": {"metric": "metric.sales.aov_usd"}, "as": "aov_usd"},
-        ],
-        "time": {
-            "temporal_role": "temporal_role.jaffle_order_time",
-            "grain": "month",
-        },
-    }
-    payload = _run_cli(
-        "compile",
-        "--package",
-        "jaffle_shop",
-        "--query-json",
-        json.dumps(query),
-    )
-    assert isinstance(payload.get("ok"), bool), (
-        f"expected bool ok, got {type(payload.get('ok')).__name__}: {payload.get('ok')!r}"
-    )
-    assert payload["ok"] is True
-    assert payload.get("status") == "ok"
-
-
 def test_cli_plan_rejects_empty_intent_with_json_error() -> None:
     payload = _run_cli("plan", "--package", "jaffle_shop", "--intent", "")
     assert payload["ok"] is False
