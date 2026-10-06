@@ -18,7 +18,6 @@ import signal
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -27,6 +26,7 @@ from typing import Any
 
 import yaml
 
+from .atomic_files import atomic_write_bytes
 from .config import load_package_config, package_root_for_source
 from .config_validation import PackageReference
 from .errors import SemanticLayerError
@@ -151,9 +151,10 @@ def save_mcp_registry(registry: dict[str, Any]) -> Path:
 
 
 def _save_mcp_registry_unlocked(registry: dict[str, Any], path: Path) -> None:
-    _atomic_write_text(
+    atomic_write_bytes(
         path,
-        yaml.safe_dump(registry, sort_keys=False, allow_unicode=False),
+        (yaml.safe_dump(registry, sort_keys=False, allow_unicode=False)).encode("utf-8"),
+        mode=0o600,
     )
 
 
@@ -563,14 +564,16 @@ def _install_client_config(client: str, servers: dict[str, dict[str, Any]]) -> d
         mcp_servers = dict(data.get("mcpServers", {}) or {})
         mcp_servers.update(servers)
         data["mcpServers"] = mcp_servers
-        _atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
+        atomic_write_bytes(
+            path, (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"), mode=0o600
+        )
         return {"ok": True, "path": str(path), "servers": sorted(servers)}
     if client == "codex":
         path = codex_config_path()
         content = path.read_text(encoding="utf-8") if path.exists() else ""
         for name, config in servers.items():
             content = _upsert_codex_server(content, name, config)
-        _atomic_write_text(path, content)
+        atomic_write_bytes(path, (content).encode("utf-8"), mode=0o600)
         return {"ok": True, "path": str(path), "servers": sorted(servers)}
     if client == "claude-code":
         claude = shutil.which("claude")
@@ -962,27 +965,8 @@ def _stop_recorded_process(record: dict[str, Any]) -> dict[str, Any]:
     return {"status": "stopped"}
 
 
-def _atomic_write_text(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(temporary)
-        raise
-
-
 def _server_name(name: str) -> str:
     text = str(name or "default").strip()
     if not text:
         text = "default"
     return re.sub(r"[^A-Za-z0-9_.-]+", "-", text)
-
-
-def executable_hint() -> str:
-    return shutil.which("semantic-rails") or sys.executable

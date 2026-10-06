@@ -461,3 +461,9 @@ class DbApiAdapter(WarehouseAdapter):
                 self._conn.close()
             finally:
                 self._conn = None
+
+
+class DuckDbApiAdapter(DbApiAdapter):
+    def _time_zone_scope(self, cursor: Any, zone: str) -> AbstractContextManager[Any]:
+        set_duckdb_time_zone(cursor, zone)
+        return nullcontext()

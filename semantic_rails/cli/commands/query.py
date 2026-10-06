@@ -18,12 +18,12 @@ from ...metadata import (
 from ...planner import plan_payload
 from ...request_payload import checked_string_list
 from ..common import (
-    _package_ref_from_args,
     _parse_json,
     _policy_context_from_args,
     _print,
     _query_payload_from_args,
     _query_with_policy_context,
+    _ref_from_args,
     _runtime_from_package_or_path,
 )
 
@@ -154,7 +154,7 @@ def cmd_segment_preview(args: argparse.Namespace) -> None:
 
 
 def cmd_serve(args: argparse.Namespace) -> None:
-    ref = _package_ref_from_args(args)
+    ref = _ref_from_args(args)
     serve(
         ref.package_id,
         host=args.host,

@@ -34,7 +34,6 @@ from .architect_scaffold import (
     project_scaffold_files,
     project_setup_questions,
     project_warehouse_options,
-    slug,
 )
 from .architect_transactions import (
     ABSENT_PROJECT_REVISION,
@@ -50,6 +49,8 @@ from .dialects import connection_option_errors, warehouse_connector
 from .errors import SemanticLayerError
 from .expressions import expr_to_dict
 from .fanout import package_route, pair_routes, route_reading
+from .naming import slug
+from .naming import title as _title
 from .package_snapshot import load_package_snapshot
 from .package_tools import impact_report
 from .route_census import resolve_pairs, route_census, route_changes
@@ -146,17 +147,6 @@ def _check_fields(kind: str, spec: dict[str, Any]) -> tuple[dict[str, Any], list
         if value is not None and not valid(value):
             problems.append(f"{name} must be {expected}")
     return fields, problems
-
-
-def _slug(value: str, *, fallback: str) -> str:
-    out = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or "")).strip("_")
-    while "__" in out:
-        out = out.replace("__", "_")
-    return out or fallback
-
-
-def _title(value: str) -> str:
-    return " ".join(part.capitalize() for part in str(value or "").replace("_", " ").split())
 
 
 def _as_list(value: Any) -> list[str]:
@@ -875,7 +865,7 @@ class ArchitectProject:
         if not models:
             raise SemanticLayerError("INVALID_CONFIG", "upsert_models needs at least one model")
         for field_name in ("model_id", "entity_key"):
-            names = [_slug(str(item.get(field_name) or ""), fallback="") for item in models]
+            names = [slug(str(item.get(field_name) or ""), fallback="") for item in models]
             repeated = sorted({name for name in names if names.count(name) > 1})
             if repeated:
                 raise SemanticLayerError(
@@ -1043,17 +1033,17 @@ class ArchitectProject:
         model_slug = (
             existing_model.key
             if existing_model is not None
-            else _slug(requested_model, fallback="model")
+            else slug(requested_model, fallback="model")
         )
         entity_slug = (
             existing_entity.key
             if existing_entity is not None
-            else _slug(requested_entity, fallback=model_slug)
+            else slug(requested_entity, fallback=model_slug)
         )
         model_path = (
             existing_model.source_path
             if existing_model is not None
-            else self._target_path(f"models/{_slug(group, fallback='core')}/{model_slug}.yml")
+            else self._target_path(f"models/{slug(group, fallback='core')}/{model_slug}.yml")
         )
         graph_path = (
             existing_entity.source_path
@@ -1263,9 +1253,9 @@ class ArchitectProject:
             if existing is not None
             else self._target_path(
                 # A new metric shares metrics/<file_name> when given.
-                f"metrics/{_slug(file_name.rsplit('.', 1)[0], fallback='core')}.yml"
+                f"metrics/{slug(file_name.rsplit('.', 1)[0], fallback='core')}.yml"
                 if file_name
-                else f"metrics/{_slug(group, fallback='core')}/{_slug(key, fallback='metric')}.yml"
+                else f"metrics/{slug(group, fallback='core')}/{slug(key, fallback='metric')}.yml"
             )
         )
         documents = self._load_documents(path)
@@ -1319,7 +1309,7 @@ class ArchitectProject:
             existing.source_path
             if existing is not None
             else self._target_path(
-                f"segments/{_slug(file_name.rsplit('.', 1)[0], fallback='core')}.yml"
+                f"segments/{slug(file_name.rsplit('.', 1)[0], fallback='core')}.yml"
             )
         )
         documents = self._load_documents(path)
@@ -1782,7 +1772,7 @@ class ArchitectProject:
         existing = self._find_raw(
             [row for row in rows if _within(row.source_path, directory)], name
         )
-        stem = _slug(file_name.rsplit(".", 1)[0], fallback="core")
+        stem = slug(file_name.rsplit(".", 1)[0], fallback="core")
         path = existing.source_path if existing else self._target_path(f"{plural}/{stem}.yml")
         documents = self._load_documents(path)
         if existing is None and kind in documents[path]:
@@ -2874,8 +2864,8 @@ def _canonical_id(
     explicit = str(spec.get("as") or spec.get("id") or "").strip()
     if explicit:
         return explicit
-    key_slug = _slug(key, fallback=kind)
-    entity_slug = _slug(entity_key, fallback="model")
+    key_slug = slug(key, fallback=kind)
+    entity_slug = slug(entity_key, fallback="model")
     if kind == "entity":
         return f"entity.{namespace}_{key_slug}"
     if kind == "dimension":

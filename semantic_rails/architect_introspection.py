@@ -31,10 +31,10 @@ from typing import Any
 
 import duckdb
 
-from .architect_scaffold import slug
 from .db_parts.common import materialized_duckdb_result
 from .db_parts.duckdb_setup import configure_duckdb_connection
 from .errors import SemanticLayerError
+from .naming import slug
 from .sql_identifiers import quote_identifier, quote_relation, relation_parts
 
 MAX_SAMPLE_VALUES = 20
