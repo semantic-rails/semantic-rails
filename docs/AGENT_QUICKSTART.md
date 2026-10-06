@@ -165,8 +165,8 @@ Catalog fallback ranking breaks equal intent-match scores by discovery score, th
 so candidate order and refusal diagnostics stay the same across Python hash seeds.
 
 The checks cover time windows, rankings, named filter values, exclusions and the answer's shape
-(the listed entity's rows for "who" or "which", a row per item for "each", a value to compare
-with for a comparison, a select of its own for each question), not every phrasing:
+(the listed entity's key for "who" or "which", a row per item for "each", a prior-period value
+to compare with for a comparison, a select of its own for each question), not every phrasing:
 a draft can still misread a question and report `ok`, sometimes with only a `PLAN_UNMATCHED_TERMS`
 warning (see the README's known limitations). Compare `best.query_ir` with the question before
 executing it.
@@ -183,12 +183,14 @@ Statuses are:
   (otherwise `PLAN_RANKING_PERIOD_AMBIGUOUS`, with no runnable option: ask the user which
   ranking they mean, such as the top N overall or the top N in each period). The result holds
   each part the question's shape asks for, or the plan is `PLAN_INTENT_COVERAGE_GAP`:
-  "who", "which" or "list" needs a key dimension of the entity it lists in `group_by`, never a
-  time grain, a category or another entity ("List customers by month", "Who are our customers
-  by store?": `list_unrealized`; "who" naming no entity takes its rows only from your
-  `query.group_by`); "each" needs a row per item (`each_unrealized`); a comparison needs a
-  prior-period select or a second, different select, not a `group_by` ("Compare revenue by
-  store last month": `comparison_unrealized`); and "How many orders and how much revenue last
+  "who", "which" or "list" needs the declared key of the entity it lists in `group_by`, never a
+  time grain, a category, another entity or a name alone, which can repeat ("List customers by
+  month", "Who are our customers by store?", "List customers" grouped by Customer name:
+  `list_unrealized`; put the key in `query.group_by`, with the name beside it if you want it;
+  "who" naming no entity takes its rows only from your `query.group_by`); "each" needs a row
+  per item (`each_unrealized`); a comparison needs a prior-period select, not a second select
+  or a `group_by` ("Compare revenue by store last month", "Food revenue vs drink revenue last
+  month": `comparison_unrealized`); and "How many orders and how much revenue last
   week?" needs a select of its own naming orders and one naming revenue, never the same select
   twice or one that names neither (`multiple_questions_unrealized`).
   `warnings` can still name other question words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).

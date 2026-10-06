@@ -296,22 +296,25 @@ A draft that validates can still leave out part of the question. `plan` returns
   "which" or "list" opening a clause asks for the rows of the entity the clause names: its
   first word outside a time window and a "by" grouping that names an entity or, for "which"
   or "list" with none, the entity a "by" grouping in the clause names ("List revenue by
-  store"). The `group_by` needs one of that entity's key dimensions: its key, or its one
-  declared dimension that names it (`list_unrealized`, with them in
-  `expected.key_dimensions`: "Who ordered last week?", "List customers by month", "Who are
-  our customers by store?"). A time grain, a category or another entity's dimension never
-  lists them, and "which" or "list" naming no entity is held. A caller's `query.group_by` can
-  also state a dimension of the entity that declares no values and is no clock ("Customer
-  name"). "who" naming no entity ("Who ordered last week?") leaves whose rows to the caller:
-  only a caller's `group_by` dimension that is no grouping the question lists ("Who ordered by
-  store?") and is such a dimension of its own entity lists them. "each" or "every" needs a row
-  per item, a `group_by` or a grain that splits the rows (`each_unrealized`: "How many orders
-  did each last week?"). "compare", "compared", "comparison", "versus", "vs", "against" or
-  "up or down" needs a value to compare with, a prior-period select or a second select with
-  another expression; a `group_by` or time grain only splits one value
+  store"). The `group_by` needs that entity's declared one-column key (`list_unrealized`, with
+  it in `expected.key_dimensions`: "Who ordered last week?", "List customers by month", "Who
+  are our customers by store?"). A name may sit beside the key, but never lists the rows on
+  its own, since a name can repeat: customers who share one would be one row ("List
+  customers" grouped by Customer name, "Which 3 stores had the most revenue last month?"
+  grouped by Store name). Nor does any other dimension, whatever it declares: a time grain, a
+  category, another dimension of the entity ("Customer order number") or another entity's
+  dimension. "which" or "list" naming no entity is held. "who" naming no entity ("Who ordered
+  last week?") leaves whose rows to the caller: only a caller's `query.group_by` dimension
+  that is no grouping the question lists ("Who ordered by store?") and is the key of its own
+  entity lists them. "each" or "every" needs a row per item, a `group_by` or a grain that
+  splits the rows (`each_unrealized`: "How many orders did each last week?"). "compare",
+  "compared", "comparison", "versus", "vs", "against" or "up or down" needs a value to compare
+  with: a prior-period select. A second select (which may spell the first again), a
+  `group_by` or a time grain doesn't show what the question compares
   (`comparison_unrealized`: "Were orders up or down last week?", "Compare revenue by store
-  last month"). Two or more questions for a value, "how many", "how much", "what is", "what
-  was" or "what's", need a select of their own each that names what the question asks about:
+  last month", "Food revenue vs drink revenue last month"). Two or more questions for a
+  value, "how many", "how much", "what is", "what was" or "what's", need a select of their
+  own each that names what the question asks about:
   its first words that aren't stopwords, framing words, numbers or a window's words lie where
   the question spells a whole name (label, alias, or the last part of the id or name) of the
   measure, at its declared aggregation, or metric the select is
