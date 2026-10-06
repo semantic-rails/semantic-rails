@@ -320,13 +320,16 @@ selected count-valued measure when the draft has no grouping, or a recorded time
 honored clause.
 A multi-word authored synonym consumes only the contiguous question span it matches,
 allowing regular plurals. Two selectable subjects sharing a whole name or synonym, with
-no other words distinguishing them, return `needs_clarification` with both ids.
+no other words distinguishing them, return `needs_clarification` with both ids; only words
+inside a matched name distinguish them. A metric label without its parenthetical counts
+toward readiness but never selects a metric: "session to order conversion rate" names both
+the `(7d)` and the `(7d, same store)` metric, so it asks which one.
 Established whole-name metric precedence over a measure and explicit caller selections
 still settle a subject.
-Metric labels match with or without a parenthetical. At plan entry, straight and curly
-apostrophe contractions expand before scope, relevance, parsing and readiness: `what's`
-becomes `what is`, `didn't` becomes `did not`, and possessive `'s` is dropped. Messages
-quote the normalized words.
+At plan entry, straight and curly apostrophe contractions expand before scope, relevance,
+parsing and readiness: `what's` becomes `what is` and `didn't` becomes `did not`. Any other
+`'s`, quoted text, and a declared name or value spelled with an apostrophe stay as typed.
+Messages quote the normalized words.
 Stopwords are exempt unless they are exact catalog names. Regular plurals are recognized
 and consumed using the same forms; "-es" applies only after s, x, z, ch or sh. A
 engine synonym, a typo, a namespace, a description, a framing word or an object the draft doesn't select

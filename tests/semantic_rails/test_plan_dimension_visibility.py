@@ -251,6 +251,7 @@ def test_uncertain_visibility_does_not_disclose_dimensions(
     runtime_factory, monkeypatch, path
 ) -> None:
     from semantic_rails import policies
+    from semantic_rails.metadata_parts import relevance
 
     runtime = runtime_factory("jaffle_shop")
     _with_districts(runtime, monkeypatch)
@@ -258,6 +259,14 @@ def test_uncertain_visibility_does_not_disclose_dimensions(
     intent = "item revenue by district"
     _force_fallback(runtime, monkeypatch, intent, path)
     try:
+        # Unknown visibility withholds every object from the relevance floor.
+        refused = plan_payload(runtime, intent=intent, detail="debug")
+        assert refused["status"] == "out_of_scope"
+        assert "'catalog_token_sample': []" in str(refused)
+        _assert_no_hidden_dimension(refused)
+        # Past the floor, the grouping guard still refuses.
+        monkeypatch.setattr(relevance, "_intent_passes_relevance_floor", lambda *a: (True, []))
+        monkeypatch.setattr(relevance, "_intent_passes_grounding_floor", lambda *a, **k: (True, []))
         with pytest.raises(SemanticLayerError) as error:
             plan_payload(runtime, intent=intent, detail="debug")
         assert error.value.code == "OBJECT_NOT_FOUND"

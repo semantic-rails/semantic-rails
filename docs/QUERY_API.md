@@ -1015,7 +1015,9 @@ Response keys:
 
 For `status="out_of_scope"`, `why.code` distinguishes classifier
 refusals (`OUT_OF_SCOPE`) from relevance-floor refusals
-(`LOW_RELEVANCE`).
+(`LOW_RELEVANCE`). The relevance floor and its `catalog_token_sample`, in `plan` and in
+`discover`, read only objects the caller may see: a hidden object's label, id or synonym
+never counts toward relevance or appears in the sample.
 
 For `status="low_confidence"`, inspect `why` before execution. In particular,
 `PLAN_FALLBACK_SEMANTIC_DRIFT` means a fallback draft validated but changed or dropped requested

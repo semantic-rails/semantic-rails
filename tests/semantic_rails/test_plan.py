@@ -737,7 +737,7 @@ def test_parse_intent_remains_internal_debug_helper(runtime_factory) -> None:
     [
         "top stores by revenue",
         "monthly orders from customers who made more than 10 purchases in that month",
-        "what is the session-to-order conversion rate",
+        "what is the session-to-order conversion rate (7d)",
     ],
 )
 def test_plan_payload_stays_token_tight(runtime_factory, intent: str) -> None:
@@ -758,7 +758,7 @@ def test_plan_payload_stays_token_tight(runtime_factory, intent: str) -> None:
     [
         "top stores by revenue",
         "monthly orders from customers who made more than 10 purchases in that month",
-        "what is the session-to-order conversion rate",
+        "what is the session-to-order conversion rate (7d)",
     ],
 )
 def test_plan_query_detail_matches_best_query_ir_and_stays_compact(
