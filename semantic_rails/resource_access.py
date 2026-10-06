@@ -454,6 +454,13 @@ _GRANTED_WARNING_KEYS = {
     "FILTER_VALUE_UNVERIFIED": frozenset(
         {"code", "severity", "stage", "message", "object_ids", "details"}
     ),
+    # The source probe re-enters resource authorization. Denied reads expose no bucket keys.
+    "FILTERED_SERIES_BUCKETS_DROPPED": frozenset(
+        {"code", "severity", "stage", "message", "object_ids", "details"}
+    ),
+    "FILTERED_SERIES_BUCKETS_UNVERIFIED": frozenset(
+        {"code", "severity", "stage", "message", "object_ids", "details"}
+    ),
 }
 
 

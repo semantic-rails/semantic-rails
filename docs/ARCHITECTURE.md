@@ -533,6 +533,12 @@ bounds only zero
 substitution on filled, dense or combined leaves. One predicate decides both coverage and
 rollup refusal, on DuckDB and Postgres only. Populated values pass through; routed
 queries keep the window test and never scan a shadow raw leaf.
+Plain filtered additive leaves on a local clock retain source buckets by evaluating authored
+dimension filters in conditional operands. The settlement guard recognizes a retained leaf's
+row count, so a no-match bucket reads zero and matching unknown amounts stay NULL; folding
+keeps leaves with the same retention semantics together. Lowering refuses a retained-bucket
+claim without its conditional operand. Unsupported filtered series keep their existing SQL
+and diagnose dropped buckets through a bounded, separately authorized runtime query.
 Segment preview and count execute their prepared statements independently; the
 preview response includes both statements. Live valid-values uses the ordinary
 query path and includes the loaded semantic identity in its provenance.

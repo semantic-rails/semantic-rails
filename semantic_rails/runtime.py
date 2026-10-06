@@ -121,6 +121,7 @@ from .request_context import (
 )
 from .result_values import result_rows
 from .runtime_parts.disclosures import mixed_time_role_warnings
+from .runtime_parts.filtered_series import filtered_series_warnings
 from .runtime_parts.responses import (
     TIME_SHAPE_WINDOW_TOTAL,
     WINDOW_TOTAL_ASSUMPTION,
@@ -2822,6 +2823,11 @@ class Runtime:
             "trace",
         }
         out.update({key: value for key, value in metadata.items() if key in execute_keep})
+        out["warnings"].extend(
+            filtered_series_warnings(
+                self, compiled, payload, out["rows"], truncated=out["truncated"]
+            )
+        )
         # Data-sparseness diagnostic: when a query returns zero rows AND
         # the request applied a time filter, the most common cause is
         # "data not present in this window" — not a query bug. The

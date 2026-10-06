@@ -420,7 +420,7 @@ def _empty_group_cases(revenue: dict[str, Any], orders: dict[str, Any]) -> Itera
         {"select": [revenue, orders], "where": absent, "observation_scope": "query"},
         "SELECT SUM(amount), NULLIF(COUNT(*), 0) FROM orders WHERE store_id = 'zzz'",
     )
-    # ...also beside an input that has data: only the input that has none reads NULL.
+    # ...also beside an input that has data: an authored filter keeps observed buckets at 0.
     absent_only = _item(
         {"kind": "aggregate", "measure": REVENUE["measure"], "filter": {"all": absent}}, "absent"
     )
@@ -428,7 +428,7 @@ def _empty_group_cases(revenue: dict[str, Any], orders: dict[str, Any]) -> Itera
         "absent_filtered_input_beside_an_observed_one",
         "utc_authored",
         _ask("quarter", revenue, absent_only),
-        _by("quarter", "SUM(o.amount), SUM(CASE WHEN o.store_id = 'zzz' THEN o.amount END)"),
+        _by("quarter", "SUM(o.amount), SUM(CASE WHEN o.store_id = 'zzz' THEN o.amount ELSE 0 END)"),
     )
     # A ratio over an unknown numerator is unknown: store a's May amounts are all NULL, though
     # its one order counts.

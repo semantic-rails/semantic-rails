@@ -1019,6 +1019,19 @@ month that mixes NULL and known amounts sums the known ones. A conditional sum
 (`aggregate_if`, or an aggregate with a `filter`) reads only the rows that meet its condition: a group
 whose rows all fail it has none and reads `0`, and one whose matching rows all have a NULL
 amount reads `NULL`. Filled or not, a group reads the same.
+For a plain additive time series with an authored dimension filter, the source rows retain
+every observed bucket before that filter: a week with rows but no matches reads `0`, in both
+observation scopes, as its window total does. Query `where` filters and policy row filters
+still restrict those source rows. A period with no source rows stays absent without `fill`;
+no calendar is generated. This applies to sums and counts on a local clock with no rewrite,
+using local dimensions or single-hop lookups, and preserves matching NULL amounts.
+Other shapes retain their existing lowering: rollups, fanout and parent-lookup rewrites,
+nonlocal clocks, predicate populations, distribution branches, and conditional operands.
+For an additive filtered series on those paths, `FILTERED_SERIES_BUCKETS_DROPPED` names
+missing observed bucket/group keys found by a separately authorized source query. If that
+query is denied, fails, reaches its 1,001-row cap, or the answer has a limit or population
+filter, `FILTERED_SERIES_BUCKETS_UNVERIFIED` reports the reason without guessing the buckets.
+Non-additive metrics, including averages, keep their existing rows and NULL behavior.
 A window of a sum or difference windows each operand first, so an unknown goods amount
 drops only the goods, not that month's revenue.
 A summing window refuses a metric referenced inside its input, such as `net * 2` where `net`
