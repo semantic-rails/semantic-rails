@@ -11,6 +11,7 @@ from semantic_rails import architect_introspection, db
 from semantic_rails.db_parts import common
 from semantic_rails.db_parts.ducklake import DuckLakeAdapter
 from semantic_rails.db_parts.motherduck import MotherDuckAdapter
+from semantic_rails.sql_preparation import ParameterSlot, PreparedQuery
 
 WINDOW_QUERY = (
     "SELECT id, COUNT(id) OVER () AS total FROM (VALUES (3), (1), (2)) AS t(id) ORDER BY id"
@@ -58,6 +59,9 @@ class RecordingConnection:
         self.log.append(("cursor.sql", sql, list(params)))
         relation = self.raw.sql(sql, params=params)
         return None if relation is None else RecordingRelation(relation, self.log)
+
+    def extract_statements(self, sql):
+        return self.raw.extract_statements(sql)
 
     @property
     def description(self):
@@ -157,10 +161,77 @@ def test_jaffle_rows_order_description_duplicate_names_and_parameters(runtime_fa
         assert rows == expected[:cap]
         assert rows.truncated is (cap is not None and cap < len(expected))
         assert all(set(row) == {"order_id", "item_id", "total", "value"} for row in rows)
-        assert ("cursor.sql", sql, params) in log
+        executed_sql = (
+            f"SELECT * FROM ({sql}\n) AS q LIMIT {cap + 1}" if bound and cap is not None else sql
+        )
+        assert ("cursor.sql", executed_sql, params) in log
     finally:
         connection.close()
         runtime.close()
+
+
+@pytest.mark.timeout(10)
+def test_parameterized_max_rows_bounds_materialization():
+    sql = "SELECT i FROM range(?) t(i)"
+    log = []
+    connection = RecordingConnection(duckdb.connect(), log)
+    try:
+        rows = db.Database(connection, "duckdb").query(sql, [10**8], max_rows=2)
+        assert rows == [{"i": 0}, {"i": 1}]
+        assert rows.truncated is True
+        # Binding executes eagerly: the uncapped statement must never run.
+        assert ("cursor.sql", sql, [10**8]) not in log
+        assert not any(entry[0] == "relation.limit" for entry in log)
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("path", ["database", "duckdb"])
+@pytest.mark.parametrize("cap", [None, 1, 2])
+@pytest.mark.parametrize("sql", ["EXPLAIN SELECT ? AS n", "DESCRIBE SELECT ? AS n"])
+def test_parameterized_non_select_matches_dbapi(path, cap, sql):
+    with duckdb.connect() as reference:
+        cursor = reference.execute(sql, [42])
+        expected = [
+            dict(zip([column[0] for column in cursor.description], row, strict=True))
+            for row in cursor.fetchall()
+        ]
+    log = []
+    connection = RecordingConnection(duckdb.connect(), log)
+    try:
+        database = db.Database(connection, "duckdb")
+        if path == "database":
+            rows = database.query(sql, [42], max_rows=cap)
+        else:
+            adapter = db.DuckDBAdapter.__new__(db.DuckDBAdapter)
+            adapter._db = database
+            prepared = PreparedQuery(sql, parameters=(ParameterSlot("n", "integer"),))
+            rows = adapter.query_prepared(prepared, parameters=[42], limits={"max_rows": cap})
+        assert rows == expected[:cap]
+        assert rows.truncated is (cap is not None and len(expected) > cap)
+        assert [entry for entry in log if entry[0] == "cursor.sql"] == [("cursor.sql", sql, [42])]
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT ? AS n;",
+        "SELECT ? AS n; -- tail",
+        "SELECT ? AS n;; -- tail",
+        "SELECT ? AS n -- tail",
+        "WITH t AS (SELECT ? AS n) SELECT n FROM t;",
+    ],
+)
+def test_parameterized_select_cap_preserves_statement_terminators_and_comments(sql):
+    database = db.Database.connect_in_memory()
+    try:
+        rows = database.query(sql, [42], max_rows=1)
+        assert rows == [{"n": 42}]
+        assert rows.truncated is False
+    finally:
+        database.close()
 
 
 def test_non_select_returns_empty_rows_without_a_cursor_fetch():

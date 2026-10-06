@@ -1,1 +1,2 @@
 - DuckDB queries with window functions can no longer hang while their rows are read.
+- Parameterized DuckDB SELECT row caps apply before materialization, and EXPLAIN and DESCRIBE retain their result metadata.

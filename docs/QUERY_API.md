@@ -466,9 +466,11 @@ resource hints:
   the shared connection or another query) and drains the watchdog before the
   query returns. Warehouse-native adapters
   with second-granularity controls round up to the next second.
-- `max_rows` — DuckDB, DuckLake and MotherDuck limit a materialized relation to
-  `max_rows + 1` rows; other DB-API and native Snowflake cursors use bounded
-  fetches where supported. They return at most `max_rows` and set
+- `max_rows` — DuckDB, DuckLake and MotherDuck cap fetched rows at `max_rows + 1`.
+  Parameter-free reads use a relation limit; a single parameterized DuckDB SELECT
+  applies the cap inside SQL before eager materialization. Other parameterized
+  statements are capped after materialization. Other DB-API and native Snowflake
+  cursors use bounded fetches where supported. They return at most `max_rows` and set
   `truncated=true` when an additional row exists. Adapters without bounded reads
   still apply the cap after materialization.
 

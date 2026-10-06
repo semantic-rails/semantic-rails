@@ -278,16 +278,40 @@ def materialized_duckdb_result(
     *,
     max_rows: int | None = None,
 ) -> tuple[Any, list[Any]]:
-    """Read a DuckDB relation without opening a streamed cursor result."""
+    """Read a DuckDB relation without opening a streamed cursor result.
+
+    Parameter-bound sql() materializes eagerly, so relation fetchall() avoids
+    the streamed cursor fetch path that can hang on window queries.
+    """
     values = list(params or [])
-    relation = cursor.sql(sql, params=values)
+    is_select = False
+    statement_sql = sql
+    if values:
+        import duckdb
+
+        try:
+            # DuckDB also labels DESCRIBE as SELECT. Parse its metadata probe
+            # to distinguish describable SELECTs without executing that probe.
+            statements = cursor.extract_statements("DESCRIBE " + sql)
+        except duckdb.ParserException:
+            pass
+        else:
+            is_select = len(statements) == 1 and statements[0].type == duckdb.StatementType.SELECT
+        if is_select and max_rows is not None:
+            # Strip terminal delimiters using DuckDB tokens (which omit comments).
+            for token_start, _ in reversed(duckdb.tokenize(sql)):
+                if sql[token_start] != ";":
+                    break
+                statement_sql = sql[:token_start]
+            statement_sql = f"SELECT * FROM ({statement_sql}\n) AS q LIMIT {max_rows + 1}"
+    relation = cursor.sql(statement_sql, params=values)
     if relation is None:
         return [], []
-    if max_rows is not None:
+    if max_rows is not None and not is_select:
         relation = relation.limit(max_rows + 1)
     description = relation.description
     fetched = relation.fetchall()
-    if values:
+    if is_select:
         # Parameter-bound relations deduplicate names; DESCRIBE retains the
         # original names (including duplicates), without executing the query.
         described = cursor.sql("DESCRIBE " + sql, params=values).fetchall()
