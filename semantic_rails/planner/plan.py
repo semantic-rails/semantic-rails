@@ -48,7 +48,11 @@ from ._base import (
     _with_fiscal_calendar,
 )
 from .faithfulness import (
+    _FRAMING_WORDS,
+    CoverageGap,
+    _coverage_why,
     _dimension_nouns,
+    _query_contains_prior_period,
     _ranking_request,
     intent_faithfulness_why,
     intent_subject_why,
@@ -355,6 +359,7 @@ def plan_payload(
                 intent_str, unconsumed_catalog_words(runtime, intent_str, best_draft.query)
             )
             or _dropped_value_why(
+                intent_str,
                 unconsumed_unknown_words(runtime, intent_str, best_draft.query),
                 set(intent_ir.unresolved),
             )
@@ -364,8 +369,17 @@ def plan_payload(
         if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
         else None
     )
+    # Last, the draft's result can hold the answer the question's shape asks for: rows for
+    # "who" or "which", a row per item for "each", two values or more for a comparison, and a
+    # select for each of several questions. It runs only when nothing else holds the draft.
+    shape_why = (
+        _answer_shape_why(runtime, intent_str, best_draft.query)
+        if best_ok
+        and not (faithfulness_why or time_why or conversion_why or subject_why or value_why)
+        else None
+    )
     ready = best_ok and not (
-        faithfulness_why or time_why or conversion_why or subject_why or value_why
+        faithfulness_why or time_why or conversion_why or subject_why or value_why or shape_why
     )
     payload = {
         "plan_version": _VERSION,
@@ -403,6 +417,8 @@ def plan_payload(
         payload["why"] = subject_why
     elif value_why is not None:
         payload["why"] = value_why
+    elif shape_why is not None:
+        payload["why"] = shape_why
     elif not best_ok:
         errors = list(best_validation.get("errors") or [])
         payload["why"] = _trim_why_errors(errors)
@@ -687,7 +703,8 @@ def _unconsumed_terms_why(terms: list[str]) -> dict[str, Any] | None:
                 "message": (
                     "Add the filter or limit to best.query_ir, or (plan resolves days and "
                     "coarser windows only) state an hour range as query.time start and end "
-                    "ISO timestamps, or ask again without those words, then validate."
+                    "ISO timestamps, then validate. Asking again without those words changes "
+                    "the question."
                 ),
             }
         ],
@@ -725,7 +742,8 @@ def _unconsumed_catalog_why(question: str, words: list[str]) -> dict[str, Any] |
                 "message": (
                     "Find what these words name with discover, add it to best.query_ir (a "
                     "group_by for a grouping, the select for a measure), then validate; or ask "
-                    "again without those words."
+                    "the user what they mean. They name catalog objects, so asking again "
+                    "without them changes the question."
                 ),
             }
         ],
@@ -1136,7 +1154,8 @@ def _dropped_grouping_why(
                 "kind": "clarify_grouping" if unclear else "use_named_objects",
                 "message": (
                     "Find a dimension for each grouping with discover, add the missing ones to "
-                    "best.query_ir group_by, then validate; or ask again without those groupings."
+                    "best.query_ir group_by, then validate; or ask the user which grouping they "
+                    "mean."
                     + (
                         " Two groupings could replace the same draft dimension, so plan offers "
                         "no options: ask the user which dimension each grouping the question "
@@ -1420,16 +1439,179 @@ def _ranking_why(
     }
 
 
-def _dropped_value_why(unconsumed: list[str], unresolved: set[str]) -> dict[str, Any] | None:
+# Words asking for more than one value (``_answer_shape_why``). "per" is not one: "revenue per
+# order" is a ratio.
+_PERSON_WORDS = frozenset({"who", "whom", "whose"})
+_LIST_WORDS = _PERSON_WORDS | {"which", "list"}
+_EACH_WORDS = frozenset({"each", "every"})
+_COMPARISON_WORDS = frozenset(
+    {"against", "compare", "compared", "compares", "comparing", "comparison", "versus", "vs"}
+)
+_COMPARISON_PHRASE_RE = re.compile(r"\b(?:up\s+or\s+down|down\s+or\s+up)\b")
+# A question asking for one value: "how many", "how much", "what is", "what was", "what's".
+_VALUE_QUESTION_RE = re.compile(r"\bhow\s+(?:many|much)\b|\bwhat(?:['’]s|\s+(?:is|was|are|were))\b")
+_CLAUSE_BREAK_RE = re.compile(r"[,;:.?!\n]")
+
+
+def _answer_shape_why(runtime: Any, question: str, query: dict[str, Any]) -> dict[str, Any] | None:
+    """The draft's result can hold the answer the question's shape asks for, or the plan is not
+    ready.
+
+    One value (one select, no group_by, no grain that splits the rows, no prior period) answers
+    none of these. "who", "whom" or "whose" opening a clause asks for an entity's rows, so the
+    draft needs a group_by; "which" or "list" opening a clause, or a comparison word
+    ("compared", "vs", "versus", "against", "up or down"), needs more than one value; "each" or
+    "every" needs a row per item (a group_by, or a grain that splits the rows); and a question
+    asking two or more questions for a value ("how many", "how much", "what is", "what was")
+    needs a select for each. A word opens a clause when every word before it in its clause is a
+    stopword, a framing word or a word of a time window the question states ("show me which
+    stores", "last week, who"); in "customers who ordered" it is a relative pronoun. A word
+    inside a declared name asks nothing. The check reads the draft's shape, never what it
+    selects, so it only holds a plan: it never changes a draft or makes one ready.
+    """
+
+    from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
+
+    config = runtime._config
+    lowered = str(question or "").lower()
+    names = list(_declared_name_spans(config, lowered))
+    windows = list(_time_window(question).spans)
+    framing = _INTENT_STOPWORDS | _FRAMING_WORDS
+    tokens = list(re.finditer(r"[^\W_]+", lowered))
+    breaks = [match.start() for match in _CLAUSE_BREAK_RE.finditer(lowered)]
+
+    def outside(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
+        return not any(low <= span[0] and span[1] <= high for low, high in spans)
+
+    def opens_clause(index: int) -> bool:
+        clause = max((at for at in breaks if at < tokens[index].start()), default=-1)
+        return all(
+            (token.group() in framing and outside(token.span(), names))
+            or not outside(token.span(), windows)
+            for token in tokens[:index]
+            if token.start() > clause
+        )
+
+    asked: dict[str, list[str]] = {"person": [], "list": [], "each": [], "comparison": []}
+    for index, token in enumerate(tokens):
+        word = token.group()
+        kind = (
+            ("person" if word in _PERSON_WORDS else "list")
+            if word in _LIST_WORDS and opens_clause(index)
+            else "each"
+            if word in _EACH_WORDS
+            else "comparison"
+            if word in _COMPARISON_WORDS
+            else ""
+        )
+        if kind and outside(token.span(), names) and word not in asked[kind]:
+            asked[kind].append(word)
+    for match in _COMPARISON_PHRASE_RE.finditer(lowered):
+        if (phrase := " ".join(match.group().split())) not in asked["comparison"]:
+            asked["comparison"].append(phrase)
+    questions = [" ".join(match.group().split()) for match in _VALUE_QUESTION_RE.finditer(lowered)]
+
+    values = [item for item in query.get("select") or [] if isinstance(item, dict)]
+    rows = bool(query.get("group_by"))
+    split = rows or _grain_splits(_time_of(query))
+    several = split or len(values) > 1 or _query_contains_prior_period(runtime, query)
+    # (kind, the words asking, whether the draft's shape leaves them unanswered, message,
+    # expected, hint kind, hint).
+    shapes: list[tuple[str, list[str], bool, str, dict[str, Any], str, str]] = [
+        (
+            "list_unrealized",
+            asked["person"] + asked["list"],
+            bool((asked["person"] and not rows) or (asked["list"] and not several)),
+            "The question asks for rows ({words}), but the draft groups by nothing, so it "
+            "returns one value instead of listing them.",
+            {"answer": "rows"},
+            "group_by_listed_rows",
+            "Find what the question lists with discover, add its name or key dimension to "
+            "best.query_ir group_by, then validate; or ask the user what to list.",
+        ),
+        (
+            "each_unrealized",
+            asked["each"],
+            bool(asked["each"]) and not split,
+            "The question asks for a row per item ({words}), but the draft has no group_by or "
+            "time grain that splits the rows, so it returns one total.",
+            {"answer": "row per item"},
+            "group_by_each_item",
+            "Add the dimension or time grain the question asks for each of to best.query_ir, "
+            "then validate; or ask the user what it means.",
+        ),
+        (
+            "comparison_unrealized",
+            asked["comparison"],
+            bool(asked["comparison"]) and not several,
+            "The question asks for a comparison ({words}), but the draft returns one value, "
+            "with nothing to compare it with.",
+            {"answer": "values to compare"},
+            "add_compared_value",
+            "Add what the question compares with to best.query_ir (a second select, a "
+            "prior_period select for an earlier period, or a group_by), then validate; or ask "
+            "the user what to compare.",
+        ),
+        (
+            "multiple_questions_unrealized",
+            questions,
+            len(questions) > 1 and len(values) < len(questions),
+            f"The question asks {len(questions)} questions for a value ({{words}}), but the "
+            f"draft selects {len(values)}.",
+            {"select_count": len(questions)},
+            "plan_each_question",
+            "Plan each question on its own, or give best.query_ir one select per value asked "
+            "for, then validate.",
+        ),
+    ]
+    actual = {
+        "select_count": len(values),
+        "group_by": list(query.get("group_by") or []),
+        "time_grain": _time_of(query).get("grain"),
+    }
+    gaps = []
+    for kind, words, unmet, message, expected, hint, text in shapes:
+        if unmet:
+            clause = ", ".join(f'"{word}"' for word in words)
+            gaps.append(
+                CoverageGap(
+                    kind=kind,
+                    clause=clause,
+                    message=message.format(words=clause),
+                    expected=expected,
+                    actual=actual,
+                    recovery_hint={"kind": hint, "message": text},
+                )
+            )
+    return _coverage_why(gaps)
+
+
+def _contraction_tail(question: str, term: str) -> bool:
+    """Whether the question writes a word only as the end of a contraction or possessive ("s"
+    in "what's" or "store's"): with it gone, the question means the same."""
+
+    lowered = str(question or "").lower()
+    found = list(re.finditer(rf"(?<![^\W_]){re.escape(term)}(?![^\W_])", lowered))
+    return bool(found) and all(
+        re.search(r"[^\W_]['’]$", lowered[: match.start()]) for match in found
+    )
+
+
+def _dropped_value_why(
+    question: str, unconsumed: list[str], unresolved: set[str]
+) -> dict[str, Any] | None:
     """Unknown words left unresolved by the intent parse make the draft not ready.
 
     The parse records a word as it normalizes it ("messages" as "message", "sent" as
     "received"), so membership compares that form; the message names the question's spelling.
+    The hint offers to ask again without the words only when each is the end of a contraction
+    (``_contraction_tail``): plan can't tell whether any other word changes the question.
     """
 
     unknown = [term for term in unconsumed if _runtime_composition_terms(term) & unresolved]
     if not unknown:
         return None
+    filler = all(_contraction_tail(question, term) for term in unknown)
     return {
         "code": "PLAN_UNMATCHED_TERMS",
         "message": (
@@ -1441,8 +1623,13 @@ def _dropped_value_why(unconsumed: list[str], unresolved: set[str]) -> dict[str,
             {
                 "kind": "add_missing_condition",
                 "message": (
-                    "Find the values with valid_values, add the filter to best.query_ir, "
-                    "then validate; or ask again without those words."
+                    "Ask again without those words: each ends a contraction or possessive "
+                    '("s" in "what\'s"), so the question means the same without them.'
+                    if filler
+                    else "Find the values with valid_values, add the filter to "
+                    "best.query_ir, then validate; or ask the user what these words mean. "
+                    "Plan can't tell whether they change the question, so asking again "
+                    "without them may answer another one."
                 ),
             }
         ],
