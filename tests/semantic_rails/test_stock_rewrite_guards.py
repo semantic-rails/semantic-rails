@@ -94,6 +94,7 @@ def test_a_stock_on_a_child_filter_path_is_refused(
     with pytest.raises(SemanticLayerError) as raised:
         compile_query(config, None, query)
     assert raised.value.code == "MIXED_GRAIN_INVALID"
+    assert "a stock" in raised.value.details["why_invalid"]
 
     # The same snapshots on the supported leaf read the basic breakdown row, not a's
     # earlier basic snapshot. Every snapshot has the requested child, so it adds no restriction.
@@ -110,16 +111,20 @@ def test_a_flow_on_the_same_child_filter_path_keeps_its_answer(
     runtime: Runtime, package: Path, warehouse: str, placement: str
 ) -> None:
     config = replace(runtime.config, package=replace(runtime.config.package, warehouse=warehouse))
-    query = _payload("fee_flow", placement=placement)
+    query = {
+        **_payload("fee_flow", placement=placement),
+        "time": {"temporal_role": ROLE, "grain": "week"},
+    }
     compiled = compile_query(config, None, query)
     assert compiled["logical_plan"].measure_plans[0].rewrite_strategy == "fanout_dedup"
     sql = compiled["prepared_query"].sql.removesuffix("\nSETTINGS join_use_nulls = 1")
     assert ("EXISTS (" if warehouse == "duckdb" else "SELECT DISTINCT") in sql
     with duckdb.connect(str(package / "data" / "fees.duckdb"), read_only=True) as connection:
         reference = connection.execute(
-            "select sum(fee) from account_day d where plan = 'basic' and exists "
+            "select date_trunc('week', d.date_day)::timestamp, sum(fee) "
+            "from account_day d where plan = 'basic' and exists "
             "(select 1 from notices n where n.account_id = d.account_id "
-            "and n.date_day = d.date_day and n.kind = 'renewal')"
+            "and n.date_day = d.date_day and n.kind = 'renewal') group by 1 order by 1"
         ).fetchall()
         assert connection.execute(sql).fetchall() == reference
 
@@ -169,51 +174,88 @@ def test_a_parent_lookup_source_refuses_stock_and_keeps_flow(package: Path, sour
         engine.close()
 
 
-@pytest.mark.parametrize(
-    "warehouse,rewrite",
-    [("duckdb", "fanout_dedup"), ("clickhouse", "fanout_dedup"), ("duckdb", "parent_lookup")],
-    ids=["semijoin", "dedup", "parent_lookup"],
-)
+@pytest.mark.parametrize("warehouse", ["duckdb", "clickhouse"], ids=["semijoin", "dedup"])
 @pytest.mark.parametrize("guard_empty", [True, False])
 @pytest.mark.parametrize("measure", ["fee", "fee_sop"])
+@pytest.mark.parametrize("accumulation_kind", ["stock", "flow"])
 def test_bypassing_the_stock_rewrite_checks_refuses_at_sql_lowering(
-    runtime: Runtime, warehouse: str, rewrite: str, guard_empty: bool, measure: str
+    runtime: Runtime, warehouse: str, guard_empty: bool, measure: str, accumulation_kind: str
 ) -> None:
     query = _payload(measure)
     query["time"] = {"temporal_role": ROLE, "grain": "week"}
-    if rewrite == "parent_lookup":
-        query["where"] = [_is(PLAN, "basic")]
-        plan = plan_query(runtime.config, None, query)
-    else:
-        # Keep a real child path, but bypass the planner's stock check by replacing the
-        # flow measure with a stock after planning.
-        flow_query = {**_payload("fee_flow"), "time": query["time"]}
-        plan = plan_query(runtime.config, None, flow_query)
-        bound = replace(plan.bound_measures[0], measure_id=f"measure.fees.{measure}")
-        plan = replace(
-            plan,
-            query=query,
-            bound_measures=[bound],
-            measure_plans=[replace(plan.measure_plans[0], bound_measure=bound)],
-        )
+    # Keep a real child path, but bypass the planner's stock check by replacing the
+    # flow measure with a stock after planning.
+    flow_query = {**_payload("fee_flow"), "time": query["time"]}
+    plan = plan_query(runtime.config, None, flow_query)
+    bound = replace(plan.bound_measures[0], measure_id=f"measure.fees.{measure}")
+    plan = replace(
+        plan,
+        query=query,
+        bound_measures=[bound],
+        measure_plans=[replace(plan.measure_plans[0], bound_measure=bound)],
+    )
     config = replace(runtime.config, package=replace(runtime.config.package, warehouse=warehouse))
-    if rewrite == "parent_lookup":
-        # Also bypass the loader's prohibition on a stock carrying a lookup value.
-        config = replace(
-            config,
-            measures=[
-                replace(row, lookup_from="measure.fees.fee_flow", lookup_via="entity.fees_account")
-                if row.id == f"measure.fees.{measure}"
-                else row
-                for row in config.measures
-            ],
-        )
-    plan = replace(plan, measure_plans=[replace(plan.measure_plans[0], rewrite_strategy=rewrite)])
+    # Use the planner's semi-additive classification even if a supplied config changes
+    # the accumulation label without changing that classification.
+    config = replace(
+        config,
+        measures=[
+            replace(row, accumulation=replace(row.accumulation, kind=accumulation_kind))
+            if row.id == bound.measure_id
+            else row
+            for row in config.measures
+        ],
+    )
     with pytest.raises(SemanticLayerError) as raised:
         lower_to_sql(plan, config, guard_empty=guard_empty)
     assert raised.value.code == "REWRITE_NOT_SUPPORTED"
     assert raised.value.details == {
         "reason": "stock_requires_snapshot_selection",
         "measure": f"measure.fees.{measure}",
-        "rewrite_strategy": rewrite,
+        "rewrite_strategy": "fanout_dedup",
     }
+
+
+@pytest.mark.parametrize("guard_empty", [True, False])
+@pytest.mark.parametrize("measure", ["fee", "fee_sop"])
+def test_bypassing_the_stock_lookup_source_check_refuses_at_sql_lowering(
+    package: Path, guard_empty: bool, measure: str
+) -> None:
+    path = package / "models" / "notices.yml"
+    doc = yaml.safe_load(path.read_text())
+    doc["model"]["entities"]["account"] = {}
+    doc["model"]["measures"] = {
+        "carried_fee": {"kind": "lookup", "from": "fee_flow", "via": "account"}
+    }
+    path.write_text(yaml.safe_dump(doc))
+    engine = Runtime.from_path(str(package))
+    try:
+        query = {
+            "version": 1,
+            "select": [{"expression": {"measure": "measure.fees.carried_fee"}, "as": "v"}],
+            "group_by": ["dimension.fees_notice_account_id"],
+        }
+        plan = plan_query(engine.config, None, query)
+        assert plan.measure_plans[0].rewrite_strategy == "parent_lookup"
+        # The same supplied plan lowers while its source remains a flow.
+        lower_to_sql(plan, engine.config, guard_empty=guard_empty)
+        config = replace(
+            engine.config,
+            measures=[
+                replace(row, lookup_from=f"measure.fees.{measure}")
+                if row.id == "measure.fees.carried_fee"
+                else row
+                for row in engine.config.measures
+            ],
+        )
+        with pytest.raises(SemanticLayerError) as raised:
+            lower_to_sql(plan, config, guard_empty=guard_empty)
+        assert raised.value.code == "REWRITE_NOT_SUPPORTED"
+        assert raised.value.details == {
+            "reason": "stock_requires_snapshot_selection",
+            "measure": f"measure.fees.{measure}",
+            "lookup": "measure.fees.carried_fee",
+            "rewrite_strategy": "parent_lookup",
+        }
+    finally:
+        engine.close()

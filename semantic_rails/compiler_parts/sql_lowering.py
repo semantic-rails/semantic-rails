@@ -5714,21 +5714,27 @@ def lower_to_sql(
     # planner/loader's stock refusal even when a caller supplies a plan that bypasses them.
     measures = _measure_index(config)
     for row in plan.measure_plans:
+        if row.rewrite_strategy not in {"fanout_dedup", "parent_lookup"}:
+            continue
         measure = measures[row.bound_measure.measure_id]
-        if measure.accumulation.kind == "stock" and row.rewrite_strategy in {
-            "fanout_dedup",
-            "parent_lookup",
-        }:
-            raise SemanticLayerError(
-                "REWRITE_NOT_SUPPORTED",
-                "A stock requires snapshot selection before attribute filters; "
-                "row-based fan-out and parent-lookup rewrites cannot preserve that reading.",
-                details={
-                    "reason": "stock_requires_snapshot_selection",
-                    "measure": row.bound_measure.measure_id,
-                    "rewrite_strategy": row.rewrite_strategy,
-                },
-            )
+        source = (
+            measures[measure.lookup_from] if row.rewrite_strategy == "parent_lookup" else measure
+        )
+        if source.measure_class != "semi_additive":
+            continue
+        details = {
+            "reason": "stock_requires_snapshot_selection",
+            "measure": source.id,
+            "rewrite_strategy": row.rewrite_strategy,
+        }
+        if row.rewrite_strategy == "parent_lookup":
+            details["lookup"] = measure.id
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            "A stock requires snapshot selection before attribute filters; "
+            "row-based fan-out and parent-lookup rewrites cannot preserve that reading.",
+            details=details,
+        )
     if _emits_time_coverage(plan, config) and any(
         row.aggregate_relation_id for row in plan.measure_plans
     ):
