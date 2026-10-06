@@ -1065,6 +1065,60 @@ def test_routing_report_caps_its_rows(tmp_path: Path, monkeypatch):
     assert len(report["candidates"]) == 1 and report["candidates_omitted"] == 1
 
 
+@pytest.mark.parametrize("fanout_path", [True, False], ids=["declared-fanout", "foreign-key-only"])
+def test_foreign_key_rollup_checks_its_declared_path(tmp_path: Path, fanout_path: bool):
+    path = [_LINE_ORDER, "relationship.lines_customer"] if fanout_path else []
+    binding = {"column": "customer_key", **({"path": path} if path else {})}
+    variant = {**_BUYER_KEY, "columns": {"revenue": "revenue", _CUSTOMER_KEY: binding}}
+    package = tmp_path / "p"
+    _rollup_package(package, {"buyer": variant}, {"lines": True, "ship_to": None})
+    source = package / "models" / "order_lines.yml"
+    lines = yaml.safe_load(source.read_text())
+    lines["model"]["joins"]["customer"] = {
+        "id": "relationship.lines_customer",
+        "to": "customer",
+        "via": ["customer_id"],
+    }
+    _write_yaml(source, lines)
+    config = load_package_config(str(package))
+    query = _rollup_query(_REVENUE, "sum", "month")
+    compiled = compile_query(config, Registry(config), query)
+    with aggregate_routing(False):
+        off = compile_query(config, Registry(config), query)
+
+    with duckdb.connect() as connection:
+        connection.execute(_ROLLUP_SEED)
+        connection.execute("INSERT INTO customers VALUES ('c9', 'east', 9)")
+        connection.execute("""
+            CREATE OR REPLACE TABLE order_lines AS
+            SELECT order_id * 2 + n AS line_id, order_id, customer_id, 'a' AS product
+            FROM order_fact CROSS JOIN range(2) t(n)
+        """)
+        if fanout_path:
+            connection.execute("""
+                CREATE OR REPLACE TABLE order_buyer_monthly AS
+                SELECT date_trunc('month', o.ordered_at) AS month_start,
+                    c.customer_id AS customer_key, SUM(o.amount) AS revenue
+                FROM order_fact o JOIN order_lines l ON l.order_id = o.order_id
+                JOIN customers c ON c.customer_id = l.customer_id GROUP BY 1, 2
+            """)
+        reference = connection.execute("""
+            SELECT date_trunc('month', ordered_at), SUM(amount)
+            FROM order_fact GROUP BY 1 ORDER BY 1
+        """).fetchall()
+        assert [row[1] for row in reference] == [78, 29, 81, 60]
+        assert sorted(connection.execute(compiled["sql"]).fetchall()) == reference
+        assert sorted(connection.execute(off["sql"]).fetchall()) == reference
+
+    relation_id = variant["id"]
+    leaf = compiled["logical_plan"].measure_plans[0]
+    assert leaf.aggregate_relation_rejections == (
+        {relation_id: "join_path_mismatch"} if fanout_path else {}
+    )
+    report = compiled["explain"].performance_plan["aggregate_routing"]
+    assert report["selected"] == ([] if fanout_path else [relation_id])
+
+
 def _routed_answers(tmp_path: Path, rollups: tuple, query: dict) -> dict:
     """Check that the package without its rollups, with them, and with routing off all return
     the same rows; return the routing report with them."""

@@ -180,11 +180,13 @@ def _prejoined_dimensions(row: AggregateRelationConfig, config: PackageConfig) -
     prejoined: set[str] = set()
     for dim_id in _aggregate_dimension_coverage(row):
         entity = _dimension_index(config)[dim_id].entity
-        if entity == row.source_entity or _direct_dimension_source_expr(
-            row.source_entity, dim_id, config
+        path = row.dimension_paths.get(dim_id, [])
+        if not path and (
+            entity == row.source_entity
+            or _direct_dimension_source_expr(row.source_entity, dim_id, config)
         ):
             continue
-        path, current = row.dimension_paths.get(dim_id, []), row.source_entity
+        current = row.source_entity
         for rel_id in path:
             rel = relationships[rel_id]
             if current not in {rel.source_entity, rel.target_entity}:

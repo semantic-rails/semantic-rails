@@ -2139,7 +2139,10 @@ Routing is conservative in the MVP:
   join would have repeated fact rows in every other column.
   Another model's key read from a foreign key (such as the customer key) needs a
   `path` of the one relationship between the two models, and doesn't route when
-  two relationships link them. Build a pre-joined column with an inner join: the
+  two relationships link them. Every declared path is checked even when the
+  column can be read from a foreign key and the query doesn't use it; an unsafe
+  path rejects the rollup with `join_path_mismatch`.
+  Build a pre-joined column with an inner join: the
   base path joins a dimension a rollup of the measure's model holds with an inner
   join too, so a fact row with no match is left out of both and routing never
   changes an answer. So a rollup with a pre-joined column answers only queries that
