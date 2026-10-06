@@ -443,8 +443,16 @@ def test_one_endpoint_does_not_settle_a_long_question(
             },
         )
         assert payload["status"] == "low_confidence"
-        assert payload["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
-        hint = payload["why"]["recovery_hints"][1]["message"]
+        assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+        assert [gap["kind"] for gap in payload["why"]["details"]["gaps"]] == [
+            "time_window_unrealized",
+            "time_window_unresolved",
+        ]
+        hint = next(
+            hint["message"]
+            for hint in payload["why"]["recovery_hints"]
+            if hint["kind"] == "provide_explicit_bounds"
+        )
         assert "query.time" in hint and "partial_query" not in hint
     finally:
         runtime.close()

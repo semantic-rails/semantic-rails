@@ -1523,9 +1523,9 @@ def _last_days(days: int) -> dict[str, str]:
         ("revenue in 2017", YEAR_2017, True),
         ("revenue for the last 7 days", {"range": {"last": {"unit": "day", "value": 7}}}, True),
         ("revenue for the last 7 days", _last_days(7), True),
-        # One bound is checked as the two are: a lookback metric loses its start.
-        ("revenue in 2017", {"end": "2018-01-01"}, True),
-        ("revenue in 2017", {"start": "2017-01-01"}, True),
+        # A window missing a bound reads past the question's on that side.
+        ("revenue in 2017", {"end": "2018-01-01"}, False),
+        ("revenue in 2017", {"start": "2017-01-01"}, False),
         ("revenue in 2017", {"start": "2018-01-01"}, False),
         ("revenue on 15 March 2017", {"end": "2017-03-16T13:00:00"}, False),
         # Another day, or the same start with another end.
