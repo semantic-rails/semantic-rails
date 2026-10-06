@@ -33,7 +33,7 @@ ORDER_TIME = "temporal_role.jaffle_order_time"
 STORE = "dimension.jaffle_store_name"
 SEGMENT = "segment.jaffle.high_value_customers"
 QUERY = {
-    "version": 2,
+    "version": 1,
     "select": [{"as": "revenue", "expression": {"measure": "measure.jaffle.revenue_usd"}}],
     "group_by": [STORE],
     "time": {"temporal_role": ORDER_TIME, "grain": "month", "start": "2017-01-01"},
@@ -564,10 +564,10 @@ def test_envelopes_state_each_fact_once(v2: SemanticLayerMCPAdapter) -> None:
         "timing_ms",
     } <= set(ok)
     # Main accepts an unambiguous unwrapped metric; conflicting targets still carry recovery.
-    bare = {"version": 2, "select": [{"metric": "metric.sales.aov_usd", "as": "aov"}]}
+    bare = {"version": 1, "select": [{"metric": "metric.sales.aov_usd", "as": "aov"}]}
     assert v2.call_tool("execute", {"query": bare, "mode": "validate"})["ok"]
     bad = {
-        "version": 2,
+        "version": 1,
         "select": [{"metric": "metric.sales.aov_usd", "measure": "measure.jaffle.revenue_usd"}],
     }
     failed = v2.call_tool("execute", {"query": bad})

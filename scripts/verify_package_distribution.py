@@ -42,7 +42,6 @@ REQUIRED_WHEEL_SUFFIXES = {
     "semantic_rails/contracts/architect_mcp.v1.json",
     "semantic_rails/contracts/http_api.v1.openapi.json",
     "semantic_rails/contracts/package.v1.json",
-    "semantic_rails/contracts/query_ir.preview.v2.json",
     "semantic_rails/contracts/query_ir.v1.json",
     "semantic_rails/contracts/semantic_contract.v1.json",
     "semantic_rails/contracts/metric_portability.v1.json",

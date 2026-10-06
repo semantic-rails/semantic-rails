@@ -1135,7 +1135,7 @@ def test_optimized_anchored_predicates_are_cuts(config, monkeypatch, allowed, co
         ],
     }
     query = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "expression": {"kind": "ratio", "numerator": numerator, "denominator": aggregate},

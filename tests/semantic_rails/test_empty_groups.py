@@ -112,7 +112,7 @@ def test_a_count_beside_a_second_fact_reads_zero_in_its_empty_group(runtime: Run
     window = {"start": "2017-04-01", "end": "2017-04-08"}
     response = runtime.query(
         {
-            "version": 2,
+            "version": 1,
             "select": _select(revenue=REVENUE, items=ITEMS),
             "group_by": [ORDER_ID],
             "time": {"temporal_role": ORDER_TIME, **window},
@@ -135,7 +135,7 @@ def test_a_count_beside_a_second_fact_reads_zero_in_its_empty_group(runtime: Run
 def test_a_limit_and_a_metric_filter_cannot_change_what_the_guard_sees(runtime: Runtime) -> None:
     """The orders with no items are all-zero once filtered, but the measure has items elsewhere."""
     query = {
-        "version": 2,
+        "version": 1,
         "select": _select(orders=ORDERS),
         "group_by": [ORDER_ID],
         "metric_filters": [{"expression": ITEMS, "op": "=", "value": 0}],
@@ -161,7 +161,7 @@ def test_a_filter_that_matches_nothing_reads_null_and_says_so(runtime: Runtime) 
     """Under the query scope; the dataset scope reads 0, as the raw count does, and names the
     value that matched nothing (test_observation_scope)."""
     query = {
-        "version": 2,
+        "version": 1,
         "select": _select(revenue=REVENUE, orders=ORDERS),
         "where": NO_SUCH_STORE,
         "observation_scope": "query",
@@ -194,7 +194,7 @@ def test_a_never_matched_authored_filter_reads_zero_in_observed_buckets(
     none = {**REVENUE, "kind": "aggregate", "filter": {"all": NO_SUCH_STORE}}
     response = runtime.query(
         {
-            "version": 2,
+            "version": 1,
             "select": _select(revenue=REVENUE, none=none),
             "observation_scope": scope,
             "time": {"temporal_role": ORDER_TIME, "grain": "quarter"},
@@ -215,7 +215,7 @@ def test_a_never_matched_authored_filter_reads_zero_in_observed_buckets(
     assert warning["details"]["filters"][0]["value"] == NO_SUCH_STORE[0]["value"]
     real = runtime.query(
         {
-            "version": 2,
+            "version": 1,
             "select": _select(
                 revenue=REVENUE,
                 filtered={
@@ -239,14 +239,14 @@ def test_an_average_of_nothing_is_undefined_not_missing_data(runtime: Runtime) -
         "aggregation": "avg",
         "filter": {"all": NO_SUCH_STORE},
     }
-    response = runtime.query({"version": 2, "select": _select(average=average)})
+    response = runtime.query({"version": 1, "select": _select(average=average)})
     assert response["rows"] == [{"average": None}]
     assert not _warnings(response)
 
 
 def test_no_rows_and_no_time_window_says_nothing_matched(runtime: Runtime) -> None:
     query = {
-        "version": 2,
+        "version": 1,
         "select": _select(revenue=REVENUE),
         "group_by": [STORE],
         "where": NO_SUCH_STORE,
@@ -275,7 +275,7 @@ def test_an_output_with_a_reason_of_its_own_to_be_null_never_gets_the_warning(
     prior = {"kind": "prior_period", "input": ORDERS, "offset": {"unit": "year", "value": 1}}
     response = runtime.query(
         {
-            "version": 2,
+            "version": 1,
             "select": _select(orders=ORDERS, prior_year=prior),
             "time": {"temporal_role": ORDER_TIME, "grain": "month", "end": "2017-06-01"},
         }
@@ -288,7 +288,7 @@ def test_an_output_with_a_reason_of_its_own_to_be_null_never_gets_the_warning(
 def test_a_metric_filter_that_removes_every_group_is_not_missing_data(runtime: Runtime) -> None:
     response = runtime.query(
         {
-            "version": 2,
+            "version": 1,
             "select": _select(revenue=REVENUE),
             "group_by": [STORE],
             "metric_filters": [{"expression": ORDERS, "op": ">", "value": 100000}],
@@ -304,7 +304,7 @@ def test_a_metric_filter_that_removes_every_group_is_not_missing_data(runtime: R
 def test_the_query_mcp_carries_the_warning_at_its_default_verbosity(
     runtime: Runtime, scope: str, code: str
 ) -> None:
-    query = {"version": 2, "select": _select(revenue=REVENUE), "where": NO_SUCH_STORE}
+    query = {"version": 1, "select": _select(revenue=REVENUE), "where": NO_SUCH_STORE}
     query["observation_scope"] = scope
     response = SemanticLayerMCPAdapter(runtime).call_tool("execute", {"query": query})
     assert response["ok"], response["errors"]
@@ -417,7 +417,7 @@ SHAPES = {
 def test_every_sum_and_count_a_projection_reads_comes_from_the_guard(
     config: Any, shape: str
 ) -> None:
-    compiled = compile_query(config, Registry(config), {"version": 2, **SHAPES[shape]})
+    compiled = compile_query(config, Registry(config), {"version": 1, **SHAPES[shape]})
     assert_settled_in_one_place(compiled, config)
 
 
@@ -429,7 +429,7 @@ def test_a_settle_path_that_skips_the_observation_scope_is_refused(
 ) -> None:
     """Force the bypass: lowering probes no measure's own rows, or never asks for the scope,
     while the guard reads it. The filtered query is refused, never judged inside its filters."""
-    query = {"version": 2, **SHAPES["filtered_by_store"]}
+    query = {"version": 1, **SHAPES["filtered_by_store"]}
     compile_query(config, Registry(config), {**query, "observation_scope": "query"})
     monkeypatch.setattr(sql_lowering, patched, lambda *args: value)
     with pytest.raises(SemanticLayerError) as raised:
@@ -449,7 +449,7 @@ def test_a_lowering_path_that_skips_the_guard_is_refused(
     """Force the bypass: lowering builds no guard, and the check that works it out again refuses."""
     monkeypatch.setattr(sql_lowering, patched, lambda *args: {})
     with pytest.raises(SemanticLayerError) as raised:
-        compile_query(config, Registry(config), {"version": 2, **SHAPES[shape]})
+        compile_query(config, Registry(config), {"version": 1, **SHAPES[shape]})
     assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
 
 
@@ -470,7 +470,7 @@ def test_a_leaf_that_skips_the_row_count_is_refused(
     from one whose values are all unknown, and refuses rather than read 0."""
     monkeypatch.setattr(sql_lowering, "_row_markers", lambda *args: [])
     with pytest.raises(SemanticLayerError) as raised:
-        compile_query(config, Registry(config), {"version": 2, **SHAPES[shape]})
+        compile_query(config, Registry(config), {"version": 1, **SHAPES[shape]})
     assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
     assert raised.value.details["missing"] == "row_count"
 
@@ -487,7 +487,7 @@ def test_a_predicate_source_that_skips_the_guard_is_refused(
 
     monkeypatch.setattr(compiler, "_compile_predicate_source_ast", unguarded)
     with pytest.raises(SemanticLayerError) as raised:
-        compile_query(config, Registry(config), {"version": 2, **SHAPES[shape]})
+        compile_query(config, Registry(config), {"version": 1, **SHAPES[shape]})
     assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
 
 
@@ -1449,7 +1449,7 @@ def test_a_row_count_named_like_another_column_is_refused(
         lambda plan, taken: {row.bound_measure.alias: "Revenue" for row in plan.measure_plans},
     )
     with pytest.raises(SemanticLayerError) as raised:
-        compile_query(config, Registry(config), {"version": 2, **SHAPES["single_measure"]})
+        compile_query(config, Registry(config), {"version": 1, **SHAPES["single_measure"]})
     assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
     assert raised.value.details["row_counts_named_like"] == ["revenue"]
 
@@ -2128,7 +2128,7 @@ def test_a_rollup_leaf_without_a_row_count_is_refused(
 @pytest.mark.parametrize("warehouse", ["duckdb", "postgres", "clickhouse", "snowflake"])
 def test_clickhouse_statements_set_join_use_nulls(config: Any, warehouse: str) -> None:
     config = replace(config, package=replace(config.package, warehouse=warehouse))
-    query = {"version": 2, "select": _select(revenue=REVENUE, items=ITEMS), "group_by": [STORE]}
+    query = {"version": 1, "select": _select(revenue=REVENUE, items=ITEMS), "group_by": [STORE]}
     sql = compile_query(config, Registry(config), query)["sql"]
     assert sql.endswith("\nSETTINGS join_use_nulls = 1") is (warehouse == "clickhouse")
 

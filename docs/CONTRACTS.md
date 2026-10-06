@@ -11,8 +11,7 @@ of those exact released bytes, not an independently edited registry.
 |---|---|---|
 | `architect_mcp.v1.json` | Engine | Stable Architect tools, schemas, annotations, and transaction semantics |
 | `package.v1.json` | Engine | Stable project/package major |
-| `query_ir.v1.json` | Engine | Stable Query IR v1 |
-| `query_ir.preview.v2.json` | Engine | Preview; may change before v2 |
+| `query_ir.v1.json` | Engine | Stable Query IR v1 (the only supported version) |
 | `metric_portability.v1.json` | Engine | Stable read-only metric catalog for BI bindings |
 | `semantic_contract.v1.json` | Engine | Stable framework-neutral validation payload |
 | `validation_report.v1.json` | Engine | Stable cross-validator report envelope |

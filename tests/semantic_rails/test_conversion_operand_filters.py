@@ -51,7 +51,7 @@ def _conversion_query(
     if dimension_bindings is not None:
         expression["dimension_bindings"] = dimension_bindings
     query: dict = {
-        "version": 2,
+        "version": 1,
         "select": [{"as": "a_then_b_conversion_rate", "expression": expression}],
         "verbosity": "full",
     }
