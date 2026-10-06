@@ -490,6 +490,13 @@ def _reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
             "TIMESTAMP '2017-07-01' AND o.ordered_at < TIMESTAMP '2017-08-01' GROUP BY 1, 2 "
             "ORDER BY 3 DESC LIMIT 3",
         ),
+        # "what's" reads as "what is" before any check.
+        (
+            "What's revenue last month?",
+            {},
+            "SELECT sum(order_total_cents) / 100.0 FROM jaffle_order WHERE ordered_at >= "
+            "TIMESTAMP '2017-07-01' AND ordered_at < TIMESTAMP '2017-08-01'",
+        ),
     ],
 )
 def test_a_ready_answer_equals_its_reference(
@@ -569,40 +576,39 @@ def test_dropping_those_words_anyway_is_still_held(jaffle: Runtime, question: st
     assert "ready_for" not in retry["next"]
 
 
-@pytest.mark.parametrize(
-    ("question", "status"),
-    [
-        ("What's revenue last month?", "ok"),
-    ],
-)
-def test_only_a_contraction_end_may_be_dropped(jaffle: Runtime, question: str, status: str) -> None:
-    held = plan_payload(jaffle, intent=question)
-    assert held["status"] == "low_confidence"
-    assert held["why"]["details"] == {"terms": ["s"], "kind": "filter_values_unrealized"}
-    assert [hint for hint in _hints(held) if DROP_HINT.search(hint)]
+@pytest.mark.parametrize("question", ["What's revenue last month?", "What’s revenue last month?"])
+def test_a_contraction_is_expanded_before_any_check(jaffle: Runtime, question: str) -> None:
+    # Plan reads "what's" as "what is" before every check, so its "s" is never an unmatched
+    # word, and the draft is the one asking again without the "s" gets.
+    plan = plan_payload(jaffle, intent=question)
+    assert plan["intent"] == "What is revenue last month?"
+    assert plan["status"] == "ok", plan.get("why")
+    assert plan["next"]["ready_for"] == ["execute"]
 
-    # The retry the hint offers is the same question: every check reads it again, and a ready
-    # retry is the held draft.
     retry = plan_payload(jaffle, intent=_without(question, ["s"]))
-    assert retry["status"] == status
-    assert retry["best"]["query_ir"] == held["best"]["query_ir"]
+    assert retry["status"] == "ok"
+    assert retry["best"]["query_ir"] == plan["best"]["query_ir"]
 
 
 @pytest.mark.parametrize(
-    ("question", "terms"),
+    ("question", "code", "named"),
     [
-        ("What's revenue from blorps last month?", {"s", "blorps"}),
-        # Without its "t", "can't" says the opposite.
-        ("Revenue we can't collect last month", {"t"}),
+        # "what's" reads as "what is"; "blorps" still carries meaning.
+        ("What's revenue from blorps last month?", UNMATCHED, {"blorps"}),
+        # "can't" reads as "can not": a negation the draft lacks, never a tail to drop.
+        ("Revenue we can't collect last month", GAP, {"negation_unrealized"}),
     ],
 )
 def test_a_meaningful_word_or_tail_is_not_offered(
-    jaffle: Runtime, question: str, terms: set[str]
+    jaffle: Runtime, question: str, code: str, named: set[str]
 ) -> None:
     payload = plan_payload(jaffle, intent=question)
 
     assert payload["status"] == "low_confidence"
-    assert set(payload["why"]["details"]["terms"]) == terms
+    assert payload["why"]["code"] == code
+    # The words the hold names, or the kinds of the gaps it reports.
+    details = payload["why"]["details"]
+    assert set(details.get("terms") or [gap["kind"] for gap in _gaps(payload)]) == named
     assert _hints(payload)
     assert not [hint for hint in _hints(payload) if DROP_HINT.search(hint)]
 
