@@ -50,8 +50,12 @@ rule, source file and full YAML path; author decisions remain pending until answ
 Duplicate identities, overlapping edits and incompatible list edit orders refuse
 with `CONFIG_CONFLICT`. Independent list edits run from higher indexes to lower
 indexes, preserving each original target and each finding's own edit sequence.
-Source iterators retain loader identities, and expression traversal skips metadata,
-literal data and parameters. The rule registry is empty; no command invokes it yet.
+Source iterators retain loader identities. Expression roots follow the loader:
+a truthy `expression` block takes precedence; otherwise only non-null direct
+expression fields are walked. Segment membership queries remain expression sources.
+Traversal shares the expression validator's child iterator, which visits every key
+except opaque metadata, literal/filter values and parameters. Row metadata stays
+outside the expression roots. The rule registry is empty; no command invokes it yet.
 
 ## Architecture Principles
 

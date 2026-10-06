@@ -9,20 +9,14 @@ from itertools import groupby
 from pathlib import Path
 from typing import Any, Literal
 
-from ..config import _DIRECT_EXPRESSION_FIELDS
+from ..config import _authored_direct_fields
 from ..errors import SemanticLayerError
-from ..expressions import _opaque_expression_data
+from ..expressions import _expression_children
 from ..package_snapshot import capture_package_source
 from ..yaml_loader import safe_load
 
 YamlPath = tuple[str | int, ...]
 Row = tuple[str, YamlPath, dict[str, Any]]
-_EXPRESSION_CHILDREN = frozenset(
-    ("expression", "numerator", "denominator", "left", "right", "input", "args")
-    + ("expr", "values", "low", "high", "value", "null_value", "date", "whens")
-    + ("when", "then", "else", "condition", "over", "base", "converted", "filter")
-    + ("where", "predicates", "membership", "metric_filters", "select")
-)
 _SECTION_FILES = {
     "defaults": "defaults.yml",
     "graph": "graph.yml",
@@ -86,14 +80,12 @@ def _walk(
 ) -> Iterator[tuple[YamlPath, Any]]:
     yield path, value
     if isinstance(value, (dict, list)) and id(value) not in ancestors:
-        items = value.items() if isinstance(value, dict) else enumerate(value)
+        items = (
+            (_expression_children(value) if expression else value.items())
+            if isinstance(value, dict)
+            else enumerate(value)
+        )
         for key, child in items:
-            if (
-                expression
-                and isinstance(value, dict)
-                and (key not in _EXPRESSION_CHILDREN or _opaque_expression_data(value, key))
-            ):
-                continue
             yield from _walk(child, (*path, key), (*ancestors, id(value)), expression=expression)
 
 
@@ -222,18 +214,16 @@ class PackageFiles:
         return self._members("measures")
 
     def expressions(self) -> Iterator[Row]:
+        roots = [row for row in self.queries() if row[1][-1:] == ("membership",)]
         for file, path, row in (*self.metrics(), *self.segments()):
-            for child_path, child in _walk(row, path, expression=True):
-                relative = child_path[len(path) :]
-                if isinstance(child, dict) and (
-                    (
-                        not relative
-                        and "expression" not in row
-                        and any(field in row for field in _DIRECT_EXPRESSION_FIELDS)
-                    )
-                    or "expression" in relative
-                    or (relative and relative[0] in {"numerator", "denominator"})
-                ):
+            if row.get("expression"):
+                roots.append((file, (*path, "expression"), row["expression"]))
+            elif direct := _authored_direct_fields(row, consumed=set()):
+                yield file, path, row
+                roots.extend((file, (*path, key), child) for key, child in direct.items())
+        for file, path, root in roots:
+            for child_path, child in _walk(root, path, expression=True):
+                if isinstance(child, dict):
                     yield file, child_path, child
 
     def queries(self) -> Iterator[Row]:

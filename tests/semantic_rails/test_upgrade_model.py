@@ -5,10 +5,16 @@ from pathlib import Path
 
 import pytest
 
+from semantic_rails import config as config_module
 from semantic_rails.architect_scaffold import dump_project_yaml
 from semantic_rails.config import _load_package_source, load_package_config
 from semantic_rails.config_parts.package_loader import normalize_package
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.expressions import (
+    expr_to_dict,
+    parse_semantic_expression,
+    validate_expression_shapes,
+)
 from semantic_rails.naming import slug
 from semantic_rails.package_snapshot import CapturedSource
 from semantic_rails.upgrade.model import Edit, Finding, Option, PackageFiles, Rule, _walk, plan
@@ -23,6 +29,51 @@ PACKAGES = [
     "tests/integration/correctness/shop",
     "configs/examples/semantic_rails_package_starter.yml",
 ]
+EXPRESSION_CASES = {
+    "filtered-predicate": {
+        "kind": "aggregate",
+        "expression": {
+            "kind": "aggregate",
+            "measure": "new",
+            "filter": {
+                "all": [
+                    {
+                        "expression": {
+                            "kind": "metric_predicate",
+                            "entity": "entity.shop_customer",
+                            "input": {"measure": "old"},
+                            "op": ">",
+                            "value": 0,
+                        }
+                    }
+                ]
+            },
+        },
+    },
+    "null-expression": {"kind": "aggregate", "measure": "old", "expression": None},
+    "empty-expression": {"kind": "aggregate", "measure": "old", "expression": {}},
+}
+
+
+def _expression_case_files(case):
+    source = ROOT / "configs/examples/semantic_rails_package_starter.yml"
+    document = safe_load(source.read_bytes())
+    measures = document["models"]["orders"]["measures"]
+    for name in ("old", "new"):
+        measures[name] = deepcopy(measures["revenue_usd"])
+    document["metrics"] = {"total": deepcopy(EXPRESSION_CASES[case])}
+    return PackageFiles(source, contents={source.name: dump_project_yaml(document).encode()})
+
+
+def _loaded_definitions(files, documents=None):
+    contents = (
+        files.contents
+        if documents is None
+        else {file: dump_project_yaml(doc).encode() for file, doc in documents.items()}
+    )
+    capture = CapturedSource(str(files.source), files.directory, tuple(contents.items()))
+    normalized = normalize_package(_load_package_source(str(files.source), captured=capture))
+    return normalized, config_module._parse_package(deepcopy(normalized), path=str(files.source))
 
 
 def _normalized_rows(document, iterator):
@@ -332,6 +383,109 @@ def test_direct_metric_expressions_are_recursive(tmp_path):
     )
     rows = list(PackageFiles(source).expressions())
     assert {row["measure"] for _, _, row in rows if "measure" in row} == {"old", "new"}
+
+
+@pytest.mark.parametrize("case", EXPRESSION_CASES)
+def test_expression_rewrite_matches_loaded_definition(case):
+    files = _expression_case_files(case)
+    _, loaded = _loaded_definitions(files)
+    [metric] = loaded.metric_recipes
+    assert any(
+        isinstance(node, dict) and node.get("measure") == "measure.shop.old"
+        for _, node in _walk(expr_to_dict(metric.expression))
+    )
+
+    def find(current):
+        for file, path, row in current.expressions():
+            if row.get("measure") == "old":
+                yield Finding(
+                    "rename-measure",
+                    file,
+                    1,
+                    path,
+                    "Rename measure",
+                    (Edit(file, "replace", (*path, "measure"), value="new"),),
+                )
+
+    rule = Rule("rename-measure", "1.0", "same_meaning", "Rename measure", find)
+    result = plan(files, (rule,), {})
+    assert len(result.findings) == 1 and result.pending == ()
+    assert result.files == {
+        file: data.replace(b"measure: old", b"measure: new")
+        for file, data in files.contents.items()
+    }
+    updated = PackageFiles(files.source, contents=result.files)
+    assert tuple(rule.find(updated)) == () and plan(updated, (rule,), {}).files == {}
+    _, loaded = _loaded_definitions(updated)
+    assert not any(
+        isinstance(node, dict) and node.get("measure") == "measure.shop.old"
+        for _, node in _walk(expr_to_dict(loaded.metric_recipes[0].expression))
+    )
+
+
+@pytest.mark.parametrize("package", [*PACKAGES, *EXPRESSION_CASES])
+def test_expression_paths_cover_parser_references(package, monkeypatch):
+    files = (
+        _expression_case_files(package)
+        if package in EXPRESSION_CASES
+        else PackageFiles(ROOT / package)
+    )
+    documents = deepcopy(files.documents)
+    origins = {}
+    for index, (file, path, row) in enumerate((*files.metrics(), *files.segments())):
+        source_row = documents[file]
+        for key in path:
+            source_row = source_row[key]
+        source_row["_coverage_origin"] = index
+        origins[index] = (file, path, row)
+    parsed_roots = {}
+    parse = config_module._parse_metric_expression
+
+    def record(raw, *, context):
+        expression = parse(raw, context=context)
+        parsed_roots[id(expression)] = raw
+        return expression
+
+    monkeypatch.setattr(config_module, "_parse_metric_expression", record)
+    normalized, loaded = _loaded_definitions(files, documents)
+    yielded = {(file, path) for file, path, _ in files.expressions()}
+    for section, definitions in (("metrics", loaded.metric_recipes), ("segments", loaded.segments)):
+        by_id = {definition.id: definition for definition in definitions}
+        for spec in normalized.get(section, {}).values():
+            file, path, authored = origins[spec["_coverage_origin"]]
+            definition = by_id[spec["id"]]
+            if section == "metrics":
+                parsed = parsed_roots[id(definition.expression)]
+                root_path = (*path, "expression") if authored.get("expression") else path
+            else:
+                parsed = {"where": definition.where, "metric_filters": definition.metric_filters}
+                root_path = (*path, "membership")
+            for relative, node in _walk(parsed):
+                if not isinstance(node, dict) or not {"measure", "metric"}.intersection(node):
+                    continue
+                # Direct shorthands synthesize wrappers; their source reference is on the row.
+                source_path = (
+                    root_path
+                    if section == "metrics" and not authored.get("expression")
+                    else (*root_path, *relative)
+                )
+                assert (file, source_path) in yielded, (definition.id, file, source_path)
+                source_node = documents[file]
+                for key in source_path:
+                    source_node = source_node[key]
+                assert isinstance(source_node, dict)
+
+
+def test_opaque_expression_metadata_does_not_bypass_parser_validation():
+    expression = {
+        "kind": "aggregate",
+        "measure": "old",
+        "meta": {"kind": "annotation", "expression": {"measure": "metadata_only"}},
+    }
+    validate_expression_shapes(expression)
+    with pytest.raises(SemanticLayerError) as exc:
+        parse_semantic_expression(expression, context="config")
+    assert exc.value.code == "INVALID_EXPRESSION_KEY" and "meta" in str(exc.value)
 
 
 def test_one_finding_can_apply_sequential_edits(files):
