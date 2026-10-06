@@ -592,10 +592,20 @@ def test_observation_and_coverage_never_see_another_customers_rows(runtime, tena
     if window_total:
         query["time"].pop("grain")
     result = runtime.query(_q(query, customer_id=tenant))
-    # A has an s2 sale outside January; B has no s2 sale anywhere.
-    assert [r["v"] for r in result["rows"]] == (
-        [0] if tenant == A else [None] if tenant == B else []
+    # Both callers have source rows: B's never-matched condition also counts zero.
+    # An empty caller has no group, preserving the empty-total behavior.
+    gold = (
+        runtime._get_adapter()
+        ._db.conn.execute(
+            "SELECT COUNT(CASE WHEN store_id = 's2' THEN order_id END) FROM order_fact "
+            "WHERE customer_id = ? AND ordered_at >= TIMESTAMP '2026-01-01' "
+            "AND ordered_at < TIMESTAMP '2026-02-01' GROUP BY date_trunc('month', ordered_at)",
+            [tenant],
+        )
+        .fetchall()
     )
+    assert [r["v"] for r in result["rows"]] == [row[0] for row in gold]
+    assert gold == ([(0,)] if tenant in {A, B} else [])
     # The total probes both measures outside its bounds, plus its leaf and coverage scan.
     assert result["rendered_sql"].count("customer_id = ?") == (4 if window_total else 3)
     assert tenant not in result["rendered_sql"]

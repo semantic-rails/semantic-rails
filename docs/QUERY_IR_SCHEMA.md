@@ -982,9 +982,11 @@ query's time bounds (DuckDB and Postgres; see time coverage below). A `dataset` 
 `where` filter beside a metric predicate can't judge one apart from the other, so it is refused
 with `EMPTY_GROUPS_UNSETTLED`; send `observation_scope: "query"`.
 Where a measure has data in scope,
-a group with no rows reads `0`: a store with orders but no refunds has 0 refunds. Where it has
-none, every group reads `NULL`: with no refunds anywhere in scope, no store has "0 refunds",
-because nothing says refunds were recorded. An average, minimum or maximum of nothing is
+a group with no rows reads `0`: a store with orders but no refunds has 0 refunds. A conditional
+additive sum or count with a supported source probe also reads `0` when its condition never
+matches but its source relation has rows in scope. No source rows means `NULL` with
+`NO_DATA_IN_SCOPE`; matching rows whose amounts are all NULL still sum to `NULL`.
+An average, minimum or maximum of nothing is
 undefined, and a stock has no value for a period nobody observed, so neither is ever made zero.
 
 A group whose rows exist but whose amounts are all NULL is not empty: its amounts are unknown,
@@ -1029,7 +1031,9 @@ are internal: they settle inside their own scope in both modes.
 - **Arithmetic** settles each operand first, then combines them. An operand that is unknown
   or has no data in scope is `NULL`, and so is the result: `goods + shipping` by refund type
   is `NULL` for a type whose rows leave one of the columns NULL, and `revenue - refunds` is
-  `NULL` if refunds were never recorded. A ratio over an unknown numerator is `NULL`, which no
+  `NULL` if the refunds relation has no rows in scope. With a supported probe, a never-matched
+  conditional operand instead reads `0` before arithmetic, so `3 - 0` reads `3` without
+  `NO_DATA_IN_SCOPE`. A ratio over an unknown numerator is `NULL`, which no
   `metric_filters` threshold keeps. Division by zero is `NULL`.
 - **A `metric_predicate` applies the rule to every entity alike.** An operand reads `0` for an
   entity with no match where its measure has data somewhere in the predicate's scope, and
@@ -1062,15 +1066,23 @@ are internal: they settle inside their own scope in both modes.
   zero substitution: populated sums and positive counts always survive, including
   NULL time keys and future-dated rows.
   A window total without a grain records the whole half-open `[start, end)` interval as one
-  bucket, with the same outside-window observation and loaded-range check. A conditional
-  count observed elsewhere therefore reads `0` in a loaded window where it has no matches;
-  a condition never observed still reads `NULL`. Relative windows use their resolved bounds.
+  bucket, with the same outside-window observation and loaded-range check. Conditional
+  sums and counts therefore read `0` in a loaded window where they have no matches, whether
+  or not their condition matched elsewhere: the probe checks for a source row under the
+  same scope filters and policy row filters. A sum whose matching amounts are all NULL
+  remains `NULL`. An empty source relation or a window outside its loaded range remains
+  `NULL` with `NO_DATA_IN_SCOPE`. Relative windows use their resolved bounds.
   Window totals, filled, dense-series (rolling, prior-period) and combined plans, bounded or
   not, read the base relation even when rollups are available, so routing cannot change their
   coverage answers. Other routed
   aggregates, nested, fanout and predicate sources retain the window observation test,
   except that a `dataset` query with a `where` filter probes each
   measure's rows untimed.
+  Source-row observation is supported for top-level conditional `CASE` operands (including
+  `aggregate_if`) in these bounded base leaves and in `dataset` probes. A condition lowered
+  into a leaf's `WHERE` still restricts its probe. Paths without a source probe, including
+  predicate operands, lookup sources and distribution branches, and the earlier settlement
+  retain their existing value-based observation: a never-matched operand stays `NULL`.
   Coverage uses data alone. Performance guidance includes the emitted observation and
   coverage reads as scans without request-window bounds; narrowing the requested window
   does not bound those reads.

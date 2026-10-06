@@ -90,7 +90,7 @@ def test_loaded_buckets_use_the_whole_base_not_the_filtered_measure(
     ("measure", "condition"),
     [("large_order_count", "amount >= 10"), ("huge_order_count", "amount >= 1000")],
 )
-def test_conditional_observation_does_not_count_rows_that_fail_the_condition(
+def test_conditional_observation_requires_source_rows_even_when_nothing_matches(
     request, backend_name, measure, condition
 ):
     backend = _backend(request, backend_name)
@@ -103,7 +103,9 @@ def test_conditional_observation_does_not_count_rows_that_fail_the_condition(
     )
     result = backend.runtimes["utc_implicit"].query(query)
     gold = backend.reference(
-        f"SELECT CASE WHEN EXISTS (SELECT 1 FROM orders WHERE {condition}) THEN 0 END"
+        f"SELECT CASE WHEN EXISTS (SELECT 1 FROM orders) THEN "
+        f"COUNT(CASE WHEN {condition} THEN order_id END) END FROM orders "
+        "WHERE ordered_at >= TIMESTAMP '2024-02-01' AND ordered_at < TIMESTAMP '2024-03-01'"
     )
     assert [r["v"] for r in typed_rows(result)] == [r[0] for r in gold]
 
