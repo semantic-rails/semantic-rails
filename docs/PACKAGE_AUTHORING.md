@@ -408,7 +408,9 @@ that must not mistake a filtered-out population for zero want it. A query's own
   missing. It records package provenance and a content hash of the seed files
   inside the new file. When those files change later, queries and runtime
   validation return a `STALE_SEED_DATABASE` warning with the command that
-  deletes the file; the next run rebuilds it from the current seed. Publication is
+  deletes the file; the next run rebuilds it from the current seed. If warehouse
+  execution fails on that stale database, the same warning and command are
+  included in the error's `details.warnings`. Publication is
   atomic and never overwrites a file another process created in the meantime.
   If the filesystem cannot publish without an overwrite (for example one
   without hard links on POSIX), creation fails with `INVALID_CONFIG`; build the
@@ -442,6 +444,13 @@ stopped through publication: the WAL check cannot prevent a writer from
 creating a new log immediately after it runs.
 
 SQL seed sources and CSV `post_sql` files accept LF or CRLF line endings.
+If a statement in either file fails, the build raises `INVALID_CONFIG` with
+`details.reason: seed_failed`, the SQL path (`file`), its one-based
+`statement_number`, its first nonblank line (`statement_first_line`), and the
+database's message (`database_message`). These diagnostics describe the
+package author's seed SQL, rather than a rendered query. Runtime queries and
+runtime validation probes preserve them. The failed build never publishes its
+temporary database or replaces an existing database.
 CRLF bytes inside string literals are preserved as authored, without normalization to LF.
 A bare carriage return refuses the script before any of its statements execute
 with `INVALID_CONFIG`, `details.reason: bare_carriage_return_sql_script` and
@@ -671,6 +680,20 @@ action checks. Action text is trimmed and lowercased; kind names must match exac
   owner, or the governed object is read inside a cut, every cut in the query
   counts. `allow_metric_filters: false` refuses any cut that counts for the
   governed object.
+  A filter the caller writes inside an expression (an aggregate's or
+  `semi_additive` expression's `filter`, a scoped aggregate's `where`, at any
+  depth in `select` or `metric_filters`, predicate inputs included) is checked
+  like a `where` filter when it counts for the governed object, by the same leaf
+  rule: its field must be in `allowed_where` (a violation carries
+  `"source": "inline_expression"`), and it always counts as a metric filter. It
+  never satisfies `required_where`, which requires an outer `where` filter.
+  Fields nested under an aggregate-filter `expression`, a scoped aggregate's
+  `predicates[].input`, a metric predicate, `metric_filters`, or a conversion
+  operand count for every governed object in the query. This conservative rule
+  can refuse a nested filter even when it affects only a sibling expression.
+  Direct leaf filters retain the leaf rule above. An
+  `aggregate_if` condition reads columns, not fields, so a package-wide
+  constraint with `allowed_where` refuses it.
   `allowed_temporal_roles` checks the query axis and the governed object's
   effective bucket and ordering roles, including expression roles and overrides.
   Grouping by a role's dimension remains subject to `allowed_group_by`.

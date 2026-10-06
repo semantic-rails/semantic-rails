@@ -33,6 +33,7 @@ from .ast import (
     normalize_query,
     plain_filters,
     refuse_child_groups,
+    rewrite_select_shorthand,
     route_decisions_from_payload,
 )
 from .compiler_parts.bind import (
@@ -3228,9 +3229,16 @@ def _query_target_entities(query: NormalizedQuery, config: PackageConfig) -> dic
     temporal_roles = _temporal_role_index(config)
     targets: dict[str, str] = {}
     for dim_id in query.group_by:
+        if dim_id not in dimensions:
+            raise SemanticLayerError(
+                "OBJECT_NOT_FOUND",
+                f"Unknown dimension '{dim_id}'",
+                details={"dimension": dim_id},
+            )
         targets.setdefault(dimensions[dim_id].entity, "group_by")
     for item in refuse_child_groups(query.where, "in a query without a measure"):
-        targets.setdefault(dimensions[item.field].entity, "where")
+        dim = _checked_where_dimension(item, dimensions, _measure_index(config))
+        targets.setdefault(dim.entity, "where")
     if query.time is not None:
         role = temporal_roles.get(query.time.temporal_role)
         if role is None:
@@ -4956,19 +4964,24 @@ class BoundQuery:
     route_decisions: tuple[dict[str, Any], ...] = ()
 
     def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:
-        """Whole-query cuts plus the cuts of leaves computing ``object_id``.
+        """Whole-query cuts plus the cuts of leaves computing ``object_id``."""
+        return tuple(
+            cut
+            for cut, owners in zip(self.cuts, self.cut_owners, strict=True)
+            if self.cut_counts(object_id, owners)
+        )
+
+    def cut_counts(self, object_id: str, owners: frozenset[str] | None) -> bool:
+        """Whether a cut of the root leaves ``owners`` (None: the whole query) counts for
+        ``object_id``.
 
         An object read inside a cut, or computed by no root leaf (an entity,
         dimension or nested-only read), has no single owner and sees every cut.
         """
         leaves = {alias for alias, ids in self.leaf_objects.items() if object_id in ids}
         if not leaves or any(object_id in cut for cut in self.cuts):
-            return self.cuts
-        return tuple(
-            cut
-            for cut, owners in zip(self.cuts, self.cut_owners, strict=True)
-            if owners is None or owners & leaves
-        )
+            return True
+        return owners is None or bool(owners & leaves)
 
 
 def bind_metadata_objects(config: PackageConfig, object_ids: Iterable[str]) -> frozenset[str]:
@@ -5234,10 +5247,11 @@ def read_routes(plan: LogicalPlan, route_choices: Sequence[RouteChoice]) -> list
 def _bind_query(
     config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
 ) -> BoundQuery:
+    canonical, _ = rewrite_select_shorthand(payload)
     # policy_context carries caller metadata and is never read as expressions;
     # every other request key, including unrecognized ones, is shape-checked.
     validate_expression_shapes(
-        {key: value for key, value in payload.items() if key != "policy_context"}, path="query"
+        {key: value for key, value in canonical.items() if key != "policy_context"}, path="query"
     )
     plan = plan_query(config, registry, payload)
     config = resolve_compile_config(plan, config)

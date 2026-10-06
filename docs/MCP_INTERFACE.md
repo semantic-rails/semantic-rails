@@ -212,6 +212,26 @@ returns member rows, the preview and member counts, and the derived query. `verb
 returns the whole response with compiler plans. Minimal responses still include query and
 segment policy effects, warnings, errors, and actionable recovery hints when present.
 
+MCP accepts a `query` object or a JSON string encoding that object. Tool arguments
+placed inside it are lifted; conflicting tool options refuse with
+`INVALID_QUERY`. Query IR's `verbosity` and `sql_profile` retain inner precedence. The response's `normalized` list reports each spelling change:
+`eq`/`equals` → `=`, `neq` → `!=`, `gt`/`gte`/`lt`/`lte` → `>`/`>=`/`<`/`<=`,
+and `is_not_null` → `IS NOT NULL`; arithmetic `sub`/`mul`/`div` →
+`subtract`/`multiply`/`divide` (`add` is already canonical). Arithmetic `operands`
+or `terms` with at least two expressions fold left, including subtraction and
+division. Mixing operand shapes refuses. Select dimension shorthand uses the shared
+[Query IR rules](QUERY_IR_SCHEMA.md#selectitem): a bare `{dimension: "<id>"}`
+moves to `group_by`; an `expression` wrapper moves only when `group_by` is empty
+or already lists that dimension. Both shapes accept `kind: dimension|group|ref`.
+Aliases and competing targets refuse with `INVALID_EXPRESSION_AST`; a wrapped
+dimension beside other grouping dimensions carries `MOVE_DIMENSION_TO_GROUP_BY`.
+Each move appears as a `QUERY_SHORTHAND_NORMALIZED` warning with
+`details.canonical`, on `execute` in every mode.
+Unsupported expression kinds refuse before their children are read. Excessive
+expression or predicate nesting returns `INVALID_QUERY` as a structured tool error.
+Unknown ids in a dimension-only list query return `OBJECT_NOT_FOUND`, with
+closest visible matches.
+
 `execute` accepts either `{"query": {...}}` or Query IR fields at the top level. Metadata tools
 accept the same request fields documented in [QUERY_API.md](QUERY_API.md), including optional
 `policy_context`.
@@ -291,7 +311,44 @@ A draft that validates can still leave out part of the question. `plan` returns
   question nor a `partial_query` select names it (`subject_ambiguous`, with up to five
   candidates in `expected.candidates` and their number in `expected.candidate_count`).
   "revenue" names Revenue over Item Revenue Cents, and "item revenue" the reverse; for
-  Gross Revenue and Net Revenue it names neither. `plan` reports every other reason first.
+  Gross Revenue and Net Revenue it names neither. `plan` reports every other reason first;
+- returns a result without the part the question's shape asks for. "who", "whom", "whose",
+  "which" or "list" opening a clause asks for the rows of the entity the clause names: its
+  first word outside a time window and a "by" grouping that names an entity or, for "which"
+  or "list" with none, the entity a "by" grouping in the clause names ("List revenue by
+  store"). The `group_by` needs that entity's declared one-column key (`list_unrealized`, with
+  it in `expected.key_dimensions`: "Who ordered last week?", "List customers by month", "Who
+  are our customers by store?"). A name may sit beside the key, but never lists the rows on
+  its own, since a name can repeat: customers who share one would be one row ("List
+  customers" grouped by Customer name, "Which 3 stores had the most revenue last month?"
+  grouped by Store name). Nor does any other dimension, whatever it declares: a time grain, a
+  category, another dimension of the entity ("Customer order number") or another entity's
+  dimension. "which" or "list" naming no entity is held. "who" naming no entity ("Who ordered
+  last week?") leaves whose rows to the caller: only a caller's `query.group_by` dimension
+  that is no grouping the question lists ("Who ordered by store?") and is the key of its own
+  entity lists them. "each" or "every" needs a row per item, a `group_by` or a grain that
+  splits the rows (`each_unrealized`: "How many orders did each last week?"). "compare",
+  "compared", "comparison", "versus", "vs", "against" or "up or down" needs a value to compare
+  with: a prior-period select. A second select (which may spell the first again), a
+  `group_by` or a time grain doesn't show what the question compares
+  (`comparison_unrealized`: "Were orders up or down last week?", "Compare revenue by store
+  last month", "Food revenue vs drink revenue last month"). Two or more questions for a
+  value, "how many", "how much", "what is", "what was" or "what's", need a select of their
+  own each that names what the question asks about:
+  its first words that aren't stopwords, framing words, numbers or a window's words lie where
+  the question spells a whole name (label, alias, or the last part of the id or name) of the
+  measure, at its declared aggregation, or metric the select is
+  (`multiple_questions_unrealized`: "How many orders and how much revenue last week?" with no
+  order count select). Selects with one expression count once, and a clock ("Order time"), a
+  filter or an expression built on a measure names nothing. A word opens a clause when only
+  stopwords, framing words ("show me", "list") or a time window's words come before it since
+  the last comma, colon, semicolon, sentence end or "and" ("How many orders last week and who
+  placed them?"): in "revenue from customers who are new", "who" asks nothing. Nor does a
+  word inside a declared name ("Comparison cost"), and "per" is no such word ("revenue per
+  order" is a ratio). `clause` quotes the words, and `actual` gives the draft's
+  `select_count`, `group_by` and `time_grain`. `plan` runs this check after every other one,
+  the `PLAN_UNMATCHED_TERMS` checks below included, so it holds only a draft nothing else
+  holds.
 
 When a question has several exclusion clauses, `plan` checks each clause. A
 negative filter for one value does not make a later excluded value safe if the
@@ -404,8 +461,12 @@ doesn't consume them, they aren't stopwords or number words, and `intent_ir.unre
 still holds them. This returns `why.code="PLAN_UNMATCHED_TERMS"` with
 `why.details={"terms": [...], "kind": "filter_values_unrealized"}` and an
 `add_missing_condition` hint: find values with `valid_values`, add the filter, then validate,
-or ask again without those words. A single unknown value such as "Brooklyn" blocks readiness
-when the package declares no value domain for it; plan never guesses its dimension or queries
+or ask the user what the words mean. No hint offers to ask again without a word a hold names
+(a catalog name, a grouping, a number or an unknown word), since the question without it may be
+another one, except the "s" ending a contraction or possessive that plan reads as an unknown
+word ("What's revenue last month?"): every check reads that retry again. No other ending is
+offered: without its "t", "can't" says the opposite. A single unknown
+value such as "Brooklyn" blocks readiness when the package declares no value domain for it; plan never guesses its dimension or queries
 the warehouse to resolve it. Other unmatched words stay warnings; check them before executing.
 A number, or a clock or zone word, the draft doesn't carry is not a warning: it makes the plan
 `low_confidence` (below), since the draft dropped an hour, a range or a
@@ -592,7 +653,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `DISCOVER_IDS_TRUNCATED` | `discover` | Empty `terms` listed one page of ids and more remain; `details.next_offset` is the next page |
 | `DISCOVER_TERMS_COERCED` | `discover` | `terms` was a non-string (int/float/bool); coerced to a string |
 | `<TOOL>_UNKNOWN_ARG` | every tool but `segment` | Unknown argument (on `discover`, incl. `term`/`kind` typos); the value was ignored |
-| `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain; flip `allow_live_query=true` to probe |
+| `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain: `ok: false`, `status: needs_live_query`, and `next_call` gives the exact opt-in `valid-values` call with `allow_live_query=true`. No warehouse lookup runs by default; a declared empty domain remains a successful empty result |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
 | `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, when one names a catalog object, when a listed non-clock, non-value grouping has no matching dimension of its own (`details.dropped_groupings` lists only unmatched terms) or may be a dimension of any of several other entities (`details.ambiguous_groupings`), or when two or more are names the catalog doesn't have |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
@@ -949,7 +1010,7 @@ expression kind names the received kind and its request path (for example,
 | `AMBIGUOUS_ALIAS` | Alias resolves to multiple semantic objects; pick one from `details.candidates`. |
 | `AMBIGUOUS_CHILD_SCOPE` | Plain filters on one child entity across a one-to-many hop don't say which child rows they mean: two or more positive ones (the same row or separate ones), or one negated one ("has a row that is not X" or "has no row that is X"). `details.clarification.options` holds both readings, each as the query's whole rewritten `where`; resend one. Offered only when both answer for this caller. |
 | `PLAN_UNMATCHED_TERMS` | A grouping option also carries `group_by` and `order_by` to apply with its complete `where` for one unclear term. With several, in `best.query_ir` remove each chosen option's `replaces` IDs from `group_by` and their `order_by` entries, add its `id`, keep `group_by` sorted, then validate. When two terms could replace the same grouping, plan offers no options; ask the user. |
-| `AMBIGUOUS_PATH` | Several routes between root entity and target can answer differently and the package records none (`details.reason: route_decision_required`). `details.clarification` asks which one the question means (`question`) and lists one option per route: its `meaning` in business words, its `relationship_path`, and its `decision` row. Ask the person, then resend with that `decision` in `route_decisions` (this query only), or record it with Architect `record_route_decision` (the package default; an option's `conflicts_with` names the package rows to change first). |
+| `AMBIGUOUS_PATH` | Several routes between root entity and target can answer differently and the package records none (`details.reason: route_decision_required`). `details.clarification` asks which one the question means (`question`) and lists one option per route: its `meaning` in business words, its `relationship_path`, and its `decision` row. Ask the person, then resend with that `decision`, the whole option, or its id in `route_decisions`. An id must uniquely answer the current query's clarification; unknown or ambiguous ids return `INVALID_QUERY` with offered ids in `closest_matches`. The clarification appears once in the error's details. Route and policy guards apply to every shape. A query decision applies to this query only; record it with Architect `record_route_decision` (the package default; an option's `conflicts_with` names the package rows to change first). |
 | `DUPLICATE_OUTPUT_ALIAS` | Two projected columns share an alias; rename one. |
 | `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. For a measure restriction, `details.aggregation` records the rejected value and the hint's `aggregation_received` and `allowed` mirror `details.aggregation` and `details.allowed`; the hint lists only those allowed values and offers omitting `aggregation` when `details.default_aggregation` belongs to `details.allowed`, naming that default. Parameter errors disclose the required parameter schema. |
 | `INVALID_TEMPORAL_ROLE` | Unknown temporal role; pick one from `details.compatible_temporal_roles`. |

@@ -675,7 +675,6 @@ def recovery_hints_for_error(
                     details.get("hint")
                     or "Choose a more specific grouping, filter, or root entity to break the path ambiguity."
                 ),
-                "clarification": dict(details.get("clarification", {}) or {}),
             },
         ]
     if code == "FANOUT_UNSAFE":
@@ -1165,6 +1164,37 @@ def enrich_diagnostic_candidates(
     ):
         # Hidden bound inputs cannot be disclosed by the denial's effects or recovery hints.
         return SemanticLayerError(exc.code, str(exc))
+    message = str(exc)
+    if (
+        exc.code == "AMBIGUOUS_PATH"
+        and details.get("start")
+        and details.get("clarification", {}).get("kind") == "route"
+    ):
+        from .fanout import visible_route, visible_route_rows
+
+        start = details["start"]
+        clarification = dict(details["clarification"])
+        options = []
+        for option in clarification["options"]:
+            if not visible_route(config, start, option["relationship_path"], hidden_ids):
+                continue
+            option = dict(option)
+            if "conflicts_with" in option:
+                option["conflicts_with"] = visible_route_rows(
+                    config, option["conflicts_with"], hidden_ids
+                )
+            options.append(option)
+        clarification["options"] = options
+        if options:
+            message = (
+                f"Ambiguous path from '{start}' to '{details['target']}'. {clarification['question']} "
+                + "; ".join(option["meaning"] for option in options)
+            )
+        else:
+            message = "This question needs a route you can't see; ask your admin."
+            clarification["question"] = message
+            details = {"reason": details["reason"], "hint": message}
+        details["clarification"] = clarification
     if exc.code == "AMBIGUOUS_ALIAS":
         rows = details.get("candidates", [])
         candidate_ids = [row["id"] if isinstance(row, dict) else row for row in rows]
@@ -1211,7 +1241,9 @@ def enrich_diagnostic_candidates(
     ):
         details.pop("time_axis_recovery")
     return (
-        exc if details == exc.details else SemanticLayerError(exc.code, str(exc), details=details)
+        exc
+        if details == exc.details and message == str(exc)
+        else SemanticLayerError(exc.code, message, details=details)
     )
 
 
