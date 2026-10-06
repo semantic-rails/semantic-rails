@@ -167,6 +167,10 @@ class CatalogSearchIndex:
                 document = _document_from_row(row)
                 documents[document.object_id] = document
                 row_tokens = _search_tokens_for_row(row)
+                if kind == "metric":
+                    row_tokens.update(
+                        token for alias in row.aliases for token in tokenize_search_value(alias)
+                    )
                 catalog_tokens.update(row_tokens)
                 catalog_tokens.update(tokenize_search_value(str(getattr(row, "id", "") or "")))
                 if kind in frequency_kinds:

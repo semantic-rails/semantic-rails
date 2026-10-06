@@ -287,6 +287,7 @@ _METRIC_KEYS: frozenset[str] = frozenset(
         "as",
         "name",
         "label",
+        "synonyms",
         "description",
         "kind",
         "measure",

@@ -308,18 +308,26 @@ held to a stricter rule, and one the draft doesn't consume is not a warning: it 
 `low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`, since the draft dropped a grouping
 ("by store, customer type and product type" grouped by store; `why.details.dropped_groupings`
 names it) or answers about another subject. A word names an object when it is a word of the
-object's label or aliases, or of the last dotted part of its id or name outside the object's own
+object's label or synonyms, or of the last dotted part of its id or name outside the object's own
 namespaces ("sales" in `metric.sales.aov_usd` names nothing); a plural counts as its singular.
-Only the draft consumes one: by the label, aliases, id or name of an object it selects (an id the
+Only the draft consumes one: by a word of the label or synonyms of an object it selects,
+or its id or name (an id the
 question spells out whole consumes its namespaces too), a value it filters on or that value's
 declared names, a time grain it carries (only its unit and its "-ly" form), a prior-period
 shift's trigger phrase, one grouping that names the query's clock at the planned grain (a
 second one, as in "by order month and order date", is not consumed), "number of" for a
 selected count-valued measure when the draft has no grouping, or a recorded time phrase or
 honored clause.
+A multi-word authored synonym consumes only the contiguous question span it matches,
+allowing regular plurals. Two selectable subjects sharing a whole name or synonym, with
+no other words distinguishing them, return `needs_clarification` with both ids.
+Metric labels match with or without a parenthetical. At plan entry, straight and curly
+apostrophe contractions expand before scope, relevance, parsing and readiness: `what's`
+becomes `what is`, `didn't` becomes `did not`, and possessive `'s` is dropped. Messages
+quote the normalized words.
 Stopwords are exempt unless they are exact catalog names. Regular plurals are recognized
 and consumed using the same forms; "-es" applies only after s, x, z, ch or sh. A
-synonym, a typo, a namespace, a description, a framing word or an object the draft doesn't select
+engine synonym, a typo, a namespace, a description, a framing word or an object the draft doesn't select
 (a measure's entity included) never does. So `plan` may hold back a right draft ("revenue from
 orders": Orders is a measure), but never calls one ready that drops a grouping the question
 names. Last, each grouping the question lists, apart from clock terms and declared values, must

@@ -52,6 +52,7 @@ from .faithfulness import (
     _ranking_request,
     intent_faithfulness_why,
     intent_subject_why,
+    named_subject_why,
     unconsumed_catalog_words,
     unconsumed_terms,
     unconsumed_unknown_words,
@@ -71,6 +72,28 @@ _VERSION = 1
 
 
 # ---------------------------------------------------------------------------
+_CONTRACTION_RE = re.compile(r"\b([^\W_]+?)(n['’]t|['’](?:s|re|ve|ll|d))\b", re.IGNORECASE)
+
+
+def _normalize_question(text: str) -> str:
+    """Expand grammatical contractions once, before every planning gate."""
+
+    def expand(match: re.Match[str]) -> str:
+        word, suffix = match.group(1), match.group(2).lower().replace("’", "'")
+        if suffix == "n't":
+            return {"ca": "can", "wo": "will", "sha": "shall"}.get(word.lower(), word) + " not"
+        if suffix == "'s":
+            return word + (
+                " is"
+                if word.lower()
+                in {"what", "who", "where", "when", "how", "it", "that", "there", "here"}
+                else ""
+            )
+        return word + {"'re": " are", "'ve": " have", "'ll": " will", "'d": " would"}[suffix]
+
+    return _CONTRACTION_RE.sub(expand, text)
+
+
 @runtime_request_scope
 @with_dimension_visibility
 def plan_payload(
@@ -131,7 +154,7 @@ def plan_payload(
         )
 
     partial_query = _checked_partial_query(partial_query)
-    intent_str = intent.strip()
+    intent = intent_str = _normalize_question(intent.strip())
     detail_level = str(detail or "best").lower()
     if detail_level not in {"query", "best", "full", "debug"}:
         detail_level = "best"
@@ -183,6 +206,19 @@ def plan_payload(
                 ),
             )
             return _query_detail_payload(payload) if detail_level == "query" else payload
+
+    collision_why = named_subject_why(runtime, intent_str)
+    if collision_why is not None:
+        payload = {
+            "plan_version": _VERSION,
+            "intent": intent,
+            "intent_ir": parse_intent(runtime, intent).to_dict(),
+            "status": "needs_clarification",
+            "best": None,
+            "why": collision_why,
+            "next": {"action": "clarify"},
+        }
+        return _query_detail_payload(payload) if detail_level == "query" else payload
 
     validate_temporal_support(runtime._config, partial_query or {})
     result = compose(runtime, intent)

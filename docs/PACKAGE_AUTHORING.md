@@ -1390,7 +1390,13 @@ and the relationships it used. Interchange export leaves lookups out as unsuppor
 ## Metrics
 
 Metrics codify governed access patterns. Each metric carries a `kind:` that
-determines the required fields.
+determines the required fields. Every metric also accepts `synonyms:`, a list of
+other declared names, for example `synonyms: [signups, signed up, new signups]`.
+Use `synonyms:` for object names; `aliases:` is an unknown metric key. These names
+count toward planner selection and readiness. Multi-word synonyms match contiguous
+phrases (regular plurals are allowed); their separate words do not consume an
+unrelated phrase. Shared names need clarification, and `project validate` warns
+with `SEMANTIC_TERM_COLLISION` once per collision.
 
 ### Common kinds — direct named fields
 
