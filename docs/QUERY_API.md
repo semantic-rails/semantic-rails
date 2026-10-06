@@ -1212,7 +1212,9 @@ Canonical public error codes:
   at the top-level `recovery_hints` field: `drop_time_start` (always-safe
   fallback, listed first) and `widen_time_window` (computed
   `suggested_start`; agents should widen by lookback + one full bucket
-  when the metric is at a discrete grain).
+  when the metric is at a discrete grain). When a `where` filter on the
+  query's own date dimension caused it, `details.where_path` names the
+  filter and `drop_time_start` removes that filter instead.
 
 ### Warning Codes
 

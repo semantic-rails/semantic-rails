@@ -888,18 +888,20 @@ def recovery_hints_for_error(
         # one full prior bucket (e.g. prior_period at month grain needs
         # the bucket BEFORE the widened start). Agents that grab the
         # first hint should get the safe path.
+        # A where filter on the query's date dimension (``where_path``) cuts the same rows.
+        where_path = str(details.get("where_path", "") or "")
         start = str(details.get("start", "") or "")
         lookback = dict(details.get("lookback", {}) or {})
         hints = [
             {
                 "kind": "drop_time_start",
                 "message": (
-                    "Remove query.time.start entirely — the window function "
+                    f"Remove {where_path or 'query.time.start'} entirely — the window function "
                     "computes its own lookback. Keep query.time.end if you "
                     "need an upper bound. This is the safe default — apply "
                     "this first."
                 ),
-                "patch": {"remove": ["time.start"]},
+                "patch": {"remove": [where_path or "time.start"]},
             }
         ]
         suggested_start = _shift_iso_date_backward(start, lookback)
@@ -908,7 +910,8 @@ def recovery_hints_for_error(
                 {
                     "kind": "widen_time_window",
                     "message": (
-                        "Widen query.time.start by the metric's lookback "
+                        f"Widen {where_path + '.value' if where_path else 'query.time.start'} "
+                        "by the metric's lookback "
                         f"({lookback.get('value')} {lookback.get('unit')}) "
                         "so the leaf WHERE doesn't truncate the rows the "
                         "window function depends on. NOTE: for prior_period / "

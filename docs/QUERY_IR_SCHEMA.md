@@ -266,6 +266,14 @@ own aggregation without a summing window. This rule also applies through derived
 metrics, metric filters, and every execution transport. `prior_period` reads one
 period with `LAG` and keeps its existing input semantics.
 
+These windows read periods before the ones they return, so a cut from below would drop rows
+they need. With a `prior_period`, `rolling`, `period_to_date` or `cumulative` window in `select`
+or `metric_filters`, a bounded `time.start` refuses, and so does a `where` filter on the query's
+own clock: on its column, on a column a relationship pairs with it, or on a calendar
+(`kind: time`) entity joined on it, child groups included. Only an upper bound (`<`, `<=`) on a
+date or timestamp runs, as `time.end` does. The refusal is `WINDOWED_TIME_FILTER_UNSUPPORTED`
+or `CUMULATIVE_TIME_FILTER_UNSUPPORTED`; for a `where` filter, `details.where_path` names it.
+
 `period_to_date` currently supports only the default calendar. A non-default
 `time.calendar_id`, or a time role bound to a non-default calendar, refuses with
 `REWRITE_NOT_SUPPORTED`; it cannot silently reset on Gregorian periods. Query the
