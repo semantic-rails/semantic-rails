@@ -32,6 +32,7 @@ from .expressions import (
     parse_semantic_expression,
     validate_boolean_argument_count,
 )
+from .naming import slug as _slug
 from .schema import PackageConfig, RelationConfig, RelationPipelineStep
 from .sql_ast import (
     SqlBinary,
@@ -81,16 +82,10 @@ class _LoweredRelation:
     dependencies: set[str] = field(default_factory=set)
 
 
-def _slug(value: str, *, fallback: str = "relation") -> str:
-    raw = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or ""))
-    parts = [part for part in raw.split("_") if part]
-    return "_".join(parts) or fallback
-
-
 def _step_name(relation: RelationConfig, index: int, kind: str, *, final: bool) -> str:
     if final:
         return relation.output_name
-    return f"{relation.output_name}__{index + 1}_{_slug(kind)}"
+    return f"{relation.output_name}__{index + 1}_{_slug(kind, fallback='relation')}"
 
 
 def _ensure_mapping(value: Any, *, path: str) -> dict[str, Any]:
@@ -981,19 +976,6 @@ def lower_relation(relation: RelationConfig, *, warehouse: str) -> tuple[list[Sq
         state.ctes.append(SqlCte(relation.output_name, query))
         state.source_name = relation.output_name
     return state.ctes, state.columns
-
-
-def relation_ctes_for_config(config: PackageConfig) -> list[SqlCte]:
-    ctes: list[SqlCte] = []
-    seen: set[str] = set()
-    for relation in config.relations:
-        relation_ctes, _ = lower_relation(relation, warehouse=config.package.warehouse)
-        for cte in relation_ctes:
-            if cte.name in seen:
-                continue
-            seen.add(cte.name)
-            ctes.append(cte)
-    return ctes
 
 
 def _table_ref_name(table: Any) -> str:

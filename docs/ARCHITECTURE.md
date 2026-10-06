@@ -480,6 +480,13 @@ exception to the `_joins_for_paths` rule above. Its CTE allocator skips a source
 when any occupied relation or CTE name contains it, ignoring case, so gate and nested
 names remain distinct from physical relations after namespacing.
 
+Stocks require snapshot selection before attribute filters. Planning refuses stock
+fan-out paths, and package loading refuses a stock lookup source. `lower_to_sql` centrally
+refuses a supplied `fanout_dedup` plan over a stock (including its semi-join leaf), and a
+supplied `parent_lookup` plan whose source is a stock, with `REWRITE_NOT_SUPPORTED`, reason
+`stock_requires_snapshot_selection`. The refusal names the stock source and, for a parent
+lookup, its consumer, including with empty-group guards off.
+
 ### Loaded semantics and executable SQL
 
 `load_package_snapshot(path)` captures a stable source inventory and parses it
@@ -530,9 +537,18 @@ package column has the name, so the alias registry never rewrites it. Source rol
 rename their internal value until it differs from every projected join column, group, time
 and row-count alias, using case-insensitive comparison. Base time coverage
 bounds only zero
-substitution on filled, dense or combined leaves. One predicate decides both coverage and
-rollup refusal, on DuckDB and Postgres only. Populated values pass through; routed
-queries keep the window test and never scan a shadow raw leaf.
+substitution on filled, dense, combined or retained filtered leaves. One predicate decides
+both coverage and rollup refusal, on DuckDB and Postgres only. Populated values pass through;
+routed queries keep the window test and never scan a shadow raw leaf.
+On those warehouses, plain filtered additive leaves on a local clock retain source buckets by
+evaluating authored dimension filters in conditional operands. One rule names the retained
+leaves for lowering and the guard, and a plan with one emits coverage, filled or not. The
+settlement guard recognizes a retained leaf's row count only where coverage gates its
+bucket, so a no-match bucket reads zero inside the loaded range, NULL after it, and matching
+unknown amounts stay NULL; folding keeps leaves with the same retention semantics together.
+Lowering refuses a retained-bucket claim without its conditional operand. Unsupported
+filtered series, and every filtered series elsewhere, keep their existing SQL and diagnose
+dropped buckets through a bounded, separately authorized runtime query.
 Segment preview and count execute their prepared statements independently; the
 preview response includes both statements. Live valid-values uses the ordinary
 query path and includes the loaded semantic identity in its provenance.

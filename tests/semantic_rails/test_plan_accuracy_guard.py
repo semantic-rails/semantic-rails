@@ -959,7 +959,6 @@ def test_negated_include_remains_an_exclusion(adapter: SemanticLayerMCPAdapter, 
         ),
         # Grouping by a value's dimension shows it as a row.
         ("revenue by product type, food vs drink", _query(ITEM_REVENUE, group_by=[PRODUCT_TYPE])),
-        ("orders by customer type, new vs repeat", _query(ORDERS, group_by=[CUSTOMER_TYPE])),
         # "new" names a customer type only next to a word of that dimension.
         (
             "new store revenue by month",
@@ -971,6 +970,17 @@ def test_honored_values_are_not_gaps(
     adapter: SemanticLayerMCPAdapter, text: str, query: dict[str, Any]
 ) -> None:
     assert _gap_kinds(adapter, text, query) == []
+
+
+def test_the_whole_question_can_name_a_metric_across_grouping_words(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    # The values are honored, but the whole question also names Repeat customer orders.
+    gaps = _gaps(
+        adapter, "orders by customer type, new vs repeat", _query(ORDERS, group_by=[CUSTOMER_TYPE])
+    )
+    assert [gap["kind"] for gap in gaps] == ["governed_metric_unrealized"]
+    assert gaps[0]["expected"]["metrics"] == ["metric.sales.repeat_customer_orders"]
 
 
 def test_values_the_draft_ignores_are_gaps(adapter: SemanticLayerMCPAdapter) -> None:

@@ -1240,14 +1240,40 @@ surrogate such as `inventory_row_id` that is unique per snapshot row, and the se
 columns must not be unique per row themselves (`[inventory_row_id, date_day]` passes the
 check below but still sums). Give the snapshot time `class: as_of_time`.
 
-For grouping, the snapshot is chosen per series per period first. A grouped attribute
-stored on the snapshot rows, such as an account's plan that changes mid-week, is read
-from that snapshot, so the series counts once, under the value it holds that day, and
-the summed grouped rows add up to the ungrouped total. A `where` filter on the attribute
-applies before the snapshot is chosen. The stock's own clock and calendar dimensions
-instead split the period: grouped by the snapshot day, each day keeps its own snapshot.
-Ratios whose numerator alone has extra conditions keep one snapshot per series per
-time bucket.
+The snapshot is chosen per series per period first. A grouped attribute stored on the
+snapshot rows, such as an account's plan that changes mid-week, is read from that
+snapshot, so the series counts once, under the value it holds that day, and the summed
+grouped rows add up to the ungrouped total. A filter (a `where` item or a measure's own
+`filter`) on such an attribute, including one reached through a key that changes between
+a series' snapshots, reads the same snapshot: `plan = basic` is the basic row of the
+by-plan breakdown, so it leaves out an account that moved from basic to pro on Thursday.
+Stocks cannot use the row-based fan-out rewrites (including filter-only semi-joins) or
+serve as the source of a `kind: lookup` measure. Child filter paths refuse with
+`MIXED_GRAIN_INVALID`, and stock lookup sources refuse at package load with `INVALID_CONFIG`.
+SQL lowering also refuses a supplied fan-out plan over a stock, and a supplied parent-lookup
+plan whose source is a stock, with `REWRITE_NOT_SUPPORTED`, reason
+`stock_requires_snapshot_selection`, if the plan bypasses those checks.
+An attribute joined through the series key is constant for the series and keeps the same
+answer. Only filters on the stock's clock (the same entity and column) or a calendar
+(`kind: time`) dimension apply before the choice: with `snapshot_day <= Wednesday`, the
+week reads Wednesday's snapshots. Other date or timestamp attributes refuse, as in
+`group_by`, with `REWRITE_NOT_SUPPORTED`, reason `stock_filtered_by_date_attribute`, and
+the dimension id; choosing between a time bound and a closing-snapshot attribute would
+be ambiguous. This also applies to conditions inside child groups. The
+stock's own clock and calendar dimensions instead split the period: grouped by the
+snapshot day, each day keeps its own snapshot. Ratios whose numerator alone has extra
+conditions keep one snapshot per series per time bucket, so grouping one by the clock, a
+calendar or another date or timestamp dimension refuses with `REWRITE_NOT_SUPPORTED`,
+reason `entity_set_ratio_grouped_by_period`; choose the period with the time grain instead.
+
+A stock that adds up its series (`last_value`, `first_value` or `sum`, and not
+`additive: false`) and is grouped only by time reads 0 in a period that has snapshots
+but none passing the filters, and NULL in a period with no snapshot at all. Its other
+aggregations read NULL there, and grouped by an attribute, a group with no snapshot
+passing the filters is left out.
+An entity-set share using those snapshots also keeps an observed period and reads 0
+when every chosen snapshot fails its attribute filters; a kept zero denominator still
+reads NULL. With `observation_scope: query`, unmatched periods have no data.
 
 - Grouping a stock by a date or timestamp attribute that is neither its ordering clock
   nor a calendar dimension is refused with `REWRITE_NOT_SUPPORTED`, with
@@ -1459,6 +1485,33 @@ filter expression. Each `all:` item is either a dimension
 condition with `field`, `op`, and `value`, or an `expression:` containing a
 `metric_predicate`. All items are combined with AND. Other filter combinators,
 including `any:`, are unsupported.
+
+### Building-block measures
+
+A filtered metric is often the governed form of a measure that also counts rows the
+package leaves out: `Active stores` keeps the retail stores of an `Active stores (all kinds)`
+count. `plan` answers a question that names such a metric with the metric, and holds a draft
+that reads the measure instead (see `governed_metric_unrealized` in
+[MCP_INTERFACE.md](MCP_INTERFACE.md)). To keep the measure out of agent search altogether,
+author it with `publish: false`:
+
+```yaml
+measures:
+  active_stores_all_kinds:
+    label: Active stores (all kinds)
+    kind: entity_count
+    entity_key: store_id
+    value_type: count
+    publish: false        # answered through the metrics that filter it
+```
+
+A measure with `publish: false` that a metric reads through a filter (`filter:` on an
+aggregate, or `where:` or `predicates:` on a scoped aggregate), and that no metric aggregates
+whole, is a building block. `discover` doesn't list it. `plan` drafts the metric when it is the
+only one that filters the measure or the question names it, and otherwise holds a draft that
+reads the measure. `inspect` and Query IR still take the measure by id. Without
+`schema_strict`, `publish: false` also keeps the loader from publishing the measure as a
+metric of its own name.
 
 ### Long-tail kind — `derived` (expression AST)
 

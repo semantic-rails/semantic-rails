@@ -20,7 +20,6 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from ..architect_scaffold import slug
 from ..architect_service import (
     ArchitectProject,
     FirstModel,
@@ -42,6 +41,7 @@ from ..config import list_package_paths
 from ..config_validation import PackageReference, resolve_package_reference
 from ..dbt_artifacts import dbt_import_models, load_dbt_artifacts
 from ..errors import SemanticLayerError
+from ..naming import slug
 from .backend import Cancelled, Option, PromptBackend, current_backend
 
 MAX_DEPTH = 4
