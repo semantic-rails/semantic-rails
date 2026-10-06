@@ -196,8 +196,27 @@ class Database:
             _check_script_line_endings(sql, source_path)
             self.conn.executescript(sql)
         else:
-            for statement in _split_sql_statements(sql, source_path=source_path):
-                self.conn.execute(statement)
+            for number, statement in enumerate(
+                _split_sql_statements(sql, source_path=source_path), start=1
+            ):
+                try:
+                    self.conn.execute(statement)
+                except Exception as exc:
+                    if not source_path:
+                        raise
+                    first_line = statement.strip().splitlines()[0]
+                    raise SemanticLayerError(
+                        "INVALID_CONFIG",
+                        f"SQL seed '{source_path}' failed at statement {number} "
+                        f"({first_line}): {exc}",
+                        details={
+                            "reason": "seed_failed",
+                            "file": source_path,
+                            "statement_number": number,
+                            "statement_first_line": first_line,
+                            "database_message": str(exc),
+                        },
+                    ) from exc
         if hasattr(self.conn, "commit"):
             self.conn.commit()
 
