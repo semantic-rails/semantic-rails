@@ -1029,12 +1029,13 @@ compile cost and warms the runtime compile cache. Agents can forward
 they need the full diagnostics envelope or are editing the IR by hand.
 
 Planning applies the caller's `policy_context` (carried in `partial_query`)
-before matching or ranking dimensions, including catalog fallback and Intent IR
-groupings. Hidden dimensions are omitted from drafts, alternatives, diagnostics
-and composition hints in every detail mode. If visibility cannot be determined,
-dimensions are withheld. Naming a hidden dimension has the same outcome as naming
-an absent dimension; a draft that bypasses the visibility check is refused with
-`OBJECT_NOT_FOUND` without naming the dimension.
+before matching or ranking dimensions, measures and metrics, including catalog
+fallback and Intent IR groupings and subjects. Hidden objects are omitted from
+drafts, alternatives, diagnostics and composition hints in every detail mode. If
+visibility cannot be determined, they are withheld. Naming a hidden dimension has
+the same outcome as naming an absent dimension; a draft that reads a hidden object
+(a dimension, measure, metric, entity, relationship or temporal role) is refused with
+`OBJECT_NOT_FOUND` without naming it.
 
 When a grouping word names available dimensions on several entities and none
 belongs to the selected measure's root entity, planning holds the draft with

@@ -22,7 +22,12 @@ import yaml
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
-from semantic_rails.metadata import catalog_payload, discover_payload, inspect_payload
+from semantic_rails.metadata import (
+    build_options_payload,
+    catalog_payload,
+    discover_payload,
+    inspect_payload,
+)
 from semantic_rails.metadata_parts.valid_values import valid_values_payload
 from semantic_rails.planner.plan import plan_payload
 from semantic_rails.policies import enforce_query_policies, hidden_object_ids
@@ -223,6 +228,9 @@ SURFACES: dict[str, Callable[[Runtime, dict[str, Any]], Any]] = {
     ),
     "discover": lambda engine, context: discover_payload(
         engine, terms="revenue", partial_query={"policy_context": context}, limit=50
+    ),
+    "build_options": lambda engine, context: build_options_payload(
+        engine, partial_query={"policy_context": context}, focus_terms="revenue", limit=50
     ),
     "inspect": lambda engine, context: inspect_payload(
         engine, object_id=REVENUE_METRIC, partial_query={"policy_context": context}
@@ -447,6 +455,24 @@ def test_route_notes_offer_a_restricted_waypoint_only_to_its_roles(
     ]
     assert bool(details["route_alternatives"]) is eligible
     assert bool(disclosed) is eligible
+
+
+@pytest.mark.parametrize(("roles", "eligible"), [(["support"], False), (["finance"], True)])
+def test_a_restricted_dimension_takes_its_values_and_domain_with_it(package, roles, eligible):
+    domain = "value_domain.jaffle_store_store_name"
+    runtime = _engine(package, {**FINANCE_ONLY, "object_ids": [STORE]})
+    context = {"roles": roles}
+    try:
+        catalog = json.dumps(catalog_payload(runtime, view="full", policy_context=context))
+        assert (domain in catalog) is eligible
+        if eligible:
+            assert valid_values_payload(runtime, dimension_id=STORE, query=_with({}, context))
+            return
+        with pytest.raises(SemanticLayerError) as exc:
+            valid_values_payload(runtime, dimension_id=STORE, query=_with({}, context))
+        assert exc.value.code == "OBJECT_NOT_FOUND"
+    finally:
+        runtime.close()
 
 
 def test_unbindable_objects_are_restricted_when_anything_is(engine, monkeypatch):
