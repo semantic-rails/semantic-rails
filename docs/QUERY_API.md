@@ -988,6 +988,15 @@ live lookup. A declared empty domain remains a successful empty result. This
 payload is shared with MCP; only MCP adds `next_call` naming its tool. HTTP
 returns no `next_call`.
 
+Live lookups choose the first eligible anchor measure in the existing order
+(query measures first, then package order). Candidates must pass the same bound
+query policies and row-filter requirements as execution; hidden, restricted,
+withheld or denied measures are skipped without appearing in the response or
+source diagnostics. If all available candidates are denied, it keeps the
+`POLICY_DENIED` refusal without naming them; otherwise a lookup with no source
+refuses with `NO_VALID_VALUES_SOURCE`. Row filters still constrain the returned
+values and counts.
+
 ### `POST /api/v1/plan`
 
 Request:
