@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import duckdb
 import pytest
@@ -96,6 +98,117 @@ def test_export_semantic_contract_reports_physical_column_types(
     assert database.read_bytes() == before
     assert payload["semantic"]["packages"][0]["semantic_hash"] == snapshot.semantic_fingerprint
     _jsonschema().Draft202012Validator(load_contract("semantic_contract.v1.json")).validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("catalog_relation", "authored_relation", "catalog_columns", "relation_kind"),
+    [
+        ("JAFFLE_ORDER", "jaffle_order", "CUSTOMER_ID UUID, ORDERED_AT TIMESTAMPTZ", "table"),
+        ("jaffle_order", "jaffle_order", "CUSTOMER_ID UUID, ORDERED_AT TIMESTAMPTZ", "table"),
+        (
+            "Analytics.Fct_Events",
+            "analytics.fct_events",
+            "customer_id UUID, ordered_at TIMESTAMPTZ",
+            "view",
+        ),
+        ("jaffle_order", "jaffle_order", "customer_id UUID, ordered_at TIMESTAMPTZ", "table"),
+        (
+            "jaffle_order",
+            "WAREHOUSE.MAIN.JAFFLE_ORDER",
+            "customer_id UUID, ordered_at TIMESTAMPTZ",
+            "table",
+        ),
+        ("source_events", "missing_events", "customer_id UUID, ordered_at TIMESTAMPTZ", "table"),
+    ],
+    ids=[
+        "table-and-columns",
+        "columns-only",
+        "schema-view",
+        "one-part",
+        "catalog-qualified",
+        "missing-relation",
+    ],
+)
+def test_export_semantic_contract_matches_catalog_identifiers(
+    typed_contract_project: Path,
+    catalog_relation: str,
+    authored_relation: str,
+    catalog_columns: str,
+    relation_kind: str,
+) -> None:
+    package_file = typed_contract_project / "package.yml"
+    raw = yaml.safe_load(package_file.read_text())
+    raw["graph"]["entities"]["event"]["key"] = "customer_id"
+    raw["models"]["events"].update(
+        relation=authored_relation,
+        grain=["customer_id"],
+        times={"ordered_at": {"kind": "timestamp"}},
+        dimensions={"customer_id": {"kind": "categorical"}},
+    )
+    package_file.write_text(yaml.safe_dump(raw))
+    database = typed_contract_project / "warehouse.duckdb"
+    with duckdb.connect(str(database)) as connection:
+        if "." in catalog_relation:
+            connection.execute("CREATE SCHEMA Analytics")
+        connection.execute(f"CREATE TABLE source_columns ({catalog_columns})")
+        connection.execute(
+            f"CREATE {relation_kind.upper()} {catalog_relation} AS SELECT * FROM source_columns"
+        )
+    before = database.read_bytes()
+    files_before = set(typed_contract_project.iterdir())
+    payload = export_semantic_contract(typed_contract_project)
+    columns = {
+        column["name"]: column["data_type"]
+        for column in payload["semantic"]["packages"][0]["resources"][0]["columns"]
+    }
+    assert columns == (
+        {"customer_id": "string", "ordered_at": "timestamp"}
+        if authored_relation == "missing_events"
+        else {"customer_id": "uuid", "ordered_at": "timestamp_tz"}
+    )
+    assert database.read_bytes() == before
+    assert set(typed_contract_project.iterdir()) == files_before
+
+
+@pytest.mark.parametrize("ambiguity", ["column", "relation"])
+def test_export_semantic_contract_keeps_hints_for_ambiguous_catalog(
+    typed_contract_project: Path, monkeypatch: pytest.MonkeyPatch, ambiguity: str
+) -> None:
+    database = typed_contract_project / "warehouse.duckdb"
+    with duckdb.connect(str(database)):
+        pass
+    rows = [
+        {
+            "database_name": "warehouse",
+            "schema_name": "analytics",
+            "table_name": "fct_events",
+            "column_name": "occurred_at",
+            "data_type": "TIMESTAMP WITH TIME ZONE",
+        },
+        {
+            "database_name": "warehouse",
+            "schema_name": "analytics",
+            "table_name": "fct_events",
+            "column_name": "tenant_id",
+            "data_type": "UUID",
+        },
+    ]
+    duplicate = dict(rows[0])
+    duplicate["column_name" if ambiguity == "column" else "schema_name"] = (
+        "OCCURRED_AT" if ambiguity == "column" else "Analytics"
+    )
+    rows.append(duplicate)
+    monkeypatch.setattr(
+        "semantic_rails.architect_introspection.open_duckdb",
+        lambda _: nullcontext(SimpleNamespace(rows=lambda *_: rows)),
+    )
+    payload = export_semantic_contract(typed_contract_project)
+    columns = {
+        column["name"]: column
+        for column in payload["semantic"]["packages"][0]["resources"][0]["columns"]
+    }
+    assert columns["occurred_at"]["data_type"] == "timestamp"
+    assert columns["tenant_id"]["data_type"] == ("uuid" if ambiguity == "column" else "string")
 
 
 def test_export_semantic_contract_does_not_create_missing_database(

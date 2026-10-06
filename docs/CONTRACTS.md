@@ -52,8 +52,11 @@ When the package's local DuckDB database exists, export reads its column catalog
 read-only, with external access disabled. Physical column types take precedence
 over semantic-kind hints: zone-aware timestamps export as `timestamp_tz`, UUIDs
 as `uuid`, and other types use the warehouse's lowercase spelling. This applies
-to tables and views, including schema-qualified relations. Export never creates
-or seeds a database or connects to a remote warehouse. Without local metadata,
+to tables and views, including schema-qualified relations. Database, schema,
+table, and column names match case-insensitively. Ambiguous relation matches
+preserve all semantic-kind hints; duplicate column matches preserve that column's
+hint. Export never creates or seeds a database or connects to a remote warehouse.
+Without local metadata,
 the existing semantic-kind hints remain; an existing database that cannot be
 opened read-only raises `INVALID_CONFIG`. Physical type metadata can change
 without changing `semantic_hash`, which fingerprints package semantics only.

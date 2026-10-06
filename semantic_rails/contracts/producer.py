@@ -332,14 +332,24 @@ def _apply_physical_column_types(
                 continue
             schema, table = parts[-2:] if len(parts) > 1 else ["main", parts[0]]
             rows = warehouse.rows(
-                "SELECT column_name, data_type FROM duckdb_columns() "
-                "WHERE database_name = coalesce(?, current_database()) "
-                "AND schema_name = ? AND table_name = ?",
+                "SELECT database_name, schema_name, table_name, column_name, data_type "
+                "FROM duckdb_columns() "
+                "WHERE lower(database_name) = lower(coalesce(?, current_database())) "
+                "AND lower(schema_name) = lower(?) AND lower(table_name) = lower(?)",
                 [parts[0] if len(parts) == 3 else None, schema, table],
             )
-            types = {row["column_name"]: str(row["data_type"]).lower() for row in rows}
+            relations = {
+                (row["database_name"], row["schema_name"], row["table_name"]) for row in rows
+            }
+            if len(relations) != 1:
+                continue
+            types: dict[str, str | None] = {}
+            for row in rows:
+                name = row["column_name"].lower()
+                # Duplicate case-insensitive matches keep the semantic hint.
+                types[name] = None if name in types else str(row["data_type"]).lower()
             for column in resource["columns"]:
-                physical_type = types.get(column["name"])
+                physical_type = types.get(column["name"].lower())
                 if physical_type:
                     column["data_type"] = (
                         "timestamp_tz"
