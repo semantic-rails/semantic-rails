@@ -2951,9 +2951,17 @@ def _role_window_why(runtime: Any, text: str, query: dict[str, Any]) -> dict[str
     """Every draft must agree with the question's window in its execution role's zone."""
 
     time = _time_block(query)
-    timezone = time_timezone(str(time.get("temporal_role") or ""), runtime=runtime)
-    if not _time_window(text, query.get("policy_context"), timezone=timezone).bounds:
-        # Unresolved and competing windows keep their existing clarification path.
+    role = str(time.get("temporal_role") or "")
+    if not role:
+        return None
+    timezone = time_timezone(role, runtime=runtime)
+    context = query.get("policy_context")
+    local = _time_window(text, context, timezone=timezone)
+    utc = _time_window(text, context, timezone="UTC")
+    if not local.bounds or _window_days(local.bounds, context, timezone=timezone) == _window_days(
+        utc.bounds, context, timezone="UTC"
+    ):
+        # Add only role-zone holds; other windows retain their existing diagnostics.
         return None
     gaps = _caller_window_gaps(runtime, text, query)
     if not gaps:

@@ -255,24 +255,41 @@ def test_relative_and_absolute_windows_agree_in_the_roles_zone() -> None:
 
 
 @pytest.mark.parametrize("caller_window", [False, True])
+@pytest.mark.parametrize("detail", ["best", "full", "query", "debug"])
+@pytest.mark.parametrize(
+    ("phrase", "start", "end"),
+    [("today", "2026-10-05", "2026-10-06"), ("yesterday", "2026-10-04", "2026-10-05")],
+)
 def test_a_window_resolved_in_utc_is_held_for_a_local_role(
-    local_subscriptions: Runtime, monkeypatch: pytest.MonkeyPatch, caller_window: bool
+    local_subscriptions: Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    caller_window: bool,
+    detail: str,
+    phrase: str,
+    start: str,
+    end: str,
 ) -> None:
     context = {"now": "2026-10-05T01:00:00Z"}
-    result = compose(local_subscriptions, "new accounts today", policy_context=context)
-    wrong_time = {**result.draft.query["time"], "start": "2026-10-05", "end": "2026-10-06"}
+    result = compose(local_subscriptions, f"new accounts {phrase}", policy_context=context)
+    wrong_time = {**result.draft.query["time"], "start": start, "end": end}
+    wrong_time.pop("range", None)
     wrong = {**result.draft.query, "time": wrong_time}
     monkeypatch.setattr(
         "semantic_rails.planner.plan.compose",
         lambda *_args, **_kwargs: replace(result, draft=replace(result.draft, query=wrong)),
     )
     partial = {"policy_context": context, **({"time": wrong_time} if caller_window else {})}
-    plan = plan_payload(local_subscriptions, intent="new accounts today", partial_query=partial)
+    plan = plan_payload(
+        local_subscriptions, intent=f"new accounts {phrase}", partial_query=partial, detail=detail
+    )
     assert plan["status"] == "low_confidence"
     assert plan["why"]["code"] == "TIME_WINDOW_UNRESOLVED", plan.get("why")
-    assert plan["why"]["details"]["unresolved_phrases"] == ["today"]
+    assert plan["why"]["details"]["unresolved_phrases"] == [phrase]
     assert not plan["next"].get("ready_for")
     assert not (plan.get("best") or {}).get("query_ir")
+    assert not any(
+        row.get("query_ir") for row in plan.get("alternatives", []) + plan.get("blocked", [])
+    )
 
 
 def test_a_previously_held_explicit_local_window_stays_held(local_subscriptions: Runtime) -> None:

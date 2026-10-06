@@ -1034,8 +1034,9 @@ to the time reference as well: when `policy_context.now` is supplied, `today` an
 role's zone, and relative ranges and window faithfulness checks use the same clock.
 Before a role is selected, resolution uses the package's default zone (UTC when
 unset). A naive `now` is already local; without `now`, the reference is the current
-UTC instant converted to the role's zone. Every draft is checked against that
-role's bounds; a mismatch holds with `TIME_WINDOW_UNRESOLVED` naming the phrase.
+UTC instant converted to the role's zone. Drafts must agree with the bounds in
+that role's zone; a role-zone mismatch holds with `TIME_WINDOW_UNRESOLVED` naming
+the phrase.
 Existing holds on explicit caller windows remain conservative. As-of phrases
 (`now`, `right now`, `currently`, `at the
 moment`, `as of now`, `current` before a metric, `end of <window>`, and `as of
