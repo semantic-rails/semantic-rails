@@ -539,7 +539,7 @@ VENV_THEN_VERSION = " && ".join(quickstart.VENV_BLOCK.splitlines()) + " && seman
     [
         (
             quickstart.TRY,
-            f'uvx --from {SPEC} semantic-rails ask --package jaffle_shop "revenue by store" --run',
+            f'uvx --from {SPEC} semantic-rails ask --package jaffle_shop "revenue by store name" --run',
         ),
         (quickstart.TOOL_INSTALL, f"uv tool install {SPEC}"),
         (

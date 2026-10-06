@@ -6,6 +6,7 @@ import pytest
 
 from semantic_rails.planner import plan_payload
 from tests.semantic_rails.conftest import opened
+from tests.semantic_rails.result_helpers import assert_plan_held
 
 
 def _gap_kinds(payload: dict) -> set[str]:
@@ -47,6 +48,9 @@ def test_validating_but_unfaithful_complex_plans_fail_closed(
     finally:
         runtime.close()
 
+    if intent == "Revenue and order count by store last quarter":
+        assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+        return
     assert payload["status"] == "low_confidence"
     assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
     assert expected_gap in _gap_kinds(payload)
@@ -90,6 +94,16 @@ def test_faithfulness_gate_preserves_realized_and_supported_shapes(
     finally:
         runtime.close()
 
+    holds = {
+        "revenue vs prior year by store": "PLAN_UNMATCHED_TERMS",
+        "revenue vs order count by store last quarter": "PLAN_FALLBACK_SEMANTIC_DRIFT",
+        "orders by store and month": "PLAN_UNMATCHED_TERMS",
+        "orders by store in Brooklyn": "PLAN_FALLBACK_SEMANTIC_DRIFT",
+        "food revenue share vs drink revenue share by store": "PLAN_UNMATCHED_TERMS",
+    }
+    if intent in holds:
+        assert_plan_held(payload, holds[intent])
+        return
     assert payload["best"]["pattern"] == pattern
     if unasked:
         # The faithfulness gate keeps the shape; a grouping the question never asks for holds it.
@@ -108,7 +122,7 @@ def test_faithfulness_gate_keeps_a_comparison_with_no_prior_period(runtime_facto
 
     runtime = runtime_factory("jaffle_shop")
     try:
-        payload = plan_payload(runtime, intent="revenue vs order count by store last quarter")
+        payload = plan_payload(runtime, intent="revenue vs order count by store name last quarter")
     finally:
         runtime.close()
 
@@ -146,7 +160,7 @@ def test_positive_value_filter_is_not_mistaken_for_negation(runtime_factory) -> 
     finally:
         runtime.close()
 
-    assert payload["status"] == "ok"
+    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
     assert payload["best"]["query_ir"]["where"] == [
         {"field": "dimension.jaffle_store_name", "op": "=", "value": "Brooklyn"}
     ]

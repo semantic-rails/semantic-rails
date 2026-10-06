@@ -48,7 +48,7 @@ STORE_TAX_RATE = "dimension.jaffle_store_tax_rate"
 ORDERS = {"measure": "measure.jaffle.order_count"}
 REVENUE = {"measure": "measure.jaffle.revenue_usd"}
 LAST_WEEK = "WHERE ordered_at >= TIMESTAMP '2017-08-14' AND ordered_at < TIMESTAMP '2017-08-21'"
-COMPARED = "Orders by store last week compared with the week ?"
+COMPARED = "Orders by store name last week compared with the week ?"
 
 
 def _selects(*expressions: dict[str, Any]) -> dict[str, Any]:
@@ -180,8 +180,8 @@ BOTH_CLAUSE = '"how many", "how much"'
 NARROWER = [
     # A time grain's rows, or another entity's, are not the rows of the entity the clause lists.
     ("List customers by month", {}, "list_unrealized", '"list"'),
-    ("Who are our customers by store?", {}, "list_unrealized", '"who"'),
-    ("Who ordered last week by store?", {}, "list_unrealized", '"who"'),
+    ("Who are our customers by store name?", {}, "list_unrealized", '"who"'),
+    ("Who ordered last week by store name?", {}, "list_unrealized", '"who"'),
     # A category declares its values: its rows list none of the entity's.
     ("Who are our customers?", {"group_by": [CUSTOMER_TYPE]}, "list_unrealized", '"who"'),
     ("Who ordered last week?", {"group_by": [CUSTOMER_TYPE]}, "list_unrealized", '"who"'),
@@ -192,11 +192,16 @@ NARROWER = [
     ("Who are our customers?", {"group_by": [CUSTOMER_NAME]}, "list_unrealized", '"who"'),
     ("Who ordered last week?", {"group_by": [CUSTOMER_NAME]}, "list_unrealized", '"who"'),
     ("Who ordered last week?", {"group_by": [ORDER_NUMBER]}, "list_unrealized", '"who"'),
-    ("Which 3 stores had the most revenue last month?", {}, "list_unrealized", '"which"'),
-    ("List revenue by store", {}, "list_unrealized", '"list"'),
+    (
+        "Which 3 stores had the most revenue last month?",
+        {"group_by": [STORE_NAME]},
+        "list_unrealized",
+        '"which"',
+    ),
+    ("List revenue by store name", {}, "list_unrealized", '"list"'),
     # A group_by splits one value: it compares it with nothing.
     (COMPARED, {}, "comparison_unrealized", '"compared"'),
-    ("Compare revenue by store last month", {}, "comparison_unrealized", '"compare"'),
+    ("Compare revenue by store name last month", {}, "comparison_unrealized", '"compare"'),
     # Only a prior-period select is a value to compare with. A second select may spell the
     # first one again, and two values don't say what the question compares.
     (
@@ -287,10 +292,15 @@ def test_only_the_shape_check_holds_those(
     ("question", "partial", "group_by", "keys"),
     [
         ("List customers by month", {}, None, [CUSTOMER_ID]),
-        ("Who are our customers by store?", {}, [STORE_NAME], [CUSTOMER_ID]),
+        ("Who are our customers by store name?", {}, [STORE_NAME], [CUSTOMER_ID]),
         # The name may sit beside the key, but never stands for it.
         ("List customers", {"group_by": [CUSTOMER_NAME]}, [CUSTOMER_NAME], [CUSTOMER_ID]),
-        ("Which 3 stores had the most revenue last month?", {}, [STORE_NAME], [STORE_ID]),
+        (
+            "Which 3 stores had the most revenue last month?",
+            {"group_by": [STORE_NAME]},
+            [STORE_NAME],
+            [STORE_ID],
+        ),
     ],
 )
 def test_a_list_hold_names_the_listed_entitys_key_dimensions(
@@ -378,10 +388,9 @@ STAY_OK = [
     "What was revenue last month?",
     "How much revenue did we make last month?",
     "What is the average order value last month?",
-    "Revenue by store last month",
-    "Revenue per store last month",
+    "Revenue by store name last month",
     "Revenue for each store last month",
-    "Show orders by store last week.",
+    "Show orders by store name last week.",
     "Show me orders by week for the last 4 weeks.",
     # A prior-period select is a value to compare with.
     "Monthly revenue vs prior year",
@@ -392,10 +401,45 @@ STAY_OK = [
 
 @pytest.mark.parametrize("question", STAY_OK)
 def test_an_answer_of_the_asked_shape_stays_ready(jaffle: Runtime, question: str) -> None:
-    payload = plan_payload(jaffle, intent=question)
+    partial = {"group_by": [STORE_NAME]} if question == "Revenue for each store last month" else {}
+    payload = plan_payload(jaffle, intent=question, partial_query=partial)
 
     assert payload["status"] == "ok", payload.get("why")
     assert payload["next"]["ready_for"] == ["execute"]
+
+
+@pytest.mark.parametrize(
+    ("question", "code"),
+    [
+        ("Who are our customers by store?", "VALIDATION_FAILED"),
+        ("Who ordered last week by store?", UNMATCHED),
+        ("Which 3 stores had the most revenue last month?", GAP),
+        ("List revenue by store", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        ("Orders by store last week compared with the week ?", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        ("Compare revenue by store last month", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        ("Revenue by store last month", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        ("Revenue per store last month", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        ("Revenue for each store last month", UNMATCHED),
+        ("Show orders by store last week.", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        (
+            "Orders by store last week compared with the week before?",
+            "PLAN_FALLBACK_SEMANTIC_DRIFT",
+        ),
+        ("What's the store's revenue last month?", UNMATCHED),
+    ],
+)
+def test_store_shortcut_removal_holds_before_the_shape_check(
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, question: str, code: str
+) -> None:
+    payload = plan_payload(jaffle, intent=question, partial_query={"policy_context": NOW})
+    monkeypatch.setattr(plan_module, "_answer_shape_why", lambda *_args: None)
+    unchecked = plan_payload(jaffle, intent=question, partial_query={"policy_context": NOW})
+
+    assert payload["status"] == "low_confidence"
+    assert "ready_for" not in payload["next"]
+    assert payload["why"]["code"] == code
+    assert payload == unchecked
+    assert not [hint for hint in _hints(payload) if DROP_HINT.search(hint)]
 
 
 def _reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
@@ -416,7 +460,7 @@ def _reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
         ),
         (
             "Revenue for each store last month",
-            {},
+            {"group_by": [STORE_NAME]},
             "SELECT s.store_name, sum(o.order_total_cents) / 100.0 FROM jaffle_order o "
             "JOIN jaffle_store s USING (store_id) WHERE o.ordered_at >= TIMESTAMP '2017-07-01' "
             "AND o.ordered_at < TIMESTAMP '2017-08-01' GROUP BY 1 ORDER BY 1",
@@ -495,7 +539,7 @@ MEANINGFUL = [
     "Which customers ordered last week?",
     "List the customers who ordered last week.",
     "How many orders did we get last week compared with the week before?",
-    "Orders by store last week compared with the week before?",
+    "Orders by store name last week compared with the week before?",
     "How many orders did each store get last week?",
     "How many orders did each plan get last week?",
     "Orders between 9 and 17 on 15 March 2017",
@@ -529,8 +573,6 @@ def test_dropping_those_words_anyway_is_still_held(jaffle: Runtime, question: st
     ("question", "status"),
     [
         ("What's revenue last month?", "ok"),
-        # Asked again, plan sees that "the store's revenue" never asks to group by store.
-        ("What's the store's revenue last month?", "low_confidence"),
     ],
 )
 def test_only_a_contraction_end_may_be_dropped(jaffle: Runtime, question: str, status: str) -> None:

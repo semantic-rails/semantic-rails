@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from semantic_rails.planner import plan_payload
 from tests.plan_candidate_envelope import plan_candidate_envelope
+from tests.semantic_rails.result_helpers import assert_plan_held, held_candidate
 
 
 def test_plan_ranks_aov_above_ltv_for_order_value_intent(runtime_factory) -> None:
@@ -80,6 +81,12 @@ def test_plan_prefers_revenue_usd_over_drink_revenue_for_generic_intent(
             "revenue by store",
         ):
             plan = plan_payload(runtime, intent=intent)
+            assert_plan_held(
+                plan,
+                "PLAN_UNMATCHED_TERMS"
+                if "recent full" in intent
+                else "PLAN_FALLBACK_SEMANTIC_DRIFT",
+            )
             if "recent full" in intent:
                 assert plan["status"] == "low_confidence"
                 assert plan["why"]["details"] == {
@@ -92,9 +99,13 @@ def test_plan_prefers_revenue_usd_over_drink_revenue_for_generic_intent(
                     == "measure.jaffle.revenue_usd"
                 )
                 continue
-            payload = plan_candidate_envelope(runtime, intent=intent, limit=10)
-            candidates = list(payload.get("candidates", []) or [])
-            assert candidates, f"expected candidates for: {intent}"
+            payload = plan_candidate_envelope(runtime, intent=intent, limit=10, verbosity="full")
+            held_candidate(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+            candidates = payload["blocked"]
+            assert (
+                candidates[0]["candidate_ir"]["select"][0]["expression"]["measure"]
+                == "measure.jaffle.revenue_usd"
+            )
             # Among all resolved revenue-family measures across candidates,
             # revenue_usd must outrank drink/food/item/delivered when both
             # appear. When plan's path-search blocks every revenue
@@ -141,9 +152,12 @@ def test_plan_prefers_revenue_usd_over_drink_revenue_for_generic_intent(
 
         # Sanity: a real qualifier in the intent should still surface the
         # qualified measure as a top-3 candidate.
-        drink_payload = plan_candidate_envelope(runtime, intent="drink revenue by store", limit=5)
+        drink_payload = plan_candidate_envelope(
+            runtime, intent="drink revenue by store", limit=5, verbosity="full"
+        )
+        held_candidate(drink_payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
         drink_resolved_ids: set[str] = set()
-        for cand in drink_payload.get("candidates", [])[:3]:
+        for cand in drink_payload["blocked"][:3]:
             for row in cand.get("resolved", []) or []:
                 drink_resolved_ids.add(str(row.get("id", "") or ""))
         assert "measure.jaffle.drink_revenue_usd" in drink_resolved_ids, (
