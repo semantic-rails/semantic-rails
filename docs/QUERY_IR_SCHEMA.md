@@ -271,11 +271,13 @@ they need. With a `prior_period`, `rolling`, `period_to_date` or `cumulative` wi
 or `metric_filters`, a bounded `time.start` refuses, and so does a `where` filter, child groups
 included, on any temporal or calendar dimension, whether or not it is the query's clock. A
 dimension is temporal when it is a time role, has a `date`, `timestamp`, `datetime` or `time`
-kind, or is on the same table column as one that is; a calendar dimension is any dimension of
-a `kind: time` entity. The rule is by type, not by relationships, so it may refuse a date that
-does not cut the window. Only an upper bound (`<`, `<=`) on a `date` or `timestamp` dimension
-runs, as `time.end` does. The refusal is `WINDOWED_TIME_FILTER_UNSUPPORTED` or
-`CUMULATIVE_TIME_FILTER_UNSUPPORTED`; for a `where` filter, `details.where_path` names it.
+kind, or is on the same table column as a temporal or calendar dimension or on a column a
+relationship pairs with one, at any depth; a calendar dimension is any dimension of a
+`kind: time` entity. The rule follows types and relationship columns, not the query's clock,
+so it may refuse a date that does not cut the window. Only an upper bound (`<`, `<=`) on a
+`date` or `timestamp` dimension runs, as `time.end` does. The refusal is
+`WINDOWED_TIME_FILTER_UNSUPPORTED` or `CUMULATIVE_TIME_FILTER_UNSUPPORTED`; for a `where`
+filter, `details.where_path` names it.
 
 `period_to_date` currently supports only the default calendar. A non-default
 `time.calendar_id`, or a time role bound to a non-default calendar, refuses with
