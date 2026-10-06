@@ -1116,6 +1116,18 @@ def _anchored_entity_set_plan(
     )
     if not safe_anchor_shape:
         return None
+    # A stock reads an attribute filter from the snapshot it chooses, which only its plain
+    # leaf does (_semi_additive_leaf_select).
+    if any(
+        _reads_chosen_snapshot(
+            measure, denominator_plan.bound_measure.temporal_role, str(item["field"]), config
+        )
+        for item in [
+            *plain_filters(plan.query.get("where")),
+            *_bound_filter_clauses(denominator_plan.bound_measure, config),
+        ]
+    ):
+        return None
 
     raw_time_expr, _, _, time_source_local, _ = _measure_time_components(
         plan, denominator_plan, config
@@ -1593,6 +1605,32 @@ def _and_conditions(conditions: list[Any]) -> Any:
     return current
 
 
+def _reads_chosen_snapshot(
+    measure, temporal_role_id: str, dim_id: str, config: PackageConfig
+) -> bool:
+    """Whether a stock reads a filter on ``dim_id`` from the snapshot it chooses per series
+    and period, as it reads a grouped attribute, rather than before choosing it.
+
+    Only a filter that bounds time applies first: on the stock's clock (the dimension or its
+    column), a calendar dimension, or any date or timestamp. Any other filter, on the
+    snapshot rows or reached through a join, keeps or drops the chosen snapshot.
+    """
+    if measure.measure_class != "semi_additive":
+        return False
+    dimensions = _dimension_index(config)
+    dimension = dimensions[dim_id]
+    role = _temporal_role_index(config).get(temporal_role_id)
+    clock = dimensions.get(role.dimension) if role is not None else None
+    return not (
+        dimension.data_type in {"date", "timestamp"}
+        or _entity_index(config)[dimension.entity].kind == "time"
+        or (
+            clock is not None
+            and (dimension.entity, dimension.column) == (clock.entity, clock.column)
+        )
+    )
+
+
 def _semi_additive_leaf_select(
     *,
     key_fields: list[SqlField],
@@ -1604,6 +1642,8 @@ def _semi_additive_leaf_select(
     from_table: SqlTableRef,
     joins: list[SqlJoin],
     where_clauses: list[Any],
+    snapshot_filters: list[Any],
+    sums_series: bool,
     window_choice: str,
     final_aggregation: str,
     aggregation_params: dict[str, Any],
@@ -1640,6 +1680,38 @@ def _semi_additive_leaf_select(
         SqlField(order_expr, "__snapshot_order"),
         SqlField(value_expr, "__snapshot_value"),
     ]
+    # `snapshot_filters` (on attributes, never on time) keep or drop each chosen snapshot,
+    # as a grouped attribute is read from it, so they're marked here and applied after the
+    # choice. Grouped only by periods, a stock that adds up its series then reads 0 in a
+    # period whose chosen snapshots all fail them (data of nothing), and NULL in a period
+    # with no snapshot (no data).
+    if snapshot_filters:
+        kept = SqlCase(
+            [SqlCaseWhen(_and_conditions(snapshot_filters), SqlLiteral(1))], SqlLiteral(0)
+        )
+        base_fields.append(SqlField(kept, "__snapshot_kept"))
+    settles = bool(snapshot_filters) and sums_series and set(key_aliases) <= set(period_aliases)
+    dialect = dialect_for_warehouse(warehouse)
+
+    def chosen_value(source: str) -> tuple[Any, list[Any]]:
+        """The leaf's value over the snapshots chosen in ``source``, and the filter on them."""
+        value: Any = SqlIdentifier(parts=[source, "__snapshot_value"])
+        flag = SqlIdentifier(parts=[source, "__snapshot_kept"])
+        kept_rows = [SqlBinary(flag, "=", SqlLiteral(1))] if snapshot_filters else []
+        if settles:
+            value = SqlCase([SqlCaseWhen(kept_rows[0], value)])
+        total = (
+            SqlCall("SUM", [value])
+            if final_aggregation in {"last_value", "first_value"}
+            else _aggregation_expr(
+                value, final_aggregation, parameters=aggregation_params, dialect=dialect
+            )
+        )
+        if not settles:
+            return total, kept_rows
+        none_kept = SqlBinary(SqlCall("MAX", [flag]), "=", SqlLiteral(0))
+        return SqlCase([SqlCaseWhen(none_kept, SqlLiteral(0))], total), []
+
     complete_fields = [
         *[
             SqlField(SqlIdentifier(parts=["snapshot_base", alias]), alias)
@@ -1654,7 +1726,6 @@ def _semi_additive_leaf_select(
         SqlIdentifier(parts=["snapshot_base", alias]) for alias in partition_aliases
     ]
 
-    dialect = dialect_for_warehouse(warehouse)
     if dialect.capabilities().get("qualify"):
         direction = "ASC" if window_choice == "first_value" else "DESC"
         snapshot_name = "snapshot_rows"
@@ -1663,17 +1734,7 @@ def _semi_additive_leaf_select(
             partition_by=[field.expression for field in period_fields] + list(row_grain_exprs),
             order_by=[SqlOrderTerm(expr=order_expr, direction=direction)],
         )
-        snapshot_value = SqlIdentifier(parts=[snapshot_name, "__snapshot_value"])
-        final_expr = (
-            SqlCall("SUM", [snapshot_value])
-            if final_aggregation in {"last_value", "first_value"}
-            else _aggregation_expr(
-                snapshot_value,
-                final_aggregation,
-                parameters=aggregation_params,
-                dialect=dialect,
-            )
-        )
+        final_expr, kept_rows = chosen_value(snapshot_name)
         return SqlSelect(
             ctes=[
                 *list(ctes or []),
@@ -1696,6 +1757,7 @@ def _semi_additive_leaf_select(
                 SqlField(final_expr, leaf_alias),
             ],
             from_table=SqlTableRef(name=snapshot_name),
+            where=kept_rows,
             group_by=[SqlIdentifier(parts=[snapshot_name, alias]) for alias in key_aliases],
         )
 
@@ -1716,17 +1778,7 @@ def _semi_additive_leaf_select(
     final_key_exprs: list[SqlExpr] = [
         SqlIdentifier(parts=["snapshot_base", alias]) for alias in key_aliases
     ]
-    snapshot_value = SqlIdentifier(parts=["snapshot_base", "__snapshot_value"])
-    final_expr = (
-        SqlCall("SUM", [snapshot_value])
-        if final_aggregation in {"last_value", "first_value"}
-        else _aggregation_expr(
-            snapshot_value,
-            final_aggregation,
-            parameters=aggregation_params,
-            dialect=dialect,
-        )
-    )
+    final_expr, kept_rows = chosen_value("snapshot_base")
     return SqlSelect(
         ctes=[
             *list(ctes or []),
@@ -1763,6 +1815,7 @@ def _semi_additive_leaf_select(
                 on=_and_conditions(join_conditions),
             )
         ],
+        where=kept_rows,
         group_by=final_key_exprs,
     )
 
@@ -2902,6 +2955,10 @@ def _measure_leaf_select(
         if measure_plan.rewrite_strategy == "fanout_dedup"
         else refuse_child_groups(query.get("where"), "in this measure's leaf")
     )
+    # The conditions a stock applies to the snapshot it chooses, not before choosing it: only
+    # its own leaf below takes them out of `where_clauses`.
+    snapshot_filters: list[Any] = []
+    stock_role = measure_plan.bound_measure.temporal_role
     for item in filters:
         expr, _ = _direct_dimension_source_expr(
             measure.entity,
@@ -2914,7 +2971,9 @@ def _measure_leaf_select(
             if semijoin and (dimensions[item["field"]].entity, "where") in crossing_filters
             else where_clauses
         )
-        target.append(_value_filter_condition(expr, item))
+        target.append(condition := _value_filter_condition(expr, item))
+        if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
+            snapshot_filters.append(condition)
     for item in _bound_filter_clauses(measure_plan.bound_measure, config):
         expr, _ = _direct_dimension_source_expr(
             measure.entity,
@@ -2927,7 +2986,9 @@ def _measure_leaf_select(
             if semijoin and (dimensions[item["field"]].entity, "metric_filter") in crossing_filters
             else where_clauses
         )
-        target.append(_value_filter_condition(expr, item))
+        target.append(condition := _value_filter_condition(expr, item))
+        if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
+            snapshot_filters.append(condition)
     untimed = list(where_clauses)
     if plan.time:
         where_clauses.extend(
@@ -3079,7 +3140,14 @@ def _measure_leaf_select(
                 name=_measure_source_relation(measure, entities[measure.entity])
             ),
             joins=joins,
-            where_clauses=where_clauses,
+            where_clauses=[
+                clause
+                for clause in where_clauses
+                if not any(clause is condition for condition in snapshot_filters)
+            ],
+            snapshot_filters=snapshot_filters,
+            sums_series=measure.additive
+            and measure_plan.bound_measure.aggregation in {"last_value", "first_value", "sum"},
             window_choice=window_choice,
             final_aggregation=measure_plan.bound_measure.aggregation,
             aggregation_params=dict(measure_plan.bound_measure.aggregation_params),
