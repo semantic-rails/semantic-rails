@@ -156,6 +156,7 @@ def test_companions_defaults_policies_and_recursive_expressions(tmp_path):
         (tmp_path / section / "many.yaml").write_text(
             f"{section}: {{many: {{query: {{version: 2}}}}}}\n"
         )
+        (tmp_path / section / "bare.yml").write_text("query: {version: 2}\n")
     files = PackageFiles(source)
     queries = list(files.queries())
     assert len(queries) == 5

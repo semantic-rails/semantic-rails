@@ -117,7 +117,9 @@ class PackageFiles:
             self.documents.items(), key=lambda pair: (len(Path(pair[0]).parts) > 1, pair[0])
         ):
             if file == primary:
-                if self.directory and section_file in self.documents:
+                if section in {"examples", "tests"} or (
+                    self.directory and section_file in self.documents
+                ):
                     continue
             elif Path(file).parts[0] not in {section, section_file}:
                 continue
@@ -127,7 +129,9 @@ class PackageFiles:
                 continue
             if section in doc:
                 yield file, (section,), doc[section]
-            elif Path(file).parts[0] == section:
+            elif Path(file).parts[0] == section and (
+                section not in {"examples", "tests"} or singular in doc
+            ):
                 yield file, (singular,) if singular in doc else (), doc.get(singular, doc)
 
     def _objects(self, section: str) -> Iterator[Row]:
