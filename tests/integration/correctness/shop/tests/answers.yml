@@ -7150,3 +7150,46 @@ tests:
       - {dimension.shop_account_day_snapshot_day: '2024-01-06', seats: 1020}
       - {dimension.shop_account_day_snapshot_day: '2024-01-07', seats: 1022}
       - {dimension.shop_account_day_snapshot_day: '2024-01-15', seats: 220}
+  shop/stock_filtered_by_changing_plan:
+    kind: query_matches_snapshot
+    expect: answer
+    why: A filter on a plan that changes within the week reads each account's last snapshot that week, so it equals that plan's row of the by-plan breakdown; a week with snapshots but none on the plan reads 0, and a week with no snapshot reads NULL.
+    cites:
+      - tests/integration/correctness/shop/models/account_days.yml#model.dimensions.plan
+      - tests/integration/correctness/shop/models/account_days.yml#model.measures.seats
+      - tests/integration/correctness/shop/models/account_days.yml#model.times.snapshot_day
+      - docs/QUERY_IR_SCHEMA.md#wherefilter
+      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
+    tags: [clock, null-vs-zero]
+    variant: utc_authored
+    query:
+      select:
+      - expression:
+          measure: measure.shop.seats
+        as: seats
+      time:
+        temporal_role: temporal_role.shop_account_day_snapshot_day
+        grain: week
+        start: '2024-01-01'
+        end: '2024-01-22'
+        fill: true
+      where:
+      - field: dimension.shop_account_day_plan
+        op: '='
+        value: builder
+    reference_sql: |-
+      SELECT g.b, CASE WHEN COUNT(CASE WHEN a.plan = 'builder' THEN 1 END) > 0
+                  THEN SUM(CASE WHEN a.plan = 'builder' THEN a.seats END)
+                WHEN COUNT(a.b) > 0 THEN 0 END
+              FROM generate_series(TIMESTAMP '2024-01-01', TIMESTAMP '2024-01-15', INTERVAL '7 day')
+                AS g(b)
+              LEFT JOIN (
+                SELECT a.*, date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP)) AS b, ROW_NUMBER() OVER (
+                  PARTITION BY a.account_id, date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP)) ORDER BY a.snapshot_day DESC) AS n
+                FROM account_days AS a
+              ) AS a ON a.b = g.b AND a.n = 1
+              GROUP BY 1
+    expected_rows:
+      - {temporal_role.shop_account_day_snapshot_day__week: '2024-01-01T00:00:00', seats: 1006}
+      - {temporal_role.shop_account_day_snapshot_day__week: '2024-01-08T00:00:00', seats: null}
+      - {temporal_role.shop_account_day_snapshot_day__week: '2024-01-15T00:00:00', seats: 0}

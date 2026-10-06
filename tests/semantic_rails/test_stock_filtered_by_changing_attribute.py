@@ -165,6 +165,7 @@ def _query(
     group_by: list[str] | None = None,
     time: dict[str, Any] | None = None,
     expression: dict[str, Any] | None = None,
+    **options: Any,
 ) -> list[tuple[Any, ...]]:
     query: dict[str, Any] = {
         "version": 1,
@@ -175,7 +176,7 @@ def _query(
         query["time"] = {"temporal_role": ROLE, **time}
     if where:
         query["where"] = where
-    result = runtime.query(query)
+    result = runtime.query({**query, **options})
     assert result["ok"], result.get("errors")
     time_alias = f"{ROLE}__{time['grain']}" if time and time.get("grain") else None
     rows = []
@@ -294,6 +295,12 @@ def test_no_snapshot_reads_null_and_no_match_reads_zero(runtime: Runtime) -> Non
         (WEEK, 0),
         (date(2026, 9, 21), 0),
     ]
+    # A metric predicate chooses the series measured: keeping none, the stock has no data.
+    over = {"entity": "entity.fees_account", "measure": "measure.fees.fee", "op": ">"}
+    over |= {"value": 1000, "time_alignment": "same_query_period"}
+    largest_accounts = {**customers, "kind": "scoped_aggregate", "predicates": [over]}
+    del largest_accounts["filter"]
+    assert _query(runtime, enterprise, expression=largest_accounts) == [(None,)]
 
 
 def test_a_matching_snapshot_of_unknown_value_stays_null(snapshot_lowering, tmp_path) -> None:
@@ -324,6 +331,9 @@ def test_only_a_balance_summed_across_series_reads_zero(runtime: Runtime) -> Non
         (WEEK, 99),
         (date(2026, 9, 21), 99),
     ]
+    # Judged inside the query's filters, a period with no snapshot passing them has no data.
+    assert _query(runtime, enterprise, observation_scope="query") == [(None,)]
+    assert _query(runtime, enterprise, time={"grain": "week"}, observation_scope="query") == []
     # Grouped by an attribute, an empty group is absent, as it is for a flow.
     assert _query(runtime, enterprise, group_by=[STATE], time={"grain": "week"}) == []
     assert _query(runtime, [_is(PLAN, "basic")], group_by=[STATE], time={"grain": "week"}) == [

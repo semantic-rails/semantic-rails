@@ -127,6 +127,7 @@ from .empty_groups import (
     expr_resolves_to_zero,
     guard_empty_groups,
     has_nested_case,
+    observation_scope,
     observes_dataset,
     reads_every_row,
     record_leaf_scope,
@@ -1631,7 +1632,7 @@ def _semi_additive_leaf_select(
     joins: list[SqlJoin],
     where_clauses: list[Any],
     snapshot_filters: list[Any],
-    sums_series: bool,
+    zero_unmatched: bool,
     window_choice: str,
     final_aggregation: str,
     aggregation_params: dict[str, Any],
@@ -1669,16 +1670,15 @@ def _semi_additive_leaf_select(
         SqlField(value_expr, "__snapshot_value"),
     ]
     # `snapshot_filters` (on attributes, never on time) keep or drop each chosen snapshot,
-    # as a grouped attribute is read from it, so they're marked here and applied after the
-    # choice. Grouped only by periods, a stock that adds up its series then reads 0 in a
-    # period whose chosen snapshots all fail them (data of nothing), and NULL in a period
-    # with no snapshot (no data).
+    # as a grouped attribute is read from it: marked here, applied after the choice. With
+    # `zero_unmatched`, grouped only by periods, a period whose chosen snapshots all fail
+    # them reads 0 (data of nothing); a period with no snapshot still reads NULL (no data).
     if snapshot_filters:
         kept = SqlCase(
             [SqlCaseWhen(_and_conditions(snapshot_filters), SqlLiteral(1))], SqlLiteral(0)
         )
         base_fields.append(SqlField(kept, "__snapshot_kept"))
-    settles = bool(snapshot_filters) and sums_series and set(key_aliases) <= set(period_aliases)
+    settles = bool(snapshot_filters) and zero_unmatched and set(key_aliases) <= set(period_aliases)
     dialect = dialect_for_warehouse(warehouse)
 
     def chosen_value(source: str) -> tuple[Any, list[Any]]:
@@ -3134,8 +3134,11 @@ def _measure_leaf_select(
                 if not any(clause is condition for condition in snapshot_filters)
             ],
             snapshot_filters=snapshot_filters,
-            sums_series=measure.additive
-            and measure_plan.bound_measure.aggregation in {"last_value", "first_value", "sum"},
+            # A stock that adds up its series; judged inside the query's filters
+            # (observation_scope: query), a period with no snapshot passing them has no data.
+            zero_unmatched=measure.additive
+            and measure_plan.bound_measure.aggregation in {"last_value", "first_value", "sum"}
+            and observation_scope(query, config) == "dataset",
             window_choice=window_choice,
             final_aggregation=measure_plan.bound_measure.aggregation,
             aggregation_params=dict(measure_plan.bound_measure.aggregation_params),

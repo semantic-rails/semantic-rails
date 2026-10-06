@@ -1240,14 +1240,24 @@ surrogate such as `inventory_row_id` that is unique per snapshot row, and the se
 columns must not be unique per row themselves (`[inventory_row_id, date_day]` passes the
 check below but still sums). Give the snapshot time `class: as_of_time`.
 
-For grouping, the snapshot is chosen per series per period first. A grouped attribute
-stored on the snapshot rows, such as an account's plan that changes mid-week, is read
-from that snapshot, so the series counts once, under the value it holds that day, and
-the summed grouped rows add up to the ungrouped total. A `where` filter on the attribute
-applies before the snapshot is chosen. The stock's own clock and calendar dimensions
-instead split the period: grouped by the snapshot day, each day keeps its own snapshot.
-Ratios whose numerator alone has extra conditions keep one snapshot per series per
-time bucket.
+The snapshot is chosen per series per period first. A grouped attribute stored on the
+snapshot rows, such as an account's plan that changes mid-week, is read from that
+snapshot, so the series counts once, under the value it holds that day, and the summed
+grouped rows add up to the ungrouped total. A filter (a `where` item or a measure's own
+`filter`) on such an attribute, or on another entity's dimension, reads the same
+snapshot: `plan = basic` is the basic row of the by-plan breakdown, so it leaves out an
+account that moved from basic to pro on Thursday. Only a filter that bounds time applies
+before the choice: on the stock's clock, a calendar dimension, or any date or timestamp
+dimension (with `snapshot_day <= Wednesday`, the week reads Wednesday's snapshots). The
+stock's own clock and calendar dimensions instead split the period: grouped by the
+snapshot day, each day keeps its own snapshot. Ratios whose numerator alone has extra
+conditions keep one snapshot per series per time bucket.
+
+A stock that adds up its series (`last_value`, `first_value` or `sum`, and not
+`additive: false`) and is grouped only by time reads 0 in a period that has snapshots
+but none passing the filters, and NULL in a period with no snapshot at all. Its other
+aggregations read NULL there, and grouped by an attribute, a group with no snapshot
+passing the filters is left out.
 
 - Grouping a stock by a date or timestamp attribute that is neither its ordering clock
   nor a calendar dimension is refused with `REWRITE_NOT_SUPPORTED`, with

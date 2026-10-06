@@ -525,6 +525,11 @@ Supported `op` values (all compile end-to-end):
 - Objects are rejected — inline expression thresholds belong in
   `metric_filters` (`metric_predicate`).
 
+On a stock, a filter on an attribute reads each series' snapshot chosen for the period, as
+a `group_by` on it does, so `plan = basic` equals the basic row of the by-plan breakdown;
+a filter on the stock's clock, a calendar dimension, or a date or timestamp bounds time and
+applies before the choice (see [Measures](PACKAGE_AUTHORING.md#measures)).
+
 A positive child-dimension filter on a parent-grain measure means "parents with at
 least one matching child". It lowers to correlated `EXISTS`, so multiple matching
 children never multiply a parent count or sum. This also applies to an aggregate's
@@ -955,7 +960,8 @@ no rows reads one or the other, by one rule, in every query:
 |---|---|---|
 | `sum`, `count`, `count_distinct` over an additive, event-count or entity-count measure | `0` | `NULL` |
 | `avg`, `min`, `max`, `median`, `percentile` | `NULL` | `NULL` |
-| semi-additive measures (stocks), distinct populations, and measures with `additive: false` | `NULL` | `NULL` |
+| a stock that adds up its series (`last_value`, `first_value` or `sum`) grouped only by time | `0` in a period with snapshots, none passing the filters | `NULL` in a period with no snapshot |
+| other semi-additive measures (stocks), distinct populations, and measures with `additive: false` | `NULL` | `NULL` |
 
 A measure has data in scope when at least one of its rows in scope holds a value: a sum with a
 non-NULL amount, or a count above zero. The scope is the measure's own authored conditions
@@ -986,6 +992,12 @@ a group with no rows reads `0`: a store with orders but no refunds has 0 refunds
 none, every group reads `NULL`: with no refunds anywhere in scope, no store has "0 refunds",
 because nothing says refunds were recorded. An average, minimum or maximum of nothing is
 undefined, and a stock has no value for a period nobody observed, so neither is ever made zero.
+A stock that adds up its series is judged by period instead, where it chooses each series'
+snapshot: a period whose chosen snapshots all fail the `where` filters or the measure's own
+`filter` reads `0` ("paying workspaces on the enterprise plan today", with today's snapshots
+loaded and none on enterprise), and a period with no snapshot reads `NULL`. A metric
+predicate chooses the series measured, so a period where it keeps none reads `NULL`, as does
+one under `observation_scope: "query"` with no snapshot passing the filters.
 
 A group whose rows exist but whose amounts are all NULL is not empty: its amounts are unknown,
 so its sum reads `NULL`, as SQL's `SUM` does, while its count still counts the rows. A month
@@ -1143,7 +1155,7 @@ is that measure's honest value for "no rows contributed":
 |---|---|---|
 | `sum` / `count` / `count_distinct` over an additive, event-count or entity-count measure | `0`, while the measure has data in scope; else `NULL` | Zero is the additive identity — summing no rows really is 0 — but only where the measure has data (see "Empty groups"). A bucket whose rows all have a NULL amount is not empty: its sum reads `NULL`, filled or not. |
 | `avg`, `min`, `max`, `median`, `percentile` | `NULL` | Undefined over no rows. A filled `0` would be a fabricated measurement — a `min` below every value actually observed. |
-| semi-additive measures (snapshots, period-to-date, rolling balances) | `NULL` | A snapshot for a period that was never observed is unknown, not empty. |
+| semi-additive measures (snapshots, period-to-date, rolling balances) | `NULL` | A snapshot for a period that was never observed is unknown, not empty. A period with snapshots that all fail the filters isn't filled: a stock that adds up its series reads `0` there (see "Empty groups"). |
 | ratios, conversion rates and other null-preserving expressions | `NULL` | A period with no denominator has no rate; `0` would read as a 0% rate. |
 
 A query with a `distribution` refuses `fill: true`; without fill, periods with no data are
