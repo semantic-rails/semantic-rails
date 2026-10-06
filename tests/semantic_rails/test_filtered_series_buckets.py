@@ -126,6 +126,37 @@ def test_a_filtered_average_keeps_its_seven_populated_buckets(series):
     ]
 
 
+def test_a_filtered_ratio_keeps_its_seven_populated_buckets(series):
+    config = series.config
+    metric = MetricConfig(
+        id="metric.obs.filtered_ratio",
+        kind="derived",
+        expression=parse_semantic_expression(
+            {
+                "kind": "ratio",
+                "numerator": {"metric": "metric.obs.filtered_sum"},
+                "denominator": {"metric": "metric.obs.filtered_count"},
+            },
+            context="query",
+        ),
+    )
+    runtime = Runtime.from_config(
+        replace(config, metric_recipes=[*config.metric_recipes, metric]),
+        source_path=series.source_path,
+    )
+    try:
+        response = runtime.query(_query("ratio"))
+        assert len(response["rows"]) == 7
+        assert [row["value"] for row in response["rows"]] == [
+            week + 1 for week in sorted(MATCHING_WEEKS)
+        ]
+        assert not any(
+            w["code"].startswith("FILTERED_SERIES_BUCKETS") for w in response["warnings"]
+        )
+    finally:
+        runtime.close()
+
+
 def test_folded_sum_and_count_keep_the_same_buckets(series):
     query = _query("sum")
     query["select"].append({"expression": {"metric": "metric.obs.filtered_count"}, "as": "count"})

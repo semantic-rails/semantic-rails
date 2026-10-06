@@ -488,6 +488,10 @@ def _filtered_series_candidate(plan: LogicalPlan, row: MeasurePlan, config: Pack
         (plan.time.get("grain") or plan.time.get("window_total"))
         and resolves_to_zero(bound.aggregation, _measure_index(config)[bound.measure_id])
         and bound.filter_spec
+        and any(
+            expr_resolves_to_zero(_parse_public_expr(payload), config)
+            for payload in plan.post_aggregation_exprs.values()
+        )
     )
 
 
@@ -511,6 +515,10 @@ def _preserves_filtered_series(plan: LogicalPlan, row: MeasurePlan, config: Pack
         and reads_every_row(measure)
         and not _all_metric_predicates(plan, row)
         and not _plan_requires_agent_dag_lowering(plan, config)
+        and all(
+            expr_resolves_to_zero(_parse_public_expr(payload), config)
+            for payload in plan.post_aggregation_exprs.values()
+        )
         and (not row.path_selections or _paths_are_single_hop_safe(row.path_selections, config))
         and all(path.analysis.get("status") == "ok" for path in row.path_selections)
         and _dimension_index(config)[role.dimension].entity == measure.entity
