@@ -20,6 +20,7 @@ import pytest
 import yaml
 
 from semantic_rails.config import load_package_config
+from semantic_rails.diagnostics import enrich_object_not_found
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import (
@@ -29,8 +30,11 @@ from semantic_rails.metadata import (
     inspect_payload,
 )
 from semantic_rails.metadata_parts.valid_values import valid_values_payload
+from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.plan import plan_payload
+from semantic_rails.planner.visibility import with_dimension_visibility
 from semantic_rails.policies import enforce_query_policies, hidden_object_ids
+from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
 from tests.semantic_rails import test_route_clarification as route
@@ -267,6 +271,19 @@ def test_metadata_surfaces_show_revenue_only_to_finance(engine, surface, name):
         assert payload["status"] != "ok" or "execute" not in payload["next"].get("ready_for", [])
 
 
+@pytest.mark.parametrize("name", CONTEXTS)
+def test_intent_subjects_name_revenue_only_for_finance(engine, name):
+    context, eligible = CONTEXTS[name]
+
+    @with_dimension_visibility
+    def subjects(runtime: Runtime, *, partial_query: dict[str, Any]) -> set[str]:
+        intent = parse_intent(runtime, "total revenue by store name").to_dict()
+        return {row["id"] for row in intent["subjects"]}
+
+    found = subjects(engine, partial_query={"policy_context": context})
+    assert bool(found & {REVENUE_METRIC, REVENUE}) is eligible
+
+
 @pytest.mark.parametrize("bypass", BYPASSES)
 @pytest.mark.parametrize("name", CONTEXTS)
 def test_every_query_reading_revenue_is_refused_outside_finance(engine, bypass, name):
@@ -471,6 +488,54 @@ def test_a_restricted_dimension_takes_its_values_and_domain_with_it(package, rol
         with pytest.raises(SemanticLayerError) as exc:
             valid_values_payload(runtime, dimension_id=STORE, query=_with({}, context))
         assert exc.value.code == "OBJECT_NOT_FOUND"
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(("roles", "eligible"), [(("support",), False), (("finance",), True)])
+def test_a_metric_grant_does_not_widen_visible_only(engine, roles, eligible):
+    """A resource grant listing the metric still needs one of the policy's roles."""
+    context = RequestContext(
+        roles=roles,
+        metric_allowlist=(REVENUE_METRIC, CUSTOMERS),
+        dimension_allowlist=(STORE,),
+    ).to_policy_context()
+    catalog = json.dumps(catalog_payload(engine, policy_context=context))
+    assert CUSTOMERS in catalog
+    assert (REVENUE_METRIC in _mentions(json.loads(catalog))) is eligible
+    query = _with(BY_STORE, context)
+    if eligible:
+        assert engine.query(query)["rows"]
+        return
+    with pytest.raises(SemanticLayerError) as exc:
+        engine.query(query)
+    assert exc.value.code == "RESOURCE_ACCESS_DENIED"
+
+
+def test_diagnostics_without_a_context_withhold_every_candidate(engine):
+    """Without a context the dependents can't be resolved, so no candidate is offered."""
+    missing = SemanticLayerError(
+        "OBJECT_NOT_FOUND", "Unknown object", details={"object_id": "metric.sales.revenu"}
+    )
+    assert enrich_object_not_found(missing, engine._config).details.get("closest_matches") in (
+        None,
+        [],
+    )
+
+
+@pytest.mark.parametrize(("roles", "eligible"), [(["support"], False), (["finance"], True)])
+def test_finance_keeps_a_visible_only_conversion_expression(package, roles, eligible):
+    conversion = "metric.sales.session_to_order_conversion_rate_7d"
+    runtime = _engine(package, {**FINANCE_ONLY, "object_ids": [conversion]})
+    partial = {"policy_context": {"roles": roles}}
+    try:
+        if not eligible:
+            with pytest.raises(SemanticLayerError) as exc:
+                inspect_payload(runtime, object_id=conversion, partial_query=partial)
+            assert exc.value.code == "OBJECT_NOT_FOUND"
+            return
+        card = inspect_payload(runtime, object_id=conversion, partial_query=partial)["card"]
+        assert card["conversion"]["expression"]["kind"] == "conversion"
     finally:
         runtime.close()
 
