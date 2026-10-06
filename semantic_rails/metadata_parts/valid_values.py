@@ -15,7 +15,13 @@ from ..compiler import (
 from ..compiler_parts.bind import lift_conditional_aggregates
 from ..compiler_parts.grain_recovery import _query_measure_ids
 from ..errors import SemanticLayerError
-from ..policies import hidden_object_ids, row_filters_for_context, withheld_measure_ids
+from ..policies import (
+    enforce_query_policies,
+    hidden_object_ids,
+    policy_effects_for_object,
+    row_filters_for_context,
+    withheld_measure_ids,
+)
 from ..request_context import context_from_policy_context
 from ..runtime import Runtime, runtime_request_scope
 from ..runtime_parts.limits import (
@@ -117,13 +123,26 @@ def _anchor_measure_id(
         measures = [row for row in measures if row.id in own]
     # An anchor's values would show beside each listed value, so a withheld one never anchors.
     context = _policy_context(probe)
-    withheld = withheld_measure_ids(
-        runtime._config,
-        environment=str(context.get("environment", "")),
-        audience=str(context.get("audience", "")),
-        roles=context.get("roles", []),
+    scope = {
+        "environment": str(context.get("environment", "")),
+        "audience": str(context.get("audience", "")),
+        "roles": context.get("roles", []),
+    }
+    unavailable = withheld_measure_ids(runtime._config, **scope) | hidden_object_ids(
+        runtime._config, **scope
     )
-    measures = [row for row in measures if row.id not in withheld]
+    denied = {
+        row.id
+        for row in measures
+        if row.id not in unavailable
+        and any(
+            effect["kind"] == "object_access" and effect["action"] in {"deny", "redact"}
+            for effect in policy_effects_for_object(runtime._config, row.id, **scope)
+        )
+    }
+    unavailable.update(denied)
+    measures = [row for row in measures if row.id not in unavailable]
+    policy_denied = bool(denied)
     reasons: list[dict[str, Any]] = []
     first_refusal: SemanticLayerError | None = None
     for measure in measures:
@@ -132,10 +151,20 @@ def _anchor_measure_id(
         candidate = _live_values_query(measure, dimension, probe)
         while True:
             try:
+                payload = {**candidate, **({"route_decisions": decisions} if decisions else {})}
+                binding = runtime._bind(payload, context)
+                enforce_query_policies(
+                    runtime._config,
+                    binding.object_ids,
+                    query=payload,
+                    binding=binding,
+                    **scope,
+                )
                 compiled = compile_query(
                     runtime._config,
                     runtime.registry,
-                    {**candidate, **({"route_decisions": decisions} if decisions else {})},
+                    payload,
+                    binding=binding,
                 )
             except SemanticLayerError as exc:
                 if exc.details.get("reason") == "route_decision_unused":
@@ -143,6 +172,9 @@ def _anchor_measure_id(
                     index = exc.details["path"].removeprefix("route_decisions[").rstrip("]")
                     del decisions[int(index)]
                     continue
+                if exc.code == "POLICY_DENIED":
+                    policy_denied = True
+                    break  # Skipped anchors never appear in source diagnostics.
                 reasons.append({"measure": measure.id, "code": exc.code, "message": str(exc)})
                 first_refusal = first_refusal or exc
                 break
@@ -159,6 +191,10 @@ def _anchor_measure_id(
             break
     if probe.get("route_decisions") and first_refusal is not None:
         raise first_refusal
+    if policy_denied:
+        raise SemanticLayerError(
+            "POLICY_DENIED", "Query references a semantic object blocked by policy."
+        )
     raise SemanticLayerError(
         "NO_VALID_VALUES_SOURCE",
         f"No valid values source for '{dimension}'; select a measure or metric that can anchor it",

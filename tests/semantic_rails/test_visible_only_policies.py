@@ -316,7 +316,7 @@ def test_metadata_surfaces_show_revenue_only_to_finance(engine, surface, name):
     if eligible:
         assert _mentions(payload) & {REVENUE_METRIC, REVENUE}, surface
         return
-    assert surface not in {"inspect", "valid_values"}, payload
+    assert surface != "inspect", payload
     named = _mentions(payload, hidden_object_ids(engine._config, roles=["support"]))
     assert not named, (surface, named)
     if surface == "plan":
