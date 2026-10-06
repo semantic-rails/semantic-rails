@@ -1450,7 +1450,9 @@ _COMPARISON_WORDS = frozenset(
 _COMPARISON_PHRASE_RE = re.compile(r"\b(?:up\s+or\s+down|down\s+or\s+up)\b")
 # A question asking for one value: "how many", "how much", "what is", "what was", "what's".
 _VALUE_QUESTION_RE = re.compile(r"\bhow\s+(?:many|much)\b|\bwhat(?:['’]s|\s+(?:is|was|are|were))\b")
-_CLAUSE_BREAK_RE = re.compile(r"[,;:.?!\n]")
+# Where a clause starts: after punctuation, or after "and" ("How many orders and who placed
+# them?").
+_CLAUSE_BREAK_RE = re.compile(r"[,;:.?!\n]|\band\b")
 
 
 def _answer_shape_why(runtime: Any, question: str, query: dict[str, Any]) -> dict[str, Any] | None:
@@ -1463,10 +1465,10 @@ def _answer_shape_why(runtime: Any, question: str, query: dict[str, Any]) -> dic
     ("compared", "vs", "versus", "against", "up or down"), needs more than one value; "each" or
     "every" needs a row per item (a group_by, or a grain that splits the rows); and a question
     asking two or more questions for a value ("how many", "how much", "what is", "what was")
-    needs a select for each. A word opens a clause when every word before it in its clause is a
-    stopword, a framing word or a word of a time window the question states ("show me which
-    stores", "last week, who"); in "customers who ordered" it is a relative pronoun. A word
-    inside a declared name asks nothing. The check reads the draft's shape, never what it
+    needs a select for each. A word opens a clause when every word before it in its clause (from
+    punctuation or "and") is a stopword, a framing word or a word of a time window the question
+    states ("show me which stores", "last week, who", "how many orders and who"); in "customers
+    who ordered" it is a relative pronoun. A word inside a declared name asks nothing. The check reads the draft's shape, never what it
     selects, so it only holds a plan: it never changes a draft or makes one ready.
     """
 

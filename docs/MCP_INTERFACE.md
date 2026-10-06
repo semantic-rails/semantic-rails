@@ -291,7 +291,25 @@ A draft that validates can still leave out part of the question. `plan` returns
   question nor a `partial_query` select names it (`subject_ambiguous`, with up to five
   candidates in `expected.candidates` and their number in `expected.candidate_count`).
   "revenue" names Revenue over Item Revenue Cents, and "item revenue" the reverse; for
-  Gross Revenue and Net Revenue it names neither. `plan` reports every other reason first.
+  Gross Revenue and Net Revenue it names neither. `plan` reports every other reason first;
+- returns one value (one select, no `group_by`, no time grain that splits the rows, no
+  prior-period select) where the question asks for more. That is rows when "who", "whom" or
+  "whose" opens a clause and the draft has no `group_by`, or when "which" or "list" opens one
+  (`list_unrealized`: "Who ordered last week?"); a row per item for "each" or "every", which
+  needs a `group_by` or a grain that splits the rows (`each_unrealized`: "How many orders did
+  each last week?"); two values or more for "compare", "compared", "comparison", "versus",
+  "vs", "against" or "up or down" (`comparison_unrealized`: "Were orders up or down last
+  week?"); and a select for each of two or more questions for a value, "how many", "how much",
+  "what is", "what was" or "what's" (`multiple_questions_unrealized`: "How many orders and how
+  much revenue last week?"). A word opens a clause when only stopwords, framing words ("show
+  me", "list") or a time window's words come before it since the last comma, colon, semicolon,
+  sentence end or "and" ("How many orders last week and who placed them?"): in "revenue from
+  customers who are new", "who" asks nothing. Nor does a
+  word inside a declared name ("Comparison cost"), and "per" is no such word ("revenue per
+  order" is a ratio). `clause` quotes the words, `actual` gives the draft's `select_count`,
+  `group_by` and `time_grain`, and a caller's `query.group_by` gives "who" its rows. `plan`
+  runs this check after every other one, the `PLAN_UNMATCHED_TERMS` checks below included, so
+  it holds only a draft nothing else holds.
 
 When a question has several exclusion clauses, `plan` checks each clause. A
 negative filter for one value does not make a later excluded value safe if the
@@ -404,8 +422,11 @@ doesn't consume them, they aren't stopwords or number words, and `intent_ir.unre
 still holds them. This returns `why.code="PLAN_UNMATCHED_TERMS"` with
 `why.details={"terms": [...], "kind": "filter_values_unrealized"}` and an
 `add_missing_condition` hint: find values with `valid_values`, add the filter, then validate,
-or ask again without those words. A single unknown value such as "Brooklyn" blocks readiness
-when the package declares no value domain for it; plan never guesses its dimension or queries
+or ask the user what the words mean. No hint offers to ask again without a word a hold names
+(a catalog name, a grouping, a number or an unknown word), since the question without it may be
+another one, except the end of a contraction or possessive that plan reads as an unknown word
+("s" in "What's revenue last month?"): every check reads that retry again. A single unknown
+value such as "Brooklyn" blocks readiness when the package declares no value domain for it; plan never guesses its dimension or queries
 the warehouse to resolve it. Other unmatched words stay warnings; check them before executing.
 A number, or a clock or zone word, the draft doesn't carry is not a warning: it makes the plan
 `low_confidence` (below), since the draft dropped an hour, a range or a
