@@ -256,7 +256,8 @@ def test_runtime_validation_probes_constrained_objects(tmp_path, target, constra
         runtime = Runtime.from_path(str(package_dir))
         try:
             actual = [
-                typed_rows(runtime.query(probe["query"]))
+                # Probes use LIMIT 0; read the fixture rows for the reference comparison.
+                typed_rows(runtime.query({**probe["query"], "limit": 10}))
                 for probe in report["runtime"]["probes"]
                 if probe["object_id"] in affected
             ]
@@ -270,7 +271,10 @@ def test_runtime_validation_probes_constrained_objects(tmp_path, target, constra
             )
         finally:
             database.close()
-        assert all(sorted(rows, key=lambda row: row[field]) == expected for rows in actual)
+        assert all(sorted(rows, key=lambda row: row[field]) == expected for rows in actual), (
+            actual,
+            expected,
+        )
 
 
 def test_probe_combines_required_grouping_with_non_additive_grain(tmp_path):
