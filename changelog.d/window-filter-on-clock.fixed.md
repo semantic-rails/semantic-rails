@@ -1,4 +1,5 @@
-- A `where` filter on a query's own date dimension is now refused with windowed and
-  cumulative metrics, like `time.start`, instead of truncating their lookback. This
-  includes columns connected to the clock through multiple equality joins and
-  dimensions on calendars reached by those joins, in either direction.
+- A `where` filter on a date, timestamp or calendar dimension is now refused with windowed
+  and cumulative metrics, like `time.start`, instead of truncating their lookback. The rule
+  is by the dimension's type, whether or not it is the query's clock, so a snapshot's own
+  date with no calendar relationship is refused too. An upper bound (`<`, `<=`) on a date or
+  timestamp still runs.

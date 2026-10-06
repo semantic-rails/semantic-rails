@@ -928,8 +928,6 @@ def _clock_where_cuts(query: NormalizedQuery, config: PackageConfig) -> list[tup
     or is on a calendar (``kind: time``) entity. Only an upper bound (``<``, ``<=``) on a
     ``date`` or ``timestamp`` dimension keeps every lookback row, as ``time.end`` does.
     """
-    if query.time is None:
-        return []
     analysis = get_package_analysis(config)  # unrecorded lookups: the guard binds no object
 
     def table_column(dim: DimensionConfig) -> tuple[str, str]:
@@ -968,7 +966,8 @@ def _clock_where_cuts(query: NormalizedQuery, config: PackageConfig) -> list[tup
 def _validate_restrictive_time_semantics(query: NormalizedQuery, config: PackageConfig) -> None:
     if query.time is None:
         return
-    # time.start first, so its refusal is unchanged; otherwise the first where cut of a date.
+    # time.start first, so its refusal is unchanged; otherwise the first where cut of a date or
+    # calendar dimension.
     details: dict[str, Any]
     if query.time.start is not None:
         details = {"start": query.time.start}
@@ -982,7 +981,7 @@ def _validate_restrictive_time_semantics(query: NormalizedQuery, config: Package
         details = {"where_path": path, "where": asdict(item)}
         if " ".join(str(item.op).upper().split()) in {">=", ">"}:
             details["start"] = item.value
-        bound = f"a where filter on a date dimension ({path}) other than an upper bound"
+        bound = f"a where filter on a date or calendar dimension ({path}) other than an upper bound"
         remedy = f"remove {path} (an upper bound or query.time.end still runs)"
     expressions = [item.expression for item in query.select if item.expression is not None]
     expressions.extend(

@@ -1,14 +1,16 @@
-"""A ``where`` filter on the query's own clock cuts a window's lookback like ``time.start``.
+"""A ``where`` filter on a date cuts a window's lookback like ``time.start``.
 
 A prior-period, rolling, period-to-date or cumulative window reads periods before the ones it
 returns. ``time.start`` was refused with these windows, but the same bound written as a
 ``where`` filter on the clock's date dimension ran: the leaf WHERE dropped the earlier rows, so
 the previous day of 2026-09-14 read NULL instead of 99 per account, and a 7-day rolling sum,
-a cumulative sum and a month-to-date sum on 2026-09-15 read 40 instead of 45, 75 and 75. Such a
-filter is now refused with the same codes and lookback, plus ``details.where_path``, whether it
-is on the clock's own dimension, another dimension on its column, or a calendar dimension
-joined on it through one or more column equalities. An upper bound alone still runs, as
-``time.end`` does, and so does a filter on any other dimension.
+a cumulative sum and a month-to-date sum on 2026-09-15 read 40 instead of 45, 75 and 75. A
+snapshot's own date cuts the same way when the query's clock is a calendar the snapshot has no
+relationship to. Such a filter is now refused with the same codes and lookback, plus
+``details.where_path``, when its dimension is temporal (a time role, a date, timestamp,
+datetime or time kind, or on the same table column as one of those) or on a calendar,
+whatever its relationship to the clock. An upper bound on a date or timestamp alone still
+runs, as ``time.end`` does, and so does a filter on any other dimension.
 """
 
 from __future__ import annotations
