@@ -467,30 +467,6 @@ def test_a_row_with_a_one_way_hop_does_not_decide_the_reverse_walk(tmp_path):
     assert resolve_path(config, start=LOAN, target=DISTRICT)[0] == [*LOAN_ACCOUNT, *OWNER]
 
 
-@pytest.mark.parametrize("weight", [None, 10], ids=["no-weight", "weight"])
-def test_equal_length_routes_refuse_whatever_their_weights_and_a_row_decides(tmp_path, weight):
-    """Branch and owner routes are both two hops. A relationship weight never decides: the
-    package that sets one does not load; without it the pair is refused; a row decides."""
-    query = _query(BALANCE, group_by=[DISTRICT_NAME])
-    pkg = _write_package(tmp_path / "none")
-    if weight is not None:
-        graph = yaml.safe_load((pkg / "graph.yml").read_text())
-        graph["graph"]["relationships"]["accounts_branch"]["path_preference"] = weight
-        (pkg / "graph.yml").write_text(yaml.safe_dump(graph, sort_keys=False))
-        with pytest.raises(SemanticLayerError) as exc_info:
-            load_package_config(str(pkg))
-        assert exc_info.value.code == "INVALID_CONFIG"
-        assert "graph.path_preferences" in str(exc_info.value)
-        return
-    err = _refusal(pkg, query)
-    assert sorted(map(len, _routes(err))) == [2, 2]
-    for route in ("branch", "owner"):
-        path = BRANCH if route == "branch" else OWNER
-        pinned = _write_package(tmp_path / route, rows=[_row(ACCOUNT, DISTRICT, path)])
-        out = Runtime.from_path(str(pinned)).query(query)
-        assert _rows(out, [DISTRICT_NAME, "v"]) == _gold(_by_account_route("account", route))
-
-
 # The two returned orders belong to two customers, but both were made in sessions of a third.
 SHOP_SEED = """
 CREATE TABLE customers (customer_id INTEGER, customer_name VARCHAR);

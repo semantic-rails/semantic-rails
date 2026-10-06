@@ -50,10 +50,6 @@ def _measures_by_id(config: PackageConfig) -> dict[str, Any]:
     return {row.id: row for row in config.measures}
 
 
-def _dimensions_by_id(config: PackageConfig) -> dict[str, Any]:
-    return {row.id: row for row in config.dimensions}
-
-
 def _metric_recipes_by_id(config: PackageConfig) -> dict[str, Any]:
     return {row.id: row for row in config.metric_recipes}
 
