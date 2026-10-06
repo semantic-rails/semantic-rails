@@ -12,6 +12,7 @@ import pytest
 
 from semantic_rails.ast import normalize_query
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.planner import plan_payload
 from semantic_rails.planner._base import _time_window
 from semantic_rails.planner.faithfulness import _window_agrees
@@ -359,6 +360,201 @@ def test_a_callers_range_is_held_where_the_roles_zone_reads_other_days(
     _assert_zone_hold(plan, ["last month"])
 
 
+SHOP_NOW = datetime(2026, 10, 5, 1, tzinfo=UTC)  # 21:00 on October 4 in New York
+SHOP_SESSIONS = "temporal_role.shop_session_started_at"
+SHOP_ORDERS = "temporal_role.shop_order_ordered_at"
+
+
+@pytest.fixture()
+def shop(tmp_path: Path):
+    """A ratio whose denominator is read on a UTC role and its numerator on a New York one."""
+
+    files = {
+        "package.yml": """
+schema_version: 1
+package:
+  id: shop
+  namespace: shop
+  name: Shop
+  description: Storefront sessions and orders
+  warehouse: duckdb
+  default_db: shop.duckdb
+  seed: {kind: external}
+defaults:
+  time: {timezone: UTC}
+""",
+        "graph.yml": """
+graph:
+  entities:
+    session: {key: [session_id], model: sessions}
+    order: {key: [order_id], model: orders}
+""",
+        "models/sessions.yml": """
+model:
+  id: sessions
+  relation: sessions
+  entities: {session: {}}
+  times:
+    started_at: {column: started_at, kind: timestamp, class: event_time, default: true}
+  measures:
+    sessions_all: {kind: entity_count, entity_key: session_id, value_type: count, publish: false}
+""",
+        "models/orders.yml": """
+model:
+  id: orders
+  relation: orders
+  entities: {order: {}}
+  times:
+    ordered_at: {column: ordered_at, kind: timestamp, class: event_time, default: true,
+      column_timezone: UTC, timezone: America/New_York}
+  measures:
+    orders_all: {kind: entity_count, entity_key: order_id, value_type: count, publish: false}
+""",
+        "metrics/shop.yml": f"""
+metrics:
+  purchase_rate:
+    label: Purchase rate
+    description: Orders per storefront session.
+    kind: ratio
+    numerator: orders_all
+    denominator: sessions_all
+    temporal_role: {SHOP_SESSIONS}
+  session_count:
+    label: Session count
+    description: Storefront sessions.
+    kind: aggregate
+    value_type: count
+    temporal_role: {SHOP_SESSIONS}
+    expression:
+      kind: aggregate
+      measure: measure.shop.sessions_all
+      aggregation: count_distinct
+""",
+    }
+    for name, contents in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents, encoding="utf-8")
+    with duckdb.connect(str(tmp_path / "shop.duckdb")) as connection:
+        connection.execute(
+            """
+CREATE TABLE sessions (session_id INTEGER, started_at TIMESTAMP);
+INSERT INTO sessions VALUES (1, '2026-10-04 12:00'), (2, '2026-10-04 12:00'),
+  (3, '2026-10-04 12:00'), (4, '2026-10-04 12:00'), (5, '2026-10-05 00:10'),
+  (6, '2026-10-05 00:10');
+CREATE TABLE orders (order_id INTEGER, ordered_at TIMESTAMP);
+INSERT INTO orders VALUES (1, '2026-10-04 02:00'), (2, '2026-10-04 02:00'),
+  (3, '2026-10-05 00:30');
+"""
+        )
+    runtime = Runtime.from_path(str(tmp_path))
+    try:
+        yield runtime
+    finally:
+        runtime.close()
+
+
+def _plan_on(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch, surface: str, intent: str, **kwargs: Any
+) -> dict[str, Any]:
+    """Plan through ``plan_payload`` with ``policy_context.now`` or through the MCP handler on
+    the same wall clock."""
+
+    if surface == "mcp":
+        _set_wall_clock(monkeypatch, SHOP_NOW)
+        return SemanticLayerMCPAdapter(runtime).call_tool("plan", {"intent": intent, **kwargs})
+    context = {"now": SHOP_NOW.isoformat()}
+    return plan_payload(runtime, intent=intent, partial_query={"policy_context": context}, **kwargs)
+
+
+def _shop_value(runtime: Runtime, plan: dict[str, Any]) -> Any:
+    assert plan["status"] == "ok", plan.get("why")
+    query = plan["best"]["query_ir"]
+    [row] = runtime.query(query)["rows"]
+    return row[query["select"][0]["as"]]
+
+
+def _shop_reference(runtime: Runtime, sql: str) -> Any:
+    with duckdb.connect(runtime.db_path, read_only=True) as connection:
+        return connection.execute(sql).fetchone()[0]
+
+
+@pytest.mark.parametrize("surface", ["python", "mcp"])
+@pytest.mark.parametrize("detail", ["best", "full", "query", "debug"])
+@pytest.mark.parametrize("phrase", ["yesterday", "today"])
+def test_a_window_a_leg_reads_on_other_days_in_its_zone_is_held(
+    shop: Runtime, monkeypatch: pytest.MonkeyPatch, surface: str, detail: str, phrase: str
+) -> None:
+    # Sessions are read in UTC, orders on New York's day. At 01:00Z New York's "yesterday" is
+    # October 3, but the UTC dates would read orders on New York's October 4; its "today" is
+    # October 4, but they would read October 5, New York's tomorrow.
+    plan = _plan_on(shop, monkeypatch, surface, f"purchase rate {phrase}", detail=detail)
+    _assert_zone_hold(plan, [phrase])
+    assert not plan.get("query_ir")
+    details = plan["why"]["details"]
+    assert details["temporal_roles"] == {SHOP_ORDERS: "America/New_York"}
+    assert (details["temporal_role"], details["timezone"]) == (SHOP_ORDERS, "America/New_York")
+    assert details["planning_timezone"] == "UTC"
+
+
+def test_a_window_every_leg_reads_on_the_same_days_executes(shop: Runtime) -> None:
+    # At 12:00Z UTC and New York both read October 4 as yesterday.
+    plan = plan_payload(
+        shop,
+        intent="purchase rate yesterday",
+        partial_query={"policy_context": {"now": "2026-10-05T12:00:00Z"}},
+    )
+    # Each leg is read on its own local day.
+    reference = _shop_reference(
+        shop,
+        "SELECT (SELECT COUNT(DISTINCT order_id) FROM orders "
+        "WHERE CAST(timezone('America/New_York', timezone('UTC', ordered_at)) AS DATE) "
+        "= DATE '2026-10-04') / (SELECT COUNT(DISTINCT session_id) FROM sessions "
+        "WHERE started_at >= TIMESTAMP '2026-10-04' AND started_at < TIMESTAMP '2026-10-05')",
+    )
+    assert reference == 0.25
+    assert _shop_value(shop, plan) == reference
+
+
+def test_an_absolute_window_on_a_mixed_zone_metric_is_unchanged(shop: Runtime) -> None:
+    plan = plan_payload(
+        shop,
+        intent="purchase rate on 4 October 2026",
+        partial_query={"policy_context": {"now": SHOP_NOW.isoformat()}},
+    )
+    assert _shop_value(shop, plan) == 0.25
+
+
+def test_a_metric_whose_legs_share_the_planning_zone_is_unchanged(shop: Runtime) -> None:
+    plan = plan_payload(
+        shop,
+        intent="session count yesterday",
+        partial_query={"policy_context": {"now": SHOP_NOW.isoformat()}},
+    )
+    reference = _shop_reference(
+        shop,
+        "SELECT COUNT(DISTINCT session_id) FROM sessions "
+        "WHERE started_at >= TIMESTAMP '2026-10-04' AND started_at < TIMESTAMP '2026-10-05'",
+    )
+    assert reference == 4
+    assert _shop_value(shop, plan) == reference
+
+
+def test_roles_that_cannot_be_computed_are_held(
+    shop: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unbound(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("binding failed")
+
+    monkeypatch.setattr("semantic_rails.planner.faithfulness.bind_query", unbound)
+    plan = plan_payload(
+        shop,
+        intent="session count yesterday",
+        partial_query={"policy_context": {"now": SHOP_NOW.isoformat()}},
+    )
+    _assert_zone_hold(plan, ["yesterday"])
+
+
 def test_before_role_selection_uses_the_package_default_zone(
     local_subscriptions: Runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -581,6 +777,8 @@ def test_a_caller_window_is_read_only_at_whole_days(
         {"grain": "", "start": "2026-10-04", "end": None},
         {"grain": "day", "start": "2026-10-04", "end": None},
         {"start": None, "end": "2026-10-05"},
+        # Without its start the window also reads October 3.
+        {"grain": "", "start": None, "end": "2026-10-05"},
     ],
 )
 def test_a_caller_window_that_clears_a_bound_is_held(
