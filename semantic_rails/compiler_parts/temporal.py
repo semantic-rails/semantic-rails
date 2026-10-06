@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import difflib
 import re
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextvars import ContextVar
 from dataclasses import asdict, fields, is_dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -224,26 +225,34 @@ def _expr_compatible_temporal_roles(
 
 
 def _window_measure_exprs(
-    expr: Any, config: PackageConfig
+    expr: Any, config: PackageConfig, *, window_inputs: bool = False
 ) -> Iterator[MeasureRefExpr | AggregateExpr | ScopedAggregateExpr]:
     """Leaves filtered by an expression's period; conversions filter only base events."""
+    if window_inputs and (
+        isinstance(expr, (CumulativeExpr, RollingExpr, PriorPeriodExpr, PeriodToDateExpr))
+        or isinstance(expr, OffsetWindowExpr)
+        and (expr.kind != "cumulative" or expr.window_scope != "query_period")
+    ):
+        yield from _window_measure_exprs(expr.input, config)
+        return
     if isinstance(expr, (MeasureRefExpr, AggregateExpr, ScopedAggregateExpr)):
-        yield expr
+        if not window_inputs:
+            yield expr
     elif isinstance(expr, MetricRecipeRefExpr):
         recipe = _recipe_index(config).get(expr.metric_recipe)
         if recipe is None:
             raise SemanticLayerError(
                 "OBJECT_NOT_FOUND", f"Unknown metric recipe '{expr.metric_recipe}'"
             )
-        yield from _window_measure_exprs(recipe.expression, config)
-    elif isinstance(expr, ConversionExpr):
+        yield from _window_measure_exprs(recipe.expression, config, window_inputs=window_inputs)
+    elif isinstance(expr, ConversionExpr) and not window_inputs:
         yield from _window_measure_exprs(expr.base, config)
     elif is_dataclass(expr):
         for item in fields(expr):
             value = getattr(expr, item.name)
             for child in value if isinstance(value, list) else [value]:
                 if is_dataclass(child):
-                    yield from _window_measure_exprs(child, config)
+                    yield from _window_measure_exprs(child, config, window_inputs=window_inputs)
 
 
 def _validate_leaf_window_clock(
@@ -993,92 +1002,95 @@ def _clock_where_cuts(
     return cuts
 
 
+_source_filter_refusals: ContextVar[list[SemanticLayerError] | None] = ContextVar(
+    "source_filter_refusals", default=None
+)
+
+
 def _validate_restrictive_time_semantics(
     query: NormalizedQuery,
     config: PackageConfig,
     *,
-    measure_filters: Iterable[tuple[str, dict[str, Any]]] = (),
+    measure_filters: Callable[[SemanticExpr], Iterable[dict[str, Any]]] | None = None,
     row_filters: Sequence[RowFilter] = (),
 ) -> None:
     if query.time is None:
         return
-    # Preserve time.start/where precedence, then check filters applied to the leaf's population.
-    details: dict[str, Any]
-    if query.time.start is not None:
-        details = {"start": query.time.start}
-        bound = "a bounded query.time.start"
-        remedy = "remove the start boundary"
-    else:
-        extras: list[tuple[str, Filter]] = []
-        sources: dict[str, dict[str, Any]] = {}
-        for index, (measure_id, clause) in enumerate(measure_filters):
-            path = f"measure_filters[{index}]"
-            extras.append((path, Filter(**clause)))
-            sources[path] = {
-                "filter_source": "measure",
-                "measure": measure_id,
-                "measure_filter": clause,
-            }
-        analysis = get_package_analysis(config)
-        for row in row_filters:
-            for dim in analysis.dimensions.values():
-                if analysis.entities[dim.entity].table == row.table and _column_name(
-                    dim.column
-                ) == _column_name(row.column):
-                    extras.append((row.policy_id, Filter(dim.id, "=", None)))
-                    sources[row.policy_id] = {
-                        "filter_source": "policy",
-                        "policy_id": row.policy_id,
-                    }
-        cuts = _clock_where_cuts(query, config, extras)
-        if not cuts:
-            return
-        path, item = cuts[0]
-        if path in sources:
-            details = sources[path]
-            bound = f"a {details['filter_source']} filter on a temporal column ({path})"
-            remedy = "query an unwindowed measure or ask the package author for a supported metric"
+    for expr in (
+        item.expression for items in (query.select, query.metric_filters) for item in items
+    ):
+        if expr is None:
+            continue
+        cumulative = _expr_contains_unsafe_bounded_cumulative(expr, config)
+        if not cumulative and not _expr_contains_unsafe_bounded_windowed(expr, config):
+            continue
+        # Preserve time.start/where precedence, then check only this window's population.
+        details: dict[str, Any]
+        if query.time.start is not None:
+            details = {"start": query.time.start}
+            bound, remedy = "a bounded query.time.start", "remove the start boundary"
         else:
-            details = {"where_path": path, "where": asdict(item)}
-            if " ".join(str(item.op).upper().split()) in {">=", ">"}:
-                details["start"] = item.value
-            bound = (
-                f"a where filter on a date or calendar dimension ({path}) other than an upper bound"
+            extras = []
+            sources: dict[str, dict[str, Any]] = {}
+            for index, clause in enumerate(measure_filters(expr) if measure_filters else ()):
+                path = f"measure_filters[{index}]"
+                extras.append((path, Filter(**clause)))
+                sources[path] = {"filter_source": "measure"}
+            analysis = get_package_analysis(config)
+            for row in row_filters:
+                for dim in analysis.dimensions.values():
+                    if analysis.entities[dim.entity].table == row.table and _column_name(
+                        dim.column
+                    ) == _column_name(row.column):
+                        extras.append((row.policy_id, Filter(dim.id, "=", None)))
+                        sources[row.policy_id] = dict(
+                            filter_source="policy", policy_id=row.policy_id
+                        )
+            cuts = _clock_where_cuts(query, config, extras)
+            if not cuts:
+                continue
+            path, item = cuts[0]
+            if path in sources:
+                details = sources[path]
+                bound = f"a {details['filter_source']} filter on a temporal column ({path})"
+                remedy = (
+                    "query an unwindowed measure or ask the package author for a supported metric"
+                )
+            else:
+                details = {"where_path": path, "where": asdict(item)}
+                if " ".join(str(item.op).upper().split()) in {">=", ">"}:
+                    details["start"] = item.value
+                bound = f"a where filter on a date or calendar dimension ({path}) other than an upper bound"
+                remedy = f"remove {path} (an upper bound or query.time.end still runs)"
+        details["expression"] = expr_to_dict(expr)
+        if cumulative:
+            message = f"Cumulative expressions do not support {bound}; " + (
+                remedy if details.get("filter_source") else f"widen the time window or {remedy}"
             )
-            remedy = f"remove {path} (an upper bound or query.time.end still runs)"
-    expressions = [item.expression for item in query.select if item.expression is not None]
-    expressions.extend(
-        item.expression for item in query.metric_filters if item.expression is not None
-    )
-    for expr in expressions:
-        if _expr_contains_unsafe_bounded_cumulative(expr, config):
-            raise SemanticLayerError(
-                "CUMULATIVE_TIME_FILTER_UNSUPPORTED",
-                f"Cumulative expressions do not support {bound}; "
-                + (
-                    remedy if details.get("filter_source") else f"widen the time window or {remedy}"
-                ),
-                details={**details, "expression": expr_to_dict(expr)},
-            )
-        if _expr_contains_unsafe_bounded_windowed(expr, config):
-            lookback = _unsafe_windowed_lookback(expr, config)
-            details = {**details, "expression": expr_to_dict(expr)}
-            if lookback is not None:
+        else:
+            if (lookback := _unsafe_windowed_lookback(expr, config)) is not None:
                 details["lookback"] = lookback
-            raise SemanticLayerError(
-                "WINDOWED_TIME_FILTER_UNSUPPORTED",
-                (
-                    f"Rolling, prior_period, and period_to_date expressions do not support {bound}: "
-                    "the leaf-level WHERE truncates the lookback rows the window "
-                    f"function depends on, producing silently wrong values. {remedy.capitalize()} "
-                    + (
-                        "."
-                        if details.get("filter_source")
-                        else "or widen it by the metric's window/offset/period lookback."
-                    )
-                ),
-                details=details,
+            ending = (
+                "."
+                if details.get("filter_source")
+                else " or widen it by the metric's window/offset/period lookback."
             )
+            message = (
+                f"Rolling, prior_period, and period_to_date expressions do not support {bound}: "
+                "the leaf-level WHERE truncates the lookback rows the window "
+                f"function depends on, producing silently wrong values. {remedy.capitalize()}"
+                + ending
+            )
+        error = SemanticLayerError(
+            f"{'CUMULATIVE' if cumulative else 'WINDOWED'}_TIME_FILTER_UNSUPPORTED",
+            message,
+            details=details,
+        )
+        deferred = _source_filter_refusals.get()
+        if details.get("filter_source") and deferred is not None:
+            deferred.append(error)
+            return
+        raise error
 
 
 def _parse_time_literal(value: Any) -> datetime:

@@ -28,9 +28,9 @@ HISTORY = {"kind": "cumulative", "input": {"measure": REVENUE}}
 
 
 @pytest.fixture
-def shop_config():
+def shop_config(tmp_path):
     config = load_package_config(str(SHOP))
-    return replace(config, package=replace(config.package, default_db=":memory:"))
+    return replace(config, package=replace(config.package, default_db=str(tmp_path / "shop.duckdb")))
 
 
 def _runtime(config):
@@ -125,7 +125,7 @@ def test_authorization_precedes_source_refusals(
             assert error["code"] == "CUMULATIVE_TIME_FILTER_UNSUPPORTED"
             assert error["details"] == {
                 "filter_source": "measure",
-                "expression": {"metric": METRIC},
+                "expression": {"kind": "metric", "metric": METRIC},
             }
             assert "2023-12-01" not in json.dumps(allowed)
     finally:
@@ -174,7 +174,8 @@ def test_sibling_filter_keeps_independent_window_answers(shop_config, placement,
         runtime.close()
 
 
-def test_unused_clock_policy_keeps_applied_store_population(shop_config):
+@pytest.mark.parametrize("unused_attribute", ["day", "store"])
+def test_unused_clock_policy_keeps_applied_store_population(shop_config, unused_attribute):
     snapshot = next(
         row for row in shop_config.dimensions if row.id == "dimension.shop_account_day_snapshot_day"
     )
@@ -197,7 +198,7 @@ def test_unused_clock_policy_keeps_applied_store_population(shop_config):
                 audiences=["reader"],
                 config={
                     "dimension": "dimension.shop_account_day_snapshot_label",
-                    "attribute": "day",
+                    "attribute": unused_attribute,
                 },
             ),
         ],
@@ -210,7 +211,7 @@ def test_unused_clock_policy_keeps_applied_store_population(shop_config):
     try:
         compiled = runtime.compile(query)
         assert compiled["status"] == "ok"
-        assert "account_days" not in compiled["sql"]
+        assert "account_days" not in compiled["rendered_sql"]
         rows = runtime.query(query)["rows"]
         december = next(row for row in rows if str(row[f"{ROLE}__month"]).startswith("2023-12-01"))
         with runtime._get_adapter()._db.conn.cursor() as connection:

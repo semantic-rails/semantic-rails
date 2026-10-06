@@ -1158,6 +1158,13 @@ def enrich_diagnostic_candidates(
 ) -> SemanticLayerError:
     """Filter compiler-supplied catalog alternatives before hints become text."""
     details = dict(exc.details or {})
+    if (
+        exc.code == "POLICY_DENIED"
+        and (blocked := details.get("blocked_objects", []))
+        and set(blocked) != set(_visible_candidate_ids(config, blocked, hidden_ids))
+    ):
+        # Hidden bound inputs cannot be disclosed by the denial's effects or recovery hints.
+        return SemanticLayerError(exc.code, str(exc))
     if exc.code == "AMBIGUOUS_ALIAS":
         rows = details.get("candidates", [])
         candidate_ids = [row["id"] if isinstance(row, dict) else row for row in rows]

@@ -122,6 +122,7 @@ from .compiler_parts.temporal import (
     _is_grain_boundary,
     _parse_time_literal,
     _requires_query_time,
+    _source_filter_refusals,
     _time_bound_relationship_ids,
     _validate_query_temporal_bindings,
     _validate_restrictive_time_semantics,
@@ -4591,35 +4592,29 @@ def _plan_query(
     _validate_query_temporal_bindings(query, config)
 
     bound_measures: list[BoundMeasure] = []
-    for select_item in query.select:
-        if select_item.expression is None:
-            continue
-        _collect_measure_refs(select_item.expression, config, query, bound_measures)
-    for filter_item in query.metric_filters:
-        if filter_item.expression is None:
-            continue
-        if isinstance(filter_item.expression, MetricPredicateExpr):
-            _validate_metric_predicate_filter_envelope(asdict(filter_item))
-            continue
-        _collect_measure_refs(filter_item.expression, config, query, bound_measures)
-    _validate_restrictive_time_semantics(
-        query,
-        config,
-        measure_filters=(
-            (row.measure_id, clause)
-            for row in bound_measures
-            for clause in _bound_filter_clauses(row, config)
-        ),
-    )
+    for items in (query.select, query.metric_filters):
+        for item in items:
+            if item.expression is None:
+                continue
+            if items is query.metric_filters and isinstance(item.expression, MetricPredicateExpr):
+                _validate_metric_predicate_filter_envelope(asdict(item))
+                continue
+            _collect_measure_refs(item.expression, config, query, bound_measures)
+
+    def window_filters(expr: SemanticExpr) -> Iterable[dict[str, Any]]:
+        inputs: list[BoundMeasure] = []
+        for leaf in _window_measure_exprs(expr, config, window_inputs=True):
+            _collect_measure_refs(leaf, config, query, inputs)
+        return (clause for row in inputs for clause in _bound_filter_clauses(row, config))
+
+    _validate_restrictive_time_semantics(query, config, measure_filters=window_filters)
     conversion_exprs: list[ConversionExpr] = []
-    for select_item in query.select:
-        if select_item.expression is not None:
-            _collect_conversion_exprs(select_item.expression, config, conversion_exprs)
-    for filter_item in query.metric_filters:
-        if filter_item.expression is not None and not isinstance(
-            filter_item.expression, MetricPredicateExpr
-        ):
-            _collect_conversion_exprs(filter_item.expression, config, conversion_exprs)
+    for items in (query.select, query.metric_filters):
+        for item in items:
+            if item.expression is not None and not (
+                items is query.metric_filters and isinstance(item.expression, MetricPredicateExpr)
+            ):
+                _collect_conversion_exprs(item.expression, config, conversion_exprs)
 
     dedup_measures = {
         (
@@ -5037,8 +5032,23 @@ def bind_query(
     passes ``check_policies``, the caller's semantic policy gate, when given. If any option
     raises, the query is refused MIXED_GRAIN_INVALID, naming that option and its error code.
     """
+
+    def bind(query: dict[str, Any]) -> BoundQuery:
+        # Finish compiler dependency binding before authorizing a source diagnostic.
+        refusals: list[SemanticLayerError] = []
+        token = _source_filter_refusals.set(refusals)
+        try:
+            binding = _bind_with_row_filters(config, registry, query, row_filters)
+            if refusals:
+                if check_policies is not None:
+                    check_policies(query, binding)
+                raise refusals[0]
+            return binding
+        finally:
+            _source_filter_refusals.reset(token)
+
     try:
-        return _bind_with_row_filters(config, registry, payload, row_filters)
+        return bind(payload)
     except SemanticLayerError as exc:
         if exc.code != "AMBIGUOUS_CHILD_SCOPE":
             raise
@@ -5046,7 +5056,7 @@ def bind_query(
     for option in ambiguity.details["clarification"]["options"]:
         resent = {**payload, "where": option["where"]}
         try:
-            binding = _bind_with_row_filters(config, registry, resent, row_filters)
+            binding = bind(resent)
             if check_policies is not None:
                 check_policies(resent, binding)
         except Exception as exc:  # any failure withdraws the whole question
@@ -5100,7 +5110,12 @@ def _bind_with_row_filters(
         _validate_restrictive_time_semantics(
             normalize_query(bound.plan.query, config=bound.config),
             bound.config,
-            row_filters=row_filters,
+            # Original slots identify applied policies; missing slots keep the guard conservative.
+            row_filters=[
+                row
+                for row in row_filters
+                if not parameters or any(slot is row.slot for slot in parameters)
+            ],
         )
     return replace(
         bound,

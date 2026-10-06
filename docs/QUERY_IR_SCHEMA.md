@@ -280,12 +280,19 @@ the same name on an unrelated table. Only an upper bound (`<`, `<=`) on a
 `WINDOWED_TIME_FILTER_UNSUPPORTED` or `CUMULATIVE_TIME_FILTER_UNSUPPORTED`; for a `where`
 filter, `details.where_path` names it.
 
-The same rule applies to dimension conditions bound to aggregate inputs, including
-conditions authored inside metric recipes (`details.filter_source: "measure"`,
-`details.measure`, `details.measure_filter`). A matching row policy that keeps a
+The same rule applies to dimension conditions bound to the window's own aggregate
+inputs, including conditions authored inside metric recipes
+(`details.filter_source: "measure"`). A separately filtered aggregate in another
+select, in `metric_filters`, or beside the window in arithmetic does not cut that
+window's input. A row policy applied to a scan in this statement that keeps a
 single value of a temporal column also refuses a full-history window
 (`details.filter_source: "policy"`, `details.policy_id`); unsupported row-policy scan
-shapes retain `POLICY_DENIED`. Policy values are never included in refusal details.
+shapes retain `POLICY_DENIED`. Policies on unread tables do not trigger this guard.
+Source refusal details include only `filter_source`, `policy_id` for a policy, and
+the caller's expression (plus window lookback when applicable). They omit authored
+measure IDs, conditions and values. Object authorization runs before a source
+refusal is returned: denied callers receive `POLICY_DENIED`, with policy details
+omitted when they would name hidden blocked objects.
 A policy restricts the caller's readable rows, and an authored filter restricts the
 measure's population. Neither promises complete lookback history. The engine refuses
 these combinations rather than widening the readable population or reporting a

@@ -938,8 +938,10 @@ def test_measure_clock_filters_refuse_before_reading_truncated_history(
             runtime.query(query)
         assert caught.value.code == f"{code}_TIME_FILTER_UNSUPPORTED"
         assert caught.value.details["filter_source"] == "measure"
-        assert caught.value.details["measure"] == "measure.fees.amount"
-        assert caught.value.details["measure_filter"] == cut
+        assert "measure" not in caught.value.details
+        assert "measure_filter" not in caught.value.details
+        if authored:
+            assert "2026-09-15" not in str(caught.value.details)
         # Authored filters have no caller-editable time.start/where recovery patch.
         assert recovery_hints_for_error(caught.value.code, caught.value.details) == []
         control = _query(expression, [])
