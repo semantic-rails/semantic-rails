@@ -504,14 +504,11 @@
         "idempotentHint": true,
         "openWorldHint": false,
         "readOnlyHint": false,
-        "title": "Write project file"
+        "title": "Write project files"
       },
-      "description": "Write one UTF-8 package file. Gotcha: overwrite: false refuses an existing file.",
+      "description": "Write or archive files in one transaction, validating the final package as a whole.",
       "inputSchema": {
         "properties": {
-          "content": {
-            "type": "string"
-          },
           "dry_run": {
             "default": false,
             "type": "boolean"
@@ -519,30 +516,33 @@
           "expected_revision": {
             "type": "string"
           },
+          "files": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
           "idempotency_key": {
             "type": "string"
-          },
-          "overwrite": {
-            "default": true,
-            "type": "boolean"
           },
           "project_path": {
             "type": "string"
           },
-          "relative_path": {
+          "reason": {
+            "default": "",
             "type": "string"
           }
         },
         "required": [
           "project_path",
-          "relative_path",
-          "content",
+          "files",
           "expected_revision",
           "idempotency_key"
         ],
         "type": "object"
       },
-      "name": "write_project_file",
+      "name": "write_project_files",
       "outputSchema": {
         "$defs": {
           "ArchitectFileChange": {
@@ -2775,258 +2775,6 @@
         "type": "object"
       },
       "name": "remove_object",
-      "outputSchema": {
-        "$defs": {
-          "ArchitectFileChange": {
-            "properties": {
-              "after_bytes": {
-                "default": 0,
-                "type": "integer"
-              },
-              "after_sha256": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "before_bytes": {
-                "default": 0,
-                "type": "integer"
-              },
-              "before_sha256": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              },
-              "content_encoding": {
-                "default": "none",
-                "enum": [
-                  "utf-8",
-                  "base64",
-                  "none"
-                ],
-                "type": "string"
-              },
-              "diff": {
-                "default": "",
-                "type": "string"
-              },
-              "operation": {
-                "enum": [
-                  "create",
-                  "update",
-                  "delete"
-                ],
-                "type": "string"
-              },
-              "path": {
-                "type": "string"
-              },
-              "proposed_content": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "default": null
-              }
-            },
-            "required": [
-              "path",
-              "operation"
-            ],
-            "type": "object"
-          },
-          "ArchitectMutationIssue": {
-            "additionalProperties": true,
-            "properties": {
-              "code": {
-                "type": "string"
-              },
-              "details": {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              "message": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "code",
-              "message"
-            ],
-            "type": "object"
-          }
-        },
-        "additionalProperties": true,
-        "description": "Stable structured output shared by every Architect mutation tool.",
-        "properties": {
-          "base_revision": {
-            "type": "string"
-          },
-          "changed_files": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "changes": {
-            "items": {
-              "$ref": "#/$defs/ArchitectFileChange"
-            },
-            "type": "array"
-          },
-          "current_revision": {
-            "type": "string"
-          },
-          "dry_run": {
-            "type": "boolean"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "$ref": "#/$defs/ArchitectMutationIssue"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          },
-          "errors": {
-            "items": {
-              "$ref": "#/$defs/ArchitectMutationIssue"
-            },
-            "type": "array"
-          },
-          "expected_revision": {
-            "type": "string"
-          },
-          "idempotency_key": {
-            "type": "string"
-          },
-          "idempotent_replay": {
-            "type": "boolean"
-          },
-          "ok": {
-            "type": "boolean"
-          },
-          "parse": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          },
-          "project_path": {
-            "type": "string"
-          },
-          "proposed_revision": {
-            "type": "string"
-          },
-          "revision": {
-            "type": "string"
-          },
-          "route_changes": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "route_decisions_added": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "status": {
-            "type": "string"
-          },
-          "workspace_root": {
-            "default": "",
-            "type": "string"
-          }
-        },
-        "required": [
-          "ok",
-          "status",
-          "project_path",
-          "expected_revision",
-          "base_revision",
-          "current_revision",
-          "revision",
-          "proposed_revision",
-          "idempotency_key",
-          "idempotent_replay",
-          "dry_run",
-          "changed_files",
-          "changes"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "annotations": {
-        "destructiveHint": true,
-        "idempotentHint": true,
-        "openWorldHint": false,
-        "readOnlyHint": false,
-        "title": "Archive project file"
-      },
-      "description": "Move one package file into .architect/archive/; remove_object removes one object.",
-      "inputSchema": {
-        "properties": {
-          "dry_run": {
-            "default": false,
-            "type": "boolean"
-          },
-          "expected_revision": {
-            "type": "string"
-          },
-          "idempotency_key": {
-            "type": "string"
-          },
-          "project_path": {
-            "type": "string"
-          },
-          "reason": {
-            "default": "",
-            "type": "string"
-          },
-          "relative_path": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "project_path",
-          "relative_path",
-          "expected_revision",
-          "idempotency_key"
-        ],
-        "type": "object"
-      },
-      "name": "archive_project_file",
       "outputSchema": {
         "$defs": {
           "ArchitectFileChange": {

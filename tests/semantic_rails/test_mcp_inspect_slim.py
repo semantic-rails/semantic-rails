@@ -142,7 +142,7 @@ def test_minimal_inspect_preserves_starter_query_literals(
     adapter: SemanticLayerMCPAdapter, value: Any
 ) -> None:
     query = {
-        "version": 2,
+        "version": 1,
         "where": [{"field": "dimension.jaffle_store_name", "op": "eq", "value": value}],
     }
     response = adapter.call_tool(

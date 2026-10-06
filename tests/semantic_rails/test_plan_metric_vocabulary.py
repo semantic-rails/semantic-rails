@@ -462,7 +462,7 @@ def test_phrase_consumption_records_exact_span_and_preserves_numbers(tmp_path: P
         runtime._config = replace(
             runtime._config, metric_recipes=[replace(metric, aliases=["7 day signups"])]
         )
-        query = {"version": 2, "select": [{"as": "n", "expression": {"metric": metric.id}}]}
+        query = {"version": 1, "select": [{"as": "n", "expression": {"metric": metric.id}}]}
         assert _unconsumed_words(runtime, "7 days signups", query) == ([], [])
         assert unconsumed_terms(runtime, "7 days signups", query) == []
         assert unconsumed_terms(runtime, "7 days unrelated signups", query) == ["7"]
@@ -477,7 +477,7 @@ def test_collision_check_also_guards_a_forced_draft(tmp_path: Path):
     ) as runtime:
         question = "How many signups last week?"
         query = {
-            "version": 2,
+            "version": 1,
             "select": [{"as": "n", "expression": {"metric": "metric.shop.new_accounts"}}],
         }
         why = intent_subject_why(

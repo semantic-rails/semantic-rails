@@ -364,11 +364,11 @@ def _guidance_payload(goal: str = "", project_path: str = "") -> dict[str, Any]:
             },
             {
                 "step": "edit",
-                "tool": "upsert_model / upsert_relationship / upsert_metric / upsert_segment / upsert_example / upsert_test / write_project_file",
+                "tool": "upsert_model / upsert_relationship / upsert_metric / upsert_segment / upsert_example / upsert_test / write_project_files",
                 "result": (
                     "Preview or atomically commit scoped changes with expected_revision "
-                    "and a caller-generated idempotency_key, one write at a time: each "
-                    "takes the revision the previous write returned."
+                    "and a caller-generated idempotency_key; use write_project_files for changes "
+                    "across files. Separate calls take the revision the previous write returned."
                 ),
             },
             {
@@ -770,10 +770,10 @@ def create_architect_mcp_server(
             "answers; preview_query); review (diff_project, impact_project).\n"
             "Every write previews with dry_run: true and takes expected_revision (from "
             "project_status or the last write) and a new idempotency_key per change; a retry "
-            "with the same key replays. Send writes one at a time: writes sent together with "
-            "one expected_revision apply only the first. A write the package can't parse is "
+            "with the same key replays. Send a change that spans several files as one "
+            "write_project_files call. A write the package can't parse is "
             "rolled back, and a stale revision returns CONFIG_CONFLICT. Prefer the typed tools over "
-            "write_project_file. This server doesn't manage cloud services."
+            "write_project_files. This server doesn't manage cloud services."
         ),
         host=host,
         port=port,
@@ -1008,24 +1008,22 @@ def create_architect_mcp_server(
         except Exception as exc:
             return _report_error(exc)
 
-    @mcp.tool(annotations=_mutation_annotations("Write project file"))
-    def write_project_file(
+    @mcp.tool(annotations=_mutation_annotations("Write project files"))
+    def write_project_files(
         project_path: str,
-        relative_path: str,
-        content: str,
+        files: list[dict[str, Any]],
         expected_revision: str,
         idempotency_key: str,
-        overwrite: bool = True,
+        reason: str = "",
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
-        """Write one UTF-8 package file. Gotcha: overwrite: false refuses an existing file."""
+        """Write or archive files in one transaction, validating the final package as a whole."""
         try:
             return _mutation_result(
                 ArchitectProject(project_path, workspace_root=root)
-                .write_file(
-                    relative_path=relative_path,
-                    content=content,
-                    overwrite=overwrite,
+                .write_files(
+                    files,
+                    reason=reason,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,
@@ -1429,38 +1427,6 @@ def create_architect_mcp_server(
                     kind=kind,
                     key=key,
                     model=model,
-                    reason=reason,
-                    validate_after=True,
-                    expected_revision=expected_revision,
-                    idempotency_key=idempotency_key,
-                    dry_run=dry_run,
-                )
-                .report
-            )
-        except Exception as exc:
-            return _mutation_error_result(
-                exc,
-                project_path=project_path,
-                expected_revision=expected_revision,
-                idempotency_key=idempotency_key,
-                dry_run=dry_run,
-            )
-
-    @mcp.tool(annotations=_mutation_annotations("Archive project file"))
-    def archive_project_file(
-        project_path: str,
-        relative_path: str,
-        expected_revision: str,
-        idempotency_key: str,
-        reason: str = "",
-        dry_run: bool = False,
-    ) -> ArchitectMutationResult:
-        """Move one package file into .architect/archive/; remove_object removes one object."""
-        try:
-            return _mutation_result(
-                ArchitectProject(project_path, workspace_root=root)
-                .archive_file(
-                    relative_path=relative_path,
                     reason=reason,
                     validate_after=True,
                     expected_revision=expected_revision,

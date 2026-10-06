@@ -2237,7 +2237,11 @@ Both are loaded from **directories only** — the package root's `examples/` and
 them in sibling files.
 
 An `examples/` file maps example IDs to a question, a Query IR, and an expected
-shape (`uv run semantic-rails run-examples` executes them):
+shape (`uv run semantic-rails run-examples` executes them). Columns are checked
+against the result's output descriptors even when a time window returns no rows;
+checks request compact responses even if the example declares `verbosity: minimal`,
+and reports retain the authored query. `min_rows` and `max_rows` still enforce the
+declared row counts:
 
 ```yaml
 # examples/core.yml
@@ -2399,6 +2403,26 @@ is kept or rejected and never dropped to make the metric load:
   do elsewhere in the package. An `anchor` with a `window` is refused when the metric is
   queried, until anchored windows compile (see `docs/CAPABILITIES.md`); it is never
   computed as a lifetime value.
+
+### Runtime probes
+
+Runtime validation probes measures and metrics through the normal query policy
+checks. A probe missing a policy's `required_group_by` retries with those fields,
+including constraints inherited through a metric's measures. If `required_where`
+needs an authored filter, the probe is marked `skipped: true` with a reason and
+the policy effects, rather than failing or inventing a filter value. Skipped
+probes count separately from passed and failed probes; other policy denials
+remain failures. Add an example or package test with an allowed filter to check
+execution of a skipped object.
+
+Segment probes execute the authored preview query without repairs or skips. A
+missing required grouping or filter fails with `POLICY_DENIED`; a non-additive
+basis also fails rather than being regrouped. Fix the segment definition to
+satisfy the runtime's query requirements.
+
+Duplicate-measure warnings compare the IDs of `metric_constraint` policies
+naming each measure as well as its entity, expression, aggregation and default
+clock. Measures with different constraint policies remain distinct.
 
 ### Filter values
 

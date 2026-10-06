@@ -57,7 +57,7 @@ def _snowflake(config):
 
 
 COUNT_IF_PAYLOAD = {
-    "version": 2,
+    "version": 1,
     "select": [
         {
             "expression": {
@@ -80,7 +80,7 @@ COUNT_IF_PAYLOAD = {
 }
 
 SUM_IF_PAYLOAD = {
-    "version": 2,
+    "version": 1,
     "select": [
         {
             "expression": {
@@ -157,7 +157,7 @@ def test_lift_conditional_aggregates_is_idempotent_for_identical_payloads(jaffle
     to a single synthetic measure (deterministic hash + dedup).
     """
     payload = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "expression": COUNT_IF_PAYLOAD["select"][0]["expression"],
@@ -175,7 +175,7 @@ def test_lift_conditional_aggregates_is_idempotent_for_identical_payloads(jaffle
 
 def test_column_without_entity_or_table_is_rejected(jaffle_config):
     payload = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "expression": {
@@ -195,7 +195,7 @@ def test_column_without_entity_or_table_is_rejected(jaffle_config):
 
 def test_unsupported_aggregation_is_rejected(jaffle_config):
     payload = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "expression": {

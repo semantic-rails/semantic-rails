@@ -57,7 +57,7 @@ def adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
 
 
 def _query(select: dict[str, Any] = REVENUE, **parts: Any) -> dict[str, Any]:
-    return {"version": 2, "select": [select], **parts}
+    return {"version": 1, "select": [select], **parts}
 
 
 def _gaps(adapter: SemanticLayerMCPAdapter, text: str, query: dict[str, Any], **kwargs: Any):
@@ -277,7 +277,7 @@ def test_a_lookback_metrics_dropped_start_is_left_to_plan(
 def test_a_prior_period_comparison_is_not_a_window(adapter: SemanticLayerMCPAdapter) -> None:
     # The dev split's correct answer to J32.
     alongside = {
-        "version": 2,
+        "version": 1,
         "select": [
             REVENUE,
             {
@@ -311,7 +311,7 @@ def test_a_callers_window_never_turns_a_prior_period_offset_into_a_gap(
     # Pinning the window is the caller's choice; the "previous month" is still the offset.
     march = {"start": "2017-03-01", "end": "2017-04-01"}
     alongside = {
-        "version": 2,
+        "version": 1,
         "select": [
             REVENUE,
             {
@@ -1243,7 +1243,7 @@ BROOKLYN_REVENUE = {
         (
             "top 5 stores by revenue",
             {
-                "version": 2,
+                "version": 1,
                 "select": [REVENUE, ORDERS],
                 "group_by": [STORE],
                 "order_by": [{"field": "revenue_usd", "direction": "DESC"}],
