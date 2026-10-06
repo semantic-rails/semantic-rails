@@ -1072,7 +1072,9 @@ are internal: they settle inside their own scope in both modes.
   a loaded window where they have no matches, whether or not their condition matched
   elsewhere: the probe checks for a source row under the same scope filters and policy row
   filters. A sum whose matching amounts are all NULL remains `NULL`. An empty source relation
-  or a window outside its loaded range remains `NULL` with `NO_DATA_IN_SCOPE`. Relative
+  or a window outside its loaded range remains `NULL` with `NO_DATA_IN_SCOPE`; under `dataset`
+  with a `where` filter, the warning follows the probe read described below, so a window
+  outside the loaded range reads `NULL` without it once the probe finds source rows. Relative
   windows use their resolved bounds.
   Window totals, filled, dense-series (rolling, prior-period) and combined plans, bounded or
   not, read the base relation even when rollups are available, so routing cannot change their
