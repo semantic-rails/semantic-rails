@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import duckdb
 import pytest
 import yaml
 
@@ -22,6 +23,104 @@ from semantic_rails.errors import SemanticLayerError
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 JAFFLE_SHOP = REPO_ROOT / "configs" / "semantic_rails" / "jaffle_shop"
+
+
+@pytest.fixture
+def typed_contract_project(tmp_path: Path) -> Path:
+    project = tmp_path / "typed_contract"
+    project.mkdir()
+    raw = {
+        "schema_version": 1,
+        "package": {
+            "id": "typed_contract",
+            "warehouse": "duckdb",
+            "default_db": "warehouse.duckdb",
+            "seed": {"kind": "external"},
+        },
+        "graph": {"entities": {"event": {"key": "event_id", "model": "events"}}},
+        "models": {
+            "events": {
+                "relation": "analytics.fct_events",
+                "grain": ["event_id"],
+                "entities": {"event": {}},
+                "times": {"occurred_at": {"kind": "timestamp"}},
+                "dimensions": {
+                    "tenant_id": {"kind": "categorical"},
+                    "local_time": {"kind": "timestamp"},
+                },
+            }
+        },
+    }
+    (project / "package.yml").write_text(yaml.safe_dump(raw), encoding="utf-8")
+    return project
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["models", "typed-config"])
+@pytest.mark.parametrize("relation_kind", ["table", "view"])
+@pytest.mark.parametrize("qualified_catalog", [False, True])
+def test_export_semantic_contract_reports_physical_column_types(
+    typed_contract_project: Path, legacy: bool, relation_kind: str, qualified_catalog: bool
+) -> None:
+    from semantic_rails.config import LoadedPackageSnapshot, load_package_snapshot
+
+    database = typed_contract_project / "warehouse.duckdb"
+    with duckdb.connect(str(database)) as connection:
+        connection.execute("CREATE SCHEMA analytics")
+        connection.execute(
+            "CREATE TABLE analytics.source_events "
+            "(event_id BIGINT, tenant_id UUID, occurred_at TIMESTAMPTZ, local_time TIMESTAMP)"
+        )
+        connection.execute(
+            f"CREATE {relation_kind.upper()} analytics.fct_events AS "
+            "SELECT * FROM analytics.source_events"
+        )
+    if qualified_catalog:
+        package_file = typed_contract_project / "package.yml"
+        raw = yaml.safe_load(package_file.read_text())
+        raw["models"]["events"]["relation"] = "warehouse.analytics.fct_events"
+        package_file.write_text(yaml.safe_dump(raw))
+    snapshot = load_package_snapshot(typed_contract_project)
+    if legacy:
+        snapshot = LoadedPackageSnapshot.from_config(
+            snapshot.config, source_path=snapshot.source_path
+        )
+    before = database.read_bytes()
+    payload = export_semantic_contract(snapshot)
+    resource = payload["semantic"]["packages"][0]["resources"][0]
+    columns = {column["name"]: column for column in resource["columns"]}
+    assert columns["occurred_at"]["data_type"] == "timestamp_tz"
+    assert columns["tenant_id"]["data_type"] == "uuid"
+    assert columns["event_id"]["data_type"] == "bigint"
+    assert columns["local_time"]["data_type"] == "timestamp"
+    assert resource["relation"].endswith("analytics.fct_events")
+    assert database.read_bytes() == before
+    assert payload["semantic"]["packages"][0]["semantic_hash"] == snapshot.semantic_fingerprint
+    _jsonschema().Draft202012Validator(load_contract("semantic_contract.v1.json")).validate(payload)
+
+
+def test_export_semantic_contract_does_not_create_missing_database(
+    typed_contract_project: Path,
+) -> None:
+    payload = export_semantic_contract(typed_contract_project)
+    columns = {
+        column["name"]: column
+        for column in payload["semantic"]["packages"][0]["resources"][0]["columns"]
+    }
+    assert columns["occurred_at"]["data_type"] == "timestamp"
+    assert columns["tenant_id"]["data_type"] == "string"
+    assert not (typed_contract_project / "warehouse.duckdb").exists()
+
+
+def test_export_semantic_contract_refuses_unreadable_existing_database(
+    typed_contract_project: Path,
+) -> None:
+    database = typed_contract_project / "warehouse.duckdb"
+    database.write_bytes(b"invalid database")
+    with pytest.raises(SemanticLayerError) as exc:
+        export_semantic_contract(typed_contract_project)
+    assert exc.value.code == "INVALID_CONFIG"
+    assert exc.value.details["reason"] == "database_unreadable"
+    assert database.read_bytes() == b"invalid database"
 
 
 def _jsonschema():

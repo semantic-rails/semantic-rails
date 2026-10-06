@@ -17,6 +17,7 @@ from semantic_rails import __version__
 from semantic_rails.config import LoadedPackageSnapshot, load_package_snapshot
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import expr_to_dict, parse_config_expression
+from semantic_rails.sql_identifiers import relation_parts
 
 CONTRACT_FORMAT_VERSION = 1
 PRODUCER_NAME = "semantic-rails"
@@ -307,6 +308,46 @@ def _resources_from_normalized(
     return resources
 
 
+def _apply_physical_column_types(
+    resources: list[dict[str, Any]], snapshot: LoadedPackageSnapshot
+) -> None:
+    """Prefer existing local warehouse metadata over semantic-kind type hints."""
+    if snapshot.config.package.warehouse != "duckdb" or not snapshot.source_path:
+        return
+    from semantic_rails.architect_introspection import open_duckdb
+    from semantic_rails.runtime import Runtime
+
+    # Reuse runtime path resolution without opening an adapter or building a seed.
+    runtime = Runtime.from_snapshot(snapshot)
+    try:
+        database = runtime.db_path
+    finally:
+        runtime.close()
+    if not Path(database).is_file():
+        return
+    with open_duckdb(database) as warehouse:
+        for resource in resources:
+            parts = relation_parts(resource.get("relation", ""))
+            if parts is None:
+                continue
+            schema, table = parts[-2:] if len(parts) > 1 else ["main", parts[0]]
+            rows = warehouse.rows(
+                "SELECT column_name, data_type FROM duckdb_columns() "
+                "WHERE database_name = coalesce(?, current_database()) "
+                "AND schema_name = ? AND table_name = ?",
+                [parts[0] if len(parts) == 3 else None, schema, table],
+            )
+            types = {row["column_name"]: str(row["data_type"]).lower() for row in rows}
+            for column in resource["columns"]:
+                physical_type = types.get(column["name"])
+                if physical_type:
+                    column["data_type"] = (
+                        "timestamp_tz"
+                        if physical_type == "timestamp with time zone"
+                        else physical_type
+                    )
+
+
 def export_semantic_contract(path: str | Path | LoadedPackageSnapshot) -> dict[str, Any]:
     """Export a framework-neutral validation contract from a project.
 
@@ -336,6 +377,7 @@ def export_semantic_contract(path: str | Path | LoadedPackageSnapshot) -> dict[s
             fallback_config=config,
         ),
     }
+    _apply_physical_column_types(package["resources"], snapshot)
     return {
         "contract_format_version": CONTRACT_FORMAT_VERSION,
         "semantic": {

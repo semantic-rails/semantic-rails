@@ -48,6 +48,16 @@ excluding connection, seed, and local database locators. It changes with
 semantic expressions, models, relationships, policies, and other governed
 behavior, but not when files are rearranged or deployment-only paths change.
 
+When the package's local DuckDB database exists, export reads its column catalog
+read-only, with external access disabled. Physical column types take precedence
+over semantic-kind hints: zone-aware timestamps export as `timestamp_tz`, UUIDs
+as `uuid`, and other types use the warehouse's lowercase spelling. This applies
+to tables and views, including schema-qualified relations. Export never creates
+or seeds a database or connects to a remote warehouse. Without local metadata,
+the existing semantic-kind hints remain; an existing database that cannot be
+opened read-only raises `INVALID_CONFIG`. Physical type metadata can change
+without changing `semantic_hash`, which fingerprints package semantics only.
+
 dbt, SQLMesh, and future integrations own an optional `binding` object. A
 binding schema composes with
 `https://semantic-rails.com/schemas/semantic_contract.v1.json` and narrows the
