@@ -228,17 +228,23 @@ def _with(query: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     return {**query, "policy_context": context}
 
 
-def _refusals(engine: Runtime, query: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
-    """The code and details of validate, compile, execute and MCP execute."""
+def _refusals(engine: Runtime, query: dict[str, Any]) -> list[tuple[str, dict[str, Any], str]]:
+    """The code, details and message of validate, compile, execute and MCP execute."""
     report = engine.validate(query)
     assert report["ok"] is False, report
-    outcomes = [(report["errors"][0]["code"], report["errors"][0].get("details", {}))]
+    issue = report["errors"][0]
+    outcomes = [(issue["code"], issue.get("details", {}), issue["message"])]
     for call in (engine.compile, engine.query):
         with pytest.raises(SemanticLayerError) as exc:
             call(query)
-        outcomes.append((exc.value.code, exc.value.details))
+        outcomes.append((exc.value.code, exc.value.details, str(exc.value)))
     tool = SemanticLayerMCPAdapter(engine).call_tool("execute", {"query": query, "mode": "run"})
-    outcomes.append((tool["errors"][0]["code"], tool["errors"][0].get("details", {})))
+    assert tool["ok"] is False, tool
+    for payload in (report, tool):
+        for field in ("sql", "rendered_sql", "sql_plan", "rows"):
+            assert not payload.get(field), payload
+    issue = tool["errors"][0]
+    outcomes.append((issue["code"], issue.get("details", {}), issue["message"]))
     return outcomes
 
 
@@ -398,9 +404,25 @@ def test_every_query_reading_revenue_is_refused_outside_finance(engine, package,
         if eligible:
             assert runtime.validate(query)["ok"] is True
             return
-        for code, details in _refusals(runtime, query):
+        hidden = hidden_object_ids(runtime._config, roles=context.get("roles", []))
+        hidden_names = hidden | {
+            row.label
+            for rows in (
+                runtime._config.entities,
+                runtime._config.dimensions,
+                runtime._config.measures,
+                runtime._config.metric_recipes,
+                runtime._config.segments,
+            )
+            for row in rows
+            if row.id in hidden and row.label
+        }
+        for code, details, message in _refusals(runtime, query):
             assert code == "POLICY_DENIED"
-            assert set(details["blocked_objects"]) <= {*RESTRICTED, RESTRICTED_DIMENSION}
+            serialized = json.dumps(details).casefold()
+            for name in hidden_names:
+                assert name.casefold() not in serialized, details
+                assert name.casefold() not in message.casefold(), message
             if bypass in {"conditional_raw_value", "conditional_raw_condition"}:
                 assert details["blocked_objects"] == []
     finally:
@@ -543,7 +565,7 @@ def test_scoping_separates_applicability_from_eligibility(package, name):
         if visible:
             assert runtime.validate(query)["ok"] is True
         else:
-            assert {code for code, _ in _refusals(runtime, query)} == {"POLICY_DENIED"}
+            assert {code for code, _, _ in _refusals(runtime, query)} == {"POLICY_DENIED"}
     finally:
         runtime.close()
 
@@ -573,7 +595,11 @@ def test_explicit_restrictions_still_apply_to_eligible_contexts(package, action)
     runtime = _engine(package, FINANCE_ONLY, restriction)
     try:
         query = _with(BY_STORE, {"roles": ["finance"]})
-        assert {code for code, _ in _refusals(runtime, query)} == {"POLICY_DENIED"}
+        for code, details, _ in _refusals(runtime, query):
+            assert code == "POLICY_DENIED"
+            if action == "deny":
+                assert REVENUE in details["blocked_objects"]
+                assert set(details["blocked_objects"]) <= set(RESTRICTED)
     finally:
         runtime.close()
 
