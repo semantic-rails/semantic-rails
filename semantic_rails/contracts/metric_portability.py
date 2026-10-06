@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from collections.abc import Mapping
 from copy import deepcopy
@@ -14,18 +12,13 @@ from semantic_rails import __version__
 from semantic_rails.config import LoadedPackageSnapshot, load_package_snapshot
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import expr_to_dict
-from semantic_rails.package_snapshot import canonicalize_semantics
+from semantic_rails.package_snapshot import canonicalize_semantics, json_fingerprint
 
 METRIC_PORTABILITY_VERSION = 1
 QUERY_IR_SCHEMA = "https://semantic-rails.com/schemas/query_ir.v1.json"
 _PRESENTATION = frozenset(
     {"name", "label", "description", "aliases", "topics", "example_entries", "authoring_warnings"}
 )
-
-
-def _hash(value: Any) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def _definition(row: Any, expression_field: str) -> dict[str, Any]:
@@ -129,7 +122,7 @@ def export_metric_portability(
         if namespace is not None and namespace != derived_namespace:
             raise ValueError("Metric namespace must match the authored package")
         namespace = derived_namespace
-    context_hash = _hash(_context(snapshot))
+    context_hash = json_fingerprint(_context(snapshot))
     definitions = {metric.id: _definition(metric, "expression") for metric in config.metric_recipes}
     metrics = []
     for metric in sorted(config.metric_recipes, key=lambda row: row.id):
@@ -139,7 +132,7 @@ def export_metric_portability(
                 "label": metric.label or metric.name or metric.id,
                 "description": metric.description,
                 "definition": definitions[metric.id],
-                "definition_hash": _hash(
+                "definition_hash": json_fingerprint(
                     {"context": context_hash, "metrics": _dependencies(metric.id, definitions)}
                 ),
                 "query_template": {
@@ -247,7 +240,7 @@ def compare_metric_portability(
             index[key] = row
             definitions[row["id"]] = row["definition"]
         for row in rows:
-            expected_hash = _hash(
+            expected_hash = json_fingerprint(
                 {"context": context_hash, "metrics": _dependencies(row["id"], definitions)}
             )
             if row.get("definition_hash") != expected_hash:

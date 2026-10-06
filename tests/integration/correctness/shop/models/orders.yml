@@ -17,6 +17,30 @@ model:
       value_type: currency, rollup: additive}
     order_count: {label: Orders, kind: entity_count, entity_key: order_id,
       accumulation: {kind: flow}, rollup: additive}
+    store_a_amount:
+      label: Store a amount
+      kind: aggregate
+      accumulation: {kind: flow}
+      rollup: additive
+      expr: {kind: case, whens: [{when: {kind: comparison, op: '=',
+        left: {kind: column, column: store_id}, right: {kind: literal, value: a}},
+        then: {kind: column, column: amount}}], else: {kind: literal, value: 0}}
+    store_a_orders:
+      label: Store a orders
+      kind: entity_count
+      accumulation: {kind: flow}
+      rollup: additive
+      expr: {kind: case, whens: [{when: {kind: comparison, op: '=',
+        left: {kind: column, column: store_id}, right: {kind: literal, value: a}},
+        then: {kind: column, column: order_id}}]}
+    store_b_orders:
+      label: Store b orders
+      kind: entity_count
+      accumulation: {kind: flow}
+      rollup: additive
+      expr: {kind: case, whens: [{when: {kind: comparison, op: '=',
+        left: {kind: column, column: store_id}, right: {kind: literal, value: b}},
+        then: {kind: column, column: order_id}}]}
     average_order: {label: Average order, kind: aggregate, expr: amount, default_agg: avg,
       value_type: currency}
     average_days_to_close:

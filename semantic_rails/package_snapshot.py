@@ -135,7 +135,7 @@ def semantic_payload(config: PackageConfig) -> dict[str, Any]:
     return semantic
 
 
-def _json_fingerprint(value: Any) -> str:
+def json_fingerprint(value: Any) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
@@ -175,10 +175,10 @@ class LoadedPackageSnapshot:
         semantic = semantic_payload(config)
         return cls(
             source_path=source_path,
-            source_fingerprint=_json_fingerprint(
+            source_fingerprint=json_fingerprint(
                 canonicalize_semantics(config, sort_objects=False)
             ).removeprefix("sha256:"),
-            semantic_fingerprint=_json_fingerprint(semantic),
+            semantic_fingerprint=json_fingerprint(semantic),
             provenance=(),
             source_kind="in_memory",
             _config=config,
@@ -207,7 +207,7 @@ def load_package_snapshot(path: str | Path | LoadedPackageSnapshot) -> LoadedPac
     return LoadedPackageSnapshot(
         source_path=source.source_path,
         source_fingerprint=source.fingerprint,
-        semantic_fingerprint=_json_fingerprint(semantic),
+        semantic_fingerprint=json_fingerprint(semantic),
         provenance=source.provenance,
         source_kind="files",
         _config=config,
