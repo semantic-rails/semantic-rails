@@ -169,6 +169,19 @@ def runtime(tmp_path: Path) -> Iterator[Runtime]:
     runtime.close()
 
 
+SNAPSHOT_LABEL_ENTITY = "    snapshot_label: {key: [account_id, date_day], model: snapshot_labels}\n"
+OBSERVED_DATE_LINE = "    observed_date: {column: date_day, kind: date}\n"
+# The clock is on the target side of this non-calendar, composite-key relationship.
+SNAPSHOT_LABELS = (
+    "model:\n"
+    "  id: snapshot_labels\n"
+    "  relation: snapshot_labels\n"
+    "  entities: {snapshot_label: {}, account_day: {}}\n"
+    "  dimensions:\n" + OBSERVED_DATE_LINE
+)
+SNAPSHOT_LABELS_TABLE = "create table snapshot_labels as select account_id, date_day from account_day"
+
+
 @pytest.fixture
 def related_runtime(tmp_path: Path) -> Iterator[Runtime]:
     package = _package(tmp_path)
@@ -176,7 +189,7 @@ def related_runtime(tmp_path: Path) -> Iterator[Runtime]:
     graph.write_text(
         graph.read_text()
         + "    time2: {kind: time, key: [date_day], model: calendar2, allowed_as_root: false}\n"
-        + "    snapshot_label: {key: [account_id, date_day], model: snapshot_labels}\n"
+        + SNAPSHOT_LABEL_ENTITY
     )
     calendar = package / "models" / "calendar.yml"
     calendar.write_text(
@@ -191,19 +204,9 @@ def related_runtime(tmp_path: Path) -> Iterator[Runtime]:
         "  times:\n"
         "    date_day: {column: date_day, kind: date, class: calendar_time}\n"
     )
-    # The clock is on the target side of this non-calendar, composite-key relationship.
-    (package / "models" / "snapshot_labels.yml").write_text(
-        "model:\n"
-        "  id: snapshot_labels\n"
-        "  relation: snapshot_labels\n"
-        "  entities: {snapshot_label: {}, account_day: {}}\n"
-        "  dimensions:\n"
-        "    observed_date: {column: date_day, kind: date}\n"
-    )
+    (package / "models" / "snapshot_labels.yml").write_text(SNAPSHOT_LABELS)
     with duckdb.connect(str(package / "data" / "fees.duckdb")) as connection:
-        connection.execute(
-            "create table snapshot_labels as select account_id, date_day from account_day"
-        )
+        connection.execute(SNAPSHOT_LABELS_TABLE)
     runtime = Runtime.from_path(str(package))
     yield runtime
     runtime.close()
@@ -562,24 +565,50 @@ ACCOUNT_LINE = "    account_id: {kind: categorical}\n"
 SNAPSHOT_DATE_LINE = "    snapshot_date: {column: date_day, kind: date}\n"
 
 
-def _edited_runtime(tmp_path: Path, edits: dict[str, dict[str, str]]) -> Runtime:
-    """The package with each model's text replaced, and a ship date one day after each event."""
+def _edited_runtime(tmp_path: Path, edits: dict[str, dict[str, str] | str]) -> Runtime:
+    """The package with the graph's or each model's text replaced, or a new model given whole,
+    a ship date one day after each event, and the tables the new models read."""
     package = _package(tmp_path)
-    for model, replacements in edits.items():
-        path = package / "models" / f"{model}.yml"
+    for name, edit in edits.items():
+        path = package / ("graph.yml" if name == "graph" else f"models/{name}.yml")
+        if isinstance(edit, str):
+            path.write_text(edit)
+            continue
         text = path.read_text()
-        for old, new in replacements.items():
+        for old, new in edit.items():
             assert old in text
             text = text.replace(old, new)
         path.write_text(text)
     with duckdb.connect(str(package / "data" / "fees.duckdb")) as connection:
         connection.execute("alter table events add column shipped_on date")
         connection.execute("update events set shipped_on = occurred_at::date + 1")
+        connection.execute(SNAPSHOT_LABELS_TABLE)
+        connection.execute("create table day_infos as select distinct date_day from account_day")
     return Runtime.from_path(str(package))
 
 
-# id: model edits, expression, field, operator. Each dimension is temporal by its own kind or
-# by its column, whatever its relationship to the query clock.
+GRAPH_ENTITIES = "graph:\n  entities:\n"
+# A non-calendar entity keyed on the clock's column: account_days is the source this time.
+DAY_INFO = {
+    "graph": {
+        GRAPH_ENTITIES: GRAPH_ENTITIES + "    day_info: {key: [date_day], model: day_infos}\n"
+    },
+    "account_days": {
+        "entities: {account_day: {}, time: {}}": "entities: {account_day: {}, time: {}, "
+        "day_info: {}}"
+    },
+    "day_infos": (
+        "model:\n"
+        "  id: day_infos\n"
+        "  relation: day_infos\n"
+        "  entities: {day_info: {}}\n"
+        "  dimensions:\n"
+        "    label: {column: date_day, kind: categorical}\n"
+    ),
+}
+# id: graph and model edits, expression, field, operator. Each dimension is temporal by its
+# own kind, by its column, or by a relationship pairing its column with a temporal one,
+# whatever its relationship to the query clock.
 BY_TYPE = {
     "categorical-on-the-clock-column": (
         {"account_days": {ACCOUNT_LINE: ACCOUNT_LINE + "    label: {column: date_day}\n"}},
@@ -628,6 +657,30 @@ BY_TYPE = {
         SHIPPED,
         "=",
     ),
+    # Not temporal by kind or by a dimension on its column: by the relationship alone.
+    "categorical-related-to-the-clock": (
+        {
+            "graph": {GRAPH_ENTITIES: GRAPH_ENTITIES + SNAPSHOT_LABEL_ENTITY},
+            "snapshot_labels": SNAPSHOT_LABELS.replace(
+                OBSERVED_DATE_LINE, "    observed_date: {column: date_day, kind: categorical}\n"
+            ),
+        },
+        PRIOR_DAY,
+        LINKED_DATE,
+        ">=",
+    ),
+    "kindless-related-to-the-clock": (
+        {
+            "graph": {GRAPH_ENTITIES: GRAPH_ENTITIES + SNAPSHOT_LABEL_ENTITY},
+            "snapshot_labels": SNAPSHOT_LABELS.replace(
+                OBSERVED_DATE_LINE, "    observed_date: {column: date_day}\n"
+            ),
+        },
+        PRIOR_DAY,
+        LINKED_DATE,
+        ">=",
+    ),
+    "categorical-relating-the-clock": (DAY_INFO, PRIOR_DAY, "dimension.fees_day_info_label", ">="),
 }
 
 
