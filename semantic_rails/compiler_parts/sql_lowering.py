@@ -5899,6 +5899,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 time_key=time_alias if _emits_time_coverage(plan, config) else "",
                 dialect=_dialect(config),
                 observed=observed,
+                bucketed=bool(plan.time),
             )
         )
         base_table = SqlTableRef(name=GUARDED_BASE, alias="base")

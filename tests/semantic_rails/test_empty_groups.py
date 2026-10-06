@@ -578,7 +578,11 @@ def test_a_window_total_refuses_a_missing_time_scope(
 
 
 @pytest.mark.parametrize("grain", [None, "week"])
-def test_a_window_count_never_matched_reads_zero(shop: Runtime, grain: str | None) -> None:
+def test_a_window_count_never_matched_reads_zero_where_its_bucket_is_checked(
+    shop: Runtime, grain: str | None
+) -> None:
+    """A window total's bucket gets the loaded-bucket check. A week bucket of one leaf, with
+    no fill, doesn't, so a count that never matched is held at NULL with the warning."""
     response = shop.query(
         {
             "select": _select(huge={"measure": "measure.shop.huge_order_count"}),
@@ -595,8 +599,13 @@ def test_a_window_count_never_matched_reads_zero(shop: Runtime, grain: str | Non
         "SELECT COUNT(CASE WHEN amount >= 1000 THEN order_id END) AS huge FROM orders "
         "WHERE ordered_at >= TIMESTAMP '2023-11-27' AND ordered_at < TIMESTAMP '2023-12-04'",
     )
-    assert [row["huge"] for row in response["rows"]] == [row["huge"] for row in gold] == [0]
-    assert not _warnings(response)
+    assert [row["huge"] for row in gold] == [0]
+    if grain:
+        assert [row["huge"] for row in response["rows"]] == [None]
+        assert _warnings(response)[0]["details"]["outputs"] == ["huge"]
+    else:
+        assert [row["huge"] for row in response["rows"]] == [row["huge"] for row in gold]
+        assert not _warnings(response)
 
 
 @pytest.fixture(scope="module")
@@ -650,8 +659,47 @@ def test_a_never_matched_count_preserves_the_window_difference(
         "WHERE ordered_at >= TIMESTAMP '2023-11-27' AND ordered_at < TIMESTAMP '2023-12-04') c",
     )
     assert gold == [{"a": 3, "b": 0, "net": 3}]
-    assert [{key: row[key] for key in gold[0]} for row in typed_rows(response)] == gold
-    assert not _warnings(response)
+    got = [{key: row[key] for key in gold[0]} for row in typed_rows(response)]
+    if grain:
+        # One leaf's week bucket gets no loaded-bucket check, so b is held at NULL.
+        assert got == [{"a": 3, "b": None, "net": None}]
+        assert _warnings(response)[0]["details"]["outputs"] == ["b", "net"]
+    else:
+        assert got == gold
+        assert not _warnings(response)
+
+
+def test_a_window_total_without_its_loaded_bucket_check_never_settles_from_source_rows(
+    only_a_shop: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Force the bypass: lowering emits no loaded-bucket check for the total. The guard then
+    can't settle the never-matched operand from source rows, so it holds NULL and warns."""
+    monkeypatch.setattr(sql_lowering, "_emits_time_coverage", lambda plan, config: False)
+    a = {"measure": "measure.shop.store_a_orders"}
+    b = {"measure": "measure.shop.store_b_orders"}
+    # A runtime of its own, so no compilation cached before the patch is reused.
+    rt = Runtime.from_config(only_a_shop.config, source_path=only_a_shop.source_path)
+    try:
+        response = rt.query(
+            {
+                "select": _select(
+                    a=a, b=b, net={"kind": "arithmetic", "op": "subtract", "left": a, "right": b}
+                ),
+                "time": {
+                    "temporal_role": SHOP_MONTH["temporal_role"],
+                    "start": "2023-11-27",
+                    "end": "2023-12-04",
+                },
+                "policy_context": {"now": "2023-12-04T00:00:00+00:00"},
+            }
+        )
+    finally:
+        rt.close()
+    assert "coverage_1" not in response["rendered_sql"]
+    assert [{key: row[key] for key in ("a", "b", "net")} for row in typed_rows(response)] == [
+        {"a": 3, "b": None, "net": None}
+    ]
+    assert _warnings(response)[0]["details"]["outputs"] == ["b", "net"]
 
 
 @pytest.mark.parametrize("shape", ["case", "aggregate_if"])

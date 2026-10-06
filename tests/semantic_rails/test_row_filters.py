@@ -592,8 +592,10 @@ def test_observation_and_coverage_never_see_another_customers_rows(runtime, tena
     if window_total:
         query["time"].pop("grain")
     result = runtime.query(_q(query, customer_id=tenant))
-    # Both callers have source rows: B's never-matched condition also counts zero.
-    # An empty caller has no group, preserving the empty-total behavior.
+    # Both callers have source rows: in the total, whose bucket the loaded-bucket check
+    # gates, B's never-matched condition also counts zero. The month bucket of one leaf
+    # gets no such check, so B's is held at NULL. An empty caller has no group, preserving
+    # the empty-total behavior.
     gold = (
         runtime._get_adapter()
         ._db.conn.execute(
@@ -604,7 +606,8 @@ def test_observation_and_coverage_never_see_another_customers_rows(runtime, tena
         )
         .fetchall()
     )
-    assert [r["v"] for r in result["rows"]] == [row[0] for row in gold]
+    held = tenant == B and not window_total
+    assert [r["v"] for r in result["rows"]] == ([None] if held else [row[0] for row in gold])
     assert gold == ([(0,)] if tenant in {A, B} else [])
     # The total probes both measures outside its bounds, plus its leaf and coverage scan.
     assert result["rendered_sql"].count("customer_id = ?") == (4 if window_total else 3)
