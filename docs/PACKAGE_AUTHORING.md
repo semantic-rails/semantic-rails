@@ -785,7 +785,8 @@ that must not see it.
   dimension, and relationships to a restricted entity. An object whose dependencies cannot
   be resolved is restricted whenever anything is.
 - For an ineligible request, restricted objects are left out of `catalog`, `discover`,
-  `build-options`, `plan` and diagnostic suggestions; `inspect` of one, and `valid-values`
+  `build-options`, `plan`, other objects' `inspect` cards (related measures and metrics,
+  companions, starter queries) and diagnostic suggestions; `inspect` of one, and `valid-values`
   of a restricted dimension, answer `OBJECT_NOT_FOUND`; `validate`, `compile`, `execute`,
   `valid-values` and the segment tools refuse any query that reads one, including through
   an inline expression, a derived metric, a metric filter or an `order_by`, with
