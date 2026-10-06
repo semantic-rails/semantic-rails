@@ -343,14 +343,102 @@ def test_hidden_underscore_objects_are_excluded_from_name_spans(runtime_factory,
         semantic_policies=[*runtime._config.semantic_policies, policy],
     )
     question = "revenue_usd at store name level"
+    query = {"group_by": []}
     try:
-        assert plan_module._declared_name_spans(config, question, underscores=True) == (
-            plan_module._declared_name_spans(
-                replace(config, **{kind: []}), question, underscores=True
-            )
+        # The check reads names through its caller-scoped view, never the raw config.
+        assert plan_module._named_groupings_unmet(config, question, query) == (
+            plan_module._named_groupings_unmet(replace(config, **{kind: []}), question, query)
         )
+        visible = replace(config, semantic_policies=runtime._config.semantic_policies)
+        assert "revenue_usd" in plan_module._named_groupings_unmet(visible, question, query)[0]
     finally:
         runtime.close()
+
+
+CALENDAR = "entity.jaffle_time"
+CUSTOMER_TYPE = "dimension.jaffle_customer_type"
+STORE_NAME = "dimension.jaffle_store_name"
+NEW_MONTH = "new month and store name revenue"
+NEW_MONTH_PARTIAL = {
+    "group_by": [STORE_NAME],
+    "where": [{"field": STORE_NAME, "op": "IN", "value": ["Brooklyn", "Philadelphia"]}],
+    "time": {
+        "temporal_role": "temporal_role.jaffle_order_time",
+        "grain": "month",
+        "calendar_id": "default",
+    },
+}
+
+
+def _new_month_alias(config, hidden: str, **changes):
+    """Customer type with the alias "new month", revenue labelled with that alias's value word,
+    and the entity or temporal role ``hidden`` hidden from every caller, with ``changes``."""
+
+    policy = SemanticPolicyConfig(
+        id="policy.hide_clock", kind="object_visibility", object_ids=[hidden], action="hidden"
+    )
+    return replace(
+        config,
+        dimensions=[
+            replace(row, aliases=[*(row.aliases or []), "new month"])
+            if row.id == CUSTOMER_TYPE
+            else row
+            for row in config.dimensions
+        ],
+        measures=[
+            replace(row, label="Revenue (new and repeat types)")
+            if row.id == "measure.jaffle.revenue_usd"
+            else row
+            for row in config.measures
+        ],
+        entities=[replace(row, **changes) if row.id == hidden else row for row in config.entities],
+        temporal_roles=[
+            replace(row, **changes) if row.id == hidden else row for row in config.temporal_roles
+        ],
+        semantic_policies=[*config.semantic_policies, policy],
+    )
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("detail", ["query", "best", "full", "debug"])
+def test_a_hidden_calendar_label_cannot_change_a_response(
+    runtime_factory, monkeypatch, path, detail
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    base = runtime._config
+    try:
+        payloads = []
+        # Labelled "New", a visible calendar would make "new month" the time block's clock.
+        for label in ("Calendar", "New"):
+            monkeypatch.setattr(runtime, "_config", _new_month_alias(base, CALENDAR, label=label))
+            runtime._catalog_search_index = None
+            _force_fallback(runtime, monkeypatch, NEW_MONTH, path)
+            payloads.append(
+                plan_payload(
+                    runtime, intent=NEW_MONTH, detail=detail, partial_query=NEW_MONTH_PARTIAL
+                )
+            )
+        assert payloads[0] == payloads[1]
+        assert payloads[0]["status"] == "low_confidence"
+        assert "execute" not in payloads[0].get("next", {}).get("ready_for", [])
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("question", [NEW_MONTH, "revenue at new month and store level"])
+def test_hidden_entity_and_temporal_role_names_cannot_change_the_name_obligation(
+    package_config_factory, question
+) -> None:
+    config, _ = package_config_factory("jaffle_shop")
+    spellings = ["New", "new month", "Month", "Store", "Store name", "Customer type", "Revenue"]
+    for row in [*config.entities, *config.temporal_roles]:
+        base = plan_module._named_groupings_unmet(
+            _new_month_alias(config, row.id), question, NEW_MONTH_PARTIAL
+        )
+        for changes in [*({"label": s} for s in spellings), *({"aliases": [s]} for s in spellings)]:
+            changed = _new_month_alias(config, row.id, **changes)
+            unmet = plan_module._named_groupings_unmet(changed, question, NEW_MONTH_PARTIAL)
+            assert unmet == base, (row.id, changes)
 
 
 @pytest.mark.parametrize("detail", ["query", "best", "full", "debug"])

@@ -823,8 +823,8 @@ def _declared_name_spans(
     A name is a label (also without its parenthetical: "item revenue" for Item revenue
     (USD)), the last part of the object's name or an alias, matched as whole words. A span
     inside a longer one is part of that name: "customer type" names Customer type, not the
-    entity Customer as well. ``underscores`` also joins words with underscores, keeps declared
-    boundary underscores ("_new_type") and reads only caller-visible objects.
+    entity Customer as well. ``underscores`` also joins words with underscores and keeps
+    declared boundary underscores ("_new_type").
     """
 
     groups: tuple[tuple[str, list[Any]], ...] = (
@@ -832,10 +832,6 @@ def _declared_name_spans(
         ("value", [*config.measures, *config.metric_recipes]),
         ("entity", config.entities),
     )
-    if underscores:
-        # Only the underscore reading is new, so only it reads just caller-visible objects.
-        visible = set(visible_object_ids(config, (row.id for _, rows in groups for row in rows)))
-        groups = tuple((kind, [row for row in rows if row.id in visible]) for kind, rows in groups)
     found: dict[tuple[int, int], list[Any]] = {}
     for kind, rows in groups:
         for row in rows:
@@ -962,7 +958,7 @@ def _grouping_filter_value_spans(
 
     filters = _where_filters(query)
     spans: list[tuple[tuple[int, int], str, str]] = []
-    for domain in visible_value_domains(config):
+    for domain in config.value_domains:
         for value in domain.values or []:
             fields = [
                 str(row["field"])
@@ -1002,22 +998,26 @@ def _named_groupings_unmet(
     is read from inside a name holds the plan even when grouped. It never changes a draft.
     """
 
+    # Every read below goes through this caller-scoped view: a hidden object is absent.
+    kinds = ("dimensions", "entities", "measures", "metric_recipes", "temporal_roles")
+    ids = set(visible_object_ids(config, (row.id for k in kinds for row in getattr(config, k))))
+    rows = {k: [row for row in getattr(config, k) if row.id in ids] for k in kinds}
+    scoped = replace(config, value_domains=visible_value_domains(config), **rows)
     lowered = str(question or "").lower()
-    clock_spans = _clock_spans(config, lowered, query)
-    values = _grouping_filter_value_spans(config, lowered, query)
+    clock_spans = _clock_spans(scoped, lowered, query)
+    values = _grouping_filter_value_spans(scoped, lowered, query)
     where = list(query.get("where") or [])
     for item in query.get("select") or []:
         # A metric the draft selects pins a dimension with its own filter as `where` does.
         expression = item.get("expression") or {}
-        metric = _object_by_id(config.metric_recipes, str(expression.get("metric")))
+        metric = _object_by_id(scoped.metric_recipes, str(expression.get("metric")))
         spec = getattr(getattr(metric, "expression", None), "filter", None) or {}
         where += spec.get("all") or []
     grouped = set(query.get("group_by") or [])
     settled = grouped | _pinned_fields({"where": where})
-    spans = _declared_name_spans(config, lowered, underscores=True)
+    spans = _declared_name_spans(scoped, lowered, underscores=True)
     words = _LEVEL_WORD_RE.finditer(lowered)
     level = any(not any(a <= word.start() < b for a, b in spans) for word in words)
-    visible = replace(config, dimensions=visible_dimensions(config))
     unmet: list[str] = []
     inside: list[dict[str, str]] = []
     for (low, high), named in sorted(spans.items()):
@@ -1030,7 +1030,7 @@ def _named_groupings_unmet(
         for field, value in found:
             if (row := {"term": term, "field": field, "value": value}) not in inside:
                 inside.append(row)
-        stand_ins = (_entity_grouping_dimensions(visible, term) or set()) if entity else set()
+        stand_ins = (_entity_grouping_dimensions(scoped, term) or set()) if entity else set()
         if found or ((dimensions or level) and not (dimensions & settled or stand_ins & grouped)):
             unmet.append(term)
     return list(dict.fromkeys(unmet)), inside
