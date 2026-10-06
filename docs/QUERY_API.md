@@ -1263,6 +1263,14 @@ Canonical public error codes:
   when the metric is at a discrete grain). When a `where` filter on a
   date or calendar dimension caused it, `details.where_path` names the
   filter and `drop_time_start` removes that filter instead.
+  For a filter on the window's measure input or an applied row policy
+  (`details.filter_source`), no time-boundary
+  recovery patch is offered; query an unwindowed measure or ask the package author
+  for a supported metric. Removing `time.start` cannot restore rows removed by
+  those filters, and the engine never widens a row policy to read lookback history.
+  Separately filtered aggregates and policies on unread tables do not truncate
+  the window's input. Source refusals follow object authorization and omit
+  authored conditions and values; a denied caller receives `POLICY_DENIED`.
 
 ### Warning Codes
 

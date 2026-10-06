@@ -1000,6 +1000,9 @@ def test_a_policy_on_a_dimension_the_condition_reads_refuses_it(
 
     for error in refusals:
         assert error.code == "POLICY_DENIED"
+        if action == "hidden":
+            assert error.details == {}
+            continue
         assert error.details["blocked_objects"] == [CURRENCY]
         assert [row["action"] for row in error.details["policy_effects"]] == [action]
 
@@ -1088,6 +1091,9 @@ def test_a_policy_on_a_dimension_a_single_entity_condition_reads_refuses_it(
         runtime.close()
 
     for error in refusals:
+        if action == "hidden":
+            assert error.details == {}
+            continue
         assert error.details["blocked_objects"] == [PERIOD]
         assert [row["action"] for row in error.details["policy_effects"]] == [action]
 
@@ -1139,7 +1145,10 @@ def test_every_dimension_on_an_own_column_is_bound(package, monkeypatch, action,
         refusals = _refusals(runtime, monkeypatch, {**query, "policy_context": RESTRICTED})
     finally:
         runtime.close()
-    assert all(error.details["blocked_objects"] == [dimension.id] for error in refusals)
+    if action == "hidden":
+        assert all(error.details == {} for error in refusals)
+    else:
+        assert all(error.details["blocked_objects"] == [dimension.id] for error in refusals)
 
 
 @pytest.mark.parametrize("without", ["", PERIOD])

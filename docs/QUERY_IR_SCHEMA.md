@@ -289,6 +289,34 @@ the same name on an unrelated table. Only an upper bound (`<`, `<=`) on a
 `WINDOWED_TIME_FILTER_UNSUPPORTED` or `CUMULATIVE_TIME_FILTER_UNSUPPORTED`; for a `where`
 filter, `details.where_path` names it.
 
+The same rule applies to dimension conditions bound to the window's own aggregate
+inputs, including conditions authored inside metric recipes
+(`details.filter_source: "measure"`). A separately filtered aggregate in another
+select, in `metric_filters`, or beside the window in arithmetic does not cut that
+window's input. A row policy applied to a scan in this statement that keeps a
+single value of a temporal column also refuses a full-history window
+(`details.filter_source: "policy"`, `details.policy_id`); unsupported row-policy scan
+shapes retain `POLICY_DENIED`. Policies on unread tables do not trigger this guard.
+Source refusal details include only `filter_source`, `policy_id` for a policy, and
+the caller's expression (plus window lookback when applicable). They omit authored
+measure IDs, conditions and values. Object authorization runs before a source
+refusal is returned: denied callers receive `POLICY_DENIED`, with policy details
+omitted when they would name hidden blocked objects.
+A policy restricts the caller's readable rows, and an authored filter restricts the
+measure's population. Neither promises complete lookback history. The engine refuses
+these combinations rather than widening the readable population or reporting a
+truncated window. Non-temporal filters and aggregate date/timestamp upper bounds
+keep their existing behavior. These refusals offer no patch to remove a policy or
+an authored filter; query an unwindowed measure or ask the package author for a
+supported metric.
+
+A separately stored month or date must declare a temporal kind or another structural
+link described above. A categorical label on a different column, with no declared
+relationship to a temporal column, carries no temporal semantics: the engine cannot
+infer that filtering it removes lookback history. Declare a physical date as
+`kind: date`; categorical period labels need a package contract before they can be
+used safely to bound a full-history window.
+
 `period_to_date` currently supports only the default calendar. A non-default
 `time.calendar_id`, or a time role bound to a non-default calendar, refuses with
 `REWRITE_NOT_SUPPORTED`; it cannot silently reset on Gregorian periods. Query the
