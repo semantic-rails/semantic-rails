@@ -1030,12 +1030,19 @@ they need the full diagnostics envelope or are editing the IR by hand.
 
 Planning applies the caller's `policy_context` (carried in `partial_query`)
 to the time reference as well: when `policy_context.now` is supplied, `today` and
-`this/current <day|week|month|quarter|year>` use its date, and relative ranges and
-window faithfulness checks use the same clock. Without `now`, planning keeps its
-wall-clock behavior. As-of phrases (`now`, `right now`, `currently`, `at the
+`this/current <day|week|month|quarter|year>` use its date in the selected temporal
+role's zone, and relative ranges and window faithfulness checks use the same clock.
+Before a role is selected, resolution uses the package's default zone (UTC when
+unset). A naive `now` is already local; without `now`, the reference is the current
+UTC instant converted to the role's zone. Every draft is checked against that
+role's bounds; a mismatch holds with `TIME_WINDOW_UNRESOLVED` naming the phrase.
+Existing holds on explicit caller windows remain conservative. As-of phrases
+(`now`, `right now`, `currently`, `at the
 moment`, `as of now`, `current` before a metric, `end of <window>`, and `as of
 <window or date>`) remain `low_confidence` with `TIME_WINDOW_UNRESOLVED` naming
-the complete cue. An explicit interval cannot consume an as-of request.
+the complete cue. An explicit interval cannot consume an as-of request. A range
+ending in an as-of cue (`2026-01-01 to now`) stays unresolved in full, and an
+unrepresentable closing-day bound also returns this hold rather than an exception.
 
 Planning also applies the caller's `policy_context`
 before matching or ranking dimensions, including catalog fallback and Intent IR

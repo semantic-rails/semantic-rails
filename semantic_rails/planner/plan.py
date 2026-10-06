@@ -443,11 +443,13 @@ def plan_payload(
             if row is not best
         ][: max(0, int(limit or 1) - 1)]
         payload["blocked"] = blocked
-    if time_why is not None and time_why["code"] == "TIME_WINDOW_UNRESOLVED":
+    if any(
+        (why or {}).get("code") == "TIME_WINDOW_UNRESOLVED" for why in (time_why, faithfulness_why)
+    ):
         # Offer no runnable draft, as ask and the REPL refuse to run one: without
         # the question's window it answers a different question.
         for row in [payload["best"], *payload.get("alternatives", []), *blocked]:
-            row.pop("query_ir")
+            row.pop("query_ir", None)
     if detail_level == "debug":
         payload["compose_hints"] = compose_hints(intent_ir)
     if detail_level == "best":

@@ -51,13 +51,12 @@ from ._base import (
     _said_name,
     _singular,
     _tied_top,
-    _time_bounds_from_text,
     _time_window,
     _tokens,
 )
 from .generators import _target_focus_text
 from .intent_ir import IntentIR
-from .time_reference import time_policy_context
+from .time_reference import time_policy_context, time_timezone
 from .visibility import visible_dimensions, visible_object_ids, visible_value_domains
 
 
@@ -516,11 +515,16 @@ def intent_faithfulness_why(
                 )
             )
 
+    role_window_why = _role_window_why(runtime, text, query)
+    if role_window_why is not None:
+        return role_window_why
     caller_time = (partial_query or {}).get("time")
     if isinstance(caller_time, dict) and any(
         caller_time.get(key) for key in ("start", "end", "range")
     ):
-        gaps.extend(_caller_window_gaps(runtime, text, query))
+        # Preserve existing caller-window holds. The role check above can only add holds;
+        # correcting automatic dates must not admit a previously held explicit interval.
+        gaps.extend(_caller_window_gaps(runtime, text, query, timezone="UTC"))
     else:
         gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
@@ -728,7 +732,11 @@ def _is_prior_period_offset(
 def _time_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
     """The draft doesn't carry the window the question names, or carries another one."""
 
-    expected = _time_bounds_from_text(text)
+    expected = _time_window(
+        text,
+        policy_context=query.get("policy_context"),
+        timezone=time_timezone(str(_time_block(query).get("temporal_role") or ""), runtime=runtime),
+    ).bounds
     if not expected:
         return []
     if _is_prior_period_offset(runtime, query, [expected]):
@@ -2605,7 +2613,14 @@ def _consumed_spans(
     spans: list[tuple[int, int]] = []
     time = _time_block(query)
     if any(time.get(key) for key in ("start", "end", "range")):
-        spans.extend(_window_spans(lowered, time, query.get("policy_context")))
+        spans.extend(
+            _window_spans(
+                lowered,
+                time,
+                query.get("policy_context"),
+                timezone=time_timezone(str(time.get("temporal_role") or ""), runtime=runtime),
+            )
+        )
     normal = [_singular(_TERM_SYNONYMS.get(word, word)) for word, _start, _end in tokens]
     referenced = set(_referenced_ids(query))
     calendar_id = str(time.get("calendar_id") or "default")
@@ -2761,6 +2776,8 @@ _MIDNIGHT_RE = re.compile(r"(?:[t ]00:00(?::00(?:\.0+)?)?(?:z|[+-]00:?00)?)?")
 def _question_time(
     lowered: str,
     policy_context: dict[str, Any] | None = None,
+    *,
+    timezone: str | None = None,
 ) -> tuple[list[tuple[tuple[int, int], dict[str, Any]]], list[tuple[int, int]]]:
     """The windows plan reads from the question, and the other spans it reads as time.
 
@@ -2786,7 +2803,7 @@ def _question_time(
             (span, {"start": f"{year:04d}-01-01", "end": f"{year + 1:04d}-01-01"})
             for span, year in years
         ], []
-    read = _time_window(lowered, policy_context=policy_context)
+    read = _time_window(lowered, policy_context=policy_context, timezone=timezone)
     windows = list(read.windows)
     others: list[tuple[int, int]] = []
     for low, high in read.spans:
@@ -2807,7 +2824,10 @@ def _question_time(
 
 
 def _window_days(
-    bounds: dict[str, Any], policy_context: dict[str, Any] | None = None
+    bounds: dict[str, Any],
+    policy_context: dict[str, Any] | None = None,
+    *,
+    timezone: str = "UTC",
 ) -> tuple[date | None, date | None] | None:
     """The first day a window covers and the first day after it, or None where unreadable.
 
@@ -2818,9 +2838,11 @@ def _window_days(
     if bounds.get("range"):
         try:
             bounds = _relative_range_bounds(
-                bounds["range"], policy_context=time_policy_context(policy_context)
+                bounds["range"],
+                policy_context=time_policy_context(policy_context),
+                timezone=timezone,
             )
-        except SemanticLayerError:
+        except (SemanticLayerError, ValueError, OverflowError):
             return None
     days: list[date | None] = []
     for key in ("start", "end"):
@@ -2844,6 +2866,8 @@ def _window_agrees(
     windows: list[tuple[tuple[int, int], dict[str, Any]]],
     time: dict[str, Any],
     policy_context: dict[str, Any] | None = None,
+    *,
+    timezone: str = "UTC",
 ) -> bool:
     """Whether the draft's window is the one the question's date phrases state.
 
@@ -2855,11 +2879,11 @@ def _window_agrees(
 
     if not windows:
         return True
-    carried = _window_days(time, policy_context)
+    carried = _window_days(time, policy_context, timezone=timezone)
     starts: list[date] = []
     ends: list[date] = []
     for _span, bounds in windows:
-        asked = _window_days(bounds, policy_context)
+        asked = _window_days(bounds, policy_context, timezone=timezone)
         if asked is None or asked[0] is None or asked[1] is None:
             return False
         starts.append(asked[0])
@@ -2870,7 +2894,11 @@ def _window_agrees(
 
 
 def _window_spans(
-    lowered: str, time: dict[str, Any], policy_context: dict[str, Any] | None = None
+    lowered: str,
+    time: dict[str, Any],
+    policy_context: dict[str, Any] | None = None,
+    *,
+    timezone: str = "UTC",
 ) -> list[tuple[int, int]]:
     """The spans of the question a window in the draft's ``query.time`` consumes.
 
@@ -2881,20 +2909,23 @@ def _window_spans(
     refused rather than matched to the window by value.
     """
 
-    windows, others = _question_time(lowered, policy_context)
-    if not _window_agrees(windows, time, policy_context):
+    windows, others = _question_time(lowered, policy_context, timezone=timezone)
+    if not _window_agrees(windows, time, policy_context, timezone=timezone):
         return []
     return [span for span, _bounds in windows] + others
 
 
-def _caller_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
+def _caller_window_gaps(
+    runtime: Any, text: str, query: dict[str, Any], *, timezone: str | None = None
+) -> list[CoverageGap]:
     """The window a caller passed is not the one the question's date phrases state."""
 
     lowered = text.lower()
     context = query.get("policy_context")
-    windows, _others = _question_time(lowered, context)
     time = _time_block(query)
-    if _window_agrees(windows, time, context) or _is_prior_period_offset(
+    timezone = timezone or time_timezone(str(time.get("temporal_role") or ""), runtime=runtime)
+    windows, _others = _question_time(lowered, context, timezone=timezone)
+    if _window_agrees(windows, time, context, timezone=timezone) or _is_prior_period_offset(
         runtime, query, [bounds for _span, bounds in windows]
     ):
         return []
@@ -2914,6 +2945,32 @@ def _caller_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[
             },
         )
     ]
+
+
+def _role_window_why(runtime: Any, text: str, query: dict[str, Any]) -> dict[str, Any] | None:
+    """Every draft must agree with the question's window in its execution role's zone."""
+
+    time = _time_block(query)
+    timezone = time_timezone(str(time.get("temporal_role") or ""), runtime=runtime)
+    if not _time_window(text, query.get("policy_context"), timezone=timezone).bounds:
+        # Unresolved and competing windows keep their existing clarification path.
+        return None
+    gaps = _caller_window_gaps(runtime, text, query)
+    if not gaps:
+        return None
+    why = _coverage_why(gaps)
+    assert why is not None
+    return {
+        **why,
+        "code": "TIME_WINDOW_UNRESOLVED",
+        "message": "The drafted window differs from the question's window in the temporal role's zone.",
+        "details": {
+            **why["details"],
+            "path": "time",
+            "timezone": timezone,
+            "unresolved_phrases": [gap.clause for gap in gaps],
+        },
+    }
 
 
 def _draft_numbers(query: dict[str, Any]) -> tuple[set[str], set[str]]:

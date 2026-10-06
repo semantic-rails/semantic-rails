@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import date
+from dataclasses import replace
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
 import duckdb
 import pytest
 
+from semantic_rails.ast import normalize_query
 from semantic_rails.planner import plan_payload
 from semantic_rails.planner._base import _time_window
 from semantic_rails.planner.faithfulness import _window_agrees
@@ -120,6 +122,237 @@ def wall_clock(monkeypatch: pytest.MonkeyPatch) -> None:
             return cls(2031, 2, 12)
 
     monkeypatch.setattr("semantic_rails.planner._base.date", MachineDate)
+
+    class MachineDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None) -> datetime:
+            return cls(2031, 2, 12, 1, tzinfo=UTC)
+
+    monkeypatch.setattr("semantic_rails.planner._base.datetime", MachineDatetime)
+    monkeypatch.setattr("semantic_rails.ast.datetime", MachineDatetime)
+
+
+@pytest.fixture()
+def local_subscriptions(subscriptions: Runtime) -> Runtime:
+    subscriptions._config = replace(
+        subscriptions._config,
+        temporal_roles=[
+            replace(role, timezone="America/New_York")
+            for role in subscriptions._config.temporal_roles
+        ],
+    )
+    with duckdb.connect(subscriptions.db_path) as connection:
+        connection.execute("UPDATE events SET occurred_at = occurred_at - INTERVAL 1 DAY")
+    return subscriptions
+
+
+def test_today_executes_on_the_roles_local_date(local_subscriptions: Runtime) -> None:
+    context = {"now": "2026-10-05T01:00:00Z"}
+    plan = plan_payload(
+        local_subscriptions,
+        intent="new accounts today",
+        partial_query={"policy_context": context},
+    )
+    assert plan["status"] == "ok", plan.get("why")
+    query = plan["best"]["query_ir"]
+    assert (query["time"]["start"], query["time"]["end"]) == ("2026-10-04", "2026-10-05")
+    rows = local_subscriptions.query(query)["rows"]
+    with duckdb.connect(local_subscriptions.db_path, read_only=True) as connection:
+        gold = connection.execute(
+            "SELECT COUNT(DISTINCT event_id) FROM events WHERE kind = 'signup' "
+            "AND occurred_at >= DATE '2026-10-04' AND occurred_at < DATE '2026-10-05'"
+        ).fetchone()[0]
+    assert gold == 2
+    assert sum(row[query["select"][0]["as"]] for row in rows) == gold
+
+
+@pytest.mark.parametrize(
+    ("phrase", "now", "start", "end"),
+    [
+        ("today", "2026-10-05T01:00:00Z", "2026-10-04", "2026-10-05"),
+        ("yesterday", "2026-10-05T01:00:00Z", "2026-10-03", "2026-10-04"),
+        ("this week", "2026-10-05T01:00:00Z", "2026-09-28", "2026-10-05"),
+        ("this month", "2026-11-01T02:00:00Z", "2026-10-01", "2026-11-01"),
+        ("this quarter", "2026-10-01T02:00:00Z", "2026-07-01", "2026-10-01"),
+        ("this year", "2027-01-01T02:00:00Z", "2026-01-01", "2027-01-01"),
+        ("today", "2026-10-05T01:00:00", "2026-10-05", "2026-10-06"),
+        ("today", "2026-10-05", "2026-10-05", "2026-10-06"),
+    ],
+)
+def test_orders_windows_use_the_roles_zone(runtime_factory, phrase, now, start, end) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    runtime._config = replace(
+        runtime._config,
+        temporal_roles=[
+            replace(role, timezone="America/New_York") for role in runtime._config.temporal_roles
+        ],
+    )
+    plan = plan_payload(
+        runtime, intent=f"orders {phrase}", partial_query={"policy_context": {"now": now}}
+    )
+    assert plan["status"] == "ok", plan.get("why")
+    time = normalize_query(
+        {**plan["best"]["query_ir"], "policy_context": {"now": now}}, config=runtime._config
+    ).time
+    assert (time.start, time.end) == (start, end)
+
+
+def test_default_instant_is_converted_to_the_roles_zone(
+    local_subscriptions: Runtime, wall_clock: None
+) -> None:
+    plan = plan_payload(local_subscriptions, intent="new accounts today")
+    assert plan["status"] == "ok", plan.get("why")
+    time = plan["best"]["query_ir"]["time"]
+    assert (time["start"], time["end"]) == ("2031-02-11", "2031-02-12")
+
+
+def test_before_role_selection_uses_the_package_default_zone(
+    local_subscriptions: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from semantic_rails.planner import _base
+
+    snapshot = local_subscriptions._snapshot
+    local_subscriptions._snapshot = replace(
+        snapshot,
+        _normalized={**snapshot.normalized, "defaults": {"time": {"timezone": "America/New_York"}}},
+    )
+    dates = []
+    resolve = _base._resolved_time_window
+
+    def record_date(text: str, today: date):
+        dates.append(today)
+        return resolve(text, today)
+
+    monkeypatch.setattr(_base, "_resolved_time_window", record_date)
+    parsed = parse_intent(
+        local_subscriptions, "new accounts today", policy_context={"now": "2026-10-05T01:00:00Z"}
+    )
+    assert parsed.time["start"] == "2026-10-04"
+    assert set(dates) == {date(2026, 10, 4)}
+
+
+def test_the_cache_tracks_local_midnight_within_one_utc_day() -> None:
+    for now, expected in [
+        ("2026-10-05T03:59:00Z", "2026-10-04"),
+        ("2026-10-05T04:01:00Z", "2026-10-05"),
+    ]:
+        assert (
+            _time_window("today", {"now": now}, timezone="America/New_York").bounds["start"]
+            == expected
+        )
+        assert _time_window("today", {"now": now}, timezone="UTC").bounds["start"] == "2026-10-05"
+
+
+def test_relative_and_absolute_windows_agree_in_the_roles_zone() -> None:
+    windows = [((0, 9), {"range": {"last": {"unit": "day", "value": 1}}})]
+    context = {"now": "2026-10-05T01:00:00Z"}
+    assert _window_agrees(
+        windows, {"start": "2026-10-03", "end": "2026-10-04"}, context, timezone="America/New_York"
+    )
+    assert not _window_agrees(
+        windows, {"start": "2026-10-04", "end": "2026-10-05"}, context, timezone="America/New_York"
+    )
+
+
+@pytest.mark.parametrize("caller_window", [False, True])
+def test_a_window_resolved_in_utc_is_held_for_a_local_role(
+    local_subscriptions: Runtime, monkeypatch: pytest.MonkeyPatch, caller_window: bool
+) -> None:
+    context = {"now": "2026-10-05T01:00:00Z"}
+    result = compose(local_subscriptions, "new accounts today", policy_context=context)
+    wrong_time = {**result.draft.query["time"], "start": "2026-10-05", "end": "2026-10-06"}
+    wrong = {**result.draft.query, "time": wrong_time}
+    monkeypatch.setattr(
+        "semantic_rails.planner.plan.compose",
+        lambda *_args, **_kwargs: replace(result, draft=replace(result.draft, query=wrong)),
+    )
+    partial = {"policy_context": context, **({"time": wrong_time} if caller_window else {})}
+    plan = plan_payload(local_subscriptions, intent="new accounts today", partial_query=partial)
+    assert plan["status"] == "low_confidence"
+    assert plan["why"]["code"] == "TIME_WINDOW_UNRESOLVED", plan.get("why")
+    assert plan["why"]["details"]["unresolved_phrases"] == ["today"]
+    assert not plan["next"].get("ready_for")
+    assert not (plan.get("best") or {}).get("query_ir")
+
+
+def test_a_previously_held_explicit_local_window_stays_held(local_subscriptions: Runtime) -> None:
+    plan = plan_payload(
+        local_subscriptions,
+        intent="new accounts today",
+        partial_query={
+            "policy_context": {"now": "2026-10-05T01:00:00Z"},
+            "time": {"start": "2026-10-04", "end": "2026-10-05"},
+        },
+    )
+    assert plan["status"] == "low_confidence"
+    assert plan["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    assert not plan["next"].get("ready_for")
+
+
+def test_local_fallback_uses_the_same_clock(
+    local_subscriptions: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from semantic_rails.planner.orchestrator import CompositionResult
+
+    def without_primary(runtime: Runtime, intent: str) -> Any:
+        return CompositionResult(parse_intent(runtime, intent), draft=None)
+
+    monkeypatch.setattr("semantic_rails.planner.plan.compose", without_primary)
+    plan = plan_payload(
+        local_subscriptions,
+        intent="new accounts today",
+        partial_query={"policy_context": {"now": "2026-10-05T01:00:00Z"}},
+    )
+    assert plan["status"] == "ok", plan.get("why")
+    time = plan["best"]["query_ir"]["time"]
+    assert (time["start"], time["end"]) == ("2026-10-04", "2026-10-05")
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "2026-01-01 to now",
+        "January 2026 through now",
+        "2026-01-01 to right now",
+        "January 2026 through currently",
+        "2026-01-01 to as of now",
+        "now to 2026-01-01",
+    ],
+)
+def test_a_range_ending_in_now_is_held_in_full(runtime_factory, phrase: str) -> None:
+    window = _time_window(f"orders {phrase}", policy_context=NOW)
+    assert window.bounds == {}
+    assert window.windows == ()
+    assert window.unresolved == (phrase.lower(),)
+    plan = plan_payload(
+        runtime_factory("jaffle_shop"),
+        intent=f"orders {phrase}",
+        partial_query={"policy_context": NOW},
+    )
+    assert plan["status"] == "low_confidence"
+    assert plan["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
+    assert plan["why"]["details"]["unresolved_phrases"] == [phrase.lower()]
+    assert not (plan.get("best") or {}).get("query_ir")
+
+
+@pytest.mark.parametrize("phrase", ["last 10000 years", "last 9999999999 days"])
+def test_unrepresentable_as_of_bounds_are_held(runtime_factory, phrase: str) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    plan = plan_payload(
+        runtime, intent=f"revenue end of {phrase}", partial_query={"policy_context": NOW}
+    )
+    assert plan["status"] == "low_confidence"
+    assert plan["why"]["code"] == "TIME_WINDOW_UNRESOLVED"
+    assert plan["why"]["details"]["unresolved_phrases"] == [f"end of {phrase}"]
+    assert not (plan.get("best") or {}).get("query_ir")
+    cue = _time_window(f"revenue end of {phrase}", policy_context=NOW).as_of[0]
+    assert cue.bounds == {}
+    # Ordinary relative intervals also return a held plan rather than escaping as an error.
+    ordinary = plan_payload(
+        runtime, intent=f"revenue {phrase}", partial_query={"policy_context": NOW}
+    )
+    assert ordinary["status"] != "ok"
+    assert not ordinary["next"].get("ready_for")
 
 
 @pytest.mark.parametrize(
