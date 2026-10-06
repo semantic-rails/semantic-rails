@@ -240,6 +240,16 @@ A draft that validates can still leave out part of the question. `plan` returns
   has two words or more and holds every measure the question names ("completed revenue"
   holds "revenue") (`named_metric_unrealized`). `plan` drafts that metric itself, and the
   metric's own name isn't read again as a window, a ranking or a value;
+- answers with a measure, or the metric that is its plain aggregate, while a metric that
+  reads the same measure through a filter fits the question (`governed_metric_unrealized`,
+  the metrics in `expected.metrics`). It fits when the question's subject phrase holds every
+  word of its label (with or without a parenthetical), an alias or its id, in any order and
+  with plurals as singulars, or when the measure is a [building
+  block](PACKAGE_AUTHORING.md#building-block-measures). A one-measure draft answers with the
+  metric itself when it aggregates the measure the same way, the phrase names no other such
+  metric as fully nor the measure more fully, and the draft neither filters nor groups by what
+  the metric's filter reads ("demo stores" keeps the measure, held). A measure or metric the
+  caller's `partial_query` names is never held for this;
 - has no filter on a dimension that a "where <dimension> is <value>" clause names, even
   when the catalog declares no values for it (`dimension_filter_unrealized`);
 - carries no time window, or a different one, where the question names one

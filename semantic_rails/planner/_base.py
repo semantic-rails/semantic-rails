@@ -431,12 +431,12 @@ def _governed_target(config: Any, focus: str, query: dict[str, Any]) -> Any | No
     """The metric a one-select draft over a measure answers with instead.
 
     The select reads a measure, or the metric that is its plain aggregate. A metric that
-    aggregates that measure the same way through a filter governs it ("Active workspaces" over
-    "Active workspaces (all classes)"). It is the answer when the question's target phrase
-    ``focus`` names it (``_said_name``), and names no other such metric as fully nor the
-    measure more fully; or when the measure is a building block and this metric alone governs
-    it. Never when the draft filters or groups by something its filter reads: "internal
-    workspaces" asks for rows the governed metric leaves out.
+    aggregates that measure the same way through a filter governs it ("Active stores" over
+    "Active stores (all kinds)"). It is the answer when the question's target phrase ``focus``
+    names it (``_said_name``), and names no other such metric as fully nor the measure more
+    fully; or when the measure is a building block and this metric alone governs it. Never
+    when the draft filters or groups by something its filter reads: "demo stores" asks for
+    rows the governed metric leaves out.
     """
 
     select = list(query.get("select") or [])
@@ -452,25 +452,24 @@ def _governed_target(config: Any, focus: str, query: dict[str, Any]) -> Any | No
     if measure is None:
         return None
     aggregation = aggregation or expression.get("aggregation") or measure.default_aggregation
+    governing = governing_metrics(config, measure.id)
     candidates = {
         metric.id: (metric, governed[2])
-        for metric in governing_metrics(config, measure.id)
+        for metric in governing
         if (governed := whole_aggregate(metric)) is not None
         and governed[0] == measure.id
         and (governed[1] or measure.default_aggregation) == aggregation
     }
-    named = {
-        key: words for key, (row, _) in candidates.items() if (words := _said_name(row, focus))
-    }
+    named = {metric.id: words for metric in governing if (words := _said_name(metric, focus))}
     widest = [key for key in named if all(words <= named[key] for words in named.values())]
     if named:
         chosen = widest[0] if len(widest) == 1 else ""
-    elif measure.id in building_block_measures(config) and len(candidates) == 1:
-        chosen = next(iter(candidates))
+    elif measure.id in building_block_measures(config) and len(governing) == 1:
+        chosen = governing[0].id
     else:
         chosen = ""
     asked = _said_name(measure, focus) | (_said_name(plain, focus) if plain else frozenset())
-    if not chosen or not asked <= named.get(chosen, frozenset()):
+    if chosen not in candidates or not asked <= named.get(chosen, frozenset()):
         return None
     metric, narrowing = candidates[chosen]
     try:
