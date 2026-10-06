@@ -1486,6 +1486,33 @@ condition with `field`, `op`, and `value`, or an `expression:` containing a
 `metric_predicate`. All items are combined with AND. Other filter combinators,
 including `any:`, are unsupported.
 
+### Building-block measures
+
+A filtered metric is often the governed form of a measure that also counts rows the
+package leaves out: `Active stores` keeps the retail stores of an `Active stores (all kinds)`
+count. `plan` answers a question that names such a metric with the metric, and holds a draft
+that reads the measure instead (see `governed_metric_unrealized` in
+[MCP_INTERFACE.md](MCP_INTERFACE.md)). To keep the measure out of agent search altogether,
+author it with `publish: false`:
+
+```yaml
+measures:
+  active_stores_all_kinds:
+    label: Active stores (all kinds)
+    kind: entity_count
+    entity_key: store_id
+    value_type: count
+    publish: false        # answered through the metrics that filter it
+```
+
+A measure with `publish: false` that a metric reads through a filter (`filter:` on an
+aggregate, or `where:` or `predicates:` on a scoped aggregate), and that no metric aggregates
+whole, is a building block. `discover` doesn't list it. `plan` drafts the metric when it is the
+only one that filters the measure or the question names it, and otherwise holds a draft that
+reads the measure. `inspect` and Query IR still take the measure by id. Without
+`schema_strict`, `publish: false` also keeps the loader from publishing the measure as a
+metric of its own name.
+
 ### Long-tail kind — `derived` (expression AST)
 
 For arbitrary formulas, `kind: derived` keeps the existing AST authoring path:

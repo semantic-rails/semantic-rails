@@ -35,6 +35,7 @@ from .compiler import (
     bind_query,
     query_route_rows,
 )
+from .config_parts.measure_governance import building_block_measures
 from .diagnostics import relationship_contract_payload
 from .errors import SemanticLayerError
 from .expressions import (
@@ -2092,8 +2093,10 @@ def discover_payload(
         _catalog_token_doc_freq(config, search_index=search_index) if enforce_scope else None
     )
 
+    # A building block is offered through the metrics that filter it, never on its own.
+    building_blocks = building_block_measures(config)
     for measure in config.measures:
-        if measure.id in hidden_ids:
+        if measure.id in hidden_ids or measure.id in building_blocks:
             continue
         availability = _availability_for_object(config, root_entity, measure.id, "measure")
         row = {
