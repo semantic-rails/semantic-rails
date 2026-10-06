@@ -300,6 +300,17 @@ def guard_empty_groups(
                     joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
                 found = SqlBinary(SqlIdentifier(parts=[name, "seen"]), ">", SqlLiteral(0))
                 seen = SqlBinary(seen, "OR", found)
+            if alias in observed_buckets:
+                # A retained leaf group proves rows existed before its authored filter.
+                # A missing leaf beside another fact has NULL here and proves nothing.
+                if aggregation not in _COUNTING and alias not in rows:
+                    raise _unsettled_error({"measures": [alias], "missing": "row_count"})
+                marker = (
+                    value
+                    if aggregation in _COUNTING
+                    else SqlIdentifier(parts=["base", rows[alias]])
+                )
+                seen = SqlBinary(seen, "OR", SqlBinary(marker, ">=", SqlLiteral(0)))
             if scope is not None:
                 if scope.bounded and not dataset:
                     seen = SqlBinary(
@@ -328,17 +339,6 @@ def guard_empty_groups(
                         ctes.append(SqlCte(name=name, query=coverage_select(scope, dialect)))
                         joins.append(SqlJoin("CROSS", SqlTableRef(name=name)))
                     seen = SqlBinary(seen, "AND", _loaded_bucket(time_key, name))
-            if alias in observed_buckets:
-                # A retained leaf group proves rows existed before its authored filter.
-                # A missing leaf beside another fact has NULL here and proves nothing.
-                if aggregation not in _COUNTING and alias not in rows:
-                    raise _unsettled_error({"measures": [alias], "missing": "row_count"})
-                marker = (
-                    value
-                    if aggregation in _COUNTING
-                    else SqlIdentifier(parts=["base", rows[alias]])
-                )
-                seen = SqlBinary(seen, "OR", SqlBinary(marker, ">=", SqlLiteral(0)))
             if (
                 aggregation not in _COUNTING
                 and not earlier_settlement_applies()

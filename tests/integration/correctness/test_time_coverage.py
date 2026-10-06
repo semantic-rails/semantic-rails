@@ -336,7 +336,10 @@ def test_filled_monthly_answers_match_with_and_without_rollups(request, backend_
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize("hours", [-1, 1], ids=["past", "future"])
-def test_aware_coverage_cutoff_ignores_the_session_zone(changed_runtime, backend_name, hours):
+@pytest.mark.parametrize("expression", [REVENUE, ORDERS], ids=["sum", "count"])
+def test_aware_coverage_cutoff_ignores_the_session_zone(
+    changed_runtime, backend_name, hours, expression
+):
     rt = changed_runtime(
         "tz_implicit",
         "INSERT INTO orders (order_id, ordered_at_tz, amount) VALUES "
@@ -350,16 +353,13 @@ def test_aware_coverage_cutoff_ignores_the_session_zone(changed_runtime, backend
         "date_trunc('day', ordered_at_tz AT TIME ZONE 'UTC') + INTERVAL '1 day' "
         "FROM orders WHERE order_id = 999",
     )[0]
-    # An authored filter retains the explicitly observed day, even for a future source row.
     store_b = {
         "kind": "aggregate",
-        **REVENUE,
+        **expression,
         "filter": {"all": [{"field": STORE, "op": "=", "value": "b"}]},
     }
     retained = rt.query(_ask("day", _item(store_b, "v"), start=str(start), end=str(end), fill=True))
-    assert [r["v"] for r in typed_rows(retained)] == [0]
-    # A query filter still uses loaded coverage to settle its missing day.
-    query = _ask("day", _item(REVENUE, "v"), start=str(start), end=str(end), fill=True)
+    query = _ask("day", _item(expression, "v"), start=str(start), end=str(end), fill=True)
     query["where"] = [{"field": STORE, "op": "=", "value": "b"}]
     result = rt.query(query)
     gold = _rows(
@@ -367,6 +367,7 @@ def test_aware_coverage_cutoff_ignores_the_session_zone(changed_runtime, backend
         "SELECT CASE WHEN ordered_at_tz <= CURRENT_TIMESTAMP THEN 0 END "
         "FROM orders WHERE order_id = 999",
     )
+    assert [r["v"] for r in typed_rows(retained)] == [r[0] for r in gold]
     assert [r["v"] for r in typed_rows(result)] == [r[0] for r in gold]
 
 

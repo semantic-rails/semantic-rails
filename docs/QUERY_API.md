@@ -1242,6 +1242,7 @@ The response `warnings` array can carry these non-error signals:
 - `FILTER_VALUE_NOT_FOUND` — fires on `execute` under `observation_scope: "dataset"` (the
   default) when a string `=` or `IN` `where` value matches no row of its dimension that the
   caller can read: there a sum reads `0`, which a misspelled value shouldn't produce silently.
+  Aggregate-filter literals of a retained additive series are checked in both observation scopes.
   One warning per query; `details.filters` lists each `dimension`, `value` and the closest
   `suggestion`.
 - `FILTERED_SERIES_BUCKETS_DROPPED` — an unsupported filtered additive series omits

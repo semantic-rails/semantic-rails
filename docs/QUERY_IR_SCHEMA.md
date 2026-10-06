@@ -1020,8 +1020,9 @@ month that mixes NULL and known amounts sums the known ones. A conditional sum
 whose rows all fail it has none and reads `0`, and one whose matching rows all have a NULL
 amount reads `NULL`. Filled or not, a group reads the same.
 For a plain additive time series with an authored dimension filter, the source rows retain
-every observed bucket before that filter: a week with rows but no matches reads `0`, in both
-observation scopes, as its window total does. String `=` and `IN` literals in its aggregate
+every observed bucket before that filter: a week with rows but no matches reads `0` inside
+the loaded range in both observation scopes; a bucket after the last loaded timestamp stays
+`NULL` under the coverage rules below. String `=` and `IN` literals in its aggregate
 filter use the same misspelling guard in both scopes: `FILTER_VALUE_NOT_FOUND` names values
 absent from their dimension, and `FILTER_VALUE_UNVERIFIED` names values whose existence
 cannot be checked under the caller's policies. Query `where` filters and policy row filters
