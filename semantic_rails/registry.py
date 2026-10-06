@@ -13,12 +13,9 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from .catalog_search import normalize_search_value as _norm
 from .errors import SemanticLayerError
 from .schema import PackageConfig
-
-
-def _norm(value: str) -> str:
-    return "".join(ch for ch in str(value).lower() if ch.isalnum())
 
 
 @dataclass(frozen=True)

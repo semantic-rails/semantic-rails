@@ -7,7 +7,7 @@ installed and the REPL runs in a terminal.
 
 from __future__ import annotations
 
-from ..cli.common import _slug
+from ..naming import slug
 from .backend import Cancelled as _AuthoringCancelled
 from .backend import current_backend
 
@@ -41,7 +41,7 @@ def _author_confirm(label: str, *, default: bool) -> bool:
 
 def _author_slug_prompt(label: str, default: str) -> str:
     raw = _author_prompt(label, default)
-    value = _slug(raw, fallback=default)
+    value = slug(raw, fallback=default)
     if value != raw:
         print(f"  normalized `{raw}` -> `{value}`")
     return value
