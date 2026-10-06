@@ -21,11 +21,17 @@ to the IR consumed internally by patterns.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from ..ast import every_filter, is_child_group, rewrite_select_shorthand
+from ..ast import (
+    _time_spec_from_payload,
+    every_filter,
+    is_child_group,
+    rewrite_select_shorthand,
+)
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
@@ -60,6 +66,7 @@ from .faithfulness import (
     _ranking_request,
     intent_faithfulness_why,
     intent_subject_why,
+    named_subject_why,
     unconsumed_catalog_words,
     unconsumed_terms,
     unconsumed_unknown_words,
@@ -68,8 +75,10 @@ from .faithfulness import (
 from .generators import _grouping_term_matches, blocked_object_not_found, fallback_drafts
 from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
+from .time_reference import with_time_reference
 from .visibility import (
-    require_visible_dimensions,
+    caller_hidden_ids,
+    require_visible_objects,
     visible_dimensions,
     visible_object_ids,
     visible_value_domains,
@@ -80,8 +89,37 @@ _VERSION = 1
 
 
 # ---------------------------------------------------------------------------
+_QUOTED = r"\"[^\"]*\"|“[^”]*”|(?<!\w)['‘].*?['’](?!\w)"
+_CONTRACTION = r"\b(?P<word>[^\W_]+?)(?P<suffix>n['’]t|['’](?:s|re|ve|ll|d))\b"
+_IS = frozenset({"what", "who", "where", "when", "how", "it", "that", "there", "here"})
+_EXPANDED = {"'s": " is", "'re": " are", "'ve": " have", "'ll": " will", "'d": " would"}
+
+
+def _normalize_question(text: str, declared: Iterable[str] = ()) -> str:
+    """Expand grammatical contractions once, before every planning gate.
+
+    Quoted text and a declared phrase spelled with an apostrophe stay as typed. Only
+    a wh-word or pronoun reads ``'s`` as "is"; any other ``'s`` is left alone.
+    """
+
+    phrases = sorted(declared, key=len, reverse=True)
+    kept = "|".join(re.sub(r"['’]", "['’]", re.escape(phrase)) for phrase in phrases) or "(?!)"
+
+    def expand(match: re.Match[str]) -> str:
+        word, suffix = match["word"], (match["suffix"] or "").lower().replace("’", "'")
+        if match["kept"] is not None or (suffix == "'s" and word.lower() not in _IS):
+            return match[0]
+        if suffix == "n't":
+            return {"ca": "can", "wo": "will", "sha": "shall"}.get(word.lower(), word) + " not"
+        return word + _EXPANDED[suffix]
+
+    pattern = rf"(?P<kept>{_QUOTED}|(?<!\w)(?:{kept})(?!\w))|{_CONTRACTION}"
+    return re.sub(pattern, expand, text, flags=re.IGNORECASE)
+
+
 @runtime_request_scope
 @with_dimension_visibility
+@with_time_reference
 def plan_payload(
     runtime: Any,
     *,
@@ -113,10 +151,12 @@ def plan_payload(
     # the discover/plan/validate surface, not the planner composition
     # pipeline itself.
     from ..metadata_parts.relevance import (  # noqa: WPS433
+        _apostrophe_names,
         _catalog_token_index,
         _intent_passes_grounding_floor,
         _intent_passes_relevance_floor,
         _low_relevance_block,
+        _visible_catalog,
         _weak_grounding_block,
         _weak_grounding_tokens,
     )
@@ -140,7 +180,8 @@ def plan_payload(
         )
 
     partial_query = _checked_partial_query(partial_query)
-    intent_str = intent.strip()
+    catalog_config = _visible_catalog(runtime._config, caller_hidden_ids(runtime._config))
+    intent = intent_str = _normalize_question(intent.strip(), _apostrophe_names(catalog_config))
     detail_level = str(detail or "best").lower()
     if detail_level not in {"query", "best", "full", "debug"}:
         detail_level = "best"
@@ -154,18 +195,12 @@ def plan_payload(
                 out_of_scope=scope_block_payload(intent_str, classification),
             )
             return _query_detail_payload(payload) if detail_level == "query" else payload
-        dimensions = visible_dimensions(runtime._config)
-        catalog_config = runtime._config
-        search_index = None
-        if len(dimensions) == len(catalog_config.dimensions):
-            search_index = runtime._get_catalog_search_index()
-        else:
-            catalog_config = replace(
-                catalog_config,
-                dimensions=dimensions,
-                value_domains=visible_value_domains(catalog_config),
-            )
-        catalog_tokens = _catalog_token_index(catalog_config, search_index=search_index)
+        catalog_tokens = _catalog_token_index(
+            catalog_config,
+            search_index=(
+                runtime._get_catalog_search_index() if catalog_config is runtime._config else None
+            ),
+        )
         passes, overlap = _intent_passes_relevance_floor(intent_str, catalog_tokens)
         if not passes:
             sample = sorted(catalog_tokens)[:30]
@@ -193,12 +228,26 @@ def plan_payload(
             )
             return _query_detail_payload(payload) if detail_level == "query" else payload
 
+    collision_why = named_subject_why(runtime, intent_str, partial_query)
+    if collision_why is not None:
+        payload = {
+            "plan_version": _VERSION,
+            "intent": intent,
+            "intent_ir": parse_intent(runtime, intent).to_dict(),
+            "status": "needs_clarification",
+            "best": None,
+            "why": collision_why,
+            "next": {"action": "clarify"},
+        }
+        return _query_detail_payload(payload) if detail_level == "query" else payload
+
     validate_temporal_support(runtime._config, partial_query or {})
+    # compose and every fallback helper inherit the request's time reference.
     result = compose(runtime, intent)
     if result.draft is not None:
         validate_temporal_support(runtime._config, result.draft.query)
     intent_ir = result.intent_ir
-    require_visible_dimensions(runtime._config, {}, intent_ir.to_dict().get("grouping", []))
+    require_visible_objects(runtime._config, {}, intent_ir.to_dict().get("grouping", []))
     draft_rows: list[tuple[Any, str]] = []
     blocked: list[dict[str, Any]] = []
     primary_query_keys: set[str] = set()
@@ -311,6 +360,7 @@ def plan_payload(
     time_why = (
         atemporal_why
         or _unresolved_time_why(intent_str, partial_query)
+        or _unclocked_window_why(runtime._config, intent_str, best_draft.query, partial_query)
         or _start_dropped_why(
             best.get("start_dropped")
             or _pattern_dropped_start(intent_str, best_draft.query, partial_query)
@@ -414,8 +464,13 @@ def plan_payload(
                 reason["actual"] = f"why.details.fallback_slots.{slot}"
             payload["why"] = {**fallback_drift_why, "details": details}
     elif faithfulness_why is not None:
-        # One why, but an unresolved or shortened window stays visible.
-        payload["why"] = _with_time_gap(faithfulness_why, time_why)
+        # One why, but an unresolved or shortened window stays visible. A hold that returns
+        # no query leaves no rows to filter from a shortened window.
+        unrunnable = faithfulness_why["code"] == "TIME_WINDOW_UNRESOLVED"
+        dropped = (time_why or {}).get("code") == "TIME_WINDOW_START_DROPPED"
+        payload["why"] = _with_time_gap(
+            faithfulness_why, None if unrunnable and dropped else time_why
+        )
     elif time_why is not None:
         payload["why"] = time_why
     elif conversion_why is not None:
@@ -463,11 +518,21 @@ def plan_payload(
             if row is not best
         ][: max(0, int(limit or 1) - 1)]
         payload["blocked"] = blocked
-    if time_why is not None and time_why["code"] == "TIME_WINDOW_UNRESOLVED":
+    # Every returned query runs the window plan checked, without the caller's clock.
+    for row in [payload["best"], *payload.get("alternatives", []), *blocked]:
+        if "query_ir" in row:
+            clocked = _with_query_clock(runtime._config, row["query_ir"], partial_query)
+            if clocked is None:
+                row.pop("query_ir")
+            else:
+                row["query_ir"] = clocked
+    if any(
+        (why or {}).get("code") == "TIME_WINDOW_UNRESOLVED" for why in (time_why, faithfulness_why)
+    ):
         # Offer no runnable draft, as ask and the REPL refuse to run one: without
         # the question's window it answers a different question.
         for row in [payload["best"], *payload.get("alternatives", []), *blocked]:
-            row.pop("query_ir")
+            row.pop("query_ir", None)
     if detail_level == "debug":
         payload["compose_hints"] = compose_hints(intent_ir)
     if detail_level == "best":
@@ -568,7 +633,7 @@ def _planned_row(
     merged_draft = replace(
         draft, query=_merge_partial_query(runtime._config, fiscal_query, partial_query)
     )
-    require_visible_dimensions(
+    require_visible_objects(
         runtime._config,
         merged_draft.query,
         merged_draft.resolved,
@@ -2023,6 +2088,68 @@ def _start_dropped_why(start: Any) -> dict[str, Any] | None:
     }
 
 
+def _with_query_clock(
+    config: Any, query: dict[str, Any], partial_query: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """The query with a relative window as the dates the caller's clock gives it.
+
+    Query IR carries no ``policy_context`` (the merge drops it), so a returned ``time.range``
+    would run on the executing caller's clock. With ``policy_context.now`` supplied, the range
+    becomes the bounds execution computes from that clock in the role's zone. None when they
+    can't be computed.
+    """
+
+    context = (partial_query or {}).get("policy_context")
+    time = query.get("time")
+    if not (
+        isinstance(context, dict)
+        and context.get("now") not in (None, "")
+        and isinstance(time, dict)
+        and time.get("range")
+    ):
+        return query
+    try:
+        spec = _time_spec_from_payload(time, policy_context=context, config=config)
+    except (SemanticLayerError, ValueError, OverflowError):
+        return None
+    if spec is None or not spec.start or not spec.end:
+        return None
+    bounded = {key: value for key, value in time.items() if key != "range"}
+    return {**query, "time": {**bounded, "start": spec.start, "end": spec.end}}
+
+
+def _unclocked_window_why(
+    config: Any, intent: str, query: dict[str, Any], partial_query: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Hold a draft whose relative window can't take the supplied clock."""
+
+    if _with_query_clock(config, query, partial_query) is not None:
+        return None
+    lowered = intent.lower()
+    return {
+        "code": "TIME_WINDOW_UNRESOLVED",
+        "message": (
+            "The draft's relative window could not be bounded on policy_context.now, so plan "
+            "returns no query: run on another clock it would answer a different question."
+        ),
+        "details": {
+            "path": "time.range",
+            "unresolved_phrases": [
+                lowered[low:high].strip() for (low, high), _bounds in _time_window(intent).windows
+            ],
+        },
+        "recovery_hints": [
+            {
+                "kind": "provide_explicit_bounds",
+                "message": (
+                    "Pass query.time.start and query.time.end (end-exclusive) in the plan "
+                    "tool's query argument instead of a relative window."
+                ),
+            }
+        ],
+    }
+
+
 def _merge_partial_query(
     config: Any,
     draft_query: dict[str, Any],
@@ -2740,13 +2867,13 @@ def _unresolved_time_why(
         _SUPPORTED_WINDOW_FORMS,
     )
 
-    window = _time_window(intent)
+    window = _time_window(intent, policy_context=(partial_query or {}).get("policy_context"))
     phrases = list(window.unresolved)
     too_long = len(intent) > _MAX_TIME_TEXT
     if not phrases and not too_long:
         return None
     caller_time = (partial_query or {}).get("time")
-    if isinstance(caller_time, dict):
+    if isinstance(caller_time, dict) and not window.as_of:
         # An unread suffix may supply either missing endpoint. Only a
         # complete caller window can settle an overlong question's scope.
         complete = caller_time.get("range") or (caller_time.get("start") and caller_time.get("end"))

@@ -61,6 +61,15 @@ def with_dimension_visibility(operation: Callable[_P, _R]) -> Callable[_P, _R]:
     return wrapped
 
 
+def caller_hidden_ids(config: Any) -> frozenset[str] | None:
+    """The pinned caller's hidden object ids; ``None`` means visibility is uncertain."""
+
+    current = _visibility.get()
+    if current is not None and current.config is config:
+        return current.hidden_ids
+    return policies.diagnostic_hidden_object_ids(config, {})
+
+
 def visible_object_ids(
     config: Any,
     object_ids: Iterable[str],
@@ -70,12 +79,7 @@ def visible_object_ids(
     """Filter candidates before ranking or text; explicit uncertainty withholds all."""
 
     if isinstance(hidden_ids, EllipsisType):
-        current = _visibility.get()
-        hidden_ids = (
-            current.hidden_ids
-            if current is not None and current.config is config
-            else policies.diagnostic_hidden_object_ids(config, {})
-        )
+        hidden_ids = caller_hidden_ids(config)
     return _visible_object_ids(config, object_ids, hidden_ids=hidden_ids)
 
 
@@ -104,13 +108,24 @@ def visible_value_domains(config: Any) -> list[Any]:
     ]
 
 
-def require_visible_dimensions(
+def require_visible_objects(
     config: Any, query: dict[str, Any], resolved: list[dict[str, Any]]
 ) -> None:
     """Refuse a bypassing draft before its IR or diagnostics can be returned."""
 
-    visible_ids = {row.id for row in visible_dimensions(config)}
-    forbidden = {row.id for row in config.dimensions} - visible_ids
+    ids = [
+        row.id
+        for rows in (
+            config.entities,
+            config.dimensions,
+            config.temporal_roles,
+            config.relationships,
+            config.measures,
+            config.metric_recipes,
+        )
+        for row in rows
+    ]
+    forbidden = set(ids) - set(visible_object_ids(config, ids))
     if not forbidden:
         return
 
@@ -122,4 +137,4 @@ def require_visible_dimensions(
         references = set(collect_object_references(query, config))
     references.update(str(row["id"]) for row in resolved if row.get("id"))
     if forbidden & references:
-        raise SemanticLayerError("OBJECT_NOT_FOUND", "The requested dimension was not found.")
+        raise SemanticLayerError("OBJECT_NOT_FOUND", "The requested object was not found.")

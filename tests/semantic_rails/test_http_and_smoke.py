@@ -570,7 +570,7 @@ def test_metadata_endpoints_and_ui_smoke_path(runtime_factory, package_config_fa
             base + "/api/v1/plan", {"intent": "ordered vs delivered revenue by month"}
         )
         conversion_plan = _post(
-            base + "/api/v1/plan", {"intent": "session to order conversion rate"}
+            base + "/api/v1/plan", {"intent": "session to order conversion rate (7d)"}
         )
         segment_validated = _post(
             base + "/api/v1/segment-validate",
@@ -742,7 +742,9 @@ def test_valid_values_http_route_requires_explicit_live_lookup(runtime_factory):
             },
         )
 
-        assert default_payload["ok"] is True
+        assert default_payload["ok"] is False
+        assert default_payload["status"] == "needs_live_query"
+        assert "next_call" not in default_payload
         assert default_payload["source"] == "none"
         assert default_payload["values"] == []
         assert default_payload["value_source_type"] == "none"

@@ -587,7 +587,6 @@ def test_semantic_rails_derived_relations_count_as_hand_written(tmp_path, monkey
         "relation_ref": (view | {"relation_ref": "rollup"}, "", {}),
         "variants": (view | {"variants": {"daily": {}}}, "", {}),
         "relations": (view, "relations:\n  derived: {}\n", {}),
-        "aggregate_relations": (view, "aggregate_relations:\n  - id: rollup\n", {}),
         "relations_dir": (view, "", {"relations/derived.yml": "relation:\n  id: derived\n"}),
         "inline_model": (None, "models:\n  orders:\n    relation: jaffle_order\n", {}),
     }
@@ -614,7 +613,6 @@ def test_semantic_rails_derived_relations_count_as_hand_written(tmp_path, monkey
         "relation_ref": derived,
         "variants": derived,
         "relations": ["relation pipelines"],
-        "aggregate_relations": ["relation pipelines"],
         "relations_dir": ["relation pipelines"],
         "inline_model": derived,
     }

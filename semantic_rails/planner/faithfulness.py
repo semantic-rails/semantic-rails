@@ -16,8 +16,9 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ..ast import _relative_range_bounds, is_child_group
 from ..config_parts.measure_governance import (
@@ -43,20 +44,22 @@ from ._base import (
     _canonical_metric,
     _explicit_grain,
     _fiscal_calendar,
+    _name_matches,
     _named_metric,
     _names_time_axis,
     _object_by_id,
     _object_text,
     _requested_grouping_spans,
     _said_name,
+    _shared_subjects,
     _singular,
     _tied_top,
-    _time_bounds_from_text,
     _time_window,
     _tokens,
 )
 from .generators import _target_focus_text
 from .intent_ir import IntentIR
+from .time_reference import time_policy_context, time_timezone
 from .visibility import visible_dimensions, visible_object_ids, visible_value_domains
 
 
@@ -515,11 +518,19 @@ def intent_faithfulness_why(
                 )
             )
 
+    role_window_why = _role_window_why(runtime, text, query)
+    if role_window_why is not None:
+        return role_window_why
     caller_time = (partial_query or {}).get("time")
     if isinstance(caller_time, dict) and any(
         caller_time.get(key) for key in ("start", "end", "range")
     ):
-        gaps.extend(_caller_window_gaps(runtime, text, query))
+        # The window must agree in the planning zone. Existing holds read it in UTC, and the
+        # planning zone must not admit an explicit interval they held.
+        gaps.extend(
+            _caller_window_gaps(runtime, text, query)
+            or _caller_window_gaps(runtime, text, query, timezone="UTC")
+        )
     else:
         gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
@@ -650,6 +661,33 @@ def _coverage_why(gaps: list[CoverageGap]) -> dict[str, Any] | None:
     }
 
 
+def named_subject_why(
+    runtime: Any, question: str, partial_query: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    """A shared whole name cannot be settled by the ranking's label or score."""
+
+    rows = _shared_subjects(runtime._config, question)
+    if not rows or any(row.id in _projected_subject_ids(partial_query or {}) for row in rows):
+        return None
+    return _coverage_why(
+        [
+            CoverageGap(
+                kind="subject_ambiguous",
+                clause=_target_focus_text(question),
+                message="The question names more than one selectable subject.",
+                expected={"candidates": [row.id for row in rows], "candidate_count": len(rows)},
+                actual={},
+                recovery_hint={
+                    "kind": "name_one_subject",
+                    "message": "Ask again naming the one you mean: "
+                    + " or ".join(f"{row.label} ({row.id})" for row in rows)
+                    + ".",
+                },
+            )
+        ]
+    )
+
+
 def intent_subject_why(
     runtime: Any,
     *,
@@ -666,6 +704,9 @@ def intent_subject_why(
     """
 
     config, text = runtime._config, str(question or "")
+    collision = named_subject_why(runtime, text, partial_query)
+    if collision is not None:
+        return collision
     subjects = _projected_subject_ids(query)
     measure = bool(subjects) and subjects[0].startswith("measure.")
     terms = set(intent_ir.target_measure_terms)
@@ -727,7 +768,7 @@ def _is_prior_period_offset(
 def _time_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
     """The draft doesn't carry the window the question names, or carries another one."""
 
-    expected = _time_bounds_from_text(text)
+    expected = _time_window(text, policy_context=query.get("policy_context")).bounds
     if not expected:
         return []
     if _is_prior_period_offset(runtime, query, [expected]):
@@ -2452,7 +2493,9 @@ def _unconsumed_words(
         if str(getattr(row, "id", "")) in referenced or (
             calendar_id != "default" and getattr(row, "calendar_id", "") == calendar_id
         ):
-            used |= own
+            # Multi-word synonyms consume only their contiguous spans.
+            used |= _own_words(row, phrase_words=False)
+            spans.extend((start, end) for _, start, end in _name_matches(row, lowered))
             # The question spelling its whole id or name ("metric.sales.aov_usd") uses that span.
             for attr in ("id", "name"):
                 path = re.escape(str(getattr(row, attr, "") or "").lower())
@@ -2521,7 +2564,7 @@ def _unconsumed_words(
     return out, unknown
 
 
-def _own_words(row: Any) -> set[str]:
+def _own_words(row: Any, *, phrase_words: bool = True) -> set[str]:
     """The words that name an object, as written: those of its label and aliases, and those of
     the last dotted part of its id and name that aren't one of its own namespaces ("sales" in
     "metric.sales.aov_usd", which is named "jaffle.sales_aov_usd")."""
@@ -2529,7 +2572,12 @@ def _own_words(row: Any) -> set[str]:
     paths = [str(getattr(row, attr, "") or "") for attr in ("id", "name")]
     spaces = set(_plain(" ".join(path.rpartition(".")[0] for path in paths)).split())
     leaves = set(_plain(" ".join(path.rpartition(".")[2] for path in paths)).split())
-    declared = [getattr(row, "label", "") or "", *(getattr(row, "aliases", None) or [])]
+    aliases = [
+        alias
+        for alias in (getattr(row, "aliases", None) or [])
+        if phrase_words or len(_TERM_RE.findall(str(alias))) == 1
+    ]
+    declared = [getattr(row, "label", "") or "", *aliases]
     return (leaves - spaces) | set(_plain(" ".join(map(str, declared))).split())
 
 
@@ -2592,8 +2640,8 @@ def _consumed_spans(
 ) -> list[tuple[int, int]]:
     """The character spans of the question the draft's constructs consume.
 
-    A window consumes the date phrases the planner resolved when the draft carries one (a
-    start, an end or a range) that agrees with them (``_window_agrees``), and the phrases it could
+    A window consumes the date phrases the planner resolved when the draft carries one (both
+    bounds, or a range) that agrees with them (``_window_agrees``), and the phrases it could
     not resolve; never a clock time or a bare year. A limit
     consumes the count of the ranking that states it ("top 5", "the 5 customers who spent the
     most"); a threshold, percentile or numeric filter value consumes its own number token, found
@@ -2604,7 +2652,7 @@ def _consumed_spans(
     spans: list[tuple[int, int]] = []
     time = _time_block(query)
     if any(time.get(key) for key in ("start", "end", "range")):
-        spans.extend(_window_spans(lowered, time))
+        spans.extend(_window_spans(lowered, time, query.get("policy_context")))
     normal = [_singular(_TERM_SYNONYMS.get(word, word)) for word, _start, _end in tokens]
     referenced = set(_referenced_ids(query))
     calendar_id = str(time.get("calendar_id") or "default")
@@ -2615,8 +2663,8 @@ def _consumed_spans(
         ):
             # An object's own names only: a description that says "per hour" consumes nothing.
             names = [str(getattr(row, attr, "") or "") for attr in ("id", "name", "label")]
-            names.extend(str(alias) for alias in getattr(row, "aliases", None) or [])
             spans.extend(_name_spans(tokens, normal, names, whole=False))
+            spans.extend((start, end) for _, start, end in _name_matches(row, lowered))
     labels = _value_phrases(runtime._config)
     fields = {str(getattr(row, "id", "")): row for row in rows}
     for node in _dict_nodes(query):
@@ -2759,6 +2807,9 @@ _MIDNIGHT_RE = re.compile(r"(?:[t ]00:00(?::00(?:\.0+)?)?(?:z|[+-]00:?00)?)?")
 
 def _question_time(
     lowered: str,
+    policy_context: dict[str, Any] | None = None,
+    *,
+    timezone: str | None = None,
 ) -> tuple[list[tuple[tuple[int, int], dict[str, Any]]], list[tuple[int, int]]]:
     """The windows plan reads from the question, and the other spans it reads as time.
 
@@ -2784,10 +2835,13 @@ def _question_time(
             (span, {"start": f"{year:04d}-01-01", "end": f"{year + 1:04d}-01-01"})
             for span, year in years
         ], []
-    read = _time_window(lowered)
+    read = _time_window(lowered, policy_context=policy_context, timezone=timezone)
     windows = list(read.windows)
     others: list[tuple[int, int]] = []
     for low, high in read.spans:
+        if any(cue.span == (low, high) for cue in read.as_of):
+            # An interval cannot consume a snapshot request.
+            continue
         if any(start <= low and high <= end for (start, end), _bounds in windows):
             continue
         if _YEAR_WORD_RE.fullmatch(lowered[low:high].strip()):
@@ -2801,21 +2855,36 @@ def _question_time(
     return windows, others
 
 
-def _window_days(bounds: dict[str, Any]) -> tuple[date | None, date | None] | None:
+def _window_days(
+    bounds: dict[str, Any],
+    policy_context: dict[str, Any] | None = None,
+    *,
+    timezone: str | None = None,
+) -> tuple[date | None, date | None] | None:
     """The first day a window covers and the first day after it, or None where unreadable.
 
-    A bound with a time of day is floored (a start) or rounded up (an end) to the day, the
-    grain of every window plan reads; a missing bound comes back None.
+    A relative range is read in ``timezone``, the planning zone unless one is given. A bound is
+    readable only at a whole day, the grain of every window plan reads: a date, or that date at
+    midnight. A bound with another time of day is unreadable, as is a window whose start is not
+    before its end (empty or reversed); a missing bound comes back None. A bound with a zone
+    designator is readable only when its offset is its temporal role's at that instant: then
+    its written date is the role-local date.
     """
 
+    role = str(bounds.get("temporal_role") or "")
     if bounds.get("range"):
         try:
-            bounds = _relative_range_bounds(bounds["range"], policy_context=None)
-        except SemanticLayerError:
+            bounds = _relative_range_bounds(
+                bounds["range"],
+                policy_context=time_policy_context(policy_context),
+                timezone=timezone or time_timezone(),
+            )
+        except (SemanticLayerError, ValueError, OverflowError):
             return None
     days: list[date | None] = []
     for key in ("start", "end"):
-        text = str(bounds.get(key) or "").strip().lower()
+        raw = str(bounds.get(key) or "").strip()
+        text = raw.lower()
         if not text:
             days.append(None)
             continue
@@ -2823,42 +2892,59 @@ def _window_days(bounds: dict[str, Any]) -> tuple[date | None, date | None] | No
             day = date.fromisoformat(text[:10])
         except ValueError:
             return None
-        days.append(
-            day + timedelta(days=1)
-            if key == "end" and not _MIDNIGHT_RE.fullmatch(text[10:])
-            else day
-        )
+        tail = text[10:]
+        if tail.endswith("z") or "+" in tail or "-" in tail:
+            try:
+                moment = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                local = moment.astimezone(ZoneInfo(time_timezone(role))).utcoffset()
+            except (ValueError, KeyError, OverflowError):
+                return None
+            if moment.utcoffset() != local:
+                return None
+        if not _MIDNIGHT_RE.fullmatch(tail):
+            return None
+        days.append(day)
+    if days[0] is not None and days[1] is not None and days[0] >= days[1]:
+        return None
     return days[0], days[1]
 
 
 def _window_agrees(
-    windows: list[tuple[tuple[int, int], dict[str, Any]]], time: dict[str, Any]
+    windows: list[tuple[tuple[int, int], dict[str, Any]]],
+    time: dict[str, Any],
+    policy_context: dict[str, Any] | None = None,
+    *,
+    timezone: str | None = None,
 ) -> bool:
     """Whether the draft's window is the one the question's date phrases state.
 
-    The one rule for a window in the draft: every bound it carries, read at the day (the grain
-    of every window plan reads), is the earliest start or the latest end among the windows the
-    question states, and it carries at least one. A draft that cannot be read does not agree. A
-    question that states no window agrees with any draft.
+    The one rule for a window in the draft: it carries both bounds, each read only at a whole
+    day (see ``_window_days``), and they are the earliest start and the latest end among the
+    windows the question states. A missing bound, or a draft that cannot be read, does not
+    agree. A question that states no window agrees with any draft.
     """
 
     if not windows:
         return True
-    carried = _window_days(time)
+    carried = _window_days(time, policy_context, timezone=timezone)
     starts: list[date] = []
     ends: list[date] = []
     for _span, bounds in windows:
-        asked = _window_days(bounds)
+        asked = _window_days(bounds, policy_context, timezone=timezone)
         if asked is None or asked[0] is None or asked[1] is None:
             return False
         starts.append(asked[0])
         ends.append(asked[1])
-    if carried is None or carried == (None, None):
-        return False
-    return carried[0] in (None, min(starts)) and carried[1] in (None, max(ends))
+    return carried == (min(starts), max(ends))
 
 
-def _window_spans(lowered: str, time: dict[str, Any]) -> list[tuple[int, int]]:
+def _window_spans(
+    lowered: str,
+    time: dict[str, Any],
+    policy_context: dict[str, Any] | None = None,
+    *,
+    timezone: str | None = None,
+) -> list[tuple[int, int]]:
     """The spans of the question a window in the draft's ``query.time`` consumes.
 
     One rule: the draft's window consumes the date phrases plan resolved only if it agrees with
@@ -2868,19 +2954,22 @@ def _window_spans(lowered: str, time: dict[str, Any]) -> list[tuple[int, int]]:
     refused rather than matched to the window by value.
     """
 
-    windows, others = _question_time(lowered)
-    if not _window_agrees(windows, time):
+    windows, others = _question_time(lowered, policy_context, timezone=timezone)
+    if not _window_agrees(windows, time, policy_context, timezone=timezone):
         return []
     return [span for span, _bounds in windows] + others
 
 
-def _caller_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
+def _caller_window_gaps(
+    runtime: Any, text: str, query: dict[str, Any], *, timezone: str | None = None
+) -> list[CoverageGap]:
     """The window a caller passed is not the one the question's date phrases state."""
 
     lowered = text.lower()
-    windows, _others = _question_time(lowered)
+    context = query.get("policy_context")
     time = _time_block(query)
-    if _window_agrees(windows, time) or _is_prior_period_offset(
+    windows, _others = _question_time(lowered, context, timezone=timezone)
+    if _window_agrees(windows, time, context, timezone=timezone) or _is_prior_period_offset(
         runtime, query, [bounds for _span, bounds in windows]
     ):
         return []
@@ -2900,6 +2989,71 @@ def _caller_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[
             },
         )
     ]
+
+
+def _role_window_why(runtime: Any, text: str, query: dict[str, Any]) -> dict[str, Any] | None:
+    """Hold a draft whose window reads other days in its temporal role's zone.
+
+    Plan drafts and checks every window in one planning zone (the package default, else UTC),
+    while execution reads it in the role's zone. A draft is ``ok`` only when the question's
+    windows, and a relative range the draft carries for them, read the same days in both.
+    """
+
+    time = _time_block(query)
+    role = str(time.get("temporal_role") or "")
+    planning = time_timezone(runtime=runtime)
+    zone = time_timezone(role, runtime=runtime) if role else planning
+    if zone == planning:
+        return None
+    context = query.get("policy_context")
+    asked = _time_window(text, context, timezone=planning).windows
+    if not asked:
+        return None
+    try:
+        read = _time_window(text, context, timezone=zone).windows
+    except (ValueError, OverflowError):
+        read = ()
+    differing = [
+        span
+        for (span, bounds), local in zip(asked, read, strict=False)
+        if span != local[0]
+        or _window_days(bounds, context, timezone=planning)
+        != _window_days(local[1], context, timezone=zone)
+    ] + [span for span, _bounds in asked[len(read) :]]
+    carried = {"range": time["range"]} if time.get("range") else {}
+    if carried and _window_days(carried, context, timezone=planning) != _window_days(
+        carried, context, timezone=zone
+    ):
+        differing = [span for span, _bounds in asked]
+    if not differing:
+        return None
+    lowered = text.lower()
+    return {
+        "code": "TIME_WINDOW_UNRESOLVED",
+        "message": (
+            f"The question's window reads different days in the temporal role's zone ({zone}) "
+            f"than in the planning zone ({planning}), so plan returns no query: either reading "
+            "may answer a different question."
+        ),
+        "details": {
+            "path": "time",
+            "temporal_role": role,
+            "timezone": zone,
+            "planning_timezone": planning,
+            "unresolved_phrases": list(
+                dict.fromkeys(lowered[low:high].strip() for low, high in differing)
+            ),
+        },
+        "recovery_hints": [
+            {
+                "kind": "rephrase_time_window",
+                "message": (
+                    "Name the window's dates as the temporal role's zone reads them (e.g. "
+                    "'2017-04-03'), so the window doesn't depend on the zone."
+                ),
+            }
+        ],
+    }
 
 
 def _draft_numbers(query: dict[str, Any]) -> tuple[set[str], set[str]]:

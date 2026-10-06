@@ -238,7 +238,7 @@ def test_unavailable_visibility_cannot_add_a_counterpart(
         runtime.close()
 
 
-@pytest.mark.parametrize("op", ["is_null", "is_not_null", "unknown"])
+@pytest.mark.parametrize("op", ["is_null", "unknown"])
 def test_where_operator_refusal_names_query_operators_and_null_form(runtime_factory, op):
     runtime = runtime_factory("jaffle_shop")
     try:

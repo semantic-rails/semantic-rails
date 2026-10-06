@@ -2,7 +2,6 @@ model:
   id: orders
   label: Orders
   relation: orders
-  default_variant: tx
   entities: {order: {}, customer: {}, customer_history: {expr: customer_id}}
   times:
     ordered_at: {label: Order time, column: ordered_at, kind: timestamp, class: event_time,
@@ -64,7 +63,7 @@ model:
         left: {kind: column, column: amount}, right: {kind: literal, value: 1000}},
         then: {kind: column, column: order_id}}], else: {kind: literal, value: null}}}
   variants:
-    tx: {relation: orders, grain: {time: transaction, entities: [order]}, covers: inherit_all}
+    tx: {relation: orders, grain: {time: transaction, entities: [order]}}
     monthly:
       relation: orders_monthly
       grain: {time: month, entities: [order]}

@@ -273,6 +273,7 @@ def test_upsert_metric_updates_project_and_revalidates_parse(tmp_path: Path):
                 "as": "metric.metric_core.double_amount",
                 "name": "metric_core.double_amount",
                 "label": "Double amount",
+                "synonyms": ["doubled amount", "twice the amount"],
                 "description": "Twice the starter total amount.",
                 "kind": "derived",
                 "temporal_role": "temporal_role.metric_core_event_time",
@@ -475,6 +476,14 @@ def test_raw_write_parse_failure_rolls_back_bytes_and_revision(tmp_path: Path):
     assert package_path.read_bytes() == before
     status = _call_tool(server, "project_status", {"project_path": str(project_path)})
     assert status["revision"] == created["revision"]
+
+
+def test_metric_synonyms_are_in_the_authoring_tool_schema(tmp_path: Path):
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    tool = next(tool for tool in _list_tools(server) if tool.name == "upsert_metric")
+    synonyms = tool.inputSchema["properties"]["spec"]["properties"]["synonyms"]
+    assert synonyms["type"] == "array"
+    assert synonyms["items"] == {"type": "string"}
 
 
 @pytest.mark.parametrize("dry_run", [False, True])

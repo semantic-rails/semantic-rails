@@ -10,10 +10,12 @@ import copy
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from typing import Any
+from zoneinfo import ZoneInfo
 
+from ..ast import _parse_now, _relative_range_bounds
 from ..config_parts.measure_governance import (
     building_block_measures,
     governing_metrics,
@@ -21,6 +23,7 @@ from ..config_parts.measure_governance import (
 )
 from ..errors import SemanticLayerError
 from ..expressions import MeasureRefExpr, collect_object_references, expr_to_dict
+from .time_reference import time_policy_context, time_timezone
 from .visibility import visible_dimensions, visible_object_ids, visible_value_domains
 
 
@@ -369,61 +372,162 @@ def _canonical_metric(config: Any, term_set: set[str]) -> Any | None:
     return None
 
 
-def _named_metric(config: Any, text: str) -> tuple[Any, str] | None:
-    """The metric the question names by its label, an alias or its id, and the
-    question with that name replaced by the id.
+def _declared_name_forms(row: Any) -> list[str]:
+    """The declared forms of one name, shared by selection and readiness."""
 
-    The name has two words or more, and every measure the question names lies
-    inside it, so the metric is the more specific reading: "completed revenue
-    by month" means the Completed Revenue metric, not the Revenue measure. So
-    does a measure with the same name ("rolling 28-day revenue" is both). A
-    measure named elsewhere ("revenue and orders") leaves the question to
-    measure-first resolution. The id stands in for the
-    name so its words ("revenue, trailing 7 days") aren't read again as a
-    window, a count or a value.
-    """
+    label = str(getattr(row, "label", "") or "")
+    return [
+        label,
+        re.sub(r"\s*\(.*?\)", "", label),
+        str(row.id),
+        _last_token(row.id),
+        *(getattr(row, "aliases", None) or []),
+    ]
+
+
+def _name_matches(row: Any, text: str, *, short_label: bool = True) -> list[tuple[int, int, int]]:
+    """Whole contiguous declared names, as (word count, start, end) spans."""
 
     words = list(re.finditer(r"[^\W_]+", text.lower()))
-    said = [word.group() for word in words]
+    said = [_singular(word.group()) for word in words]
+    matches = set()
+    forms = _declared_name_forms(row)
+    for name in forms if short_label else [forms[0], *forms[2:]]:
+        parts = [_singular(word) for word in re.findall(r"[^\W_]+", name.lower())]
+        for start in range(len(said) - len(parts) + 1):
+            if parts and said[start : start + len(parts)] == parts:
+                matches.add((len(parts), words[start].start(), words[start + len(parts) - 1].end()))
+    return sorted(matches)
 
-    def named(rows: Iterable[Any]) -> Iterable[tuple[int, int, Any]]:
-        for row in rows:
-            for name in (row.label, row.id, *(getattr(row, "aliases", None) or [])):
-                parts = re.findall(r"[^\W_]+", str(name or "").lower())
-                for start in range(len(said) - len(parts) + 1):
-                    if parts and said[start : start + len(parts)] == parts:
-                        yield len(parts), start, row
 
-    size, start, metric = max(
-        (item for item in named(config.metric_recipes) if item[0] > 1),
-        key=lambda item: item[0],
-        default=(0, 0, None),
-    )
-    if metric is None or any(
-        not (start <= begin and begin + length <= start + size)
-        for length, begin, _row in named(config.measures)
+def _name_fit(text: str, spans: Iterable[tuple[int, int, int]]) -> set[str]:
+    """The words inside a subject's matched name spans; no other word of the question."""
+
+    return {
+        _singular(word)
+        for _, start, end in spans
+        for word in re.findall(r"[^\W_]+", text[start:end].lower())
+    }
+
+
+def _named_metric(config: Any, text: str) -> tuple[Any, str] | None:
+    """A whole metric name containing every named measure, replaced by its id.
+
+    Ties never select a metric. Single-word synonyms also name a metric; label and
+    id forms retain the multi-word requirement used for ordinary measure-first lookup.
+    A label without its parenthetical never selects: it is a readiness form only.
+    """
+
+    spans = {row.id: _name_matches(row, text, short_label=False) for row in config.metric_recipes}
+    matches = [
+        (size, start, end, row)
+        for row in config.metric_recipes
+        for size, start, end in spans[row.id]
+        if size > 1
+        or any(
+            _singular(alias.lower()) == _singular(text[start:end].lower())
+            for alias in (row.aliases or [])
+        )
+    ]
+    size = max((item[0] for item in matches), default=0)
+    fits = {row.id: _name_fit(text, spans[row.id]) for _, _, _, row in matches}
+    longest = [
+        item
+        for item in matches
+        if item[0] == size and not any(fits[item[3].id] < words for words in fits.values())
+    ]
+    if not longest or len({item[3].id for item in longest}) != 1:
+        return None
+    _, first, last, metric = longest[0]
+    if any(
+        not (first <= begin and end <= last)
+        for row in config.measures
+        for _size, begin, end in _name_matches(row, text)
     ):
         return None
-    first, last = words[start].start(), words[start + size - 1].end()
     return metric, f"{text[:first]}{metric.id}{text[last:]}"
 
 
 def _said_name(row: Any, text: str) -> frozenset[str]:
-    """The words of the longest name of ``row`` that ``text`` says, in any order.
+    """Words of the longest whole name said, allowing plurals.
 
-    The swap matches the target phrase (``_target_focus_text``); the readiness guard matches
-    the whole question. The names are its label, with or without a parenthetical, the last
-    part of its id and its aliases; a plural counts as its singular. Empty when the text
-    says none.
+    Labels and ids retain their any-order rule. A multi-word synonym must be
+    contiguous, so separate fragments cannot stand in for its declared phrase.
     """
 
     said = {_singular(word) for word in _tokens(text)}
-    label = str(getattr(row, "label", "") or "")
-    names = [label, re.sub(r"\s*\(.*?\)", "", label), _last_token(row.id), *(row.aliases or [])]
+    aliases = getattr(row, "aliases", None) or []
+    contiguous = {text[start:end].lower() for _, start, end in _name_matches(row, text)}
     return max(
-        (words for name in names if (words := frozenset(map(_singular, _tokens(name)))) <= said),
+        (
+            words
+            for name in _declared_name_forms(row)
+            if (words := frozenset(map(_singular, _tokens(name)))) <= said
+            and (
+                name not in aliases
+                or len(words) == 1
+                or any(frozenset(map(_singular, _tokens(span))) == words for span in contiguous)
+            )
+        ),
         key=len,
         default=frozenset(),
+    )
+
+
+def _shared_subjects(config: Any, text: str) -> list[Any]:
+    """Whole analytic names that remain indistinguishable, independent of ranking.
+
+    A label without its parenthetical counts, so the shared base of two variants
+    ("Conversion rate (7d)", "Conversion rate (7d, same store)") never picks one.
+    """
+
+    rows = [
+        *config.metric_recipes,
+        *(row for row in config.measures if getattr(row, "publish", True)),
+    ]
+    visible = set(visible_object_ids(config, (row.id for row in rows)))
+    rows = [row for row in rows if row.id in visible]
+    # A generated plain mirror and its measure are the same authored answer.
+    measures = {row.id: row for row in config.measures}
+    mirrors = set()
+    for metric in config.metric_recipes:
+        wrapped = whole_aggregate(metric)
+        other = measures.get(wrapped[0]) if wrapped is not None and not wrapped[2] else None
+        if other is not None and other.label == metric.label and other.name == metric.name:
+            mirrors.add(metric.id)
+    rows = [row for row in rows if row.id not in mirrors]
+    fits = {}
+    for row in rows:
+        spans = _name_matches(row, text)
+        if spans:
+            fits[row.id] = (row, _name_fit(text, spans), spans)
+    contenders = [
+        row
+        for row, words, _ in fits.values()
+        if not any(words < other_words for _, other_words, _ in fits.values())
+    ]
+    return (
+        sorted(contenders, key=lambda row: row.id)
+        if len(contenders) > 1
+        and any(
+            (start, end) == (other_start, other_end)
+            for row in contenders
+            for _, start, end in fits[row.id][2]
+            for other in contenders
+            if other.id != row.id
+            and (
+                row.id.split(".")[0] == other.id.split(".")[0]
+                # Existing whole-name metric precedence settles measure/metric labels.
+                # An authored synonym crossing that boundary must still clarify.
+                or any(
+                    _singular(text[start:end].lower()) == _singular(alias.lower())
+                    for candidate in (row, other)
+                    for alias in (candidate.aliases or [])
+                )
+            )
+            for _, other_start, other_end in fits[other.id][2]
+        )
+        else []
     )
 
 
@@ -1159,6 +1263,15 @@ _SUBDAY_WINDOW_RE = re.compile(
 
 
 @dataclass(frozen=True)
+class _AsOfCue:
+    """A snapshot request, kept separate from an ordinary interval."""
+
+    kind: str
+    span: tuple[int, int]
+    bounds: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class _TimeWindow:
     """What a question says about time: its window, or what couldn't be resolved."""
 
@@ -1176,6 +1289,7 @@ class _TimeWindow:
     # Every window the question states that plan resolved, as (span, bounds), whether or not
     # another phrase left the question unresolved.
     windows: tuple[tuple[tuple[int, int], dict[str, Any]], ...] = ()
+    as_of: tuple[_AsOfCue, ...] = ()
 
 
 def _overlaps(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
@@ -1184,6 +1298,9 @@ def _overlaps(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
 
 def _calendar_windows(
     lowered: str,
+    *,
+    boundary_text: str | None = None,
+    as_of: tuple[_AsOfCue, ...] = (),
 ) -> tuple[list[tuple[tuple[int, int], dict[str, str], re.Pattern[str]]], list[tuple[int, int]]]:
     """Resolved calendar spans with their bounds and form, and calendar spans rejected as bounds."""
 
@@ -1195,7 +1312,20 @@ def _calendar_windows(
             span = match.span()
             if _overlaps(span, [row[0] for row in accepted] + rejected):
                 continue
-            before, after = lowered[: span[0]], lowered[span[1] :]
+            original = boundary_text if boundary_text is not None else lowered
+            before, after = original[: span[0]], original[span[1] :]
+            adjacent_cue = False
+            for cue in as_of:
+                if cue.span[0] >= span[1] and re.fullmatch(
+                    _RANGE_CONNECTOR, original[span[1] : cue.span[0]].strip()
+                ):
+                    span = (span[0], cue.span[1])
+                    adjacent_cue = True
+                elif cue.span[1] <= span[0] and re.fullmatch(
+                    _RANGE_CONNECTOR, original[cue.span[1] : span[0]].strip()
+                ):
+                    span = (cue.span[0], span[1])
+                    adjacent_cue = True
             try:
                 bounds = to_bounds(match)
             except (KeyError, ValueError):
@@ -1217,13 +1347,15 @@ def _calendar_windows(
                 # Report the qualifier with its year: "financial year 2017".
                 word = _LAST_WORD_RE.search(before)
                 span = (word.start() if word else span[0], span[1])
+            range_after = _UNPARSED_RANGE_AFTER_RE.search(after)
             if (
                 not bounds
                 or boundary
                 or qualified
                 or (fiscal and pattern not in _DAY_EXACT_FORMS)
                 or _UNPARSED_RANGE_BEFORE_RE.search(before)
-                or _UNPARSED_RANGE_AFTER_RE.search(after)
+                or range_after
+                or adjacent_cue
             ):
                 rejected.append(span)
                 continue
@@ -1301,7 +1433,12 @@ def _is_restatement(
     )
 
 
-def _time_window(text: str) -> _TimeWindow:
+def _time_window(
+    text: str,
+    policy_context: dict[str, Any] | None = None,
+    *,
+    timezone: str | None = None,
+) -> _TimeWindow:
     """Resolve the question's time window, or report why it can't be resolved.
 
     A window resolves only when the question names exactly one calendar or
@@ -1320,7 +1457,18 @@ def _time_window(text: str) -> _TimeWindow:
         # contradict its window. The plan honesty gate reports this limit.
         return _TimeWindow()
     lowered = text.lower()
-    return copy.deepcopy(_resolved_time_window(lowered, date.today()))
+    context = time_policy_context(policy_context)
+    now = (
+        _parse_now(context)
+        if context and context.get("now") not in (None, "")
+        else datetime.now(UTC)
+    )
+    if isinstance(now, datetime):
+        if now.tzinfo is not None:
+            now = now.astimezone(ZoneInfo(timezone or time_timezone()))
+        now = now.date()
+    today = now
+    return copy.deepcopy(_resolved_time_window(lowered, today))
 
 
 # Longer questions are left unresolved; the resolver's cost grows with the
@@ -1328,10 +1476,54 @@ def _time_window(text: str) -> _TimeWindow:
 _MAX_TIME_TEXT = 2000
 
 
+_AS_OF_NOW_RE = re.compile(
+    rf"\b(?:(?:as\s+of\s+|right\s+)?now|currently|at\s+the\s+moment|"
+    rf"current(?!\s+(?:{_TIME_UNIT_ALT}|hour|minute|second)s?\b))\b"
+)
+_AS_OF_WINDOW_RE = re.compile(
+    r"\b(?:(?:as\s+of\s+)?(?:at\s+the\s+|the\s+)?end\s+of|as\s+of)\s+(?:the\s+)?"
+)
+
+
+def _as_of_cues(lowered: str, today: date) -> tuple[_AsOfCue, ...]:
+    """Read complete as-of phrases before interval parsing can claim their suffix."""
+
+    cues = [
+        _AsOfCue("latest_complete_day", match.span()) for match in _AS_OF_NOW_RE.finditer(lowered)
+    ]
+    for lead in _AS_OF_WINDOW_RE.finditer(lowered):
+        if _overlaps(lead.span(), [cue.span for cue in cues]):
+            continue
+        suffix = lowered[lead.end() :]
+        accepted, rejected = _calendar_windows(suffix)
+        candidates = [(span, bounds) for span, bounds, _form in accepted]
+        candidates += [(span, bounds) for span, bounds, _unit in _relative_window(suffix, today)]
+        candidates += [(span, {}) for span in rejected + _time_cues(suffix)]
+        candidates = [row for row in candidates if row[0][0] == 0]
+        if not candidates:
+            # Keep an unread as-of lead held as well; never admit its suffix as an interval.
+            cues.append(_AsOfCue("closing_day", lead.span()))
+            continue
+        span, bounds = max(candidates, key=lambda row: row[0][1])
+        if bounds.get("range"):
+            try:
+                bounds = _relative_range_bounds(bounds["range"], policy_context={"now": today})
+            except (SemanticLayerError, ValueError, OverflowError):
+                bounds = {}
+        cues.append(_AsOfCue("closing_day", (lead.start(), lead.end() + span[1]), bounds))
+    return tuple(sorted(cues, key=lambda cue: cue.span))
+
+
 @lru_cache(maxsize=512)
 def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
-    accepted, rejected = _calendar_windows(lowered)
-    relative = _relative_window(lowered, today)
+    as_of = _as_of_cues(lowered, today)
+    # Mask exactly the recorded spans: no parser may resolve part of an as-of phrase.
+    interval_text = lowered
+    for cue in reversed(as_of):
+        start, end = cue.span
+        interval_text = interval_text[:start] + " " * (end - start) + interval_text[end:]
+    accepted, rejected = _calendar_windows(interval_text, boundary_text=lowered, as_of=as_of)
+    relative = _relative_window(interval_text, today)
     if _FISCAL_RE.search(lowered):
         # A fiscal question's "last quarter" or "this year" is a fiscal period.
         rejected += [row[0] for row in relative if row[2] != "day"]
@@ -1344,7 +1536,17 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
             windows.append(row)
     windows.sort(key=lambda row: row[0])
     covered = [row[0] for row in windows]
-    unresolved_spans = [span for span in rejected if not _overlaps(span, covered)]
+    unread = [cue.span for cue in as_of] + [
+        span for span in rejected if not _overlaps(span, covered)
+    ]
+    # A range ending in an as-of cue is one unread phrase, including its connector.
+    unresolved_spans: list[tuple[int, int]] = []
+    for start, end in sorted(unread):
+        if unresolved_spans and start < unresolved_spans[-1][1]:
+            prior_start, prior_end = unresolved_spans.pop()
+            unresolved_spans.append((prior_start, max(prior_end, end)))
+        else:
+            unresolved_spans.append((start, end))
     assumptions: list[str] = []
     if len(windows) > 1 and _is_restatement(lowered, windows):
         span = (windows[0][0][0], windows[-1][0][1])
@@ -1379,6 +1581,7 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
             conflicts=conflicts,
             sub_day=tuple(dict.fromkeys(_phrase(lowered, span) for span in sorted(sub_day))),
             windows=tuple((row[0], dict(row[1])) for row in windows),
+            as_of=as_of,
         )
     if not windows:
         return _TimeWindow()

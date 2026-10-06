@@ -12,6 +12,7 @@ subclass initialization via AST.
 from __future__ import annotations
 
 import ast
+from itertools import product
 from pathlib import Path
 
 import pytest
@@ -22,12 +23,28 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SOURCE_ROOT = REPO_ROOT / "semantic_rails"
 
 
+def _literal_strings(node: ast.AST) -> list[str]:
+    """Expand only strings whose alternatives are all statically known."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value]
+    if isinstance(node, ast.IfExp):
+        body, orelse = _literal_strings(node.body), _literal_strings(node.orelse)
+        return body + orelse if body and orelse else []
+    if isinstance(node, ast.FormattedValue) and node.conversion == -1 and node.format_spec is None:
+        return _literal_strings(node.value)
+    if isinstance(node, ast.JoinedStr):
+        parts = [_literal_strings(value) for value in node.values]
+        return ["".join(values) for values in product(*parts)]
+    return []
+
+
 def _collect_raised_codes() -> dict[str, list[str]]:
     """Return {code -> [file:line, ...]} for every SemanticLayerError("CODE", ...)
     construction site. Counts both `raise SemanticLayerError(...)` and
     `return SemanticLayerError(...)` patterns — the latter is the deferred-raise
     idiom (e.g., runtime.py:124 returns an error for the caller to raise).
     Also counts `super().__init__("CODE", ...)` in SemanticLayerError subclasses.
+    Literal conditional expressions and f-strings count each possible code.
     """
     raised: dict[str, list[str]] = {}
     for py_file in SOURCE_ROOT.rglob("*.py"):
@@ -67,14 +84,42 @@ def _collect_raised_codes() -> dict[str, list[str]]:
             )
             if name != "SemanticLayerError" and node not in subclass_initializers:
                 continue
-            if not node.args or not isinstance(node.args[0], ast.Constant):
-                continue
-            code = node.args[0].value
-            if not isinstance(code, str):
+            if not node.args:
                 continue
             site = f"{py_file.relative_to(REPO_ROOT)}:{node.lineno}"
-            raised.setdefault(code, []).append(site)
+            for code in _literal_strings(node.args[0]):
+                raised.setdefault(code, []).append(site)
     return raised
+
+
+@pytest.mark.parametrize(
+    ("construction", "expected"),
+    [
+        ('SemanticLayerError("POLICY_DENIED", "denied")', {"POLICY_DENIED"}),
+        (
+            'SemanticLayerError("POLICY_DENIED" if denied else "INVALID_QUERY", "error")',
+            {"POLICY_DENIED", "INVALID_QUERY"},
+        ),
+        (
+            "SemanticLayerError(f\"{'CUMULATIVE' if cumulative else 'WINDOWED'}"
+            '_TIME_FILTER_UNSUPPORTED", "unsupported")',
+            {"CUMULATIVE_TIME_FILTER_UNSUPPORTED", "WINDOWED_TIME_FILTER_UNSUPPORTED"},
+        ),
+        ('SemanticLayerError(f"{prefix}_UNSUPPORTED", "error")', set()),
+        ('SemanticLayerError("POLICY_DENIED" if denied else unknown, "error")', set()),
+        ('other("POLICY_DENIED", "error")', set()),
+    ],
+)
+def test_collect_raised_codes_with_literal_alternatives(
+    tmp_path, monkeypatch, construction, expected
+):
+    source_root = tmp_path / "semantic_rails"
+    source_root.mkdir()
+    (source_root / "sample.py").write_text(f"error = {construction}\nraise error\n")
+    monkeypatch.setattr(__name__ + ".REPO_ROOT", tmp_path)
+    monkeypatch.setattr(__name__ + ".SOURCE_ROOT", source_root)
+    raised = _collect_raised_codes()
+    assert raised == {code: ["semantic_rails/sample.py:1"] for code in expected}
 
 
 @pytest.fixture(scope="module")

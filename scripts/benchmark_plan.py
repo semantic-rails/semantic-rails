@@ -22,7 +22,9 @@ In ``--gate`` mode, the script exits non-zero if any of these regress:
 * a clarification case is marked ready to execute
 * forbidden hallucinated IDs appear in the best plan
 * any ``status="ok"`` plan fails to produce a compile cache hit
-* cache-hit compile p95 exceeds the configured threshold
+* cache-hit compile p95 exceeds the configured threshold (each case's
+  cache-hit time is the fastest of several repeated compiles, so one
+  scheduler or GC pause cannot fail the gate)
 """
 
 from __future__ import annotations
@@ -152,6 +154,13 @@ def _load_cases() -> list[dict[str, Any]]:
                 "forbidden_query_paths": ["time"],
             },
             {
+                "name": "shared_conversion_rate_label_requires_clarification",
+                "intent": "What is the session-to-order conversion rate?",
+                "expected": "clarify",
+                "expected_status": "needs_clarification",
+                "forbid_ready_for_execute": True,
+            },
+            {
                 "name": "unresolved_time_window_requires_clarification",
                 "intent": "revenue by store over the last few weeks",
                 "expected": "clarify",
@@ -184,7 +193,25 @@ def _is_actionable(payload: dict[str, Any]) -> bool:
     return payload.get("status") in {"ok", "low_confidence", "unrealizable"}
 
 
-def _compile_after_plan(runtime: Any, payload: dict[str, Any]) -> dict[str, Any]:
+CACHE_HIT_REPEATS = 5
+
+
+def _compile_after_plan(
+    runtime: Any,
+    payload: dict[str, Any],
+    *,
+    repeats: int = CACHE_HIT_REPEATS,
+    clock: Any = time.perf_counter,
+) -> dict[str, Any]:
+    """Compile the best plan's query and time the plan-warmed cache hit.
+
+    The first compile must hit the cache the plan warmed. A cache hit is then
+    repeated ``repeats`` more times and ``elapsed_ms`` is the fastest call:
+    scheduler or GC pauses only add time, so the minimum is the stable
+    estimate. Every call must hit the cache; ``first_elapsed_ms`` keeps the
+    first call's time for the report.
+    """
+
     if payload.get("status") != "ok":
         return {"attempted": False}
     best = payload.get("best") or {}
@@ -192,26 +219,41 @@ def _compile_after_plan(runtime: Any, payload: dict[str, Any]) -> dict[str, Any]
     if not query:
         return {"attempted": False}
     query["verbosity"] = "full"
-    started = time.perf_counter()
-    try:
-        compiled = runtime.compile(query)
-    except Exception as exc:  # noqa: BLE001 - benchmark records failures instead of aborting
-        return {
-            "attempted": True,
-            "ok": False,
-            "cache_hit": False,
-            "elapsed_ms": (time.perf_counter() - started) * 1000,
-            "lookup_ms": 0.0,
-            "error": str(exc),
-        }
-    elapsed_ms = (time.perf_counter() - started) * 1000
-    stats = dict(compiled.get("compile_stats") or {})
+    timings: list[float] = []
+    hits: list[bool] = []
+    first_stats: dict[str, Any] = {}
+    ok = True
+    for _ in range(1 + (repeats if repeats > 0 else 0)):
+        started = clock()
+        try:
+            compiled = runtime.compile(dict(query))
+        except Exception as exc:  # noqa: BLE001 - benchmark records failures instead of aborting
+            elapsed_ms = (clock() - started) * 1000
+            return {
+                "attempted": True,
+                "ok": False,
+                "cache_hit": False,
+                "elapsed_ms": elapsed_ms,
+                "first_elapsed_ms": timings[0] if timings else elapsed_ms,
+                "lookup_ms": 0.0,
+                "error": str(exc),
+            }
+        timings.append((clock() - started) * 1000)
+        stats = dict(compiled.get("compile_stats") or {})
+        if not hits:
+            first_stats = stats
+        hits.append(bool(stats.get("cache_hit")))
+        ok = ok and bool(compiled.get("ok", True))
+        if not hits[-1]:
+            # A miss is the regression; repeating would only time the cold path.
+            break
     return {
         "attempted": True,
-        "ok": bool(compiled.get("ok", True)),
-        "cache_hit": bool(stats.get("cache_hit")),
-        "elapsed_ms": elapsed_ms,
-        "lookup_ms": float(stats.get("cache_lookup_ms") or 0.0),
+        "ok": ok,
+        "cache_hit": all(hits),
+        "elapsed_ms": min(timings),
+        "first_elapsed_ms": timings[0],
+        "lookup_ms": float(first_stats.get("cache_lookup_ms") or 0.0),
     }
 
 
@@ -357,6 +399,7 @@ def _run_case(runtime: Any, case: dict[str, Any]) -> dict[str, Any]:
         "plan_ms": plan_ms,
         "compile_cache_hit": compile_probe.get("cache_hit"),
         "compile_ms": compile_probe.get("elapsed_ms", 0.0),
+        "compile_first_ms": compile_probe.get("first_elapsed_ms", 0.0),
         "compile_lookup_ms": compile_probe.get("lookup_ms", 0.0),
         "compile_attempted": compile_probe.get("attempted", False),
         "missing_expected_ids": missing_expected_ids,

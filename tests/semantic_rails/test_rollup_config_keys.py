@@ -7,7 +7,7 @@ import yaml
 
 from semantic_rails.config import _load_package_source, load_package_config
 from semantic_rails.errors import SemanticLayerError
-from tests.semantic_rails.test_model_physical_variants import _MONTHLY, _NO_ROLE, _rollup_package
+from tests.semantic_rails.test_model_physical_variants import _MONTHLY, _rollup_package
 
 
 @pytest.mark.parametrize("layout", ["directory", "single_file"])
@@ -15,9 +15,8 @@ from tests.semantic_rails.test_model_physical_variants import _MONTHLY, _NO_ROLE
 @pytest.mark.parametrize("value", [True, False, "yes"])
 def test_removed_rollup_setting_is_an_unknown_key(tmp_path: Path, layout, location, value):
     variants = {}
-    aggregates = []
     if location == "aggregate":
-        aggregates = [{**_NO_ROLE, "requires_certification": value}]
+        variants = {}
     elif location == "base_variant":
         variants = {"tx": {"relation": "order_fact", "requires_certification": value}}
     else:
@@ -25,12 +24,22 @@ def test_removed_rollup_setting_is_an_unknown_key(tmp_path: Path, layout, locati
         if location == "inherited_variant":
             variants["quarterly"] = {"inherits_from": "monthly", "grain": {"time": "quarter"}}
     source = tmp_path / "p"
-    _rollup_package(source, variants, aggregates)
+    _rollup_package(source, variants)
+    if location == "aggregate":
+        package_file = source / "package.yml"
+        package = yaml.safe_load(package_file.read_text(encoding="utf-8"))
+        package["aggregate_relations"] = [{"requires_certification": value}]
+        package_file.write_text(yaml.safe_dump(package), encoding="utf-8")
     if layout == "single_file":
         raw = _load_package_source(str(source))
         source = tmp_path / "package.yml"
         source.write_text(yaml.safe_dump(raw), encoding="utf-8")
 
-    with pytest.raises(SemanticLayerError, match="unknown keys.*requires_certification") as caught:
+    refusal = (
+        "declare rollups under the model's `variants:`"
+        if location == "aggregate"
+        else "unknown keys.*requires_certification"
+    )
+    with pytest.raises(SemanticLayerError, match=refusal) as caught:
         load_package_config(str(source))
     assert caught.value.code == "INVALID_CONFIG"

@@ -17,10 +17,10 @@ PACKAGE = Path(__file__).resolve().parents[2] / "semantic_rails"
 # the longest matching key wins, so ``contracts.generation`` sits above ``contracts``.
 LAYERS = [
     "cli repl __main__ embedding mcp_manager local_config",
-    "api asgi http_core http_request mcp mcp_server mcp_session mcp_streamable_http architect_mcp"
+    "api asgi http_core http_request mcp mcp_query mcp_server mcp_session mcp_streamable_http architect_mcp"
     " contracts.generation",
     "architect_service architect_transactions architect_introspection architect_scaffold"
-    " dbt_artifacts package_tools config_validation semantic_collisions contracts interop",
+    " dbt_artifacts package_tools upgrade config_validation semantic_collisions contracts interop",
     "planner",
     "metadata metadata_parts catalog_service",
     "runtime runtime_parts manifest segments caveats resource_access policies cache"

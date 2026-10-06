@@ -28,9 +28,13 @@ from .config_parts.route_rows import (
     require_rows_agree,
 )
 from .config_parts.shape_checks import (
-    _AGGREGATE_RELATION_KEYS,
     _MEASURE_KEYS,
+    _MODEL_VARIANT_EQUIVALENCE_KEYS,
+    _MODEL_VARIANT_EXCLUDES_KEYS,
+    _MODEL_VARIANT_GRAIN_KEYS,
     _MODEL_VARIANT_KEYS,
+    _MODEL_VARIANT_SELECTION_KEYS,
+    _MODEL_VARIANT_TIME_KEYS,
 )
 from .dialects import (
     connection_option_errors,
@@ -313,9 +317,19 @@ def _resolve_variant_specs(
             )
         resolving.add(name)
         spec = dict(raw[name])
-        _check_binding_keys(
-            spec, _MODEL_VARIANT_KEYS, label=f"{path}: model '{model_id}' variant '{name}'"
-        )
+        label = f"{path}: model '{model_id}' variant '{name}'"
+        _check_binding_keys(spec, _MODEL_VARIANT_KEYS, label=label)
+        for key, allowed in (
+            ("grain", _MODEL_VARIANT_GRAIN_KEYS),
+            ("time", _MODEL_VARIANT_TIME_KEYS),
+            ("excludes", _MODEL_VARIANT_EXCLUDES_KEYS),
+            ("selection", _MODEL_VARIANT_SELECTION_KEYS),
+            ("equivalence", _MODEL_VARIANT_EQUIVALENCE_KEYS),
+        ):
+            if key in spec:
+                if not isinstance(spec[key], dict):
+                    raise SemanticLayerError("INVALID_CONFIG", f"{label} {key} must be a mapping")
+                _check_binding_keys(spec[key], allowed, label=f"{label} {key}")
         parent_name = str(spec.get("inherits_from", "") or "").strip()
         if parent_name:
             spec = _merge_variant_spec(resolve(parent_name), spec)
@@ -1651,8 +1665,8 @@ def _parse_path_preferences(
     return out
 
 
-def _validate_caveat_refs(config: PackageConfig, *, path: str) -> None:
-    object_ids = {
+def _package_object_ids(config: PackageConfig) -> set[str]:
+    return {
         *[row.id for row in config.entities],
         *[row.id for row in config.dimensions],
         *[row.id for row in config.temporal_roles],
@@ -1662,6 +1676,36 @@ def _validate_caveat_refs(config: PackageConfig, *, path: str) -> None:
         *[row.id for row in config.metric_recipes],
         *[row.id for row in config.segments],
     }
+
+
+def _validate_policy_scopes(config: PackageConfig, *, path: str) -> None:
+    """Policy and caveat environments are the package's own; visible_only names real objects.
+
+    An environment spelled unlike the one requests carry would never put its row in force."""
+    declared = set(config.package.environments or [])
+    for label, row_id, environments in [
+        *(("policy", row.id, row.environments) for row in config.semantic_policies),
+        *(("caveat", row.id, row.environments) for row in config.semantic_caveats),
+    ]:
+        undeclared = sorted(set(environments) - declared)
+        if undeclared:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{path}: {label} {row_id} environments {undeclared} are not declared in "
+                f"package.environments ({sorted(declared) or 'none declared'})",
+            )
+    object_ids = _package_object_ids(config)
+    for policy in config.semantic_policies:
+        unknown = sorted(set(policy.object_ids) - object_ids)
+        if unknown and policy_action(policy) == "visible_only":
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{path}: policy {policy.id} references unknown object_ids {unknown}",
+            )
+
+
+def _validate_caveat_refs(config: PackageConfig, *, path: str) -> None:
+    object_ids = _package_object_ids(config)
     entity_ids = {row.id for row in config.entities}
     dimension_ids = {row.id for row in config.dimensions}
     for caveat in config.semantic_caveats:
@@ -1697,6 +1741,8 @@ def _validate_caveat_refs(config: PackageConfig, *, path: str) -> None:
 
 
 def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
+    if "aggregate_relations" in raw:
+        raise SemanticLayerError("INVALID_CONFIG", "declare rollups under the model's `variants:`")
     package_raw = dict(raw.get("package", {}) or {})
     namespace = str(package_raw.get("namespace", package_raw.get("id", "")) or "").strip()
     defaults = dict(raw.get("defaults", {}) or {})
@@ -2582,6 +2628,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             compatible_temporal_roles=metric_compatible_temporal_roles,
             filter_spec=expression.get("filter", {}) or {},
             window_spec=expression.get("window", {}) or {},
+            aliases=list(spec.get("synonyms", []) or []),
             name=str(spec.get("name", metric_key)),
             label=str(spec.get("label", _titleize(metric_key))),
             description=str(spec.get("description", spec.get("label", ""))),
@@ -2695,7 +2742,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     caveats = _parse_caveats(raw.get("semantic_caveats", []), path=path)
 
     entity_ids = {entity.id for entity in entities}
-    measure_ids = {measure.id for measure in measures}
     dimension_ids = {dimension.id for dimension in dimensions}
     temporal_role_ids = {role.id for role in temporal_roles}
     relationship_ids = {row.id for row in relationships}
@@ -2733,115 +2779,60 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         text = str(ref or "").strip()
         return entity_lookup.get(text, text)
 
-    def _aggregate_from_row(
-        row_dict: dict[str, Any], *, model_id: str = ""
-    ) -> AggregateRelationConfig:
-        _check_binding_keys(
-            row_dict,
-            _AGGREGATE_RELATION_KEYS,
-            label=f"{path}: aggregate relation '{row_dict.get('id', '')}'",
-        )
-        source_entity_ref = str(row_dict.get("source_entity", row_dict.get("entity", ""))).strip()
-        source_entity = _resolve_entity_ref(source_entity_ref)
-        if source_entity and source_entity not in entity_ids:
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                f"{path}: aggregate relation '{row_dict.get('id', '')}' references unknown source_entity '{source_entity_ref}'",
-            )
-        raw_measure_bindings = row_dict.get("measures")
+    def _aggregate_from_row(row_dict: dict[str, Any]) -> AggregateRelationConfig:
+        source_entity = row_dict["source_entity"]
+        raw_measure_bindings = row_dict["measures"]
         measure_columns: dict[str, str] = {}
         measure_rollups: dict[str, str] = {}
         measure_aggregations: dict[str, str] = {}
         measure_holds: dict[str, str] = {}
-        if isinstance(raw_measure_bindings, dict):
-            measures_list: list[str] = []
-            for measure_ref, binding_raw in raw_measure_bindings.items():
-                measure_id = _resolve_measure_ref(measure_ref, model_id=model_id)
-                measures_list.append(measure_id)
-                binding = dict(binding_raw or {}) if isinstance(binding_raw, dict) else {}
-                _check_binding_keys(
-                    binding, _MEASURE_BINDING_KEYS, label=f"{path}: rollup measure '{measure_id}'"
+        for measure_id, binding in raw_measure_bindings.items():
+            column = str(binding.get("column", "") or "").strip()
+            if column:
+                measure_columns[measure_id] = column
+            measure_rollups[measure_id] = str(binding.get("rollup", "") or "").strip()
+            measure_aggregations[measure_id] = str(binding.get("aggregation", "") or "").strip()
+            holds = str(binding.get("holds", "") or "").strip().lower()
+            allowed = getattr(measures_by_id.get(measure_id), "allowed_aggregations", [holds])
+            if holds and (holds not in _ROLLUP_HOLDS or holds not in allowed):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{path}: aggregate relation measure '{measure_id}' declares holds '{holds}';"
+                    f" use one of {sorted(_ROLLUP_HOLDS & set(allowed))}",
                 )
-                column = str(
-                    binding.get("column", binding_raw if not isinstance(binding_raw, dict) else "")
-                    or ""
-                ).strip()
-                if column:
-                    measure_columns[measure_id] = column
-                measure_rollups[measure_id] = str(binding.get("rollup", "") or "").strip()
-                measure_aggregations[measure_id] = str(binding.get("aggregation", "") or "").strip()
-                holds = str(binding.get("holds", "") or "").strip().lower()
-                allowed = getattr(measures_by_id.get(measure_id), "allowed_aggregations", [holds])
-                if holds and (holds not in _ROLLUP_HOLDS or holds not in allowed):
-                    raise SemanticLayerError(
-                        "INVALID_CONFIG",
-                        f"{path}: aggregate relation measure '{measure_id}' declares holds '{holds}';"
-                        f" use one of {sorted(_ROLLUP_HOLDS & set(allowed))}",
-                    )
-                if holds:
-                    measure_holds[measure_id] = holds
-        else:
-            measures_list = [
-                _resolve_measure_ref(item, model_id=model_id)
-                for item in _ensure_list(raw_measure_bindings)
-            ]
-        raw_dimension_bindings = row_dict.get("dimensions")
+            if holds:
+                measure_holds[measure_id] = holds
+        raw_dimension_bindings = row_dict["dimensions"]
         dimension_columns: dict[str, str] = {}
         dimension_paths: dict[str, list[str]] = {}
-        if isinstance(raw_dimension_bindings, dict):
-            dimensions_list: list[str] = []
-            for dim_ref, binding_raw in raw_dimension_bindings.items():
-                dim_id = _resolve_dimension_ref(dim_ref, model_id=model_id)
-                dimensions_list.append(dim_id)
-                binding = dict(binding_raw or {}) if isinstance(binding_raw, dict) else {}
-                _check_binding_keys(
-                    binding, _DIMENSION_BINDING_KEYS, label=f"{path}: rollup dimension '{dim_id}'"
-                )
-                column = str(
-                    binding.get("column", binding_raw if not isinstance(binding_raw, dict) else "")
-                    or ""
-                ).strip()
-                if column:
-                    dimension_columns[dim_id] = column
-                join_path = [str(item).strip() for item in _ensure_list(binding.get("path"))]
-                unknown_relationships = sorted(set(join_path) - relationship_ids)
-                if unknown_relationships:
-                    raise SemanticLayerError(
-                        "INVALID_CONFIG",
-                        f"{path}: aggregate relation dimension '{dim_id}' path names unknown"
-                        f" relationships {unknown_relationships}",
-                    )
-                if join_path:
-                    dimension_paths[dim_id] = join_path
-        else:
-            dimensions_list = [
-                _resolve_dimension_ref(item, model_id=model_id)
-                for item in _ensure_list(raw_dimension_bindings)
-            ]
-        grain = str(row_dict.get("grain", row_dict.get("time_grain", ""))).strip().lower()
-        eligible = _ensure_list(row_dict.get("eligible_time_grains")) or _coarser_time_grains(grain)
-        relation_id = str(
-            row_dict.get(
-                "id",
-                f"aggregate_relation.{_slug(str(row_dict.get('relation', 'aggregate')))}",
+        for dim_id, binding in raw_dimension_bindings.items():
+            _check_binding_keys(
+                binding, _DIMENSION_BINDING_KEYS, label=f"{path}: rollup dimension '{dim_id}'"
             )
-        )
+            column = str(binding.get("column", "") or "").strip()
+            if column:
+                dimension_columns[dim_id] = column
+            join_path = [str(item).strip() for item in _ensure_list(binding.get("path"))]
+            unknown_relationships = sorted(set(join_path) - relationship_ids)
+            if unknown_relationships:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"{path}: aggregate relation dimension '{dim_id}' path names unknown"
+                    f" relationships {unknown_relationships}",
+                )
+            if join_path:
+                dimension_paths[dim_id] = join_path
+        grain = str(row_dict.get("grain", "")).strip().lower()
+        eligible = _ensure_list(row_dict.get("eligible_time_grains")) or _coarser_time_grains(grain)
+        relation_id = row_dict["id"]
         source = str(row_dict.get("source", "default") or "default")
         if source != "default":
             raise SemanticLayerError(
                 "INVALID_CONFIG",
                 f"{path}: aggregate relation '{relation_id}' declares source '{source}', but MVP aggregate routing only supports source: default",
             )
-        unknown_measures = sorted(
-            item for item in measures_list if item and item not in measure_ids
-        )
-        if unknown_measures:
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                f"{path}: aggregate relation '{relation_id}' references unknown measures {unknown_measures}",
-            )
         unknown_dimensions = sorted(
-            item for item in dimensions_list if item and item not in dimension_ids
+            item for item in raw_dimension_bindings if item and item not in dimension_ids
         )
         if unknown_dimensions:
             raise SemanticLayerError(
@@ -2869,17 +2860,16 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             id=relation_id,
             relation=str(row_dict.get("relation", "")),
             source_entity=source_entity,
-            measures=[item for item in measures_list if item],
-            dimensions=[item for item in dimensions_list if item],
+            measures=list(raw_measure_bindings),
+            dimensions=list(raw_dimension_bindings),
             temporal_role=temporal_role,
             grain=grain,
             entity_grain=entity_grain,
-            filters=dict(row_dict.get("filters", {}) or {}),
             description=str(row_dict.get("description", "")),
             freshness_source=str(row_dict.get("freshness_source", "")),
             freshness_sla_seconds=_optional_int(row_dict.get("freshness_sla_seconds")),
             freshness_as_of=str(row_dict.get("freshness_as_of", "") or ""),
-            model_id=str(row_dict.get("model_id", model_id) or ""),
+            model_id=row_dict["model_id"],
             variant_id=str(row_dict.get("variant_id", "") or ""),
             source=source,
             time_column=str(row_dict.get("time_column", "") or ""),
@@ -2892,14 +2882,8 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             measure_holds=measure_holds,
             dimension_columns=dimension_columns,
             dimension_paths=dimension_paths,
-            excluded_entities=[
-                _resolve_entity_ref(item)
-                for item in _ensure_list(row_dict.get("excluded_entities"))
-            ],
-            excluded_dimensions=[
-                _resolve_dimension_ref(item, model_id=model_id)
-                for item in _ensure_list(row_dict.get("excluded_dimensions"))
-            ],
+            excluded_entities=row_dict["excluded_entities"],
+            excluded_dimensions=row_dict["excluded_dimensions"],
             selection_priority=int(row_dict.get("selection_priority", 0) or 0),
             equivalence_kind=str(row_dict.get("equivalence_kind", "") or ""),
         )
@@ -2907,31 +2891,22 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     def _aggregate_rows_from_model_variants() -> list[AggregateRelationConfig]:
         rows: list[AggregateRelationConfig] = []
         for model_id, model in model_rows.items():
+            if "default_variant" in model:
+                raise SemanticLayerError("INVALID_CONFIG", f"{path}: delete model default_variant")
             variants_raw = dict(model.get("variants", {}) or {})
             if not variants_raw:
                 continue
             variants = _resolve_variant_specs(variants_raw, path=path, model_id=model_id)
-            source_entity = model_to_entity.get(model_id, "")
-            if not source_entity:
-                continue
+            source_entity = model_to_entity.get(model_id) or _resolve_entity_ref(
+                model["time_entity"]
+            )
             default_time_key = _model_default_time_key(model)
             base_time_spec = dict(
                 dict(model.get("times", {}) or {}).get(default_time_key, {}) or {}
             )
             for variant_id, variant in variants.items():
-                grain_spec = (
-                    dict(variant.get("grain", {}) or {})
-                    if isinstance(variant.get("grain"), dict)
-                    else {}
-                )
-                time_grain = (
-                    str(
-                        grain_spec.get("time", variant.get("time_grain", variant.get("grain", "")))
-                        or ""
-                    )
-                    .strip()
-                    .lower()
-                )
+                grain_spec = dict(variant.get("grain", {}) or {})
+                time_grain = str(grain_spec.get("time", "") or "").strip().lower()
                 if not time_grain or time_grain == "transaction":
                     continue
                 relation = str(variant.get("relation", "") or "").strip()
@@ -2986,7 +2961,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                         "aggregation": aggregation,
                         "holds": holds,
                     }
-                dimension_bindings: dict[str, dict[str, str]] = {}
+                dimension_bindings: dict[str, dict[str, Any]] = {}
                 for dim_key in sorted(model_dimension_keys.get(model_id, set())):
                     dim_id = _resolve_dimension_ref(dim_key, model_id=model_id)
                     dim_cfg = next((row for row in dimensions if row.id == dim_id), None)
@@ -3002,21 +2977,29 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     ):
                         continue
                     raw_column = columns.get(dim_id, columns.get(dim_key, ""))
-                    column = str(
-                        raw_column or getattr(dim_cfg, "column", dim_key) or dim_key
-                    ).strip()
-                    dimension_bindings[dim_id] = {"column": column}
+                    dimension_bindings[dim_id] = (
+                        raw_column
+                        if isinstance(raw_column, dict)
+                        else {
+                            "column": str(
+                                raw_column or getattr(dim_cfg, "column", dim_key) or dim_key
+                            ).strip()
+                        }
+                    )
+                for dim_id, raw_column in columns.items():
+                    if (
+                        str(dim_id).startswith("dimension.")
+                        and dim_id not in dimension_bindings
+                        and dim_id not in excluded_dimensions
+                    ):
+                        dimension_bindings[dim_id] = (
+                            raw_column if isinstance(raw_column, dict) else {"column": raw_column}
+                        )
                 time_spec = dict(variant.get("time", {}) or {})
-                role_ref = str(
-                    time_spec.get("role", variant.get("temporal_role", default_time_key)) or ""
-                ).strip()
+                role_ref = str(time_spec.get("role", default_time_key) or "").strip()
                 temporal_role = temporal_lookup.get((model_id, role_ref), role_ref)
                 time_column = str(
-                    time_spec.get(
-                        "column",
-                        variant.get("time_column", base_time_spec.get("column", default_time_key)),
-                    )
-                    or ""
+                    time_spec.get("column", base_time_spec.get("column", default_time_key)) or ""
                 ).strip()
                 selection = dict(variant.get("selection", {}) or {})
                 equivalence = dict(variant.get("equivalence", {}) or {})
@@ -3033,7 +3016,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                             "source_entity": source_entity,
                             "temporal_role": temporal_role,
                             "time_column": time_column,
-                            "time_grain": time_grain,
+                            "grain": time_grain,
                             "entity_grain": _ensure_list(grain_spec.get("entities")),
                             "measures": measure_bindings,
                             "dimensions": dimension_bindings,
@@ -3053,15 +3036,11 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                             "freshness_sla_seconds": variant.get("freshness_sla_seconds"),
                             "freshness_as_of": str(variant.get("freshness_as_of", "") or ""),
                         },
-                        model_id=model_id,
                     )
                 )
         return rows
 
-    aggregate_relations: list[AggregateRelationConfig] = []
-    aggregate_relations.extend(_aggregate_rows_from_model_variants())
-    for row in list(raw.get("aggregate_relations", []) or []):
-        aggregate_relations.append(_aggregate_from_row(dict(row or {})))
+    aggregate_relations = _aggregate_rows_from_model_variants()
 
     config = PackageConfig(
         version=1,
@@ -3092,6 +3071,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     validate_row_filters(config)
     for policy in config.semantic_policies:
         policy_action(policy)
+    _validate_policy_scopes(config, path=path)
     validate_expression_calls(config, config)
     return config
 

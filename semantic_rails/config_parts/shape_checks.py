@@ -83,7 +83,6 @@ _TOP_LEVEL_KEYS: frozenset[str] = frozenset(
         "relations",
         "semantic_policies",
         "semantic_caveats",
-        "aggregate_relations",
         "path_policy",
         "path_preferences",
         "examples",
@@ -157,7 +156,6 @@ _MODEL_KEYS: frozenset[str] = frozenset(
         "defaults",
         "time_entity",
         "time_column",
-        "default_variant",
         "variants",
     }
 )
@@ -168,10 +166,6 @@ _MODEL_VARIANT_KEYS: frozenset[str] = frozenset(
         "inherits_from",
         "grain",
         "time",
-        "time_grain",
-        "time_column",
-        "temporal_role",
-        "covers",
         "excludes",
         "columns",
         "eligible_time_grains",
@@ -184,39 +178,11 @@ _MODEL_VARIANT_KEYS: frozenset[str] = frozenset(
         "freshness_as_of",
     }
 )
-_AGGREGATE_RELATION_KEYS: frozenset[str] = frozenset(
-    {
-        "id",
-        "relation",
-        "source_entity",
-        "entity",
-        "measures",
-        "dimensions",
-        "temporal_role",
-        "grain",
-        "time_grain",
-        "entity_grain",
-        "filters",
-        "description",
-        "freshness_source",
-        "freshness_sla_seconds",
-        "freshness_as_of",
-        "model_id",
-        "variant_id",
-        "source",
-        "time_column",
-        "eligible_time_grains",
-        "excluded_entities",
-        "excluded_dimensions",
-        "selection_priority",
-        "equivalence_kind",
-    }
-)
 _MODEL_VARIANT_GRAIN_KEYS: frozenset[str] = frozenset({"time", "entities"})
 _MODEL_VARIANT_TIME_KEYS: frozenset[str] = frozenset({"role", "column"})
 _MODEL_VARIANT_EXCLUDES_KEYS: frozenset[str] = frozenset({"entities", "dimensions", "measures"})
-_MODEL_VARIANT_SELECTION_KEYS: frozenset[str] = frozenset({"priority", "prefer_for_grains"})
-_MODEL_VARIANT_EQUIVALENCE_KEYS: frozenset[str] = frozenset({"kind", "baseline"})
+_MODEL_VARIANT_SELECTION_KEYS: frozenset[str] = frozenset({"priority"})
+_MODEL_VARIANT_EQUIVALENCE_KEYS: frozenset[str] = frozenset({"kind"})
 _MODEL_ENTITY_REF_KEYS: frozenset[str] = frozenset({"expr", "label"})
 _DIMENSION_KEYS: frozenset[str] = frozenset(
     {
@@ -314,6 +280,7 @@ _METRIC_KEYS: frozenset[str] = frozenset(
         "as",
         "name",
         "label",
+        "synonyms",
         "description",
         "kind",
         "measure",

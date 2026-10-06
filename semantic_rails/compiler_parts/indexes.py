@@ -64,6 +64,9 @@ class PackageAnalysis:
     path_cache: dict[tuple[str, str], RouteResolution | RouteRefusal] = field(default_factory=dict)
     # Pinned-pair notes need only whether two routes fit the hop ceiling.
     route_note_cache: dict[tuple[str, str], bool] = field(default_factory=dict)
+    # Object id -> every object the compiler reads to answer it, or None when it cannot be
+    # bound (``policies.restricted_object_ids``). Keyed only by package inputs.
+    object_reads: dict[str, frozenset[str] | None] | None = None
 
     @classmethod
     def from_config(cls, config: PackageConfig) -> PackageAnalysis:

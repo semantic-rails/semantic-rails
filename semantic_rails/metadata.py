@@ -97,6 +97,7 @@ from .metadata_parts.relevance import (
     _intent_passes_relevance_floor,
     _low_relevance_block,
     _token_idf_weight,
+    _visible_catalog,
 )
 from .metadata_parts.scope_gate import scope_block_payload as _scope_block_payload
 from .metadata_parts.valid_values import _policy_context, valid_values_payload
@@ -802,7 +803,7 @@ def _conversion_metadata(
             audience=str(policy_context.get("audience", "")),
             roles=policy_context.get("roles", []),
         )
-        if any(effect["action"] not in {"visible", "label"} for effect in effects):
+        if any(effect["action"] not in {"visible_only", "label"} for effect in effects):
             return {}
     units = "|".join(CONVERSION_WINDOW_UNITS)
     return {
@@ -870,6 +871,22 @@ def _predicate_metadata(
         else "none",
         "predicate_count": len(predicates),
     }
+
+
+_CARD_ID_LISTS = {
+    "related_curated_metrics",
+    "related_measures",
+    "comparison_peers",
+    "clock_variants",
+    "preferred_companion_metrics",
+}
+
+
+def _filter_card_ids(payload: dict[str, Any], hidden_ids: set[str]) -> None:
+    for key in _CARD_ID_LISTS & set(payload):
+        payload[key] = [item for item in payload[key] if item not in hidden_ids]
+    if payload.get("default_metric_id") in hidden_ids:
+        payload["default_metric_id"] = ""
 
 
 def _object_card(
@@ -1047,6 +1064,8 @@ def _object_card(
                 },
             }
         )
+    # A card names, and starts queries from, only objects this caller can see.
+    _filter_card_ids(base, hidden_ids)
     base["starter_query_patches"] = _starter_query_patches(
         runtime, object_id, partial_query, card=base
     )
@@ -1065,6 +1084,16 @@ def _summary_row(
     config = runtime._config
     payload = dict(obj.get("payload", {}) or {})
     payload.update(_metric_object_payload(config, str(obj["id"]), str(obj["kind"])))
+    context = _policy_context(partial_query)
+    _filter_card_ids(
+        payload,
+        hidden_object_ids(
+            config,
+            environment=str(context.get("environment", "")),
+            audience=str(context.get("audience", "")),
+            roles=context.get("roles", []),
+        ),
+    )
     if verbosity != "full":
         payload.pop("operational", None)
     availability = _availability_for_object(config, root_entity, str(obj["id"]), str(obj["kind"]))
@@ -2016,6 +2045,13 @@ def discover_payload(
     search_terms = SearchTerms.from_text(terms)
     partial_query = dict(partial_query or {})
     validate_temporal_support(runtime._config, partial_query)
+    policy_context = _policy_context(partial_query)
+    hidden_ids = hidden_object_ids(
+        config,
+        environment=str(policy_context.get("environment", "")),
+        audience=str(policy_context.get("audience", "")),
+        roles=policy_context.get("roles", []),
+    )
     # When invoked from the HTTP boundary (``enforce_scope=True``), gate
     # the response on the same classifier ``validate``/``compile`` use
     # and a content-token relevance floor against the package catalog.
@@ -2043,7 +2079,10 @@ def discover_payload(
                 "blocked": [],
                 "out_of_scope": _scope_block_payload(str(terms), classification),
             }
-        catalog_tokens = _catalog_token_index(config, search_index=search_index)
+        catalog = _visible_catalog(config, frozenset(hidden_ids))
+        catalog_tokens = _catalog_token_index(
+            catalog, search_index=search_index if catalog is config else None
+        )
         passes, overlap = _intent_passes_relevance_floor(str(terms), catalog_tokens)
         if not passes:
             sample = sorted(catalog_tokens)[:30]
@@ -2068,13 +2107,6 @@ def discover_payload(
                     str(terms), overlap_tokens=overlap, catalog_token_sample=sample
                 ),
             }
-    policy_context = _policy_context(partial_query)
-    hidden_ids = hidden_object_ids(
-        config,
-        environment=str(policy_context.get("environment", "")),
-        audience=str(policy_context.get("audience", "")),
-        roles=policy_context.get("roles", []),
-    )
     selection = _selection_context(config, partial_query)
     root_entity = selection["root_entity"]
     stage = _infer_stage(partial_query, stage, terms)

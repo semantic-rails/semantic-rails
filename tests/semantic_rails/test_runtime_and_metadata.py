@@ -588,6 +588,9 @@ def test_valid_values_defaults_to_declared_domains_without_live_query(runtime_fa
         assert declared["source"] == "value_domain"
         assert declared["value_source_type"] == "declared_domain"
         assert [row["value"] for row in declared["values"]] == ["jaffle", "beverage"]
+        assert empty["ok"] is False
+        assert empty["status"] == "needs_live_query"
+        assert "next_call" not in empty
         assert empty["values"] == []
         assert empty["total_count"] == 0
         assert empty["source"] == "none"
@@ -1023,7 +1026,7 @@ def test_plan_supports_guided_query_building(runtime_factory):
         )
         conversion = plan_candidate_envelope(
             runtime,
-            intent="session to order conversion rate",
+            intent="session to order conversion rate (7d)",
             limit=2,
             verbosity="full",
         )

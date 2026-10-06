@@ -408,7 +408,9 @@ that must not mistake a filtered-out population for zero want it. A query's own
   missing. It records package provenance and a content hash of the seed files
   inside the new file. When those files change later, queries and runtime
   validation return a `STALE_SEED_DATABASE` warning with the command that
-  deletes the file; the next run rebuilds it from the current seed. Publication is
+  deletes the file; the next run rebuilds it from the current seed. If warehouse
+  execution fails on that stale database, the same warning and command are
+  included in the error's `details.warnings`. Publication is
   atomic and never overwrites a file another process created in the meantime.
   If the filesystem cannot publish without an overwrite (for example one
   without hard links on POSIX), creation fails with `INVALID_CONFIG`; build the
@@ -442,6 +444,13 @@ stopped through publication: the WAL check cannot prevent a writer from
 creating a new log immediately after it runs.
 
 SQL seed sources and CSV `post_sql` files accept LF or CRLF line endings.
+If a statement in either file fails, the build raises `INVALID_CONFIG` with
+`details.reason: seed_failed`, the SQL path (`file`), its one-based
+`statement_number`, its first nonblank line (`statement_first_line`), and the
+database's message (`database_message`). These diagnostics describe the
+package author's seed SQL, rather than a rendered query. Runtime queries and
+runtime validation probes preserve them. The failed build never publishes its
+temporary database or replaces an existing database.
 CRLF bytes inside string literals are preserved as authored, without normalization to LF.
 A bare carriage return refuses the script before any of its statements execute
 with `INVALID_CONFIG`, `details.reason: bare_carriage_return_sql_script` and
@@ -458,7 +467,11 @@ package:
 `promote-package --environment <name>` rejects undeclared environments with
 `INVALID_CONFIG` (`details.allowed_environments`), and policies that declare
 `environments:` only fire when `policy_context.environment` matches one of
-them. `validate-config` warns (advisory) when a package omits the block.
+them. A policy or caveat whose `environments:` names an environment the package
+doesn't declare (`prod` in a package declaring `production`), or that declares
+`environments:` in a package declaring none, fails to load with `INVALID_CONFIG`,
+because it would never apply. `validate-config` warns (advisory) when a package
+omits the block.
 
 Measures and curated metrics also accept a `meta:` block that drives advisory
 governance warnings:
@@ -623,7 +636,7 @@ lookup, and during policy evaluation. Release labels belong in `config.label`.
 | Kind | Allowed action |
 | --- | --- |
 | `package_release` | omitted or `label` |
-| `object_visibility` | `hidden`, `visible` (required) |
+| `object_visibility` | `hidden`, `visible_only` (required) |
 | `object_access` | `deny`, `redact`, `withhold_values` (required) |
 | `protected_object` | omitted or `protected` |
 | `metric_constraint` | omitted or `constrain` |
@@ -635,10 +648,11 @@ action checks. Action text is trimmed and lowercased; kind names must match exac
 - **`package_release`** — labels the package's release status. `config.label`
   (e.g. `stable`, `preview`) surfaces in the package manifest and discovery
   metadata; it gates nothing by itself.
-- **`object_visibility`** — hides matching objects from `catalog`, `discover`,
-  and `inspect` for the scoped audiences/environments/roles. `action: hidden` is the
-  useful value; a hidden measure cannot be discovered but a query that names
-  it directly is governed by `object_access`, not visibility.
+- **`object_visibility`** — `action: hidden` hides matching objects from `catalog`,
+  `discover`, and `inspect` for the scoped audiences/environments/roles, and refuses a
+  query that reads one with `POLICY_DENIED`. `action: visible_only` does the opposite:
+  it hides the objects, and everything computed from them, from every context it does
+  not name; see [Objects visible only to named roles](#objects-visible-only-to-named-roles).
 - **`object_access`** — enforced at query time. `action: deny` refuses the
   query with a structured policy error; `action: redact` executes but replaces
   the governed object's values in the result. An `aggregate_if` reads every
@@ -749,6 +763,54 @@ semantic_policies:
     attribute: customer_id
     rationale: Each customer sees only their own orders.
 ```
+
+### Objects visible only to named roles
+
+```yaml
+semantic_policies:
+  - id: policy.shop.revenue_finance_only
+    kind: object_visibility
+    action: visible_only
+    object_ids: [metric.shop.revenue, measure.shop.revenue_usd]
+    roles: [finance]
+    rationale: Revenue is visible only to the finance role.
+```
+
+A `visible_only` policy is an allow-list: its objects are visible only to the contexts it
+names, and hidden from everyone else, including a request with no roles at all. Use it for
+a sensitive object that should stay hidden until someone is given access ("a support role
+does not see revenue until it is named here"), where `hidden` would need to list every role
+that must not see it.
+
+- **Form.** `object_ids` (non-empty, each an existing object) and `roles`, `audiences` or
+  both (at least one name). `environments` is optional; no other key is accepted. Anything
+  else, including `action: visible` (no longer accepted), fails to load with
+  `INVALID_CONFIG`. An engine release without `visible_only` refuses to load such a
+  package, so a package using it never runs on an engine that would ignore it.
+- **In force** when `environments` is empty, lists the request's environment, or the
+  request carries no environment or one the package does not declare. A policy scoped to
+  `development` does not restrict a declared `production` request.
+- **Eligible** when the request has one of the listed `roles` (case-insensitive) if any
+  are listed, and the listed audience if `audiences` are listed. No roles, or a role the
+  policy doesn't list, is not eligible: a role the package never names grants nothing.
+- **Several policies** on one object must all be met; adding a policy never widens access.
+- **Everything computed from a restricted object is restricted too:** metrics that read
+  it (directly, through another metric, a filter or a metric filter), segments whose
+  basis metric, conditions or preview dimensions read it, value domains of a restricted
+  dimension, and relationships to a restricted entity. An object whose dependencies cannot
+  be resolved is restricted whenever anything is. The policy governs objects, not columns:
+  list every measure that computes the sensitive value, since another measure over the
+  same column (a filtered, windowed or rolled-up variant) is a separate object.
+  While any `visible_only` restriction applies to a caller, that caller cannot aggregate raw columns.
+- For an ineligible request, restricted objects are left out of `catalog`, `discover`,
+  `build-options`, `plan`, other objects' `inspect` cards (related measures and metrics,
+  companions, starter queries) and diagnostic suggestions; `inspect` of one, and `valid-values`
+  of a restricted dimension, answer `OBJECT_NOT_FOUND`; `validate`, `compile`, `execute`,
+  `valid-values` and the segment tools refuse any query that reads one, including through
+  an inline expression, a derived metric, a metric filter or an `order_by`, with
+  `POLICY_DENIED`.
+- `hidden`, `deny`, `redact` and `withhold_values` still apply to eligible requests:
+  explicit restrictions win.
 
 ### Ranking by withheld values
 
@@ -1396,7 +1458,13 @@ and the relationships it used. Interchange export leaves lookups out as unsuppor
 ## Metrics
 
 Metrics codify governed access patterns. Each metric carries a `kind:` that
-determines the required fields.
+determines the required fields. Every metric also accepts `synonyms:`, a list of
+other declared names, for example `synonyms: [signups, signed up, new signups]`.
+Use `synonyms:` for object names; `aliases:` is an unknown metric key. These names
+count toward planner selection and readiness. Multi-word synonyms match contiguous
+phrases (regular plurals are allowed); their separate words do not consume an
+unrelated phrase. Shared names need clarification, and `project validate` warns
+with `SEMANTIC_TERM_COLLISION` once per collision.
 
 ### Common kinds — direct named fields
 
@@ -2020,7 +2088,7 @@ cardinality / safety and the rule that chose it (`route_basis`: `decided`,
 `colocated_key`, `inherited` or `only_route`, the route rule's rungs 1-4), the
 hop ceiling, and `long_hop_targets` (targets 3+ hops out). Operators can log this to find questions that repeatedly cross
 many entities — those are the candidates for a shortcut relationship, an
-authored `aggregate_relations:` rollup, or physical colocation in the
+authored `model.variants:` rollup, or physical colocation in the
 warehouse.
 
 ## Physical variants and aggregate routing
@@ -2034,14 +2102,24 @@ or dimensions differ from the transaction table.
 The loader normalizes each eligible non-transaction variant into an internal
 `AggregateRelationConfig`. Query compilation can then route a compatible measure
 leaf to the rollup relation instead of the raw relation while preserving the
-same public measure and dimension IDs.
+same public measure and dimension IDs. Fact-model variants use the model's
+`time_entity` as their source entity. An optional variant `id:` preserves a
+rollup's public relation ID. Hosts supplying managed rollups attach entries in
+this same `variants:` shape to the model.
+
+Declare rollups only under the model's `variants:`. The loader refuses top-level
+`aggregate_relations:`, string variant `grain`, and variant `time_grain`,
+`time_column`, `temporal_role`, `covers`, `filters`, `selection.prefer_for_grains`,
+`equivalence.baseline`, and model `default_variant` with `INVALID_CONFIG`.
+Use `grain: {time, entities}` and `time: {role, column}`. Without `time.role`, a
+variant inherits the model's default time role; without `time.column`, it uses
+the default time role's column. Transaction queries use the model's `relation`.
 
 ```yaml
 # models/orders.yml
 model:
   id: orders
   relation: order_fact
-  default_variant: tx
   grain: [order_id]
   entities:
     order: {}
@@ -2069,7 +2147,6 @@ model:
     tx:
       relation: order_fact
       grain: { time: transaction, entities: [order] }
-      covers: inherit_all
 
     monthly:
       relation: order_monthly
@@ -2126,9 +2203,9 @@ Routing is conservative in the MVP:
   with a non-default `calendar_id`, run on the base tables: the rollup path
   buckets the stored column's clock, without the role's zone conversion, on the
   default calendar.
-- A dimension column pre-joined from another model (in an `aggregate_relations:`
-  entry, for example `region` from customers) declares the relationships it was
-  built along: `dimensions: {dimension.region: {column: region, path:
+- A dimension column pre-joined from another model (for example `region` from
+  customers) uses its full dimension ID in the variant's `columns:` and declares
+  the relationships it was built along: `columns: {dimension.region: {column: region, path:
   [relationship.orders_customer]}}`. It routes only when the query joins that
   model along the same path, and only if every hop is many-to-one (or one-to-one)
   with no `temporal_validity`. A rollup holding a pre-joined column without such a
@@ -2136,22 +2213,22 @@ Routing is conservative in the MVP:
   join would have repeated fact rows in every other column.
   Another model's key read from a foreign key (such as the customer key) needs a
   `path` of the one relationship between the two models, and doesn't route when
-  two relationships link them. Build a pre-joined column with an inner join: the
+  two relationships link them. Every declared path is checked even when the
+  column can be read from a foreign key and the query doesn't use it; an unsafe
+  path rejects the rollup with `join_path_mismatch`.
+  Build a pre-joined column with an inner join: the
   base path joins a dimension a rollup of the measure's model holds with an inner
   join too, so a fact row with no match is left out of both and routing never
   changes an answer. So a rollup with a pre-joined column answers only queries that
   group or filter by that column; the base path doesn't join it otherwise and keeps
   such rows. A measure whose
   expression, or a time role whose column, comes from another model doesn't route.
-  An `aggregate_relations:` entry must declare its `temporal_role`.
 - Every selected measure must have a column in the variant.
 - Every grouped or filtered dimension must be covered by the variant. If a
   query groups by `customer_id` and the monthly table excludes that dimension,
   the planner scans the raw relation.
 - Query-time `metric_predicate` shapes, including a `metric_predicate` inside an
   aggregate's `filter`, do not route through variants yet.
-- An `aggregate_relations:` entry that declares `filters` doesn't route yet: it
-  holds only the rows its filters kept.
 
 When a rollup can't answer a query exactly, the query runs on the base tables, and
 `logical_plan.measure_plans[].aggregate_relation_rejections` maps each rejected

@@ -137,7 +137,7 @@ def _package(root, policies):
                     "left": {"kind": "column", "column": "store_id"}, "right": {"kind": "literal", "value": "s2"}},
                     "then": {"kind": "column", "column": "order_id"}}], "else": {"kind": "literal", "value": None}}},
         },
-        "default_variant": "tx", "variants": {"tx": {**tx, "covers": "inherit_all"}, "monthly": monthly},
+        "variants": {"tx": tx, "monthly": monthly},
     }})  # fmt: skip
     put("models/stores.yml", {"model": {"id": "stores", "relation": "store_dim", "entities": {"store": {}},
                                         "dimensions": {"store_name": {"kind": "categorical"}}}})  # fmt: skip
@@ -302,6 +302,9 @@ def test_rollups_are_not_routed_under_a_row_filter(runtime):
     internal = runtime.compile(_q(query, audience="internal"))
     filtered = runtime.query(_q(query, customer_id=B))
     assert "FROM order_monthly" in internal["rendered_sql"]
+    assert internal["explain"]["performance_plan"]["aggregate_routing"]["selected"] == [
+        "aggregate_relation.orders_monthly"
+    ]
     assert (
         "FROM order_fact" in filtered["rendered_sql"]
         and "order_monthly" not in filtered["rendered_sql"]

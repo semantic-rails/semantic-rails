@@ -43,6 +43,20 @@ Key authoring principles:
 - Active package: [configs/semantic_rails/jaffle_shop](../configs/semantic_rails/jaffle_shop)
 - Focused semantic tests: `tests/semantic_rails/`
 
+## Package Upgrade Planning
+
+`semantic_rails.upgrade` plans YAML edits in memory. Finding identities include the
+rule, source file and full YAML path; author decisions remain pending until answered.
+Duplicate identities, overlapping edits and incompatible list edit orders refuse
+with `CONFIG_CONFLICT`. Independent list edits run from higher indexes to lower
+indexes, preserving each original target and each finding's own edit sequence.
+Source iterators retain loader identities. Expression roots follow the loader:
+a truthy `expression` block takes precedence; otherwise only non-null direct
+expression fields are walked. Segment membership queries remain expression sources.
+Traversal shares the expression validator's child iterator, which visits every key
+except opaque metadata, literal/filter values and parameters. Row metadata stays
+outside the expression roots. The rule registry is empty; no command invokes it yet.
+
 ## Architecture Principles
 
 - AST first: query input is normalized before planning, and SQL is rendered only after lowering from typed semantic structures.
@@ -177,7 +191,7 @@ Relationship rules:
 ### AggregateRelation
 
 An exact physical rollup relation that can serve a compatible measure leaf.
-Authors usually define these through `model.variants:`; the loader normalizes
+Authors define these through `model.variants:`; the loader normalizes
 eligible non-transaction variants into this compiled shape.
 
 Current compiled fields:

@@ -1,0 +1,1 @@
+- Plan expands straight and curly apostrophe contractions.

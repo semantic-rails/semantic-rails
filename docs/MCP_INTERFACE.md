@@ -212,6 +212,26 @@ returns member rows, the preview and member counts, and the derived query. `verb
 returns the whole response with compiler plans. Minimal responses still include query and
 segment policy effects, warnings, errors, and actionable recovery hints when present.
 
+MCP accepts a `query` object or a JSON string encoding that object. Tool arguments
+placed inside it are lifted; conflicting tool options refuse with
+`INVALID_QUERY`. Query IR's `verbosity` and `sql_profile` retain inner precedence. The response's `normalized` list reports each spelling change:
+`eq`/`equals` → `=`, `neq` → `!=`, `gt`/`gte`/`lt`/`lte` → `>`/`>=`/`<`/`<=`,
+and `is_not_null` → `IS NOT NULL`; arithmetic `sub`/`mul`/`div` →
+`subtract`/`multiply`/`divide` (`add` is already canonical). Arithmetic `operands`
+or `terms` with at least two expressions fold left, including subtraction and
+division. Mixing operand shapes refuses. Select dimension shorthand uses the shared
+[Query IR rules](QUERY_IR_SCHEMA.md#selectitem): a bare `{dimension: "<id>"}`
+moves to `group_by`; an `expression` wrapper moves only when `group_by` is empty
+or already lists that dimension. Both shapes accept `kind: dimension|group|ref`.
+Aliases and competing targets refuse with `INVALID_EXPRESSION_AST`; a wrapped
+dimension beside other grouping dimensions carries `MOVE_DIMENSION_TO_GROUP_BY`.
+Each move appears as a `QUERY_SHORTHAND_NORMALIZED` warning with
+`details.canonical`, on `execute` in every mode.
+Unsupported expression kinds refuse before their children are read. Excessive
+expression or predicate nesting returns `INVALID_QUERY` as a structured tool error.
+Unknown ids in a dimension-only list query return `OBJECT_NOT_FOUND`, with
+closest visible matches.
+
 `execute` accepts either `{"query": {...}}` or Query IR fields at the top level. Metadata tools
 accept the same request fields documented in [QUERY_API.md](QUERY_API.md), including optional
 `policy_context`.
@@ -345,18 +365,31 @@ held to a stricter rule, and one the draft doesn't consume is not a warning: it 
 `low_confidence` with `why.code="PLAN_UNMATCHED_TERMS"`, since the draft dropped a grouping
 ("by store, customer type and product type" grouped by store; `why.details.dropped_groupings`
 names it) or answers about another subject. A word names an object when it is a word of the
-object's label or aliases, or of the last dotted part of its id or name outside the object's own
+object's label or synonyms, or of the last dotted part of its id or name outside the object's own
 namespaces ("sales" in `metric.sales.aov_usd` names nothing); a plural counts as its singular.
-Only the draft consumes one: by the label, aliases, id or name of an object it selects (an id the
+Only the draft consumes one: by a word of the label or synonyms of an object it selects,
+or its id or name (an id the
 question spells out whole consumes its namespaces too), a value it filters on or that value's
 declared names, a time grain it carries (only its unit and its "-ly" form), a prior-period
 shift's trigger phrase, one grouping that names the query's clock at the planned grain (a
 second one, as in "by order month and order date", is not consumed), "number of" for a
 selected count-valued measure when the draft has no grouping, or a recorded time phrase or
 honored clause.
+A multi-word authored synonym consumes only the contiguous question span it matches,
+allowing regular plurals. Two selectable subjects sharing a whole name or synonym, with
+no other words distinguishing them, return `needs_clarification` with both ids; only words
+inside a matched name distinguish them. A metric label without its parenthetical counts
+toward readiness but never selects a metric: "session to order conversion rate" names both
+the `(7d)` and the `(7d, same store)` metric, so it asks which one.
+Established whole-name metric precedence over a measure and explicit caller selections
+still settle a subject.
+At plan entry, straight and curly apostrophe contractions expand before scope, relevance,
+parsing and readiness: `what's` becomes `what is` and `didn't` becomes `did not`. Any other
+`'s`, quoted text, and a declared name or value spelled with an apostrophe stay as typed.
+Messages quote the normalized words.
 Stopwords are exempt unless they are exact catalog names. Regular plurals are recognized
 and consumed using the same forms; "-es" applies only after s, x, z, ch or sh. A
-synonym, a typo, a namespace, a description, a framing word or an object the draft doesn't select
+engine synonym, a typo, a namespace, a description, a framing word or an object the draft doesn't select
 (a measure's entity included) never does. So `plan` may hold back a right draft ("revenue from
 orders": Orders is a measure), but never calls one ready that drops a grouping the question
 names. Last, each grouping the question lists, apart from clock terms and declared values, must
@@ -517,9 +550,13 @@ and no `next.ready_for`. So "between 9 and 17 on 15 March 2017", "from nine to f
 written as an ordinary word ("Pacific time", "London time", "local time") is not recognised by
 itself, so with no hour beside it the question reads as its day. A window in the draft
 (one you pass in `query.time`, or plan's own) consumes the date phrases plan resolved only if it
-agrees with them: each bound it carries, read at the day, is the earliest start or the latest end
-of the windows the question states ("15 March 2017" against 12:00 to 13:00 on that day agrees;
-against 1 June 2018, or against the whole of 2017, does not). If it disagrees, the draft is
+agrees with them: it carries both bounds, the earliest start and the latest end of the windows
+the question states ("15 March 2017" against 15 to 16 March agrees; against 1 June 2018, the
+whole of 2017, or a start of 15 March with no end, does not). Plan reads a window you pass only
+when it carries both bounds, each a date or 00:00 with no offset or a UTC one, and a bound with
+a zone designator only when that is the role zone's offset at that instant: a missing bound, a
+bound with another time of day, or a window whose start is not before its end, is held ("15
+March 2017" against 12:00 to 13:00 on that day). If it disagrees, the draft is
 `low_confidence` (`PLAN_INTENT_COVERAGE_GAP`, gap `time_window_unrealized`) and the phrase's
 numbers are left over. A window you pass in `query.time` is not held to a lone "previous
 month" when the draft carries a `prior_period` expression: that phrase is the comparison's offset,
@@ -533,11 +570,11 @@ checked, as calendar years, and only when they name one year: a count ("in 2000 
 one, and two different years ("in 2017 ... for 2000 customers") cannot be told from a count, so
 no window is read and both years are left over. It never consumes a time of day,
 an hour or a zone, whatever hours its bounds carry: a question that states "12:00 to 13:00" or
-"noon" is refused (`PLAN_UNMATCHED_TERMS`) even against a window with those hours, so write the
-question without the hours and let the window carry them. To ask for an hour range, pass it in `query.time` yourself, as
+"noon" is never ready, even against a window with those hours. To ask for an hour range, pass it in `query.time` yourself, as
 end-exclusive ISO timestamps in the temporal role's time zone (the role must be a timestamp),
 for example `start: "2017-03-15T12:00:00"`, `end: "2017-03-15T13:00:00"`, with the role and
-grain, and plan again. "and" joins a range only after "between": "between March and May 2017" is
+grain, and plan a question that names neither the hours nor the day ("orders"): those bounds
+are not the whole day a date phrase states. "and" joins a range only after "between": "between March and May 2017" is
 a range, while "March and May 2017" names two months. Unsupported calendar forms, such as a
 bound ("before 2017", "since March 2017"), a qualifier ("early 2017"), a comparison ("2017 vs
 2016", "2017 over 2016"), a numeric date (4/3/2017), two periods joined by "and", or two
@@ -653,7 +690,7 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `DISCOVER_IDS_TRUNCATED` | `discover` | Empty `terms` listed one page of ids and more remain; `details.next_offset` is the next page |
 | `DISCOVER_TERMS_COERCED` | `discover` | `terms` was a non-string (int/float/bool); coerced to a string |
 | `<TOOL>_UNKNOWN_ARG` | every tool but `segment` | Unknown argument (on `discover`, incl. `term`/`kind` typos); the value was ignored |
-| `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain; flip `allow_live_query=true` to probe |
+| `VALID_VALUES_NO_DOMAIN` | `valid-values` | Dimension has no declared value domain: `ok: false`, `status: needs_live_query`, and `next_call` gives the exact opt-in `valid-values` call with `allow_live_query=true`. No warehouse lookup runs by default; a declared empty domain remains a successful empty result |
 | `EXECUTE_EMPTY_RESULT` | `execute` | Returned 0 rows with no user filters — verify the measure/time range |
 | `PLAN_UNMATCHED_TERMS` | `plan` | The draft uses none of `details.terms` — check it answers the question before executing. As a `why` (status `low_confidence`, no `next.ready_for`) when one is a number or a clock or zone word, when one names a catalog object, when a listed non-clock, non-value grouping has no matching dimension of its own (`details.dropped_groupings` lists only unmatched terms) or may be a dimension of any of several other entities (`details.ambiguous_groupings`), or when two or more are names the catalog doesn't have |
 | `EXECUTE_ROWS_TRUNCATED` | `execute` | Returned `max_rows` of `total_row_count` rows — narrow the query or raise `max_rows` |
@@ -1010,7 +1047,7 @@ expression kind names the received kind and its request path (for example,
 | `AMBIGUOUS_ALIAS` | Alias resolves to multiple semantic objects; pick one from `details.candidates`. |
 | `AMBIGUOUS_CHILD_SCOPE` | Plain filters on one child entity across a one-to-many hop don't say which child rows they mean: two or more positive ones (the same row or separate ones), or one negated one ("has a row that is not X" or "has no row that is X"). `details.clarification.options` holds both readings, each as the query's whole rewritten `where`; resend one. Offered only when both answer for this caller. |
 | `PLAN_UNMATCHED_TERMS` | A grouping option also carries `group_by` and `order_by` to apply with its complete `where` for one unclear term. With several, in `best.query_ir` remove each chosen option's `replaces` IDs from `group_by` and their `order_by` entries, add its `id`, keep `group_by` sorted, then validate. When two terms could replace the same grouping, plan offers no options; ask the user. |
-| `AMBIGUOUS_PATH` | Several routes between root entity and target can answer differently and the package records none (`details.reason: route_decision_required`). `details.clarification` asks which one the question means (`question`) and lists one option per route: its `meaning` in business words, its `relationship_path`, and its `decision` row. Ask the person, then resend with that `decision` in `route_decisions` (this query only), or record it with Architect `record_route_decision` (the package default; an option's `conflicts_with` names the package rows to change first). |
+| `AMBIGUOUS_PATH` | Several routes between root entity and target can answer differently and the package records none (`details.reason: route_decision_required`). `details.clarification` asks which one the question means (`question`) and lists one option per route: its `meaning` in business words, its `relationship_path`, and its `decision` row. Ask the person, then resend with that `decision`, the whole option, or its id in `route_decisions`. An id must uniquely answer the current query's clarification; unknown or ambiguous ids return `INVALID_QUERY` with offered ids in `closest_matches`. The clarification appears once in the error's details. Route and policy guards apply to every shape. A query decision applies to this query only; record it with Architect `record_route_decision` (the package default; an option's `conflicts_with` names the package rows to change first). |
 | `DUPLICATE_OUTPUT_ALIAS` | Two projected columns share an alias; rename one. |
 | `UNSUPPORTED_AGGREGATION` | Aggregation kind is not legal for this measure's class. For a measure restriction, `details.aggregation` records the rejected value and the hint's `aggregation_received` and `allowed` mirror `details.aggregation` and `details.allowed`; the hint lists only those allowed values and offers omitting `aggregation` when `details.default_aggregation` belongs to `details.allowed`, naming that default. Parameter errors disclose the required parameter schema. |
 | `INVALID_TEMPORAL_ROLE` | Unknown temporal role; pick one from `details.compatible_temporal_roles`. |
@@ -1021,8 +1058,8 @@ expression kind names the received kind and its request path (for example,
 | `ROLLUP_UNSAFE` | Roll-up combines non-additive primitives; declare the aggregation entity or supply sketch metadata. For an `additive: false` measure summed above its stored grain, group by or filter (=) each key dimension. Keys are named only on validate, compile and run errors made with a request context. The message, `details.key_dimensions` and hint name those dimensions only when every key dimension is visible under the request's policy context; hidden or uncertain visibility keeps the generic refusal. |
 | `MEASURE_VALIDITY_BOUNDARY` | Query crosses a declared measure-validity window; split by sub-window. |
 | `OUT_OF_SCOPE` | Request isn't a governed-data query; hand off to the recommended tool — the semantic layer compiles governed data queries only. |
-| `CUMULATIVE_TIME_FILTER_UNSUPPORTED` | Measure's accumulation semantics forbid the requested time filter: a bounded `time.start`, or a `where` filter on a date or calendar dimension other than an upper bound (`details.where_path`). |
-| `WINDOWED_TIME_FILTER_UNSUPPORTED` | Time-windowed filter cannot be applied to this query shape. `details.lookback` carries the metric's window; `recovery_hints` carries a `widen_time_window` patch with a concrete `suggested_start` and a `drop_time_start` patch with `{remove: ["time.start"]}`. A `where` filter on a date or calendar dimension other than an upper bound refuses the same way: `details.where_path` names it and the patch removes it. |
+| `CUMULATIVE_TIME_FILTER_UNSUPPORTED` | Measure's accumulation semantics forbid the requested time filter: a bounded `time.start`, or a `where` filter on a date or calendar dimension other than an upper bound (`details.where_path`). Filters on the window's own measure input and applied row policies on temporal columns refuse too (`details.filter_source`), with no patch to remove the authored filter or policy. |
+| `WINDOWED_TIME_FILTER_UNSUPPORTED` | Time-windowed filter cannot be applied to this query shape. `details.lookback` carries the metric's window; `recovery_hints` carries a `widen_time_window` patch with a concrete `suggested_start` and a `drop_time_start` patch with `{remove: ["time.start"]}`. A `where` filter on a date or calendar dimension other than an upper bound refuses the same way: `details.where_path` names it and the patch removes it. Filters on the window's own measure input and applied row policies on temporal columns also refuse (`details.filter_source`), with no time-boundary recovery patch. |
 | `MIXED_GRAIN_INVALID` | Query mixes incompatible grains; split or rewrite. Compatible measure and dimension replacements rank naming-token overlap (id suffix, name and label) before character similarity. Replacements answer a different question and are suggestions for the caller to judge. |
 | `NO_VALID_VALUES_SOURCE` | No `valid_values` source declared for the requested dimension. |
 | `REWRITE_NOT_SUPPORTED` | Required rewrite is not implemented; try a simpler shape. |
@@ -1035,7 +1072,7 @@ expression kind names the received kind and its request path (for example,
 | `MISSING_DEPENDENCY` | Required upstream object is missing. |
 | `QUERY_EXECUTION_ERROR` | Warehouse refused or aborted execution. |
 | `PATH_NOT_FOUND` | No valid join path between the requested objects; `details.reason: excluded_by_decision` means every route walks a pair the package's `graph.path_preferences` rows (`details.rows`) record differently. `details.reachable_targets` and suggested group-by dimensions share compilation's path traversal and route-selection rules, respecting relationship directions, hop limits, route ambiguity, and recorded path preferences, including inherited decisions. The lists are exact under these path rules, without caching rejected routes, and are route-eligible: fan-out and policy checks still apply. Unrelated route rows retain bounded reachability scans; inherited-route searches skip branches that cannot reach the target within the remaining hops. |
-| `POLICY_DENIED` | Policy context blocks a referenced object or query cut. |
+| `POLICY_DENIED` | Policy context blocks a referenced object or query cut. When a denied query reads an object hidden from the caller, or one whose visibility cannot be determined, the denial carries only its code and message, with no `blocked_objects`, `policy_effects`, `policy_violations` or hints. |
 | `INVALID_METRIC_PREDICATE` | `metric_predicates[]` entry is malformed. |
 | `PREDICATE_SCOPE_UNSAFE` | Predicate scope is incompatible with query grain. |
 | `PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE` | Predicate context entity disagrees with the surrounding query. |
