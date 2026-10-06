@@ -3365,7 +3365,7 @@ def _anchored_snapshot_ctes(
     measure = _measure_index(config)[bound.measure_id]
     source_table = _measure_owned_relation(measure, entities)
     # One snapshot is chosen per series and time bucket only, so a grouped clock, calendar
-    # or other date would read just that snapshot's and drop the bucket's other periods.
+    # or other date would be read from that one snapshot, dropping the bucket's other periods.
     for dim_id in plan.group_by:
         period = _stock_period_split(bound.temporal_role, dim_id, config)
         if period or _dimension_index(config)[dim_id].data_type in {"date", "timestamp"}:
@@ -3565,7 +3565,7 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
     anchor_select_fields["__anchor_value"] = SqlIdentifier(parts=["snapshot", "__anchor_value"])
     # Keep observed periods when every chosen snapshot fails an attribute filter, just as
     # the stock leaf does. Base metric predicates still select the series measured first.
-    # Grouped only by periods means ungrouped here: the snapshots refuse grouped periods.
+    # Grouped only by periods means ungrouped here: _anchored_snapshot_ctes refuses the rest.
     settles = (
         bool(kept_rows)
         and measure.additive
