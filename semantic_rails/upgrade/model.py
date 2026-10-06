@@ -252,8 +252,8 @@ def plan(files: PackageFiles, rules: Iterable[Rule], choices: Mapping[str, str])
     findings = tuple(finding for rule in rules for finding in rule.find(files))
     pending: list[Finding] = []
     answered: dict[str, Option] = {}
-    selected: list[tuple[Edit, list[YamlPath], Finding]] = []
-    for finding in findings:
+    selected: list[tuple[Edit, list[YamlPath], int]] = []
+    for index, finding in enumerate(findings):
         if finding.options or not finding.edits:
             key = files.choice_key(finding)
             if key not in choices:
@@ -274,7 +274,7 @@ def plan(files: PackageFiles, rules: Iterable[Rule], choices: Mapping[str, str])
                 paths = [()]
             for other, other_paths, owner in selected:
                 if (
-                    owner is not finding
+                    owner != index
                     and other.file == edit.file
                     and any(
                         a[: len(b)] == b or b[: len(a)] == a for a in paths for b in other_paths
@@ -282,9 +282,9 @@ def plan(files: PackageFiles, rules: Iterable[Rule], choices: Mapping[str, str])
                 ):
                     raise SemanticLayerError(
                         "CONFIG_CONFLICT",
-                        f"Rules '{owner.rule}' and '{finding.rule}' conflict at {edit.file}:{edit.path}",
+                        f"Rules '{findings[owner].rule}' and '{finding.rule}' conflict at {edit.file}:{edit.path}",
                     )
-            selected.append((edit, paths, finding))
+            selected.append((edit, paths, index))
     result: dict[str, bytes | None] = {}
     if set(choices) - set(answered) - {files.choice_key(finding) for finding in pending}:
         raise SemanticLayerError("INVALID_CONFIG", "Unknown upgrade choice")

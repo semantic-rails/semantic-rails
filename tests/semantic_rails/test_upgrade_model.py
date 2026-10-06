@@ -371,3 +371,24 @@ def test_overlapping_paths_and_rename_destination_refuse(files, path, op, key):
     rule = Rule("second", "1.0", "same_meaning", "Overlap", find)
     with pytest.raises(SemanticLayerError, match="Rules 'first' and 'second' conflict"):
         plan(files, (_rule("first", "rename"), rule), {})
+
+
+def test_duplicate_finding_emission_conflicts(files):
+    finding = Finding(
+        "rewrite",
+        "package.yaml",
+        1,
+        ("package",),
+        "Replace legacy",
+        (Edit("package.yaml", "replace", ("package", "legacy"), value=False),),
+    )
+
+    def find(current):
+        if current.documents["package.yaml"]["package"]["legacy"]:
+            return (finding, finding)
+        return ()
+
+    rule = Rule("rewrite", "1.0", "same_meaning", "Replace legacy", find)
+    with pytest.raises(SemanticLayerError, match="Rules 'rewrite' and 'rewrite' conflict") as exc:
+        plan(files, (rule,), {})
+    assert exc.value.code == "CONFIG_CONFLICT"

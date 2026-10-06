@@ -170,6 +170,8 @@ def _splice(text: str, root: Node, expected: Any, edit: Any) -> tuple[str, bool]
                     .rstrip("\n")
                 )
             span = text[scalar.start_mark.index : scalar.end_mark.index]
+            if not span and scalar.start_mark.index and text[scalar.start_mark.index - 1] in ":-":
+                rendered = " " + rendered
             if scalar.style in {"|", ">"} and span.endswith("\n"):
                 rendered += "\r\n" if span.endswith("\r\n") else "\n"
             return text[: scalar.start_mark.index] + rendered + text[scalar.end_mark.index :], False

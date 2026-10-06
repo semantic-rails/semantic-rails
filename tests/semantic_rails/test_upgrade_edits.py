@@ -308,3 +308,16 @@ def test_flow_anchor_collection_edits(op):
         expected["x"].update({"a": {"value": 1}, "new": 3})
     assert safe_load(result) == expected
     assert reformatted and result.startswith("# before\nx: {") and result.endswith("} # after\n")
+
+
+@pytest.mark.parametrize(
+    "text,path,expected",
+    [
+        ("a:\nb: 2\n", ("a",), {"a": "new", "b": 2}),
+        ("items:\n-\n- 2\n", ("items", 0), {"items": ["new", 2]}),
+    ],
+)
+def test_blank_scalar_replacement(text, path, expected):
+    result, reformatted = apply_edits(text, [Edit("", "replace", path, value="new")])
+    assert safe_load(result) == expected and not reformatted
+    assert result == text.replace("a:\n", "a: new\n").replace("-\n", "- new\n")
