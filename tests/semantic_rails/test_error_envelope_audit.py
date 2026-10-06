@@ -90,6 +90,12 @@ _MCP_TRIGGERED_CODES = {
     "UNKNOWN_MCP_RESOURCE": _trigger_unknown_mcp_resource,
 }
 
+_AVAILABILITY_HINTS = {
+    "UNKNOWN_MCP_TOOL": ("use_available_tool", "available_tools"),
+    "UNKNOWN_MCP_PROMPT": ("use_available_prompt", "available_prompts"),
+    "UNKNOWN_MCP_RESOURCE": ("use_available_resource", "available_resources"),
+}
+
 
 @pytest.mark.parametrize("code", sorted(_MCP_TRIGGERED_CODES.keys()))
 def test_mcp_advertised_error_codes_produce_structured_envelopes(runtime_factory, code) -> None:
@@ -101,9 +107,7 @@ def test_mcp_advertised_error_codes_produce_structured_envelopes(runtime_factory
         assert result.get("ok") is False, f"trigger for {code} returned ok=True"
         errors = list(result.get("errors", []) or [])
         assert errors, f"trigger for {code} returned no errors"
-        # The first error should match the expected code (or a related
-        # boundary code — the trigger for OBJECT_NOT_FOUND can surface
-        # as a different code if the registry shape changes).
+        # Each trigger must preserve its advertised boundary code.
         first = errors[0]
         _assert_envelope_shape(first)
         assert result["error"] == {key: first[key] for key in ("code", "message")}
@@ -113,10 +117,16 @@ def test_mcp_advertised_error_codes_produce_structured_envelopes(runtime_factory
             assert "recovery_hints" not in issue.get("details", {})
             for hint in issue["recovery_hints"]:
                 assert serialized.count(json.dumps(hint["message"])) == 1
-        if code in {"OBJECT_NOT_FOUND", "INVALID_MCP_ARGUMENTS", "UNKNOWN_MCP_TOOL"}:
-            assert first["code"] == code, (
-                f"expected code={code}, got {first['code']}: {first.get('message')}"
-            )
+        assert first["code"] == code, (
+            f"expected code={code}, got {first['code']}: {first.get('message')}"
+        )
+        if code in _AVAILABILITY_HINTS:
+            kind, available = _AVAILABILITY_HINTS[code]
+            hint = first["recovery_hints"][0]
+            assert hint["kind"] == kind
+            assert hint[available]
+            if code == "UNKNOWN_MCP_TOOL":
+                assert {"discover", "plan"} <= set(hint[available])
     finally:
         runtime.close()
 
