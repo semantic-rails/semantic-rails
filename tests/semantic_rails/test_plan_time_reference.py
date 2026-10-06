@@ -309,6 +309,34 @@ def test_a_package_zone_reading_is_held_where_the_role_reads_utc(
     assert plan["why"]["details"]["planning_timezone"] == "Asia/Tokyo"
 
 
+@pytest.mark.parametrize(
+    ("start", "end"), [("2026-10-06", "2026-10-07"), ("2026-10-05", "2026-10-06")]
+)
+def test_a_caller_window_must_agree_in_the_planning_zone_and_utc(
+    subscriptions: Runtime, start: str, end: str
+) -> None:
+    # Tokyo is both the role's and the planning zone and reads 2026-10-06; UTC reads
+    # 2026-10-05. A window held in UTC stays held; one read in UTC is another local day.
+    subscriptions._config = replace(
+        subscriptions._config,
+        temporal_roles=[
+            replace(role, timezone="Asia/Tokyo") for role in subscriptions._config.temporal_roles
+        ],
+    )
+    _with_package_zone(subscriptions, "Asia/Tokyo")
+    plan = plan_payload(
+        subscriptions,
+        intent="new accounts today",
+        partial_query={
+            "policy_context": {"now": "2026-10-05T16:00:00Z"},
+            "time": {"start": start, "end": end},
+        },
+    )
+    assert plan["status"] == "low_confidence"
+    assert plan["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    assert not plan["next"].get("ready_for")
+
+
 def test_a_callers_range_is_held_where_the_roles_zone_reads_other_days(
     subscriptions: Runtime,
 ) -> None:
@@ -322,7 +350,7 @@ def test_a_callers_range_is_held_where_the_roles_zone_reads_other_days(
     )
     plan = plan_payload(
         subscriptions,
-        intent="new accounts last month",
+        intent="monthly new accounts last month",
         partial_query={
             "policy_context": {"now": "2026-10-01T16:00:00Z"},
             "time": {"range": {"last": {"unit": "day", "value": 30}}},
