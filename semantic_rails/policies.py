@@ -251,7 +251,7 @@ def enforce_query_policies(
     # visible_only is checked against everything the query reads, never policy by policy.
     restricted = restricted_object_ids(
         config, environment=environment, audience=audience, roles=roles
-    ).intersection(object_ids, bound_object_ids(binding) if binding is not None else ())
+    ) & {*object_ids, *(bound_object_ids(binding) if binding is not None else ())}
     if restricted:
         raise SemanticLayerError(
             "POLICY_DENIED",

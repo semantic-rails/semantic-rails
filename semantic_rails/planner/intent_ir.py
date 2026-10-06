@@ -290,12 +290,16 @@ def _subject_candidates(
     if not content_terms:
         return []
     raw: list[tuple[int, str, str, str]] = []
+    visible = set(
+        visible_object_ids(config, (row.id for row in [*config.measures, *config.metric_recipes]))
+    )
     for row in config.measures:
+        if row.id not in visible:
+            continue
         score = _score(row, content_terms) - _specificity_penalty(row, content_terms)
         if score <= 0:
             continue
         raw.append((score, getattr(row, "label", ""), getattr(row, "id", ""), "measure"))
-    visible = set(visible_object_ids(config, (row.id for row in config.metric_recipes)))
     for row in config.metric_recipes:
         if row.id not in visible:
             continue
