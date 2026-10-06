@@ -27,13 +27,13 @@ STORE = "dimension.jaffle_store_name"
 REVENUE = [{"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}]
 # 365 daily buckets: more than the default cap, fewer than the counting ceiling.
 DAILY_REVENUE = {
-    "version": 2,
+    "version": 1,
     "select": REVENUE,
     "time": {"temporal_role": ORDER_TIME, "grain": "day"},
 }
 # A time role with no grain or window, grouped by store: one row per store and order timestamp.
 NO_GRAIN_WINDOW = {
-    "version": 2,
+    "version": 1,
     "select": REVENUE,
     "group_by": [STORE],
     "time": {"temporal_role": ORDER_TIME},

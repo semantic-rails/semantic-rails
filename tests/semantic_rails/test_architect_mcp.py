@@ -5,6 +5,8 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
 from semantic_rails.architect_mcp import (
     ARCHITECT_INTERFACE_VERSION,
     create_architect_mcp_server,
@@ -65,10 +67,11 @@ def test_architect_mcp_registers_developer_project_tools(tmp_path: Path):
         "impact_project",
         "mcp_client_config",
     }.issubset(tool_names)
+    assert {"write_project_file", "archive_project_file"}.isdisjoint(tool_names)
+    assert "write_project_files" in tool_names
     assert ARCHITECT_INTERFACE_VERSION == "v1"
 
     mutation_names = {
-        "archive_project_file",
         "create_project",
         "record_route_decision",
         "remove_object",
@@ -78,7 +81,7 @@ def test_architect_mcp_registers_developer_project_tools(tmp_path: Path):
         "upsert_example",
         "upsert_segment",
         "upsert_test",
-        "write_project_file",
+        "write_project_files",
     }
     for tool in _list_tools(server):
         if tool.name not in mutation_names:
@@ -122,7 +125,7 @@ def test_tool_list_follows_the_description_rules(tmp_path: Path):
     assert len(server.instructions or "") < 2048
     assert all(
         name in (server.instructions or "")
-        for name in ("dry_run", "expected_revision", "one at a time")
+        for name in ("dry_run", "expected_revision", "write_project_files")
     )
     for tool in tools:
         assert tool.annotations is not None and tool.annotations.title, tool.name
@@ -206,29 +209,27 @@ def test_create_project_scaffolds_parseable_and_runnable_package(tmp_path: Path)
     assert package_tests["ok"] is True
 
 
-def test_write_project_file_is_workspace_scoped(tmp_path: Path):
+def test_write_project_files_is_workspace_scoped(tmp_path: Path):
     server = create_architect_mcp_server(workspace_root=tmp_path)
     created = _create_project(server, "scoped_core")
     project_path = tmp_path / "configs" / "semantic_rails" / "scoped_core"
 
     root_result = _call_tool(
         server,
-        "write_project_file",
+        "write_project_files",
         {
             "project_path": str(tmp_path),
-            "relative_path": "README.md",
-            "content": "nope\n",
+            "files": [{"path": "README.md", "content": "nope\n"}],
             "expected_revision": created["revision"],
             "idempotency_key": "root-write",
         },
     )
     result = _call_tool(
         server,
-        "write_project_file",
+        "write_project_files",
         {
             "project_path": str(project_path),
-            "relative_path": "../outside.yml",
-            "content": "nope: true\n",
+            "files": [{"path": "../outside.yml", "content": "nope: true\n"}],
             "expected_revision": created["revision"],
             "idempotency_key": "outside-write",
         },
@@ -458,11 +459,10 @@ def test_raw_write_parse_failure_rolls_back_bytes_and_revision(tmp_path: Path):
 
     result = _call_tool(
         server,
-        "write_project_file",
+        "write_project_files",
         {
             "project_path": str(project_path),
-            "relative_path": "package.yml",
-            "content": "schema_version: [\n",
+            "files": [{"path": "package.yml", "content": "schema_version: [\n"}],
             "expected_revision": created["revision"],
             "idempotency_key": "invalid-raw-write",
         },
@@ -475,3 +475,71 @@ def test_raw_write_parse_failure_rolls_back_bytes_and_revision(tmp_path: Path):
     assert package_path.read_bytes() == before
     status = _call_tool(server, "project_status", {"project_path": str(project_path)})
     assert status["revision"] == created["revision"]
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_write_project_files_commits_or_previews_one_batch(tmp_path: Path, dry_run: bool):
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    created = _create_project(server, "batch_core")
+    project_path = Path(created["project_path"])
+    files = [
+        {
+            "path": path,
+            "content": (project_path / path).read_text().replace("total_amount", "renamed_amount"),
+        }
+        for path in ("models/core/events.yml", "metrics/core.yml")
+    ]
+    before = {entry["path"]: (project_path / entry["path"]).read_bytes() for entry in files}
+    result = _call_tool(
+        server,
+        "write_project_files",
+        {
+            "project_path": str(project_path),
+            "files": files,
+            "expected_revision": created["revision"],
+            "idempotency_key": "batch-rename",
+            "dry_run": dry_run,
+        },
+    )
+
+    assert result["ok"], result
+    assert result["status"] == ("preview" if dry_run else "written")
+    assert set(result["changed_files"]) == set(before)
+    for entry in files:
+        assert (project_path / entry["path"]).read_bytes() == (
+            before[entry["path"]] if dry_run else entry["content"].encode()
+        )
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        [],
+        [{"path": "new.md", "content": "a"}, {"path": "new.md", "archive": True}],
+        [{"path": "new.md", "content": "a", "archive": True}],
+        [{"path": "new.md", "content": "a"}, {"path": "missing.md", "archive": True}],
+        [{"path": "package.yml", "content": "a", "overwrite": False}],
+        [{"path": ".architect/archive/new.md", "content": "a"}],
+    ],
+)
+def test_write_project_files_wraps_refusals_without_writes(tmp_path: Path, files: list):
+    server = create_architect_mcp_server(workspace_root=tmp_path)
+    created = _create_project(server, "refusal_core")
+    project_path = Path(created["project_path"])
+    before = {str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    result = _call_tool(
+        server,
+        "write_project_files",
+        {
+            "project_path": str(project_path),
+            "files": files,
+            "expected_revision": created["revision"],
+            "idempotency_key": "refused-batch",
+        },
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] in {"INVALID_MCP_ARGUMENTS", "INVALID_CONFIG"}
+    assert {
+        str(path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()
+    } == before

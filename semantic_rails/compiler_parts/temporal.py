@@ -3,12 +3,12 @@ from __future__ import annotations
 import difflib
 import re
 from collections.abc import Iterable, Iterator
-from dataclasses import fields, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from ..ast import NormalizedQuery
+from ..ast import ChildGroup, Filter, NormalizedQuery
 from ..errors import SemanticLayerError
 from ..expressions import (
     AggregateExpr,
@@ -917,9 +917,96 @@ def _unsafe_windowed_lookback(expr: SemanticExpr, config: PackageConfig) -> dict
     return None
 
 
+def _column_name(column: str) -> str:
+    """A column as the warehouse resolves an unquoted name: without quotes or case."""
+    return str(column).strip().strip('"`').casefold()
+
+
+def _clock_where_cuts(query: NormalizedQuery, config: PackageConfig) -> list[tuple[str, Filter]]:
+    """The ``where`` conditions, child groups' included, that may cut a window's lookback: each
+    with its path.
+
+    A window can order its rows by any date (the query's clock, a snapshot's own date, or one
+    joined to either), so a condition is judged by its dimension's column, never by tracing it
+    to that date. A column is its name compared without case, on any table, so a column of the
+    same name on an unrelated table counts too. A column is temporal when a dimension on it is
+    a time role or of a ``date``, ``timestamp``, ``datetime`` or ``time`` kind, when it belongs
+    to a calendar (``kind: time``) entity, or when a relationship pairs it (either direction)
+    with a temporal column, repeated until nothing changes. A condition cuts when its
+    dimension's column is temporal. Only an upper bound (``<``, ``<=``) on a ``date`` or
+    ``timestamp`` dimension keeps every lookback row, as ``time.end`` does.
+    """
+    analysis = get_package_analysis(config)  # unrecorded lookups: the guard binds no object
+    role_dimensions = {role.dimension for role in analysis.temporal_roles.values()}
+    temporal_columns = {
+        _column_name(dim.column)
+        for dim in analysis.dimensions.values()
+        if str(dim.data_type).lower() in {"date", "timestamp", "datetime", "time"}
+        or dim.id in role_dimensions
+        or analysis.entities[dim.entity].kind == "time"
+    }
+    temporal_columns.update(
+        _column_name(column)
+        for entity in analysis.entities.values()
+        if entity.kind == "time"
+        for column in entity.key or [entity.primary_key]
+    )
+    pairs = [
+        (_column_name(source), _column_name(target))
+        for rel in config.relationships
+        for source, target in zip(
+            rel.source_columns or [rel.source_column],
+            rel.target_columns or [rel.target_column],
+            strict=True,
+        )
+    ]
+    added = True
+    while added:
+        added = False
+        for pair in pairs:
+            if temporal_columns.intersection(pair) and not temporal_columns.issuperset(pair):
+                temporal_columns.update(pair)
+                added = True
+    conditions: list[tuple[str, Filter]] = []
+    for index, item in enumerate(query.where):
+        if isinstance(item, ChildGroup):
+            conditions.extend(
+                (f"where[{index}].where[{inner}]", row) for inner, row in enumerate(item.where)
+            )
+        else:
+            conditions.append((f"where[{index}]", item))
+    cuts = []
+    for path, item in conditions:
+        dim = analysis.dimensions.get(item.field)
+        if dim is None or _column_name(dim.column) not in temporal_columns:
+            continue
+        op = " ".join(str(item.op).upper().split())
+        if op in {"<", "<="} and dim.data_type in {"date", "timestamp"}:
+            continue
+        cuts.append((path, item))
+    return cuts
+
+
 def _validate_restrictive_time_semantics(query: NormalizedQuery, config: PackageConfig) -> None:
-    if query.time is None or query.time.start is None:
+    if query.time is None:
         return
+    # time.start first, so its refusal is unchanged; otherwise the first where cut of a date or
+    # calendar dimension.
+    details: dict[str, Any]
+    if query.time.start is not None:
+        details = {"start": query.time.start}
+        bound = "a bounded query.time.start"
+        remedy = "remove the start boundary"
+    else:
+        cuts = _clock_where_cuts(query, config)
+        if not cuts:
+            return
+        path, item = cuts[0]
+        details = {"where_path": path, "where": asdict(item)}
+        if " ".join(str(item.op).upper().split()) in {">=", ">"}:
+            details["start"] = item.value
+        bound = f"a where filter on a date or calendar dimension ({path}) other than an upper bound"
+        remedy = f"remove {path} (an upper bound or query.time.end still runs)"
     expressions = [item.expression for item in query.select if item.expression is not None]
     expressions.extend(
         item.expression for item in query.metric_filters if item.expression is not None
@@ -928,23 +1015,20 @@ def _validate_restrictive_time_semantics(query: NormalizedQuery, config: Package
         if _expr_contains_unsafe_bounded_cumulative(expr, config):
             raise SemanticLayerError(
                 "CUMULATIVE_TIME_FILTER_UNSUPPORTED",
-                "Cumulative expressions do not support a bounded query.time.start; widen the time window or remove the start boundary",
-                details={"start": query.time.start, "expression": expr_to_dict(expr)},
+                f"Cumulative expressions do not support {bound}; widen the time window or {remedy}",
+                details={**details, "expression": expr_to_dict(expr)},
             )
         if _expr_contains_unsafe_bounded_windowed(expr, config):
             lookback = _unsafe_windowed_lookback(expr, config)
-            details: dict[str, Any] = {
-                "start": query.time.start,
-                "expression": expr_to_dict(expr),
-            }
+            details = {**details, "expression": expr_to_dict(expr)}
             if lookback is not None:
                 details["lookback"] = lookback
             raise SemanticLayerError(
                 "WINDOWED_TIME_FILTER_UNSUPPORTED",
                 (
-                    "Rolling, prior_period, and period_to_date expressions do not support a bounded "
-                    "query.time.start: the leaf-level WHERE truncates the lookback rows the window "
-                    "function depends on, producing silently wrong values. Remove the start boundary "
+                    f"Rolling, prior_period, and period_to_date expressions do not support {bound}: "
+                    "the leaf-level WHERE truncates the lookback rows the window "
+                    f"function depends on, producing silently wrong values. {remedy.capitalize()} "
                     "or widen it by the metric's window/offset/period lookback."
                 ),
                 details=details,

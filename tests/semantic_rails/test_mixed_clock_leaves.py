@@ -33,7 +33,7 @@ def _orders_per_session(overrides: dict[str, str]) -> dict:
         "denominator": _SESSIONS,
     }
     return {
-        "version": 2,
+        "version": 1,
         "select": [{"expression": ratio, "as": "orders_per_session"}],
         "time": {
             "temporal_role": _SESSION_TIME,
@@ -61,7 +61,7 @@ def _answer(runtime, config, overrides: dict[str, str]) -> float:
 
 # A snapshot measure queried on a calendar clock at month grain is aligned to its own.
 _INVENTORY_BY_MONTH = {
-    "version": 2,
+    "version": 1,
     "select": [{"expression": {"kind": "aggregate", "measure": _INVENTORY}, "as": "inventory"}],
     "time": {"temporal_role": "temporal_role.jaffle_monthly_metric_month", "grain": "month"},
 }
@@ -106,7 +106,7 @@ def test_a_conversion_operand_keeps_its_own_clock_rules(package_config_factory):
         "matching_mode": "first_converted_after_base",
     }
     query = {
-        "version": 2,
+        "version": 1,
         "select": [{"expression": conversion, "as": "conversion_rate"}],
         "time": {"temporal_role": _SESSION_TIME, "grain": "month"},
     }

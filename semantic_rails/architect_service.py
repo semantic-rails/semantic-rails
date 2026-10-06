@@ -2229,131 +2229,105 @@ class ArchitectProject:
         ]
         return {**report["impact"], "changes": changes, "references": references}
 
-    def write_file(
+    def write_files(
         self,
+        files: list[dict[str, Any]],
         *,
-        relative_path: str,
-        content: str,
-        overwrite: bool = True,
-        validate_after: bool = True,
-        expected_revision: str | None = None,
-        idempotency_key: str | None = None,
-        dry_run: bool = False,
-    ) -> ArchitectMutation:
-        """Write one raw UTF-8 project file through the transaction boundary.
-
-        The file is checked after receipt replay, so a retried write replays.
-        """
-
-        expected, key = self._mutation_identity(expected_revision, idempotency_key)
-        path = self._target_path(relative_path)
-        relative = self._relative(path)
-        metadata = {"relative_path": relative, "target_file": relative}
-
-        def prepare(_: str) -> tuple[list[ProjectFileUpdate], None]:
-            if path.exists() and not overwrite:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    "Target file exists and overwrite=false",
-                    details={"relative_path": relative_path},
-                )
-            metadata["operation"] = "updated" if path.exists() else "created"
-            mode = (path.stat().st_mode & 0o777) if path.exists() else None
-            return [ProjectFileUpdate(relative, str(content).encode("utf-8"), mode)], None
-
-        outcome = ProjectTransaction(
-            self.project_path,
-            workspace_root=self.workspace_root,
-        ).apply(
-            (),
-            expected_revision=expected,
-            idempotency_key=key,
-            intent={
-                "operation": "write_project_file",
-                "expected_revision": expected,
-                "relative_path": relative,
-                "content": str(content),
-                "overwrite": overwrite,
-            },
-            dry_run=dry_run,
-            validate_after=validate_after,
-            success_status="written",
-            metadata=metadata,
-            prepare_updates=prepare,
-        )
-        return ArchitectMutation(
-            report=outcome.report,
-            project_path=self.project_path,
-            _snapshots=outcome.snapshots,
-            _active=bool(outcome.snapshots),
-        )
-
-    def archive_file(
-        self,
-        *,
-        relative_path: str,
         reason: str = "",
         validate_after: bool = True,
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
         dry_run: bool = False,
     ) -> ArchitectMutation:
-        """Archive one project file through an atomic move-like transaction.
-
-        The file is checked after receipt replay, so a retried archive replays.
-        """
-
+        """Write or archive package files together; check existence after receipt replay."""
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
-        source = self._target_path(relative_path)
-        source_relative = self._relative(source)
-        archive_id = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
-        destination_relative = f".architect/archive/{archive_id}/{source_relative}"
+        entries: dict[str, dict[str, Any]] = {}
+        if not isinstance(files, list) or not files:
+            raise SemanticLayerError("INVALID_MCP_ARGUMENTS", "files must be a nonempty list")
+        for entry in files:
+            if (
+                not isinstance(entry, dict)
+                or not _is_text(entry.get("path"))
+                or not (
+                    (set(entry) == {"path", "archive"} and entry["archive"] is True)
+                    or (
+                        {"path", "content"} <= set(entry) <= {"path", "content", "overwrite"}
+                        and isinstance(entry["content"], str)
+                        and isinstance(entry.get("overwrite", True), bool)
+                    )
+                )
+            ):
+                raise SemanticLayerError("INVALID_MCP_ARGUMENTS", "Invalid write or archive entry")
+            raw = entry["path"].strip().replace("\\", "/")
+            if Path(raw).is_absolute():
+                raise SemanticLayerError("INVALID_CONFIG", "A project-relative path is required")
+            relative = self._relative(self._target_path(raw))
+            if relative == "." or relative in entries or Path(relative).parts[0] == ".architect":
+                raise SemanticLayerError("INVALID_CONFIG", "Duplicate or reserved project path")
+            entries[relative] = entry
+        archive_root = f".architect/archive/{hashlib.sha256(key.encode('utf-8')).hexdigest()[:16]}"
+        archived = {
+            path: f"{archive_root}/{path}" for path, e in entries.items() if e.get("archive")
+        }
 
         def prepare(_: str) -> tuple[list[ProjectFileUpdate], None]:
-            if not source.exists() or not source.is_file():
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    "File to archive does not exist",
-                    details={"relative_path": relative_path},
-                )
-            updates = [
-                ProjectFileUpdate(
-                    destination_relative, source.read_bytes(), source.stat().st_mode & 0o777
-                ),
-                ProjectFileUpdate(source_relative, None),
-            ]
-            if reason:
-                updates.append(
-                    ProjectFileUpdate(
-                        f".architect/archive/{archive_id}/ARCHIVE_REASON.txt",
-                        str(reason).encode("utf-8"),
+            updates = []
+            for relative, entry in entries.items():
+                path = self._target_path(relative)
+                if entry.get("archive"):
+                    if not path.is_file():
+                        raise SemanticLayerError("INVALID_CONFIG", "File to archive does not exist")
+                    updates.extend(
+                        [
+                            ProjectFileUpdate(
+                                archived[relative], path.read_bytes(), path.stat().st_mode & 0o777
+                            ),
+                            ProjectFileUpdate(relative, None),
+                        ]
                     )
+                else:
+                    if path.exists() and not entry.get("overwrite", True):
+                        raise SemanticLayerError(
+                            "INVALID_CONFIG", "Target file exists and overwrite=false"
+                        )
+                    mode = path.stat().st_mode & 0o777 if path.exists() else None
+                    updates.append(
+                        ProjectFileUpdate(relative, entry["content"].encode("utf-8"), mode)
+                    )
+            if archived and reason:
+                updates.append(
+                    ProjectFileUpdate(f"{archive_root}/ARCHIVE_REASON.txt", reason.encode("utf-8"))
+                )
+            if len({u.relative_path for u in updates}) != len(updates):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG", "Archive destination conflicts with reason file"
                 )
             return updates, None
 
-        outcome = ProjectTransaction(
-            self.project_path,
-            workspace_root=self.workspace_root,
-        ).apply(
+        outcome = ProjectTransaction(self.project_path, workspace_root=self.workspace_root).apply(
             (),
             expected_revision=expected,
             idempotency_key=key,
             intent={
-                "operation": "archive_project_file",
+                "operation": "write_project_files",
                 "expected_revision": expected,
-                "relative_path": source_relative,
+                "files": [
+                    {
+                        "path": path,
+                        "sha256": "archive"
+                        if e.get("archive")
+                        else hashlib.sha256(e["content"].encode("utf-8")).hexdigest(),
+                        "overwrite": e.get("overwrite", True),
+                    }
+                    for path, e in entries.items()
+                ],
                 "reason": reason,
             },
             dry_run=dry_run,
             validate_after=validate_after,
-            allow_internal_paths=True,
-            success_status="archived",
-            metadata={
-                "operation": "archived",
-                "relative_path": source_relative,
-                "source_file": source_relative,
-                "archived_to": destination_relative,
-            },
+            allow_internal_paths=bool(archived),
+            success_status="written",
+            metadata={"operation": "written", "files": list(entries), "archived_to": archived},
             prepare_updates=prepare,
         )
         return ArchitectMutation(

@@ -56,7 +56,7 @@ def _agg(measure: str) -> dict[str, Any]:
 
 def _query(*selects: dict[str, Any], **extra: Any) -> dict[str, Any]:
     return {
-        "version": 2,
+        "version": 1,
         "select": [{"expression": expr, "as": f"v{index}"} for index, expr in enumerate(selects)],
         "group_by": [CUSTOMER],
         **extra,

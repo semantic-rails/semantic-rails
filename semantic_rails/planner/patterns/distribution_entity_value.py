@@ -39,7 +39,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         return None
     product_filter = _product_filter(config, "account")
     query: dict[str, Any] = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "as": "p80_arr",

@@ -672,7 +672,7 @@ _METRIC_PREDICATE = {
     "value": 500,
 }
 _CONVERSION = {
-    "version": 2,
+    "version": 1,
     "select": [
         {
             "as": "v",

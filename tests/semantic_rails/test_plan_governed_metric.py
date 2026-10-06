@@ -205,7 +205,7 @@ def test_a_building_block_is_left_out_of_discover_and_runs_by_id(runtime: Runtim
     assert METRIC in [row["id"] for row in found["metrics"]]
     assert (MEASURE in [row["id"] for row in found["measures"]]) is not building_block
     query = {
-        "version": 2,
+        "version": 1,
         "select": [{"as": "all_kinds", "expression": {"measure": MEASURE}}],
         "time": {"temporal_role": "temporal_role.shop_visit_day", "range": {"last": {"unit": "week", "value": 1}}},
     }  # fmt: skip

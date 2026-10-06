@@ -393,7 +393,7 @@ def _expression_alias(expr: SemanticExpr, config: PackageConfig | None = None) -
         if config is None:
             return f"leaf__scoped_{expr.measure.replace('.', '_')}"
         query = normalize_query(
-            {"version": 2, "select": [{"expression": expr_to_dict(expr), "as": "__scoped"}]}
+            {"version": 1, "select": [{"expression": expr_to_dict(expr), "as": "__scoped"}]}
         )
         return _bind_scoped_aggregate(expr, config, query).alias
     if isinstance(expr, MetricRecipeRefExpr):
