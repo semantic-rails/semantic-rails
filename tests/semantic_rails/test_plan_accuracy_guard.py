@@ -1032,6 +1032,7 @@ def _stand_in_runtime(values: list[Any]) -> Any:
 
     return SimpleNamespace(
         _config=SimpleNamespace(
+            package=SimpleNamespace(environments=[]),
             measures=[row("measure.shop.revenue", "revenue")],
             metric_recipes=[],
             dimensions=[row("dimension.store_name", "store"), row("dimension.region", "region")],
