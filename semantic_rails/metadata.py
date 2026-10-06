@@ -68,6 +68,7 @@ from .metadata_parts.guidance import (
     _metric_guidance,
     _metric_preferences,
 )
+from .metadata_parts.measure_governance import building_block_measures
 from .metadata_parts.object_metadata import (
     _comparison_metadata,
     _example_test_metadata,
@@ -2095,8 +2096,10 @@ def discover_payload(
         _catalog_token_doc_freq(config, search_index=search_index) if enforce_scope else None
     )
 
+    # A building block is offered through the metrics that filter it, never on its own.
+    building_blocks = building_block_measures(config)
     for measure in config.measures:
-        if measure.id in hidden_ids:
+        if measure.id in hidden_ids or measure.id in building_blocks:
             continue
         availability = _availability_for_object(config, root_entity, measure.id, "measure")
         row = {

@@ -2242,6 +2242,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 additive=_authored_additive(measure_spec, kind, f"{path}: measure '{measure_key}'"),
                 lookup_from=str(measure_spec.get("from", "") or "").strip(),
                 lookup_via=str(measure_spec.get("via", "") or "").strip(),
+                publish=measure_spec.get("publish") is not False,
             )
             measures.append(measure)
             measure_lookup[(model_id, str(measure_key))] = measure_id

@@ -26,6 +26,7 @@ from .._base import (
     _add_order,
     _aggregation_from_text,
     _explicit_grain,
+    _governed_target,
     _implied_window_grain,
     _maybe_group_by,
     _named_measure,
@@ -192,6 +193,13 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     if group_by:
         query["group_by"] = group_by
     query = _normalize_value_filters(query, _matched_value_rows(runtime, query, text), text=text)
+    # The governed metric over the chosen measure answers instead ("how many workspaces were
+    # active" means Active workspaces, not the all-classes count it filters).
+    governed = _governed_target(config, text, query)
+    if governed is not None:
+        target, target_id, is_measure = governed, str(governed.id), False
+        select_alias = _semantic_token(target_id, fallback="value")
+        query["select"] = [{"as": select_alias, "expression": {"metric": target_id}}]
     if is_top:
         query["order_by"] = [{"field": select_alias, "direction": "DESC"}]
         query["limit"] = top_n
