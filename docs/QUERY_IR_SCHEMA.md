@@ -1019,19 +1019,21 @@ month that mixes NULL and known amounts sums the known ones. A conditional sum
 (`aggregate_if`, or an aggregate with a `filter`) reads only the rows that meet its condition: a group
 whose rows all fail it has none and reads `0`, and one whose matching rows all have a NULL
 amount reads `NULL`. Filled or not, a group reads the same.
-For a plain additive time series with an authored dimension filter, the source rows retain
-every observed bucket before that filter: a week with rows but no matches reads `0` inside
-the loaded range in both observation scopes; a bucket after the last loaded timestamp stays
-`NULL` under the coverage rules below. String `=` and `IN` literals in its aggregate
+For a plain additive time series with an authored dimension filter, on a warehouse that
+checks loaded coverage (DuckDB and Postgres), the source rows retain every observed bucket
+before that filter: a week with rows but no matches reads `0` only inside the loaded range,
+with or without `fill`, in both observation scopes. A bucket after the last loaded timestamp,
+such as one held only by a future-dated row, stays `NULL` under the coverage rules below, so
+filled and unfilled output agree. String `=` and `IN` literals in its aggregate
 filter use the same misspelling guard in both scopes: `FILTER_VALUE_NOT_FOUND` names values
 absent from their dimension, and `FILTER_VALUE_UNVERIFIED` names values whose existence
 cannot be checked under the caller's policies. Query `where` filters and policy row filters
 still restrict those source rows. A period with no source rows stays absent without `fill`;
 no calendar is generated. This applies to sums and counts on a local clock with no rewrite,
 using local dimensions or single-hop lookups, with only additive outputs, and preserves matching NULL amounts.
-Other shapes retain their existing lowering: rollups, fanout and parent-lookup rewrites,
-nonlocal clocks, predicate populations, non-additive sibling outputs, distribution branches,
-and conditional operands.
+Other shapes retain their existing lowering: warehouses without loaded coverage, rollups,
+fanout and parent-lookup rewrites, nonlocal clocks, predicate populations, non-additive
+sibling outputs, distribution branches, and conditional operands.
 For an additive filtered series on those paths, `FILTERED_SERIES_BUCKETS_DROPPED` names
 missing observed bucket/group keys found by a separately authorized source query. If that
 query is denied, fails, reaches its 1,001-row cap, or the answer has a limit or population
@@ -1095,9 +1097,9 @@ are internal: they settle inside their own scope in both modes.
   nested `CASE` keeps its earlier settlement inside a predicate too.
 - **Time coverage bounds zero filling.** Bounded plain time leaves check for observation
   outside the query's window under the same authored, query and policy row filters. For
-  fill, dense series and combined leaves, an empty bucket inside the base relation's loaded
-  range reads `0`; an empty bucket before its first loaded timestamp or after its last
-  reads `NULL`. Coverage uses the whole base relation under policy filters, ignoring
+  fill, dense series, combined leaves and retained filtered series (filled or not), an empty
+  bucket inside the base relation's loaded range reads `0`; an empty bucket before its first
+  loaded timestamp or after its last reads `NULL`. Coverage uses the whole base relation under policy filters, ignoring
   measure and query filters, and excludes future timestamps from its upper edge. The
   cutoff compares UTC instants: timezone-aware columns preserve their instant, and
   naive columns use their declared storage zone (`column_timezone`, then `timezone`,
@@ -1126,11 +1128,13 @@ are internal: they settle inside their own scope in both modes.
   `aggregate_if`) in these bounded base leaves and in `dataset` probes. It settles a
   never-matched operand to `0` only for an output whose bucket the same guard checks against
   the loaded range, or for an output with no time bucket (one total over its scope). The
-  loaded-range check covers window totals, filled and dense series and combined leaves, each
-  for a leaf that reads its clock from its own relation. Every other output keeps value-based
-  observation, so a never-matched operand reads `NULL` with `NO_DATA_IN_SCOPE`:
-  - a grained series of a single leaf without a fill or dense series, bounded or not: a
-    month or week of a window, including a future month held only by a placeholder row;
+  loaded-range check covers window totals, filled and dense series, combined leaves and
+  retained filtered series, each for a leaf that reads its clock from its own relation. Every
+  other output keeps value-based observation, so a never-matched operand reads `NULL` with
+  `NO_DATA_IN_SCOPE`:
+  - a grained series of a single leaf without a fill, dense series or retained filter, bounded
+    or not: a month or week of a window, including a future month held only by a placeholder
+    row;
   - a leaf that reads its clock through a join, such as refunds on the order time, even in a
     window total or a filled series;
   - the grained buckets of a `dataset` query with a `where` filter that get no loaded-range
