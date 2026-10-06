@@ -25,7 +25,7 @@ from semantic_rails.schema import SemanticPolicyConfig
 SLIM_KEYS = {"id", "kind", "label", "measure", "description", "default_temporal_role", "available"}
 VALUE_KEYS = {"id", "kind", "dimension_id", "value", "label", "available"}
 SESSION_STARTS = {
-    "version": 2,
+    "version": 1,
     "select": [{"as": "s", "expression": {"measure": "measure.jaffle.session_starts"}}],
 }
 
@@ -334,7 +334,7 @@ def test_denied_metric_does_not_hide_allowed_equivalent_or_measure(
             ({"metric": alias.id}, True),
             ({"measure": measure_id}, True),
         ):
-            query = {"version": 2, "select": [{"as": "value", "expression": expression}]}
+            query = {"version": 1, "select": [{"as": "value", "expression": expression}]}
             result = runtime.validate(query)
             assert result["ok"] is ok, result
             if not ok:

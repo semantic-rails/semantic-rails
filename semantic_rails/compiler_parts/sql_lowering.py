@@ -1407,7 +1407,7 @@ def _branch_context_query(
     extra_group_by: list[str] | None = None,
 ) -> dict[str, Any]:
     query: dict[str, Any] = {
-        "version": int(plan.query.get("version", 2) or 2),
+        "version": int(plan.query.get("version", 1) or 1),
         "select": [{"expression": expression, "as": alias}],
         "group_by": [*list(plan.group_by), *list(extra_group_by or [])],
     }
@@ -3327,7 +3327,7 @@ def _minimal_predicate_set_ctes(
     group_by_dims = _predicate_key_aliases(predicate, config)
     time_spec = _predicate_time_spec(predicate, query, config)
     mini_query: dict[str, Any] = {
-        "version": 2,
+        "version": 1,
         "select": [{"expression": expr_to_dict(predicate.input), "as": "__predicate_value"}],
         "group_by": list(group_by_dims),
     }

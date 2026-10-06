@@ -201,7 +201,7 @@ def test_compile_response_summarizes_qualified_metric_rollup(runtime_factory):
         # default drops it.
         result = runtime.compile(
             {
-                "version": 2,
+                "version": 1,
                 "select": [
                     {
                         "as": "revenue_usd_from_qualified_customers",
@@ -314,7 +314,7 @@ def test_jaffle_shop_advanced_examples_execute_hard_questions(runtime_factory):
     try:
         ratio = runtime.query(
             {
-                "version": 2,
+                "version": 1,
                 "select": [
                     {
                         "as": "pct_revenue_from_session_customers",
@@ -352,7 +352,7 @@ def test_jaffle_shop_advanced_examples_execute_hard_questions(runtime_factory):
         )
         p80 = runtime.query(
             {
-                "version": 2,
+                "version": 1,
                 "select": [
                     {
                         "as": "p80_customer_revenue",

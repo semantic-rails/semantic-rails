@@ -497,7 +497,7 @@ def test_mcp_client_session_over_the_network_transport(
 ) -> None:
     with _architect(tmp_path, token, transport=transport) as (_, base_url):
         tools = asyncio.run(_tools_over(transport, base_url + path, _bearer(token)))
-        assert "write_project_file" in tools
+        assert "write_project_files" in tools
         with pytest.raises(ExceptionGroup) as excinfo:
             asyncio.run(_tools_over(transport, base_url + path, {}))
 

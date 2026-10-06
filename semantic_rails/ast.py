@@ -929,7 +929,7 @@ _TOP_LEVEL_KEY_TYPOS: dict[str, tuple[str, str]] = {
 }
 
 
-_SUPPORTED_QUERY_IR_VERSIONS: frozenset[int] = frozenset({1, 2})
+_SUPPORTED_QUERY_IR_VERSIONS: frozenset[int] = frozenset({1})
 
 
 def _check_supported_version(payload: dict[str, Any]) -> None:
