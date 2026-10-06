@@ -366,7 +366,7 @@ def export_semantic_contract(path: str | Path | LoadedPackageSnapshot) -> dict[s
     namespace = str(
         package_raw.get("namespace") or package_raw.get("id") or config.package.package_id
     ).strip()
-    package = {
+    package: dict[str, Any] = {
         "package_id": config.package.package_id,
         "namespace": namespace,
         "package_schema_version": config.version,
