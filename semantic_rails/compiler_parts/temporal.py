@@ -929,7 +929,7 @@ def _clock_where_cuts(query: NormalizedQuery, config: PackageConfig) -> list[tup
     """
     if query.time is None:
         return []
-    analysis = get_package_analysis(config)  # not a binding: the guard reads no object
+    analysis = get_package_analysis(config)  # unrecorded lookups: the guard binds no object
     role = analysis.temporal_roles.get(query.time.temporal_role)
     clock = analysis.dimensions.get(role.dimension) if role is not None else None
     if clock is None:

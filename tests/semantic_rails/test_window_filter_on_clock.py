@@ -213,6 +213,8 @@ ON_THE_CLOCK = {
         "where[0]",
     ),
     "second-item": (PRIOR_DAY, [_cut(ACCOUNT, "=", "a"), SINCE_14], True, "WINDOWED", "where[1]"),
+    # The guard reads a child group's conditions too. (A group on the measure's own rows is
+    # refused later in any case; this checks the guard's depth.)
     "child-group": (
         PRIOR_DAY,
         [{"child": "entity.fees_account_day", "match": "any", "where": [SINCE_14]}],
@@ -266,16 +268,15 @@ def test_the_uncut_series_has_the_reference_values_the_cut_lost(runtime: Runtime
     }
     assert [(account, grouped[(account, date(2026, 9, 14))]) for account in "abc"] == reference
     assert dict(_rows(runtime, _query(PRIOR_DAY, [])))[date(2026, 9, 14)] == 297
-    for expression, since in (
-        (ROLLING, "2026-09-09"),
-        (CUMULATIVE, "2000-01-01"),
-        (MONTH_TO_DATE, "2026-09-01"),
+    for expression, since, expected in (
+        (ROLLING, "2026-09-09", 45),
+        (CUMULATIVE, "2000-01-01", 75),
+        (MONTH_TO_DATE, "2026-09-01", 75),
     ):
-        [(expected,)] = _reference(
+        assert _reference(
             "select sum(amount) from events "
             f"where occurred_at::date between date '{since}' and date '2026-09-15'"
-        )
-        assert expected in {45, 75}
+        ) == [(expected,)]
         assert dict(_rows(runtime, _query(expression, [])))[date(2026, 9, 15)] == expected
 
 
