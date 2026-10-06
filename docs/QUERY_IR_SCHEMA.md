@@ -527,8 +527,13 @@ Supported `op` values (all compile end-to-end):
 
 On a stock, a filter on an attribute reads each series' snapshot chosen for the period, as
 a `group_by` on it does, so `plan = basic` equals the basic row of the by-plan breakdown;
-a filter on the stock's clock, a calendar dimension, or a date or timestamp bounds time and
-applies before the choice (see [Measures](PACKAGE_AUTHORING.md#measures)).
+this includes attributes reached through a key that changes between the series'
+snapshots. A filter on the stock's clock (the same entity and column) or a calendar
+(`kind: time`) dimension bounds time and applies before the choice. Other date or
+timestamp attributes refuse, as in `group_by`: `REWRITE_NOT_SUPPORTED`, with
+`details.reason: stock_filtered_by_date_attribute` and `details.dimension`. Conditions
+inside child groups and a measure's own filters follow the same rule
+(see [Measures](PACKAGE_AUTHORING.md#measures)).
 
 A positive child-dimension filter on a parent-grain measure means "parents with at
 least one matching child". It lowers to correlated `EXISTS`, so multiple matching

@@ -1594,30 +1594,37 @@ def _and_conditions(conditions: list[Any]) -> Any:
     return current
 
 
+def _stock_period_split(temporal_role_id: str, dim_id: str, config: PackageConfig) -> bool:
+    """Only the stock's clock (same entity and column) or a calendar splits its periods."""
+    dimensions = _dimension_index(config)
+    dimension = dimensions.get(dim_id)
+    if dimension is None:
+        raise SemanticLayerError(
+            "OBJECT_NOT_FOUND", f"Unknown dimension '{dim_id}'", details={"dimension": dim_id}
+        )
+    role = _temporal_role_index(config).get(temporal_role_id)
+    clock = dimensions.get(role.dimension) if role is not None else None
+    return _entity_index(config)[dimension.entity].kind == "time" or (
+        clock is not None and (dimension.entity, dimension.column) == (clock.entity, clock.column)
+    )
+
+
 def _reads_chosen_snapshot(
     measure, temporal_role_id: str, dim_id: str, config: PackageConfig
 ) -> bool:
-    """Whether a stock reads a filter on ``dim_id`` from the snapshot it chooses per series
-    and period, as it reads a grouped attribute, rather than before choosing it.
-
-    Only a filter that bounds time applies first: on the stock's clock (the dimension or its
-    column), a calendar dimension, or any date or timestamp. Any other filter, on the
-    snapshot rows or reached through a join, keeps or drops the chosen snapshot.
-    """
+    """Read attributes after choosing a stock snapshot; ambiguous date attributes refuse."""
     if measure.measure_class != "semi_additive":
         return False
-    dimensions = _dimension_index(config)
-    dimension = dimensions[dim_id]
-    role = _temporal_role_index(config).get(temporal_role_id)
-    clock = dimensions.get(role.dimension) if role is not None else None
-    return not (
-        dimension.data_type in {"date", "timestamp"}
-        or _entity_index(config)[dimension.entity].kind == "time"
-        or (
-            clock is not None
-            and (dimension.entity, dimension.column) == (clock.entity, clock.column)
+    if _stock_period_split(temporal_role_id, dim_id, config):
+        return False
+    if _dimension_index(config)[dim_id].data_type in {"date", "timestamp"}:
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            "Filtering a stock by a date or timestamp attribute is ambiguous. "
+            "Filter by the stock's clock or a calendar dimension instead.",
+            details={"reason": "stock_filtered_by_date_attribute", "dimension": dim_id},
         )
-    )
+    return True
 
 
 def _semi_additive_leaf_select(
@@ -3092,19 +3099,16 @@ def _measure_leaf_select(
             )
         # The query's time bucket, the stock's own clock and calendar dimensions split a
         # series into periods; any other grouped dimension is an attribute of the snapshot.
-        clock = temporal_roles[measure_plan.bound_measure.temporal_role].dimension
         period_aliases = [
             field.alias
             for field in select_fields
-            if field.alias in {time_alias, clock}
-            or field.expression == order_expr
-            or (
-                field.alias in dimensions
-                and entities[dimensions[field.alias].entity].kind == "time"
-            )
+            if field.alias == time_alias
+            or (field.alias in dimensions and _stock_period_split(stock_role, field.alias, config))
         ]
         for dim_id in plan.group_by:
-            if dim_id not in period_aliases and dimensions[dim_id].data_type in {
+            if not _stock_period_split(stock_role, dim_id, config) and dimensions[
+                dim_id
+            ].data_type in {
                 "date",
                 "timestamp",
             }:
@@ -3548,6 +3552,25 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
     if time_alias:
         anchor_select_fields[time_alias] = SqlIdentifier(parts=["snapshot", time_alias])
     anchor_select_fields["__anchor_value"] = SqlIdentifier(parts=["snapshot", "__anchor_value"])
+    # Keep observed periods when every chosen snapshot fails an attribute filter, just as
+    # the stock leaf does. Base metric predicates still select the series measured first.
+    settles = (
+        bool(kept_rows)
+        and measure.additive
+        and measure_plan.bound_measure.aggregation == "sum"
+        and observation_scope(plan.query, config) == "dataset"
+        and all(
+            _stock_period_split(measure_plan.bound_measure.temporal_role, dim_id, config)
+            for dim_id in plan.group_by
+        )
+    )
+    if settles:
+        anchor_select_fields["__snapshot_kept"] = SqlIdentifier(
+            parts=["snapshot", "__snapshot_kept"]
+        )
+        anchor_select_fields["__anchor_value"] = SqlCase(
+            [SqlCaseWhen(_and_conditions(kept_rows), anchor_select_fields["__anchor_value"])]
+        )
 
     joins = _joins_for_paths(
         measure.entity,
@@ -3557,7 +3580,7 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
         time_spec=plan.time,
         table_overrides={measure.entity: "snapshot"},
     )
-    anchor_where: list[Any] = list(kept_rows)
+    anchor_where: list[Any] = [] if settles else list(kept_rows)
     for predicate_set in base_predicate_sets:
         join_condition = _join_condition(
             predicate_set.key_aliases
@@ -3632,9 +3655,16 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
             ],
         )
         denominator_expr = SqlCall("SUM", [value_expr])
-    ratio_expr = SqlBinary(
+    ratio_expr: SqlExpr = SqlBinary(
         numerator_expr, "/", SqlCall("NULLIF", [denominator_expr, SqlLiteral(0)])
     )
+    if settles:
+        none_kept = SqlBinary(
+            SqlCall("MAX", [SqlIdentifier(parts=["anchor", "__snapshot_kept"])]),
+            "=",
+            SqlLiteral(0),
+        )
+        ratio_expr = SqlCase([SqlCaseWhen(none_kept, SqlLiteral(0))], ratio_expr)
 
     key_aliases = _query_key_aliases(plan)
     final_fields = [

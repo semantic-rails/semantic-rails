@@ -1244,11 +1244,16 @@ The snapshot is chosen per series per period first. A grouped attribute stored o
 snapshot rows, such as an account's plan that changes mid-week, is read from that
 snapshot, so the series counts once, under the value it holds that day, and the summed
 grouped rows add up to the ungrouped total. A filter (a `where` item or a measure's own
-`filter`) on such an attribute, or on another entity's dimension, reads the same
-snapshot: `plan = basic` is the basic row of the by-plan breakdown, so it leaves out an
-account that moved from basic to pro on Thursday. Only a filter that bounds time applies
-before the choice: on the stock's clock, a calendar dimension, or any date or timestamp
-dimension (with `snapshot_day <= Wednesday`, the week reads Wednesday's snapshots). The
+`filter`) on such an attribute, including one reached through a key that changes between
+a series' snapshots, reads the same snapshot: `plan = basic` is the basic row of the
+by-plan breakdown, so it leaves out an account that moved from basic to pro on Thursday.
+An attribute joined through the series key is constant for the series and keeps the same
+answer. Only filters on the stock's clock (the same entity and column) or a calendar
+(`kind: time`) dimension apply before the choice: with `snapshot_day <= Wednesday`, the
+week reads Wednesday's snapshots. Other date or timestamp attributes refuse, as in
+`group_by`, with `REWRITE_NOT_SUPPORTED`, reason `stock_filtered_by_date_attribute`, and
+the dimension id; choosing between a time bound and a closing-snapshot attribute would
+be ambiguous. This also applies to conditions inside child groups. The
 stock's own clock and calendar dimensions instead split the period: grouped by the
 snapshot day, each day keeps its own snapshot. Ratios whose numerator alone has extra
 conditions keep one snapshot per series per time bucket.
@@ -1258,6 +1263,9 @@ A stock that adds up its series (`last_value`, `first_value` or `sum`, and not
 but none passing the filters, and NULL in a period with no snapshot at all. Its other
 aggregations read NULL there, and grouped by an attribute, a group with no snapshot
 passing the filters is left out.
+An entity-set share using those snapshots also keeps an observed period and reads 0
+when every chosen snapshot fails its attribute filters; a kept zero denominator still
+reads NULL. With `observation_scope: query`, unmatched periods have no data.
 
 - Grouping a stock by a date or timestamp attribute that is neither its ordering clock
   nor a calendar dimension is refused with `REWRITE_NOT_SUPPORTED`, with

@@ -6,8 +6,8 @@ that snapshot. A `where` filter on the same attribute used to run before the sna
 chosen: an account on "basic" Monday to Wednesday and "pro" from Thursday counted its
 Wednesday fee under `plan = basic`, although the by-plan breakdown puts it under pro.
 The filter now reads the chosen snapshot, so `where plan = v` is the `v` row of the
-breakdown. Filters that bound time (the stock's clock, a calendar dimension, a date) still
-apply before the choice.
+breakdown. Filters on the stock's clock or a calendar dimension apply before the choice;
+other date or timestamp attributes refuse because their reading is ambiguous.
 
 A stock summed across its series reads 0 in a period that has snapshots but none that
 match (data of nothing), and NULL in a period with no snapshot at all (no data).
@@ -22,8 +22,12 @@ from typing import Any
 
 import duckdb
 import pytest
+import yaml
 
+from semantic_rails.compiler import plan_query
+from semantic_rails.compiler_parts.sql_lowering import lower_to_sql
 from semantic_rails.dialects import DuckDbDialect
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.runtime import Runtime
 
 ROLE = "temporal_role.fees_account_day_date_day"
@@ -33,6 +37,7 @@ STATE = "dimension.fees_account_day_state"
 SNAPSHOT_WEEK = "dimension.fees_account_day_snapshot_week"
 SEGMENT = "dimension.fees_account_segment"
 WEEKDAY = "dimension.fees_time_weekday"
+REGION = "dimension.fees_owner_region"
 WEEK = date(2026, 9, 14)
 FILTERED = {PLAN: "plan", STATE: "state", SEGMENT: "segment"}
 
@@ -70,11 +75,22 @@ def _package(root: Path) -> Path:
         "    account_day: {key: [account_id, date_day], model: account_days, "
         "allowed_as_root: true}\n"
         "    account: {key: [account_id], model: accounts}\n"
+        "    owner: {key: [owner_id], model: owners}\n"
+        "    notice: {key: [notice_id], model: notices}\n"
         "    time: {kind: time, key: [date_day], model: calendar, allowed_as_root: false}\n"
     )
     (package / "models" / "accounts.yml").write_text(
         "model:\n  id: accounts\n  relation: accounts\n  entities: {account: {}}\n"
         "  dimensions:\n    segment: {kind: categorical}\n"
+    )
+    (package / "models" / "owners.yml").write_text(
+        "model:\n  id: owners\n  relation: owners\n  entities: {owner: {}}\n"
+        "  dimensions:\n    region: {kind: categorical}\n"
+    )
+    (package / "models" / "notices.yml").write_text(
+        "model:\n  id: notices\n  relation: notices\n"
+        "  entities: {notice: {}, account_day: {}}\n"
+        "  dimensions:\n    renewal_on: {kind: date}\n    renewal_at: {kind: timestamp}\n"
     )
     (package / "models" / "calendar.yml").write_text(
         "model:\n  id: calendar\n  relation: calendar\n  calendar_id: default\n"
@@ -85,11 +101,14 @@ def _package(root: Path) -> Path:
     stock = "kind: aggregate, expr: fee, value_type: currency, accumulation: {kind: stock, snapshot"
     (package / "models" / "account_days.yml").write_text(
         "model:\n  id: account_days\n  relation: account_day\n"
-        "  entities: {account_day: {}, account: {}, time: {}}\n"
+        "  entities: {account_day: {}, account: {}, owner: {}, time: {}}\n"
         "  dimensions:\n"
         "    plan: {kind: categorical}\n"
         "    state: {kind: categorical}\n"
         "    snapshot_week: {kind: date}\n"
+        "    renewal_on: {kind: date}\n"
+        "    renewal_at: {kind: timestamp}\n"
+        "    observed_on: {column: date_day, kind: date}\n"
         "  times:\n"
         "    date_day: {column: date_day, kind: date, class: as_of_time, default: true}\n"
         "  measures:\n"
@@ -111,6 +130,20 @@ def _load(connection: duckdb.DuckDBPyConnection) -> None:
     connection.execute(
         "alter table account_day add column snapshot_week date; "
         "update account_day set snapshot_week = date_trunc('week', date_day)::date"
+    )
+    connection.execute(
+        "alter table account_day add column renewal_on date; "
+        "alter table account_day add column renewal_at timestamp; "
+        "update account_day set renewal_on = date '2027-01-01', "
+        "renewal_at = timestamp '2027-01-01 00:00:00'; "
+        "alter table account_day add column owner_id integer; "
+        "update account_day set owner_id = case when date_day < date '2026-09-17' "
+        "then 1 else 2 end; "
+        "create table owners as select * from (values (1, 'west'), (2, 'east')) t(owner_id, region)"
+    )
+    connection.execute(
+        "create table notices (notice_id integer, account_id varchar, date_day date, "
+        "renewal_on date, renewal_at timestamp)"
     )
     connection.execute(
         "create table accounts as select * from (values ('a', 'customer'), ('b', 'customer'), "
@@ -352,8 +385,13 @@ def test_only_a_balance_summed_across_series_reads_zero(runtime: Runtime) -> Non
         (_is(DAY, "2026-09-16", "<="), "date_day <= '2026-09-16'", 198),
         # A calendar dimension: the last Monday or Tuesday, when b was still active.
         (_is(WEEKDAY, 2, "<="), "weekday <= 2", 297),
-        # A date attribute bounds time like the clock: the last snapshot of that week.
-        (_is(SNAPSHOT_WEEK, "2026-09-14"), "snapshot_week = '2026-09-14'", 599),
+        (_is("dimension.fees_time_week_start", "2026-09-14"), "c.week_start = '2026-09-14'", 599),
+        # A second dimension on the clock's entity and column is the same clock.
+        (
+            _is("dimension.fees_account_day_observed_on", "2026-09-16", "<="),
+            "date_day <= '2026-09-16'",
+            198,
+        ),
     ],
 )
 def test_a_time_bound_applies_before_the_snapshot_is_chosen(
@@ -405,3 +443,254 @@ def test_an_entity_set_share_reads_the_same_closing_snapshots(runtime: Runtime) 
         ).fetchall()
     assert sorted(answer) == reference
     assert reference[1] == (WEEK, 500 / 599)
+
+
+def _share(filter_item: dict[str, Any] | None = None) -> dict[str, Any]:
+    fee: dict[str, Any] = {
+        "kind": "scoped_aggregate",
+        "measure": "measure.fees.fee",
+        "aggregation": "sum",
+    }
+    if filter_item:
+        fee["where"] = [filter_item]
+    predicate = {
+        "entity": "entity.fees_account",
+        "measure": "measure.fees.fee",
+        "op": ">",
+        "value": 100,
+        "time_alignment": "same_query_period",
+    }
+    return {"kind": "ratio", "numerator": {**fee, "predicates": [predicate]}, "denominator": fee}
+
+
+@pytest.mark.parametrize("attribute", ["snapshot_week", "renewal_on", "renewal_at"])
+@pytest.mark.parametrize("placement", ["where", "measure_filter", "anchored", "child_group"])
+@pytest.mark.parametrize("grain", [None, "week"])
+def test_a_date_attribute_filter_refuses(
+    runtime: Runtime, attribute: str, placement: str, grain: str | None
+) -> None:
+    # Child conditions also need the stock reading check, before fanout planning refuses
+    # stocks on a child path. The same dimension type must not get a different reading there.
+    entity = "notice" if placement == "child_group" else "account_day"
+    attribute = "renewal_on" if entity == "notice" and attribute == "snapshot_week" else attribute
+    dimension = f"dimension.fees_{entity}_{attribute}"
+    item = _is(dimension, "2026-09-14" if attribute == "snapshot_week" else "2027-01-01")
+    expression: dict[str, Any] = {"measure": "measure.fees.fee"}
+    where = [item]
+    if placement == "measure_filter":
+        expression = {**expression, "kind": "aggregate", "filter": {"all": [item]}}
+        where = []
+    elif placement == "anchored":
+        expression = _share()
+    elif placement == "child_group":
+        where = [{"child": "entity.fees_notice", "match": "any", "where": [item]}]
+    with pytest.raises(SemanticLayerError) as raised:
+        _query(runtime, where, expression=expression, time={"grain": grain} if grain else None)
+    assert raised.value.code == "REWRITE_NOT_SUPPORTED"
+    assert raised.value.details == {
+        "reason": "stock_filtered_by_date_attribute",
+        "dimension": dimension,
+    }
+
+
+def test_a_renewal_date_has_two_distinct_readings(snapshot_lowering, tmp_path: Path) -> None:
+    fixture_sql = "update account_day set renewal_on = case when plan = 'basic' "
+    fixture_sql += "then date '2027-01-01' else date '2028-01-01' end"
+    package = _package(tmp_path)
+    with duckdb.connect(str(package / "data" / "fees.duckdb")) as connection:
+        connection.execute(fixture_sql)
+    condition = "renewal_on = '2027-01-01'"
+    assert (WEEK, 198) in _reference("true", before=condition, fixture_sql=fixture_sql)
+    assert (WEEK, 99) in _reference(condition, fixture_sql=fixture_sql)
+    runtime = Runtime.from_path(str(package))
+    try:
+        with pytest.raises(SemanticLayerError) as raised:
+            _query(
+                runtime,
+                [_is("dimension.fees_account_day_renewal_on", "2027-01-01")],
+                time={"grain": "week"},
+            )
+        assert raised.value.details["reason"] == "stock_filtered_by_date_attribute"
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("anchored", [False, True])
+def test_lowering_cannot_bypass_the_date_attribute_refusal(
+    runtime: Runtime, anchored: bool
+) -> None:
+    # Force a caller to bypass the planning check: both stock choices must refuse too.
+    query = {
+        "select": [
+            {"expression": _share() if anchored else {"measure": "measure.fees.fee"}, "as": "v"}
+        ],
+        "time": {"temporal_role": ROLE, "grain": "week"},
+    }
+    plan = plan_query(runtime.config, runtime.registry, query)
+    dimension = "dimension.fees_account_day_renewal_on"
+    plan.query["where"] = [_is(dimension, "2027-01-01")]
+    with pytest.raises(SemanticLayerError) as raised:
+        lower_to_sql(plan, runtime.config)
+    assert raised.value.code == "REWRITE_NOT_SUPPORTED"
+    assert raised.value.details == {
+        "reason": "stock_filtered_by_date_attribute",
+        "dimension": dimension,
+    }
+
+
+def test_an_unknown_filter_dimension_still_has_a_public_error(runtime: Runtime) -> None:
+    with pytest.raises(SemanticLayerError) as raised:
+        _query(runtime, [_is("dimension.fees_account_day_unknown", "x")])
+    assert raised.value.code == "OBJECT_NOT_FOUND"
+
+
+def test_a_join_through_a_changing_key_reads_the_closing_owner(
+    snapshot_lowering, tmp_path: Path
+) -> None:
+    package = _package(tmp_path)
+    with duckdb.connect(str(package / "data" / "fees.duckdb")) as connection:
+        connection.execute("delete from account_day")
+        connection.execute(
+            "insert into account_day (account_id, date_day, fee, owner_id) values "
+            "('a', date '2026-09-14', 20, 2), ('a', date '2026-09-20', 10, 2), "
+            "('b', date '2026-09-14', 10, 2), ('b', date '2026-09-20', 20, 1)"
+        )
+        reference = connection.execute(
+            "with chosen as (select *, row_number() over (partition by account_id "
+            "order by date_day desc) rn from account_day) "
+            "select o.region, sum(d.fee) from chosen d join owners o using (owner_id) "
+            "where rn = 1 group by o.region order by o.region"
+        ).fetchall()
+        # Filtering first also keeps b's former east owner, incorrectly reading 20.
+    runtime = Runtime.from_path(str(package))
+    try:
+        grouped = _query(runtime, group_by=[REGION], time={"grain": "week"})
+        assert grouped == [(WEEK, region, fee) for region, fee in reference]
+        assert reference == [("east", 10), ("west", 20)]
+        for region, fee in reference:
+            assert _query(runtime, [_is(REGION, region)], time={"grain": "week"}) == [(WEEK, fee)]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("scope", ["dataset", "query"])
+def test_an_unknown_series_key_distinguishes_observed_and_missing_weeks(
+    snapshot_lowering, tmp_path: Path, scope: str
+) -> None:
+    # Use the canonical shop's January gap, without copying a database seed.
+    source = Path(__file__).parents[1] / "integration" / "correctness" / "shop"
+    package = tmp_path / "shop"
+    (package / "models").mkdir(parents=True)
+    for source_file in [
+        source / "package.yml",
+        source / "graph.yml",
+        *(source / "models").glob("*.yml"),
+    ]:
+        target = package / source_file.relative_to(source)
+        target.write_text(source_file.read_text())
+    config = yaml.safe_load((package / "package.yml").read_text())
+    config["package"].update(default_db="data/shop.duckdb", seed={"kind": "external"})
+    (package / "package.yml").write_text(yaml.safe_dump(config, sort_keys=False))
+    (package / "data").mkdir()
+    with duckdb.connect(str(package / "data" / "shop.duckdb")) as connection:
+        connection.execute((source / "data" / "seed.sql").read_text())
+        reference = connection.execute(
+            "with chosen as (select *, date_trunc('week', snapshot_day)::date period, "
+            "row_number() over (partition by account_id, date_trunc('week', snapshot_day) "
+            "order by snapshot_day desc) rn from account_days) "
+            "select g.period, case when count(*) filter (where d.account_id = 999) > 0 "
+            "then sum(d.seats) filter (where d.account_id = 999) "
+            "when count(d.account_id) = 0 then null "
+            f"when '{scope}' = 'dataset' then 0 end "
+            "from generate_series(date '2024-01-01', date '2024-01-15', interval 7 day) g(period) "
+            "left join chosen d on d.period = g.period and rn = 1 "
+            "group by g.period order by g.period"
+        ).fetchall()
+    runtime = Runtime.from_path(str(package))
+    try:
+        role = "temporal_role.shop_account_day_snapshot_day"
+        result = runtime.query(
+            {
+                "version": 1,
+                "select": [{"expression": {"measure": "measure.shop.seats"}, "as": "v"}],
+                "time": {
+                    "temporal_role": role,
+                    "grain": "week",
+                    "start": "2024-01-01",
+                    "end": "2024-01-22",
+                    "fill": True,
+                },
+                "where": [_is("dimension.shop_account_day_account_id", 999)],
+                "observation_scope": scope,
+            }
+        )
+        answer = sorted((_day(row[f"{role}__week"]), row["v"]) for row in result["rows"])
+        assert answer == [(_day(period), value) for period, value in reference]
+        assert [value for _, value in answer] == (
+            [0, None, 0] if scope == "dataset" else [None] * 3
+        )
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("placement", ["where", "measure_filter"])
+@pytest.mark.parametrize("scope", ["dataset", "query"])
+@pytest.mark.parametrize("state", ["active", "enterprise"])
+def test_an_anchored_share_reads_its_measure_filter_and_keeps_observed_periods(
+    runtime: Runtime, placement: str, scope: str, state: str
+) -> None:
+    item = _is(STATE, state)
+    expression = _share(item if placement == "measure_filter" else None)
+    where = [item] if placement == "where" else []
+    answer = _query(
+        runtime, where, expression=expression, time={"grain": "week"}, observation_scope=scope
+    )
+    with duckdb.connect() as connection:
+        _load(connection)
+        reference = connection.execute(
+            "with chosen as (select *, date_trunc('week', date_day)::date period, "
+            "row_number() over (partition by account_id, date_trunc('week', date_day) "
+            "order by date_day desc) rn from account_day) "
+            f"select period, case when count(*) filter (where state = '{state}') = 0 then 0 "
+            f"else coalesce(sum(fee) filter (where state = '{state}' and fee > 100), 0) * 1.0 "
+            f"/ nullif(sum(fee) filter (where state = '{state}'), 0) end "
+            f"from chosen where rn = 1 {'and state = ' + repr(state) if scope == 'query' else ''} "
+            "group by period order by period"
+        ).fetchall()
+    assert answer == reference
+    assert answer == (
+        []
+        if state == "enterprise" and scope == "query"
+        else [
+            (date(2026, 9, 7), 0),
+            (WEEK, 500 / 599 if state == "active" else 0),
+            (date(2026, 9, 21), 500 / 599 if state == "active" else 0),
+        ]
+    )
+
+
+@pytest.mark.parametrize("value", ["0", "null"])
+def test_an_anchored_share_keeps_a_matched_zero_or_unknown_denominator_null(
+    snapshot_lowering, tmp_path: Path, value: str
+) -> None:
+    package = _package(tmp_path)
+    with duckdb.connect(str(package / "data" / "fees.duckdb")) as connection:
+        connection.execute(f"update account_day set fee = {value} where state = 'active'")
+        connection.execute("delete from account_day where date_day >= date '2026-09-21'")
+        reference = connection.execute(
+            "with chosen as (select *, date_trunc('week', date_day)::date period, "
+            "row_number() over (partition by account_id, date_trunc('week', date_day) "
+            "order by date_day desc) rn from account_day) "
+            "select period, coalesce(sum(fee) filter (where fee > 100), 0) * 1.0 "
+            "/ nullif(sum(fee), 0) from chosen where rn = 1 and state = 'active' "
+            "group by period order by period"
+        ).fetchall()
+    runtime = Runtime.from_path(str(package))
+    try:
+        assert (
+            _query(runtime, expression=_share(_is(STATE, "active")), time={"grain": "week"})
+            == reference
+        )
+        assert reference == [(date(2026, 9, 7), None), (WEEK, None)]
+    finally:
+        runtime.close()
