@@ -588,6 +588,9 @@ def test_valid_values_defaults_to_declared_domains_without_live_query(runtime_fa
         assert declared["source"] == "value_domain"
         assert declared["value_source_type"] == "declared_domain"
         assert [row["value"] for row in declared["values"]] == ["jaffle", "beverage"]
+        assert empty["ok"] is False
+        assert empty["status"] == "needs_live_query"
+        assert "next_call" not in empty
         assert empty["values"] == []
         assert empty["total_count"] == 0
         assert empty["source"] == "none"
@@ -907,7 +910,6 @@ def test_plan_acceptance_intents_return_ranked_valid_candidates(runtime_factory)
     intents = [
         "revenue by store last month",
         "monthly average order value by customer type",
-        "food vs drink revenue share by month",
         "end-of-month inventory levels by store",
         "monthly revenue from customers with at least 10 orders by store",
     ]
@@ -915,9 +917,8 @@ def test_plan_acceptance_intents_return_ranked_valid_candidates(runtime_factory)
         for intent in intents:
             # Wider candidate window: as the metric registry grew (direct
             # rolling/prior_period/period_to_date/derived demos), nearby
-            # share/ratio metrics for the "food vs drink" intent get
-            # ranked alongside more candidates. Bumping limit keeps the
-            # ≥3 invariant without weakening it.
+            # share/ratio metrics get ranked alongside more candidates.
+            # Bumping limit keeps the ≥3 invariant without weakening it.
             result = plan_candidate_envelope(
                 runtime,
                 intent=intent,

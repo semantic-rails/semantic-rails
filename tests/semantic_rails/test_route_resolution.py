@@ -759,8 +759,10 @@ def test_a_refusal_is_cached_and_its_recovery_hint_carries_the_rows(tmp_path, mo
     with pytest.raises(SemanticLayerError) as third:
         resolve_path(config, start=INVOICE, target=REGION)
     assert third.value.details == first.value.details
-    (hint,) = exception_issue(first.value, stage="compile")["recovery_hints"]
-    assert hint["clarification"] == first.value.details["clarification"]
+    issue = exception_issue(first.value, stage="compile")
+    (hint,) = issue["recovery_hints"]
+    assert "clarification" not in hint
+    assert issue["details"]["clarification"] == first.value.details["clarification"]
 
 
 @pytest.mark.parametrize(
