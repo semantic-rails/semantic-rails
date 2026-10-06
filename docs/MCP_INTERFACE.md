@@ -292,24 +292,40 @@ A draft that validates can still leave out part of the question. `plan` returns
   candidates in `expected.candidates` and their number in `expected.candidate_count`).
   "revenue" names Revenue over Item Revenue Cents, and "item revenue" the reverse; for
   Gross Revenue and Net Revenue it names neither. `plan` reports every other reason first;
-- returns one value (one select, no `group_by`, no time grain that splits the rows, no
-  prior-period select) where the question asks for more. That is rows when "who", "whom" or
-  "whose" opens a clause and the draft has no `group_by`, or when "which" or "list" opens one
-  (`list_unrealized`: "Who ordered last week?"); a row per item for "each" or "every", which
-  needs a `group_by` or a grain that splits the rows (`each_unrealized`: "How many orders did
-  each last week?"); two values or more for "compare", "compared", "comparison", "versus",
-  "vs", "against" or "up or down" (`comparison_unrealized`: "Were orders up or down last
-  week?"); and a select for each of two or more questions for a value, "how many", "how much",
-  "what is", "what was" or "what's" (`multiple_questions_unrealized`: "How many orders and how
-  much revenue last week?"). A word opens a clause when only stopwords, framing words ("show
-  me", "list") or a time window's words come before it since the last comma, colon, semicolon,
-  sentence end or "and" ("How many orders last week and who placed them?"): in "revenue from
-  customers who are new", "who" asks nothing. Nor does a
+- returns a result without the part the question's shape asks for. "who", "whom", "whose",
+  "which" or "list" opening a clause asks for the rows of the entity the clause names: its
+  first word outside a time window and a "by" grouping that names an entity or, for "which"
+  or "list" with none, the entity a "by" grouping in the clause names ("List revenue by
+  store"). The `group_by` needs one of that entity's key dimensions: its key, or its one
+  declared dimension that names it (`list_unrealized`, with them in
+  `expected.key_dimensions`: "Who ordered last week?", "List customers by month", "Who are
+  our customers by store?"). A time grain, a category or another entity's dimension never
+  lists them, and "which" or "list" naming no entity is held. A caller's `query.group_by` can
+  also state a dimension of the entity that declares no values and is no clock ("Customer
+  name"). "who" naming no entity ("Who ordered last week?") leaves whose rows to the caller:
+  only a caller's `group_by` dimension that is no grouping the question lists ("Who ordered by
+  store?") and is such a dimension of its own entity lists them. "each" or "every" needs a row
+  per item, a `group_by` or a grain that splits the rows (`each_unrealized`: "How many orders
+  did each last week?"). "compare", "compared", "comparison", "versus", "vs", "against" or
+  "up or down" needs a value to compare with, a prior-period select or a second select with
+  another expression; a `group_by` or time grain only splits one value
+  (`comparison_unrealized`: "Were orders up or down last week?", "Compare revenue by store
+  last month"). Two or more questions for a value, "how many", "how much", "what is", "what
+  was" or "what's", need a select of their own each that names what the question asks about:
+  its first words that aren't stopwords, framing words, numbers or a window's words lie where
+  the question spells a whole name (label, alias, or the last part of the id or name) of the
+  measure, at its declared aggregation, or metric the select is
+  (`multiple_questions_unrealized`: "How many orders and how much revenue last week?" with no
+  order count select). Selects with one expression count once, and a clock ("Order time"), a
+  filter or an expression built on a measure names nothing. A word opens a clause when only
+  stopwords, framing words ("show me", "list") or a time window's words come before it since
+  the last comma, colon, semicolon, sentence end or "and" ("How many orders last week and who
+  placed them?"): in "revenue from customers who are new", "who" asks nothing. Nor does a
   word inside a declared name ("Comparison cost"), and "per" is no such word ("revenue per
-  order" is a ratio). `clause` quotes the words, `actual` gives the draft's `select_count`,
-  `group_by` and `time_grain`, and a caller's `query.group_by` gives "who" its rows. `plan`
-  runs this check after every other one, the `PLAN_UNMATCHED_TERMS` checks below included, so
-  it holds only a draft nothing else holds.
+  order" is a ratio). `clause` quotes the words, and `actual` gives the draft's
+  `select_count`, `group_by` and `time_grain`. `plan` runs this check after every other one,
+  the `PLAN_UNMATCHED_TERMS` checks below included, so it holds only a draft nothing else
+  holds.
 
 When a question has several exclusion clauses, `plan` checks each clause. A
 negative filter for one value does not make a later excluded value safe if the
@@ -424,8 +440,9 @@ still holds them. This returns `why.code="PLAN_UNMATCHED_TERMS"` with
 `add_missing_condition` hint: find values with `valid_values`, add the filter, then validate,
 or ask the user what the words mean. No hint offers to ask again without a word a hold names
 (a catalog name, a grouping, a number or an unknown word), since the question without it may be
-another one, except the end of a contraction or possessive that plan reads as an unknown word
-("s" in "What's revenue last month?"): every check reads that retry again. A single unknown
+another one, except the "s" ending a contraction or possessive that plan reads as an unknown
+word ("What's revenue last month?"): every check reads that retry again. No other ending is
+offered: without its "t", "can't" says the opposite. A single unknown
 value such as "Brooklyn" blocks readiness when the package declares no value domain for it; plan never guesses its dimension or queries
 the warehouse to resolve it. Other unmatched words stay warnings; check them before executing.
 A number, or a clock or zone word, the draft doesn't carry is not a warning: it makes the plan

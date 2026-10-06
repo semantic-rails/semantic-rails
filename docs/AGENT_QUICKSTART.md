@@ -165,8 +165,8 @@ Catalog fallback ranking breaks equal intent-match scores by discovery score, th
 so candidate order and refusal diagnostics stay the same across Python hash seeds.
 
 The checks cover time windows, rankings, named filter values, exclusions and the answer's shape
-(rows for "who" or "which", a row per item for "each", two values or more for a comparison, a
-select for each question), not every phrasing:
+(the listed entity's rows for "who" or "which", a row per item for "each", a value to compare
+with for a comparison, a select of its own for each question), not every phrasing:
 a draft can still misread a question and report `ok`, sometimes with only a `PLAN_UNMATCHED_TERMS`
 warning (see the README's known limitations). Compare `best.query_ir` with the question before
 executing it.
@@ -181,11 +181,16 @@ Statuses are:
   `group_by` dimension and a time grain that splits the rows, traces to the question too
   (otherwise `PLAN_UNASKED_GROUPING`), and a ranking keeps the top N of the entity it ranks
   (otherwise `PLAN_RANKING_PERIOD_AMBIGUOUS`, with no runnable option: ask the user which
-  ranking they mean, such as the top N overall or the top N in each period). One value never
-  answers a question asking for more: drafted as one value, "Who ordered last week?", "How
-  many orders did each last week?", "Were orders up or down last week?" and "How many orders
-  and how much revenue last week?" are `PLAN_INTENT_COVERAGE_GAP` (gaps `list_unrealized`,
-  `each_unrealized`, `comparison_unrealized`, `multiple_questions_unrealized`).
+  ranking they mean, such as the top N overall or the top N in each period). The result holds
+  each part the question's shape asks for, or the plan is `PLAN_INTENT_COVERAGE_GAP`:
+  "who", "which" or "list" needs a key dimension of the entity it lists in `group_by`, never a
+  time grain, a category or another entity ("List customers by month", "Who are our customers
+  by store?": `list_unrealized`; "who" naming no entity takes its rows only from your
+  `query.group_by`); "each" needs a row per item (`each_unrealized`); a comparison needs a
+  prior-period select or a second, different select, not a `group_by` ("Compare revenue by
+  store last month": `comparison_unrealized`); and "How many orders and how much revenue last
+  week?" needs a select of its own naming orders and one naming revenue, never the same select
+  twice or one that names neither (`multiple_questions_unrealized`).
   `warnings` can still name other question words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
   Request words such as "show" still count when they are exact catalog names. A time grain
   consumes its own unit and its "-ly" form; a grouping that names the query's clock at the
@@ -198,8 +203,8 @@ Statuses are:
   `PLAN_UNMATCHED_TERMS` reason names it with `kind="filter_values_unrealized"`; use
   `valid_values` to find the value, add the filter and validate, or ask the user what the word
   means. Don't plan again without a word a hold names: the question without it may be another
-  one. Only the end of a contraction ("s" in "What's") means nothing, and only then does the
-  hint offer asking again without it.
+  one. Only the "s" ending a contraction ("What's") means nothing, and only then does the hint
+  offer asking again without it; never the "t" of "can't".
 - `low_confidence`: a draft exists, but validation failed, the draft leaves out part of the
   question (`why` names it, for example `PLAN_INTENT_COVERAGE_GAP`, or `TIME_WINDOW_UNRESOLVED`,
   which returns no `query_ir`: pass the window, temporal role and grain in `query.time` and

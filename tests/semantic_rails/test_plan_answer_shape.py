@@ -1,13 +1,16 @@
 """A ready plan's result has the shape of the answer the question asks for.
 
-The invariant: plan calls a draft ready only if its result can hold the answer the question's
-shape words ask for. One value (one select, no group_by, no time grain that splits the rows, no
-prior period) answers none of "who" or "which" (rows), "each" (a row per item), a comparison
-("compared with", "vs", "up or down": two values or more), or two questions for a value ("how
-many ... and how much ..."). Each question below was `ok` with that one value, and so was each
-question an agent got by asking again without the words a hold named, as its hint said. The
-check runs after every other one and only holds a plan; a hint offers to ask again without words
-only when they end a contraction ("s" in "what's").
+The invariant: plan calls a draft ready only if its result holds the part each of the
+question's shape words asks for. "who", "which" or "list" asks for the rows of the entity its
+clause names, so the group_by needs one of that entity's key dimensions; "each" needs a row per
+item; a comparison ("compared with", "vs", "up or down") needs a prior-period select or a second
+select with another expression; and two questions for a value ("how many ... and how much ...")
+need a select of their own each, which names what the question asks about. A time grain, a
+category, another entity's grouping or a repeated select never stands in. Each question below
+was `ok` without that part, and so was each question an agent got by asking again without the
+words a hold named, as its hint said. The check runs after every other one and only holds a
+plan; a hint offers to ask again without words only when they are the "s" ending a contraction
+("what's").
 """
 
 from __future__ import annotations
@@ -35,6 +38,20 @@ UNMATCHED = "PLAN_UNMATCHED_TERMS"
 # A Monday: last week is 2017-08-14 to 2017-08-20, last month is July 2017.
 NOW = {"now": "2017-08-21"}
 DROP_HINT = re.compile(r"\bask again without\b", re.IGNORECASE)
+CUSTOMER_NAME = "dimension.jaffle_customer_name"
+CUSTOMER_TYPE = "dimension.jaffle_customer_type"
+ORDERS = {"measure": "measure.jaffle.order_count"}
+REVENUE = {"measure": "measure.jaffle.revenue_usd"}
+LAST_WEEK = "WHERE ordered_at >= TIMESTAMP '2017-08-14' AND ordered_at < TIMESTAMP '2017-08-21'"
+
+
+def _selects(*expressions: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "select": [
+            {"as": f"value_{index}", "expression": expression}
+            for index, expression in enumerate(expressions)
+        ]
+    }
 
 
 @pytest.fixture(scope="module")
@@ -144,11 +161,119 @@ def test_a_caller_group_by_gives_who_its_rows(jaffle: Runtime) -> None:
     payload = plan_payload(
         jaffle,
         intent="Who ordered last week?",
-        partial_query={"group_by": ["dimension.jaffle_customer_name"]},
+        partial_query={"group_by": [CUSTOMER_NAME]},
     )
 
     assert payload["status"] == "ok"
-    assert payload["best"]["query_ir"]["group_by"] == ["dimension.jaffle_customer_name"]
+    assert payload["best"]["query_ir"]["group_by"] == [CUSTOMER_NAME]
+
+
+BOTH = "How many orders and how much revenue last week?"
+BOTH_CLAUSE = '"how many", "how much"'
+# Each was `ok` with more than one value, which answered a narrower question.
+NARROWER = [
+    # A time grain's rows, or another entity's, are not the rows of the entity the clause lists.
+    ("List customers by month", {}, "list_unrealized", '"list"'),
+    ("Who are our customers by store?", {}, "list_unrealized", '"who"'),
+    ("Who ordered last week by store?", {}, "list_unrealized", '"who"'),
+    # A category declares its values: its rows list none of the entity's.
+    ("Who are our customers?", {"group_by": [CUSTOMER_TYPE]}, "list_unrealized", '"who"'),
+    ("Who ordered last week?", {"group_by": [CUSTOMER_TYPE]}, "list_unrealized", '"who"'),
+    # A group_by splits one value: it compares it with nothing.
+    (
+        "Orders by store last week compared with the week ?",
+        {},
+        "comparison_unrealized",
+        '"compared"',
+    ),
+    ("Compare revenue by store last month", {}, "comparison_unrealized", '"compare"'),
+    # One select twice is one value, and no other select names "orders": not Tax paid, not
+    # Order cost (one word of its name), nor revenue on the order clock ("Order time").
+    (
+        BOTH,
+        _selects({**REVENUE, "aggregation": "sum"}, {**REVENUE, "aggregation": "sum"}),
+        "multiple_questions_unrealized",
+        BOTH_CLAUSE,
+    ),
+    (
+        BOTH,
+        _selects(REVENUE, {**REVENUE, "aggregation": "sum"}),
+        "multiple_questions_unrealized",
+        BOTH_CLAUSE,
+    ),
+    (
+        BOTH,
+        _selects({"measure": "measure.jaffle.tax_paid_usd"}, REVENUE),
+        "multiple_questions_unrealized",
+        BOTH_CLAUSE,
+    ),
+    (
+        BOTH,
+        _selects({"measure": "measure.jaffle.order_cost_usd"}, REVENUE),
+        "multiple_questions_unrealized",
+        BOTH_CLAUSE,
+    ),
+    (
+        BOTH,
+        _selects({**REVENUE, "temporal_role": "temporal_role.jaffle_order_time"}, REVENUE),
+        "multiple_questions_unrealized",
+        BOTH_CLAUSE,
+    ),
+]
+
+
+@pytest.mark.parametrize(("question", "partial", "kind", "clause"), NARROWER)
+def test_a_shape_answering_a_narrower_question_is_held(
+    jaffle: Runtime, question: str, partial: dict[str, Any], kind: str, clause: str
+) -> None:
+    payload = plan_payload(
+        jaffle, intent=question, partial_query={**partial, "policy_context": NOW}
+    )
+
+    assert payload["status"] == "low_confidence"
+    assert "ready_for" not in payload["next"]
+    assert payload["why"]["code"] == GAP
+    [gap] = _gaps(payload)
+    assert (gap["kind"], gap["clause"]) == (kind, clause)
+    assert clause in gap["message"]
+
+
+@pytest.mark.parametrize(("question", "partial", "kind", "clause"), NARROWER)
+def test_only_the_shape_check_holds_those(
+    jaffle: Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    question: str,
+    partial: dict[str, Any],
+    kind: str,
+    clause: str,
+) -> None:
+    monkeypatch.setattr(plan_module, "_answer_shape_why", lambda *_args: None)
+    payload = plan_payload(
+        jaffle, intent=question, partial_query={**partial, "policy_context": NOW}
+    )
+
+    assert payload["status"] == "ok"
+
+
+@pytest.mark.parametrize(
+    ("question", "group_by", "keys"),
+    [
+        ("List customers by month", None, ["dimension.jaffle_customer_id"]),
+        (
+            "Who are our customers by store?",
+            ["dimension.jaffle_store_name"],
+            ["dimension.jaffle_customer_id"],
+        ),
+    ],
+)
+def test_a_list_hold_names_the_listed_entitys_key_dimensions(
+    jaffle: Runtime, question: str, group_by: list[str] | None, keys: list[str]
+) -> None:
+    payload = plan_payload(jaffle, intent=question)
+
+    [gap] = _gaps(payload)
+    assert gap["expected"] == {"answer": "rows", "key_dimensions": keys}
+    assert payload["best"]["query_ir"].get("group_by") == group_by
 
 
 # Questions a value or rows of the asked shape answer, which stay `ok`.
@@ -164,7 +289,6 @@ STAY_OK = [
     "Show me orders by week for the last 4 weeks.",
     "Food revenue vs drink revenue last month",
     "Monthly revenue vs prior year",
-    "Compare revenue by store last month",
     "Orders vs revenue by month",
     "Which 3 stores had the most revenue last month?",
     "List revenue by store",
@@ -190,24 +314,50 @@ def _reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
 
 
 @pytest.mark.parametrize(
-    ("question", "sql"),
+    ("question", "partial", "sql"),
     [
         (
             "How many orders last week?",
-            "SELECT count(DISTINCT order_id) FROM jaffle_order "
-            "WHERE ordered_at >= TIMESTAMP '2017-08-14' AND ordered_at < TIMESTAMP '2017-08-21'",
+            {},
+            f"SELECT count(DISTINCT order_id) FROM jaffle_order {LAST_WEEK}",
         ),
         (
             "Revenue for each store last month",
+            {},
             "SELECT s.store_name, sum(o.order_total_cents) / 100.0 FROM jaffle_order o "
             "JOIN jaffle_store s USING (store_id) WHERE o.ordered_at >= TIMESTAMP '2017-07-01' "
             "AND o.ordered_at < TIMESTAMP '2017-08-01' GROUP BY 1 ORDER BY 1",
         ),
+        # Each question for a value has a select of its own that names what it asks about.
+        (
+            BOTH,
+            _selects(ORDERS, REVENUE),
+            "SELECT count(DISTINCT order_id), sum(order_total_cents) / 100.0 FROM jaffle_order "
+            f"{LAST_WEEK}",
+        ),
+        # The caller's group_by states the rows "who" asks for: a key dimension of an entity
+        # that declares no values.
+        (
+            "Who ordered last week?",
+            {"group_by": [CUSTOMER_NAME]},
+            "SELECT c.customer_name, count(DISTINCT o.order_id) FROM jaffle_order o "
+            "JOIN jaffle_customer c USING (customer_id) WHERE o.ordered_at >= TIMESTAMP "
+            "'2017-08-14' AND o.ordered_at < TIMESTAMP '2017-08-21' GROUP BY 1",
+        ),
+        (
+            "Who are our customers?",
+            {"group_by": [CUSTOMER_NAME]},
+            "SELECT customer_name, count(DISTINCT customer_id) FROM jaffle_customer GROUP BY 1",
+        ),
     ],
 )
-def test_a_ready_answer_equals_its_reference(jaffle: Runtime, question: str, sql: str) -> None:
-    payload = plan_payload(jaffle, intent=question, partial_query={"policy_context": NOW})
-    assert payload["status"] == "ok"
+def test_a_ready_answer_equals_its_reference(
+    jaffle: Runtime, question: str, partial: dict[str, Any], sql: str
+) -> None:
+    payload = plan_payload(
+        jaffle, intent=question, partial_query={**partial, "policy_context": NOW}
+    )
+    assert payload["status"] == "ok", payload.get("why")
 
     def plain(row: Any) -> tuple[Any, ...]:
         # The window's one bucket is no part of the answer; money compares to the cent.
@@ -229,6 +379,7 @@ MEANINGFUL = [
     "Which customers ordered last week?",
     "List the customers who ordered last week.",
     "How many orders did we get last week compared with the week before?",
+    "Orders by store last week compared with the week before?",
     "How many orders did each store get last week?",
     "How many orders did each plan get last week?",
     "Orders between 9 and 17 on 15 March 2017",
@@ -246,9 +397,10 @@ def test_no_hint_offers_to_drop_a_word_that_carries_meaning(jaffle: Runtime, que
     assert not [hint for hint in _hints(payload) if DROP_HINT.search(hint)]
 
 
-@pytest.mark.parametrize("question", MEANINGFUL[:5])
+@pytest.mark.parametrize("question", MEANINGFUL[:-1])
 def test_dropping_those_words_anyway_is_still_held(jaffle: Runtime, question: str) -> None:
-    """An agent that drops them anyway keeps the shape words, and the shape check holds it."""
+    """An agent that drops them anyway keeps the shape words, and the shape check holds it,
+    grouped or not."""
 
     held = plan_payload(jaffle, intent=question)
     retry = plan_payload(jaffle, intent=_without(question, held["why"]["details"]["terms"]))
@@ -278,11 +430,22 @@ def test_only_a_contraction_end_may_be_dropped(jaffle: Runtime, question: str, s
     assert retry["best"]["query_ir"] == held["best"]["query_ir"]
 
 
-def test_a_meaningful_word_beside_a_contraction_end_is_not_offered(jaffle: Runtime) -> None:
-    payload = plan_payload(jaffle, intent="What's revenue from blorps last month?")
+@pytest.mark.parametrize(
+    ("question", "terms"),
+    [
+        ("What's revenue from blorps last month?", {"s", "blorps"}),
+        # Without its "t", "can't" says the opposite.
+        ("Revenue we can't collect last month", {"t"}),
+    ],
+)
+def test_a_meaningful_word_or_tail_is_not_offered(
+    jaffle: Runtime, question: str, terms: set[str]
+) -> None:
+    payload = plan_payload(jaffle, intent=question)
 
     assert payload["status"] == "low_confidence"
-    assert set(payload["why"]["details"]["terms"]) == {"s", "blorps"}
+    assert set(payload["why"]["details"]["terms"]) == terms
+    assert _hints(payload)
     assert not [hint for hint in _hints(payload) if DROP_HINT.search(hint)]
 
 
@@ -296,6 +459,10 @@ def test_a_meaningful_word_beside_a_contraction_end_is_not_offered(jaffle: Runti
         ("What's revenue for s?", "s", False),
         ("revenue by plan", "plan", False),
         ("revenue", "s", False),
+        # Only "s" is a tail: "t" carries a negation, and plan reads no other.
+        ("Revenue we can't collect last month", "t", False),
+        ("We aren’t paid", "t", False),
+        ("We'll see revenue", "ll", False),
     ],
 )
 def test_a_contraction_end_follows_an_apostrophe_inside_a_word(
