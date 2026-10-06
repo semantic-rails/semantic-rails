@@ -106,6 +106,10 @@ shapes (`aggregate`, `metric`, `prior_period`, `rolling`, `cumulative`, `ratio`,
 `conversion`, `distribution`, `aggregate_if`, `between`). Each entry is a
 `{name, description, example}` dict so agents can introspect the IR contract at
 runtime without parsing `schemas/query_ir.v1.json` out of band.
+The capability list advertises `agent_query_ir_v1`, the only accepted Query IR
+version. Queries with `version: 2` are refused with `INVALID_QUERY` and
+`supported_versions: [1]`. Python capability payloads and MCP discovery/catalog
+resources expose the same capability list.
 
 ## Request Context And API Key Shim
 
@@ -1240,7 +1244,9 @@ Canonical public error codes:
   at the top-level `recovery_hints` field: `drop_time_start` (always-safe
   fallback, listed first) and `widen_time_window` (computed
   `suggested_start`; agents should widen by lookback + one full bucket
-  when the metric is at a discrete grain).
+  when the metric is at a discrete grain). When a `where` filter on a
+  date or calendar dimension caused it, `details.where_path` names the
+  filter and `drop_time_start` removes that filter instead.
 
 ### Warning Codes
 

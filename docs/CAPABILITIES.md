@@ -276,7 +276,7 @@ trigger phrases and percentile-shaped threshold values.
 
 - duplicate projected output names are rejected with `DUPLICATE_OUTPUT_ALIAS`
 - collisions are checked across explicit select aliases, grouped dimension IDs, and the projected time-axis alias
-- cumulative expressions with a bounded `query.time.start` fail with `CUMULATIVE_TIME_FILTER_UNSUPPORTED` instead of silently computing from truncated history
+- cumulative expressions with a bounded `query.time.start` fail with `CUMULATIVE_TIME_FILTER_UNSUPPORTED` instead of silently computing from truncated history; so does a `where` filter on a date or calendar dimension other than an upper bound, and rolling, prior-period and period-to-date windows fail the same way with `WINDOWED_TIME_FILTER_UNSUPPORTED`
 
 ### Historical Joins
 
@@ -534,5 +534,5 @@ runs every file through schema validation, `Runtime.validate`, and
 4. Use [QUERY_API.md](QUERY_API.md) for request and response shapes.
    The core loop is `discover -> plan -> execute`. `execute` validates and compiles first, so
    `validate` and `compile` (on MCP, `execute` modes `validate` and `sql`) are optional dry runs.
-5. Scaffold a new package with `semantic-rails init` (it validates as it generates). [configs/examples/semantic_rails_package_starter.yml](../configs/examples/semantic_rails_package_starter.yml) is a *single-file* package starter — if you explode it into a directory package, drop the `grain:` keys (directory packages reject them under `schema_strict`).
+5. Scaffold a new directory package with `semantic-rails init <name>` (it validates as it generates). [configs/examples/semantic_rails_package_starter.yml](../configs/examples/semantic_rails_package_starter.yml) is a *single-file* package starter — if you explode it into a directory package, drop the `grain:` keys (directory packages reject them under `schema_strict`).
 6. Use [ARCHITECTURE.md](ARCHITECTURE.md) when you need the architecture spec rather than the user guide.

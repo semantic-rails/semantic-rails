@@ -1,6 +1,6 @@
 """Authoring-shape checks — silent mistakes must fail loudly.
 
-A blind-author evaluation planted realistic mistakes in a fresh ``init``
+A blind-author evaluation planted realistic mistakes in an authored
 package and found four that every validator accepted silently: a typo'd
 key (``agg:`` for ``default_agg:``) was ignored, a scalar ``domain:``
 was iterated character-wise into a corrupt value set, an invalid time
@@ -8,8 +8,7 @@ was iterated character-wise into a corrupt value set, an invalid time
 matched no entity key silently mis-detected the primary entity. These
 tests pin the fixes: each mistake now produces a located, actionable
 error from ``validate_runtime_package`` for SINGLE-FILE packages (the
-directory form already ran the enum checks; the single-file form —
-``init``'s output — skipped them entirely).
+directory form already ran the enum checks; the single-file form skipped them entirely).
 """
 
 from __future__ import annotations
@@ -20,21 +19,16 @@ from pathlib import Path
 import pytest
 import yaml
 
-from semantic_rails.cli.commands.package import cmd_init
 from semantic_rails.config import load_package_config
 from semantic_rails.config_parts.package_loader import normalize_package
 from semantic_rails.config_validation import validate_runtime_package
 from semantic_rails.errors import SemanticLayerError
-from tests.semantic_rails.conftest import copy_package_config
+from tests.semantic_rails.conftest import copy_package_config, write_single_file_package
 
 
 @pytest.fixture()
 def starter_package(tmp_path: Path) -> Path:
-    target = tmp_path / "shape_shop"
-    cmd_init(
-        argparse.Namespace(output=str(target), package_id="shape_shop", namespace="", force=False)
-    )
-    return target / "package.yml"
+    return write_single_file_package(tmp_path / "shape_shop")
 
 
 def _mutated(starter_package: Path, old: str, new: str) -> Path:

@@ -317,6 +317,7 @@ def _print_named_check(name: str, check: dict[str, Any]) -> None:
         "probes_total",
         "passed",
         "failed",
+        "skipped",
         "examples_total",
         "tests_total",
         "warnings",

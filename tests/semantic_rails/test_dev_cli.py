@@ -122,36 +122,12 @@ def test_init_name_creates_split_package_by_default(tmp_path: Path) -> None:
     assert (project_path / "models" / "core" / "events.yml").is_file()
 
 
-def test_legacy_init_output_still_creates_single_file_package(tmp_path: Path) -> None:
-    target = tmp_path / "single_file_core"
-    payload = _run_json(
-        "init",
-        "--output",
-        str(target),
-        "--package-id",
-        "single_file_core",
-    )
-
-    assert payload["ok"] is True, payload
-    assert (target / "package.yml").is_file()
-    assert not (target / "graph.yml").exists()
-
-
-def test_single_file_flag_with_name_uses_legacy_scaffold(tmp_path: Path) -> None:
-    target = tmp_path / "named_single"
-    payload = _run_json(
-        "init",
-        "named_single",
-        "--single-file",
-        "--output",
-        str(target),
-        "--json",
-    )
-
-    assert payload["ok"] is True, payload
-    assert payload["package_id"] == "named_single"
-    assert (target / "package.yml").is_file()
-    assert not (target / "graph.yml").exists()
+@pytest.mark.parametrize("flag", ["--output", "--single-file", "--split"])
+def test_init_rejects_removed_scaffold_flags(tmp_path: Path, flag: str) -> None:
+    proc = _run_cli("init", "removed_scaffold", flag, "--workspace-root", str(tmp_path))
+    assert proc.returncode == 2
+    assert f"unrecognized arguments: {flag}" in proc.stderr
+    assert not (tmp_path / "removed_scaffold").exists()
 
 
 def test_project_list_discovers_packages_under_extra_root(tmp_path: Path) -> None:

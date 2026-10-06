@@ -1285,6 +1285,11 @@ def _compiled_package_warnings(
                 measure.default_aggregation,
                 measure.default_temporal_role or [*measure.compatible_temporal_roles, ""][0],
                 expr_to_dict(measure.expr),
+                sorted(
+                    policy.id
+                    for policy in config.semantic_policies
+                    if policy.kind == "metric_constraint" and measure.id in policy.object_ids
+                ),
             ],
             sort_keys=True,
             default=str,
@@ -1610,19 +1615,48 @@ def _probe_query_for_metric(recipe, runtime: Runtime) -> dict[str, Any]:
 
 @runtime_request_scope
 def _run_probe(
-    runtime: Runtime, *, kind: str, object_id: str, query: dict[str, Any]
+    runtime: Runtime, *, kind: str, object_id: str, query: dict[str, Any], repair: bool
 ) -> dict[str, Any]:
     started = time.perf_counter()
     try:
-        try:
-            runtime.query(query)
-        except SemanticLayerError as exc:
-            # An `additive: false` measure answers only at its stored grain: probe it there.
-            missing = exc.dimensions if isinstance(exc, NonAdditiveRefusal) else None
-            if not missing or query.get("group_by"):
-                raise
-            query = {**query, "group_by": list(missing)}
-            runtime.query(query)
+        # At most two repairs: required policy grouping and a non-additive stored grain.
+        for attempt in range(3):
+            try:
+                runtime.query(query)
+                break
+            except SemanticLayerError as exc:
+                if not repair:
+                    raise
+                missing = exc.dimensions if isinstance(exc, NonAdditiveRefusal) else []
+                effects = exc.details.get("policy_effects", [])
+                violations = exc.details.get("policy_violations", [])
+                if (
+                    exc.code == "POLICY_DENIED"
+                    and effects
+                    and all(row.get("kind") == "metric_constraint" for row in effects)
+                    and violations
+                    and all(
+                        row.get("kind") in {"missing_required_group_by", "missing_required_where"}
+                        for row in violations
+                    )
+                ):
+                    if any(row["kind"] == "missing_required_where" for row in violations):
+                        return {
+                            "object_id": object_id,
+                            "kind": kind,
+                            "ok": True,
+                            "skipped": True,
+                            "reason": "Constrained probe: required_where needs an authored filter.",
+                            "policy_effects": effects,
+                            "query": query,
+                            "timing_ms": round((time.perf_counter() - started) * 1000, 3),
+                        }
+                    missing = [field for row in violations for field in row["missing"]]
+                grouping = list(query.get("group_by", []))
+                repaired = list(dict.fromkeys([*grouping, *missing]))
+                if repaired == grouping or attempt == 2:
+                    raise
+                query = {**query, "group_by": repaired}
         return {
             "object_id": object_id,
             "kind": kind,
@@ -1663,7 +1697,7 @@ def _probe_failure(probe: dict[str, Any]) -> dict[str, Any]:
 
 def _run_metric_probe(recipe, runtime: Runtime) -> dict[str, Any]:
     query = _probe_query_for_metric(recipe, runtime)
-    result = _run_probe(runtime, kind="metric", object_id=recipe.id, query=query)
+    result = _run_probe(runtime, kind="metric", object_id=recipe.id, query=query, repair=True)
     if result["ok"] or "time" in query:
         return result
     error_code = str(result.get("error", {}).get("code", "") or "")
@@ -1681,7 +1715,7 @@ def _run_metric_probe(recipe, runtime: Runtime) -> dict[str, Any]:
             "timing_ms": result["timing_ms"],
             "error": _error_payload(exc.code, str(exc), details=exc.details),
         }
-    return _run_probe(runtime, kind="metric", object_id=recipe.id, query=retry_query)
+    return _run_probe(runtime, kind="metric", object_id=recipe.id, query=retry_query, repair=True)
 
 
 # A filter with these operators matches rows only when its literal is a value in the data.
@@ -1784,6 +1818,7 @@ def validate_config_report(
                 "probes_total": 0,
                 "passed": 0,
                 "failed": 0,
+                "skipped": 0,
                 "warnings": len(warnings),
                 "errors": len(parse_report["errors"]),
             },
@@ -1814,6 +1849,7 @@ def validate_config_report(
                 kind="measure",
                 object_id=measure.id,
                 query=_probe_query_for_measure(measure),
+                repair=True,
             )
             probes.append(probe)
             if not probe["ok"]:
@@ -1842,7 +1878,9 @@ def validate_config_report(
                 include_preview_dimensions=True,
                 limit=1,
             )
-            probe = _run_probe(runtime, kind="segment", object_id=segment.id, query=query)
+            probe = _run_probe(
+                runtime, kind="segment", object_id=segment.id, query=query, repair=False
+            )
             probes.append(probe)
             if not probe["ok"]:
                 failures.append(_probe_failure(probe))
@@ -1850,8 +1888,9 @@ def validate_config_report(
                     progress(f"WARNING segment failed: {segment.id} ({probe['error']['code']})")
 
         warnings.extend(_filter_value_warnings(runtime))
-        passed = sum(1 for probe in probes if probe["ok"])
-        failed = len(probes) - passed
+        skipped = sum(1 for probe in probes if probe.get("skipped"))
+        failed = sum(1 for probe in probes if not probe["ok"])
+        passed = len(probes) - failed - skipped
         warnings.extend(runtime._seed_warnings)
         return {
             "ok": failed == 0,
@@ -1863,6 +1902,7 @@ def validate_config_report(
                 "probes_total": len(probes),
                 "passed": passed,
                 "failed": failed,
+                "skipped": skipped,
                 "warnings": len(warnings),
                 "errors": len(failures),
             },

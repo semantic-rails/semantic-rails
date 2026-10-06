@@ -155,14 +155,6 @@ source, and pre-rendered catalog variants the runtime can serve without
 recompiling; a stale fingerprint falls back to live compute. Pass `--no-manifest`
 to `validate-config` to skip writing it.
 
-The older single-file starter is still available when you specifically want one
-YAML file:
-
-```bash
-semantic-rails init --single-file --output ./my_single_file_pkg --package-id my_single_file_pkg
-semantic-rails validate-config --path ./my_single_file_pkg/package.yml
-```
-
 Single-file packages are loaded by pointing `--path` at the **file**, not the
 directory. They can still have sibling `examples/` and `tests/` directories next
 to the `package.yml`; `run-examples`, `test-package`, and `check` pick them up
@@ -287,8 +279,8 @@ model:
   # grain: is derived — the graph's `model:` pointer marks this model as
   # primary for `order`. In schema_strict DIRECTORY packages, authoring
   # `grain:` alongside `entities:` is rejected ("Drop 'grain:'"). In
-  # single-file packages both are accepted (the init starter authors
-  # `grain:` explicitly to pin the primary entity).
+  # single-file packages both are accepted (`grain:` explicitly pins
+  # the primary entity).
 
   entities:
     order: {}                         # primary (grain = graph's order.key)
@@ -2146,27 +2138,6 @@ Routing is conservative in the MVP:
   aggregate's `filter`, do not route through variants yet.
 - An `aggregate_relations:` entry that declares `filters` doesn't route yet: it
   holds only the rows its filters kept.
-- A rollup that declares `requires_certification: true` (on a variant or an
-  `aggregate_relations:` entry; default `false`) routes only while the host's
-  certification provider says it is certified, and never when none is installed
-  (`not_certified`). A host installs one at startup with
-  `semantic_rails.acceleration.routing.set_certification_provider(provider)`, where
-  `provider.certified(config, relation)` returns `True` for a certified rollup. To
-  certify one, a host calls
-  `semantic_rails.acceleration.certification.certify_aggregate_relation(config,
-  relation_id)`. For each measure column it gets the rule the rollup fails (or none)
-  and a query's `base_sql` and `rollup_sql` to run and compare: over all time,
-  grouped by every rollup dimension, at the rollup's own grain, so its rows are the
-  rollup's buckets. Every other query the rules let it answer re-aggregates those
-  buckets. A rollup whose own grain its time role can't be queried at (an hour
-  rollup under a role that starts at day) isn't certifiable. A runtime doesn't
-  use its compile cache for a package with such a rollup: every request compiles
-  again, which costs compile time, so that a revoked certification applies to the
-  next request. A rollup under a role whose `timezone:` isn't `UTC` or `Etc/UTC`
-  isn't certifiable yet (`timezone_not_utc`), so its queries use the base tables.
-  On DuckDB, MotherDuck, DuckLake and Postgres, which run each query in its role's
-  zone, build the rollup and run each pair with the session time zone set to UTC
-  (`SET TimeZone = 'UTC'`).
 
 When a rollup can't answer a query exactly, the query runs on the base tables, and
 `logical_plan.measure_plans[].aggregate_relation_rejections` maps each rejected
@@ -2231,7 +2202,11 @@ Both are loaded from **directories only** — the package root's `examples/` and
 them in sibling files.
 
 An `examples/` file maps example IDs to a question, a Query IR, and an expected
-shape (`uv run semantic-rails run-examples` executes them):
+shape (`uv run semantic-rails run-examples` executes them). Columns are checked
+against the result's output descriptors even when a time window returns no rows;
+checks request compact responses even if the example declares `verbosity: minimal`,
+and reports retain the authored query. `min_rows` and `max_rows` still enforce the
+declared row counts:
 
 ```yaml
 # examples/core.yml
@@ -2393,6 +2368,26 @@ is kept or rejected and never dropped to make the metric load:
   do elsewhere in the package. An `anchor` with a `window` is refused when the metric is
   queried, until anchored windows compile (see `docs/CAPABILITIES.md`); it is never
   computed as a lifetime value.
+
+### Runtime probes
+
+Runtime validation probes measures and metrics through the normal query policy
+checks. A probe missing a policy's `required_group_by` retries with those fields,
+including constraints inherited through a metric's measures. If `required_where`
+needs an authored filter, the probe is marked `skipped: true` with a reason and
+the policy effects, rather than failing or inventing a filter value. Skipped
+probes count separately from passed and failed probes; other policy denials
+remain failures. Add an example or package test with an allowed filter to check
+execution of a skipped object.
+
+Segment probes execute the authored preview query without repairs or skips. A
+missing required grouping or filter fails with `POLICY_DENIED`; a non-additive
+basis also fails rather than being regrouped. Fix the segment definition to
+satisfy the runtime's query requirements.
+
+Duplicate-measure warnings compare the IDs of `metric_constraint` policies
+naming each measure as well as its entity, expression, aggregation and default
+clock. Measures with different constraint policies remain distinct.
 
 ### Filter values
 
