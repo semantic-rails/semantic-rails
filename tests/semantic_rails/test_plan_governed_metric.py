@@ -42,7 +42,9 @@ METRIC = "metric.shop.active_stores"
 QUESTION = "How many stores were active last week?"
 
 
-def _package(root: Path, *, publish: bool) -> Path:
+def _package(
+    root: Path, *, publish: bool, label: str = "Active stores", domain: bool = True
+) -> Path:
     def put(name: str, doc: dict[str, Any]) -> None:
         (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
@@ -60,14 +62,15 @@ def _package(root: Path, *, publish: bool) -> Path:
     put("models/visits.yml", {"model": {
         "id": "visits", "relation": "visits", "entities": {"visit": {}},
         "times": {"day": {"column": "day", "kind": "date", "class": "event_time", "default": True}},
-        "dimensions": {"channel": {"kind": "categorical", "domain": ["retail", "demo", "staff"]}},
+        "dimensions": {"channel": {"kind": "categorical",
+                                   **({"domain": ["retail", "demo", "staff"]} if domain else {})}},
         "measures": {"active_stores_all_kinds": {
             "label": "Active stores (all kinds)", "kind": "entity_count", "entity_key": "store_id",
             "value_type": "count", **({} if publish else {"publish": False}),
         }},
     }})  # fmt: skip
     put("metrics/stores.yml", {"metrics": {"active_stores": {
-        "label": "Active stores", "description": "Retail stores with a visit.",
+        "label": label, "description": "Retail stores with a visit.",
         "kind": "aggregate", "value_type": "count", "temporal_role": "temporal_role.shop_visit_day",
         "expression": {
             "kind": "aggregate", "measure": MEASURE, "aggregation": "count_distinct",
@@ -128,6 +131,22 @@ def test_a_question_naming_the_metric_gets_the_metric(runtime: Runtime, intent: 
     query = plan["best"]["query_ir"]
     assert query["select"] == [{"as": "active_stores", "expression": {"metric": METRIC}}]
     assert _value(runtime, query) == _gold(f"{LAST_WEEK} AND channel = 'retail'") == 3
+
+
+def test_a_word_only_the_metric_names_is_read_by_the_metric(tmp_path: Path) -> None:
+    """Not ready before: "retail" named nothing the measure's draft used. The metric's own
+    name now consumes it, and its number is the retail stores' one."""
+
+    root = _package(tmp_path / "shop", publish=True, label="Active retail stores", domain=False)
+    engine = Runtime.from_path(str(root))
+    try:
+        plan = _plan(engine, "How many retail stores were active last week?")
+        assert plan["status"] == "ok", plan.get("why")
+        query = plan["best"]["query_ir"]
+        assert query["select"][0]["expression"] == {"metric": METRIC}
+        assert _value(engine, query) == _gold(f"{LAST_WEEK} AND channel = 'retail'") == 3
+    finally:
+        engine.close()
 
 
 @pytest.mark.parametrize(
