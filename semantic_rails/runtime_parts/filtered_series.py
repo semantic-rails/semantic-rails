@@ -1,28 +1,64 @@
 """Diagnose missing filtered-series buckets through the ordinary authorized query path."""
 
+import json
 from typing import Any
 
-from ..compiler_parts.sql_lowering import _filtered_series_candidate, _preserves_filtered_series
+from ..compiler_parts.sql_lowering import _filtered_series_candidate
 from ..errors import SemanticLayerError
 
 
 def filtered_series_warnings(
     runtime: Any, compiled: Any, payload: dict, rows: list[dict], *, truncated: bool
 ) -> list[dict]:
+    try:
+        return _filtered_series_warnings(runtime, compiled, payload, rows, truncated=truncated)
+    except Exception:
+        return [_warning([], "source_probe_failed", [])]
+
+
+def _warning(dropped: list[dict], reason: str, object_ids: list[str]) -> dict:
+    return {
+        "code": "FILTERED_SERIES_BUCKETS_UNVERIFIED"
+        if reason
+        else "FILTERED_SERIES_BUCKETS_DROPPED",
+        "severity": "warning",
+        "stage": "execution",
+        "object_ids": object_ids,
+        "message": (
+            "The authored filter's observed time buckets could not be verified; "
+            "this series may omit zero-valued buckets."
+            if reason
+            else f"The authored filter dropped {len(dropped)} observed time buckets; "
+            "averages over the returned rows omit those buckets."
+        ),
+        "details": {"dropped_buckets": dropped, "reason": reason},
+    }
+
+
+def _filtered_series_warnings(
+    runtime: Any, compiled: Any, payload: dict, rows: list[dict], *, truncated: bool
+) -> list[dict]:
     plan = compiled["logical_plan"]
+    retained = set(compiled.get("retained_filtered_series", []))
     if not plan.time.get("grain"):
         return []
     unsupported = [
         row
         for row in plan.measure_plans
         if _filtered_series_candidate(plan, row, runtime._config)
-        and not _preserves_filtered_series(plan, row, runtime._config)
+        and row.bound_measure.alias not in retained
     ]
     if not unsupported:
         return []
     time_key = f"{plan.time['temporal_role']}__{plan.time['grain']}"
     keys = [*plan.group_by, time_key]
-    present = {tuple(row.get(key) for key in keys) for row in rows}
+
+    def normalized_key(item: dict) -> tuple[str, ...]:
+        return tuple(
+            json.dumps(item.get(key), sort_keys=True, separators=(",", ":")) for key in keys
+        )
+
+    present = {normalized_key(row) for row in rows}
     warnings = []
     probed = set()
     for row in unsupported:
@@ -62,7 +98,7 @@ def filtered_series_warnings(
                     dropped = [
                         {key: item.get(key) for key in keys}
                         for item in result["rows"]
-                        if tuple(item.get(key) for key in keys) not in present
+                        if normalized_key(item) not in present
                     ]
             except SemanticLayerError as exc:
                 reason = exc.code
@@ -70,22 +106,5 @@ def filtered_series_warnings(
                 reason = "source_probe_failed"
         if not reason and not dropped:
             continue
-        warnings.append(
-            {
-                "code": "FILTERED_SERIES_BUCKETS_UNVERIFIED"
-                if reason
-                else "FILTERED_SERIES_BUCKETS_DROPPED",
-                "severity": "warning",
-                "stage": "execution",
-                "object_ids": [*plan.group_by, plan.time["temporal_role"]],
-                "message": (
-                    "The authored filter's observed time buckets could not be verified; "
-                    "this series may omit zero-valued buckets."
-                    if reason
-                    else f"The authored filter dropped {len(dropped)} observed time buckets; "
-                    "averages over the returned rows omit those buckets."
-                ),
-                "details": {"dropped_buckets": dropped, "reason": reason},
-            }
-        )
+        warnings.append(_warning(dropped, reason, [*plan.group_by, plan.time["temporal_role"]]))
     return warnings

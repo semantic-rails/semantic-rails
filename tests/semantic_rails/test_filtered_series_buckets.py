@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import duckdb
 import pytest
@@ -21,6 +22,7 @@ from tests.semantic_rails.test_observation_scope import (
     REGIONAL,
     SALES,
     SOLD,
+    STORE,
     _package,
 )
 
@@ -337,3 +339,151 @@ def test_an_incomplete_source_probe_never_claims_a_dropped_bucket(series, monkey
         )
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize("kind", ["sum", "count"])
+@pytest.mark.parametrize("scope", ["dataset", "query"])
+@pytest.mark.parametrize("limit", [None, 20])
+@pytest.mark.parametrize("metric_only", [False, True])
+@pytest.mark.parametrize("cached", [False, True])
+def test_retained_series_skip_bucket_probes_on_cold_and_cached_compiles(
+    series, monkeypatch, kind, scope, limit, metric_only, cached
+):
+    config = replace(series.config, package=replace(series.config.package, observation_scope=scope))
+    runtime = Runtime.from_config(config, source_path=series.source_path)
+    original = runtime.query
+    calls = []
+
+    def query(payload):
+        calls.append(payload)
+        return original(payload)
+
+    monkeypatch.setattr(runtime, "query", query)
+    payload = {**_query(kind, scope), "verbosity": "full"}
+    if limit is not None:
+        payload["limit"] = limit
+    if metric_only:
+        payload.pop("observation_scope")
+        context = RequestContext(
+            metric_allowlist=(f"metric.obs.filtered_{kind}",),
+            dimension_allowlist=(PRODUCT, SOLD),
+        )
+        payload["policy_context"] = context.to_policy_context()
+    try:
+        if cached:
+            assert runtime.compile(payload)["compile_stats"]["cache_hit"] is False
+        response = runtime.query(payload)
+        assert response["compile_stats"]["cache_hit"] is cached
+        assert len(response["rows"]) == 12
+        # The only extra call is the shared filter-literal existence probe.
+        assert len(calls) == 2
+        assert calls[1]["select"] == []
+        assert not any(
+            w["code"].startswith("FILTERED_SERIES_") or w["code"] == "RESOURCE_ACCESS_DENIED"
+            for w in response["warnings"]
+        )
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    ("sql_type", "sql_value", "expected"),
+    [("VARCHAR[]", "[store_id]", ["s1"]), ("STRUCT(id VARCHAR)", "{'id': store_id}", {"id": "s1"})],
+)
+def test_unsupported_series_accept_container_valued_group_keys(
+    series, tmp_path, sql_type, sql_value, expected
+):
+    package = _package(tmp_path / "container", {})
+    with duckdb.connect(str(package / "obs.duckdb")) as connection:
+        connection.execute("DELETE FROM sales")
+        connection.executemany(
+            "INSERT INTO sales VALUES (?, 's1', 'east', ?, ?, ?)",
+            [
+                (
+                    week + 1,
+                    "apple" if week in MATCHING_WEEKS else "pear",
+                    week + 1,
+                    START + timedelta(weeks=week),
+                )
+                for week in range(12)
+            ],
+        )
+        connection.execute(f"ALTER TABLE sales ALTER store_id TYPE {sql_type} USING {sql_value}")
+    config = replace(load_package_config(str(package)), metric_recipes=series.config.metric_recipes)
+    base = Runtime.from_config(config, source_path=str(package))
+    runtime = _conditional_runtime(base)
+    try:
+        response = runtime.query({**_query("sum", "query"), "group_by": [STORE]})
+        assert len(response["rows"]) == 7
+        assert all(row[STORE] == expected for row in response["rows"])
+        (warning,) = [w for w in response["warnings"] if w["code"].startswith("FILTERED_SERIES_")]
+        assert warning["code"] == "FILTERED_SERIES_BUCKETS_DROPPED"
+        assert warning["details"]["dropped_buckets"] == [
+            {STORE: expected, f"{SOLD}__week": (START + timedelta(weeks=week)).isoformat()}
+            for week in range(12)
+            if week not in MATCHING_WEEKS
+        ]
+    finally:
+        runtime.close()
+        base.close()
+
+
+def test_a_key_normalization_failure_only_warns_after_the_answer_is_computed(series, monkeypatch):
+    from semantic_rails.runtime_parts import filtered_series
+
+    runtime = _conditional_runtime(series)
+
+    def failed_key(*args, **kwargs):
+        raise TypeError("Key cannot be normalized")
+
+    monkeypatch.setattr(filtered_series, "json", SimpleNamespace(dumps=failed_key), raising=False)
+    try:
+        response = runtime.query(_query("sum", "query"))
+        assert len(response["rows"]) == 7
+        (warning,) = [w for w in response["warnings"] if w["code"].startswith("FILTERED_SERIES_")]
+        assert warning["code"] == "FILTERED_SERIES_BUCKETS_UNVERIFIED"
+        assert warning["details"] == {"dropped_buckets": [], "reason": "source_probe_failed"}
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("scope", ["dataset", "query"])
+@pytest.mark.parametrize(("op", "value"), [("=", "appels"), ("IN", ["apple", "appels"])])
+def test_retained_aggregate_filter_literals_keep_the_shared_misspelling_guard(
+    series, scope, op, value
+):
+    query = _query("sum", scope)
+    query["select"] = [
+        {
+            "as": "value",
+            "expression": {
+                "kind": "aggregate",
+                **QTY,
+                "filter": {"all": [{"field": PRODUCT, "op": op, "value": value}]},
+            },
+        }
+    ]
+    response = series.query(query)
+    assert len(response["rows"]) == 12
+    (warning,) = [w for w in response["warnings"] if w["code"] == "FILTER_VALUE_NOT_FOUND"]
+    assert warning["details"]["filters"] == [
+        {"dimension": PRODUCT, "value": "appels", "suggestion": "apple"}
+    ]
+
+
+@pytest.mark.parametrize("scope", ["dataset", "query"])
+def test_a_failed_retained_filter_literal_probe_warns_without_losing_rows(
+    series, monkeypatch, scope
+):
+    original = series.query
+
+    def query(payload):
+        if not payload["select"]:
+            raise SemanticLayerError("QUERY_EXECUTION_ERROR", "Existence probe failed")
+        return original(payload)
+
+    monkeypatch.setattr(series, "query", query)
+    response = series.query(_query("sum", scope))
+    assert len(response["rows"]) == 12
+    (warning,) = [w for w in response["warnings"] if w["code"] == "FILTER_VALUE_UNVERIFIED"]
+    assert warning["details"]["filters"] == [{"dimension": PRODUCT, "value": "apple"}]

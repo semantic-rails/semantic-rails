@@ -5063,6 +5063,8 @@ class BoundQuery:
     stock_key_gaps: tuple[dict[str, Any], ...] = ()
     # Every output that reads 0 or NULL for an empty group, with the measures behind it.
     zero_outputs: tuple[dict[str, Any], ...] = ()
+    # Root leaf output aliases whose observed buckets lowering retained.
+    retained_filtered_series: tuple[str, ...] = ()
     # Every route the SQL reads, nested compiles included (the plan's own root and leaf paths
     # are in the plan).
     route_choices: tuple[RouteChoice, ...] = ()
@@ -5361,6 +5363,7 @@ def _bind_query(
         frozenset(rollup_scans),
         stock_key_gaps=tuple(stock_key_gaps),
         zero_outputs=tuple(zero_outputs),
+        retained_filtered_series=tuple(sorted(leaves.retained_filtered_series)),
         route_choices=tuple(route_choices),
     )
 
@@ -5461,6 +5464,7 @@ def compile_query(
         "compile_stats": compile_stats,
         "stock_key_gaps": list(bound.stock_key_gaps),
         "zero_outputs": list(bound.zero_outputs),
+        "retained_filtered_series": list(bound.retained_filtered_series),
         "route_choices": list(bound.route_choices),
         "route_decisions": list(bound.route_decisions),
     }

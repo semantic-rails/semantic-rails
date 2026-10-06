@@ -118,6 +118,7 @@ from .dependencies import (
     record_bound_object,
     record_ids,
     record_leaf_reference,
+    record_retained_filtered_series,
 )
 from .empty_groups import (
     GUARDED_BASE,
@@ -5889,6 +5890,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                     if all(_preserves_filtered_series(plan, row, config) for row in measure_group):
                         for row in measure_group:
                             _require_filtered_series_operand(leaf_select, row, config)
+                            record_retained_filtered_series(row.bound_measure.alias)
                     for row in measure_group if probing else ():
                         if (scope := _dataset_scope(row, config)) is not None:
                             observed[row.bound_measure.alias] = scope

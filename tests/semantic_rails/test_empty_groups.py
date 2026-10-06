@@ -187,12 +187,16 @@ def test_a_filter_that_matches_nothing_reads_null_and_says_so(runtime: Runtime) 
     ]
 
 
-def test_a_never_matched_authored_filter_reads_zero_in_observed_buckets(runtime: Runtime) -> None:
+@pytest.mark.parametrize("scope", ["dataset", "query"])
+def test_a_never_matched_authored_filter_reads_zero_in_observed_buckets(
+    runtime: Runtime, scope: str
+) -> None:
     none = {**REVENUE, "kind": "aggregate", "filter": {"all": NO_SUCH_STORE}}
     response = runtime.query(
         {
             "version": 2,
             "select": _select(revenue=REVENUE, none=none),
+            "observation_scope": scope,
             "time": {"temporal_role": ORDER_TIME, "grain": "quarter"},
         }
     )
@@ -207,6 +211,25 @@ def test_a_never_matched_authored_filter_reads_zero_in_observed_buckets(runtime:
         (pytest.approx(row["revenue"]), row["none"]) for row in gold
     ]
     assert not _warnings(response)
+    (warning,) = _warnings(response, "FILTER_VALUE_NOT_FOUND")
+    assert warning["details"]["filters"][0]["value"] == NO_SUCH_STORE[0]["value"]
+    real = runtime.query(
+        {
+            "version": 2,
+            "select": _select(
+                revenue=REVENUE,
+                filtered={
+                    **REVENUE,
+                    "kind": "aggregate",
+                    "filter": {"all": [{"field": STORE, "op": "=", "value": "Philadelphia"}]},
+                },
+            ),
+            "observation_scope": scope,
+            "time": {"temporal_role": ORDER_TIME, "grain": "quarter"},
+        }
+    )
+    assert not _warnings(real, "FILTER_VALUE_NOT_FOUND")
+    assert not _warnings(real, "FILTER_VALUE_UNVERIFIED")
 
 
 def test_an_average_of_nothing_is_undefined_not_missing_data(runtime: Runtime) -> None:

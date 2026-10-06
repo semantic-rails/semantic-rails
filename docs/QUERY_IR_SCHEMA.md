@@ -1021,7 +1021,10 @@ whose rows all fail it has none and reads `0`, and one whose matching rows all h
 amount reads `NULL`. Filled or not, a group reads the same.
 For a plain additive time series with an authored dimension filter, the source rows retain
 every observed bucket before that filter: a week with rows but no matches reads `0`, in both
-observation scopes, as its window total does. Query `where` filters and policy row filters
+observation scopes, as its window total does. String `=` and `IN` literals in its aggregate
+filter use the same misspelling guard in both scopes: `FILTER_VALUE_NOT_FOUND` names values
+absent from their dimension, and `FILTER_VALUE_UNVERIFIED` names values whose existence
+cannot be checked under the caller's policies. Query `where` filters and policy row filters
 still restrict those source rows. A period with no source rows stays absent without `fill`;
 no calendar is generated. This applies to sums and counts on a local clock with no rewrite,
 using local dimensions or single-hop lookups, with only additive outputs, and preserves matching NULL amounts.
