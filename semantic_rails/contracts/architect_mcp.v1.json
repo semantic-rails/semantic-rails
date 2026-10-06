@@ -1104,7 +1104,7 @@
         "readOnlyHint": false,
         "title": "Upsert relationship"
       },
-      "description": "Relate two entities: columns on from_entity's model hold to_entity's key, in key order. cardinality: many_to_one or one_to_one.",
+      "description": "Relate two entities: columns on from_entity's model hold to_entity's key, in key order. cardinality: many_to_one or one_to_one. Set keep_existing_routes=true to record every moved pair's previous route in this transaction; otherwise unrecorded route changes refuse the write.",
       "inputSchema": {
         "properties": {
           "cardinality": {
@@ -1129,6 +1129,10 @@
           },
           "idempotency_key": {
             "type": "string"
+          },
+          "keep_existing_routes": {
+            "default": false,
+            "type": "boolean"
           },
           "project_path": {
             "type": "string"
@@ -1367,9 +1371,24 @@
         "readOnlyHint": false,
         "title": "Record route decision"
       },
-      "description": "Record which route a question between two entities means, as the package default: write or replace the pair's graph.path_preferences row (pass the decision of an AMBIGUOUS_PATH clarification option). An off-route path or an unknown entity or relationship is INVALID_CONFIG with nothing written. Returns replaced (the previous row) and summary, one sentence for the review.",
+      "description": "Record which route a question between two entities means, as the package default: write or replace the pair's graph.path_preferences row (pass the decision of an AMBIGUOUS_PATH clarification option). An off-route path or an unknown entity or relationship is INVALID_CONFIG with nothing written. Returns replaced (the previous row) and summary, one sentence for the review. For several pairs, pass decisions=[{source_entity, target_entity, relationship_path, label?}, ...] instead of single-pair fields. All rows are validated together in one transaction; one invalid or conflicting row refuses all.",
       "inputSchema": {
         "properties": {
+          "decisions": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "dry_run": {
             "default": false,
             "type": "boolean"
@@ -1394,17 +1413,16 @@
             "type": "array"
           },
           "source_entity": {
+            "default": "",
             "type": "string"
           },
           "target_entity": {
+            "default": "",
             "type": "string"
           }
         },
         "required": [
           "project_path",
-          "source_entity",
-          "target_entity",
-          "relationship_path",
           "expected_revision",
           "idempotency_key"
         ],

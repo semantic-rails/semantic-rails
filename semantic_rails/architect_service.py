@@ -52,6 +52,7 @@ from .expressions import expr_to_dict
 from .fanout import package_route, pair_routes, route_reading
 from .package_snapshot import load_package_snapshot
 from .package_tools import impact_report
+from .route_census import resolve_pairs, route_census, route_changes
 from .schema import PackageConfig, PathPreferenceConfig
 from .yaml_loader import safe_load as yaml_safe_load
 
@@ -1365,6 +1366,7 @@ class ArchitectProject:
         to_entity: str,
         columns: list[str],
         cardinality: str = "many_to_one",
+        keep_existing_routes: bool = False,
         validate_after: bool = True,
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
@@ -1378,7 +1380,9 @@ class ArchitectProject:
         packages read as a many-to-one relationship. ``one_to_one``, or an
         existing ``graph.relationships`` entry for the pair, also records the
         cardinality there. The project is checked under the transaction lock,
-        after receipt replay and the revision check.
+        after receipt replay and the revision check. ``keep_existing_routes=True``
+        records each moved pair's previous path in the same transaction and refuses
+        if any previous route outcome (including a refusal) would still change.
         """
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         source, target = str(from_entity or "").strip(), str(to_entity or "").strip()
@@ -1488,8 +1492,76 @@ class ArchitectProject:
                 documents[graph_path]["graph"] = {**graph, "relationships": relationships}
             elif graph_path != model_row.source_path:
                 documents.pop(graph_path)
-            return self._file_updates(documents), None
+            updates = self._file_updates(documents)
+            if keep_existing_routes:
+                transaction = ProjectTransaction(
+                    self.project_path, workspace_root=self.workspace_root
+                )
+                base = load_package_snapshot(str(self.project_path)).config
+                changed = self._proposed_config(transaction, updates)
+                rows = [
+                    {
+                        "source_entity": change["source_entity"],
+                        "target_entity": change["target_entity"],
+                        "relationship_path": change["base"]["relationship_path"],
+                    }
+                    for change in route_changes(base, changed)
+                    if "relationship_path" in change["base"]
+                ]
+                assumed = {
+                    (row["source_entity"], row["target_entity"])
+                    for row in route_census(base)["assumed"]
+                }
+                # Confirm newly ambiguous own-key routes too, even when their path
+                # did not move, so the explicit keep choice needs no further call.
+                rows.extend(
+                    {field: row[field] for field in _PIN_ENDS + ("relationship_path",)}
+                    for row in route_census(changed)["assumed"]
+                    if (row["source_entity"], row["target_entity"]) not in assumed
+                    and (row["source_entity"], row["target_entity"])
+                    not in {(item["source_entity"], item["target_entity"]) for item in rows}
+                )
+                if rows:
+                    updates, reports = self._prepare_route_decisions(
+                        transaction, changed, rows, updates
+                    )
+                # Preserve every previously answered pair. For refused pairs, allow the
+                # relationship's own outcome, but refuse any additional change from pins.
+                final = self._proposed_config(transaction, updates)
+                remaining = [
+                    change
+                    for change in route_changes(base, final)
+                    if "refused" not in change["base"]
+                ]
+                pin_changes = route_changes(changed, final)
+                base_outcomes = resolve_pairs(
+                    base, [(row["source_entity"], row["target_entity"]) for row in pin_changes]
+                )
+                remaining.extend(
+                    {**row, "base": outcome.shape()}
+                    for row in pin_changes
+                    if (
+                        outcome := base_outcomes[(row["source_entity"], row["target_entity"])]
+                    ).refused
+                )
+                if remaining:
+                    raise SemanticLayerError(
+                        "ROUTE_DECISION_NOT_RECORDED",
+                        "keep_existing_routes could not preserve every existing route outcome; "
+                        "nothing was written. Record explicit decisions instead.",
+                        details={"route_changes": remaining},
+                    )
+                metadata["kept_route_decisions"] = rows
+            return updates, None
 
+        metadata: dict[str, Any] = {
+            "relationship": {
+                "from_entity": source,
+                "to_entity": target,
+                "columns": foreign_key,
+                "cardinality": kind,
+            }
+        }
         outcome = ProjectTransaction(self.project_path, workspace_root=self.workspace_root).apply(
             (),
             expected_revision=expected,
@@ -1501,18 +1573,12 @@ class ArchitectProject:
                 "to_entity": target,
                 "columns": foreign_key,
                 "cardinality": kind,
+                **({"keep_existing_routes": True} if keep_existing_routes else {}),
             },
             dry_run=dry_run,
             validate_after=validate_after,
             success_status="upserted",
-            metadata={
-                "relationship": {
-                    "from_entity": source,
-                    "to_entity": target,
-                    "columns": foreign_key,
-                    "cardinality": kind,
-                }
-            },
+            metadata=metadata,
             prepare_updates=prepare,
         )
         return ArchitectMutation(
@@ -1522,13 +1588,88 @@ class ArchitectProject:
             _active=bool(outcome.snapshots),
         )
 
+    def _proposed_config(
+        self, transaction: ProjectTransaction, updates: list[ProjectFileUpdate]
+    ) -> PackageConfig:
+        with transaction.virtual_project(updates) as proposed:
+            try:
+                return load_package_snapshot(str(proposed)).config
+            except SemanticLayerError as exc:
+                message = str(exc).replace(str(proposed), str(self.project_path))
+                raise SemanticLayerError(exc.code, message, details=exc.details) from None
+
+    def _prepare_route_decisions(
+        self,
+        transaction: ProjectTransaction,
+        config: PackageConfig,
+        rows: list[dict[str, Any]],
+        updates: list[ProjectFileUpdate],
+    ) -> tuple[list[ProjectFileUpdate], list[dict[str, Any]]]:
+        """Stage every pair together, then require the complete package to honor each row."""
+        keys = {item.key: item.object_id for item in self._raw_inventory()["entities"]}
+        entities = entity_references(config.entities, keys)
+        decisions: list[PathPreferenceConfig] = []
+        reports = []
+        files = transaction.proposed_files(updates)
+        for row in rows:
+            try:
+                if not isinstance(row, dict):
+                    raise RouteRowError("must be an object")
+                if set(row) - {"source_entity", "target_entity", "relationship_path", "label"}:
+                    raise RouteRowError("contains unknown fields")
+                if not isinstance(row.get("relationship_path"), list):
+                    raise RouteRowError("relationship_path must be a list")
+                decision = check_route_row(
+                    row, entities=entities, relationships=config.relationships
+                )
+                pair = (decision.source_entity, decision.target_entity)
+                if pair in {(item.source_entity, item.target_entity) for item in decisions}:
+                    raise RouteRowError("declares the same entity pair more than once")
+            except RouteRowError as exc:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"route decision {exc}",
+                    details={"reason": "invalid_route_decision", "route_decision": row},
+                ) from None
+            update, replaced = route_rows_update(files, [row], replace_pair=pair, entities=entities)
+            files[update.relative_path] = update.content or b""
+            updates = [item for item in updates if item.relative_path != update.relative_path]
+            updates.append(update)
+            decisions.append(decision)
+            reports.append(
+                {
+                    "route_decision": row,
+                    "replaced": replaced,
+                    "summary": _route_decision_summary(config, decision),
+                }
+            )
+        changed = self._proposed_config(transaction, updates)
+        for row, decision in zip(rows, decisions, strict=True):
+            try:
+                route = list(
+                    package_route(
+                        changed, start=decision.source_entity, target=decision.target_entity
+                    ).routes[0]
+                )
+            except SemanticLayerError:
+                route = []
+            if route != decision.relationship_path:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG",
+                    f"route decision for {decision.source_entity} -> {decision.target_entity} "
+                    "would not take effect: the changed package resolves the pair another way",
+                    details={"reason": "route_decision_not_in_effect", "route_decision": row},
+                )
+        return updates, reports
+
     def record_route_decision(
         self,
         *,
-        source_entity: str,
-        target_entity: str,
-        relationship_path: list[str],
+        source_entity: str | None = None,
+        target_entity: str | None = None,
+        relationship_path: list[str] | None = None,
         label: str = "",
+        decisions: list[dict[str, Any]] | None = None,
         validate_after: bool = True,
         expected_revision: str | None = None,
         idempotency_key: str | None = None,
@@ -1545,7 +1686,10 @@ class ArchitectProject:
         is ``INVALID_CONFIG`` (the loader's error, naming any row it disagrees with) and nothing
         is written. The report adds ``replaced`` (the row in effect before, or None) and
         ``summary``, one plain sentence for a review, and every ``route_changes`` pair it moves,
-        including inherited pairs. No keep rows are added.
+        including inherited pairs. Alternatively pass a nonempty ``decisions`` list
+        instead of the single-pair fields: all rows are staged and validated together,
+        and the report's ``route_decisions`` lists each row's replacement and summary.
+        Duplicate pairs, conflicting rows, or any invalid row refuse the whole batch.
         """
         expected, key = self._mutation_identity(expected_revision, idempotency_key)
         row: dict[str, Any] = {
@@ -1554,46 +1698,33 @@ class ArchitectProject:
             "relationship_path": [hop.strip() for hop in _as_list(relationship_path)],
             **({"label": str(label).strip()} if str(label or "").strip() else {}),
         }
-        metadata: dict[str, Any] = {"route_decision": row}
+        if decisions is not None:
+            if (
+                source_entity is not None
+                or target_entity is not None
+                or relationship_path is not None
+                or label
+            ):
+                raise SemanticLayerError(
+                    "INVALID_CONFIG", "Use decisions or single-pair fields, not both"
+                )
+            if not isinstance(decisions, list) or not decisions:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG", "decisions must be a nonempty list of route rows"
+                )
+            rows = deepcopy(decisions)
+        else:
+            rows = [row]
+        metadata: dict[str, Any] = {}
 
         def prepare(_: str) -> tuple[list[ProjectFileUpdate], None]:
             config = load_package_snapshot(str(self.project_path)).config
-            keys = {item.key: item.object_id for item in self._raw_inventory()["entities"]}
-            entities = entity_references(config.entities, keys)
-            try:
-                decision = check_route_row(
-                    row, entities=entities, relationships=config.relationships
-                )
-            except RouteRowError as exc:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"route decision {exc}",
-                    details={"reason": "invalid_route_decision", "route_decision": row},
-                ) from None
-            pair = (decision.source_entity, decision.target_entity)
             transaction = ProjectTransaction(self.project_path, workspace_root=self.workspace_root)
-            update, metadata["replaced"] = route_rows_update(
-                transaction.proposed_files(()), [row], replace_pair=pair, entities=entities
-            )
-            updates = [update]
-            with transaction.virtual_project(updates) as proposed:
-                try:
-                    changed = load_package_snapshot(str(proposed)).config
-                except SemanticLayerError as exc:
-                    message = str(exc).replace(str(proposed), str(self.project_path))
-                    raise SemanticLayerError(exc.code, message, details=exc.details) from None
-            try:
-                route = list(package_route(changed, start=pair[0], target=pair[1]).routes[0])
-            except SemanticLayerError:
-                route = []
-            if route != decision.relationship_path:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"route decision for {pair[0]} -> {pair[1]} would not take effect: the "
-                    "changed package resolves the pair another way",
-                    details={"reason": "route_decision_not_in_effect", "route_decision": row},
-                )
-            metadata["summary"] = _route_decision_summary(config, decision)
+            updates, reports = self._prepare_route_decisions(transaction, config, rows, [])
+            if decisions is None:
+                metadata.update(reports[0])
+            else:
+                metadata["route_decisions"] = reports
             return updates, None
 
         outcome = ProjectTransaction(self.project_path, workspace_root=self.workspace_root).apply(
@@ -1603,7 +1734,7 @@ class ArchitectProject:
             intent={
                 "operation": "record_route_decision",
                 "expected_revision": expected,
-                **row,
+                **({"decisions": rows} if decisions is not None else row),
             },
             dry_run=dry_run,
             validate_after=validate_after,
