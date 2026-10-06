@@ -214,8 +214,6 @@ def test_every_unconsumed_number_and_clock_word_is_named(
         ("revenue for the last 7 days", _draft(time=LAST_7_DAYS)),
         ("average delivery time by month", _draft()),
         ("revenue by order time in 2017", _draft(time=WINDOW)),
-        # A caller's hour window is answered by the date the question states, not by its hours.
-        ("orders on 15 March 2017", _draft(time={"grain": "day", **HOUR})),
     ],
 )
 def test_a_number_or_clock_word_the_draft_carries_is_consumed(
@@ -424,16 +422,18 @@ def test_a_number_word_or_zone_no_construct_reads_is_never_ok(
         ("ORDERS ON 15 MARCH 2017 IN EST", _draft(time=WINDOW), ["est"]),
         ("orders on 15 March 2017 in MSK", _draft(time=WINDOW), ["msk"]),
         ("orders on 15 March 2017 at 12:00 Z", _draft(time=WINDOW), ["12", "00", "z"]),
-        # A caller's hours consume nothing: the question's hours are left over, whatever they are.
+        # A caller's hours consume nothing: the question's hours are left over, whatever they are,
+        # and so is its date, which a window shorter than the day is not.
+        ("orders on 15 March 2017", _draft(time={"grain": "day", **HOUR}), ["15", "2017"]),
         (
             "revenue from 12:00 to 13:00 on 15 March 2017",
             _draft(time={"grain": "day", **HOUR}),
-            ["12", "00", "13"],
+            ["12", "00", "13", "15", "2017"],
         ),
         (
             "revenue from 9 to 17 on 15 March 2017",
             _draft(time={"grain": "day", **HOUR}),
-            ["9", "17"],
+            ["9", "17", "15", "2017"],
         ),
         # A caller's window is not a zone.
         (
@@ -828,9 +828,17 @@ def test_a_caller_window_answers_the_time_phrases_plan_could_not_resolve(
         # A bare year that no date phrase states is left over, not matched to the bounds.
         ("revenue 2018", YEAR_2017, ["2018"]),
         ("revenue 2017", YEAR_2017, ["2017"]),
-        ("revenue on 15 March 2017 from 1900 to 2000 hours", HOUR, ["1900", "2000", "hours"]),
+        (
+            "revenue on 15 March 2017 from 1900 to 2000 hours",
+            HOUR,
+            ["15", "2017", "1900", "2000", "hours"],
+        ),
         # Neither is a clock time the bounds do not state.
-        ("revenue from 9:30 to 17:00 on 15 March 2017", HOUR, ["9", "30", "17", "00"]),
+        (
+            "revenue from 9:30 to 17:00 on 15 March 2017",
+            HOUR,
+            ["9", "30", "17", "00", "15", "2017"],
+        ),
     ],
 )
 def test_a_caller_window_never_consumes_a_year_shaped_or_other_clock_time_by_value(
@@ -865,24 +873,52 @@ BUSINESS_HOURS = {"start": f"{MARCH_15}T09:30:00", "end": f"{MARCH_15}T17:00:00"
         ("revenue on 15 March 2017 for 3 hours", DAY_BOUNDS, ["3", "hours"]),
         ("revenue on 15 March 2017 at 0", DAY_BOUNDS, ["0"]),
         # ...and neither do bounds that state hours: no clock time is consumed by its value,
-        # whether it matches a bound, is reversed, or sits in another role.
-        ("revenue from noon to midnight on 15 March 2017", NOON_TO_MIDNIGHT, ["noon", "midnight"]),
+        # whether it matches a bound, is reversed, or sits in another role. Such bounds are not
+        # the day the question states either, so its date is left over too.
+        (
+            "revenue from noon to midnight on 15 March 2017",
+            NOON_TO_MIDNIGHT,
+            ["noon", "midnight", "15", "2017"],
+        ),
         (
             "revenue from 9:30 am to 5 pm on 15 March 2017",
             BUSINESS_HOURS,
-            ["9", "30", "5"],
+            ["9", "30", "5", "15", "2017"],
         ),
-        ("revenue from 09:30 to 17:00 on 15 March 2017", BUSINESS_HOURS, ["09", "30", "17", "00"]),
-        ("revenue on 15 March 2017 from 17:00 to 09:30", BUSINESS_HOURS, ["17", "00", "09", "30"]),
-        ("revenue on 15 March 2017 except 17:00-09:30", BUSINESS_HOURS, ["17", "00", "09", "30"]),
-        ("revenue on 15 March 2017 from 9:30 to 18:00", BUSINESS_HOURS, ["9", "30", "18", "00"]),
-        ("revenue on 15 March 2017 at 17 or 1700", BUSINESS_HOURS, ["17", "1700"]),
-        ("revenue on 15 March 2017 at 9 o'clock", BUSINESS_HOURS, ["9", "clock"]),
-        ("revenue on 15 March 2017 from 9 to 17", BUSINESS_HOURS, ["9", "17"]),
-        ("revenue on 15 March 2017 per hour, 17:00", BUSINESS_HOURS, ["hour", "17", "00"]),
-        ("revenue on 15 March 2017 at 17:00 UTC", BUSINESS_HOURS, ["17", "00", "utc"]),
-        # What a window answers is the date the question states.
-        ("revenue on 15 March 2017", BUSINESS_HOURS, []),
+        (
+            "revenue from 09:30 to 17:00 on 15 March 2017",
+            BUSINESS_HOURS,
+            ["09", "30", "17", "00", "15", "2017"],
+        ),
+        (
+            "revenue on 15 March 2017 from 17:00 to 09:30",
+            BUSINESS_HOURS,
+            ["15", "2017", "17", "00", "09", "30"],
+        ),
+        (
+            "revenue on 15 March 2017 except 17:00-09:30",
+            BUSINESS_HOURS,
+            ["15", "2017", "17", "00", "09", "30"],
+        ),
+        (
+            "revenue on 15 March 2017 from 9:30 to 18:00",
+            BUSINESS_HOURS,
+            ["15", "2017", "9", "30", "18", "00"],
+        ),
+        ("revenue on 15 March 2017 at 17 or 1700", BUSINESS_HOURS, ["15", "2017", "17", "1700"]),
+        ("revenue on 15 March 2017 at 9 o'clock", BUSINESS_HOURS, ["15", "2017", "9", "clock"]),
+        ("revenue on 15 March 2017 from 9 to 17", BUSINESS_HOURS, ["15", "2017", "9", "17"]),
+        (
+            "revenue on 15 March 2017 per hour, 17:00",
+            BUSINESS_HOURS,
+            ["15", "2017", "hour", "17", "00"],
+        ),
+        (
+            "revenue on 15 March 2017 at 17:00 UTC",
+            BUSINESS_HOURS,
+            ["15", "2017", "17", "00", "utc"],
+        ),
+        ("revenue on 15 March 2017", BUSINESS_HOURS, ["15", "2017"]),
     ],
 )
 def test_a_caller_window_consumes_no_clock_time_by_its_value(
@@ -896,19 +932,15 @@ def test_a_caller_window_consumes_no_clock_time_by_its_value(
         runtime.close()
 
 
-def test_a_caller_hour_window_answers_the_date_and_refuses_the_hours_the_question_states(
+def test_a_caller_hour_window_is_not_the_date_the_question_states(
     runtime_factory: Any,
 ) -> None:
     partial = {"time": {"temporal_role": ORDER_TIME, "grain": "day", **HOUR}}
-    ok = _plan(runtime_factory, "revenue on 15 March 2017", partial_query=partial)
-    assert ok["status"] == "ok", ok.get("why")
-    assert {key: _query(ok)["time"][key] for key in ("start", "end")} == HOUR
-    refused = _plan(
-        runtime_factory, "revenue from 12:00 to 13:00 on 15 March 2017", partial_query=partial
-    )
-    assert refused["status"] == "low_confidence", refused
-    assert refused["why"]["details"]["terms"] == ["12", "00", "13"]
-    assert "ready_for" not in refused["next"]
+    for text in ("revenue on 15 March 2017", "revenue from 12:00 to 13:00 on 15 March 2017"):
+        held = _plan(runtime_factory, text, partial_query=partial)
+        assert held["status"] == "low_confidence", held
+        assert held["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+        assert "ready_for" not in held["next"]
 
 
 def test_a_noon_to_midnight_question_against_a_whole_day_window_is_refused(
@@ -945,14 +977,15 @@ def test_a_question_too_long_to_read_consumes_only_the_years_its_date_phrases_st
 def test_a_caller_window_that_contradicts_the_questions_hours_is_refused(
     runtime_factory: Any,
 ) -> None:
-    # The caller's stated hours consume the question's own; hours it doesn't state are left over.
+    # Hours the caller's window doesn't state are left over.
     payload = _plan(
         runtime_factory,
         "revenue from 9 to 17 on 15 March 2017",
         partial_query={"time": {"temporal_role": ORDER_TIME, "grain": "day", **HOUR}},
     )
     assert payload["status"] == "low_confidence"
-    assert payload["why"]["details"]["terms"] == ["9", "17"]
+    assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    assert payload["warnings"][0]["details"]["terms"] == ["9", "17"]
 
 
 def test_a_day_is_still_resolved_as_a_day() -> None:
@@ -977,13 +1010,15 @@ def test_plan_refuses_an_hour_on_a_date_role_too(runtime_factory: Any) -> None:
 
 
 def test_plan_accepts_an_hour_range_the_caller_states(runtime_factory: Any) -> None:
-    payload = _plan(
-        runtime_factory,
-        "orders on 15 March 2017",
-        partial_query={"time": {"temporal_role": ORDER_TIME, "grain": "day", **HOUR}},
-    )
+    # The window carries the hours, and a question that names no date or hour reads it as is.
+    partial = {"time": {"temporal_role": ORDER_TIME, "grain": "day", **HOUR}}
+    payload = _plan(runtime_factory, "orders", partial_query=partial)
     assert payload["status"] == "ok", payload.get("why")
     assert {key: _query(payload)["time"][key] for key in ("start", "end")} == HOUR
+    # Plan reads a caller's bounds only at whole days, so the hours are not the day it names.
+    held = _plan(runtime_factory, "orders on 15 March 2017", partial_query=partial)
+    assert held["status"] == "low_confidence", held
+    assert "ready_for" not in held["next"]
 
 
 def test_plan_still_plans_a_day(runtime_factory: Any) -> None:
@@ -1472,10 +1507,18 @@ def _last_days(days: int) -> dict[str, str]:
 @pytest.mark.parametrize(
     ("text", "time", "agrees"),
     [
-        # The same day, read at the day: a whole day, or hours within it.
+        # The same day, as a whole day: a date, or that date at midnight. Hours within it, or a
+        # reversed or empty window, are not the day.
         ("revenue on 15 March 2017", {"start": MARCH_15, "end": "2017-03-16"}, True),
         ("revenue on 15 March 2017", {"start": f"{MARCH_15}T00:00:00", "end": "2017-03-16"}, True),
-        ("revenue on 15 March 2017", HOUR, True),
+        ("revenue on 15 March 2017", HOUR, False),
+        ("revenue on 15 March 2017", {"start": f"{MARCH_15}T12:00:00", "end": "2017-03-16"}, False),
+        ("revenue on 15 March 2017", {"start": "2017-03-16", "end": MARCH_15}, False),
+        (
+            "revenue on 15 March 2017",
+            {"start": f"{MARCH_15}T12:00", "end": f"{MARCH_15}T12:00"},
+            False,
+        ),
         ("revenue in March 2017", MARCH_2017, True),
         ("revenue in Q1 2017", Q1_2017, True),
         ("revenue in 2017", YEAR_2017, True),

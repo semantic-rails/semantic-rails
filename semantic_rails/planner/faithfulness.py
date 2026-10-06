@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -2824,11 +2824,12 @@ def _window_days(
 ) -> tuple[date | None, date | None] | None:
     """The first day a window covers and the first day after it, or None where unreadable.
 
-    A relative range is read in ``timezone``, the planning zone unless one is given. A bound
-    with a time of day is floored (a start) or rounded up (an end) to the day, the grain of
-    every window plan reads; a missing bound comes back None. A bound with a zone designator
-    is readable only when its offset is its temporal role's at that instant: then its written
-    date is the role-local date.
+    A relative range is read in ``timezone``, the planning zone unless one is given. A bound is
+    readable only at a whole day, the grain of every window plan reads: a date, or that date at
+    midnight. A bound with another time of day is unreadable, as is a window whose start is not
+    before its end (empty or reversed); a missing bound comes back None. A bound with a zone
+    designator is readable only when its offset is its temporal role's at that instant: then
+    its written date is the role-local date.
     """
 
     role = str(bounds.get("temporal_role") or "")
@@ -2861,11 +2862,11 @@ def _window_days(
                 return None
             if moment.utcoffset() != local:
                 return None
-        days.append(
-            day + timedelta(days=1)
-            if key == "end" and not _MIDNIGHT_RE.fullmatch(text[10:])
-            else day
-        )
+        if not _MIDNIGHT_RE.fullmatch(tail):
+            return None
+        days.append(day)
+    if days[0] is not None and days[1] is not None and days[0] >= days[1]:
+        return None
     return days[0], days[1]
 
 

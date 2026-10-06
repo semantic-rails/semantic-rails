@@ -540,17 +540,23 @@ def test_offset_bounds_on_another_local_day_are_held(
     assert not plan.get("next", {}).get("ready_for")
 
 
+@pytest.mark.parametrize("detail", ["best", "full", "query", "debug"])
 @pytest.mark.parametrize(
-    ("start", "end", "ready"),
+    ("start", "end"),
     [
-        # In the role's offset the written date is the local date.
-        ("2026-10-04T00:00:00-04:00", "2026-10-04T23:59:59-04:00", True),
-        # Held as before: an end at midnight with an offset reads as one day later.
-        ("2026-10-04T00:00:00-04:00", "2026-10-05T00:00:00-04:00", False),
+        # Reversed or empty: the window holds no row.
+        ("2026-10-04T12:00:00-04:00", "2026-10-04T01:00:00-04:00"),
+        ("2026-10-04T12:00:00-04:00", "2026-10-04T12:00:00-04:00"),
+        ("2026-10-05", "2026-10-04"),
+        # Part of the day: on a timestamp clock it leaves out the rest of the day.
+        ("2026-10-04T12:00:00-04:00", "2026-10-04T23:59:59-04:00"),
+        ("2026-10-04T00:00:00-04:00", "2026-10-04T23:59:59-04:00"),
+        # Midnight in an offset other than UTC's.
+        ("2026-10-04T00:00:00-04:00", "2026-10-05T00:00:00-04:00"),
     ],
 )
-def test_offset_bounds_in_the_roles_offset_keep_their_date(
-    local_subscriptions: Runtime, start: str, end: str, ready: bool
+def test_a_caller_window_is_read_only_at_whole_days(
+    local_subscriptions: Runtime, start: str, end: str, detail: str
 ) -> None:
     plan = plan_payload(
         local_subscriptions,
@@ -559,11 +565,23 @@ def test_offset_bounds_in_the_roles_offset_keep_their_date(
             "policy_context": {"now": "2026-10-04T12:00:00Z"},
             "time": {"start": start, "end": end},
         },
+        detail=detail,
     )
-    if not ready:
-        assert plan["status"] == "low_confidence"
-        assert plan["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
-        return
+    assert plan["status"] == "low_confidence", plan.get("why")
+    assert plan["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    assert [gap["kind"] for gap in plan["why"]["details"]["gaps"]] == ["time_window_unrealized"]
+    assert not plan.get("next", {}).get("ready_for")
+
+
+def test_a_whole_day_caller_window_executes(local_subscriptions: Runtime) -> None:
+    plan = plan_payload(
+        local_subscriptions,
+        intent="new accounts today",
+        partial_query={
+            "policy_context": {"now": "2026-10-04T12:00:00Z"},
+            "time": {"start": "2026-10-04", "end": "2026-10-05"},
+        },
+    )
     assert plan["status"] == "ok", plan.get("why")
     query = plan["best"]["query_ir"]
     rows = local_subscriptions.query(query)["rows"]
