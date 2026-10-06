@@ -94,7 +94,10 @@ def test_plan_drafts_a_qualified_ranking(runtime_factory) -> None:
     ("intent", "expected_id"),
     [
         ("new customer orders over time", "measure.jaffle.new_customer_order_count"),
-        ("session to order conversion rate", "metric.sales.session_to_order_conversion_rate_7d"),
+        (
+            "session to order conversion rate (7d)",
+            "metric.sales.session_to_order_conversion_rate_7d",
+        ),
         ("repeat customer orders by store", "metric.sales.repeat_customer_orders"),
         ("high value customer orders by store", "metric.sales.high_value_customer_orders"),
         (

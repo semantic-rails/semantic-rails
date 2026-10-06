@@ -1011,7 +1011,7 @@ def test_plan_supports_guided_query_building(runtime_factory):
     try:
         planned = plan_candidate_envelope(runtime, intent="new customer orders over time", limit=2)
         conversion = plan_candidate_envelope(
-            runtime, intent="session to order conversion rate", limit=2
+            runtime, intent="session to order conversion rate (7d)", limit=2
         )
         contextual = plan_candidate_envelope(
             runtime,

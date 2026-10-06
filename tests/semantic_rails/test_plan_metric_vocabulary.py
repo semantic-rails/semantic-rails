@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from contextlib import closing
 from datetime import date
 from pathlib import Path
@@ -26,9 +28,19 @@ INSERT INTO events VALUES (1,'a','signup','2026-09-02'),(2,'b','signup','2026-09
  (5,'b','close','2026-10-01'),(6,'a','upgrade','2026-10-02');
 CREATE VIEW event_records AS SELECT e.*, a.segment FROM events e JOIN accounts a USING (account_id);
 """
+# Customer signups: one for "Globex's", two for "Globex", one for "Trader Joe's".
+CLIENTS = """
+ALTER TABLE events ADD COLUMN client VARCHAR;
+UPDATE events SET client = CASE WHEN event_id = 1 THEN 'Globex''s' ELSE 'Globex' END;
+INSERT INTO events VALUES (7,'d','signup','2026-09-30','Trader Joe''s');
+CREATE OR REPLACE VIEW event_records AS
+ SELECT e.*, a.segment FROM events e JOIN accounts a USING (account_id);
+"""
 
 
-def _package(root: Path, *, synonyms: bool = False, collision: bool = False) -> Path:
+def _package(
+    root: Path, *, synonyms: bool = False, collision: bool = False, clients: bool = False
+) -> Path:
     metrics: dict[str, Any] = {}
     for key, kind, aliases in [
         ("new_accounts", "signup", ["signups", "signed up", "new signups"]),
@@ -67,6 +79,15 @@ def _package(root: Path, *, synonyms: bool = False, collision: bool = False) -> 
     }
     if collision:
         metrics["closures"]["synonyms"] = ["signups", "signed up"]
+    dimensions: dict[str, Any] = {
+        "kind": {"kind": "categorical", "domain": ["signup", "close", "upgrade"]},
+        "segment": {"kind": "categorical", "domain": ["customer", "internal"]},
+    }
+    if clients:
+        dimensions["client"] = {
+            "kind": "categorical",
+            "domain": ["Globex's", "Globex", "Trader Joe's"],
+        }
     files = {
         "package.yml": {
             "schema_version": 1,
@@ -94,10 +115,7 @@ def _package(root: Path, *, synonyms: bool = False, collision: bool = False) -> 
                         "default": True,
                     }
                 },
-                "dimensions": {
-                    "kind": {"kind": "categorical", "domain": ["signup", "close", "upgrade"]},
-                    "segment": {"kind": "categorical", "domain": ["customer", "internal"]},
-                },
+                "dimensions": dimensions,
                 "measures": {
                     "events_all": {
                         "kind": "entity_count",
@@ -116,6 +134,8 @@ def _package(root: Path, *, synonyms: bool = False, collision: bool = False) -> 
         path.write_text(yaml.safe_dump(body, sort_keys=False), encoding="utf-8")
     with duckdb.connect(str(root / "shop.duckdb")) as connection:
         connection.execute(SEED)
+        if clients:
+            connection.execute(CLIENTS)
     return root
 
 
@@ -227,7 +247,7 @@ def test_aliases_is_still_an_unknown_metric_key(tmp_path: Path):
         ("That's it", "That is it"),
         ("There's it", "There is it"),
         ("Here's it", "Here is it"),
-        ("Globex's accounts", "Globex accounts"),
+        ("Globex's accounts", "Globex's accounts"),
         ("didn't close", "did not close"),
         ("can't close", "can not close"),
         ("won't close", "will not close"),
@@ -240,7 +260,155 @@ def test_aliases_is_still_an_unknown_metric_key(tmp_path: Path):
 def test_contractions(text: str, expected: str, apostrophe: str) -> None:
     from semantic_rails.planner.plan import _normalize_question
 
-    assert _normalize_question(text.replace("'", apostrophe)) == expected
+    assert _normalize_question(text.replace("'", apostrophe)) == expected.replace("'", apostrophe)
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("sales for \"Who's Next\", who's up", 'sales for "Who\'s Next", who is up'),
+        ("sales for “Who’s Next”, who’s up", "sales for “Who’s Next”, who is up"),
+        ("sales for 'Who's Next', who's up", "sales for 'Who's Next', who is up"),
+        ("sales for ‘Who’s Next’, who’s up", "sales for ‘Who’s Next’, who is up"),
+        ("sales at It's Sugar, it's up", "sales at It's Sugar, it is up"),
+        ("sales at it’s sugar", "sales at it’s sugar"),
+        ("didn't close at We'll Bake", "did not close at We'll Bake"),
+    ],
+)
+def test_quoted_text_and_declared_phrases_stay_as_typed(text: str, expected: str) -> None:
+    from semantic_rails.planner.plan import _normalize_question
+
+    assert _normalize_question(text, ["It's Sugar", "We'll Bake"]) == expected
+
+
+@pytest.mark.parametrize(
+    "question",
+    ['new accounts for "Globex\'s"', "new accounts for Globex's", "new accounts for ‘Globex’s’"],
+)
+def test_apostrophe_value_is_never_answered_as_another_value(tmp_path: Path, question: str):
+    root = _package(tmp_path / "shop", clients=True)
+    with closing(Runtime.from_path(str(root))) as runtime:
+        plan = plan_payload(runtime, intent=question, partial_query={"policy_context": NOW})
+        assert plan["intent"] == question
+        if plan["status"] != "ok":
+            assert "ready_for" not in plan["next"]
+            return
+        query = plan["best"]["query_ir"]
+        assert [(row["field"], row["value"]) for row in query["where"]] == [
+            ("dimension.shop_event_client", "Globex's")
+        ]
+        rows = runtime.query({**query, "policy_context": NOW})["rows"]
+    with duckdb.connect(str(root / "shop.duckdb"), read_only=True) as connection:
+        reference = connection.execute(
+            """SELECT COUNT(DISTINCT event_id) FROM event_records
+            WHERE kind='signup' AND segment='customer' AND client='Globex''s'"""
+        ).fetchone()[0]
+    assert [row["new_accounts"] for row in rows] == [reference] == [1]
+
+
+def test_declared_value_with_a_possessive_still_matches(tmp_path: Path):
+    root = _package(tmp_path / "shop", clients=True)
+    with closing(Runtime.from_path(str(root))) as runtime:
+        plan = plan_payload(
+            runtime, intent="new accounts for Trader Joe's", partial_query={"policy_context": NOW}
+        )
+        assert plan["status"] == "ok", plan.get("why")
+        query = plan["best"]["query_ir"]
+        assert query["where"] == [
+            {"field": "dimension.shop_event_client", "op": "=", "value": "Trader Joe's"}
+        ]
+        rows = runtime.query({**query, "policy_context": NOW})["rows"]
+    with duckdb.connect(str(root / "shop.duckdb"), read_only=True) as connection:
+        reference = connection.execute(
+            """SELECT COUNT(DISTINCT event_id) FROM event_records
+            WHERE kind='signup' AND segment='customer' AND client='Trader Joe''s'"""
+        ).fetchone()[0]
+    assert [row["new_accounts"] for row in rows] == [reference] == [1]
+
+
+def test_hidden_metric_words_never_reach_relevance(tmp_path: Path):
+    from dataclasses import replace
+
+    from semantic_rails.catalog_search import CatalogSearchIndex
+    from semantic_rails.metadata import discover_payload
+    from semantic_rails.schema import SemanticPolicyConfig
+
+    root = _package(tmp_path / "shop", synonyms=True)
+    path = root / "metrics/accounts.yml"
+    doc = yaml.safe_load(path.read_text())
+    doc["metrics"]["closures"]["synonyms"] = ["aabankruptcy"]
+    doc["metrics"]["upgrades"]["synonyms"] = ["aaupgrade"]
+    path.write_text(yaml.safe_dump(doc))
+    hidden = "metric.shop.closures"
+    with closing(Runtime.from_path(str(root))) as runtime:
+        config = runtime._config
+        owned = CatalogSearchIndex.from_config(config).catalog_tokens - (
+            CatalogSearchIndex.from_config(
+                replace(config, metric_recipes=[r for r in config.metric_recipes if r.id != hidden])
+            ).catalog_tokens
+        )
+        assert {"aabankruptcy", "closures"} <= owned
+        runtime._config = replace(
+            config,
+            semantic_policies=[
+                SemanticPolicyConfig(
+                    id="policy.hide_closures",
+                    kind="object_visibility",
+                    object_ids=[hidden],
+                    action="hidden",
+                )
+            ],
+        )
+        for question in ["weather zebras", "aabankruptcy zebras"]:
+            for payload in (
+                plan_payload(runtime, intent=question, partial_query={"policy_context": NOW}),
+                discover_payload(runtime, terms=question, enforce_scope=True),
+            ):
+                assert payload.get("status", "out_of_scope") == "out_of_scope", payload
+                assert "catalog_token_sample" in str(payload)
+                said = set(question.split())
+                words = set(re.findall(r"[a-z0-9]+", json.dumps(payload).lower())) - said
+                assert not words & owned
+        # A visible synonym still counts toward relevance.
+        plan = plan_payload(
+            runtime, intent="aaupgrade zebras", partial_query={"policy_context": NOW}
+        )
+        assert plan["status"] != "out_of_scope", plan
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["session to order conversion rate by store", "session to order conversion rate"],
+)
+def test_label_shared_without_parenthetical_clarifies(runtime_factory, question: str):
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        plan = plan_payload(runtime, intent=question)
+    finally:
+        runtime.close()
+    assert plan["status"] == "needs_clarification"
+    assert "ready_for" not in plan["next"]
+    assert plan["why"]["details"]["gaps"][0]["expected"]["candidates"] == [
+        "metric.sales.session_to_order_conversion_rate_7d",
+        "metric.sales.session_to_order_conversion_rate_7d_same_store",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("question", "subject"),
+    [
+        ("rolling 7-day revenue", "measure.jaffle.rolling_7d_revenue_usd"),
+        ("revenue MTD", "measure.jaffle.revenue_mtd_usd"),
+    ],
+)
+def test_label_without_parenthetical_never_selects(runtime_factory, question: str, subject: str):
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        plan = plan_payload(runtime, intent=question)
+    finally:
+        runtime.close()
+    select = plan["best"]["query_ir"]["select"]
+    assert [item["expression"].get("measure") for item in select] == [subject]
 
 
 def test_negation_is_normalized_before_scope_and_parsing(
