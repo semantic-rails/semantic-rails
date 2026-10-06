@@ -229,13 +229,11 @@ def test_bundled_yaml_edit_properties(file, part, parts):
                     assert result[:start] == text[:start]
                     tail = result[start:]
                     assert text.endswith(tail)
-    for index, (path, node) in enumerate(_leaves(root, text)):
-        if index % parts != part:
-            continue
+    for path, node in list(_leaves(root, text))[part::parts]:
         expected = deepcopy(original)
         parent = expected
-        for part in path[:-1]:
-            parent = parent[part]
+        for path_part in path[:-1]:
+            parent = parent[path_part]
         parent[path[-1]] = "replacement_leaf"
         result, reformatted = apply_edits(
             text, [Edit("", "replace", path, value="replacement_leaf")]
