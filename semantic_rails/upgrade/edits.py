@@ -52,14 +52,23 @@ def _change(document: Any, edit: Any) -> Any:
     return document
 
 
-def _node(root: Node, path: YamlPath, text: str) -> Node:
+@lru_cache(maxsize=256)
+def _entries(node: MappingNode) -> dict[Any, tuple[Node, Node]]:
+    loader = Yaml12SafeLoader("")
+    try:
+        return {
+            loader.construct_object(key, deep=True): (key, value)
+            for key, value in node.value
+            if key.tag != "tag:yaml.org,2002:merge"
+        }
+    finally:
+        loader.dispose()
+
+
+def _node(root: Node, path: YamlPath) -> Node:
     for part in path:
         if isinstance(root, MappingNode):
-            root = next(
-                value
-                for key, value in root.value
-                if safe_load(text[key.start_mark.index : key.end_mark.index]) == part
-            )
+            root = _entries(root)[part][1]
         elif isinstance(root, SequenceNode) and isinstance(part, int):
             root = root.value[part]
         else:
@@ -109,12 +118,12 @@ def _anchors(text: str) -> tuple[tuple[int, str], ...]:
 
 def _splice(text: str, root: Node, expected: Any, edit: Any) -> tuple[str, bool]:
     try:
-        target = _node(root, edit.path, text)
-        parent = _node(root, edit.path[:-1], text) if edit.path else root
-    except (StopIteration, yaml.YAMLError):
+        target = _node(root, edit.path)
+        parent = _node(root, edit.path[:-1]) if edit.path else root
+    except (KeyError, yaml.YAMLError):
         return dump_project_yaml(expected), True  # Inherited merge keys have no direct span.
     anchors = _anchors(text)
-    ancestors = [_node(root, edit.path[:depth], text) for depth in range(len(edit.path) + 1)]
+    ancestors = [_node(root, edit.path[:depth]) for depth in range(len(edit.path) + 1)]
     affected = {
         name
         for position, name in anchors
@@ -125,7 +134,7 @@ def _splice(text: str, root: Node, expected: Any, edit: Any) -> tuple[str, bool]
         depth_start = len(edit.path) if edit.op in {"insert", "replace"} else len(edit.path) - 1
         for depth in range(depth_start, -1, -1):
             path = edit.path[:depth]
-            node = _node(root, path, text)
+            node = _node(root, path)
             if not isinstance(node, (MappingNode, SequenceNode)) or not node.flow_style:
                 continue
             inside = {
@@ -150,7 +159,7 @@ def _splice(text: str, root: Node, expected: Any, edit: Any) -> tuple[str, bool]
     if edit.op in {"replace", "rename"}:
         scalar = target
         if edit.op == "rename" and isinstance(parent, MappingNode):
-            scalar = next(key for key, value in parent.value if value is target)
+            scalar = _entries(parent)[edit.path[-1]][0]
         value = edit.key if edit.op == "rename" else edit.value
         if isinstance(scalar, ScalarNode) and not isinstance(value, (dict, list)):
             rendered = _render(value, flow=True)
@@ -173,22 +182,13 @@ def _splice(text: str, root: Node, expected: Any, edit: Any) -> tuple[str, bool]
     if isinstance(mapping, MappingNode) and not mapping.flow_style:
         entries = mapping.value
         if edit.op == "delete" and len(entries) > 1:
-            key, value = next(pair for pair in entries if pair[1] is target)
+            key, value = _entries(mapping)[edit.path[-1]]
             start = text.rfind("\n", 0, key.start_mark.index) + 1
             if not text[start : key.start_mark.index].strip():
                 end = _line_end(text, _end(value))
                 return text[:start] + text[end:], False
         if edit.op == "insert" and entries:
-            key, value = (
-                entries[-1]
-                if not edit.after
-                else next(
-                    pair
-                    for pair in entries
-                    if safe_load(text[pair[0].start_mark.index : pair[0].end_mark.index])
-                    == edit.after
-                )
-            )
+            key, value = entries[-1] if not edit.after else _entries(mapping)[edit.after]
             position = _line_end(text, _end(value))
             indentation = " " * entries[0][0].start_mark.column
             newline = "\r\n" if "\r\n" in text else "\n"
