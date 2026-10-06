@@ -1470,13 +1470,13 @@ def _answer_shape_why(
     plan is not ready.
 
     "who", "whom" or "whose" opening a clause, or "which" or "list" opening one, asks for an
-    entity's rows: the draft's group_by needs one of its key dimensions (``_lists_entity_rows``).
-    "each" or "every" needs a row per item (a group_by, or a grain that splits the rows). A
-    comparison word ("compared", "vs", "versus", "against", "up or down") needs a value to
-    compare with: a prior-period select, or a second select with another expression
-    (``_select_key``); a group_by or a grain only splits one value. Two or more questions for a
-    value ("how many", "how much", "what is", "what was") need a select of their own each, which
-    names what the question asks about (``_questions_answered``). A word opens a clause when
+    entity's rows: the draft's group_by needs its declared key (``_lists_entity_rows``). "each"
+    or "every" needs a row per item (a group_by, or a grain that splits the rows). A comparison
+    word ("compared", "vs", "versus", "against", "up or down") needs a value to compare with: a
+    prior-period select. A second select (which may spell the first one again), a group_by or a
+    grain doesn't show what the question compares. Two or more questions for a value ("how
+    many", "how much", "what is", "what was") need a select of their own each, which names what
+    the question asks about (``_questions_answered``). A word opens a clause when
     every word before it in its clause (from punctuation or "and") is a stopword, a framing word
     or a word of a time window the question states ("show me which stores", "last week, who",
     "how many orders and who"); in "customers who ordered" it is a relative pronoun. A word
@@ -1568,8 +1568,7 @@ def _answer_shape_why(
 
     values = [item for item in query.get("select") or [] if isinstance(item, dict)]
     split = bool(query.get("group_by")) or _grain_splits(_time_of(query))
-    expressions = {_select_key(config, item) for item in values}
-    compared = len(expressions) > 1 or _query_contains_prior_period(runtime, query)
+    compared = _query_contains_prior_period(runtime, query)
     # (kind, the words asking, whether the draft's shape leaves them unanswered, message,
     # expected, hint kind, hint).
     shapes: list[tuple[str, list[str], bool, str, dict[str, Any], str, str]] = [
@@ -1578,12 +1577,13 @@ def _answer_shape_why(
             unlisted,
             bool(unlisted),
             "The question asks for the rows of what it lists ({words}), but the draft's "
-            "group_by has no key dimension of that entity, or plan can't tell which entity it "
-            "lists, so it doesn't list them.",
+            "group_by has no declared key of that entity, or plan can't tell which entity it "
+            "lists, so it doesn't list them: a name can repeat across rows.",
             {"answer": "rows", **({"key_dimensions": sorted(keys)} if keys else {})},
             "group_by_listed_rows",
-            "Find what the question lists with discover, add its name or key dimension to "
-            "best.query_ir group_by, then validate; or ask the user what to list.",
+            "Find what the question lists with discover, add its key dimension to "
+            "best.query_ir group_by (a name may go beside it), then validate; or ask the user "
+            "what to list.",
         ),
         (
             "each_unrealized",
@@ -1601,13 +1601,12 @@ def _answer_shape_why(
             asked["comparison"],
             bool(asked["comparison"]) and not compared,
             "The question asks for a comparison ({words}), but the draft has no prior-period "
-            "select or second select with another expression, so it has nothing to compare "
-            "with: a group_by or time grain only splits one value.",
+            "select, so it has nothing to compare with: a second select, a group_by or a time "
+            "grain doesn't say what the question compares.",
             {"answer": "values to compare"},
             "add_compared_value",
             "Add what the question compares with to best.query_ir (a prior_period select for "
-            "an earlier period, or a second select), then validate; or ask the user what to "
-            "compare.",
+            "an earlier period), then validate; or ask the user what to compare.",
         ),
         (
             "multiple_questions_unrealized",
@@ -1657,18 +1656,18 @@ def _lists_entity_rows(
 
     The rows are those of the entity the word's clause names: its first word, outside a window
     and a grouping the question lists ("by store"), that names an entity. With none, "list" or
-    "which" lists the entity a grouping in its clause names ("List revenue by store"). One of the
-    entity's key dimensions lists them: its key, or its one declared dimension that names it
-    (``_entity_grouping_dimensions``), or a dimension of it the caller's group_by states that
-    declares no values (a category declares them) and is no clock. When "who" names no entity
-    ("Who ordered last week?"), plan can't tell whose rows it asks for, so only the caller's
-    group_by says: one of its dimensions that reads no grouping the question lists ("Who ordered
-    by store?" asks for more than stores) and is a key dimension of its own entity, as above. A
-    time grain, a category or an entity the clause doesn't name never lists them, and when
-    "list" or "which" names no entity, nothing does.
+    "which" lists the entity a grouping in its clause names ("List revenue by store"). Only the
+    entity's declared one-column key lists them: the key among its stand-ins
+    (``_entity_grouping_dimensions``). A display name may sit beside the key, but lists nothing
+    on its own, because a name can repeat ("Customer name"); nor does any other dimension of the
+    entity, whatever it declares. When "who" names no entity ("Who ordered last week?"), plan
+    can't tell whose rows it asks for, so only the caller's group_by says: one of its dimensions
+    that reads no grouping the question lists ("Who ordered by store?" asks for more than
+    stores) and is the key of its own entity. A time grain, a category, a name or an entity the
+    clause doesn't name never lists them, and when "list" or "which" names no entity, nothing
+    does.
     """
 
-    clocks = {row.dimension for row in config.temporal_roles}
     chosen = set(caller.get("group_by") or [])
     grouped = [
         row
@@ -1676,13 +1675,15 @@ def _lists_entity_rows(
         if (row := _object_by_id(config.dimensions, item)) is not None
     ]
 
-    def stated(row: Any, entities: set[str]) -> bool:
-        return (
-            row.id in chosen
-            and row.entity in entities
-            and not row.value_domain
-            and row.id not in clocks
-        )
+    def keys_of(term: str) -> set[str]:
+        stand_ins = _entity_grouping_dimensions(config, term) or set()
+        return {
+            row.id
+            for row in config.dimensions
+            if row.id in stand_ins
+            and (entity := _object_by_id(config.entities, row.entity)) is not None
+            and row.column == entity.key[0]
+        }
 
     groupings = _requested_grouping_spans(lowered)
     words = [
@@ -1705,13 +1706,8 @@ def _lists_entity_rows(
 
     term = named(False) or (None if person else named(True))
     if term is not None:
-        keys = _entity_grouping_dimensions(config, term) or set()
-        entities = {
-            row.id
-            for row in config.entities
-            if len(row.key) == 1 and _names_whole_entity(term, row)
-        }
-        return any(row.id in keys or stated(row, entities) for row in grouped), keys
+        keys = keys_of(term)
+        return any(row.id in keys for row in grouped), keys
     if not person:
         return False, set()
     terms = _listed_grouping_terms(lowered, config)
@@ -1720,17 +1716,13 @@ def _lists_entity_rows(
         if (
             row.id not in chosen
             or entity is None
-            or len(entity.key) != 1
             or any(
                 _reads_grouping(term, _entity_grouping_dimensions(config, term), row)
                 for term in terms
             )
         ):
             continue
-        label = str(entity.label or _last_token(entity.name))
-        if row.id in (_entity_grouping_dimensions(config, label) or set()) or stated(
-            row, {entity.id}
-        ):
+        if row.id in keys_of(str(entity.label or _last_token(entity.name))):
             return True, set()
     return False, set()
 
