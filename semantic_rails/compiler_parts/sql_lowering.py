@@ -1116,18 +1116,6 @@ def _anchored_entity_set_plan(
     )
     if not safe_anchor_shape:
         return None
-    # A stock reads an attribute filter from the snapshot it chooses, which only its plain
-    # leaf does (_semi_additive_leaf_select).
-    if any(
-        _reads_chosen_snapshot(
-            measure, denominator_plan.bound_measure.temporal_role, str(item["field"]), config
-        )
-        for item in [
-            *plain_filters(plan.query.get("where")),
-            *_bound_filter_clauses(denominator_plan.bound_measure, config),
-        ]
-    ):
-        return None
 
     raw_time_expr, _, _, time_source_local, _ = _measure_time_components(
         plan, denominator_plan, config
@@ -3363,9 +3351,11 @@ def _anchored_snapshot_ctes(
     plan: LogicalPlan,
     anchored: AnchoredEntitySetPlan,
     config: PackageConfig,
-) -> tuple[list[SqlCte], str, str]:
+) -> tuple[list[SqlCte], str, str, list[Any]]:
+    """The chosen snapshots, their CTE and time alias, and the condition that keeps one."""
     entities = _entity_index(config)
-    measure = _measure_index(config)[anchored.denominator_measure_plan.bound_measure.measure_id]
+    bound = anchored.denominator_measure_plan.bound_measure
+    measure = _measure_index(config)[bound.measure_id]
     source_table = _measure_owned_relation(measure, entities)
     (
         fields,
@@ -3376,19 +3366,30 @@ def _anchored_snapshot_ctes(
         partition_aliases,
         leaf_time_role,
     ) = _snapshot_select_fields(plan, anchored, config)
-    where_clauses: list[Any] = []
-    source_filters = _source_local_filter_conditions(
-        measure.entity,
-        refuse_child_groups(plan.query.get("where"), "in an entity-set ratio"),
-        config,
+    filters = [
+        *refuse_child_groups(plan.query.get("where"), "in an entity-set ratio"),
+        *_bound_filter_clauses(bound, config),
+    ]
+    # As in a stock's own leaf (_semi_additive_leaf_select), a filter on an attribute keeps
+    # or drops the chosen snapshot; only one bounding time applies before the choice.
+    chosen = [
+        item
+        for item in filters
+        if _reads_chosen_snapshot(measure, bound.temporal_role, str(item["field"]), config)
+    ]
+    where_clauses: list[Any] = (
+        _source_local_filter_conditions(
+            measure.entity, [item for item in filters if item not in chosen], config
+        )
+        or []
     )
-    bound_filters = _source_local_filter_conditions(
-        measure.entity,
-        _bound_filter_clauses(anchored.denominator_measure_plan.bound_measure, config),
-        config,
-    )
-    where_clauses.extend(source_filters or [])
-    where_clauses.extend(bound_filters or [])
+    kept_rows: list[Any] = []
+    if chosen_conditions := _source_local_filter_conditions(measure.entity, chosen, config):
+        kept = SqlCase(
+            [SqlCaseWhen(_and_conditions(chosen_conditions), SqlLiteral(1))], SqlLiteral(0)
+        )
+        fields = [*fields, SqlField(kept, "__snapshot_kept")]
+        kept_rows = [SqlBinary(SqlIdentifier(["snapshot", "__snapshot_kept"]), "=", SqlLiteral(1))]
     if plan.time and raw_time_expr is not None:
         where_clauses.extend(
             _source_time_window(raw_time_expr, plan.time, config, role_id=leaf_time_role)
@@ -3422,6 +3423,7 @@ def _anchored_snapshot_ctes(
             ],
             snapshot_name,
             time_alias,
+            kept_rows,
         )
 
     base_name = f"{snapshot_name}_base"
@@ -3489,6 +3491,7 @@ def _anchored_snapshot_ctes(
         ],
         snapshot_name,
         time_alias,
+        kept_rows,
     )
 
 
@@ -3521,7 +3524,9 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
     base_predicate_sets = predicate_sets[:base_predicate_count]
     extra_predicate_sets = predicate_sets[base_predicate_count:]
 
-    snapshot_ctes, snapshot_name, time_alias = _anchored_snapshot_ctes(plan, anchored, config)
+    snapshot_ctes, snapshot_name, time_alias, kept_rows = _anchored_snapshot_ctes(
+        plan, anchored, config
+    )
     if project_is_cut():
         # This path returns before the normal projection loop. Both operands
         # consume the snapshot value; their predicates record separate cuts.
@@ -3549,7 +3554,7 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
         time_spec=plan.time,
         table_overrides={measure.entity: "snapshot"},
     )
-    anchor_where: list[Any] = []
+    anchor_where: list[Any] = list(kept_rows)
     for predicate_set in base_predicate_sets:
         join_condition = _join_condition(
             predicate_set.key_aliases

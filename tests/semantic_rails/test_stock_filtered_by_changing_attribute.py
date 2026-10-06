@@ -352,3 +352,46 @@ def test_a_time_bound_applies_before_the_snapshot_is_chosen(
     answer = _query(runtime, [where], time={"grain": "week"})
     assert (WEEK, expected) in answer
     assert answer == _reference("true", before=before)
+
+
+def test_an_entity_set_share_reads_the_same_closing_snapshots(runtime: Runtime) -> None:
+    # The share of active accounts' fees from accounts paying over 100 in the period: a ratio
+    # over one choice of snapshots, which a's 500 over a's and c's 599 reads, not over b's
+    # Tuesday too (698).
+    fee = {"kind": "scoped_aggregate", "measure": "measure.fees.fee", "aggregation": "sum"}
+    predicate = {
+        "entity": "entity.fees_account",
+        "measure": "measure.fees.fee",
+        "op": ">",
+        "value": 100,
+        "time_alignment": "same_query_period",
+    }
+    query = {
+        "version": 1,
+        "select": [
+            {
+                "expression": {
+                    "kind": "ratio",
+                    "numerator": {**fee, "predicates": [predicate]},
+                    "denominator": fee,
+                },
+                "as": "v",
+            }
+        ],
+        "time": {"temporal_role": ROLE, "grain": "week"},
+        "where": [_is(STATE, "active")],
+    }
+    result = runtime.query(query)
+    assert "latest_fees_account_day_snapshot" in result["rendered_sql"]
+    answer = [(_day(row[f"{ROLE}__week"]), row["v"]) for row in result["rows"]]
+    with duckdb.connect() as connection:
+        _load(connection)
+        reference = connection.execute(
+            "select period, coalesce(sum(fee) filter (where fee > 100), 0) * 1.0 / sum(fee) "
+            "from (select *, date_trunc('week', date_day)::date as period, row_number() over ("
+            "  partition by account_id, date_trunc('week', date_day) order by date_day desc) as rn"
+            "  from account_day"
+            ") where rn = 1 and state = 'active' group by period order by period"
+        ).fetchall()
+    assert sorted(answer) == reference
+    assert reference[1] == (WEEK, 500 / 599)
