@@ -607,7 +607,18 @@
         "kind": { "type": "string", "const": "entity_value" },
         "entity": { "type": "string" },
         "input": { "$ref": "#/$defs/SelectExpression" },
-        "where": { "type": "array", "items": { "type": "object" } }
+        "where": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "type": "string", "const": "value_filter" },
+              "op": { "type": "string" },
+              "value": {}
+            }
+          }
+        }
       }
     },
     "MetricPredicateExpr": {

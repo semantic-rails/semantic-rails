@@ -26,6 +26,32 @@ from .errors import SemanticLayerError
 from .schema import DEFAULT_PATH_HOP_LIMIT, PackageConfig, PathPreferenceConfig, RelationshipConfig
 
 
+def visible_route(
+    config: PackageConfig, start: str, path: Sequence[str], hidden_ids: frozenset[str] | None
+) -> bool:
+    """Disclose a route only when its relationships and every waypoint are visible."""
+    relationships = get_package_analysis(config).relationships
+    entities = {start} if not path else set()
+    for relationship_id in path:
+        relationship = relationships.get(relationship_id)
+        if relationship is None:
+            return False
+        entities.update((relationship.source_entity, relationship.target_entity))
+    if hidden_ids is None:
+        return not any(policy.kind == "object_visibility" for policy in config.semantic_policies)
+    return not hidden_ids.intersection([*path, *entities])
+
+
+def visible_route_rows(
+    config: PackageConfig, rows: Sequence[dict[str, Any]], hidden_ids: frozenset[str] | None
+) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in rows
+        if visible_route(config, row["source_entity"], row["relationship_path"], hidden_ids)
+    ]
+
+
 def package_hop_limit(config: PackageConfig) -> int:
     """Hop ceiling for path enumeration: ``graph.path_policy.max_hops``,
     falling back to the package default. Every compiler call site that

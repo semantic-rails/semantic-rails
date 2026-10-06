@@ -1325,7 +1325,17 @@ The response `warnings` array can carry these non-error signals:
   one-step query switches; alternatives are never executed. The warning mentions
   a reviewed package default using `details.row` once, without a duplicate
   recovery hint. Pairs the package already resolves keep their existing message
-  and details. Own-key notes also omit hidden alternative routes. See
+  and details. Route clarifications, conflict rows, inherited-row notes, and
+  plan candidates name only routes whose relationships and every waypoint
+  are visible to the caller. If visibility cannot be resolved under an
+  `object_visibility` policy, route identifiers and package-route notes are withheld.
+  If the query's chosen route is hidden or its visibility is unresolved,
+  `ROUTE_CHOSEN_BY_QUERY` remains at every verbosity with the message
+  "a route chosen by this query", without `details.row` or `details.meaning`.
+  Filtering every clarification option still returns `AMBIGUOUS_PATH`, with
+  a message asking the caller to contact their admin; it never selects the
+  remaining visible route automatically. These projections do not change
+  route selection, readiness, SQL, or results. See
   [`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions).
 
 HTTP failures return:
