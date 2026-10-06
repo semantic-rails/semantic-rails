@@ -98,3 +98,13 @@ def validate_temporal_support(config: PackageConfig, payload: Mapping[str, Any])
                 visit(child)
 
     visit(payload)
+
+
+def _date_key(value: Any) -> str:
+    return str(value or "").split("T", 1)[0].split(" ", 1)[0]
+
+
+def _range_intersects(start: str, end: str, window_start: str, window_end: str) -> bool:
+    lower_ok = not window_end or not start or start < window_end
+    upper_ok = not window_start or not end or end > window_start
+    return lower_ok and upper_ok

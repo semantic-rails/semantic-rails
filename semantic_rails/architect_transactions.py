@@ -368,11 +368,18 @@ def route_rows_update(
     return ProjectFileUpdate(relative, dump_project_yaml(document).encode("utf-8")), replaced
 
 
-def _routes_not_recorded(unkept: list[dict[str, Any]]) -> SemanticLayerError:
+def _routes_not_recorded(unkept: list[dict[str, Any]], operation: str) -> SemanticLayerError:
+    keep_hint = (
+        "Retry upsert_relationship with keep_existing_routes=true "
+        "to record and keep every existing route. "
+        if operation == "upsert_relationship"
+        else ""
+    )
     return SemanticLayerError(
         "ROUTE_DECISION_NOT_RECORDED",
         "This change moves the join route of entity pairs without an explicit decision; "
-        "nothing was written. Record each pair with record_route_decision or include its "
+        f"nothing was written. {keep_hint}Use record_route_decision(decisions=[...]) "
+        "to record several pairs in one call. Alternatively include each "
         "graph.path_preferences row in the change itself, with source_entity, "
         "target_entity and relationship_path fields.",
         details={"route_changes": unkept},
@@ -428,7 +435,8 @@ class ProjectTransaction:
         """Whether a completed create_project receipt recorded these exact file bytes.
 
         Receipts are the transaction's existing provenance. Missing or unreadable
-        receipts cannot prove a model is still the generated scaffold.
+        receipts or receipts without scaffold hashes cannot prove a model is
+        still the generated scaffold.
         """
         for path in self._receipt_root.glob("*.json"):
             if path.is_symlink():
@@ -445,38 +453,19 @@ class ProjectTransaction:
                 ):
                     continue
                 scaffold_files = payload.get("scaffold_files")
-                if scaffold_files is not None:
-                    matches = (
-                        isinstance(scaffold_files, dict)
-                        and all(
-                            scaffold_files.get(name) == f"sha256:{_digest(content)}"
-                            for name, content in files.items()
-                        )
-                        and all(
-                            isinstance(name, str)
-                            and isinstance(digest, str)
-                            and self._matches_receipt_file(name, digest)
-                            for name, digest in scaffold_files.items()
-                        )
-                    )
-                else:
-                    # A legacy receipt can be promoted only when its effective
-                    # changes prove all queried files and still match disk.
-                    changes = {row["path"]: row for row in report["changes"]}
-                    matches = all(
-                        changes.get(name, {}).get("content_encoding") == "utf-8"
-                        and changes[name].get("proposed_content", "").encode("utf-8") == content
-                        and changes[name].get("after_sha256") == f"sha256:{_digest(content)}"
+                if (
+                    isinstance(scaffold_files, dict)
+                    and all(
+                        scaffold_files.get(name) == f"sha256:{_digest(content)}"
                         for name, content in files.items()
-                    ) and all(
-                        isinstance(name, str)
-                        and (digest is None or isinstance(digest, str))
-                        and self._matches_receipt_file(name, digest)
-                        for name, digest in (
-                            (row["path"], row.get("after_sha256")) for row in report["changes"]
-                        )
                     )
-                if matches:
+                    and all(
+                        isinstance(name, str)
+                        and isinstance(digest, str)
+                        and self._matches_receipt_file(name, digest)
+                        for name, digest in scaffold_files.items()
+                    )
+                ):
                     return True
             except (OSError, ValueError, KeyError, TypeError, AttributeError, RuntimeError):
                 continue
@@ -598,6 +587,7 @@ class ProjectTransaction:
                     normalized_updates,
                     guard=routes == "guard",
                     validate_after=validate_after,
+                    operation=str(intent.get("operation", "")),
                 )
 
             snapshots = tuple(self._snapshot(update.relative_path) for update in normalized_updates)
@@ -851,6 +841,7 @@ class ProjectTransaction:
         *,
         guard: bool,
         validate_after: bool,
+        operation: str = "",
     ) -> dict[str, Any]:
         """Refuse unapproved route changes; every Architect write passes here.
 
@@ -892,7 +883,7 @@ class ProjectTransaction:
                 # The parse gate reports invalid staged input and restores the valid base.
                 return {}
         if guard and (unkept := unkept_route_changes(base, head)):
-            raise _routes_not_recorded(unkept)
+            raise _routes_not_recorded(unkept, operation)
         return {
             "route_decisions_added": [],
             "route_changes": route_changes(base, head),

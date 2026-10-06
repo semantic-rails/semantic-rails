@@ -29,7 +29,7 @@ def _conversion_expr(**overrides) -> dict:
 
 def _validate_expr(runtime, expr: dict, **query_extra) -> dict:
     return runtime.validate(
-        {"version": 2, "select": [{"as": "probe", "expression": expr}], **query_extra}
+        {"version": 1, "select": [{"as": "probe", "expression": expr}], **query_extra}
     )
 
 

@@ -69,9 +69,7 @@ def resolve_sql_profile(payload: dict[str, Any] | None) -> str:
     """
     raw = ""
     if isinstance(payload, dict):
-        raw = (
-            str(payload.get("sql_profile", payload.get("render_profile", "")) or "").strip().lower()
-        )
+        raw = str(payload.get("sql_profile", "") or "").strip().lower()
     if raw not in _VALID_SQL_PROFILES:
         return "audit"
     return raw

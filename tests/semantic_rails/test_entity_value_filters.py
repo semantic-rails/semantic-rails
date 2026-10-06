@@ -152,11 +152,9 @@ def test_valid_value_filter_matches_reference_sql(engine, tagged, dimension_filt
     assert actual == pytest.approx(reference)
 
 
-@pytest.mark.parametrize("version", [1, 2])
-def test_published_schema_closes_value_filter_items(version):
-    name = "query_ir.v1.json" if version == 1 else "query_ir.preview.v2.json"
-    validator = Draft202012Validator(load_contract(name))
-    valid = {**_query([{"kind": "value_filter", "op": ">", "value": 1}]), "version": version}
+def test_published_schema_closes_value_filter_items():
+    validator = Draft202012Validator(load_contract("query_ir.v1.json"))
+    valid = _query([{"kind": "value_filter", "op": ">", "value": 1}])
     validator.validate(valid)
-    invalid = {**_query([FIELD_FILTER]), "version": version}
+    invalid = _query([FIELD_FILTER])
     assert list(validator.iter_errors(invalid))

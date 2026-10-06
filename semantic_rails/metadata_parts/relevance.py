@@ -10,8 +10,7 @@ out-of-scope refusal so agents can branch on a single presence-of-key test.
 
 This module owns:
 
-* Compatibility wrappers around the shared catalog-search normalization
-  primitives (``_norm``, ``_tokenize``).
+* Shared catalog-search normalization primitives (``normalize_search_value``, ``tokenize_search_value``).
 * The stopword set stripped before computing overlap (``_INTENT_STOPWORDS``).
 * Tokenization / catalog-token-index helpers used as the relevance denominator.
 * The floor predicate (``_intent_passes_relevance_floor``).
@@ -28,30 +27,9 @@ from typing import Any
 
 from ..catalog_search import (
     CatalogSearchIndex,
-    derive_discovery_tokens,
-    normalize_search_value,
     tokenize_search_value,
 )
 from ..schema import PackageConfig
-
-
-def _derive_discovery_tokens(name: str, label: str, description: str) -> list[str]:
-    """Compatibility wrapper for planner imports."""
-
-    return derive_discovery_tokens(name, label, description)
-
-
-def _norm(value: str) -> str:
-    """Compatibility wrapper for metadata helpers."""
-
-    return normalize_search_value(value)
-
-
-def _tokenize(value: str) -> list[str]:
-    """Compatibility wrapper for metadata and planner helpers."""
-
-    return tokenize_search_value(value)
-
 
 # Stopwords stripped before computing token-overlap relevance against the
 # catalog. These tokens appear in nearly any business intent and would
@@ -134,7 +112,7 @@ _INTENT_STOPWORDS: frozenset[str] = frozenset(
 
 def _content_tokens(text: str) -> set[str]:
     """Tokens with stopwords removed — used for relevance-floor checks."""
-    return {tok for tok in _tokenize(text) if tok and tok not in _INTENT_STOPWORDS}
+    return {tok for tok in tokenize_search_value(text) if tok and tok not in _INTENT_STOPWORDS}
 
 
 def _catalog_token_index(
@@ -250,7 +228,7 @@ def _weak_grounding_tokens(config: PackageConfig) -> set[str]:
     (every ``measure.jaffle.*`` id contributes "jaffle")."""
     meta = getattr(config, "package", None)
     package_id = str(getattr(meta, "package_id", "") or getattr(config, "package_id", "") or "")
-    return set(_TIME_GRAIN_TOKENS) | set(_tokenize(package_id))
+    return set(_TIME_GRAIN_TOKENS) | set(tokenize_search_value(package_id))
 
 
 def _intent_passes_grounding_floor(

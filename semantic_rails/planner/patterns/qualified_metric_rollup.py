@@ -80,7 +80,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
             f"{_semantic_token(target_measure.id)}_from_qualified_{_semantic_token(entity.id)}s"
         )
         placeholder_query: dict[str, Any] = {
-            "version": 2,
+            "version": 1,
             "select": [
                 {
                     "as": select_alias,
@@ -175,7 +175,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         f"{_semantic_token(target_measure.id)}_from_qualified_{_semantic_token(entity.id)}s"
     )
     query: dict[str, Any] = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "as": select_alias,

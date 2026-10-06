@@ -108,6 +108,11 @@ package test and a `.gitignore` for build outputs.
    block would override the columns, and so is a pair that may have several roles
    (role-playing keys: several `graph.relationships` entries in either direction, or an entry
    with its own `via` beside the model's foreign key): edit those in `graph.yml`.
+   To add a relationship while preserving existing routes, pass `keep_existing_routes: true`.
+   The same transaction records each moved pair's previous path and confirms newly ambiguous
+   own-key routes. Its `kept_route_decisions` lists the rows recorded. It refuses if a previously
+   answered pair still changes, or if generated decisions change a previously refused pair's
+   outcome compared with the relationship alone. The relationship's own new answers are allowed.
    `record_route_decision(source_entity, target_entity, relationship_path, label="")` records
    which route a question between two entities means, as the package default: it writes the
    pair's row in the `path_preferences` list the loader reads (a top-level list in `package.yml`
@@ -329,13 +334,23 @@ Which route between two entities a question means is a business definition (see
 - Before writing, the transaction compares the package with the change applied. A change that
   would refuse an answered pair whose route still exists, or answer it by another route, refuses
   with `ROUTE_DECISION_NOT_RECORDED` until the author records an explicit decision. Previews use
-  the same guard. Nothing is written and no route rows are generated. The refusal's
+  the same guard. Without an explicit keep choice, nothing is written and no route rows are
+  generated. The refusal's
   `details.route_changes` lists affected pairs. The message names the explicit
   `graph.path_preferences` fields (`source_entity`, `target_entity`, `relationship_path`),
-  without suggesting rows: choose a route and use `record_route_decision` before adding
-  the relationship, or include chosen rows in the authored change. Census and guard
+  without suggesting rows. For `upsert_relationship`, retry with `keep_existing_routes: true`
+  to record the previous routes within the relationship write. Otherwise choose routes and
+  call `record_route_decision(decisions=[...])` before adding the relationship, or include chosen
+  rows in the authored change. Census and guard
   comparisons use package decisions independently of active query route overrides. An ordinary
   change that moves an inherited answer needs that pair's own decision.
+- For several pairs, call `record_route_decision(decisions=[...])` with a nonempty list of
+  rows containing `source_entity`, `target_entity`, `relationship_path`, and optional `label`,
+  instead of single-pair fields. All replacements are staged together and the final package
+  must honor every row. One invalid, duplicate, or conflicting row refuses the entire batch;
+  no files or receipts are written. This lets forward and reverse decisions be changed together.
+  The result's `route_decisions` lists each row, its `replaced` value, and its `summary`.
+  Revision checks, idempotent retries, and write-free previews apply to the whole batch.
 - `record_route_decision` uses the loader location: top-level
   `package.yml` `path_preferences`, else the file holding `graph`. That file is rewritten as
   Architect YAML, dropping comments.
@@ -418,7 +433,7 @@ tool list's size.
 - `project_status`
 - `list_project_files`
 - `read_project_file`
-- `write_project_file`
+- `write_project_files`
 - `upsert_model`
 - `upsert_relationship`
 - `upsert_metric`
@@ -427,7 +442,6 @@ tool list's size.
 - `upsert_test`
 - `record_route_decision`
 - `preview_query`
-- `archive_project_file`
 - `remove_object`
 - `validate_project`
 - `diff_project`
@@ -461,17 +475,25 @@ validation returns `INVALID_CONFIG` with the missing relation names. A database 
 (for example dbt) declares `seed: {kind: external}` and is never created by the runtime. Snowflake validation can issue live queries through the configured Snow CLI
 connection. Use `mode=parse` for a no-query authoring check.
 
-All six mutation tools (`create_project`, raw write, the three upserts, and
-archive) use one engine-owned transaction layer:
+All mutation tools use one engine-owned transaction layer. `write_project_files` takes a
+nonempty `files` list of `{path, content, overwrite: true}` writes (overwrite defaults to true)
+or `{path, archive: true}` archives, plus `expected_revision`, `idempotency_key`, optional
+`reason` for archives, and `dry_run`. A change across files is one call, validated as a whole
+after all files are in place; either every change commits or every file is restored. Archives
+share `.architect/archive/<id>/` and an optional `ARCHIVE_REASON.txt`. Empty lists, duplicate
+paths, entries that both write and archive, missing archives, existing files with `overwrite: false`,
+and paths outside the project or under `.architect/` are refused without writes.
+
+The transaction contract is:
 
 - `project_status` computes a deterministic `sha256:` revision over authored
   project files. Internal transaction receipts, archives, locks, generated
   databases, and cache files are excluded.
 - `expected_revision` is required at the MCP boundary. A stale writer receives
   `CONFIG_CONFLICT` with both expected and current revisions; it never
-  overwrites an intervening edit. Writes sent together with one `expected_revision`
-  apply only the first, so send them one at a time, each with the `revision` the previous
-  write returned; the refusal's `details.retry` names the revision to resend with.
+  overwrites an intervening edit. Use one `write_project_files` call for a change across files.
+  Separate calls use the `revision` the previous write returned; the refusal's `details.retry` names the revision
+  to resend with.
 - `idempotency_key` is required and persisted as a hashed, workspace-local
   receipt. Retrying the identical mutation replays its result. Reusing the key
   for a different intent fails closed. For `create_project`, the transaction checks that receipt
@@ -487,12 +509,12 @@ archive) use one engine-owned transaction layer:
   a completed creation receipt. Successful creation receipts record hashes for the complete
   generated scaffold, including files unchanged by an overwrite; an intervening edit to one of
   those files cannot become the next scaffold's provenance. Byte-identical files need no
-  replacement, but a no-op without proof does not establish new provenance. Older change-only
-  receipts can authorize an overwrite only when one receipt proves the complete current generated
-  scaffold. For a missing graph or changed scaffold file without that proof, restore the recorded
-  bytes or archive the authored project and create a new one. Changing the first entity also
-  retires its old model only when that model matches the receipt. Other authored files and
-  warehouse data stay in place.
+  replacement, but a no-op without proof does not establish new provenance. Receipts without
+  complete scaffold hashes cannot authorize an overwrite, even when their change report matches
+  the current files. For a missing graph or changed scaffold file without that proof, restore
+  the recorded bytes or archive the authored project and create a new one. Changing the first
+  entity also retires its old model only when that model matches the receipt. Other authored
+  files and warehouse data stay in place.
 
 Exact existing keys are updated in their current source file instead of
 creating duplicate definitions elsewhere. Successful internal REPL mutations

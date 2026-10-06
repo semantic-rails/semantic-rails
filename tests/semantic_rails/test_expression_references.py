@@ -225,7 +225,6 @@ def _cases():
 
 CASES = list(_cases())
 WALKERS = [
-    runtime._collect_expr_object_ids,
     responses._collect_expr_object_ids,
     caveats._collect_expr_object_ids,
     resource_access._references,

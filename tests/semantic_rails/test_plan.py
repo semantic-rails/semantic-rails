@@ -491,7 +491,7 @@ def _qualified_primary(*, target: str, predicate: str, entity: str, group_by: st
     return {
         "draft": RuntimeCompositionDraft(
             query={
-                "version": 2,
+                "version": 1,
                 "select": [
                     {
                         "as": "qualified_target",
