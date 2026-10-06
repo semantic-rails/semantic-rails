@@ -517,9 +517,13 @@ and no `next.ready_for`. So "between 9 and 17 on 15 March 2017", "from nine to f
 written as an ordinary word ("Pacific time", "London time", "local time") is not recognised by
 itself, so with no hour beside it the question reads as its day. A window in the draft
 (one you pass in `query.time`, or plan's own) consumes the date phrases plan resolved only if it
-agrees with them: each bound it carries, read at the day, is the earliest start or the latest end
-of the windows the question states ("15 March 2017" against 12:00 to 13:00 on that day agrees;
-against 1 June 2018, or against the whole of 2017, does not). If it disagrees, the draft is
+agrees with them: it carries both bounds, the earliest start and the latest end of the windows
+the question states ("15 March 2017" against 15 to 16 March agrees; against 1 June 2018, the
+whole of 2017, or a start of 15 March with no end, does not). Plan reads a window you pass only
+when it carries both bounds, each a date or 00:00 with no offset or a UTC one, and a bound with
+a zone designator only when that is the role zone's offset at that instant: a missing bound, a
+bound with another time of day, or a window whose start is not before its end, is held ("15
+March 2017" against 12:00 to 13:00 on that day). If it disagrees, the draft is
 `low_confidence` (`PLAN_INTENT_COVERAGE_GAP`, gap `time_window_unrealized`) and the phrase's
 numbers are left over. A window you pass in `query.time` is not held to a lone "previous
 month" when the draft carries a `prior_period` expression: that phrase is the comparison's offset,
@@ -533,11 +537,11 @@ checked, as calendar years, and only when they name one year: a count ("in 2000 
 one, and two different years ("in 2017 ... for 2000 customers") cannot be told from a count, so
 no window is read and both years are left over. It never consumes a time of day,
 an hour or a zone, whatever hours its bounds carry: a question that states "12:00 to 13:00" or
-"noon" is refused (`PLAN_UNMATCHED_TERMS`) even against a window with those hours, so write the
-question without the hours and let the window carry them. To ask for an hour range, pass it in `query.time` yourself, as
+"noon" is never ready, even against a window with those hours. To ask for an hour range, pass it in `query.time` yourself, as
 end-exclusive ISO timestamps in the temporal role's time zone (the role must be a timestamp),
 for example `start: "2017-03-15T12:00:00"`, `end: "2017-03-15T13:00:00"`, with the role and
-grain, and plan again. "and" joins a range only after "between": "between March and May 2017" is
+grain, and plan a question that names neither the hours nor the day ("orders"): those bounds
+are not the whole day a date phrase states. "and" joins a range only after "between": "between March and May 2017" is
 a range, while "March and May 2017" names two months. Unsupported calendar forms, such as a
 bound ("before 2017", "since March 2017"), a qualifier ("early 2017"), a comparison ("2017 vs
 2016", "2017 over 2016"), a numeric date (4/3/2017), two periods joined by "and", or two

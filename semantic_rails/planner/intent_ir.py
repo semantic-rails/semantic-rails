@@ -36,6 +36,7 @@ from ._base import (
     _top_n_intent,
 )
 from .generators import _target_focus_text
+from .time_reference import with_time_reference
 from .visibility import visible_dimensions, visible_object_ids
 
 
@@ -472,7 +473,10 @@ def _unresolved_tokens(
     return unresolved
 
 
-def parse_intent(runtime: Any, intent: str) -> IntentIR:
+@with_time_reference
+def parse_intent(
+    runtime: Any, intent: str, *, policy_context: dict[str, Any] | None = None
+) -> IntentIR:
     """Parse ``intent`` into a structured ``IntentIR``.
 
     The function is read-only — it only reads catalog metadata. Safe to
