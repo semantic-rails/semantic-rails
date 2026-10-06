@@ -141,6 +141,7 @@ from .segments import build_segment_query, normalize_segment, strip_segment_prev
 from .sql_ast import SqlCall, SqlField, SqlIdentifier, SqlSelect, SqlTableRef
 from .sql_identifiers import plain_relation_parts
 from .sql_preparation import PreparedQuery, checked_parameter_values
+from .temporal_support import _date_key, _range_intersects
 
 __all__ = [
     "CachedCompilation",
@@ -152,35 +153,6 @@ __all__ = [
     "SemanticLayerError",
     "ValidationReport",
     "WarehouseAdapter",
-    "_KIND_PRESERVING_EXPRESSION_KINDS",
-    "_SQL_OUTLINE_KEYWORDS",
-    "_adapter_query",
-    "_collect_expr_object_ids",
-    "_compiled_expression_kind",
-    "_compiled_warnings",
-    "_crosses_boundary",
-    "_date_key",
-    "_debug_sql_authorized",
-    "_expression_normalized_away_warnings",
-    "_freshness_as_of",
-    "_freshness_by_leaf",
-    "_history_warnings",
-    "_input_expression_kind",
-    "_is_repo_managed_source",
-    "_measure_validity_warnings",
-    "_methodology_hints",
-    "_metric_payload",
-    "_normalize_query_limits",
-    "_operator_allows_debug_sql",
-    "_policy_context",
-    "_query_execution_error_details",
-    "_query_object_ids",
-    "_range_intersects",
-    "_scope_refusal",
-    "_serialise_dropped_expression",
-    "_sql_outline",
-    "_sql_summary",
-    "_walk_expr_payload",
     "apply_response_verbosity",
     "build_segment_query",
     "classify_question",
@@ -572,14 +544,6 @@ def _history_warnings(config, logical_plan) -> list[dict[str, Any]]:
     if not history_paths:
         return []
     return [history_warning_payload(paths=history_paths)]
-
-
-def _collect_expr_object_ids(expr_payload: dict[str, Any], config: Any = None) -> list[str]:
-    return collect_object_references(expr_payload, config)
-
-
-def _collect_spec_object_ids(spec: Any, config: Any = None) -> list[str]:
-    return collect_object_references(spec, config)
 
 
 def _query_object_ids(payload: dict[str, Any], config: Any = None) -> list[str]:
@@ -1352,16 +1316,6 @@ def _expression_normalized_away_warnings(
             )
 
     return warnings
-
-
-def _date_key(value: Any) -> str:
-    return str(value or "").split("T", 1)[0].split(" ", 1)[0]
-
-
-def _range_intersects(start: str, end: str, window_start: str, window_end: str) -> bool:
-    lower_ok = not window_end or not start or start < window_end
-    upper_ok = not window_start or not end or end > window_start
-    return lower_ok and upper_ok
 
 
 def _crosses_boundary(start: str, end: str, window_start: str, window_end: str) -> bool:
@@ -2449,11 +2403,6 @@ class Runtime:
                 self._resolve_cache[key] = deepcopy(resolved)
             return deepcopy(self._resolve_cache[key])
 
-    def _query_fingerprint(self, payload: dict[str, Any]) -> str:
-        import json
-
-        return json.dumps(payload, sort_keys=True, default=str)
-
     def _compile(
         self,
         payload: dict[str, Any],
@@ -2474,9 +2423,7 @@ class Runtime:
             relation_profile=str(
                 self._config.package.connection.name or self._config.package.default_db or ""
             ),
-            render_profile=str(
-                payload.get("sql_profile", payload.get("render_profile", "audit")) or "audit"
-            ),
+            render_profile=str(payload.get("sql_profile", "audit") or "audit"),
             policy_context=dict(policy_context),
             aggregate_routing=aggregate_routing_enabled(),
         )

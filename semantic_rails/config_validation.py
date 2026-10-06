@@ -25,11 +25,11 @@ from .compiler import (
     NonAdditiveRefusal,
     _collect_conversion_exprs,
     _conversion_sources,
-    _expr_leaf_temporal_role_sets,
     _requires_query_time,
     compile_query,
 )
 from .compiler_parts.sql_lowering import _stock_clock_key_gap, _stock_snapshot_refusal
+from .compiler_parts.temporal import _expr_leaf_temporal_role_sets
 from .config import (
     SEED_KIND_EXTERNAL,
     _merge_package_dir,
@@ -1354,7 +1354,7 @@ def _compiled_package_warnings(
                     path=f"{source_path}: relation {relation.id}",
                 )
             )
-    warnings.extend(_semantic_collision_warnings(config, source_path))
+    warnings.extend(semantic_collision_warnings(config, source_path))
     if undecided := _undecided_routes_warning(census, source_path):
         warnings.append(undecided)
     return warnings
@@ -1382,11 +1382,6 @@ def _undecided_routes_warning(
         "to record_route_decision to write the graph.path_preferences row.",
         details={"count": len(pairs), "pairs": pairs},
     )
-
-
-def _semantic_collision_warnings(config, source_path: Path) -> list[dict[str, Any]]:
-    """Compatibility wrapper for the dedicated collision detector."""
-    return semantic_collision_warnings(config, source_path)
 
 
 def _stock_key_warning(prefix: str, measure, config) -> dict[str, Any] | None:
