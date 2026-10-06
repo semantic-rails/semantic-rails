@@ -102,12 +102,12 @@ SHARED_VIEW = re.compile(r"comparison_\w+")
 
 def semantic_rails(entry: dict[str, Any]) -> tuple[list[str], list[str]]:
     # The rubric doesn't resolve which models a metric reads, so any derived relation in the
-    # package counts against every answer: a relation pipeline, an aggregate relation, or a
+    # package counts against every answer: a relation pipeline, a model variant, or a
     # model over anything but one shared view. The package is read the way the engine reads
     # it, so a model declared anywhere the engine accepts one is checked.
     package = _merge_package_dir(str(SR_PACKAGE))
     helpers = []
-    if package.get("relations") or package.get("aggregate_relations"):
+    if package.get("relations"):
         helpers.append("relation pipelines")
     models = _require(sorted(dict(package.get("models") or {}).items()), "models", entry)
     for model_id, model in models:

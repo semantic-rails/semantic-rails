@@ -90,12 +90,6 @@
         "array"
       ]
     },
-    "aggregate_relations": {
-      "type": [
-        "object",
-        "array"
-      ]
-    },
     "path_policy": {
       "type": "object"
     },

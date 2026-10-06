@@ -27,7 +27,7 @@ from tests.semantic_rails.test_model_physical_variants import (
     _REGION,
     _REVENUE,
     _ROLLUP_SEED,
-    _S1_ONLY,
+    _UNDECLARED_COLUMNS,
     _WEEKLY,
     _decisions,
     _monthly,
@@ -36,7 +36,7 @@ from tests.semantic_rails.test_model_physical_variants import (
     _routed_answers,
 )
 
-_GATED = ({"monthly": {**_MONTHLY, "requires_certification": True}}, [])
+_GATED = ({"monthly": {**_MONTHLY, "requires_certification": True}},)
 _MONTHLY_ID = "aggregate_relation.orders_monthly"
 
 
@@ -98,31 +98,31 @@ def test_revoked_certification_applies_to_the_next_request(tmp_path: Path, insta
     provider.answer = False
     assert compile_once() == ([], False)  # the revocation applies to the very next request
 
-    _rollup_package(tmp_path / "ungated", {"monthly": _MONTHLY}, [])
+    _rollup_package(tmp_path / "ungated", {"monthly": _MONTHLY})
     ungated = Runtime.from_path(str(tmp_path / "ungated"))
     ungated.compile(payload)
     assert ungated.compile(payload)["compile_stats"]["cache_hit"]  # other packages still cache
 
 
 def _entry(**fields) -> tuple:
-    return ({}, [{**_NO_ROLE, "temporal_role": "temporal_role.t", **fields}])
+    return ({"managed": {**_NO_ROLE, "time": _MONTHLY["time"], **fields}},)
 
 
-def test_an_aggregate_relation_entry_can_require_certification(tmp_path: Path):
-    """The shape a host's managed rollups take: an `aggregate_relations:` entry."""
+def test_a_managed_variant_can_require_certification(tmp_path: Path):
+    """A host attaches its managed rollups to the model as variants."""
     rollups = _entry(requires_certification=True)
     routing = _routed_answers(tmp_path, rollups, _rollup_query(_REVENUE, "sum", "quarter"))
     assert _decisions(routing) == {"leaf_1:aggregate_relation.no_role": "not_certified"}
 
 
-def test_an_aggregate_relation_entry_checks_the_setting(tmp_path: Path):
+def test_a_managed_variant_checks_the_setting(tmp_path: Path):
     _rollup_package(tmp_path / "p", *_entry(requires_certification="yes"))
     with pytest.raises(SemanticLayerError, match="must be true or false"):
         load_package_config(str(tmp_path / "p"))
 
 
 def test_certification_settings_are_checked(tmp_path: Path):
-    _rollup_package(tmp_path / "p", {"monthly": {**_MONTHLY, "requires_certification": "yes"}}, [])
+    _rollup_package(tmp_path / "p", {"monthly": {**_MONTHLY, "requires_certification": "yes"}})
     with pytest.raises(SemanticLayerError, match="requires_certification must be true or false"):
         load_package_config(str(tmp_path / "p"))
     with pytest.raises(TypeError):
@@ -150,7 +150,7 @@ _NOT_REAGGREGABLE = "aggregation_not_reaggregable"
     ("rollups", "relation_id", "reasons"),
     [
         pytest.param(
-            ({"monthly": _MONTHLY}, []),
+            ({"monthly": _MONTHLY},),
             _MONTHLY_ID,
             {
                 _REVENUE: "",
@@ -168,19 +168,19 @@ _NOT_REAGGREGABLE = "aggregation_not_reaggregable"
             id="max",
         ),
         pytest.param(
-            ({"weekly": _revenue_only(_WEEKLY)}, []),
+            ({"weekly": _revenue_only(_WEEKLY)},),
             "aggregate_relation.orders_weekly",
             {_REVENUE: ""},
             id="weekly",
         ),
         pytest.param(
-            ({"hourly": _revenue_only(_HOURLY)}, []),
+            ({"hourly": _revenue_only(_HOURLY)},),
             "aggregate_relation.orders_hourly",
             {_REVENUE: "unsupported_query_grain"},
             id="hourly",  # the time role can't be queried by the hour, so no pair checks the hours
         ),
         pytest.param(
-            ({"minutely": _revenue_only(_MINUTELY)}, []),
+            ({"minutely": _revenue_only(_MINUTELY)},),
             "aggregate_relation.orders_minutely",
             {_REVENUE: "unsupported_query_grain"},
             id="minutely",
@@ -192,68 +192,58 @@ _NOT_REAGGREGABLE = "aggregation_not_reaggregable"
             id="min",
         ),
         pytest.param(
-            ({}, [_BUYER_KEY], {"ship_to": None}),
+            ({"buyer_key": _BUYER_KEY}, {"ship_to": None}),
             _BUYER_KEY["id"],
             {_REVENUE: ""},
             id="foreign-key",
         ),
         pytest.param(
-            ({}, [_DAYS_MONTHLY], {"fact_days": True}),
+            ({"days_monthly": _DAYS_MONTHLY}, {"fact_days": True}),
             _DAYS_MONTHLY["id"],
             {"measure.days": _NOT_REAGGREGABLE},
             id="fact-model-distinct",
         ),
         pytest.param(
-            ({}, [{**_NO_ROLE, "measures": {_REVENUE: {"column": "revenue"}}}]),
+            ({"no_role": {**_NO_ROLE, "columns": _UNDECLARED_COLUMNS}},),
             _NO_ROLE["id"],
             {_REVENUE: "temporal_role_mismatch"},
             id="no-time-role",
         ),
         pytest.param(
-            (
-                {},
-                [
-                    {
-                        **_NO_ROLE,
-                        "temporal_role": "temporal_role.t",
-                        "measures": {_REVENUE: {"column": "revenue"}},
-                    }
-                ],
-            ),
+            _entry(columns=_UNDECLARED_COLUMNS),
             _NO_ROLE["id"],
             {_REVENUE: "unsupported_rollup"},
             id="neither-rollup-nor-holds",
         ),
         pytest.param(
-            ({"monthly": _revenue_only({**_MONTHLY, "eligible_time_grains": ["quarter"]})}, []),
+            ({"monthly": _revenue_only({**_MONTHLY, "eligible_time_grains": ["quarter"]})},),
             _MONTHLY_ID,
             {_REVENUE: "unsupported_query_grain"},
             id="own-grain-not-eligible",  # its own buckets are never compared
         ),
-        pytest.param(({}, [_REGION], {"ship_to": False}), _REGION["id"], {_REVENUE: ""}, id="path"),
         pytest.param(
-            ({}, [_REGION], {"ship_to": True}),
+            ({"region": _REGION}, {"ship_to": False}), _REGION["id"], {_REVENUE: ""}, id="path"
+        ),
+        pytest.param(
+            ({"region": _REGION}, {"ship_to": True}),
             _REGION["id"],
             {_REVENUE: "join_path_mismatch"},
             id="other-path",
         ),
         pytest.param(
-            ({}, [_NO_PATH], {"ship_to": False}),
+            ({"no_path": _NO_PATH}, {"ship_to": False}),
             _REGION["id"],
             {_REVENUE: "join_path_mismatch"},
             id="undeclared-path",
         ),
         pytest.param(
-            ({}, [_PRODUCT], {"lines": True}),
+            ({"product": _PRODUCT}, {"lines": True}),
             _PRODUCT["id"],
             {_REVENUE: "query_not_compiled"},  # the base path can't group by a line's product
             id="one-to-many-pre-join",
         ),
         pytest.param(
-            ({}, [_S1_ONLY]), _S1_ONLY["id"], {_REVENUE: "rollup_filter_not_implied"}, id="filter"
-        ),
-        pytest.param(
-            ({"monthly": {**_MONTHLY, "equivalence": {"kind": "approximate"}}}, []),
+            ({"monthly": {**_MONTHLY, "equivalence": {"kind": "approximate"}}},),
             _MONTHLY_ID,
             {_REVENUE: "non_exact_equivalence"},
             id="approximate",
@@ -261,7 +251,6 @@ _NOT_REAGGREGABLE = "aggregation_not_reaggregable"
         pytest.param(
             (
                 {"monthly": _MONTHLY},
-                [],
                 {"time": {"timezone": "America/New_York", "column_timezone": "UTC"}},
             ),
             _MONTHLY_ID,
@@ -271,14 +260,14 @@ _NOT_REAGGREGABLE = "aggregation_not_reaggregable"
         # A query runs in its role's zone, which the paired queries don't carry, so a role in
         # another zone isn't certified and answers from the base tables. UTC certifies as before.
         pytest.param(
-            ({"monthly": _MONTHLY}, [], {"time": {"timezone": "America/New_York"}}),
+            ({"monthly": _MONTHLY}, {"time": {"timezone": "America/New_York"}}),
             _MONTHLY_ID,
             {_REVENUE: "timezone_not_utc", "measure.order_count": "timezone_not_utc"},
             id="role-zone-not-utc",
         ),
         *(
             pytest.param(
-                ({"monthly": _MONTHLY}, [], {"time": {"timezone": zone}}),
+                ({"monthly": _MONTHLY}, {"time": {"timezone": zone}}),
                 _MONTHLY_ID,
                 {_REVENUE: "", "measure.order_count": ""},
                 id=f"role-zone-{zone or 'unset'}",
@@ -319,7 +308,7 @@ def test_certify_pair_tells_a_mis_built_rollup_apart(tmp_path: Path):
     region; the base path's inner join leaves it out. The rules pass; the rows don't."""
     left = {**_REGION, "id": "aggregate_relation.region_left"}
     left["relation"] = "order_region_left_monthly"
-    _rollup_package(tmp_path / "p", {}, [left], {"ship_to": False})
+    _rollup_package(tmp_path / "p", {"region_left": left}, {"ship_to": False})
     verdict = certify_aggregate_relation(load_package_config(str(tmp_path / "p")), left["id"])
     (item,) = verdict["measures"]
     connection = duckdb.connect()

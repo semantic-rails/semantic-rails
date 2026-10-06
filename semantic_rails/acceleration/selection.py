@@ -212,9 +212,6 @@ def _aggregate_relation_rejection_reason(
         return "non_default_source"
     if (row.equivalence_kind or "exact") != "exact":
         return "non_exact_equivalence"
-    if row.filters:
-        # The rollup holds only the rows its filters kept, and no query is proven to imply them.
-        return "rollup_filter_not_implied"
     time = leaf.query.time
     requested_grain = str((time.grain if time else "") or "").lower()
     if time is None or not requested_grain:

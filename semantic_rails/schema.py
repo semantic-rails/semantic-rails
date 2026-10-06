@@ -367,7 +367,6 @@ class AggregateRelationConfig:
     temporal_role: str = ""
     grain: str = ""
     entity_grain: list[str] = field(default_factory=list)
-    filters: dict[str, Any] = field(default_factory=dict)
     description: str = ""
     freshness_source: str = ""
     freshness_sla_seconds: int | None = None

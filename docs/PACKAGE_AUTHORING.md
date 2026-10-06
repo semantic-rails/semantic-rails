@@ -2014,7 +2014,7 @@ cardinality / safety and the rule that chose it (`route_basis`: `decided`,
 `colocated_key`, `inherited` or `only_route`, the route rule's rungs 1-4), the
 hop ceiling, and `long_hop_targets` (targets 3+ hops out). Operators can log this to find questions that repeatedly cross
 many entities — those are the candidates for a shortcut relationship, an
-authored `aggregate_relations:` rollup, or physical colocation in the
+authored `model.variants:` rollup, or physical colocation in the
 warehouse.
 
 ## Physical variants and aggregate routing
@@ -2028,14 +2028,24 @@ or dimensions differ from the transaction table.
 The loader normalizes each eligible non-transaction variant into an internal
 `AggregateRelationConfig`. Query compilation can then route a compatible measure
 leaf to the rollup relation instead of the raw relation while preserving the
-same public measure and dimension IDs.
+same public measure and dimension IDs. Fact-model variants use the model's
+`time_entity` as their source entity. An optional variant `id:` preserves a
+rollup's public relation ID. Hosts supplying managed rollups attach entries in
+this same `variants:` shape to the model.
+
+Declare rollups only under the model's `variants:`. The loader refuses top-level
+`aggregate_relations:`, string variant `grain`, and variant `time_grain`,
+`time_column`, `temporal_role`, `covers`, `filters`, `selection.prefer_for_grains`,
+`equivalence.baseline`, and model `default_variant` with `INVALID_CONFIG`.
+Use `grain: {time, entities}` and `time: {role, column}`. Without `time.role`, a
+variant inherits the model's default time role; without `time.column`, it uses
+the default time role's column. Transaction queries use the model's `relation`.
 
 ```yaml
 # models/orders.yml
 model:
   id: orders
   relation: order_fact
-  default_variant: tx
   grain: [order_id]
   entities:
     order: {}
@@ -2063,7 +2073,6 @@ model:
     tx:
       relation: order_fact
       grain: { time: transaction, entities: [order] }
-      covers: inherit_all
 
     monthly:
       relation: order_monthly
@@ -2120,9 +2129,9 @@ Routing is conservative in the MVP:
   with a non-default `calendar_id`, run on the base tables: the rollup path
   buckets the stored column's clock, without the role's zone conversion, on the
   default calendar.
-- A dimension column pre-joined from another model (in an `aggregate_relations:`
-  entry, for example `region` from customers) declares the relationships it was
-  built along: `dimensions: {dimension.region: {column: region, path:
+- A dimension column pre-joined from another model (for example `region` from
+  customers) uses its full dimension ID in the variant's `columns:` and declares
+  the relationships it was built along: `columns: {dimension.region: {column: region, path:
   [relationship.orders_customer]}}`. It routes only when the query joins that
   model along the same path, and only if every hop is many-to-one (or one-to-one)
   with no `temporal_validity`. A rollup holding a pre-joined column without such a
@@ -2137,17 +2146,14 @@ Routing is conservative in the MVP:
   group or filter by that column; the base path doesn't join it otherwise and keeps
   such rows. A measure whose
   expression, or a time role whose column, comes from another model doesn't route.
-  An `aggregate_relations:` entry must declare its `temporal_role`.
 - Every selected measure must have a column in the variant.
 - Every grouped or filtered dimension must be covered by the variant. If a
   query groups by `customer_id` and the monthly table excludes that dimension,
   the planner scans the raw relation.
 - Query-time `metric_predicate` shapes, including a `metric_predicate` inside an
   aggregate's `filter`, do not route through variants yet.
-- An `aggregate_relations:` entry that declares `filters` doesn't route yet: it
-  holds only the rows its filters kept.
-- A rollup that declares `requires_certification: true` (on a variant or an
-  `aggregate_relations:` entry; default `false`) routes only while the host's
+- A variant that declares `requires_certification: true` (default `false`) routes
+  only while the host's
   certification provider says it is certified, and never when none is installed
   (`not_certified`). A host installs one at startup with
   `semantic_rails.acceleration.routing.set_certification_provider(provider)`, where
