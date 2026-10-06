@@ -350,14 +350,18 @@ def test_aware_coverage_cutoff_ignores_the_session_zone(changed_runtime, backend
         "date_trunc('day', ordered_at_tz AT TIME ZONE 'UTC') + INTERVAL '1 day' "
         "FROM orders WHERE order_id = 999",
     )[0]
-    # Store b's revenue has no row that day (order 999 has no store), so it reads 0 exactly
-    # where the day is loaded.
+    # An authored filter retains the explicitly observed day, even for a future source row.
     store_b = {
         "kind": "aggregate",
         **REVENUE,
         "filter": {"all": [{"field": STORE, "op": "=", "value": "b"}]},
     }
-    result = rt.query(_ask("day", _item(store_b, "v"), start=str(start), end=str(end), fill=True))
+    retained = rt.query(_ask("day", _item(store_b, "v"), start=str(start), end=str(end), fill=True))
+    assert [r["v"] for r in typed_rows(retained)] == [0]
+    # A query filter still uses loaded coverage to settle its missing day.
+    query = _ask("day", _item(REVENUE, "v"), start=str(start), end=str(end), fill=True)
+    query["where"] = [{"field": STORE, "op": "=", "value": "b"}]
+    result = rt.query(query)
     gold = _rows(
         rt,
         "SELECT CASE WHEN ordered_at_tz <= CURRENT_TIMESTAMP THEN 0 END "

@@ -575,7 +575,7 @@ CREATE = [
             "kind": "aggregate", "measure": REVENUE, "aggregation": "sum",
             "filter": _one_filter("dimension.shop_order_status", "IN", ["placed", "completed"])}},
         {"Filter by": "status - [dimension] Status - orders", "Keep the rows where it": "is one of"},
-        [10.0, 30.0], id="filtered",
+        [10.0, 0.0, 30.0], id="filtered",
     ),
     pytest.param(
         {}, {"Metric recipe": "Ratio", "Numerator": "revenue - "},
@@ -1003,7 +1003,7 @@ def test_another_filter_dimension_or_measure_asks_for_new_values(tmp_path: Path)
     }
     _author(project, {**filtered, **no_web})
     created = _path(project, "m").read_bytes()
-    assert _values(project, "m") == [20.0, 30.0]
+    assert _values(project, "m") == [0.0, 20.0, 30.0]
 
     undo: list[Any] = []
     completed = {"Filter by": "status - ", "Values": ["completed"]}
