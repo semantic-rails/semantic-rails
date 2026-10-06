@@ -11,7 +11,7 @@ import yaml
 from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 from yaml.tokens import AliasToken, AnchorToken
 
-from ..architect_scaffold import dump_project_yaml
+from ..architect_scaffold import _NoAliasDumper, dump_project_yaml
 from ..errors import SemanticLayerError
 from ..yaml_loader import Yaml12SafeLoader, safe_load
 
@@ -84,7 +84,9 @@ def _line_end(text: str, end: int) -> int:
 
 def _render(value: Any, *, flow: bool = False) -> str:
     rendered = (
-        yaml.safe_dump(value, sort_keys=False, default_flow_style=True, width=10**9)
+        yaml.dump(
+            value, Dumper=_NoAliasDumper, sort_keys=False, default_flow_style=True, width=10**9
+        )
         if flow
         else dump_project_yaml(value)
     )
@@ -92,9 +94,9 @@ def _render(value: Any, *, flow: bool = False) -> str:
 
 
 @lru_cache(maxsize=1)
-def _anchors(text: str) -> tuple[int, ...]:
+def _anchors(text: str) -> tuple[tuple[int, str], ...]:
     return tuple(
-        token.start_mark.index
+        (token.start_mark.index, token.value)
         for token in yaml.scan(text, Loader=Yaml12SafeLoader)
         if isinstance(token, (AliasToken, AnchorToken))
     )
@@ -108,9 +110,33 @@ def _splice(text: str, root: Node, expected: Any, edit: Any) -> tuple[str, bool]
         return dump_project_yaml(expected), True  # Inherited merge keys have no direct span.
     anchors = _anchors(text)
     ancestors = [_node(root, edit.path[:depth], text) for depth in range(len(edit.path) + 1)]
-    if any(
-        target.start_mark.index <= position < target.end_mark.index for position in anchors
-    ) or any(node.start_mark.index in anchors for node in ancestors):
+    affected = {
+        name
+        for position, name in anchors
+        if target.start_mark.index <= position < target.end_mark.index
+        or any(node.start_mark.index == position for node in ancestors)
+    }
+    if affected:
+        depth_start = len(edit.path) if edit.op in {"insert", "replace"} else len(edit.path) - 1
+        for depth in range(depth_start, -1, -1):
+            path = edit.path[:depth]
+            node = _node(root, path, text)
+            if not isinstance(node, (MappingNode, SequenceNode)) or not node.flow_style:
+                continue
+            inside = {
+                name
+                for position, name in anchors
+                if node.start_mark.index <= position < node.end_mark.index
+            }
+            if any(
+                name in affected | inside
+                and not node.start_mark.index <= position < node.end_mark.index
+                for position, name in anchors
+            ):
+                continue
+            return text[: node.start_mark.index] + _render(_get(expected, path), flow=True) + text[
+                node.end_mark.index :
+            ], True
         return (
             _render(expected, flow=True) + "\n"
             if getattr(root, "flow_style", False)
@@ -123,10 +149,16 @@ def _splice(text: str, root: Node, expected: Any, edit: Any) -> tuple[str, bool]
         value = edit.key if edit.op == "rename" else edit.value
         if isinstance(scalar, ScalarNode) and not isinstance(value, (dict, list)):
             rendered = _render(value, flow=True)
-            if "\n" not in rendered and scalar.style not in {"|", ">"}:
-                return text[: scalar.start_mark.index] + rendered + text[
-                    scalar.end_mark.index :
-                ], False
+            if "\n" in rendered:
+                rendered = (
+                    yaml.safe_dump(value, default_style='"', width=10**9)
+                    .removesuffix("...\n")
+                    .rstrip("\n")
+                )
+            span = text[scalar.start_mark.index : scalar.end_mark.index]
+            if scalar.style in {"|", ">"} and span.endswith("\n"):
+                rendered += "\r\n" if span.endswith("\r\n") else "\n"
+            return text[: scalar.start_mark.index] + rendered + text[scalar.end_mark.index :], False
     mapping = (
         target
         if edit.op == "insert"

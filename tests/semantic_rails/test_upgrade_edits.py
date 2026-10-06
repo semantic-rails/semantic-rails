@@ -119,7 +119,7 @@ YAML_FILES = sorted(
             "a: |\n  hello\n  world\nb: 2\n",
             Edit("", "replace", ("a",), value="new"),
             {"a": "new", "b": 2},
-            True,
+            False,
         ),
     ],
 )
@@ -240,7 +240,71 @@ def test_bundled_yaml_edit_properties(file, part, parts):
         )
         assert safe_load(result) == expected
         if not reformatted:
+            replacement = "replacement_leaf"
+            if node.style in {"|", ">"} and text[
+                node.start_mark.index : node.end_mark.index
+            ].endswith("\n"):
+                replacement += "\n"
             assert (
-                result
-                == text[: node.start_mark.index] + "replacement_leaf" + text[node.end_mark.index :]
+                result == text[: node.start_mark.index] + replacement + text[node.end_mark.index :]
             )
+
+
+@pytest.mark.parametrize(
+    "text,path,expected,spliced",
+    [
+        (
+            "# before\na: &unused {x: old}\n# after\nb: 2\n",
+            ("a", "x"),
+            {"a": {"x": "new"}, "b": 2},
+            True,
+        ),
+        (
+            "# before\na: &shared {x: old}\nb: *shared\n",
+            ("a", "x"),
+            {"a": {"x": "new"}, "b": {"x": "new"}},
+            False,
+        ),
+        (
+            "a: &shared old\nb: *shared\nc: unchanged # after\n",
+            ("c",),
+            {"a": "old", "b": "old", "c": "new"},
+            True,
+        ),
+        ("a: {<<: {x: old}, y: 2}\nb: 3\n", ("a", "x"), {"a": {"x": "new", "y": 2}, "b": 3}, False),
+    ],
+)
+def test_anchor_scope_and_inherited_merge_keys(text, path, expected, spliced):
+    result, reformatted = apply_edits(text, [Edit("", "replace", path, value="new")])
+    assert safe_load(result) == expected
+    if spliced:
+        assert "# after" in result
+    if path == ("a", "x") and "unused" in text:
+        assert reformatted and result == "# before\na: {x: new}\n# after\nb: 2\n"
+    if path == ("c",):
+        assert not reformatted
+
+
+def test_multiline_scalar_replacements_preserve_surrounding_bytes():
+    text = "# before\na: old # after\nb: 2\n"
+    result, reformatted = apply_edits(text, [Edit("", "replace", ("a",), value="first\nsecond")])
+    assert safe_load(result) == {"a": "first\nsecond", "b": 2}
+    assert (
+        not reformatted
+        and result.startswith("# before\na: ")
+        and result.endswith(" # after\nb: 2\n")
+    )
+
+
+@pytest.mark.parametrize("op", ["delete", "rename", "insert"])
+def test_flow_anchor_collection_edits(op):
+    text = "# before\nx: {a: &unused {value: 1}, b: 2} # after\n"
+    path = ("x",) if op == "insert" else ("x", "a")
+    result, reformatted = apply_edits(text, [Edit("", op, path, key="new", value=3)])
+    expected = {"x": {"b": 2}}
+    if op == "rename":
+        expected["x"]["new"] = {"value": 1}
+    if op == "insert":
+        expected["x"].update({"a": {"value": 1}, "new": 3})
+    assert safe_load(result) == expected
+    assert reformatted and result.startswith("# before\nx: {") and result.endswith("} # after\n")
