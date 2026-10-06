@@ -589,18 +589,7 @@ def test_valid_values_defaults_to_declared_domains_without_live_query(runtime_fa
         assert [row["value"] for row in declared["values"]] == ["jaffle", "beverage"]
         assert empty["ok"] is False
         assert empty["status"] == "needs_live_query"
-        assert empty["next_call"] == {
-            "tool": "valid-values",
-            "arguments": {
-                "dimension_id": "dimension.jaffle_order_customer_id",
-                "query": query,
-                "allow_live_query": True,
-                "search": "",
-                "limit": 100,
-                "offset": 0,
-                "include_counts": False,
-            },
-        }
+        assert "next_call" not in empty
         assert empty["values"] == []
         assert empty["total_count"] == 0
         assert empty["source"] == "none"
