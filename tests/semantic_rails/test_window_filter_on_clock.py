@@ -67,10 +67,21 @@ def _load(connection: duckdb.DuckDBPyConnection) -> None:
     connection.executemany("insert into events values (?, ?, ?, ?)", EVENTS)
     connection.execute(
         "create table calendar as select d::date as date_day, "
-        "date_trunc('week', d)::date as week_start "
+        "date_trunc('week', d)::date as week_start, date_trunc('month', d)::date as month_start "
         "from generate_series(date '2026-08-01', date '2026-10-31', interval 1 day) t(d)"
     )
     connection.execute("create table calendar2 as select * from calendar")
+
+
+def _load_august(connection: duckdb.DuckDBPyConnection) -> None:
+    connection.executemany(
+        "insert into account_day values (?, ?, 99)",
+        [
+            (account, date(2026, 8, 1) + timedelta(days=offset))
+            for offset in range(31)
+            for account in ("a", "b", "c")
+        ],
+    )
 
 
 def _package(root: Path) -> Path:
@@ -138,10 +149,12 @@ def _package(root: Path) -> Path:
     return package
 
 
-def _reference(sql: str) -> list[tuple]:
+def _reference(sql: str, *, august: bool = False) -> list[tuple]:
     connection = duckdb.connect()
     try:
         _load(connection)
+        if august:
+            _load_august(connection)
         return sorted(connection.execute(sql).fetchall(), key=repr)
     finally:
         connection.close()
@@ -194,6 +207,26 @@ def related_runtime(tmp_path: Path) -> Iterator[Runtime]:
     runtime.close()
 
 
+@pytest.fixture
+def disconnected_runtime(tmp_path: Path) -> Iterator[Runtime]:
+    """The snapshot with August history and no relationship to the calendar, which has a
+    month grain."""
+    package = _package(tmp_path)
+    snapshot = package / "models" / "account_days.yml"
+    snapshot.write_text(
+        snapshot.read_text().replace(
+            "entities: {account_day: {}, time: {}}", "entities: {account_day: {}}"
+        )
+    )
+    calendar = package / "models" / "calendar.yml"
+    calendar.write_text(calendar.read_text() + "    month_start: {kind: date}\n")
+    with duckdb.connect(str(package / "data" / "fees.duckdb")) as connection:
+        _load_august(connection)
+    runtime = Runtime.from_path(str(package))
+    yield runtime
+    runtime.close()
+
+
 def _query(expression: dict, where: list[dict], *, grouped: bool = False) -> dict[str, Any]:
     role = DAY_ROLE if expression is PRIOR_DAY else EVENT_ROLE
     return {
@@ -208,7 +241,7 @@ def _query(expression: dict, where: list[dict], *, grouped: bool = False) -> dic
 def _rows(runtime: Runtime, query: dict[str, Any]) -> list[tuple]:
     result = runtime.query(query)
     assert result["ok"], result.get("errors")
-    time_alias = f"{query['time']['temporal_role']}__day"
+    time_alias = f"{query['time']['temporal_role']}__{query['time']['grain']}"
     return sorted(
         (
             (
@@ -479,11 +512,43 @@ def test_a_two_hop_calendar_upper_bound_matches_reference(related_runtime: Runti
     ]
 
 
-def test_monthly_snapshot_own_clock_cut_refuses(runtime: Runtime) -> None:
-    prior_month = {"kind": "prior_period", "input": FEE, "offset": {"unit": "month", "value": 1}}
-    query = _query(prior_month, [_cut(DAY, ">=", "2026-09-01")], grouped=True)
+PRIOR_MONTH = {"kind": "prior_period", "input": FEE, "offset": {"unit": "month", "value": 1}}
+
+
+def _monthly(where: list[dict]) -> dict[str, Any]:
+    query = _query(PRIOR_MONTH, where, grouped=True)
     query["time"] = {"temporal_role": CALENDAR_ROLE, "grain": "month"}
+    return query
+
+
+def test_monthly_snapshot_own_clock_cut_refuses(runtime: Runtime) -> None:
     with pytest.raises(SemanticLayerError) as caught:
-        runtime.query(query)
+        runtime.query(_monthly([_cut(DAY, ">=", "2026-09-01")]))
     assert caught.value.code == "WINDOWED_TIME_FILTER_UNSUPPORTED"
     assert caught.value.details["where_path"] == "where[0]"
+
+
+def test_a_date_cut_of_a_snapshot_with_no_calendar_relationship_refuses(
+    disconnected_runtime: Runtime,
+) -> None:
+    """The cut is not on the query clock, but on the snapshot's own date, which the leaf filters
+    before its window: September read NULL instead of each account's last August snapshot."""
+    cut = _cut(DAY, ">=", "2026-09-01")
+    with pytest.raises(SemanticLayerError) as caught:
+        disconnected_runtime.query(_monthly([cut]))
+    assert caught.value.code == "WINDOWED_TIME_FILTER_UNSUPPORTED"
+    assert caught.value.details["where_path"] == "where[0]"
+    assert caught.value.details["where"] == cut
+
+
+def test_an_upper_bound_on_a_snapshot_with_no_calendar_relationship_matches_reference(
+    disconnected_runtime: Runtime,
+) -> None:
+    rows = _rows(disconnected_runtime, _monthly([_cut(DAY, "<=", "2026-09-30")]))
+    september = [(account, value) for account, month, value in rows if month == date(2026, 9, 1)]
+    reference = _reference(
+        "select account_id, fee from account_day a where date_day = (select max(date_day) "
+        "from account_day p where p.account_id = a.account_id and p.date_day < '2026-09-01')",
+        august=True,
+    )
+    assert september == reference == [("a", 99), ("b", 99), ("c", 99)]
