@@ -4953,19 +4953,24 @@ class BoundQuery:
     route_decisions: tuple[dict[str, Any], ...] = ()
 
     def object_cuts(self, object_id: str) -> tuple[frozenset[str], ...]:
-        """Whole-query cuts plus the cuts of leaves computing ``object_id``.
+        """Whole-query cuts plus the cuts of leaves computing ``object_id``."""
+        return tuple(
+            cut
+            for cut, owners in zip(self.cuts, self.cut_owners, strict=True)
+            if self.cut_counts(object_id, owners)
+        )
+
+    def cut_counts(self, object_id: str, owners: frozenset[str] | None) -> bool:
+        """Whether a cut of the root leaves ``owners`` (None: the whole query) counts for
+        ``object_id``.
 
         An object read inside a cut, or computed by no root leaf (an entity,
         dimension or nested-only read), has no single owner and sees every cut.
         """
         leaves = {alias for alias, ids in self.leaf_objects.items() if object_id in ids}
         if not leaves or any(object_id in cut for cut in self.cuts):
-            return self.cuts
-        return tuple(
-            cut
-            for cut, owners in zip(self.cuts, self.cut_owners, strict=True)
-            if owners is None or owners & leaves
-        )
+            return True
+        return owners is None or bool(owners & leaves)
 
 
 def bind_metadata_objects(config: PackageConfig, object_ids: Iterable[str]) -> frozenset[str]:
