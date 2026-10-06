@@ -552,3 +552,108 @@ def test_an_upper_bound_on_a_snapshot_with_no_calendar_relationship_matches_refe
         august=True,
     )
     assert september == reference == [("a", 99), ("b", 99), ("c", 99)]
+
+
+SHIPPED = "dimension.fees_event_shipped_on"
+CHANNEL_LINE = "    channel: {kind: categorical}\n"
+ACCOUNT_LINE = "    account_id: {kind: categorical}\n"
+SNAPSHOT_DATE_LINE = "    snapshot_date: {column: date_day, kind: date}\n"
+
+
+def _edited_runtime(tmp_path: Path, edits: dict[str, dict[str, str]]) -> Runtime:
+    """The package with each model's text replaced, and a ship date one day after each event."""
+    package = _package(tmp_path)
+    for model, replacements in edits.items():
+        path = package / "models" / f"{model}.yml"
+        text = path.read_text()
+        for old, new in replacements.items():
+            assert old in text
+            text = text.replace(old, new)
+        path.write_text(text)
+    with duckdb.connect(str(package / "data" / "fees.duckdb")) as connection:
+        connection.execute("alter table events add column shipped_on date")
+        connection.execute("update events set shipped_on = occurred_at::date + 1")
+    return Runtime.from_path(str(package))
+
+
+# id: model edits, expression, field, operator. Each dimension is temporal by its own kind or
+# by its column, whatever its relationship to the query clock.
+BY_TYPE = {
+    "categorical-on-the-clock-column": (
+        {"account_days": {ACCOUNT_LINE: ACCOUNT_LINE + "    label: {column: date_day}\n"}},
+        PRIOR_DAY,
+        "dimension.fees_account_day_label",
+        ">=",
+    ),
+    # Not date-typed, so an upper bound refuses too.
+    "categorical-upper-bound": (
+        {"account_days": {ACCOUNT_LINE: ACCOUNT_LINE + "    label: {column: date_day}\n"}},
+        PRIOR_DAY,
+        "dimension.fees_account_day_label",
+        "<=",
+    ),
+    "datetime-kind": (
+        {
+            "account_days": {
+                SNAPSHOT_DATE_LINE: "    snapshot_date: {column: date_day, kind: datetime}\n"
+            }
+        },
+        PRIOR_DAY,
+        SNAPSHOT_DATE,
+        ">=",
+    ),
+    "clock-of-another-kind": (
+        {
+            "account_days": {
+                SNAPSHOT_DATE_LINE: "",
+                "kind: date, class: as_of_time": "kind: categorical, class: as_of_time",
+            }
+        },
+        PRIOR_DAY,
+        DAY,
+        ">=",
+    ),
+    # Not the window's clock; still a date, so it may cut the lookback.
+    "another-date-of-the-measure": (
+        {"events": {CHANNEL_LINE: CHANNEL_LINE + "    shipped_on: {kind: date}\n"}},
+        ROLLING,
+        SHIPPED,
+        ">=",
+    ),
+    "kind-in-capitals": (
+        {"events": {CHANNEL_LINE: CHANNEL_LINE + "    shipped_on: {kind: Date}\n"}},
+        ROLLING,
+        SHIPPED,
+        "=",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("edits", "expression", "field", "op"), list(BY_TYPE.values()), ids=list(BY_TYPE)
+)
+def test_a_cut_of_a_temporal_dimension_refuses_by_type(
+    tmp_path: Path, edits: dict, expression: dict, field: str, op: str
+) -> None:
+    runtime = _edited_runtime(tmp_path, edits)
+    cut = _cut(field, op, "2026-09-15")
+    try:
+        with pytest.raises(SemanticLayerError) as caught:
+            runtime.query(_query(expression, [cut], grouped=expression is PRIOR_DAY))
+    finally:
+        runtime.close()
+    assert caught.value.code == "WINDOWED_TIME_FILTER_UNSUPPORTED"
+    assert caught.value.details["where_path"] == "where[0]"
+    assert caught.value.details["where"] == cut
+
+
+def test_an_upper_bound_on_another_date_matches_reference(tmp_path: Path) -> None:
+    runtime = _edited_runtime(
+        tmp_path, {"events": {CHANNEL_LINE: CHANNEL_LINE + "    shipped_on: {kind: date}\n"}}
+    )
+    try:
+        rows = _rows(runtime, _query(ROLLING, [_cut(SHIPPED, "<=", "2026-09-11")]))
+    finally:
+        runtime.close()
+    reference = ROLLING_REFERENCE.format(cut="occurred_at::date + 1 <= date '2026-09-11'")
+    assert rows == _reference(reference)

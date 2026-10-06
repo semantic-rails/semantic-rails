@@ -888,7 +888,7 @@ def recovery_hints_for_error(
         # one full prior bucket (e.g. prior_period at month grain needs
         # the bucket BEFORE the widened start). Agents that grab the
         # first hint should get the safe path.
-        # A where filter on the query's date dimension (``where_path``) cuts the same rows.
+        # A where filter on a date dimension (``where_path``) cuts the same rows.
         where_path = str(details.get("where_path", "") or "")
         start = str(details.get("start", "") or "")
         lookback = dict(details.get("lookback", {}) or {})

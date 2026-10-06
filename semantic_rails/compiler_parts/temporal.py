@@ -918,53 +918,30 @@ def _unsafe_windowed_lookback(expr: SemanticExpr, config: PackageConfig) -> dict
 
 
 def _clock_where_cuts(query: NormalizedQuery, config: PackageConfig) -> list[tuple[str, Filter]]:
-    """The ``where`` conditions, child groups' included, that cut the query clock's rows other
-    than from above: each with its path.
+    """The ``where`` conditions, child groups' included, that may cut a window's lookback: each
+    with its path.
 
-    A condition reads the clock when its dimension is on the clock's column or on a column
-    connected to it through relationship column equalities, in either direction and at any
-    depth. Any dimension on a calendar (``kind: time``) entity reached by those equalities
-    reads the clock too. Only an upper bound (``<``, ``<=``) on a date or
-    timestamp keeps every window's lookback rows, as ``time.end`` does; any other operator cuts
-    them, and is returned.
+    A window can order its rows by any date (the query's clock, a snapshot's own date, or one
+    joined to either), so a condition is judged by its dimension's type, never by tracing it to
+    that date. A condition cuts when its dimension is temporal (a time role, of a ``date``,
+    ``timestamp``, ``datetime`` or ``time`` kind, or on the same table column as one of those)
+    or is on a calendar (``kind: time``) entity. Only an upper bound (``<``, ``<=``) on a
+    ``date`` or ``timestamp`` dimension keeps every lookback row, as ``time.end`` does.
     """
     if query.time is None:
         return []
     analysis = get_package_analysis(config)  # unrecorded lookups: the guard binds no object
-    role = analysis.temporal_roles.get(query.time.temporal_role)
-    clock = analysis.dimensions.get(role.dimension) if role is not None else None
-    if clock is None:
-        return []
-    # paths imports temporal; defer the shared orientation helper until planning runs.
-    from .paths import _pair_orientations
 
-    clock_table = analysis.entities[clock.entity].table
-    clock_columns = {
-        (entity.id, clock.column) for entity in config.entities if entity.table == clock_table
+    def table_column(dim: DimensionConfig) -> tuple[str, str]:
+        return analysis.entities[dim.entity].table, dim.column
+
+    role_dimensions = {role.dimension for role in analysis.temporal_roles.values()}
+    temporal_columns = {
+        table_column(dim)
+        for dim in analysis.dimensions.values()
+        if str(dim.data_type).lower() in {"date", "timestamp", "datetime", "time"}
+        or dim.id in role_dimensions
     }
-    neighbors: dict[tuple[str, str], set[tuple[str, str]]] = {}
-    entity_pairs = {
-        tuple(sorted((rel.source_entity, rel.target_entity))) for rel in config.relationships
-    }
-    for source, target in entity_pairs:
-        for _rel, source_columns, target_columns in _pair_orientations(source, target, config):
-            for source_column, target_column in zip(source_columns, target_columns, strict=True):
-                left, right = (source, source_column), (target, target_column)
-                neighbors.setdefault(left, set()).add(right)
-                neighbors.setdefault(right, set()).add(left)
-    pending = list(clock_columns)
-    while pending:
-        for paired in neighbors.get(pending.pop(), set()):
-            if paired not in clock_columns:
-                clock_columns.add(paired)
-                pending.append(paired)
-    clock_entities = {entity for entity, _column in clock_columns}
-
-    def reads_clock(dim: DimensionConfig) -> bool:
-        return (dim.entity, dim.column) in clock_columns or (
-            analysis.entities[dim.entity].kind == "time" and dim.entity in clock_entities
-        )
-
     conditions: list[tuple[str, Filter]] = []
     for index, item in enumerate(query.where):
         if isinstance(item, ChildGroup):
@@ -976,7 +953,10 @@ def _clock_where_cuts(query: NormalizedQuery, config: PackageConfig) -> list[tup
     cuts = []
     for path, item in conditions:
         dim = analysis.dimensions.get(item.field)
-        if dim is None or not reads_clock(dim):
+        if dim is None or (
+            table_column(dim) not in temporal_columns
+            and analysis.entities[dim.entity].kind != "time"
+        ):
             continue
         op = " ".join(str(item.op).upper().split())
         if op in {"<", "<="} and dim.data_type in {"date", "timestamp"}:
@@ -988,7 +968,7 @@ def _clock_where_cuts(query: NormalizedQuery, config: PackageConfig) -> list[tup
 def _validate_restrictive_time_semantics(query: NormalizedQuery, config: PackageConfig) -> None:
     if query.time is None:
         return
-    # time.start first, so its refusal is unchanged; otherwise the first where cut of the clock.
+    # time.start first, so its refusal is unchanged; otherwise the first where cut of a date.
     details: dict[str, Any]
     if query.time.start is not None:
         details = {"start": query.time.start}
@@ -1002,7 +982,7 @@ def _validate_restrictive_time_semantics(query: NormalizedQuery, config: Package
         details = {"where_path": path, "where": asdict(item)}
         if " ".join(str(item.op).upper().split()) in {">=", ">"}:
             details["start"] = item.value
-        bound = f"a where filter on the query's date dimension ({path}) other than an upper bound"
+        bound = f"a where filter on a date dimension ({path}) other than an upper bound"
         remedy = f"remove {path} (an upper bound or query.time.end still runs)"
     expressions = [item.expression for item in query.select if item.expression is not None]
     expressions.extend(
