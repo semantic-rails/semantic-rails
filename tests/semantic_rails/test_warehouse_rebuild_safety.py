@@ -66,6 +66,149 @@ def _explicit_seed(tmp_path: Path, db_path: Path, kind: str) -> None:
         load_csv_dir_to_duckdb(str(db_path), str(source))
 
 
+@pytest.mark.parametrize("kind", ["sql_script", "csv_dir_duckdb"])
+@pytest.mark.parametrize("existing", [False, True])
+def test_failed_seed_statement_reports_context_without_publishing(
+    tmp_path: Path, kind: str, existing: bool
+) -> None:
+    source = tmp_path / "seed.sql"
+    source.write_text(
+        "-- a comment with a semicolon;\nSELECT 'a;b';\n\n"
+        "SELECT missing_seed_column\nFROM missing_seed_table;\n"
+        "CREATE TABLE must_not_run AS SELECT 1;",
+        encoding="utf-8",
+    )
+    target = tmp_path / "warehouse.duckdb"
+    before = None
+    if existing:
+        _write_db(target, "CREATE TABLE original AS SELECT 1 AS marker")
+        before = file_digest(target)
+
+    with pytest.raises(SemanticLayerError) as caught:
+        if kind == "sql_script":
+            seed_db(str(target), str(source))
+        else:
+            load_csv_dir_to_duckdb(str(target), str(tmp_path), str(source))
+
+    error = caught.value
+    assert error.code == "INVALID_CONFIG"
+    assert error.details == {
+        "reason": "seed_failed",
+        "file": str(source),
+        "statement_number": 2,
+        "statement_first_line": "SELECT missing_seed_column",
+        "database_message": str(error.__cause__),
+    }
+    assert "missing_seed_table" in error.details["database_message"]
+    for text in (str(source), "statement 2", "SELECT missing_seed_column", "missing_seed_table"):
+        assert text in str(error)
+    if existing:
+        assert file_digest(target) == before
+    else:
+        assert not target.exists()
+    assert not list(tmp_path.glob("*.seed.*.tmp*"))
+
+
+@pytest.mark.parametrize("surface", ["query", "runtime_validation"])
+def test_runtime_preserves_failed_seed_statement_details(tmp_path: Path, surface: str) -> None:
+    package_dir = write_orders_package(tmp_path, schema="")
+    source = package_dir / "data" / "seed.sql"
+    source.write_text("SELECT 1;\nSELECT * FROM missing_seed_table;", encoding="utf-8")
+    if surface == "query":
+        runtime = Runtime.from_path(str(package_dir))
+        try:
+            with pytest.raises(SemanticLayerError) as caught:
+                runtime.query(ORDER_COUNT_QUERY)
+            errors = [{"code": caught.value.code, "details": caught.value.details}]
+        finally:
+            runtime.close()
+    else:
+        report = project_validation_report(
+            PackageReference(source_path=str(package_dir)), mode="runtime"
+        )
+        assert not report["ok"]
+        errors = [probe["error"] for probe in report["runtime"]["probes"] if not probe["ok"]]
+        assert errors
+    for error in errors:
+        assert error["code"] == "INVALID_CONFIG"
+        assert error["details"]["reason"] == "seed_failed"
+        assert error["details"]["file"] == str(source)
+        assert error["details"]["statement_number"] == 2
+        assert error["details"]["statement_first_line"] == "SELECT * FROM missing_seed_table"
+        assert "missing_seed_table" in error["details"]["database_message"]
+    assert not (package_dir / "data" / "warehouse.duckdb").exists()
+    assert not list((package_dir / "data").glob("*.seed.*.tmp*"))
+
+
+@pytest.mark.parametrize("stale", [False, True])
+@pytest.mark.parametrize("surface", ["query", "runtime_validation", "segment_preview"])
+def test_failed_query_reports_stale_seed_hint_without_replacing_database(
+    tmp_path: Path, stale: bool, surface: str
+) -> None:
+    package_dir, db_path = _seeded_orders_only_package(tmp_path)
+    model_path = package_dir / "models" / "orders.yml"
+    model = yaml.safe_load(model_path.read_text(encoding="utf-8"))
+    model["model"]["measures"]["order_total"]["expr"] = "new_order_total"
+    if surface == "segment_preview":
+        model["model"]["dimensions"]["order_id"] = {"label": "Order ID", "kind": "categorical"}
+        segments = package_dir / "segments"
+        segments.mkdir()
+        (segments / "orders.yml").write_text(
+            yaml.safe_dump(
+                {
+                    "segment": {
+                        "id": "segment.shop.orders",
+                        "label": "Orders",
+                        "entity": "entity.shop_order",
+                        "basis_metric": "metric.shop.revenue",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+    model_path.write_text(yaml.safe_dump(model, sort_keys=False), encoding="utf-8")
+    if stale:
+        source = package_dir / "data" / "seed.sql"
+        source.write_text(
+            ORDERS_ONLY_SEED_SQL.replace("order_total", "new_order_total"), encoding="utf-8"
+        )
+    before = file_digest(db_path)
+    query = {"version": 1, "select": [{"expression": {"measure": "measure.shop.order_total"}}]}
+    if surface in {"query", "segment_preview"}:
+        runtime = Runtime.from_path(str(package_dir))
+        try:
+            with pytest.raises(SemanticLayerError) as caught:
+                if surface == "query":
+                    runtime.query(query)
+                else:
+                    runtime.segment_preview("segment.shop.orders")
+            error = {"code": caught.value.code, "details": caught.value.details}
+        finally:
+            runtime.close()
+    else:
+        report = project_validation_report(
+            PackageReference(source_path=str(package_dir)), mode="runtime"
+        )
+        assert not report["ok"]
+        error = next(
+            probe["error"]
+            for probe in report["runtime"]["probes"]
+            if probe["object_id"] == "measure.shop.order_total"
+        )
+    assert error["code"] == "QUERY_EXECUTION_ERROR"
+    details = error["details"]
+    assert details["sql_redacted"] is True and "sql" not in details
+    assert "database_message" not in details
+    if stale:
+        (warning,) = details["warnings"]
+        assert warning["code"] == "STALE_SEED_DATABASE"
+        assert warning["details"] == {"default_db": str(db_path), "reason": "seed_files_changed"}
+        assert warning["message"].endswith(f"rm {db_path}")
+    else:
+        assert "warnings" not in details
+    assert file_digest(db_path) == before
+
+
 @pytest.mark.parametrize("kind", ["sql", "csv"])
 def test_explicit_seed_refuses_existing_wal_without_touching_database(
     tmp_path: Path, monkeypatch, kind: str

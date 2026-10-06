@@ -408,7 +408,9 @@ that must not mistake a filtered-out population for zero want it. A query's own
   missing. It records package provenance and a content hash of the seed files
   inside the new file. When those files change later, queries and runtime
   validation return a `STALE_SEED_DATABASE` warning with the command that
-  deletes the file; the next run rebuilds it from the current seed. Publication is
+  deletes the file; the next run rebuilds it from the current seed. If warehouse
+  execution fails on that stale database, the same warning and command are
+  included in the error's `details.warnings`. Publication is
   atomic and never overwrites a file another process created in the meantime.
   If the filesystem cannot publish without an overwrite (for example one
   without hard links on POSIX), creation fails with `INVALID_CONFIG`; build the
@@ -442,6 +444,13 @@ stopped through publication: the WAL check cannot prevent a writer from
 creating a new log immediately after it runs.
 
 SQL seed sources and CSV `post_sql` files accept LF or CRLF line endings.
+If a statement in either file fails, the build raises `INVALID_CONFIG` with
+`details.reason: seed_failed`, the SQL path (`file`), its one-based
+`statement_number`, its first nonblank line (`statement_first_line`), and the
+database's message (`database_message`). These diagnostics describe the
+package author's seed SQL, rather than a rendered query. Runtime queries and
+runtime validation probes preserve them. The failed build never publishes its
+temporary database or replaces an existing database.
 CRLF bytes inside string literals are preserved as authored, without normalization to LF.
 A bare carriage return refuses the script before any of its statements execute
 with `INVALID_CONFIG`, `details.reason: bare_carriage_return_sql_script` and
