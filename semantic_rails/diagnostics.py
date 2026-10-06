@@ -877,6 +877,9 @@ def recovery_hints_for_error(
             )
         return hints
     if code == "WINDOWED_TIME_FILTER_UNSUPPORTED":
+        # An authored filter or policy is not a caller-editable time boundary.
+        if details.get("filter_source") in {"measure", "policy"}:
+            return []
         # The error message already says what to do — agents need a
         # structured patch they can apply without parsing English.
         # Two patches: ``drop_time_start`` (remove the boundary entirely)
@@ -1154,6 +1157,13 @@ def enrich_diagnostic_candidates(
 ) -> SemanticLayerError:
     """Filter compiler-supplied catalog alternatives before hints become text."""
     details = dict(exc.details or {})
+    if (
+        exc.code == "POLICY_DENIED"
+        and (blocked := details.get("blocked_objects", []))
+        and set(blocked) != set(_visible_candidate_ids(config, blocked, hidden_ids))
+    ):
+        # Hidden bound inputs cannot be disclosed by the denial's effects or recovery hints.
+        return SemanticLayerError(exc.code, str(exc))
     message = str(exc)
     if (
         exc.code == "AMBIGUOUS_PATH"
