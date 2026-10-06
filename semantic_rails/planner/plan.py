@@ -207,7 +207,7 @@ def plan_payload(
             )
             return _query_detail_payload(payload) if detail_level == "query" else payload
 
-    collision_why = named_subject_why(runtime, intent_str)
+    collision_why = named_subject_why(runtime, intent_str, partial_query)
     if collision_why is not None:
         payload = {
             "plan_version": _VERSION,

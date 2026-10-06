@@ -141,7 +141,7 @@ def monday(monkeypatch: pytest.MonkeyPatch) -> None:
     ],
 )
 def test_authored_names_answer_reference_sql(tmp_path: Path, question: str, metric: str, gold: Any):
-    root = _package(tmp_path / "shop", synonyms=True)
+    root = _package(tmp_path / "shop", synonyms="sign" in question)
     with closing(Runtime.from_path(str(root))) as runtime:
         plan = plan_payload(runtime, intent=question, partial_query={"policy_context": NOW})
         assert plan["status"] == "ok", plan.get("why")
@@ -333,3 +333,43 @@ def test_unique_words_separate_a_shared_synonym(tmp_path: Path):
             _base._named_metric(runtime._config, "new accounts signed up")[0].id
             == "metric.shop.new_accounts"
         )
+
+
+def test_metric_synonym_lists_round_trip_from_yaml(tmp_path: Path):
+    from semantic_rails.config import load_package_config
+
+    config = load_package_config(str(_package(tmp_path / "shop", synonyms=True)))
+    names = {row.id: row.aliases for row in config.metric_recipes}
+    assert names["metric.shop.new_accounts"] == ["signups", "signed up", "new signups"]
+    assert names["metric.shop.closures"] == ["closed"]
+    assert names["metric.shop.upgrades"] == ["upgraded"]
+
+
+def test_metric_synonym_colliding_with_a_measure_clarifies(tmp_path: Path):
+    from dataclasses import replace
+
+    with closing(Runtime.from_path(str(_package(tmp_path / "shop", synonyms=True)))) as runtime:
+        measure = runtime._config.measures[0]
+        runtime._config = replace(
+            runtime._config, measures=[replace(measure, label="Signups", publish=True)]
+        )
+        plan = plan_payload(
+            runtime, intent="How many signups last week?", partial_query={"policy_context": NOW}
+        )
+        assert plan["status"] == "needs_clarification"
+        assert measure.id in str(plan["why"])
+        assert "metric.shop.new_accounts" in str(plan["why"])
+
+
+def test_whole_metric_label_collision_clarifies(tmp_path: Path):
+    from dataclasses import replace
+
+    with closing(Runtime.from_path(str(_package(tmp_path / "shop")))) as runtime:
+        runtime._config = replace(
+            runtime._config,
+            metric_recipes=[
+                replace(row, label="Account total") for row in runtime._config.metric_recipes[:2]
+            ],
+        )
+        plan = plan_payload(runtime, intent="Account total", partial_query={"policy_context": NOW})
+        assert plan["status"] == "needs_clarification"

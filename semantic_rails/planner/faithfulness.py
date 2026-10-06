@@ -652,11 +652,13 @@ def _coverage_why(gaps: list[CoverageGap]) -> dict[str, Any] | None:
     }
 
 
-def named_subject_why(runtime: Any, question: str) -> dict[str, Any] | None:
+def named_subject_why(
+    runtime: Any, question: str, partial_query: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
     """A shared whole name cannot be settled by the ranking's label or score."""
 
     rows = _shared_subjects(runtime._config, _target_focus_text(question))
-    if not rows:
+    if not rows or any(row.id in _projected_subject_ids(partial_query or {}) for row in rows):
         return None
     return _coverage_why(
         [
@@ -693,7 +695,7 @@ def intent_subject_why(
     """
 
     config, text = runtime._config, str(question or "")
-    collision = named_subject_why(runtime, text)
+    collision = named_subject_why(runtime, text, partial_query)
     if collision is not None:
         return collision
     subjects = _projected_subject_ids(query)

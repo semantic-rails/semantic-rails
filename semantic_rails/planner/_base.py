@@ -382,13 +382,14 @@ def _declared_name_forms(row: Any) -> list[str]:
     ]
 
 
-def _name_matches(row: Any, text: str) -> list[tuple[int, int, int]]:
+def _name_matches(row: Any, text: str, *, short_label: bool = True) -> list[tuple[int, int, int]]:
     """Whole contiguous declared names, as (word count, start, end) spans."""
 
     words = list(re.finditer(r"[^\W_]+", text.lower()))
     said = [_singular(word.group()) for word in words]
     matches = set()
-    for name in _declared_name_forms(row):
+    forms = _declared_name_forms(row)
+    for name in forms if short_label else [forms[0], *forms[2:]]:
         parts = [_singular(word) for word in re.findall(r"[^\W_]+", name.lower())]
         for start in range(len(said) - len(parts) + 1):
             if parts and said[start : start + len(parts)] == parts:
@@ -482,22 +483,17 @@ def _shared_subjects(config: Any, text: str) -> list[Any]:
         *(row for row in config.measures if getattr(row, "publish", True)),
     ]
     # A generated plain mirror and its measure are the same authored answer.
-    rows = [
-        row
-        for row in rows
-        if not any(
-            row in config.metric_recipes
-            and (wrapped := whole_aggregate(row)) is not None
-            and not wrapped[2]
-            and other.id == wrapped[0]
-            and other.label == row.label
-            and other.name == row.name
-            for other in config.measures
-        )
-    ]
+    measures = {row.id: row for row in config.measures}
+    mirrors = set()
+    for metric in config.metric_recipes:
+        wrapped = whole_aggregate(metric)
+        other = measures.get(wrapped[0]) if wrapped is not None and not wrapped[2] else None
+        if other is not None and other.label == metric.label and other.name == metric.name:
+            mirrors.add(metric.id)
+    rows = [row for row in rows if row.id not in mirrors]
     fits = {}
     for row in rows:
-        spans = _name_matches(row, text)
+        spans = _name_matches(row, text, short_label=False)
         if spans:
             fits[row.id] = (row, _name_fit(row, text), spans)
     contenders = [
@@ -514,6 +510,16 @@ def _shared_subjects(config: Any, text: str) -> list[Any]:
             for _, start, end in fits[row.id][2]
             for other in contenders
             if other.id != row.id
+            and (
+                row.id.split(".")[0] == other.id.split(".")[0]
+                # Existing whole-name metric precedence settles measure/metric labels.
+                # An authored synonym crossing that boundary must still clarify.
+                or any(
+                    _singular(text[start:end].lower()) == _singular(alias.lower())
+                    for candidate in (row, other)
+                    for alias in (candidate.aliases or [])
+                )
+            )
             for _, other_start, other_end in fits[other.id][2]
         )
         else []
