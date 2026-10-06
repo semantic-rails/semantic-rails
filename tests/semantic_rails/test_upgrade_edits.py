@@ -192,14 +192,14 @@ def _leaves(node, text, path=(), seen=None):
 @pytest.mark.parametrize(
     "file,part,parts",
     [
-        (file, part, 4 if file.stat().st_size > 100_000 else 1)
+        (file, part, 16 if file.stat().st_size > 100_000 else 1)
         for file in YAML_FILES
-        for part in range(4 if file.stat().st_size > 100_000 else 1)
+        for part in range(16 if file.stat().st_size > 100_000 else 1)
     ],
     ids=[
         f"{file.relative_to(ROOT)}-{part}"
         for file in YAML_FILES
-        for part in range(4 if file.stat().st_size > 100_000 else 1)
+        for part in range(16 if file.stat().st_size > 100_000 else 1)
     ],
 )
 def test_bundled_yaml_edit_properties(file, part, parts):

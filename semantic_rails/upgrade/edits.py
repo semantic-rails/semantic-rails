@@ -94,6 +94,11 @@ def _render(value: Any, *, flow: bool = False) -> str:
 
 
 @lru_cache(maxsize=1)
+def _document(text: str) -> tuple[Any, Node | None]:
+    return safe_load(text), yaml.compose(text, Loader=Yaml12SafeLoader)
+
+
+@lru_cache(maxsize=1)
 def _anchors(text: str) -> tuple[tuple[int, str], ...]:
     return tuple(
         (token.start_mark.index, token.value)
@@ -209,8 +214,8 @@ def apply_edits(text: str, edits: Iterable[Any]) -> tuple[str, bool]:
         if edit.op in {"create", "archive"}:
             continue
         try:
-            expected = _change(deepcopy(safe_load(text)), edit)
-            root = yaml.compose(text, Loader=Yaml12SafeLoader)
+            document, root = _document(text)
+            expected = _change(deepcopy(document), edit)
             if root is None:
                 raise ValueError("Cannot edit an empty document")
             result, fallback = _splice(text, root, expected, edit)
