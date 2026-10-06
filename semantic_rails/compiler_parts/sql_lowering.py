@@ -87,6 +87,7 @@ from ..sql_ast import (
     SqlTableRef,
     SqlWindow,
     build_filter_condition,
+    build_negation,
 )
 from .aliasing import AliasRegistry, alias_select
 from .bind import (
@@ -456,8 +457,10 @@ def _emits_time_coverage(plan: LogicalPlan, config: PackageConfig) -> bool:
     only inside the base's loaded range. Only DuckDB and Postgres execute that coverage.
     Branches are counted unrouted, so the answer never depends on routing.
     """
-    if not plan.time or plan.time.get("window_total") or not _dialect(config).has_time_coverage:
+    if not plan.time or not _dialect(config).has_time_coverage:
         return False
+    if plan.time.get("window_total"):
+        return True
     if _query_requires_dense_series(plan, config):
         return True
     unrouted = [replace(row, aggregate_relation_id="") for row in plan.measure_plans]
@@ -468,7 +471,6 @@ def _needs_time_scope(plan: LogicalPlan, config: PackageConfig) -> bool:
     """Whether base leaves record their scope: for coverage, or a window's observation."""
     return _emits_time_coverage(plan, config) or bool(
         plan.time
-        and not plan.time.get("window_total")
         and (plan.time.get("start") or plan.time.get("end"))
         and _dialect(config).has_time_coverage
     )
@@ -490,7 +492,7 @@ def _record_time_scope(
     calendar: SqlJoin | None,
     local: bool,
 ) -> None:
-    if not plan.time or plan.time.get("window_total") or leaf.ctes:
+    if not plan.time or leaf.ctes:
         return
     if not _needs_time_scope(plan, config):
         return
@@ -503,6 +505,25 @@ def _record_time_scope(
         role = _temporal_role_index(config)[
             _leaf_time_role(row.bound_measure, normalize_query(plan.query), config)
         ]
+        coverage_bucket = bucket
+        if plan.time.get("window_total"):
+            # The whole [start, end) interval is bucket 0; timestamps before/after it
+            # are -1/1. The central guard can then compare its key to loaded coverage
+            # just as for a grained bucket, using the source clock's bound semantics.
+            window = _source_time_window(
+                _apply_role_timezone(raw_time, role, config), plan.time, config, role_id=role.id
+            )
+            coverage_bucket = SqlCase(
+                [SqlCaseWhen(SqlIsNull(raw_time), SqlLiteral(None))]
+                + [
+                    SqlCaseWhen(
+                        build_negation(condition),
+                        SqlLiteral(-1 if condition.op == ">=" else 1),
+                    )
+                    for condition in window
+                ],
+                else_expr=SqlLiteral(0),
+            )
         record_leaf_scope(
             alias,
             LeafScope(
@@ -510,7 +531,7 @@ def _record_time_scope(
                 joins=tuple(j for j in leaf.joins if j is not calendar),
                 where=tuple(untimed),
                 value=value,
-                bucket=bucket if local else None,
+                bucket=coverage_bucket if local else None,
                 raw_time=raw_time,
                 storage_zone=role.column_timezone or role.timezone or "UTC",
                 calendar=calendar,
@@ -5993,6 +6014,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 time_key=time_alias if _emits_time_coverage(plan, config) else "",
                 dialect=_dialect(config),
                 observed=observed,
+                bucketed=bool(plan.time),
             )
         )
         base_table = SqlTableRef(name=GUARDED_BASE, alias="base")
