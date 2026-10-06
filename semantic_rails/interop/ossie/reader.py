@@ -25,6 +25,7 @@ from ...config import (
     _suggested_aggregations,
     load_package_snapshot,
 )
+from ...config_parts.measure_governance import with_published_flags
 from ...config_parts.package_loader import _slug, _titleize
 from ...errors import SemanticLayerError
 from ...expressions import (
@@ -457,7 +458,9 @@ class _Importer:
                 built[item.name] = _value(hint, value, item.name)
         for name in objects:
             self.skip("sidecar sections this version doesn't read", name)
-        return PackageConfig(version=int(identity.get("schema_version", 1)), package=meta, **built)
+        return with_published_flags(
+            PackageConfig(version=int(identity.get("schema_version", 1)), package=meta, **built)
+        )
 
 
 def _stale(edits: list[str]) -> str:

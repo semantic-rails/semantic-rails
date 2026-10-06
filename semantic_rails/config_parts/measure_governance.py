@@ -14,6 +14,7 @@ govern it. It stays queryable by id.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
+from dataclasses import replace
 from typing import Any
 
 from ..expressions import expr_to_dict
@@ -66,17 +67,32 @@ def governing_metrics(config: PackageConfig, measure_id: str) -> list[MetricConf
     ]
 
 
-def building_block_measures(config: PackageConfig) -> frozenset[str]:
-    """Measures authored with ``publish: false`` that a metric governs and none publishes."""
+def with_published_flags(config: PackageConfig) -> PackageConfig:
+    """``config`` with each ``MeasureConfig.publish`` as the package's YAML loads it.
 
-    governed: set[str] = set()
-    published: set[str] = set()
-    for metric in config.metric_recipes:
-        published.add(published_measure(metric))
-        governed.update(
-            measure_id
-            for measure_id, narrowed in _measure_reads(expr_to_dict(metric.expression))
-            if narrowed
-        )
+    A measure some metric publishes is published. Without ``schema_strict`` every other
+    measure was authored ``publish: false``, since the loader publishes the rest itself; a
+    package written back, with each metric spelled out, then reads the same.
+    """
+
+    published = {published_measure(metric) for metric in config.metric_recipes}
+    strict = config.package.schema_strict
+    return replace(
+        config,
+        measures=[
+            replace(row, publish=row.id in published or (strict and row.publish))
+            for row in config.measures
+        ],
+    )
+
+
+def building_block_measures(config: PackageConfig) -> frozenset[str]:
+    """Unpublished measures (see ``MeasureConfig.publish``) that a metric governs."""
+
     unpublished = {measure.id for measure in config.measures if not measure.publish}
-    return frozenset(unpublished & governed - published)
+    return frozenset(
+        measure_id
+        for metric in config.metric_recipes
+        for measure_id, narrowed in _measure_reads(expr_to_dict(metric.expression))
+        if narrowed and measure_id in unpublished
+    )

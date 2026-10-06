@@ -247,9 +247,8 @@ class MeasureConfig:
     # measure's rows; ``expr`` is the foreign key to ``via``.
     lookup_from: str = ""
     lookup_via: str = ""
-    # False when authored ``publish: false``; a metric that filters such a measure, with
-    # none publishing it whole, makes it a building block (see
-    # ``metadata_parts.measure_governance``).
+    # False when authored ``publish: false`` and no metric aggregates it whole; a metric that
+    # filters it then makes it a building block (``config_parts.measure_governance``).
     publish: bool = True
 
 

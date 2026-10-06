@@ -14,13 +14,13 @@ from datetime import date, timedelta
 from functools import lru_cache
 from typing import Any
 
-from ..errors import SemanticLayerError
-from ..expressions import MeasureRefExpr, collect_object_references, expr_to_dict
-from ..metadata_parts.measure_governance import (
+from ..config_parts.measure_governance import (
     building_block_measures,
     governing_metrics,
     whole_aggregate,
 )
+from ..errors import SemanticLayerError
+from ..expressions import MeasureRefExpr, collect_object_references, expr_to_dict
 from .visibility import visible_dimensions, visible_value_domains
 
 
@@ -409,10 +409,12 @@ def _named_metric(config: Any, text: str) -> tuple[Any, str] | None:
 
 
 def _said_name(row: Any, text: str) -> frozenset[str]:
-    """The words of the longest name of ``row`` that the question says, in any order.
+    """The words of the longest name of ``row`` that ``text`` says, in any order.
 
-    The names are its label, with or without a parenthetical, the last part of its id and
-    its aliases; a plural counts as its singular. Empty when the question says none.
+    ``text`` is the question's target phrase (``_target_focus_text``), so a grouping or its
+    values ("orders by customer type, new vs repeat") name no metric. The names are its
+    label, with or without a parenthetical, the last part of its id and its aliases; a plural
+    counts as its singular. Empty when the phrase says none.
     """
 
     said = {_singular(word) for word in _tokens(text)}
@@ -425,15 +427,16 @@ def _said_name(row: Any, text: str) -> frozenset[str]:
     )
 
 
-def _governed_target(config: Any, text: str, query: dict[str, Any]) -> Any | None:
+def _governed_target(config: Any, focus: str, query: dict[str, Any]) -> Any | None:
     """The metric a one-select draft over a measure answers with instead.
 
     The select reads a measure, or the metric that is its plain aggregate. A metric that
     aggregates that measure the same way through a filter governs it ("Active workspaces" over
-    "Active workspaces (all classes)"). It is the answer when the question names it, and names
-    no other such metric as fully nor the measure more fully; or when the measure is a building
-    block and this metric alone governs it. Never when the draft filters or groups by something
-    its filter reads: "internal workspaces" asks for rows the governed metric leaves out.
+    "Active workspaces (all classes)"). It is the answer when the question's target phrase
+    ``focus`` names it (``_said_name``), and names no other such metric as fully nor the
+    measure more fully; or when the measure is a building block and this metric alone governs
+    it. Never when the draft filters or groups by something its filter reads: "internal
+    workspaces" asks for rows the governed metric leaves out.
     """
 
     select = list(query.get("select") or [])
@@ -456,7 +459,9 @@ def _governed_target(config: Any, text: str, query: dict[str, Any]) -> Any | Non
         and governed[0] == measure.id
         and (governed[1] or measure.default_aggregation) == aggregation
     }
-    named = {key: words for key, (row, _) in candidates.items() if (words := _said_name(row, text))}
+    named = {
+        key: words for key, (row, _) in candidates.items() if (words := _said_name(row, focus))
+    }
     widest = [key for key in named if all(words <= named[key] for words in named.values())]
     if named:
         chosen = widest[0] if len(widest) == 1 else ""
@@ -464,7 +469,7 @@ def _governed_target(config: Any, text: str, query: dict[str, Any]) -> Any | Non
         chosen = next(iter(candidates))
     else:
         chosen = ""
-    asked = _said_name(measure, text) | (_said_name(plain, text) if plain else frozenset())
+    asked = _said_name(measure, focus) | (_said_name(plain, focus) if plain else frozenset())
     if not chosen or not asked <= named.get(chosen, frozenset()):
         return None
     metric, narrowing = candidates[chosen]

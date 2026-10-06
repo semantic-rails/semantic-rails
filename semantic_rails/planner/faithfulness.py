@@ -20,12 +20,12 @@ from datetime import date, timedelta
 from typing import Any
 
 from ..ast import _relative_range_bounds, is_child_group
-from ..errors import SemanticLayerError
-from ..metadata_parts.measure_governance import (
+from ..config_parts.measure_governance import (
     building_block_measures,
     governing_metrics,
     published_measure,
 )
+from ..errors import SemanticLayerError
 from ._base import (
     _BOUNDARY_BEFORE_RE,
     _FISCAL_BUCKET_RE,
@@ -574,11 +574,13 @@ def _governed_metric_gaps(
     """Hold a draft that answers with a measure a metric filters, where that metric fits.
 
     The draft selects the measure itself, or the metric that is its plain aggregate, and does
-    not select a metric that aggregates the measure through a filter while the question names
-    that metric, or the measure is a building block. A measure or metric the caller's
-    ``partial_query`` names is the caller's choice; ``reported`` already has its own gap.
+    not select a metric that aggregates the measure through a filter while the question's
+    target phrase names that metric, or the measure is a building block. A measure or metric
+    the caller's ``partial_query`` names is the caller's choice; ``reported`` already has its
+    own gap.
     """
 
+    focus = _target_focus_text(question) or question
     caller = set(_referenced_ids(partial_query))
     selected = list(
         dict.fromkeys(
@@ -600,7 +602,7 @@ def _governed_metric_gaps(
             for metric in governing_metrics(config, measure_id)
             if metric.id not in selected
             and metric.id != reported
-            and (measure_id in building_blocks or _said_name(metric, question))
+            and (measure_id in building_blocks or _said_name(metric, focus))
         ]
         if not metrics:
             continue

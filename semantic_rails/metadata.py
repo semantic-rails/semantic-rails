@@ -30,6 +30,7 @@ from .compiler import (
     bind_query,
     query_route_rows,
 )
+from .config_parts.measure_governance import building_block_measures
 from .diagnostics import relationship_contract_payload
 from .errors import SemanticLayerError
 from .expressions import (
@@ -68,7 +69,6 @@ from .metadata_parts.guidance import (
     _metric_guidance,
     _metric_preferences,
 )
-from .metadata_parts.measure_governance import building_block_measures
 from .metadata_parts.object_metadata import (
     _comparison_metadata,
     _example_test_metadata,

@@ -195,7 +195,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     query = _normalize_value_filters(query, _matched_value_rows(runtime, query, text), text=text)
     # The governed metric over the chosen measure answers instead ("how many workspaces were
     # active" means Active workspaces, not the all-classes count it filters).
-    governed = _governed_target(config, text, query)
+    governed = _governed_target(config, target_focus or text, query)
     if governed is not None:
         target, target_id, is_measure = governed, str(governed.id), False
         select_alias = _semantic_token(target_id, fallback="value")
