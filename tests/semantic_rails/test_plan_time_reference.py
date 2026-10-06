@@ -276,6 +276,8 @@ def test_a_period_comparison_is_held_where_the_roles_zone_reads_another_year(
         partial_query={"policy_context": {"now": "2027-01-01T02:00:00Z"}},
     )
     _assert_zone_hold(plan, ["this year"])
+    # No query is returned, so there are no rows to filter.
+    assert "best.query_ir" not in str(plan["why"])
 
 
 def test_a_period_comparison_drops_its_start_where_both_zones_agree(local_orders: Runtime) -> None:

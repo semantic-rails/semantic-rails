@@ -2831,7 +2831,7 @@ def _window_days(
     date is the role-local date.
     """
 
-    local_zone = time_timezone(str(bounds.get("temporal_role") or ""))
+    role = str(bounds.get("temporal_role") or "")
     if bounds.get("range"):
         try:
             bounds = _relative_range_bounds(
@@ -2856,7 +2856,7 @@ def _window_days(
         if tail.endswith("z") or "+" in tail or "-" in tail:
             try:
                 moment = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-                local = moment.astimezone(ZoneInfo(local_zone)).utcoffset()
+                local = moment.astimezone(ZoneInfo(time_timezone(role))).utcoffset()
             except (ValueError, KeyError, OverflowError):
                 return None
             if moment.utcoffset() != local:
