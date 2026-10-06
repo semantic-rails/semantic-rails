@@ -991,8 +991,8 @@ def _named_groupings_unmet(
     """The caller-visible names in any question, read with spaces, underscores and any case
     (``_declared_name_spans``), that the draft leaves unmet, and the filters read from inside
     them as ``{"term", "field", "value"}``. Outside a clock phrase (``_clock_spans``), a
-    dimension name needs its dimension grouped or pinned (``_pinned_fields``) by ``where`` or a
-    selected metric's ``all`` filter; an entity name needs a stand-in grouped in a level or grain
+    dimension name needs its dimension grouped or pinned (``_pinned_fields``) by ``where``;
+    an entity name needs a stand-in grouped in a level or grain
     question (elsewhere it often describes the measure: "repeat-customer orders"). No value word
     inside a name or word of the measure's label discharges it, and a positive filter whose value
     is read from inside a name holds the plan even when grouped. It never changes a draft.
@@ -1006,15 +1006,8 @@ def _named_groupings_unmet(
     lowered = str(question or "").lower()
     clock_spans = _clock_spans(scoped, lowered, query)
     values = _grouping_filter_value_spans(scoped, lowered, query)
-    where = list(query.get("where") or [])
-    for item in query.get("select") or []:
-        # A metric the draft selects pins a dimension with its own filter as `where` does.
-        expression = item.get("expression") or {}
-        metric = _object_by_id(scoped.metric_recipes, str(expression.get("metric")))
-        spec = getattr(getattr(metric, "expression", None), "filter", None) or {}
-        where += spec.get("all") or []
     grouped = set(query.get("group_by") or [])
-    settled = grouped | _pinned_fields({"where": where})
+    settled = grouped | _pinned_fields({"where": query.get("where") or []})
     spans = _declared_name_spans(scoped, lowered, underscores=True)
     words = _LEVEL_WORD_RE.finditer(lowered)
     level = any(not any(a <= word.start() < b for a, b in spans) for word in words)

@@ -1492,7 +1492,13 @@ def named_metrics(tmp_path: Path) -> Iterator[SemanticLayerMCPAdapter]:
     [
         # The wizard's questions answer with the metric they name, by label or id,
         # and the label's own words are not also a window or a top 7.
-        ("What is large order revenue by month?", "metric.sales.large_order_revenue", "ok", None),
+        # "Is large order" names a dimension; the metric's filter pins only its aggregate.
+        (
+            "What is large order revenue by month?",
+            "metric.sales.large_order_revenue",
+            "low_confidence",
+            "named_grouping",
+        ),
         (
             "What is revenue, trailing 7 days by day?",
             "metric.sales.revenue_trailing_7_days",
@@ -1564,7 +1570,7 @@ def test_plan_answers_or_flags_the_metric_a_question_names(
     status: str,
     gap: str | None,
 ) -> None:
-    payload = named_metrics.call_tool("plan", {"intent": text})
+    payload = named_metrics.call_tool("plan", {"intent": text, "detail": "full"})
     query = payload["best"]["query_ir"]
     assert payload["status"] == status
     if subject is not None:
@@ -1574,6 +1580,10 @@ def test_plan_answers_or_flags_the_metric_a_question_names(
         ] == [subject]
     if status == "ok":
         assert "range" not in query["time"] and "limit" not in query
+    elif gap == "named_grouping":
+        assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+        assert payload["why"]["details"]["dropped_groupings"] == ["is large order"]
+        assert "execute" not in payload["next"].get("ready_for", [])
     else:
         assert gap in [row["kind"] for row in payload["why"]["details"]["gaps"]]
 

@@ -11,6 +11,7 @@ import duckdb
 import pytest
 import yaml
 
+from semantic_rails.expressions import AggregateExpr
 from semantic_rails.planner import plan as plan_module
 from semantic_rails.planner import plan_payload
 from semantic_rails.planner._base import (
@@ -22,6 +23,7 @@ from semantic_rails.planner._base import (
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.runtime import Runtime
+from semantic_rails.schema import MetricConfig
 from tests.semantic_rails.result_helpers import typed_rows
 from tests.semantic_rails.test_plan_unasked_groupings import _CASES
 from tests.semantic_rails.test_plan_value_lists import _force_fallback
@@ -612,6 +614,70 @@ def _value_word_in_measure_label(runtime: Runtime) -> Any:
             for row in runtime._config.measures
         ],
     )
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+@pytest.mark.parametrize("grouped", [False, True], ids=["metric-filter-only", "grouped"])
+def test_a_metric_filter_cannot_pin_another_selections_named_grouping(
+    jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, path: str, grouped: bool
+) -> None:
+    config = _value_word_in_measure_label(jaffle)
+    cohort = MetricConfig(
+        id="metric.sales.cohort_revenue",
+        kind="aggregate",
+        label="Cohort revenue",
+        expression=AggregateExpr(
+            REVENUE,
+            "sum",
+            filter={"all": [{"field": CUSTOMER_TYPE, "op": "=", "value": "new"}]},
+        ),
+    )
+    monkeypatch.setattr(
+        jaffle, "_config", replace(config, metric_recipes=[*config.metric_recipes, cohort])
+    )
+    question = "revenue at _new_type and store name level"
+    _force_fallback(jaffle, monkeypatch, question, path)
+    partial = {
+        "select": [
+            {"as": "revenue_usd", "expression": {"measure": REVENUE}},
+            {"as": "cohort_revenue", "expression": {"metric": cohort.id}},
+        ],
+        "group_by": [STORE, CUSTOMER_TYPE] if grouped else [STORE],
+        "where": [JAFFLE_FILTER],
+    }
+    before, after = _compare_declared_name_base(jaffle, monkeypatch, question, partial)
+    query = after["best"]["query_ir"]
+    assert query["select"] == partial["select"]
+    assert query["group_by"] == partial["group_by"]
+    assert query["where"] == partial["where"]
+    assert before["status"] == "ok"
+    if not grouped:
+        assert after["status"] == "low_confidence"
+        assert after["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+        assert after["why"]["details"]["dropped_groupings"] == ["_new_type"]
+        assert "execute" not in after["next"].get("ready_for", [])
+        return
+    assert after["status"] == "ok", after.get("why")
+    assert "execute" in after["next"]["ready_for"]
+    reference = _in_memory_reference(
+        jaffle,
+        "SELECT s.store_name, c.customer_type, SUM(o.order_total_cents / 100.0), "
+        "SUM(CASE WHEN c.customer_type = 'new' THEN o.order_total_cents / 100.0 ELSE 0 END) "
+        "FROM jaffle_order o JOIN jaffle_customer c USING (customer_id) "
+        "JOIN jaffle_store s USING (store_id) "
+        "WHERE s.store_name IN ('Brooklyn', 'Philadelphia') GROUP BY 1, 2 ORDER BY 1, 2",
+    )
+    columns, rows = _in_memory(jaffle, jaffle.compile(query)["rendered_sql"])
+    actual = [
+        tuple(
+            row[columns.index(item)]
+            for item in [STORE, CUSTOMER_TYPE, "revenue_usd", "cohort_revenue"]
+        )
+        for row in rows
+    ]
+    assert len(actual) == len(reference) == 4
+    assert sorted(actual) == reference
+    assert [row[2] for row in reference] == pytest.approx([90.48, 259334.37, 6.36, 486461.82])
 
 
 @pytest.mark.parametrize("path", ["primary", "fallback"])
