@@ -4589,7 +4589,6 @@ def _plan_query(
     measures = _measure_index(config)
 
     _validate_query_temporal_bindings(query, config)
-    _validate_restrictive_time_semantics(query, config)
 
     bound_measures: list[BoundMeasure] = []
     for select_item in query.select:
@@ -4603,6 +4602,15 @@ def _plan_query(
             _validate_metric_predicate_filter_envelope(asdict(filter_item))
             continue
         _collect_measure_refs(filter_item.expression, config, query, bound_measures)
+    _validate_restrictive_time_semantics(
+        query,
+        config,
+        measure_filters=(
+            (row.measure_id, clause)
+            for row in bound_measures
+            for clause in _bound_filter_clauses(row, config)
+        ),
+    )
     conversion_exprs: list[ConversionExpr] = []
     for select_item in query.select:
         if select_item.expression is not None:
@@ -5088,6 +5096,12 @@ def _bind_with_row_filters(
                 },
             )
     sql_ast, parameters = apply_row_filters(bound.sql_ast, row_filters)
+    if row_filters:
+        _validate_restrictive_time_semantics(
+            normalize_query(bound.plan.query, config=bound.config),
+            bound.config,
+            row_filters=row_filters,
+        )
     return replace(
         bound,
         sql_ast=sql_ast,

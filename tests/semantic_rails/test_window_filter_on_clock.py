@@ -17,13 +17,18 @@ relationship to the clock. An upper bound on a date or timestamp alone still run
 from __future__ import annotations
 
 from collections.abc import Iterator
+from copy import deepcopy
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
 import duckdb
 import pytest
+import yaml
 
+from semantic_rails import compiler
+from semantic_rails.diagnostics import recovery_hints_for_error
+from semantic_rails.embedding import RequestContext
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.runtime import Runtime
@@ -835,3 +840,269 @@ def test_same_table_temporal_relationship_terminates(
             assert _rows(runtime, query) == _reference(reference)
     finally:
         runtime.close()
+
+
+# Every source needs the history before the visible day, not just its 40 units.
+LEAF_WINDOWS = [
+    (
+        {"kind": "prior_period", "input": AMOUNT, "offset": {"unit": "day", "value": 5}},
+        "select sum(amount) from events where occurred_at::date = '2026-09-10'",
+        5,
+    ),
+    (
+        ROLLING,
+        "select sum(amount) from events where occurred_at::date between '2026-09-09' and '2026-09-15'",
+        45,
+    ),
+    (CUMULATIVE, "select sum(amount) from events where occurred_at::date <= '2026-09-15'", 75),
+    (
+        MONTH_TO_DATE,
+        "select sum(amount) from events where occurred_at::date between '2026-09-01' and '2026-09-15'",
+        75,
+    ),
+]
+CLOCK_LABEL = "dimension.fees_event_clock_label"
+STORED_MONTH = "dimension.fees_event_snapshot_month"
+VISIBLE_DAY_POLICY = "policy.fees.visible_day"
+
+
+def _clock_filter_package(root: Path, *, policy_dimension: str | None = None) -> Path:
+    package = _package(root)
+    events = package / "models" / "events.yml"
+    model = yaml.safe_load(events.read_text())
+    model["model"]["dimensions"]["clock_label"] = {
+        "column": "occurred_at",
+        "kind": "categorical",
+    }
+    events.write_text(yaml.safe_dump(model, sort_keys=False))
+    if policy_dimension is not None:
+        (package / "policies.yml").write_text(
+            yaml.safe_dump(
+                {
+                    "semantic_policies": [
+                        {
+                            "id": VISIBLE_DAY_POLICY,
+                            "kind": "row_filter",
+                            "dimension": policy_dimension,
+                            "attribute": "visible",
+                            "audiences": ["reader"],
+                        }
+                    ]
+                }
+            )
+        )
+    return package
+
+
+def _filtered_window(expression: dict, cut: dict) -> dict:
+    expression = deepcopy(expression)
+    expression["input"] = {
+        "kind": "aggregate",
+        "measure": "measure.fees.amount",
+        "filter": {"all": [cut]},
+    }
+    return expression
+
+
+@pytest.mark.parametrize(("expression", "sql", "expected"), LEAF_WINDOWS)
+@pytest.mark.parametrize("authored", [False, True], ids=["inline", "authored"])
+def test_measure_clock_filters_refuse_before_reading_truncated_history(
+    tmp_path: Path, expression: dict, sql: str, expected: int, authored: bool
+) -> None:
+    assert _reference(sql) == [(expected,)]
+    package = _clock_filter_package(tmp_path)
+    cut = _cut(OCCURRED_AT, ">=", "2026-09-15")
+    filtered = _filtered_window(expression, cut)
+    if authored:
+        (package / "metrics").mkdir()
+        (package / "metrics" / "windows.yml").write_text(
+            yaml.safe_dump(
+                {
+                    "metrics": {
+                        "visible_window": {
+                            "kind": "derived",
+                            "value_type": "count",
+                            "temporal_role": EVENT_ROLE,
+                            "expression": filtered,
+                        }
+                    }
+                }
+            )
+        )
+        filtered = {"metric": "metric.fees.visible_window"}
+    runtime = Runtime.from_path(str(package))
+    query = _query(filtered, [])
+    try:
+        code = "CUMULATIVE" if expression is CUMULATIVE else "WINDOWED"
+        with pytest.raises(SemanticLayerError) as caught:
+            runtime.query(query)
+        assert caught.value.code == f"{code}_TIME_FILTER_UNSUPPORTED"
+        assert caught.value.details["filter_source"] == "measure"
+        assert caught.value.details["measure"] == "measure.fees.amount"
+        assert caught.value.details["measure_filter"] == cut
+        # Authored filters have no caller-editable time.start/where recovery patch.
+        assert recovery_hints_for_error(caught.value.code, caught.value.details) == []
+        control = _query(expression, [])
+        assert dict(_rows(runtime, control))[date(2026, 9, 15)] == expected
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("surface", ["validate", "compile", "query", "metric-filter"])
+@pytest.mark.parametrize("field", [OCCURRED_AT, CLOCK_LABEL])
+def test_bound_clock_filters_share_the_planning_guard(
+    tmp_path: Path, surface: str, field: str
+) -> None:
+    runtime = Runtime.from_path(str(_clock_filter_package(tmp_path)))
+    expression = _filtered_window(ROLLING, _cut(field, "=", "2026-09-15 10:00:00"))
+    query = _query(expression, [])
+    if surface == "metric-filter":
+        query["select"] = [{"expression": AMOUNT, "as": "v"}]
+        query["metric_filters"] = [{"expression": expression, "op": ">", "value": 0}]
+        surface = "query"
+    try:
+        if surface == "validate":
+            error = runtime.validate(query)["errors"][0]
+        else:
+            with pytest.raises(SemanticLayerError) as caught:
+                getattr(runtime, surface)(query)
+            error = {"code": caught.value.code, "details": caught.value.details}
+        assert error["code"] == "WINDOWED_TIME_FILTER_UNSUPPORTED"
+        assert error["details"]["filter_source"] == "measure"
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(("expression", "sql", "expected"), LEAF_WINDOWS)
+def test_clock_row_policy_refuses_or_keeps_its_existing_scan_refusal(
+    tmp_path: Path, expression: dict, sql: str, expected: int
+) -> None:
+    assert _reference(sql) == [(expected,)]
+    runtime = Runtime.from_path(str(_clock_filter_package(tmp_path, policy_dimension=CLOCK_LABEL)))
+    query = _query(expression, [])
+    query["policy_context"] = RequestContext(
+        audience="reader", attributes={"visible": "2026-09-15 10:00:00"}
+    ).to_policy_context()
+    try:
+        with pytest.raises(SemanticLayerError) as caught:
+            runtime.query(query)
+        if expression in (CUMULATIVE, MONTH_TO_DATE):
+            code = "CUMULATIVE" if expression is CUMULATIVE else "WINDOWED"
+            assert caught.value.code == f"{code}_TIME_FILTER_UNSUPPORTED"
+            assert caught.value.details["filter_source"] == "policy"
+            assert caught.value.details["policy_id"] == VISIBLE_DAY_POLICY
+            assert "2026-09-15" not in str(caught.value.details)
+            assert recovery_hints_for_error(caught.value.code, caught.value.details) == []
+        else:
+            assert caught.value.code == "POLICY_DENIED"
+        # The same declared policy does not match the internal audience.
+        assert dict(_rows(runtime, _query(expression, [])))[date(2026, 9, 15)] == expected
+    finally:
+        runtime.close()
+
+
+def test_clock_policy_still_refuses_if_the_scan_gate_is_bypassed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runtime = Runtime.from_path(str(_clock_filter_package(tmp_path, policy_dimension=CLOCK_LABEL)))
+    query = _query(CUMULATIVE, [])
+    query["policy_context"] = RequestContext(
+        audience="reader", attributes={"visible": "2026-09-15 10:00:00"}
+    ).to_policy_context()
+    monkeypatch.setattr(compiler, "apply_row_filters", lambda sql, filters: (sql, ()))
+    try:
+        with pytest.raises(SemanticLayerError) as caught:
+            runtime.compile(query)
+        assert caught.value.code == "CUMULATIVE_TIME_FILTER_UNSUPPORTED"
+        assert caught.value.details["filter_source"] == "policy"
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("expression", [CUMULATIVE, MONTH_TO_DATE])
+def test_nonclock_row_policy_preserves_the_filtered_population(
+    tmp_path: Path, expression: dict
+) -> None:
+    runtime = Runtime.from_path(str(_clock_filter_package(tmp_path, policy_dimension=CHANNEL)))
+    query = _query(expression, [])
+    query["policy_context"] = RequestContext(
+        audience="reader", attributes={"visible": "web"}
+    ).to_policy_context()
+    try:
+        assert _reference("select sum(amount) from events where channel = 'web'") == [(70,)]
+        assert dict(_rows(runtime, query))[date(2026, 9, 15)] == 70
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("expression", [ROLLING, CUMULATIVE, MONTH_TO_DATE])
+@pytest.mark.parametrize(
+    "cut",
+    [_cut(OCCURRED_AT, "<=", "2026-09-15 10:00:00"), _cut(CHANNEL, "=", "web")],
+    ids=["upper-bound", "nonclock"],
+)
+def test_safe_bound_filters_keep_the_reference_values(
+    runtime: Runtime, expression: dict, cut: dict
+) -> None:
+    query = _query(_filtered_window(expression, cut), [])
+    where = "occurred_at <= timestamp '2026-09-15 10:00:00'"
+    if cut["field"] == CHANNEL:
+        where = "channel = 'web'"
+    if expression is ROLLING:
+        where += " and occurred_at::date >= '2026-09-09'"
+    expected = _reference(f"select sum(amount) from events where {where}")[0][0]
+    assert dict(_rows(runtime, query))[date(2026, 9, 15)] == expected
+
+
+@pytest.mark.parametrize("expression", [row[0] for row in LEAF_WINDOWS[:3]])
+def test_a_stored_derived_month_needs_a_temporal_declaration(
+    tmp_path: Path, expression: dict
+) -> None:
+    package = _clock_filter_package(tmp_path)
+    model_path = package / "models" / "events.yml"
+    model = yaml.safe_load(model_path.read_text())
+    model["model"]["dimensions"]["snapshot_month"] = {"kind": "date"}
+    model_path.write_text(yaml.safe_dump(model, sort_keys=False))
+    calendar = package / "models" / "calendar.yml"
+    calendar.write_text(calendar.read_text() + "    month_start: {kind: date}\n")
+    with duckdb.connect(str(package / "data" / "fees.duckdb")) as connection:
+        connection.execute("alter table events add column snapshot_month date")
+        connection.execute("update events set snapshot_month = date_trunc('month', occurred_at)")
+        connection.execute("insert into events values (10, '2026-08-31', 'web', 20, '2026-08-01')")
+        reference = connection.execute(
+            "select sum(amount) from events where occurred_at "
+            + ("< '2026-09-01'" if expression is LEAF_WINDOWS[0][0] else "< '2026-10-01'")
+        ).fetchone()[0]
+    query_expression = deepcopy(expression)
+    if "offset" in query_expression:
+        query_expression["offset"] = {"unit": "month", "value": 1}
+    if "window" in query_expression:
+        query_expression["window"] = {"unit": "month", "value": 2}
+    query = _query(query_expression, [_cut(STORED_MONTH, ">=", "2026-09-01")])
+    query["time"]["grain"] = "month"
+    runtime = Runtime.from_path(str(package))
+    try:
+        with pytest.raises(SemanticLayerError) as caught:
+            runtime.query(query)
+        code = "CUMULATIVE" if expression is CUMULATIVE else "WINDOWED"
+        assert caught.value.code == f"{code}_TIME_FILTER_UNSUPPORTED"
+        query["where"] = []
+        assert dict(_rows(runtime, query))[date(2026, 9, 1)] == reference
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("kind", ["aggregate", "query-period-cumulative"])
+def test_a_bound_clock_filter_keeps_unwindowed_and_query_period_answers(
+    runtime: Runtime, kind: str
+) -> None:
+    cut = _cut(OCCURRED_AT, ">=", "2026-09-15")
+    aggregate = _filtered_window(CUMULATIVE, cut)["input"]
+    expression = (
+        aggregate
+        if kind == "aggregate"
+        else {"kind": "cumulative", "window_scope": "query_period", "input": aggregate}
+    )
+    query = _query(expression, [])
+    assert _reference("select sum(amount) from events where occurred_at >= '2026-09-15'") == [(40,)]
+    assert dict(_rows(runtime, query))[date(2026, 9, 15)] == 40

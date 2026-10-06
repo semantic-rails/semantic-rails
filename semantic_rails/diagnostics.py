@@ -878,6 +878,9 @@ def recovery_hints_for_error(
             )
         return hints
     if code == "WINDOWED_TIME_FILTER_UNSUPPORTED":
+        # An authored filter or policy is not a caller-editable time boundary.
+        if details.get("filter_source") in {"measure", "policy"}:
+            return []
         # The error message already says what to do — agents need a
         # structured patch they can apply without parsing English.
         # Two patches: ``drop_time_start`` (remove the boundary entirely)

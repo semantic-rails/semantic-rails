@@ -2,6 +2,43 @@ fixture:
   tables: [orders, refunds, signups, dim_fiscal, customer_history, account_days]
   data_sha256: 9c846589d4cc8d72b7e3f7bd19ea9d9a21ef246a87d6de79fe4727ea578223e5
 tests:
+  shop/cumulative-input-clock-filter-refuses-truncated-history:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: CUMULATIVE_TIME_FILTER_UNSUPPORTED
+    why: A lower bound on the input clock removes history needed by the cumulative sum.
+    cites: [docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union, tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at]
+    tags: [time-window]
+    query:
+      select:
+        - as: total
+          expression:
+            kind: cumulative
+            input:
+              kind: aggregate
+              measure: measure.shop.revenue
+              filter:
+                all: [{field: dimension.shop_order_ordered_at, op: '>=', value: '2023-12-01'}]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month}
+  shop/rolling-input-clock-filter-refuses-truncated-history:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: WINDOWED_TIME_FILTER_UNSUPPORTED
+    why: A lower bound on the input clock removes earlier buckets needed by the rolling sum.
+    cites: [docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union, tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at]
+    tags: [time-window]
+    query:
+      select:
+        - as: total
+          expression:
+            kind: rolling
+            window: {unit: month, value: 2}
+            input:
+              kind: aggregate
+              measure: measure.shop.revenue
+              filter:
+                all: [{field: dimension.shop_order_ordered_at, op: '>=', value: '2023-12-01'}]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month}
   shop/net-growth-from-a-never-matched-count:
     kind: query_matches_snapshot
     expect: answer

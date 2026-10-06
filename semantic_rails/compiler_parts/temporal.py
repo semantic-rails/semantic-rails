@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import difflib
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import asdict, fields, is_dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -35,6 +35,7 @@ from ..expressions import (
     expr_kind,
     expr_to_dict,
 )
+from ..row_filters import RowFilter
 from ..schema import MetricConfig, PackageConfig
 from .indexes import (
     _dimension_index,
@@ -922,7 +923,11 @@ def _column_name(column: str) -> str:
     return str(column).strip().strip('"`').casefold()
 
 
-def _clock_where_cuts(query: NormalizedQuery, config: PackageConfig) -> list[tuple[str, Filter]]:
+def _clock_where_cuts(
+    query: NormalizedQuery,
+    config: PackageConfig,
+    extra_filters: Iterable[tuple[str, Filter]] = (),
+) -> list[tuple[str, Filter]]:
     """The ``where`` conditions, child groups' included, that may cut a window's lookback: each
     with its path.
 
@@ -975,6 +980,7 @@ def _clock_where_cuts(query: NormalizedQuery, config: PackageConfig) -> list[tup
             )
         else:
             conditions.append((f"where[{index}]", item))
+    conditions.extend(extra_filters)
     cuts = []
     for path, item in conditions:
         dim = analysis.dimensions.get(item.field)
@@ -987,26 +993,59 @@ def _clock_where_cuts(query: NormalizedQuery, config: PackageConfig) -> list[tup
     return cuts
 
 
-def _validate_restrictive_time_semantics(query: NormalizedQuery, config: PackageConfig) -> None:
+def _validate_restrictive_time_semantics(
+    query: NormalizedQuery,
+    config: PackageConfig,
+    *,
+    measure_filters: Iterable[tuple[str, dict[str, Any]]] = (),
+    row_filters: Sequence[RowFilter] = (),
+) -> None:
     if query.time is None:
         return
-    # time.start first, so its refusal is unchanged; otherwise the first where cut of a date or
-    # calendar dimension.
+    # Preserve time.start/where precedence, then check filters applied to the leaf's population.
     details: dict[str, Any]
     if query.time.start is not None:
         details = {"start": query.time.start}
         bound = "a bounded query.time.start"
         remedy = "remove the start boundary"
     else:
-        cuts = _clock_where_cuts(query, config)
+        extras: list[tuple[str, Filter]] = []
+        sources: dict[str, dict[str, Any]] = {}
+        for index, (measure_id, clause) in enumerate(measure_filters):
+            path = f"measure_filters[{index}]"
+            extras.append((path, Filter(**clause)))
+            sources[path] = {
+                "filter_source": "measure",
+                "measure": measure_id,
+                "measure_filter": clause,
+            }
+        analysis = get_package_analysis(config)
+        for row in row_filters:
+            for dim in analysis.dimensions.values():
+                if analysis.entities[dim.entity].table == row.table and _column_name(
+                    dim.column
+                ) == _column_name(row.column):
+                    extras.append((row.policy_id, Filter(dim.id, "=", None)))
+                    sources[row.policy_id] = {
+                        "filter_source": "policy",
+                        "policy_id": row.policy_id,
+                    }
+        cuts = _clock_where_cuts(query, config, extras)
         if not cuts:
             return
         path, item = cuts[0]
-        details = {"where_path": path, "where": asdict(item)}
-        if " ".join(str(item.op).upper().split()) in {">=", ">"}:
-            details["start"] = item.value
-        bound = f"a where filter on a date or calendar dimension ({path}) other than an upper bound"
-        remedy = f"remove {path} (an upper bound or query.time.end still runs)"
+        if path in sources:
+            details = sources[path]
+            bound = f"a {details['filter_source']} filter on a temporal column ({path})"
+            remedy = "query an unwindowed measure or ask the package author for a supported metric"
+        else:
+            details = {"where_path": path, "where": asdict(item)}
+            if " ".join(str(item.op).upper().split()) in {">=", ">"}:
+                details["start"] = item.value
+            bound = (
+                f"a where filter on a date or calendar dimension ({path}) other than an upper bound"
+            )
+            remedy = f"remove {path} (an upper bound or query.time.end still runs)"
     expressions = [item.expression for item in query.select if item.expression is not None]
     expressions.extend(
         item.expression for item in query.metric_filters if item.expression is not None
@@ -1015,7 +1054,10 @@ def _validate_restrictive_time_semantics(query: NormalizedQuery, config: Package
         if _expr_contains_unsafe_bounded_cumulative(expr, config):
             raise SemanticLayerError(
                 "CUMULATIVE_TIME_FILTER_UNSUPPORTED",
-                f"Cumulative expressions do not support {bound}; widen the time window or {remedy}",
+                f"Cumulative expressions do not support {bound}; "
+                + (
+                    remedy if details.get("filter_source") else f"widen the time window or {remedy}"
+                ),
                 details={**details, "expression": expr_to_dict(expr)},
             )
         if _expr_contains_unsafe_bounded_windowed(expr, config):
@@ -1029,7 +1071,11 @@ def _validate_restrictive_time_semantics(query: NormalizedQuery, config: Package
                     f"Rolling, prior_period, and period_to_date expressions do not support {bound}: "
                     "the leaf-level WHERE truncates the lookback rows the window "
                     f"function depends on, producing silently wrong values. {remedy.capitalize()} "
-                    "or widen it by the metric's window/offset/period lookback."
+                    + (
+                        "."
+                        if details.get("filter_source")
+                        else "or widen it by the metric's window/offset/period lookback."
+                    )
                 ),
                 details=details,
             )
