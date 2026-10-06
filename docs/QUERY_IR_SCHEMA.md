@@ -533,7 +533,12 @@ snapshots. A filter on the stock's clock (the same entity and column) or a calen
 timestamp attributes refuse, as in `group_by`: `REWRITE_NOT_SUPPORTED`, with
 `details.reason: stock_filtered_by_date_attribute` and `details.dimension`. Conditions
 inside child groups and a measure's own filters follow the same rule
-(see [Measures](PACKAGE_AUTHORING.md#measures)).
+(see [Measures](PACKAGE_AUTHORING.md#measures)). An entity-set share (a ratio of one stock or
+distinct count whose numerator alone adds metric predicates) keeps one snapshot per series
+per time bucket, so a `group_by` on the stock's clock, a calendar dimension or another date
+or timestamp dimension refuses: `REWRITE_NOT_SUPPORTED`, with
+`details.reason: entity_set_ratio_grouped_by_period` and `details.dimension`. Choose the
+period with `time.grain` instead.
 
 A positive child-dimension filter on a parent-grain measure means "parents with at
 least one matching child". It lowers to correlated `EXISTS`, so multiple matching

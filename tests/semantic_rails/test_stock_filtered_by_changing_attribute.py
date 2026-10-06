@@ -115,6 +115,8 @@ def _package(root: Path) -> Path:
         "  measures:\n"
         f"    fee: {{{stock}: end_of_period}}}}\n"
         f"    fee_sop: {{{stock}: start_of_period}}}}\n"
+        "    accounts: {kind: entity_count, entity_key: account_id, "
+        "accumulation: {kind: population}}\n"
     )
     connection = duckdb.connect(str(package / "data" / "fees.duckdb"))
     _load(connection)
@@ -696,6 +698,33 @@ def test_an_anchored_share_grouped_by_a_period_refuses(
             group_by=[dimension],
             time={"grain": grain} if grain else None,
         )
+    assert raised.value.code == "REWRITE_NOT_SUPPORTED"
+    assert raised.value.details == {
+        "reason": "entity_set_ratio_grouped_by_period",
+        "dimension": dimension,
+    }
+
+
+@pytest.mark.parametrize("dimension", [DAY, WEEKDAY])
+def test_an_anchored_population_share_grouped_by_a_period_refuses(
+    runtime: Runtime, dimension: str
+) -> None:
+    # A distinct count of accounts read from the snapshots keeps one per account and week too.
+    accounts = {
+        "kind": "scoped_aggregate",
+        "measure": "measure.fees.accounts",
+        "aggregation": "count_distinct",
+    }
+    paying = {**accounts, "predicates": _share()["numerator"]["predicates"]}
+    share = {"kind": "ratio", "numerator": paying, "denominator": accounts}
+    week = {"grain": "week"}
+    assert _query(runtime, expression=share, time=week) == [
+        (date(2026, 9, 7), 0),
+        (WEEK, 1 / 3),
+        (date(2026, 9, 21), 1 / 3),
+    ]
+    with pytest.raises(SemanticLayerError) as raised:
+        _query(runtime, expression=share, group_by=[dimension], time=week)
     assert raised.value.code == "REWRITE_NOT_SUPPORTED"
     assert raised.value.details == {
         "reason": "entity_set_ratio_grouped_by_period",

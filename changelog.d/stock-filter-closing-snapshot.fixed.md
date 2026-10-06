@@ -8,3 +8,8 @@
 - A stock that adds up its series reads 0 in a period whose snapshots all fail the filters,
   and NULL only in a period with no snapshot. An entity-set share also keeps an observed
   period and reads 0 when every chosen snapshot fails its attribute filters.
+- An entity-set share (a ratio whose numerator alone adds metric predicates) keeps one
+  snapshot per series per time bucket, so grouped by the stock's clock, a calendar
+  dimension or another date it returned only the bucket's chosen snapshot: by day within a
+  week, just the week's last day. Those groupings now refuse with `REWRITE_NOT_SUPPORTED`
+  and reason `entity_set_ratio_grouped_by_period`; choose the period with the time grain.

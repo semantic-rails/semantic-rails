@@ -1256,7 +1256,9 @@ the dimension id; choosing between a time bound and a closing-snapshot attribute
 be ambiguous. This also applies to conditions inside child groups. The
 stock's own clock and calendar dimensions instead split the period: grouped by the
 snapshot day, each day keeps its own snapshot. Ratios whose numerator alone has extra
-conditions keep one snapshot per series per time bucket.
+conditions keep one snapshot per series per time bucket, so grouping one by the clock, a
+calendar or another date or timestamp dimension refuses with `REWRITE_NOT_SUPPORTED`,
+reason `entity_set_ratio_grouped_by_period`; choose the period with the time grain instead.
 
 A stock that adds up its series (`last_value`, `first_value` or `sum`, and not
 `additive: false`) and is grouped only by time reads 0 in a period that has snapshots
