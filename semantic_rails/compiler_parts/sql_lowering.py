@@ -3364,6 +3364,17 @@ def _anchored_snapshot_ctes(
     bound = anchored.denominator_measure_plan.bound_measure
     measure = _measure_index(config)[bound.measure_id]
     source_table = _measure_owned_relation(measure, entities)
+    # One snapshot is chosen per series and time bucket only, so a grouped clock, calendar
+    # or other date would read just that snapshot's and drop the bucket's other periods.
+    for dim_id in plan.group_by:
+        period = _stock_period_split(bound.temporal_role, dim_id, config)
+        if period or _dimension_index(config)[dim_id].data_type in {"date", "timestamp"}:
+            raise SemanticLayerError(
+                "REWRITE_NOT_SUPPORTED",
+                "An entity-set ratio can't be grouped by a date, time or calendar dimension. "
+                "Use the query's time grain instead.",
+                details={"reason": "entity_set_ratio_grouped_by_period", "dimension": dim_id},
+            )
     (
         fields,
         partition_exprs,
@@ -3554,15 +3565,13 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
     anchor_select_fields["__anchor_value"] = SqlIdentifier(parts=["snapshot", "__anchor_value"])
     # Keep observed periods when every chosen snapshot fails an attribute filter, just as
     # the stock leaf does. Base metric predicates still select the series measured first.
+    # Grouped only by periods means ungrouped here: the snapshots refuse grouped periods.
     settles = (
         bool(kept_rows)
         and measure.additive
         and measure_plan.bound_measure.aggregation == "sum"
         and observation_scope(plan.query, config) == "dataset"
-        and all(
-            _stock_period_split(measure_plan.bound_measure.temporal_role, dim_id, config)
-            for dim_id in plan.group_by
-        )
+        and not plan.group_by
     )
     if settles:
         anchor_select_fields["__snapshot_kept"] = SqlIdentifier(

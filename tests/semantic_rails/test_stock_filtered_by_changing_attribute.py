@@ -16,6 +16,7 @@ match (data of nothing), and NULL in a period with no snapshot at all (no data).
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -667,6 +668,83 @@ def test_an_anchored_share_reads_its_measure_filter_and_keeps_observed_periods(
             (date(2026, 9, 21), 500 / 599 if state == "active" else 0),
         ]
     )
+
+
+@pytest.mark.parametrize(
+    "dimension",
+    [
+        # The share chooses one snapshot per series and time bucket: grouped by the day or
+        # weekday within the week, it read only the week's closing Sunday.
+        DAY,
+        WEEKDAY,
+        "dimension.fees_account_day_observed_on",
+        "dimension.fees_time_week_start",
+        SNAPSHOT_WEEK,
+        "dimension.fees_account_day_renewal_at",
+    ],
+)
+@pytest.mark.parametrize("where", [[], [_is(STATE, "active")]])
+@pytest.mark.parametrize("grain", [None, "week"])
+def test_an_anchored_share_grouped_by_a_period_refuses(
+    runtime: Runtime, dimension: str, where: list[dict[str, Any]], grain: str | None
+) -> None:
+    with pytest.raises(SemanticLayerError) as raised:
+        _query(
+            runtime,
+            where,
+            expression=_share(),
+            group_by=[dimension],
+            time={"grain": grain} if grain else None,
+        )
+    assert raised.value.code == "REWRITE_NOT_SUPPORTED"
+    assert raised.value.details == {
+        "reason": "entity_set_ratio_grouped_by_period",
+        "dimension": dimension,
+    }
+
+
+def test_an_anchored_share_grouped_by_a_series_attribute_runs(runtime: Runtime) -> None:
+    # The account's segment is the same in every snapshot of its series.
+    answer = _query(
+        runtime,
+        [_is(STATE, "active")],
+        expression=_share(),
+        group_by=[SEGMENT],
+        time={"grain": "week"},
+    )
+    with duckdb.connect() as connection:
+        _load(connection)
+        reference = connection.execute(
+            "with chosen as (select *, date_trunc('week', date_day)::date period, "
+            "row_number() over (partition by account_id, date_trunc('week', date_day) "
+            "order by date_day desc) rn from account_day) "
+            "select period, segment, coalesce(sum(fee) filter (where fee > 100), 0) * 1.0 "
+            "/ nullif(sum(fee), 0) from chosen join accounts using (account_id) "
+            "where rn = 1 and state = 'active' group by period, segment order by period, segment"
+        ).fetchall()
+    assert answer == reference
+    assert len(answer) == 6
+    assert (WEEK, "customer", 1) in answer
+
+
+def test_lowering_cannot_bypass_the_period_grouping_refusal(runtime: Runtime) -> None:
+    # Force a plan past planning: the share's own lowering, under either snapshot choice,
+    # refuses a period group that planning never saw.
+    query = {
+        "select": [{"expression": _share(), "as": "v"}],
+        "group_by": [SEGMENT],
+        "time": {"temporal_role": ROLE, "grain": "week"},
+    }
+    plan = plan_query(runtime.config, runtime.registry, query)
+    ctes = lower_to_sql(plan, runtime.config).ctes
+    assert "latest_fees_account_day_snapshot" in {cte.name for cte in ctes}
+    with pytest.raises(SemanticLayerError) as raised:
+        lower_to_sql(replace(plan, group_by=[DAY]), runtime.config)
+    assert raised.value.code == "REWRITE_NOT_SUPPORTED"
+    assert raised.value.details == {
+        "reason": "entity_set_ratio_grouped_by_period",
+        "dimension": DAY,
+    }
 
 
 @pytest.mark.parametrize("value", ["0", "null"])
