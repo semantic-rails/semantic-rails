@@ -482,6 +482,8 @@ def _shared_subjects(config: Any, text: str) -> list[Any]:
         *config.metric_recipes,
         *(row for row in config.measures if getattr(row, "publish", True)),
     ]
+    visible = set(visible_object_ids(config, (row.id for row in rows)))
+    rows = [row for row in rows if row.id in visible]
     # A generated plain mirror and its measure are the same authored answer.
     measures = {row.id: row for row in config.measures}
     mirrors = set()

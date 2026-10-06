@@ -373,3 +373,38 @@ def test_whole_metric_label_collision_clarifies(tmp_path: Path):
         )
         plan = plan_payload(runtime, intent="Account total", partial_query={"policy_context": NOW})
         assert plan["status"] == "needs_clarification"
+
+
+def test_collision_options_include_only_visible_metrics(tmp_path: Path):
+    from dataclasses import replace
+
+    from semantic_rails.schema import SemanticPolicyConfig
+
+    with closing(
+        Runtime.from_path(str(_package(tmp_path / "shop", synonyms=True, collision=True)))
+    ) as runtime:
+        hidden = "metric.shop.closures"
+        runtime._config = replace(
+            runtime._config,
+            metric_recipes=[
+                replace(row, aliases=["signups"]) if row.id == "metric.shop.upgrades" else row
+                for row in runtime._config.metric_recipes
+            ],
+            semantic_policies=[
+                SemanticPolicyConfig(
+                    id="policy.hide_closures",
+                    kind="object_visibility",
+                    object_ids=[hidden],
+                    action="hidden",
+                )
+            ],
+        )
+        plan = plan_payload(
+            runtime, intent="How many signups last week?", partial_query={"policy_context": NOW}
+        )
+        assert plan["status"] == "needs_clarification"
+        assert hidden not in str(plan)
+        assert plan["why"]["details"]["gaps"][0]["expected"]["candidates"] == [
+            "metric.shop.new_accounts",
+            "metric.shop.upgrades",
+        ]
