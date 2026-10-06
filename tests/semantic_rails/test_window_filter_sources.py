@@ -1,6 +1,7 @@
 """Window input filters preserve authorization and independent populations."""
 
 import json
+import shutil
 from copy import deepcopy
 from dataclasses import replace
 from decimal import Decimal
@@ -29,12 +30,13 @@ HISTORY = {"kind": "cumulative", "input": {"measure": REVENUE}}
 
 @pytest.fixture
 def shop_config(tmp_path):
-    config = load_package_config(str(SHOP))
-    return replace(config, package=replace(config.package, default_db=str(tmp_path / "shop.duckdb")))
+    (tmp_path / "data").mkdir()
+    shutil.copyfile(SHOP / "data" / "seed.sql", tmp_path / "data" / "seed.sql")
+    return load_package_config(str(SHOP))
 
 
-def _runtime(config):
-    return Runtime.from_config(config, source_path=str(SHOP))
+def _runtime(config, root):
+    return Runtime.from_config(config, source_path=str(root))
 
 
 def _query(expression=HISTORY):
@@ -49,7 +51,7 @@ def _query(expression=HISTORY):
 @pytest.mark.parametrize("surface", ["validate", "sql", "run"])
 @pytest.mark.parametrize("source", ["measure", "policy"])
 def test_authorization_precedes_source_refusals(
-    shop_config, monkeypatch, verbosity, surface, source
+    shop_config, tmp_path, monkeypatch, verbosity, surface, source
 ):
     expression = {**HISTORY, "input": AGGREGATE} if source == "measure" else HISTORY
     metric = MetricConfig(
@@ -95,7 +97,7 @@ def test_authorization_precedes_source_refusals(
         metric_recipes=[*shop_config.metric_recipes, metric],
         semantic_policies=policies,
     )
-    runtime = _runtime(config)
+    runtime = _runtime(config, tmp_path)
     query = {**_query({"metric": METRIC}), "verbosity": verbosity}
     context = RequestContext(audience="reader", attributes={"day": "2023-12-01 02:00:00"})
 
@@ -134,7 +136,7 @@ def test_authorization_precedes_source_refusals(
 
 @pytest.mark.parametrize("placement", ["select", "metric-filter", "arithmetic", "authored"])
 @pytest.mark.parametrize("scope", ["full-history", "query-period"])
-def test_sibling_filter_keeps_independent_window_answers(shop_config, placement, scope):
+def test_sibling_filter_keeps_independent_window_answers(shop_config, tmp_path, placement, scope):
     history = deepcopy(HISTORY)
     if scope == "query-period":
         history["window_scope"] = "query_period"
@@ -155,7 +157,7 @@ def test_sibling_filter_keeps_independent_window_answers(shop_config, placement,
             shop_config = replace(shop_config, metric_recipes=[*shop_config.metric_recipes, metric])
             expression = {"metric": METRIC}
         query = _query(expression)
-    runtime = _runtime(shop_config)
+    runtime = _runtime(shop_config, tmp_path)
     try:
         rows = runtime.query(query)["rows"]
         december = next(row for row in rows if str(row[f"{ROLE}__month"]).startswith("2023-12-01"))
@@ -175,7 +177,9 @@ def test_sibling_filter_keeps_independent_window_answers(shop_config, placement,
 
 
 @pytest.mark.parametrize("unused_attribute", ["day", "store"])
-def test_unused_clock_policy_keeps_applied_store_population(shop_config, unused_attribute):
+def test_unused_clock_policy_keeps_applied_store_population(
+    shop_config, tmp_path, unused_attribute
+):
     snapshot = next(
         row for row in shop_config.dimensions if row.id == "dimension.shop_account_day_snapshot_day"
     )
@@ -203,7 +207,7 @@ def test_unused_clock_policy_keeps_applied_store_population(shop_config, unused_
             ),
         ],
     )
-    runtime = _runtime(config)
+    runtime = _runtime(config, tmp_path)
     query = _query()
     query["policy_context"] = RequestContext(
         audience="reader", attributes={"store": "a", "day": "2024-01-01"}
@@ -223,9 +227,9 @@ def test_unused_clock_policy_keeps_applied_store_population(shop_config, unused_
         runtime.close()
 
 
-def test_source_refusal_message_has_no_space_before_period(shop_config):
+def test_source_refusal_message_has_no_space_before_period(shop_config, tmp_path):
     expression = {"kind": "rolling", "input": AGGREGATE, "window": {"unit": "month", "value": 2}}
-    runtime = _runtime(shop_config)
+    runtime = _runtime(shop_config, tmp_path)
     try:
         with pytest.raises(SemanticLayerError) as caught:
             runtime.compile(_query(expression))
