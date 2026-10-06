@@ -90,7 +90,6 @@ def _capability_payload(config: PackageConfig) -> tuple[list[dict[str, Any]], li
         "runtime_ratios": True,
         "entity_grain_distributions": True,
         "cross_domain_metric_predicates": True,
-        "agent_query_ir_v2": True,
         "conversion_metrics": "ConversionExpr" in expr_kinds,
         "percentile_metrics": "percentile" in measure_aggs
         or "median" in measure_aggs
@@ -123,7 +122,7 @@ def _capability_payload(config: PackageConfig) -> tuple[list[dict[str, Any]], li
         if not supported["percentile_metrics"]
         else "",
     }
-    supported_rows = [
+    supported_rows = [{"kind": "agent_query_ir_v1", "available": True, "reason": ""}] + [
         {"kind": kind, "available": True, "reason": ""} for kind, ok in supported.items() if ok
     ]
     unsupported_rows = [

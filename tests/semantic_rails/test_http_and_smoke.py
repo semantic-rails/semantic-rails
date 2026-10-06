@@ -184,6 +184,13 @@ def test_api_v1_capabilities_exposes_locked_public_index(runtime_factory):
         assert payload["package"]["id"] == "jaffle_shop"
         assert payload["schema_version"] == 1
         assert payload["capabilities"]
+        ir_rows = [
+            row for row in payload["capabilities"] if row["kind"].startswith("agent_query_ir_")
+        ]
+        assert ir_rows == [{"kind": "agent_query_ir_v1", "available": True, "reason": ""}]
+        assert not any(
+            row["kind"].startswith("agent_query_ir_") for row in payload["unsupported_capabilities"]
+        )
         assert "qualify" in payload["warehouse_capabilities"]
 
 
