@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from .errors import SemanticLayerError
+from .expressions import validate_expression_shapes
 
 _COMPARISONS = {
     "eq": "=",
@@ -67,14 +68,19 @@ def normalize_arguments(
 
 
 def normalize_query_spellings(query: dict[str, Any], notes: list[str]) -> dict[str, Any]:
-    def walk(value: Any, path: str) -> Any:
+    def walk(value: Any, path: str, depth: int = 0) -> Any:
+        if depth > 128:
+            raise _invalid("Query expression nesting is too deep.", path, [])
         if isinstance(value, list):
-            return [walk(row, f"{path}[{idx}]") for idx, row in enumerate(value)]
+            return [walk(row, f"{path}[{idx}]", depth + 1) for idx, row in enumerate(value)]
         if not isinstance(value, dict):
             return value
+        if "kind" in value and value["kind"] not in ("dimension", "group", "ref"):
+            # Use the parser's closed kind list, rejecting before visiting children.
+            validate_expression_shapes({"kind": value["kind"]}, path=path)
         if value.get("kind") == "literal":
             return dict(value)
-        row = {key: walk(item, f"{path}.{key}") for key, item in value.items()}
+        row = {key: walk(item, f"{path}.{key}", depth + 1) for key, item in value.items()}
         op = row.get("op")
         kind = row.get("kind")
         if isinstance(op, str):
@@ -101,7 +107,9 @@ def normalize_query_spellings(query: dict[str, Any], notes: list[str]) -> dict[s
     for key in ("where", "metric_filters"):
         if isinstance(out.get(key), list):
             # Predicate values are caller data, not expression nodes.
-            def predicates(rows: list[Any], path: str) -> list[Any]:
+            def predicates(rows: list[Any], path: str, depth: int = 0) -> list[Any]:
+                if depth > 128:
+                    raise _invalid("Query predicate nesting is too deep.", path, [])
                 result = []
                 for idx, item in enumerate(rows):
                     if not isinstance(item, dict):
@@ -114,44 +122,19 @@ def normalize_query_spellings(query: dict[str, Any], notes: list[str]) -> dict[s
                         row["op"] = _COMPARISONS[op]
                         notes.append(f"{prefix}.op: {op} -> {row['op']}")
                     if "expression" in row:
-                        row["expression"] = walk(row["expression"], f"{prefix}.expression")
+                        row["expression"] = walk(
+                            row["expression"], f"{prefix}.expression", depth + 1
+                        )
                     if isinstance(row.get("where"), list):
-                        row["where"] = predicates(row["where"], f"{prefix}.where")
+                        row["where"] = predicates(row["where"], f"{prefix}.where", depth + 1)
                     result.append(row)
                 return result
 
             out[key] = predicates(out[key], f"query.{key}")
     if isinstance(out.get("select"), list):
-        selected = []
-        groups = (
-            list(out.get("group_by") or []) if isinstance(out.get("group_by", []), list) else None
-        )
-        for idx, item in enumerate(out["select"]):
-            expr = item.get("expression", item) if isinstance(item, dict) else item
-            dimension = expr.get("dimension") if isinstance(expr, dict) else None
-            if (
-                isinstance(dimension, str)
-                and set(expr) - {"kind"} == {"dimension"}
-                and expr.get("kind") in (None, "dimension", "group", "ref")
-            ):
-                if groups is None or (item.get("as") and item["as"] != dimension):
-                    raise _invalid(
-                        "A selected dimension needs an unaliased group_by.",
-                        f"query.select[{idx}]",
-                        ["group_by"],
-                    )
-                if set(item) - {"expression", "as", "dimension", "kind"}:
-                    raise _invalid(
-                        "Ambiguous selected dimension.", f"query.select[{idx}]", ["group_by"]
-                    )
-                if dimension not in groups:
-                    groups.append(dimension)
-                notes.append(f"query.select[{idx}]: moved {dimension} to group_by")
-            else:
-                selected.append(walk(item, f"query.select[{idx}]"))
-        out["select"] = selected
-        if groups is not None and groups != out.get("group_by", []):
-            out["group_by"] = groups
+        out["select"] = [
+            walk(item, f"query.select[{idx}]") for idx, item in enumerate(out["select"])
+        ]
     return out
 
 

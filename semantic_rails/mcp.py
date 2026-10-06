@@ -48,6 +48,7 @@ from .request_context import (
     RequestContext,
     context_from_policy_context,
     request_context_payload,
+    without_trusted_attributes,
 )
 from .request_payload import (
     build_query_payload,
@@ -63,6 +64,7 @@ from .request_payload import (
 )
 from .resource_access import GRANT_DISCOVER_KINDS
 from .runtime import Runtime
+from .runtime_parts.limits import max_valid_values_limit, max_valid_values_offset
 from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL, resolve_verbosity
 from .schema import PackageConfig
 
@@ -1974,31 +1976,6 @@ class SemanticLayerMCPAdapter:
         args_dict = _arguments_with_trusted_context(
             decoded, request_context, inject_policy_context=policy_aware
         )
-        try:
-            nested_query = isinstance(args_dict.get("query"), dict)
-            if nested_query or (name == "execute" and "query" not in args_dict):
-                query = normalize_query_spellings(
-                    args_dict["query"] if nested_query else args_dict, normalized
-                )
-                if nested_query:
-                    args_dict["query"] = query
-                else:
-                    args_dict = query
-                routes = query.get("route_decisions")
-                route_query = query
-                if isinstance(routes, list) and any(isinstance(row, str) for row in routes):
-                    route_query = _query_payload(
-                        _strip_execute_transport_args(
-                            {key: value for key, value in args_dict.items() if key != "mode"}
-                        )
-                        if name == "execute"
-                        else args_dict
-                    )
-                routed = normalize_routes(route_query, normalized, self.runtime.validate)
-                if "route_decisions" in routed:
-                    query["route_decisions"] = routed["route_decisions"]
-        except SemanticLayerError as exc:
-            return finish(self._error_response(exc, args_dict))
         handler = self._tool_handlers.get(name)
         available_tools = {tool["name"] for tool in self.list_tools()}
         if handler is None or name not in available_tools:
@@ -2029,7 +2006,34 @@ class SemanticLayerMCPAdapter:
         # handler with their domain-specific guidance; this generic
         # pass catches everything else.
         unknown_arg_warnings = _unknown_argument_warnings(tool_name=name, arguments=args_dict)
-        response = handler(args_dict)
+
+        def dispatch(args: dict[str, Any]) -> dict[str, Any]:
+            nested_query = isinstance(args.get("query"), dict)
+            if nested_query or (name == "execute" and "query" not in args):
+                query = normalize_query_spellings(
+                    args["query"] if nested_query else args, normalized
+                )
+                if nested_query:
+                    args["query"] = query
+                else:
+                    args.clear()
+                    args.update(query)
+                routes = query.get("route_decisions")
+                route_query = query
+                if isinstance(routes, list) and any(isinstance(row, str) for row in routes):
+                    route_query = _query_payload(
+                        _strip_execute_transport_args(
+                            {key: value for key, value in args.items() if key != "mode"}
+                        )
+                        if name == "execute"
+                        else args
+                    )
+                routed = normalize_routes(route_query, normalized, self.runtime.validate)
+                if "route_decisions" in routed:
+                    query["route_decisions"] = routed["route_decisions"]
+            return handler(args)
+
+        response = self._guarded(args_dict, dispatch)
         if unknown_arg_warnings:
             existing = list(response.get("warnings") or [])
             # Avoid duplicating per-handler typo warnings that already
@@ -2287,6 +2291,9 @@ class SemanticLayerMCPAdapter:
     def _guarded(
         self, arguments: dict[str, Any], handler: Callable[[dict[str, Any]], dict[str, Any]]
     ) -> dict[str, Any]:
+        if _TOOL_REQUEST_CONTEXT.get() is not None:
+            # Dispatch owns the boundary; nested built-in handlers reuse its context.
+            return handler(arguments)
         started = time.perf_counter()
         token = None
         try:
@@ -2301,6 +2308,14 @@ class SemanticLayerMCPAdapter:
             return self._success(handler(arguments), arguments, started)
         except SemanticLayerError as exc:
             return self._error_response(exc, arguments, started_at=started)
+        except RecursionError:
+            return self._error_response(
+                SemanticLayerError(
+                    "INVALID_QUERY", "Query nesting is too deep.", details={"path": "query"}
+                ),
+                arguments,
+                started_at=started,
+            )
         except Exception as exc:  # noqa: BLE001 — defensive MCP boundary
             # Bare exceptions (KeyError, AttributeError, TypeError, ...)
             # must never escape as raw tracebacks. Log the trace for ops
@@ -2511,21 +2526,32 @@ class SemanticLayerMCPAdapter:
         )
 
     def _handle_valid_values(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        return self._guarded(
-            arguments,
-            lambda args: valid_values_payload(
-                self.runtime,
-                dimension_id=str(args.get("dimension_id", "")),
-                query=_partial_query_payload(args)
+        def build(args: dict[str, Any]) -> dict[str, Any]:
+            call_arguments: dict[str, Any] = {
+                "dimension_id": str(args.get("dimension_id", "")),
+                "query": _partial_query_payload(args)
                 if args.get("query") or args.get("policy_context")
                 else None,
-                search=str(args.get("search", "")),
-                limit=_coerce_int(args.get("limit"), 100, field="limit", minimum=1),
-                offset=_coerce_int(args.get("offset"), 0, field="offset", minimum=0),
-                include_counts=_coerce_bool(args.get("include_counts"), False),
-                allow_live_query=_coerce_bool(args.get("allow_live_query"), False),
-            ),
-        )
+                "search": str(args.get("search", "")),
+                "limit": min(
+                    _coerce_int(args.get("limit"), 100, field="limit", minimum=1),
+                    max_valid_values_limit(),
+                ),
+                "offset": min(
+                    _coerce_int(args.get("offset"), 0, field="offset", minimum=0),
+                    max_valid_values_offset(),
+                ),
+                "include_counts": _coerce_bool(args.get("include_counts"), False),
+                "allow_live_query": _coerce_bool(args.get("allow_live_query"), False),
+            }
+            payload = valid_values_payload(self.runtime, **call_arguments)
+            if payload.get("status") == "needs_live_query":
+                call_arguments["allow_live_query"] = True
+                call_arguments["query"] = without_trusted_attributes(call_arguments["query"] or {})
+                payload["next_call"] = {"tool": "valid-values", "arguments": call_arguments}
+            return payload
+
+        return self._guarded(arguments, build)
 
     def _handle_plan(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return self._guarded(

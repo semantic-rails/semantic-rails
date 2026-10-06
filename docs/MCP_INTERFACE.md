@@ -219,8 +219,16 @@ placed inside it are lifted; conflicting tool options refuse with
 and `is_not_null` → `IS NOT NULL`; arithmetic `sub`/`mul`/`div` →
 `subtract`/`multiply`/`divide` (`add` is already canonical). Arithmetic `operands`
 or `terms` with at least two expressions fold left, including subtraction and
-division. Mixing operand shapes refuses. An unaliased `{dimension: "<id>"}` in
-`select` (also with `kind: dimension|group|ref`) moves to `group_by`; a custom output alias refuses rather than losing it.
+division. Mixing operand shapes refuses. Select dimension shorthand uses the shared
+[Query IR rules](QUERY_IR_SCHEMA.md#selectitem): a bare `{dimension: "<id>"}`
+moves to `group_by`; an `expression` wrapper moves only when `group_by` is empty
+or already lists that dimension. Both shapes accept `kind: dimension|group|ref`.
+Aliases and competing targets refuse with `INVALID_EXPRESSION_AST`; a wrapped
+dimension beside other grouping dimensions carries `MOVE_DIMENSION_TO_GROUP_BY`.
+Each move appears as a `QUERY_SHORTHAND_NORMALIZED` warning with
+`details.canonical`, on `execute` in every mode.
+Unsupported expression kinds refuse before their children are read. Excessive
+expression or predicate nesting returns `INVALID_QUERY` as a structured tool error.
 Unknown ids in a dimension-only list query return `OBJECT_NOT_FOUND`, with
 closest visible matches.
 
