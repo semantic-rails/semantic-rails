@@ -88,7 +88,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     prior_alias = f"{base_alias}_prior_{shift_grain}"
 
     query: dict[str, Any] = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "as": base_alias,

@@ -5,7 +5,7 @@ examples:
   revenue_share_from_session_customers:
     question: What share of revenue came from customers with sessions in the same month?
     query:
-      version: 2
+      version: 1
       select:
         - as: pct_revenue_from_session_customers
           expression:
@@ -41,7 +41,7 @@ examples:
   p80_customer_revenue_by_month:
     question: What is the p80 monthly revenue per customer?
     query:
-      version: 2
+      version: 1
       select:
         - as: p80_customer_revenue
           expression:
@@ -74,7 +74,7 @@ examples:
   menu_orders_by_store:
     question: How many food or drink orders did each store handle?
     query:
-      version: 2
+      version: 1
       select:
         - as: menu_orders
           expression:
@@ -95,7 +95,7 @@ examples:
   order_share_from_session_customers_by_store:
     question: What share of store orders came from customers with sessions in the same month?
     query:
-      version: 2
+      version: 1
       select:
         - as: pct_orders_from_session_customers
           expression:
@@ -134,7 +134,7 @@ examples:
   active_menu_snapshot_for_high_activity_stores:
     question: Give me the active menu snapshot by store and month for stores with more than one order and more than one session in the same month.
     query:
-      version: 2
+      version: 1
       select:
         - as: active_menu_count_from_high_activity_stores
           expression:
@@ -505,7 +505,7 @@ examples:
   active_menu_snapshot_for_session_stores:
     question: Monthly active menu snapshot for stores with any storefront sessions, by store.
     query:
-      version: 2
+      version: 1
       select:
         - as: active_menu_count_from_session_stores
           expression:
