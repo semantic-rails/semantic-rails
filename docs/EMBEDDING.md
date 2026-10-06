@@ -203,9 +203,9 @@ host is responsible for applying it. To keep the engine's checks, read the built
 `ArchitectProject(project_path, workspace_root=None)` is the transactional authoring
 session behind the Architect MCP and the REPL. It edits a package directory on disk:
 `revision()`, `inventory()`, `upsert_model`, `upsert_relationship`, `upsert_metric`,
-`upsert_segment`, `record_route_decision`, `remove_object`, `write_file`, and
-`archive_file`. Each change returns an
-`ArchitectMutation`: `report` is the result the Architect MCP returns, `changed_files`
+`upsert_segment`, `record_route_decision`, `remove_object`, and `write_files`.
+`write_files` stages a list of write or archive entries as one package transaction. Each change
+returns an `ArchitectMutation`: `report` is the result the Architect MCP returns, `changed_files`
 lists the files written, and `undo()` restores them unless a later edit changed them.
 Hosts receive `ArchitectMutation` objects and never construct them.
 

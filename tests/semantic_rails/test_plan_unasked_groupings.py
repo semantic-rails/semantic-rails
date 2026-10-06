@@ -221,7 +221,7 @@ def test_a_ranking_of_a_time_axis_value_offers_no_runnable_option(jaffle: Runtim
 
 # The top 3 stores by revenue, as a draft before its time block.
 _TOP_3_STORES = {
-    "version": 2,
+    "version": 1,
     "select": [{"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}],
     "group_by": [STORE],
     "order_by": [{"field": "revenue_usd", "direction": "DESC"}],
@@ -372,7 +372,7 @@ def test_a_grouping_after_a_window_keeps_the_window(incident: Runtime, jaffle: R
 def _draft(query: dict[str, Any]) -> RuntimeCompositionDraft:
     return RuntimeCompositionDraft(
         query={
-            "version": 2,
+            "version": 1,
             "select": [
                 {"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}
             ],

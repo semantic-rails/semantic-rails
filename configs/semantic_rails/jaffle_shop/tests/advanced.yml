@@ -4,7 +4,7 @@ tests:
   revenue_share_from_session_customers_executes:
     kind: query_row_count_bounds
     query:
-      version: 2
+      version: 1
       select:
         - as: pct_revenue_from_session_customers
           expression:
@@ -36,7 +36,7 @@ tests:
   p80_customer_revenue_returns_monthly_rows:
     kind: query_row_count_bounds
     query:
-      version: 2
+      version: 1
       select:
         - as: p80_customer_revenue
           expression:
@@ -68,7 +68,7 @@ tests:
   menu_orders_by_store_snapshot:
     kind: query_matches_snapshot
     query:
-      version: 2
+      version: 1
       select:
         - as: menu_orders
           expression:
@@ -91,7 +91,7 @@ tests:
   order_share_from_session_customers_by_store_executes:
     kind: query_row_count_bounds
     query:
-      version: 2
+      version: 1
       select:
         - as: pct_orders_from_session_customers
           expression:
@@ -129,7 +129,7 @@ tests:
   active_menu_snapshot_for_high_activity_stores_executes:
     kind: query_row_count_bounds
     query:
-      version: 2
+      version: 1
       select:
         - as: active_menu_count_from_high_activity_stores
           expression:
@@ -326,7 +326,7 @@ tests:
   active_menu_snapshot_for_session_stores_executes:
     kind: query_row_count_bounds
     query:
-      version: 2
+      version: 1
       select:
         - as: active_menu_count_from_session_stores
           expression:
@@ -358,7 +358,7 @@ tests:
     # order counts once, however many beverages it holds.
     kind: query_matches_snapshot
     query:
-      version: 2
+      version: 1
       select:
         - expression: {measure: measure.jaffle.order_count}
           as: orders
@@ -375,7 +375,7 @@ tests:
     # Rounded to cents: the sum of the per-order doubles varies in its last digits.
     kind: query_matches_snapshot
     query:
-      version: 2
+      version: 1
       select:
         - as: revenue_usd
           expression:
@@ -398,7 +398,7 @@ tests:
     # each customer) once in every product type it bought.
     kind: query_matches_snapshot
     query:
-      version: 2
+      version: 1
       select:
         - expression: {measure: measure.jaffle.ordering_customer_count}
           as: customers

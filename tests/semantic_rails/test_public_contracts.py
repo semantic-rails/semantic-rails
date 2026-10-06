@@ -269,7 +269,6 @@ def test_every_json_schema_is_well_formed() -> None:
     jsonschema = _jsonschema()
     for name in (
         "package.v1.json",
-        "query_ir.preview.v2.json",
         "query_ir.v1.json",
         "semantic_contract.v1.json",
         "metric_portability.v1.json",
@@ -542,14 +541,17 @@ def test_compatibility_checker_flags_breaking_schema_http_and_mcp_changes() -> N
     assert {"operation_removed", "tool_removed", "required_added"}.issubset(kinds)
 
 
-def test_compatibility_checker_reports_a_retired_contract_as_removed(tmp_path: Path) -> None:
-    # Removing MCP interface v1 retired query_mcp.v1.json; a baseline with it must not pass silently.
-    (tmp_path / "query_mcp.v1.json").write_text(json.dumps({"tools": []}), encoding="utf-8")
+@pytest.mark.parametrize("name", ["query_mcp.v1.json", "query_ir.preview.v2.json"])
+def test_compatibility_checker_reports_a_retired_contract_as_removed(
+    tmp_path: Path, name: str
+) -> None:
+    # A baseline containing a retired contract must not pass silently.
+    (tmp_path / name).write_text(json.dumps({"tools": []}), encoding="utf-8")
     baseline = load_contract_directory(tmp_path)
-    assert set(baseline) == {"query_mcp.v1.json"}
+    assert set(baseline) == {name}
     removed = compare_contract_bundles(baseline, {})["breaking_changes"]
     assert [(change["artifact"], change["kind"]) for change in removed] == [
-        ("query_mcp.v1.json", "artifact_removed")
+        (name, "artifact_removed")
     ]
 
 

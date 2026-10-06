@@ -14,7 +14,7 @@ Phase 5 contracts (see plan ``snoopy-foraging-crescent.md``):
   ``customer_count``), and falls back to "no match" rather than
   picking an unrelated measure (e.g. ``aov_usd``).
 
-- The produced IR validates against its declared stable/preview schema.
+- The produced IR validates against the version 1 schema.
 
 - "Revenue with YoY"-style intents emit the inline ``prior_period``
   shorthand from Phase 4.
@@ -35,20 +35,12 @@ except ImportError:  # pragma: no cover - matches schema-test guard
 from tests.plan_candidate_envelope import plan_candidate_envelope
 
 SCHEMA_PATH = pathlib.Path(__file__).resolve().parents[2] / "schemas" / "query_ir.v1.json"
-PREVIEW_V2_SCHEMA_PATH = (
-    pathlib.Path(__file__).resolve().parents[2] / "schemas" / "query_ir.preview.v2.json"
-)
-
-
-def _load_schema(version: int) -> dict:
-    path = PREVIEW_V2_SCHEMA_PATH if version == 2 else SCHEMA_PATH
-    return json.loads(path.read_text())
 
 
 def _validate_against_schema(query: dict) -> None:
     if jsonschema is None:
         pytest.skip("jsonschema is not installed in this environment")
-    jsonschema.Draft202012Validator(_load_schema(int(query.get("version", 1)))).validate(query)
+    jsonschema.Draft202012Validator(json.loads(SCHEMA_PATH.read_text())).validate(query)
 
 
 def _resolved_ids(candidate: dict) -> list[str]:
