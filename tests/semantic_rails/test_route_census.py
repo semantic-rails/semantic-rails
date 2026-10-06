@@ -512,8 +512,8 @@ def test_adding_a_role_cannot_silently_change_an_unmatched_key(tmp_path, dry_run
         }
         revision, before = project.revision(), _files_and_receipts(project)
         with pytest.raises(SemanticLayerError, match="record_route_decision") as raised:
-            project.write_file(
-                relative_path="graph.yml", content=yaml.safe_dump(graph), dry_run=dry_run
+            project.write_files(
+                [{"path": "graph.yml", "content": yaml.safe_dump(graph)}], dry_run=dry_run
             )
         assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
         pair = ("entity.air_leg", "entity.air_airport")
@@ -528,7 +528,9 @@ def test_adding_a_role_cannot_silently_change_an_unmatched_key(tmp_path, dry_run
             _pin(*pair, [DESTINATION if role == "destination" else ORIGIN]),
             _pin(*reversed(pair), [DESTINATION if role == "destination" else ORIGIN]),
         ]
-        report = project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph)).report
+        report = project.write_files(
+            [{"path": "graph.yml", "content": yaml.safe_dump(graph)}]
+        ).report
         assert report["ok"] is True, report
         assert report["route_decisions_added"] == []
         select = "a.airport_code, SUM(l.seats)" if grouped else "SUM(l.seats)"
@@ -807,15 +809,15 @@ def test_a_second_route_to_a_dimensionless_child_requires_a_decision(tmp_path, c
     )
     revision, before = project.revision(), _files_and_receipts(project)
     with pytest.raises(SemanticLayerError) as raised:
-        project.write_file(relative_path="graph.yml", content=content, validate_after=False)
+        project.write_files([{"path": "graph.yml", "content": content}], validate_after=False)
     assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
     assert "rows" not in raised.value.details
     assert project.revision() == revision
     assert _files_and_receipts(project) == before
     assert answer() == gold
     graph["graph"]["path_preferences"] = _base_decisions(raised.value.details["route_changes"])
-    report = project.write_file(
-        relative_path="graph.yml", content=yaml.safe_dump(graph), validate_after=False
+    report = project.write_files(
+        [{"path": "graph.yml", "content": yaml.safe_dump(graph)}], validate_after=False
     ).report
     assert report["ok"] is True, report
     assert report["route_decisions_added"] == []
@@ -898,7 +900,7 @@ def test_lowering_the_hop_ceiling_commits_without_undoing_the_cut(tmp_path):
     project = _architect(tmp_path)
     graph = _graph(project)
     graph["graph"]["path_policy"] = {"max_hops": 1}
-    report = project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph)).report
+    report = project.write_files([{"path": "graph.yml", "content": yaml.safe_dump(graph)}]).report
     assert report["ok"] is True
     assert report["route_decisions_added"] == []
     assert len(report["route_changes"]) == 6
@@ -946,14 +948,14 @@ def test_a_single_route_swap_requires_the_pairs_own_row(tmp_path, decide):
     revision, before = project.revision(), _files_and_receipts(project)
     content = yaml.safe_dump(graph)
     if decide:
-        report = project.write_file(relative_path="graph.yml", content=content).report
+        report = project.write_files([{"path": "graph.yml", "content": content}]).report
         assert report["ok"] is True
         assert report["route_decisions_added"] == []
         assert _pairs(report["route_changes"]) == [(ACCOUNT, REGION)]
         assert project.revision() != revision
     else:
         with pytest.raises(SemanticLayerError, match="nothing was written") as raised:
-            project.write_file(relative_path="graph.yml", content=content)
+            project.write_files([{"path": "graph.yml", "content": content}])
         assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
         assert _pairs(raised.value.details["route_changes"]) == [(ACCOUNT, REGION)]
         assert project.revision() == revision
@@ -1019,8 +1021,8 @@ def test_invalid_loader_input_reaches_the_parse_gate_and_rolls_back(
 
     project = _architect(tmp_path)
     package = project.project_path / "package.yml"
-    assert project.write_file(
-        relative_path="package.yml", content=package.read_text() + "# previous write\n"
+    assert project.write_files(
+        [{"path": "package.yml", "content": package.read_text() + "# previous write\n"}]
     ).report["ok"]
     revision, before = project.revision(), _files_and_receipts(project)
     load = transactions.load_package_snapshot
@@ -1070,15 +1072,15 @@ def test_an_architect_write_can_repair_invalid_yaml_and_preview_invalid_input(
     valid = package.read_text()
     if repair:
         package.write_text("schema_version: [\n")
-        report = project.write_file(
-            relative_path="package.yml", content=valid, validate_after=validate_after
+        report = project.write_files(
+            [{"path": "package.yml", "content": valid}], validate_after=validate_after
         ).report
         assert (report["ok"], report["status"]) == (True, "written")
         assert package.read_text() == valid
         load_package_config(str(project.project_path))
     revision, before = project.revision(), _files_and_receipts(project)
-    preview = project.write_file(
-        relative_path="package.yml", content="schema_version: [\n", dry_run=True
+    preview = project.write_files(
+        [{"path": "package.yml", "content": "schema_version: [\n"}], dry_run=True
     ).report
     assert (preview["ok"], preview["status"]) == (False, "preview_invalid")
     assert preview["parse"]["ok"] is False
@@ -1108,8 +1110,8 @@ def test_an_invalid_intermediate_write_cannot_erase_the_branch_region_baseline(t
     }
     revision, before = project.revision(), _files_and_receipts(project)
     with pytest.raises(SemanticLayerError, match="nothing was written") as raised:
-        project.write_file(
-            relative_path="graph.yml", content=yaml.safe_dump(graph), validate_after=False
+        project.write_files(
+            [{"path": "graph.yml", "content": yaml.safe_dump(graph)}], validate_after=False
         )
     assert raised.value.code == "INVALID_CONFIG"
     assert project.revision() == revision
@@ -1119,16 +1121,16 @@ def test_an_invalid_intermediate_write_cannot_erase_the_branch_region_baseline(t
     # Retrying only the repaired input still compares against the valid branch-region base.
     del relationships["unknown_entity"]
     with pytest.raises(SemanticLayerError) as raised:
-        project.write_file(
-            relative_path="graph.yml", content=yaml.safe_dump(graph), validate_after=False
+        project.write_files(
+            [{"path": "graph.yml", "content": yaml.safe_dump(graph)}], validate_after=False
         )
     assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
     assert project.revision() == revision
     assert _files_and_receipts(project) == before
     assert _invoice_amounts(project.project_path) == branch
     graph["graph"]["path_preferences"] = _base_decisions(raised.value.details["route_changes"])
-    report = project.write_file(
-        relative_path="graph.yml", content=yaml.safe_dump(graph), validate_after=False
+    report = project.write_files(
+        [{"path": "graph.yml", "content": yaml.safe_dump(graph)}], validate_after=False
     ).report
     assert report["ok"] is True, report
     assert report["route_decisions_added"] == []
@@ -1208,9 +1210,8 @@ def test_an_explicit_shorter_row_keeps_both_answers_and_follows_the_loader(tmp_p
         "cardinality": "many_to_one",
         "allowed_directions": ["forward"],
     }
-    report = project.write_file(
-        relative_path=relative,
-        content="# authored comment\n" + yaml.safe_dump(document),
+    report = project.write_files(
+        [{"path": relative, "content": "# authored comment\n" + yaml.safe_dump(document)}],
         # The loader accepts inline graphs; directory lint still requires graph.yml.
         validate_after=layout != "inline",
     ).report
@@ -1245,12 +1246,14 @@ def test_an_edited_row_that_moves_an_inherited_pair_requires_its_own_decision(tm
         "cardinality": "many_to_one",
         "allowed_directions": ["forward"],
     }
-    assert project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph)).report["ok"]
+    assert project.write_files([{"path": "graph.yml", "content": yaml.safe_dump(graph)}]).report[
+        "ok"
+    ]
     revision, before = project.revision(), _files_and_receipts(project)
     graph = _graph(project)
     graph["graph"]["path_preferences"] = [_pin(SMALL_ACCOUNT, DISTRICT, SMALL_HOME)]
     with pytest.raises(SemanticLayerError) as raised:
-        project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph))
+        project.write_files([{"path": "graph.yml", "content": yaml.safe_dump(graph)}])
     assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
     assert _pairs(raised.value.details["route_changes"]) == [(LOAN, DISTRICT)]
     assert "rows" not in raised.value.details
@@ -1324,7 +1327,7 @@ def test_deleting_a_pairs_row_never_silently_switches_its_answer(tmp_path):
     del graph["graph"]["path_preferences"]
     revision, before = project.revision(), _files_and_receipts(project)
     with pytest.raises(SemanticLayerError) as raised:
-        project.write_file(relative_path="graph.yml", content=yaml.safe_dump(graph))
+        project.write_files([{"path": "graph.yml", "content": yaml.safe_dump(graph)}])
     assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
     assert "rows" not in raised.value.details
     assert (OWNER, REGION) in _pairs(raised.value.details["route_changes"])
@@ -1332,3 +1335,37 @@ def test_deleting_a_pairs_row_never_silently_switches_its_answer(tmp_path):
     assert _files_and_receipts(project) == before
     config = load_package_config(str(project.project_path))
     assert resolve_path(config, start=OWNER, target=REGION)[0] == [OWNS, *BRANCH]
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_batch_route_swap_refuses_every_file_without_recorded_decision(tmp_path, dry_run):
+    project = ArchitectProject(
+        _write_package(
+            tmp_path,
+            relationships=("accounts_branch_region",),
+            extra={"accounts_branch_region": {"allowed_directions": ["forward"]}},
+        ),
+        workspace_root=tmp_path,
+    )
+    graph = _graph(project)
+    relationship = graph["graph"]["relationships"].pop("accounts_branch_region")
+    graph["graph"]["relationships"]["accounts_billing_region"] = {
+        **relationship,
+        "id": "relationship.accounts_billing_region",
+        "via": ["billing_region_id"],
+    }
+    revision, before = project.revision(), _files_and_receipts(project)
+
+    with pytest.raises(SemanticLayerError) as raised:
+        project.write_files(
+            [
+                {"path": "graph.yml", "content": yaml.safe_dump(graph)},
+                {"path": "notes.md", "content": "new route\n"},
+            ],
+            dry_run=dry_run,
+        )
+
+    assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
+    assert _pairs(raised.value.details["route_changes"]) == [(ACCOUNT, REGION)]
+    assert project.revision() == revision
+    assert _files_and_receipts(project) == before
