@@ -59,8 +59,8 @@ class MotherDuckAdapter(DbApiAdapter):
     """DB-API-ish adapter over ``duckdb.connect("md:...")``.
 
     DuckDB connections satisfy enough of PEP 249 for the shared
-    :class:`DbApiAdapter` machinery (``cursor()``, ``execute``,
-    ``description``, ``fetchall``, ``close``).
+    :class:`DbApiAdapter` machinery, with result reads using ``sql()``
+    and materialized relations instead of streamed cursor fetches.
     """
 
     engine = "motherduck"

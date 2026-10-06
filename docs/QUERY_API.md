@@ -466,10 +466,14 @@ resource hints:
   the shared connection or another query) and drains the watchdog before the
   query returns. Warehouse-native adapters
   with second-granularity controls round up to the next second.
-- `max_rows` — DB-API, DuckDB, and native Snowflake cursors fetch at most
-  `max_rows + 1`, return at most `max_rows`, and set `truncated=true` when an
-  additional row exists. Adapters without bounded cursor reads still apply the
-  cap after materialization.
+- `max_rows` — DuckDB, DuckLake and MotherDuck cap fetched rows at `max_rows + 1`.
+  Parameter-free reads use a relation limit; a single parameterized DuckDB SELECT
+  applies the cap inside SQL before eager materialization, preserving Unicode
+  literals and identifiers with optional statement terminators and trailing comments.
+  Other parameterized statements are capped after materialization. Other DB-API
+  and native Snowflake cursors use bounded fetches where supported. They return at most `max_rows` and set
+  `truncated=true` when an additional row exists. Adapters without bounded reads
+  still apply the cap after materialization.
 
 Unrecognized keys are ignored. Invalid values (non-int, negative) are
 treated as unset. This is scaffolding for hosted operators to enforce

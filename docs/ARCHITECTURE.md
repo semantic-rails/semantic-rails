@@ -57,6 +57,11 @@ Key authoring principles:
   operations and authoring introspection, disables `common_subplan` before running
   warehouse SQL, preserving existing optimizer exclusions. This avoids incorrect
   multi-measure totals over views filtered on derived columns in DuckDB 1.5.6.
+- DuckDB, DuckLake, MotherDuck and authoring introspection read materialized
+  relations through one shared helper. Result limits use a relation limit and
+  one extra row to detect truncation, avoiding DuckDB's streamed cursor fetches
+  that can hang on queries with window functions. DuckDB's per-query interrupt
+  watchdog also covers materialization.
 - Physical routing is semantic-first. The compiler may use exact aggregate
   relations for efficiency, but only when the configured rollup covers the
   requested measures, dimensions, filters, time role, and time grain.

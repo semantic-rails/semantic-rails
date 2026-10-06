@@ -32,6 +32,7 @@ from typing import Any
 import duckdb
 
 from .architect_scaffold import slug
+from .db_parts.common import materialized_duckdb_result
 from .db_parts.duckdb_setup import configure_duckdb_connection
 from .errors import SemanticLayerError
 from .sql_identifiers import quote_identifier, quote_relation, relation_parts
@@ -80,9 +81,9 @@ class DuckDBWarehouse:
     path: str
     connection: Any
 
-    def execute(self, sql: str, params: list[Any] | None = None) -> Any:
+    def execute(self, sql: str, params: list[Any] | None = None) -> tuple[Any, list[Any]]:
         try:
-            return self.connection.execute(sql, params or [])
+            return materialized_duckdb_result(self.connection, sql, params)
         except duckdb.PermissionException:
             raise SemanticLayerError(
                 "UNSUPPORTED_PLATFORM",
@@ -91,9 +92,9 @@ class DuckDBWarehouse:
             ) from None
 
     def rows(self, sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
-        cursor = self.execute(sql, params)
-        names = [column[0] for column in cursor.description]
-        return [dict(zip(names, row, strict=True)) for row in cursor.fetchall()]
+        description, fetched = self.execute(sql, params)
+        names = [column[0] for column in description]
+        return [dict(zip(names, row, strict=True)) for row in fetched]
 
 
 @contextlib.contextmanager
@@ -303,7 +304,7 @@ def profile_columns(
         )
     limit = max(0, min(int(sample_limit), MAX_SAMPLE_VALUES))
     row_cap = max(1, min(int(max_rows), MAX_PROFILE_ROWS))
-    (row_count,) = warehouse.execute(f"SELECT count(*) FROM {source}").fetchone()
+    (row_count,) = warehouse.execute(f"SELECT count(*) FROM {source}")[1][0]
     sampled = int(row_count) > row_cap
     scan = f"(SELECT * FROM {source} USING SAMPLE {row_cap} ROWS)" if sampled else source
     profiles: list[dict[str, Any]] = []
@@ -314,14 +315,14 @@ def profile_columns(
         counted, distinct, nulls, low, high = warehouse.execute(
             f"SELECT count(*), count(DISTINCT {quoted}), count(*) - count({quoted})"
             f"{extremes} FROM {scan} AS t"
-        ).fetchone()
+        )[1][0]
         samples = (
             [
                 _sample_text(row[0])
                 for row in warehouse.execute(
                     f"SELECT DISTINCT {quoted} FROM {scan} AS t WHERE {quoted} IS NOT NULL "
                     f"ORDER BY 1 LIMIT {limit}"
-                ).fetchall()
+                )[1]
             ]
             if limit
             else []
@@ -704,7 +705,7 @@ def _suggest_key(
             a, b = quote_identifier(first), quote_identifier(second)
             checked, present_first, present_second, pairs = warehouse.execute(
                 f"SELECT count(*), count({a}), count({b}), count(DISTINCT ({a}, {b})) FROM {probe}"
-            ).fetchone()
+            )[1][0]
             if checked and checked == present_first == present_second == pairs:
                 return {
                     "columns": [first, second],
