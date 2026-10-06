@@ -360,9 +360,9 @@ def test_removed_null_behavior_key_fails_to_load_with_one_message(
     """`null_behavior:` used to pick how a ratio or a sum read an empty group; the engine now
     settles that itself, so a package that still writes it fails to load and says why."""
     path = _mutated(starter_package, old, new)
-    with pytest.raises(SemanticLayerError, match="`null_behavior` was removed; delete the line"):
+    with pytest.raises(SemanticLayerError, match="`null_behavior` was removed; delete the key"):
         load_package_config(str(path.parent))
-    assert any("`null_behavior` was removed; delete the line" in e for e in _errors(path))
+    assert any("`null_behavior` was removed; delete the key" in e for e in _errors(path))
 
 
 def test_ratio_operand_typo_names_metric_and_field(starter_package: Path) -> None:
