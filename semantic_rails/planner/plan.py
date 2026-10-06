@@ -21,6 +21,7 @@ to the IR consumed internally by patterns.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -62,9 +63,9 @@ from .generators import _grouping_term_matches, blocked_object_not_found, fallba
 from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
 from .visibility import (
+    caller_hidden_ids,
     require_visible_dimensions,
     visible_dimensions,
-    visible_value_domains,
     with_dimension_visibility,
 )
 
@@ -72,26 +73,32 @@ _VERSION = 1
 
 
 # ---------------------------------------------------------------------------
-_CONTRACTION_RE = re.compile(r"\b([^\W_]+?)(n['’]t|['’](?:s|re|ve|ll|d))\b", re.IGNORECASE)
+_QUOTED = r"\"[^\"]*\"|“[^”]*”|(?<!\w)['‘].*?['’](?!\w)"
+_CONTRACTION = r"\b(?P<word>[^\W_]+?)(?P<suffix>n['’]t|['’](?:s|re|ve|ll|d))\b"
+_IS = frozenset({"what", "who", "where", "when", "how", "it", "that", "there", "here"})
+_EXPANDED = {"'s": " is", "'re": " are", "'ve": " have", "'ll": " will", "'d": " would"}
 
 
-def _normalize_question(text: str) -> str:
-    """Expand grammatical contractions once, before every planning gate."""
+def _normalize_question(text: str, declared: Iterable[str] = ()) -> str:
+    """Expand grammatical contractions once, before every planning gate.
+
+    Quoted text and a declared phrase spelled with an apostrophe stay as typed. Only
+    a wh-word or pronoun reads ``'s`` as "is"; any other ``'s`` is left alone.
+    """
+
+    phrases = sorted(declared, key=len, reverse=True)
+    kept = "|".join(re.sub(r"['’]", "['’]", re.escape(phrase)) for phrase in phrases) or "(?!)"
 
     def expand(match: re.Match[str]) -> str:
-        word, suffix = match.group(1), match.group(2).lower().replace("’", "'")
+        word, suffix = match["word"], (match["suffix"] or "").lower().replace("’", "'")
+        if match["kept"] is not None or (suffix == "'s" and word.lower() not in _IS):
+            return match[0]
         if suffix == "n't":
             return {"ca": "can", "wo": "will", "sha": "shall"}.get(word.lower(), word) + " not"
-        if suffix == "'s":
-            return word + (
-                " is"
-                if word.lower()
-                in {"what", "who", "where", "when", "how", "it", "that", "there", "here"}
-                else ""
-            )
-        return word + {"'re": " are", "'ve": " have", "'ll": " will", "'d": " would"}[suffix]
+        return word + _EXPANDED[suffix]
 
-    return _CONTRACTION_RE.sub(expand, text)
+    pattern = rf"(?P<kept>{_QUOTED}|(?<!\w)(?:{kept})(?!\w))|{_CONTRACTION}"
+    return re.sub(pattern, expand, text, flags=re.IGNORECASE)
 
 
 @runtime_request_scope
@@ -127,10 +134,12 @@ def plan_payload(
     # the discover/plan/validate surface, not the planner composition
     # pipeline itself.
     from ..metadata_parts.relevance import (  # noqa: WPS433
+        _apostrophe_names,
         _catalog_token_index,
         _intent_passes_grounding_floor,
         _intent_passes_relevance_floor,
         _low_relevance_block,
+        _visible_catalog,
         _weak_grounding_block,
         _weak_grounding_tokens,
     )
@@ -154,7 +163,8 @@ def plan_payload(
         )
 
     partial_query = _checked_partial_query(partial_query)
-    intent = intent_str = _normalize_question(intent.strip())
+    catalog_config = _visible_catalog(runtime._config, caller_hidden_ids(runtime._config))
+    intent = intent_str = _normalize_question(intent.strip(), _apostrophe_names(catalog_config))
     detail_level = str(detail or "best").lower()
     if detail_level not in {"query", "best", "full", "debug"}:
         detail_level = "best"
@@ -168,18 +178,12 @@ def plan_payload(
                 out_of_scope=scope_block_payload(intent_str, classification),
             )
             return _query_detail_payload(payload) if detail_level == "query" else payload
-        dimensions = visible_dimensions(runtime._config)
-        catalog_config = runtime._config
-        search_index = None
-        if len(dimensions) == len(catalog_config.dimensions):
-            search_index = runtime._get_catalog_search_index()
-        else:
-            catalog_config = replace(
-                catalog_config,
-                dimensions=dimensions,
-                value_domains=visible_value_domains(catalog_config),
-            )
-        catalog_tokens = _catalog_token_index(catalog_config, search_index=search_index)
+        catalog_tokens = _catalog_token_index(
+            catalog_config,
+            search_index=(
+                runtime._get_catalog_search_index() if catalog_config is runtime._config else None
+            ),
+        )
         passes, overlap = _intent_passes_relevance_floor(intent_str, catalog_tokens)
         if not passes:
             sample = sorted(catalog_tokens)[:30]

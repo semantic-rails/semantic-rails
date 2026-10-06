@@ -397,18 +397,12 @@ def _name_matches(row: Any, text: str, *, short_label: bool = True) -> list[tupl
     return sorted(matches)
 
 
-def _name_fit(row: Any, text: str) -> set[str]:
-    """Words distinguishing a subject, from its whole phrases and primary name."""
+def _name_fit(text: str, spans: Iterable[tuple[int, int, int]]) -> set[str]:
+    """The words inside a subject's matched name spans; no other word of the question."""
 
-    said = {_singular(word) for word in re.findall(r"[^\W_]+", text.lower())}
-    words = {
+    return {
         _singular(word)
-        for name in _declared_name_forms(row)[:4]
-        for word in re.findall(r"[^\W_]+", name.lower())
-    } & said
-    return words | {
-        _singular(word)
-        for _, start, end in _name_matches(row, text)
+        for _, start, end in spans
         for word in re.findall(r"[^\W_]+", text[start:end].lower())
     }
 
@@ -418,12 +412,14 @@ def _named_metric(config: Any, text: str) -> tuple[Any, str] | None:
 
     Ties never select a metric. Single-word synonyms also name a metric; label and
     id forms retain the multi-word requirement used for ordinary measure-first lookup.
+    A label without its parenthetical never selects: it is a readiness form only.
     """
 
+    spans = {row.id: _name_matches(row, text, short_label=False) for row in config.metric_recipes}
     matches = [
         (size, start, end, row)
         for row in config.metric_recipes
-        for size, start, end in _name_matches(row, text)
+        for size, start, end in spans[row.id]
         if size > 1
         or any(
             _singular(alias.lower()) == _singular(text[start:end].lower())
@@ -431,7 +427,7 @@ def _named_metric(config: Any, text: str) -> tuple[Any, str] | None:
         )
     ]
     size = max((item[0] for item in matches), default=0)
-    fits = {row.id: _name_fit(row, text) for _, _, _, row in matches}
+    fits = {row.id: _name_fit(text, spans[row.id]) for _, _, _, row in matches}
     longest = [
         item
         for item in matches
@@ -476,7 +472,11 @@ def _said_name(row: Any, text: str) -> frozenset[str]:
 
 
 def _shared_subjects(config: Any, text: str) -> list[Any]:
-    """Whole analytic names that remain indistinguishable, independent of ranking."""
+    """Whole analytic names that remain indistinguishable, independent of ranking.
+
+    A label without its parenthetical counts, so the shared base of two variants
+    ("Conversion rate (7d)", "Conversion rate (7d, same store)") never picks one.
+    """
 
     rows = [
         *config.metric_recipes,
@@ -495,9 +495,9 @@ def _shared_subjects(config: Any, text: str) -> list[Any]:
     rows = [row for row in rows if row.id not in mirrors]
     fits = {}
     for row in rows:
-        spans = _name_matches(row, text, short_label=False)
+        spans = _name_matches(row, text)
         if spans:
-            fits[row.id] = (row, _name_fit(row, text), spans)
+            fits[row.id] = (row, _name_fit(text, spans), spans)
     contenders = [
         row
         for row, words, _ in fits.values()
