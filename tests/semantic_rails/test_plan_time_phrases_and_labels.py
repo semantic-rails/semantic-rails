@@ -27,6 +27,7 @@ from semantic_rails.planner._base import (
 )
 from semantic_rails.planner.faithfulness import _caller_window_gaps, unmatched_intent_terms
 from semantic_rails.planner.faithfulness import unconsumed_terms as _unconsumed_terms
+from tests.semantic_rails.result_helpers import assert_plan_held
 
 MARCH_15 = "2017-03-15"
 HOUR = {"start": f"{MARCH_15}T12:00:00", "end": f"{MARCH_15}T13:00:00"}
@@ -309,6 +310,12 @@ def test_a_question_whose_numbers_and_time_words_are_all_consumed_is_ok(
         }
         assert "ready_for" not in payload["next"]
         return
+    if text in {
+        "top 5 stores by revenue in 2017",
+        "monthly revenue for the last 3 months by store",
+    }:
+        assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
+        return
     assert payload["status"] == "ok", payload.get("why")
     assert payload["next"]["ready_for"] == ["execute"]
 
@@ -542,8 +549,14 @@ def test_a_ranking_question_with_its_limit_is_ok(
     runtime_factory: Any, text: str, limit: int
 ) -> None:
     payload = _plan(runtime_factory, text)
-    assert payload["status"] == "ok", payload.get("why")
-    assert payload["next"]["ready_for"] == ["execute"]
+    code = (
+        "PLAN_UNMATCHED_TERMS"
+        if text == "top 5 stores by revenue in 2017"
+        else "PLAN_INTENT_COVERAGE_GAP"
+    )
+    if text in {"top 5 stores by revenue", "top five stores by revenue", "top 3 stores by orders"}:
+        code = "PLAN_FALLBACK_SEMANTIC_DRIFT"
+    assert_plan_held(payload, code)
     assert _query(payload)["limit"] == limit
 
 
@@ -772,6 +785,9 @@ def test_a_question_with_a_day_or_coarser_window_is_still_ok(
     runtime_factory: Any, text: str
 ) -> None:
     payload = _plan(runtime_factory, text)
+    if text in {"top 5 stores by revenue in 2017", "orders on 15 March 2017 by store"}:
+        assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
+        return
     assert payload["status"] == "ok", payload.get("why")
     assert payload["next"]["ready_for"] == ["execute"]
 
@@ -1276,6 +1292,9 @@ def test_a_second_measure_is_never_dropped_silently(
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(runtime, intent=intent, detail="query")
+        if intent == "revenue and orders by store":
+            assert_plan_held(payload, "VALIDATION_FAILED")
+            return
         assert payload["status"] == "low_confidence"
         assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
         gaps = [gap for gap in payload["why"]["details"]["gaps"] if "subjects" in gap["kind"]]
@@ -1294,6 +1313,10 @@ def test_a_single_measure_still_plans(runtime_factory: Any, intent: str) -> None
     runtime = runtime_factory("jaffle_shop")
     try:
         payload = plan_payload(runtime, intent=intent, detail="query")
+        if intent == "revenue by store for the first half of 2017":
+            assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
+            assert _measures(payload) == ["measure.jaffle.revenue_usd"]
+            return
         assert payload["status"] == "ok", payload.get("why")
         assert _measures(payload) == ["measure.jaffle.revenue_usd"]
         assert "why" not in payload

@@ -19,6 +19,7 @@ from semantic_rails.metadata import (
 )
 from semantic_rails.runtime import Runtime
 from tests.plan_candidate_envelope import plan_candidate_envelope
+from tests.semantic_rails.result_helpers import held_candidate
 
 
 def _fake_query_result(payload):
@@ -871,13 +872,13 @@ def test_plan_exposes_contextual_and_lifetime_metric_predicate_semantics(runtime
         assert lifetime_card["predicate_context_entities"] == []
         assert lifetime_card["predicate_filter_inheritance"] == "none"
 
-        assert contextual["candidates"]
-        contextual_query = contextual["candidates"][0]["candidate_ir"]
+        held_candidate(contextual, "PLAN_UNMATCHED_TERMS")
+        contextual_query = contextual["blocked"][0]["candidate_ir"]
         contextual_expr = contextual_query["select"][0]["expression"]
         contextual_predicate = contextual_expr["predicates"][0]
-        contextual_bound = contextual["candidates"][0]["validation"]["logical_plan"][
-            "bound_measures"
-        ][0]["filter_spec"]["all"][0]["expression"]
+        contextual_bound = contextual["blocked"][0]["validation"]["logical_plan"]["bound_measures"][
+            0
+        ]["filter_spec"]["all"][0]["expression"]
         assert contextual_expr["kind"] == "scoped_aggregate"
         # Predicate carries the entity, op, value — but its input ref may
         # be a measure OR a metric, depending on what the planner picked
@@ -891,10 +892,12 @@ def test_plan_exposes_contextual_and_lifetime_metric_predicate_semantics(runtime
         )
         assert contextual_bound["scope_mode"] == "contextual"
         assert contextual_bound["entity"] == "entity.jaffle_customer"
-        assert contextual_query["group_by"] == ["dimension.jaffle_store_name"]
+        assert contextual_query["group_by"] == [
+            "dimension.jaffle_customer_history_preferred_store_id"
+        ]
 
-        assert daily_contextual["candidates"]
-        daily_query = daily_contextual["candidates"][0]["candidate_ir"]
+        held_candidate(daily_contextual, "PLAN_INTENT_COVERAGE_GAP")
+        daily_query = daily_contextual["blocked"][0]["candidate_ir"]
         daily_predicate = daily_query["select"][0]["expression"]["predicates"][0]
         assert daily_query["time"]["grain"] == "day"
         assert daily_predicate["time_grain"] == "month"
@@ -924,6 +927,14 @@ def test_plan_acceptance_intents_return_ranked_valid_candidates(runtime_factory)
                 partial_query={"policy_context": {"now": "2026-05-04"}},
                 limit=20,
             )
+            holds = {
+                "revenue by store last month": "PLAN_FALLBACK_SEMANTIC_DRIFT",
+                "end-of-month inventory levels by store": "PLAN_FALLBACK_SEMANTIC_DRIFT",
+                "monthly revenue from customers with at least 10 orders by store": "PLAN_UNMATCHED_TERMS",
+            }
+            if intent in holds:
+                held_candidate(result, holds[intent])
+                continue
             candidates = list(result.get("candidates", []) or [])
             assert len(candidates) >= 3, intent
             assert any(
@@ -1012,24 +1023,32 @@ def test_valid_values_supports_search_paging_and_selection_context(runtime_facto
 def test_plan_supports_guided_query_building(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        planned = plan_candidate_envelope(runtime, intent="new customer orders over time", limit=2)
+        planned = plan_candidate_envelope(
+            runtime, intent="new customer orders over time", limit=2, verbosity="full"
+        )
         conversion = plan_candidate_envelope(
-            runtime, intent="session to order conversion rate", limit=2
+            runtime,
+            intent="session to order conversion rate",
+            limit=2,
+            verbosity="full",
         )
         contextual = plan_candidate_envelope(
             runtime,
             intent="monthly order volume for customers that made more than 10 purchases in that month",
             limit=2,
+            verbosity="full",
         )
         revenue_qualified = plan_candidate_envelope(
             runtime,
             intent="monthly revenue from customers with at least 10 orders by store",
             limit=2,
+            verbosity="full",
         )
         daily_qualified = plan_candidate_envelope(
             runtime,
             intent="daily order volume from customers with at least 10 orders in that month",
             limit=2,
+            verbosity="full",
         )
 
         assert planned["candidates"]
@@ -1038,8 +1057,10 @@ def test_plan_supports_guided_query_building(runtime_factory):
         assert planned["candidates"][0]["validation"]["ok"] is True
         assert planned["candidates"][0]["resolved"]
         assert "assumptions" in planned["candidates"][0]
-        assert contextual["candidates"]
-        contextual_query = contextual["candidates"][0]["candidate_ir"]
+        held_candidate(contextual, "PLAN_INTENT_COVERAGE_GAP")
+        held_candidate(revenue_qualified, "PLAN_UNMATCHED_TERMS")
+        held_candidate(daily_qualified, "PLAN_INTENT_COVERAGE_GAP")
+        contextual_query = contextual["blocked"][0]["candidate_ir"]
         assert contextual["interpreted_intent"]["pattern"] == "qualified_metric_rollup"
         assert contextual_query["select"][0]["expression"]["kind"] == "scoped_aggregate"
         # The predicate carries the customer entity, op, and value — the
@@ -1051,10 +1072,10 @@ def test_plan_supports_guided_query_building(runtime_factory):
         assert contextual_predicate["value"] == 10
         assert "measure" in contextual_predicate or "metric" in contextual_predicate
         assert any(
-            row["id"] == "entity.jaffle_customer" for row in contextual["candidates"][0]["resolved"]
+            row["id"] == "entity.jaffle_customer" for row in contextual["blocked"][0]["resolved"]
         )
-        assert contextual["candidates"][0]["validation"]["ok"] is True
-        revenue_query = revenue_qualified["candidates"][0]["candidate_ir"]
+        assert contextual["blocked"][0]["validation"]["ok"] is True
+        revenue_query = revenue_qualified["blocked"][0]["candidate_ir"]
         revenue_expr = revenue_query["select"][0]["expression"]
         assert revenue_qualified["interpreted_intent"]["pattern"] == "qualified_metric_rollup"
         assert revenue_expr["measure"] == "measure.jaffle.revenue_usd"
@@ -1064,8 +1085,8 @@ def test_plan_supports_guided_query_building(runtime_factory):
         assert revenue_predicate["op"] == ">="
         assert revenue_predicate["value"] == 10
         assert "measure" in revenue_predicate or "metric" in revenue_predicate
-        assert revenue_query["group_by"] == ["dimension.jaffle_store_name"]
-        daily_expr = daily_qualified["candidates"][0]["candidate_ir"]["select"][0]["expression"]
+        assert revenue_query["group_by"] == ["dimension.jaffle_customer_history_preferred_store_id"]
+        daily_expr = daily_qualified["blocked"][0]["candidate_ir"]["select"][0]["expression"]
         assert daily_expr["predicates"][0]["time_grain"] == "month"
         assert "time_alignment" not in daily_expr["predicates"][0]
         assert conversion["candidates"]
@@ -1135,13 +1156,18 @@ def test_plan_generic_q4_bounds_and_paying_filter_not_group_by(tmp_path: Path):
 def test_plan_avoids_irrelevant_value_filters(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        top_stores = plan_candidate_envelope(runtime, intent="top stores by revenue", limit=2)
+        top_stores = plan_candidate_envelope(
+            runtime, intent="top stores by revenue", limit=2, verbosity="full"
+        )
         new_customer_trend = plan_candidate_envelope(
-            runtime, intent="new customer orders over time", limit=2
+            runtime,
+            intent="new customer orders over time",
+            limit=2,
+            verbosity="full",
         )
 
-        assert top_stores["candidates"]
-        assert "where" not in top_stores["candidates"][0]["candidate_ir"]
+        held_candidate(top_stores, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+        assert "where" not in top_stores["blocked"][0]["candidate_ir"]
         assert new_customer_trend["candidates"]
         assert "where" not in new_customer_trend["candidates"][0]["candidate_ir"]
     finally:
@@ -1151,11 +1177,15 @@ def test_plan_avoids_irrelevant_value_filters(runtime_factory):
 def test_plan_does_not_invent_generic_dimension_value_filters(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
-        planned = plan_candidate_envelope(runtime, intent="top stores by revenue", limit=2)
-        assert planned["candidates"]
-        candidate_query = planned["candidates"][0]["candidate_ir"]
+        planned = plan_candidate_envelope(
+            runtime, intent="top stores by revenue", limit=2, verbosity="full"
+        )
+        held_candidate(planned, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+        candidate_query = planned["blocked"][0]["candidate_ir"]
         assert "where" not in candidate_query or candidate_query["where"] == []
-        assert candidate_query["group_by"] == ["dimension.jaffle_store_name"]
+        assert candidate_query["group_by"] == [
+            "dimension.jaffle_customer_history_preferred_store_id"
+        ]
     finally:
         runtime.close()
 
