@@ -1285,6 +1285,11 @@ def _compiled_package_warnings(
                 measure.default_aggregation,
                 measure.default_temporal_role or [*measure.compatible_temporal_roles, ""][0],
                 expr_to_dict(measure.expr),
+                sorted(
+                    policy.id
+                    for policy in config.semantic_policies
+                    if policy.kind == "metric_constraint" and measure.id in policy.object_ids
+                ),
             ],
             sort_keys=True,
             default=str,
@@ -1614,15 +1619,42 @@ def _run_probe(
 ) -> dict[str, Any]:
     started = time.perf_counter()
     try:
-        try:
-            runtime.query(query)
-        except SemanticLayerError as exc:
-            # An `additive: false` measure answers only at its stored grain: probe it there.
-            missing = exc.dimensions if isinstance(exc, NonAdditiveRefusal) else None
-            if not missing or query.get("group_by"):
-                raise
-            query = {**query, "group_by": list(missing)}
-            runtime.query(query)
+        # At most two repairs: required policy grouping and a non-additive stored grain.
+        for attempt in range(3):
+            try:
+                runtime.query(query)
+                break
+            except SemanticLayerError as exc:
+                missing = exc.dimensions if isinstance(exc, NonAdditiveRefusal) else []
+                effects = exc.details.get("policy_effects", [])
+                violations = exc.details.get("policy_violations", [])
+                if (
+                    exc.code == "POLICY_DENIED"
+                    and effects
+                    and all(row.get("kind") == "metric_constraint" for row in effects)
+                    and violations
+                    and all(
+                        row.get("kind") in {"missing_required_group_by", "missing_required_where"}
+                        for row in violations
+                    )
+                ):
+                    if any(row["kind"] == "missing_required_where" for row in violations):
+                        return {
+                            "object_id": object_id,
+                            "kind": kind,
+                            "ok": True,
+                            "skipped": True,
+                            "reason": "Constrained probe: required_where needs an authored filter.",
+                            "policy_effects": effects,
+                            "query": query,
+                            "timing_ms": round((time.perf_counter() - started) * 1000, 3),
+                        }
+                    missing = [field for row in violations for field in row["missing"]]
+                grouping = list(query.get("group_by", []))
+                repaired = list(dict.fromkeys([*grouping, *missing]))
+                if repaired == grouping or attempt == 2:
+                    raise
+                query = {**query, "group_by": repaired}
         return {
             "object_id": object_id,
             "kind": kind,
@@ -1784,6 +1816,7 @@ def validate_config_report(
                 "probes_total": 0,
                 "passed": 0,
                 "failed": 0,
+                "skipped": 0,
                 "warnings": len(warnings),
                 "errors": len(parse_report["errors"]),
             },
@@ -1850,8 +1883,9 @@ def validate_config_report(
                     progress(f"WARNING segment failed: {segment.id} ({probe['error']['code']})")
 
         warnings.extend(_filter_value_warnings(runtime))
-        passed = sum(1 for probe in probes if probe["ok"])
-        failed = len(probes) - passed
+        skipped = sum(1 for probe in probes if probe.get("skipped"))
+        failed = sum(1 for probe in probes if not probe["ok"])
+        passed = len(probes) - failed - skipped
         warnings.extend(runtime._seed_warnings)
         return {
             "ok": failed == 0,
@@ -1863,6 +1897,7 @@ def validate_config_report(
                 "probes_total": len(probes),
                 "passed": passed,
                 "failed": failed,
+                "skipped": skipped,
                 "warnings": len(warnings),
                 "errors": len(failures),
             },

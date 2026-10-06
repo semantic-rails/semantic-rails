@@ -201,6 +201,208 @@ def _write_minimal_package(
     _write_seed_sql(package_dir / "data" / "seed_example.sql")
 
 
+@pytest.mark.parametrize("target", ["measure.demo.order_count", "metric.sales.orders"])
+@pytest.mark.parametrize("constraint", ["required_group_by", "required_where"])
+def test_runtime_validation_probes_constrained_objects(tmp_path, target, constraint):
+    package_dir = tmp_path / "constrained_orders"
+    field = "dimension.demo_order_kind"
+    _write_minimal_package(
+        package_dir,
+        extra_dimensions={
+            "kind": {"id": field, "column": "kind", "kind": "categorical"},
+        },
+    )
+    (package_dir / "data" / "seed_example.sql").write_text(
+        "CREATE TABLE order_fact (order_id INTEGER, ordered_at TIMESTAMP, kind VARCHAR);\n"
+        "INSERT INTO order_fact VALUES (1, '2024-01-01', 'retail'), "
+        "(2, '2024-01-02', 'retail'), (3, '2024-01-02', 'wholesale');",
+        encoding="utf-8",
+    )
+    _write_yaml(
+        package_dir / "policies.yml",
+        {
+            "semantic_policies": [
+                {
+                    "id": "policy.orders.cut",
+                    "kind": "metric_constraint",
+                    "object_ids": [target],
+                    constraint: [field],
+                }
+            ]
+        },
+    )
+    report = project_validation_report(
+        resolve_package_reference(path=str(package_dir)), mode="runtime"
+    )
+    assert report["ok"] is True, report["errors"]
+    affected = {target}
+    if target.startswith("measure."):
+        affected.add("metric.sales.orders")
+    skipped = len(affected) if constraint == "required_where" else 0
+    assert report["summary"]["runtime"]["skipped"] == skipped
+    assert report["summary"]["runtime"]["passed"] == 2 - skipped
+    assert report["summary"]["runtime"]["failed"] == 0
+    for probe in report["runtime"]["probes"]:
+        if probe["object_id"] not in affected:
+            assert not probe.get("skipped")
+        elif constraint == "required_group_by":
+            assert probe["query"]["group_by"] == [field]
+            assert not probe.get("skipped")
+        else:
+            assert probe["skipped"] is True
+            assert "required_where" in probe["reason"]
+            assert "where" not in probe["query"]
+    if constraint == "required_group_by":
+        runtime = Runtime.from_path(str(package_dir))
+        try:
+            actual = [
+                typed_rows(runtime.query(probe["query"]))
+                for probe in report["runtime"]["probes"]
+                if probe["object_id"] in affected
+            ]
+        finally:
+            runtime.close()
+        database = Database.connect(runtime.db_path, read_only=True)
+        try:
+            expected = database.query(
+                f'SELECT kind AS "{field}", COUNT(DISTINCT order_id) AS probe_value '
+                "FROM order_fact GROUP BY kind ORDER BY kind"
+            )
+        finally:
+            database.close()
+        assert all(sorted(rows, key=lambda row: row[field]) == expected for rows in actual)
+
+
+def test_probe_combines_required_grouping_with_non_additive_grain(tmp_path):
+    package_dir = tmp_path / "stored_orders"
+    field = "dimension.demo_order_kind"
+    _write_minimal_package(
+        package_dir,
+        extra_dimensions={"kind": {"id": field, "column": "kind", "kind": "categorical"}},
+        extra_measures={
+            "stored_value": {
+                "id": "measure.demo.stored_value",
+                "kind": "aggregate",
+                "expr": "order_id",
+                "additive": False,
+                "time": "ordered_at",
+                "publish": False,
+            }
+        },
+    )
+    (package_dir / "data" / "seed_example.sql").write_text(
+        "CREATE TABLE order_fact (order_id INTEGER, ordered_at TIMESTAMP, kind VARCHAR);\n"
+        "INSERT INTO order_fact VALUES (1, '2024-01-01', 'retail');",
+        encoding="utf-8",
+    )
+    _write_yaml(
+        package_dir / "policies.yml",
+        {
+            "semantic_policies": [
+                {
+                    "id": "policy.orders.cut",
+                    "kind": "metric_constraint",
+                    "object_ids": ["measure.demo.stored_value"],
+                    "required_group_by": [field],
+                }
+            ]
+        },
+    )
+    report = validate_config_report(resolve_package_reference(path=str(package_dir)))
+    assert report["ok"] is True, report["errors"]
+    probe = next(row for row in report["probes"] if row["object_id"] == "measure.demo.stored_value")
+    assert field in probe["query"]["group_by"]
+    assert len(probe["query"]["group_by"]) > 1
+
+
+@pytest.mark.parametrize("constraint", ["required_group_by", "required_where"])
+@pytest.mark.parametrize("denial", ["access", "grouping", "scope"])
+def test_constrained_probe_preserves_denials_and_policy_scope(tmp_path, constraint, denial):
+    package_dir = tmp_path / "policy_scope"
+    field = "dimension.demo_order_order_id"
+    _write_minimal_package(
+        package_dir,
+        extra_dimensions={
+            "order_key": {"id": field, "column": "order_id", "kind": "categorical"},
+        },
+    )
+    policy = {
+        "id": "policy.orders.cut",
+        "kind": "metric_constraint",
+        "object_ids": ["measure.demo.order_count"],
+        constraint: [field],
+    }
+    policies = [policy]
+    if denial == "access":
+        policies.append(
+            {
+                "id": "policy.orders.deny",
+                "kind": "object_access",
+                "action": "deny",
+                "object_ids": ["measure.demo.order_count"],
+            }
+        )
+    elif denial == "grouping":
+        # This second violation appears only after a grouping retry.
+        policy["allowed_group_by"] = []
+    else:
+        policy["roles"] = ["analyst"]
+    _write_yaml(package_dir / "policies.yml", {"semantic_policies": policies})
+    query = {
+        "version": 1,
+        "select": [{"expression": {"measure": "measure.demo.order_count"}, "as": "orders"}],
+    }
+    if denial == "grouping" and constraint == "required_where":
+        query["group_by"] = [field]
+    runtime = Runtime.from_path(str(package_dir))
+    try:
+        probe = _run_probe(
+            runtime, kind="measure", object_id="measure.demo.order_count", query=query
+        )
+    finally:
+        runtime.close()
+    assert probe["ok"] is (denial == "scope"), probe
+    assert not probe.get("skipped")
+    if denial != "scope":
+        assert probe["error"]["code"] == "POLICY_DENIED"
+
+
+@pytest.mark.parametrize(
+    "targets, kind, duplicate",
+    [
+        (["measure.demo.constrained_orders"], "metric_constraint", False),
+        (["measure.demo.order_count"], "metric_constraint", False),
+        (
+            ["measure.demo.order_count", "measure.demo.constrained_orders"],
+            "metric_constraint",
+            True,
+        ),
+        (["measure.demo.constrained_orders"], "object_visibility", True),
+    ],
+)
+def test_duplicate_measure_warning_respects_constraint_identity(tmp_path, targets, kind, duplicate):
+    package_dir = tmp_path / "measure_twins"
+    _write_minimal_package(
+        package_dir,
+        extra_measures={
+            "constrained_orders": {
+                "id": "measure.demo.constrained_orders",
+                "kind": "entity_count",
+                "time": "ordered_at",
+            }
+        },
+    )
+    policy = {"id": "policy.orders.cut", "kind": kind, "object_ids": targets}
+    if kind == "metric_constraint":
+        policy["required_group_by"] = ["dimension.demo_order_order_id"]
+    else:
+        policy["action"] = "hidden"
+    _write_yaml(package_dir / "policies.yml", {"semantic_policies": [policy]})
+    report, _ = parse_config_report(resolve_package_reference(path=str(package_dir)))
+    assert report["ok"] is True, report["errors"]
+    assert any("duplicates" in warning["message"] for warning in report["warnings"]) is duplicate
+
+
 def test_measure_aggregation_warning(tmp_path: Path):
     package_dir = tmp_path / "aggregation_warning_demo"
     _write_minimal_package(

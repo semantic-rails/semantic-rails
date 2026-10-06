@@ -5,6 +5,7 @@ import sys
 import tarfile
 from pathlib import Path
 
+import pytest
 import yaml
 
 from semantic_rails import cli as cli_module
@@ -407,6 +408,48 @@ def test_parse_config_emits_authoring_profile_warnings(tmp_path: Path):
     assert report["ok"] is True
     assert report["warnings"]
     assert any(warning["code"] == "AUTHORING_PROFILE_WARNING" for warning in report["warnings"])
+
+
+@pytest.mark.parametrize(
+    "columns, min_rows, code",
+    [
+        (["temporal_role.demo_order_time__day", "orders"], 0, None),
+        (["wrong", "orders"], 0, "EXAMPLE_SHAPE_MISMATCH"),
+        (["temporal_role.demo_order_time__day", "orders"], 1, "EXAMPLE_ROW_COUNT_MISMATCH"),
+    ],
+)
+def test_empty_window_example_checks_declared_columns(tmp_path, columns, min_rows, code):
+    package_dir = tmp_path / "empty_window"
+    _write_package(package_dir)
+    _write_yaml(
+        package_dir / "examples" / "orders.yml",
+        {
+            "examples": {
+                "empty": {
+                    "query": {
+                        "version": 1,
+                        "select": [
+                            {"expression": {"metric": "metric.sales.orders"}, "as": "orders"}
+                        ],
+                        "time": {
+                            "temporal_role": "temporal_role.demo_order_time",
+                            "grain": "day",
+                            "range": {"last": {"unit": "month", "value": 1}},
+                        },
+                        "policy_context": {"now": "2026-05-04"},
+                    },
+                    "expected_shape": {"columns": columns, "min_rows": min_rows, "max_rows": 0},
+                }
+            }
+        },
+    )
+    report = run_examples_report(resolve_package_reference(path=str(package_dir)))
+    assert report["ok"] is (code is None), report
+    if code:
+        assert report["errors"][0]["code"] == code
+    else:
+        assert report["examples"][0]["columns"] == columns
+        assert report["examples"][0]["row_count"] == 0
 
 
 def test_package_tools_and_cli_support_examples_tests_diff_and_promotion(
