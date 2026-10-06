@@ -20,6 +20,11 @@ from datetime import date, timedelta
 from typing import Any
 
 from ..ast import _relative_range_bounds, is_child_group
+from ..config_parts.measure_governance import (
+    building_block_measures,
+    governing_metrics,
+    published_measure,
+)
 from ..errors import SemanticLayerError
 from ._base import (
     _BOUNDARY_BEFORE_RE,
@@ -40,8 +45,11 @@ from ._base import (
     _fiscal_calendar,
     _named_metric,
     _names_time_axis,
+    _object_by_id,
     _object_text,
     _requested_grouping_spans,
+    _said_name,
+    _singular,
     _tied_top,
     _time_bounds_from_text,
     _time_window,
@@ -49,7 +57,7 @@ from ._base import (
 )
 from .generators import _target_focus_text
 from .intent_ir import IntentIR
-from .visibility import visible_dimensions, visible_value_domains
+from .visibility import visible_dimensions, visible_object_ids, visible_value_domains
 
 
 @dataclass(frozen=True)
@@ -382,6 +390,11 @@ def intent_faithfulness_why(
                 },
             )
         )
+    gaps.extend(
+        _governed_metric_gaps(
+            runtime._config, question, query, partial_query or {}, named[0].id if named else ""
+        )
+    )
     partition_match = _PARTITIONED_RANK_RE.search(text)
     if (
         partition_match
@@ -553,6 +566,71 @@ def _ambiguous_grouping_gaps(
             },
         )
     ]
+
+
+def _governed_metric_gaps(
+    config: Any, question: str, query: dict[str, Any], partial_query: dict[str, Any], reported: str
+) -> list[CoverageGap]:
+    """Hold a draft that answers with a measure a metric filters, where that metric fits.
+
+    The draft selects the measure itself, or the metric that is its plain aggregate, and does
+    not select a metric that aggregates the measure through a filter while the question's
+    whole question names that metric, or the measure is a building block. A measure or metric
+    the caller's ``partial_query`` names is the caller's choice; ``reported`` already has its
+    own gap.
+    """
+
+    caller = set(_referenced_ids(partial_query))
+    selected = list(
+        dict.fromkeys(
+            node[key]
+            for node in _dict_nodes(list(query.get("select") or []))
+            for key in ("measure", "metric")
+            if isinstance(node.get(key), str)
+        )
+    )
+    building_blocks = building_block_measures(config)
+    gaps: list[CoverageGap] = []
+    for object_id in selected:
+        plain = _object_by_id(config.metric_recipes, object_id)
+        measure_id = published_measure(plain) if plain is not None else object_id
+        if not measure_id or {object_id, measure_id} & caller:
+            continue
+        governing = governing_metrics(config, measure_id)
+        visible = set(visible_object_ids(config, (metric.id for metric in governing)))
+        governing = [metric for metric in governing if metric.id in visible]
+        metrics = [
+            metric.id
+            for metric in governing
+            if metric.id not in selected
+            and metric.id != reported
+            and (measure_id in building_blocks or _said_name(metric, question))
+        ]
+        if not metrics and (measure_id not in building_blocks or governing):
+            continue
+        measure = _object_by_id(config.measures, measure_id)
+        gaps.append(
+            CoverageGap(
+                kind="governed_metric_unrealized",
+                clause=str(getattr(measure, "label", "") or measure_id),
+                message=(
+                    "The draft reads this measure without the filter of a governed metric "
+                    "that fits the question."
+                    if metrics
+                    else "The draft reads a building-block measure without a visible governed metric."
+                ),
+                expected={"metrics": metrics},
+                actual={"measure": measure_id},
+                recovery_hint={
+                    "kind": "use_governed_metric",
+                    "message": (
+                        "Select the governed metric in Query IR. Pass the measure in "
+                        "partial_query only when the question asks for every row it counts."
+                    ),
+                },
+            )
+        )
+    return gaps
 
 
 def _coverage_why(gaps: list[CoverageGap]) -> dict[str, Any] | None:
@@ -1089,14 +1167,6 @@ def _noun_phrase(words: list[str], start: int) -> tuple[str, int]:
         return "", start
     head = words[end - 1]
     return (head[:-2] if head.endswith("'s") else head), end
-
-
-def _singular(word: str) -> str:
-    if word.endswith("ies"):
-        return word[:-3] + "y"
-    if word.endswith("s") and not word.endswith("ss"):
-        return word[:-1]
-    return word
 
 
 def _ranking_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:

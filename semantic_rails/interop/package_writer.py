@@ -26,9 +26,9 @@ from ..config import (
     _suggested_aggregations,
     load_package_snapshot,
 )
-from ..config_parts.package_loader import _slug
 from ..errors import SemanticLayerError
 from ..expressions import expr_to_dict
+from ..naming import slug as _slug
 from ..package_snapshot import semantic_payload
 from ..schema import OBSERVATION_SCOPES, PackageConfig
 

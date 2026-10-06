@@ -14,8 +14,14 @@ from datetime import date, timedelta
 from functools import lru_cache
 from typing import Any
 
-from ..expressions import MeasureRefExpr, expr_to_dict
-from .visibility import visible_dimensions, visible_value_domains
+from ..config_parts.measure_governance import (
+    building_block_measures,
+    governing_metrics,
+    whole_aggregate,
+)
+from ..errors import SemanticLayerError
+from ..expressions import MeasureRefExpr, collect_object_references, expr_to_dict
+from .visibility import visible_dimensions, visible_object_ids, visible_value_domains
 
 
 @dataclass(frozen=True)
@@ -110,6 +116,14 @@ def _cached_tokens(text: str) -> tuple[str, ...]:
 
 def _tokens(text: str) -> tuple[str, ...]:
     return _cached_tokens(str(text or ""))
+
+
+def _singular(word: str) -> str:
+    if word.endswith("ies"):
+        return word[:-3] + "y"
+    if word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
 
 
 def _object_text(row: Any) -> str:
@@ -392,6 +406,83 @@ def _named_metric(config: Any, text: str) -> tuple[Any, str] | None:
         return None
     first, last = words[start].start(), words[start + size - 1].end()
     return metric, f"{text[:first]}{metric.id}{text[last:]}"
+
+
+def _said_name(row: Any, text: str) -> frozenset[str]:
+    """The words of the longest name of ``row`` that ``text`` says, in any order.
+
+    The swap matches the target phrase (``_target_focus_text``); the readiness guard matches
+    the whole question. The names are its label, with or without a parenthetical, the last
+    part of its id and its aliases; a plural counts as its singular. Empty when the text
+    says none.
+    """
+
+    said = {_singular(word) for word in _tokens(text)}
+    label = str(getattr(row, "label", "") or "")
+    names = [label, re.sub(r"\s*\(.*?\)", "", label), _last_token(row.id), *(row.aliases or [])]
+    return max(
+        (words for name in names if (words := frozenset(map(_singular, _tokens(name)))) <= said),
+        key=len,
+        default=frozenset(),
+    )
+
+
+def _governed_target(config: Any, focus: str, query: dict[str, Any]) -> Any | None:
+    """The metric a one-select draft over a measure answers with instead.
+
+    The select reads a measure, or the metric that is its plain aggregate. A metric that
+    aggregates that measure the same way through a filter governs it ("Active stores" over
+    "Active stores (all kinds)"). It is the answer when the question's target phrase ``focus``
+    names it (``_said_name``), and names no other such metric as fully nor the measure more
+    fully; or when the measure is a building block and this metric alone governs it. Never
+    when the draft filters or groups by something its filter reads: "demo stores" asks for
+    rows the governed metric leaves out.
+    """
+
+    select = list(query.get("select") or [])
+    expression = select[0].get("expression") if len(select) == 1 else None
+    if not isinstance(expression, dict):
+        return None
+    plain = _object_by_id(config.metric_recipes, str(expression.get("metric", "")))
+    whole = whole_aggregate(plain) if plain is not None else None
+    if plain is not None and (whole is None or whole[2]):
+        return None
+    measure_id, aggregation = whole[:2] if whole else (expression.get("measure"), "")
+    measure = _object_by_id(config.measures, str(measure_id or ""))
+    if measure is None:
+        return None
+    aggregation = aggregation or expression.get("aggregation") or measure.default_aggregation
+    governing = governing_metrics(config, measure.id)
+    visible = set(visible_object_ids(config, (metric.id for metric in governing)))
+    governing = [metric for metric in governing if metric.id in visible]
+    candidates = {
+        metric.id: (metric, governed[2])
+        for metric in governing
+        if (governed := whole_aggregate(metric)) is not None
+        and governed[0] == measure.id
+        and (governed[1] or measure.default_aggregation) == aggregation
+    }
+    named = {metric.id: words for metric in governing if (words := _said_name(metric, focus))}
+    widest = [key for key in named if all(words <= named[key] for words in named.values())]
+    if named:
+        chosen = widest[0] if len(widest) == 1 else ""
+    elif measure.id in building_block_measures(config) and len(governing) == 1:
+        chosen = governing[0].id
+    else:
+        chosen = ""
+    asked = _said_name(measure, focus) | (_said_name(plain, focus) if plain else frozenset())
+    if chosen not in candidates or not asked <= named.get(chosen, frozenset()):
+        return None
+    metric, narrowing = candidates[chosen]
+    try:
+        cuts = {key: query.get(key) for key in ("where", "group_by", "metric_filters")}
+        if set(collect_object_references(narrowing, config)) & set(
+            collect_object_references(cuts, config)
+        ):
+            return None
+    except SemanticLayerError:
+        return None
+    return metric
 
 
 _NAME_CONNECTORS = frozenset(

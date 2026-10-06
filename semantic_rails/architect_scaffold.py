@@ -22,9 +22,10 @@ from typing import Any, Literal
 import yaml
 
 from .config import SEED_KIND_EXTERNAL
-from .config_parts.package_loader import _slug as _id_slug  # the loader's id slug
 from .dialects import supported_warehouses, warehouse_connector
 from .errors import SemanticLayerError
+from .naming import slug
+from .naming import title as _title
 from .sql_identifiers import relation_parts
 
 DataMode = Literal["starter", "external"]
@@ -94,17 +95,6 @@ class ProjectSpec:
     warehouse: ProjectWarehouse = field(default_factory=ProjectWarehouse)
     first_model: FirstModel = field(default_factory=FirstModel)
     environments: tuple[str, ...] = ("development", "staging", "production")
-
-
-def slug(value: str, *, fallback: str) -> str:
-    out = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or "")).strip("_")
-    while "__" in out:
-        out = out.replace("__", "_")
-    return out or fallback
-
-
-def _title(value: str) -> str:
-    return " ".join(part.capitalize() for part in value.replace("_", " ").split()) or value
 
 
 def _identifier(value: str, *, field_name: str, dotted: bool = False) -> str:
@@ -317,7 +307,8 @@ def _plan(spec: ProjectSpec) -> _Plan:
         )
     return _Plan(
         package_id=package_id,
-        description=spec.description or f"{_title(package_id)} Semantic Rails package.",
+        description=spec.description
+        or f"{_title(package_id, fallback=package_id)} Semantic Rails package.",
         warehouse=ProjectWarehouse(
             kind=kind,
             data="starter" if starter else "external",
@@ -377,7 +368,7 @@ def _package_document(plan: _Plan) -> dict[str, Any]:
 
 
 def _model_document(plan: _Plan) -> dict[str, Any]:
-    entity_title = _title(plan.entity)
+    entity_title = _title(plan.entity, fallback=plan.entity)
     rows = plan.entity.replace("_", " ")
     measures: dict[str, Any] = {
         f"{plan.entity}_count": {
@@ -411,7 +402,7 @@ def _model_document(plan: _Plan) -> dict[str, Any]:
     if plan.time_column:
         model["times"] = {
             plan.time_column: {
-                "label": _title(plan.time_column),
+                "label": _title(plan.time_column, fallback=plan.time_column),
                 "column": plan.time_column,
                 "kind": "timestamp",
                 "class": "event_time",
@@ -420,7 +411,10 @@ def _model_document(plan: _Plan) -> dict[str, Any]:
         }
     if plan.dimension_column:
         model["dimensions"] = {
-            plan.dimension_column: {"label": _title(plan.dimension_column), "kind": "categorical"}
+            plan.dimension_column: {
+                "label": _title(plan.dimension_column, fallback=plan.dimension_column),
+                "kind": "categorical",
+            }
         }
     model["measures"] = measures
     return {"model": model}
@@ -430,7 +424,7 @@ def _metrics_document(plan: _Plan) -> dict[str, Any]:
     rows = plan.entity.replace("_", " ")
     metrics: dict[str, Any] = {
         f"{plan.entity}_count": {
-            "label": f"{_title(plan.entity)} count",
+            "label": f"{_title(plan.entity, fallback=plan.entity)} count",
             "description": f"Count of unique {rows} rows.",
             "kind": "aggregate",
             "measure": f"{plan.entity}_count",
@@ -452,7 +446,7 @@ def _metrics_document(plan: _Plan) -> dict[str, Any]:
 
 def _examples_and_tests(plan: _Plan) -> tuple[dict[str, Any], dict[str, Any]]:
     ns = plan.package_id
-    temporal_role = f"temporal_role.{ns}_{plan.entity}_{_id_slug(plan.time_column)}"
+    temporal_role = f"temporal_role.{ns}_{plan.entity}_{slug(plan.time_column)}"
     metric_key = "total_amount" if plan.amount_column else f"{plan.entity}_count"
     query: dict[str, Any] = {
         "version": 1,
@@ -464,11 +458,12 @@ def _examples_and_tests(plan: _Plan) -> tuple[dict[str, Any], dict[str, Any]]:
         query["order_by"] = [{"field": "time", "direction": "ASC"}]
     suffix = "_by_day" if plan.time_column else ""
     if plan.dimension_column:
-        query["group_by"] = [f"dimension.{ns}_{plan.entity}_{_id_slug(plan.dimension_column)}"]
+        query["group_by"] = [f"dimension.{ns}_{plan.entity}_{slug(plan.dimension_column)}"]
     examples = {
         "examples": {
             f"starter_{metric_key}{suffix}": {
-                "question": f"{_title(metric_key)}" + (" by day" if plan.time_column else ""),
+                "question": f"{_title(metric_key, fallback=metric_key)}"
+                + (" by day" if plan.time_column else ""),
                 "query": query,
                 "expected_shape": {"min_rows": 1},
             }
@@ -536,7 +531,7 @@ def project_scaffold_files(spec: ProjectSpec) -> dict[str, bytes]:
                 "graph": {
                     "entities": {
                         plan.entity: {
-                            "label": _title(plan.entity),
+                            "label": _title(plan.entity, fallback=plan.entity),
                             "key": [plan.primary_key],
                             "model": plan.model_id,
                             "allowed_as_root": True,

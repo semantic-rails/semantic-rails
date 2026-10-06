@@ -16,6 +16,7 @@ from .diagnostics import semantic_issue
 from .expressions import collect_object_references, expr_to_dict
 from .policies import context_scope_matches
 from .schema import PackageConfig, SemanticCaveatConfig
+from .temporal_support import _date_key, _range_intersects
 
 
 @dataclass(frozen=True)
@@ -558,12 +559,6 @@ def _bookends_point(intervals: list[_Interval], point: str) -> bool:
     return before and after
 
 
-def _range_intersects(start: str, end: str, window_start: str, window_end: str) -> bool:
-    lower_ok = not window_end or not start or start < window_end
-    upper_ok = not window_start or not end or end > window_start
-    return lower_ok and upper_ok
-
-
 def _bookends_range(intervals: list[_Interval], start: str, end: str) -> bool:
     if not start or not end:
         return False
@@ -574,10 +569,6 @@ def _bookends_range(intervals: list[_Interval], start: str, end: str) -> bool:
 
 def _interval_payload(interval: _Interval) -> dict[str, str]:
     return {"start": interval.start, "end": interval.end, "source": interval.source}
-
-
-def _date_key(value: Any) -> str:
-    return str(value or "").split("T", 1)[0].split(" ", 1)[0]
 
 
 def _parse_date(value: str) -> date | None:

@@ -1389,7 +1389,7 @@ def test_order_lifecycle_covers_full_order_date_range(runtime_factory):
     try:
         result = runtime.query(
             {
-                "version": 2,
+                "version": 1,
                 "select": [
                     {
                         "expression": {"measure": "measure.jaffle.delivered_revenue_usd"},

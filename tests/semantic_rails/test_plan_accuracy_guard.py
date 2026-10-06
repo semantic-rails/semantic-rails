@@ -57,7 +57,7 @@ def adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
 
 
 def _query(select: dict[str, Any] = REVENUE, **parts: Any) -> dict[str, Any]:
-    return {"version": 2, "select": [select], **parts}
+    return {"version": 1, "select": [select], **parts}
 
 
 def _gaps(adapter: SemanticLayerMCPAdapter, text: str, query: dict[str, Any], **kwargs: Any):
@@ -277,7 +277,7 @@ def test_a_lookback_metrics_dropped_start_is_left_to_plan(
 def test_a_prior_period_comparison_is_not_a_window(adapter: SemanticLayerMCPAdapter) -> None:
     # The dev split's correct answer to J32.
     alongside = {
-        "version": 2,
+        "version": 1,
         "select": [
             REVENUE,
             {
@@ -311,7 +311,7 @@ def test_a_callers_window_never_turns_a_prior_period_offset_into_a_gap(
     # Pinning the window is the caller's choice; the "previous month" is still the offset.
     march = {"start": "2017-03-01", "end": "2017-04-01"}
     alongside = {
-        "version": 2,
+        "version": 1,
         "select": [
             REVENUE,
             {
@@ -959,7 +959,6 @@ def test_negated_include_remains_an_exclusion(adapter: SemanticLayerMCPAdapter, 
         ),
         # Grouping by a value's dimension shows it as a row.
         ("revenue by product type, food vs drink", _query(ITEM_REVENUE, group_by=[PRODUCT_TYPE])),
-        ("orders by customer type, new vs repeat", _query(ORDERS, group_by=[CUSTOMER_TYPE])),
         # "new" names a customer type only next to a word of that dimension.
         (
             "new store revenue by month",
@@ -971,6 +970,17 @@ def test_honored_values_are_not_gaps(
     adapter: SemanticLayerMCPAdapter, text: str, query: dict[str, Any]
 ) -> None:
     assert _gap_kinds(adapter, text, query) == []
+
+
+def test_the_whole_question_can_name_a_metric_across_grouping_words(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    # The values are honored, but the whole question also names Repeat customer orders.
+    gaps = _gaps(
+        adapter, "orders by customer type, new vs repeat", _query(ORDERS, group_by=[CUSTOMER_TYPE])
+    )
+    assert [gap["kind"] for gap in gaps] == ["governed_metric_unrealized"]
+    assert gaps[0]["expected"]["metrics"] == ["metric.sales.repeat_customer_orders"]
 
 
 def test_values_the_draft_ignores_are_gaps(adapter: SemanticLayerMCPAdapter) -> None:
@@ -1231,7 +1241,7 @@ BROOKLYN_REVENUE = {
         (
             "top 5 stores by revenue",
             {
-                "version": 2,
+                "version": 1,
                 "select": [REVENUE, ORDERS],
                 "group_by": [STORE],
                 "order_by": [{"field": "revenue_usd", "direction": "DESC"}],
