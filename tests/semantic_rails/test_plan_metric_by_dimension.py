@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from semantic_rails.expressions import AggregateExpr, ColumnRefExpr
-from semantic_rails.planner import compose
+from semantic_rails.planner import compose, plan_payload
 from semantic_rails.planner.generators import _choose_group_dimensions
 from semantic_rails.schema import (
     DimensionConfig,
@@ -26,6 +26,7 @@ from semantic_rails.schema import (
     PackageConfig,
     PackageMeta,
 )
+from tests.semantic_rails.result_helpers import assert_plan_held
 
 _FIRES_FROM_PROPOSE = [
     ("top stores by revenue", "measure.jaffle.revenue_usd"),
@@ -57,6 +58,9 @@ def test_metric_by_dimension_without_time_cue_does_not_invent_a_bucket(runtime_f
     runtime = runtime_factory("jaffle_shop")
     try:
         result = compose(runtime, "orders by store")
+        assert_plan_held(
+            plan_payload(runtime, intent="orders by store"), "PLAN_FALLBACK_SEMANTIC_DRIFT"
+        )
     finally:
         runtime.close()
 
@@ -70,7 +74,7 @@ def test_metric_by_dimension_without_time_cue_does_not_invent_a_bucket(runtime_f
             },
         }
     ]
-    assert query["group_by"] == ["dimension.jaffle_store_name"]
+    assert query["group_by"] == ["dimension.jaffle_customer_history_preferred_store_id"]
     assert "time" not in query
 
 

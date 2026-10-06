@@ -12,15 +12,23 @@ from __future__ import annotations
 
 import contextvars
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import replace
+from dataclasses import fields, is_dataclass, replace
 from functools import cache
 from typing import Any
 
-from .ast import every_filter, normalize_query, plain_filters
+from .ast import NormalizedQuery, every_filter, normalize_query, plain_filters
 from .compiler import BoundQuery, bind_metadata_objects, bind_query
 from .compiler_parts.indexes import get_package_analysis
 from .errors import SemanticLayerError
-from .expressions import collect_column_refs
+from .expressions import (
+    AggregateExpr,
+    ConditionalAggregateExpr,
+    ConversionExpr,
+    MetricPredicateExpr,
+    ScopedAggregateExpr,
+    collect_column_refs,
+    parse_semantic_expression,
+)
 from .policy_rules import MAX_RANK, hidden_policy_ids, visible_only_listed, withheld_max_rank
 from .policy_rules import context_scope_matches as context_scope_matches
 from .policy_rules import policy_action as _policy_action
@@ -41,6 +49,8 @@ from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral,
 from .sql_preparation import checked_slot_value
 
 WITHHOLD = "withhold_values"
+# A conditional aggregate's condition reads columns, not fields: no allowed_where lists it.
+INLINE_CONDITION = "aggregate_if.condition"
 WITHHELD_SHAPE = (
     "Select the withheld metric directly, put it first in order_by, then every group key in "
     "the same direction (added for you when order_by names only the metric), with a limit of "
@@ -690,6 +700,13 @@ def _metric_constraint_violations(
 
     # A required filter must cut the query's own rows; a child group's condition cuts child
     # rows, so it never meets one. Every condition, a group's included, must be allowed.
+    # An expression filter never meets required_where; it must be allowed when it counts
+    # for the governed object, including whole-query attribution for nested filters.
+    inline = cache(
+        lambda: _governed_inline_fields(
+            _inline_filters(query), bound, object_id, package_wide=not policy.object_ids
+        )
+    )
     where_rows = [
         {"field": item.field, "op": item.op, "value": item.value}
         for item in plain_filters(query.where)
@@ -718,6 +735,16 @@ def _metric_constraint_violations(
             violations.append(
                 {"kind": "disallowed_where", "disallowed": disallowed, "allowed": sorted(allowed)}
             )
+        disallowed = [field for field in inline() if field not in allowed]
+        if disallowed:
+            violations.append(
+                {
+                    "kind": "disallowed_where",
+                    "disallowed": disallowed,
+                    "allowed": sorted(allowed),
+                    "source": "inline_expression",
+                }
+            )
 
     if "allowed_temporal_roles" in policy_config:
         allowed = set(_config_str_list(policy_config, "allowed_temporal_roles"))
@@ -742,6 +769,15 @@ def _metric_constraint_violations(
     refs = metric_filter_refs(object_id) if filters_denied or allowlists else {}
     if filters_denied and bound().object_cuts(object_id):
         violations.append({"kind": "metric_filters_not_allowed", "metric_filter_refs": refs})
+    elif filters_denied and inline():
+        # Every inline filter is a cut, whether or not the compiler recorded one.
+        violations.append(
+            {
+                "kind": "metric_filters_not_allowed",
+                "metric_filter_refs": refs,
+                "source": "inline_expression",
+            }
+        )
     if allowlists and refs.get("unresolved"):
         violations.append({"kind": "unresolved_metric_filter", "unresolved": refs["unresolved"]})
     if "allowed_metric_filter_entities" in policy_config:
@@ -792,6 +828,82 @@ def _where_spec_matches(row: Mapping[str, Any], spec: Mapping[str, Any]) -> bool
     if "op" in spec and str(row.get("op", "")).upper() != str(spec.get("op", "")).upper():
         return False
     return "value" not in spec or row.get("value") == spec.get("value")
+
+
+def _inline_filters(query: NormalizedQuery) -> list[tuple[str | None, str]]:
+    """``(measure, field)`` for each filter the caller wrote inside a select or metric-filter
+    expression: an aggregate's ``filter`` and a scoped aggregate's ``where``, at any depth,
+    predicate inputs included. A conditional aggregate's condition has no declared measure and
+    is ``("", INLINE_CONDITION)``. ``measure=None`` marks whole-query attribution under
+    predicates, metric filters and conversion operands. Recipes are not read here.
+    """
+    found: list[tuple[str | None, str]] = []
+
+    def visit(expr: Any, *, whole_query: bool = False) -> None:
+        whole_query = whole_query or isinstance(expr, (MetricPredicateExpr, ConversionExpr))
+        nested: list[Any] = []
+        if isinstance(expr, AggregateExpr):
+            for clause in expr.filter.get("all", []):
+                if "expression" in clause:
+                    nested.append(dict(clause["expression"]))
+                else:
+                    found.append((None if whole_query else expr.measure, str(clause["field"])))
+        elif isinstance(expr, ScopedAggregateExpr):
+            found.extend(
+                (None if whole_query else expr.measure, str(item.get("field", "")))
+                for item in expr.where
+            )
+            nested.extend(
+                dict(item["input"])
+                for item in expr.predicates
+                if isinstance(item.get("input"), dict)
+            )
+        elif isinstance(expr, ConditionalAggregateExpr):
+            found.append((None if whole_query else "", INLINE_CONDITION))
+        for payload in nested:
+            visit(parse_semantic_expression(payload, context="query"), whole_query=True)
+        for item in fields(expr) if is_dataclass(expr) else ():
+            value = getattr(expr, item.name)
+            for child in value if isinstance(value, list) else [value]:
+                if is_dataclass(child):
+                    visit(child, whole_query=whole_query)
+
+    for row in query.select:
+        visit(row.expression)
+    for metric_filter in query.metric_filters:
+        visit(metric_filter.expression, whole_query=True)
+    return found
+
+
+def _governed_inline_fields(
+    filters: list[tuple[str | None, str]],
+    bound: Callable[[], BoundQuery],
+    object_id: str,
+    *,
+    package_wide: bool,
+) -> list[str]:
+    """The fields of the inline filters that cut ``object_id``.
+
+    A filter is owned by the query's root leaves over its measure, and counts by the rule
+    that attributes the compiler's own cuts (:meth:`BoundQuery.cut_counts`). A filter on the
+    governed measure itself, under a package-wide constraint, or marked whole-query
+    (``measure=None``) always counts.
+    """
+
+    def owners(measure: str) -> frozenset[str]:
+        return frozenset(
+            row.alias for row in bound().plan.bound_measures if row.measure_id == measure
+        )
+
+    out = [
+        field
+        for measure, field in filters
+        if package_wide
+        or measure is None
+        or measure == object_id
+        or bound().cut_counts(object_id, owners(measure))
+    ]
+    return list(dict.fromkeys(out))
 
 
 def _metric_filter_refs(

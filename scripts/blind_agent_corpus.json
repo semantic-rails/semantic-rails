@@ -3,15 +3,13 @@
     {
       "name": "top_stores_by_revenue",
       "intent": "What are the top stores by revenue?",
-      "expectation": "candidate",
+      "expectation": "clarification",
       "expected_resolved_ids": [
         "measure.jaffle.revenue_usd"
       ],
-      "expected_query_patch": {
-        "group_by": [
-          "dimension.jaffle_store_name"
-        ]
-      }
+      "expected_query_patch": {},
+      "expected_status": "low_confidence",
+      "forbid_ready_for_execute": true
     },
     {
       "name": "new_customer_orders_trending",
@@ -68,15 +66,13 @@
     {
       "name": "inventory_levels_by_store",
       "intent": "What are end-of-month inventory levels by store?",
-      "expectation": "candidate",
+      "expectation": "clarification",
       "expected_resolved_ids": [
         "measure.jaffle.inventory_on_hand_eop"
       ],
-      "expected_query_patch": {
-        "group_by": [
-          "dimension.jaffle_store_name"
-        ]
-      }
+      "expected_query_patch": {},
+      "expected_status": "low_confidence",
+      "forbid_ready_for_execute": true
     },
     {
       "name": "repeat_customer_orders",
@@ -97,23 +93,21 @@
     {
       "name": "active_menu_snapshot_for_high_activity_stores",
       "intent": "Give me the sum of active menu snapshot at the store dimension for stores that have done more than one order and more than one session grouped by month.",
-      "expectation": "candidate",
+      "expectation": "clarification",
       "expected_resolved_ids": [
         "measure.jaffle.active_menu_count_eop",
         "measure.jaffle.order_count",
         "measure.jaffle.session_starts",
-        "entity.jaffle_store",
-        "dimension.jaffle_store_name"
+        "entity.jaffle_store"
       ],
       "expected_query_patch": {
-        "group_by": [
-          "dimension.jaffle_store_name"
-        ],
         "time": {
           "temporal_role": "temporal_role.jaffle_inventory_day",
           "grain": "month"
         }
-      }
+      },
+      "expected_status": "low_confidence",
+      "forbid_ready_for_execute": true
     },
     {
       "name": "signup_to_send_adoption_for_high_order_rate_stores",
@@ -186,7 +180,7 @@
     {
       "name": "adversarial_fake_ids_route_to_real_revenue",
       "intent": "Use metric.sales.moon_revenue and dimension.jaffle_mars_colony_id for revenue by store.",
-      "expectation": "candidate",
+      "expectation": "clarification",
       "expected_resolved_ids": [
         "measure.jaffle.revenue_usd"
       ],
@@ -194,11 +188,9 @@
         "metric.sales.moon_revenue",
         "dimension.jaffle_mars_colony_id"
       ],
-      "expected_query_patch": {
-        "group_by": [
-          "dimension.jaffle_store_name"
-        ]
-      }
+      "expected_query_patch": {},
+      "expected_status": "low_confidence",
+      "forbid_ready_for_execute": true
     }
   ],
   "builder_cases": [

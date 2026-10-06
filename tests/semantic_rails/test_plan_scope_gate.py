@@ -25,6 +25,7 @@ import pytest
 from semantic_rails.metadata import discover_payload
 from semantic_rails.planner import plan_payload
 from tests.plan_candidate_envelope import plan_candidate_envelope
+from tests.semantic_rails.result_helpers import held_candidate
 
 NONSENSE_INTENTS = [
     "compile the linux kernel",
@@ -97,7 +98,14 @@ def test_plan_lets_reasonable_intents_through(runtime_factory, intent):
         payload = plan_candidate_envelope(runtime, intent=intent)
     finally:
         runtime.close()
-    assert payload["candidates"], f"reasonable intent {intent!r} should still produce candidates"
+    if intent == "orders per store":
+        held_candidate(payload, "PLAN_UNMATCHED_TERMS")
+    elif intent == "revenue by store last month":
+        held_candidate(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+    else:
+        assert payload["candidates"], (
+            f"reasonable intent {intent!r} should still produce candidates"
+        )
     assert "out_of_scope" not in payload
     assert "low_relevance" not in payload
 

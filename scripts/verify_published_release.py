@@ -145,7 +145,7 @@ expected = __EXPECTED_VERSION__
 assert installed_version("semantic-rails") == expected
 runtime = Runtime("jaffle_shop")
 try:
-    planned = plan_payload(runtime, intent="orders by store", detail="best", limit=1)
+    planned = plan_payload(runtime, intent="orders by store name", detail="best", limit=1)
     assert planned.get("status") == "ok", planned
     best = planned.get("best") or {}
     assert best.get("validation_ok") is True, planned

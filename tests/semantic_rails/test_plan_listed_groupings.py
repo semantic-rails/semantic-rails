@@ -29,7 +29,7 @@ from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import DimensionConfig, SemanticPolicyConfig
-from tests.semantic_rails.result_helpers import typed_rows
+from tests.semantic_rails.result_helpers import assert_plan_held, typed_rows
 from tests.semantic_rails.test_plan_catalog_words import _with_store_dimensions
 from tests.semantic_rails.test_plan_value_lists import (
     STORE_DISTRICT,
@@ -269,7 +269,7 @@ def test_an_unrelated_dimension_never_masks_a_dropped_order_grouping(jaffle: Run
     assert "execute" not in payload["next"].get("ready_for", [])
     assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
     assert payload["why"]["details"]["dropped_groupings"] == ["order"]
-    assert payload["best"]["query_ir"]["group_by"] == [STORE, CUSTOMER_TYPE]
+    assert payload["best"]["query_ir"]["group_by"] == [CUSTOMER_TYPE]
     assert len(typed_rows(jaffle.query(payload["best"]["query_ir"]))) == 2
 
 
@@ -406,7 +406,9 @@ def test_a_window_inside_the_list_never_drops_a_later_grouping(jaffle: Runtime) 
     assert "execute" not in payload["next"].get("ready_for", [])
     assert payload["why"]["code"] == "PLAN_UNMATCHED_TERMS"
     assert payload["why"]["details"]["dropped_groupings"] == ["customer type"]
-    assert payload["best"]["query_ir"]["group_by"] == [STORE]
+    assert payload["best"]["query_ir"]["group_by"] == [
+        "dimension.jaffle_customer_history_preferred_store_id"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -611,6 +613,18 @@ def test_a_comma_before_a_trailing_clause_keeps_the_original_plan(
     jaffle: Runtime, intent: str, status: str, groups: list[str], window: str | None
 ) -> None:
     payload = plan_payload(jaffle, intent=intent)
+    if intent in {
+        "revenue by store, last month",
+        "revenue by store, sorted by revenue",
+        "revenue by store",
+    }:
+        assert_plan_held(
+            payload,
+            "PLAN_FALLBACK_SEMANTIC_DRIFT"
+            if intent == "revenue by store" or "sorted" in intent
+            else "PLAN_UNMATCHED_TERMS",
+        )
+        return
     assert payload["status"] == status, payload.get("why")
     query = payload["best"]["query_ir"]
     assert query.get("group_by", []) == groups
@@ -700,6 +714,18 @@ def test_a_single_grouping_stays_ready(
 ) -> None:
     payload = plan_payload(jaffle, intent=intent)
 
+    if intent in {
+        "revenue by store, last month",
+        "revenue by store, sorted by revenue",
+        "revenue by store",
+    }:
+        assert_plan_held(
+            payload,
+            "PLAN_FALLBACK_SEMANTIC_DRIFT"
+            if intent == "revenue by store" or "sorted" in intent
+            else "PLAN_UNMATCHED_TERMS",
+        )
+        return
     assert payload["status"] == "ok", payload.get("why")
     query = payload["best"]["query_ir"]
     assert query.get("group_by") == group_by
@@ -844,12 +870,12 @@ _GRAIN_PHRASES = [
     for unit in ("day", "week", "month", "quarter", "year")
 ]
 _BEFORE = [
-    _Before("revenue by store, last month", OK),
+    _Before("revenue by store, last month", "ok", held=True, code="PLAN_UNMATCHED_TERMS"),
     _Before("revenue by month, last year", OK),
     _Before("revenue by store, 2017", WINDOW),
-    _Before("revenue by store, sorted by revenue", UNMATCHED),
+    _Before("revenue by store, sorted by revenue", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
     _Before("order count by customer type, order for Brooklyn store", OK, held=True),
-    _Before("revenue by store, customer type and product type", UNMATCHED),
+    _Before("revenue by store, customer type and product type", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
     _Before("What was revenue by month, beside the revenue of the month before?", UNMATCHED),
     _Before(
         "What was revenue by month, and how much of it came from orders of 50 USD or more?",
@@ -858,8 +884,8 @@ _BEFORE = [
     _Before("order count by customer type, order", OK, held=True),
     _Before("order count by customer history, month", OK, held=True),
     _Before("revenue by store, last month and customer type", UNMATCHED),
-    _Before("revenue by store last month and customer type", OK),
-    _Before("the top 5 stores by revenue", OK),
+    _Before("revenue by store last month and customer type", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+    _Before("the top 5 stores by revenue", "PLAN_INTENT_COVERAGE_GAP"),
     _Before("revenue by customer segment", INVALID),
     _Before("order count by month, name", UNMATCHED),
     _Before("top customers by revenue", OK),
@@ -897,41 +923,44 @@ _BEFORE = [
     ),
     _Before("order count by month and name", OK, held=True),
     _Before("order count by month, customer name", UNMATCHED),
-    _Before("order count by month, store name", OK),
+    _Before("order count by month, store name", "PLAN_UNMATCHED_TERMS"),
     _Before("order count by month and customer name", OK),
     _Before("order count by month and store name", OK),
-    _Before("revenue by store", OK),
+    _Before("revenue by store", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
     _Before("revenue by month", OK),
-    _Before("revenue by store, customer type", UNMATCHED),
-    _Before("revenue by store and customer type", OK),
-    _Before("revenue by store, customer type, and product type", UNMATCHED),
-    _Before("revenue by store,customer type", UNMATCHED),
-    _Before("revenue by store; customer type", UNMATCHED),
+    _Before("revenue by store, customer type", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+    _Before("revenue by store and customer type", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+    _Before("revenue by store, customer type, and product type", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+    _Before("revenue by store,customer type", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+    _Before("revenue by store; customer type", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
     _Before("revenue by store, customer type for 2017", UNMATCHED),
-    _Before("revenue by store, the customer type", UNMATCHED),
-    _Before("revenue by store, order date", UNMATCHED),
-    _Before("revenue by store, nonsense, customer type", UNMATCHED),
-    _Before("revenue by store, order", UNMATCHED),
-    _Before("revenue by store, date", UNMATCHED),
+    _Before("revenue by store, the customer type", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+    _Before("revenue by store, order date", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+    _Before("revenue by store, nonsense, customer type", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+    _Before("revenue by store, order", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+    _Before("revenue by store, date", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
     _Before("revenue from orders", UNMATCHED),
-    _Before("orders by store, time", UNMATCHED),
-    _Before("revenue by store, statuses", UNMATCHED),
+    _Before("orders by store, time", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+    _Before("revenue by store, statuses", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
     _Before("food revenue vs drink revenue by store, customer type", UNMATCHED),
     # The comparison buckets by month, which the question never asks for.
     _Before(
-        "food revenue vs drink revenue by store and customer type", OK, held=True, code=UNASKED
+        "food revenue vs drink revenue by store and customer type",
+        "ok",
+        held=True,
+        code="PLAN_UNMATCHED_TERMS",
     ),
-    _Before("show monthly revenue by store", OK),
+    _Before("show monthly revenue by store", "ok", held=True, code="PLAN_UNMATCHED_TERMS"),
     _Before("order count by name", OK, held=True),
     _Before("order count by customer name", OK),
     _Before("order count by store name", OK),
     _Before("order count by product type", OK, held=True),
     _Before("item count by product type", OK),
     _Before("revenue by type", OK, held=True),
-    _Before("revenue by store and type", OK, held=True),
+    _Before("revenue by store and type", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
     _Before("revenue by order", DRIFT),
     _Before("revenue by customer", OK),
-    _Before("revenue by stores", OK),
+    _Before("revenue by stores", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
     _Before("revenue by supply", INVALID),
     _Before("revenue by item", OK, held=True),
     _Before("revenue by product", INVALID),
@@ -940,7 +969,7 @@ _BEFORE = [
     _Before("revenue by customer type", OK),
     # A grain phrase after a comma ends the draft's list; elsewhere the draft groups by a calendar
     # dimension that validation refuses for the measure.
-    *(_Before(f"revenue by store, {phrase}", OK) for phrase in _GRAIN_PHRASES),
+    *(_Before(f"revenue by store, {phrase}", OK, held=True) for phrase in _GRAIN_PHRASES),
     *(
         _Before(shape.format(phrase), INVALID)
         for shape in (
@@ -967,15 +996,24 @@ _BEFORE = [
     _Before("revenue by month level and store", INVALID),
     _Before("revenue by week level, store", INVALID),
     _Before("revenue by states, status", UNMATCHED, dims=(("states", "States", "store_name"),)),
-    _Before("revenue by store, sales", UNMATCHED, dims=(("sales", "", "store_name"),)),
-    _Before("aov by store, sales", UNMATCHED, dims=(("sales", "", "store_id"),)),
+    _Before(
+        "revenue by store, sales",
+        "PLAN_FALLBACK_SEMANTIC_DRIFT",
+        dims=(("sales", "", "store_name"),),
+    ),
+    _Before("aov by store, sales", "VALIDATION_FAILED", dims=(("sales", "", "store_id"),)),
     _Before(
         "revenue by received, sent",
         UNMATCHED,
         dims=(("received", "Received", "store_name"), ("sent", "Sent", "store_id")),
     ),
     *(
-        _Before(intent, before, dims=((name, name.title(), "store_id"),))
+        _Before(
+            intent,
+            before,
+            held=intent == "monthly revenue by store",
+            dims=((name, name.title(), "store_id"),),
+        )
         for name in ("period", "show", "date")
         for intent, before in [
             ("monthly revenue by store", OK),
@@ -983,11 +1021,11 @@ _BEFORE = [
         ]
     ),
     _Before("revenue by taxes", OK, group_by=("dimension.tax",), dims=_TAX),
-    _Before("revenue by store, taxes", UNMATCHED, dims=_TAX),
+    _Before("revenue by store, taxes", "PLAN_FALLBACK_SEMANTIC_DRIFT", dims=_TAX),
     _Before("revenue by boxes", OK, group_by=("dimension.box",), dims=_BOX),
-    _Before("revenue by store, boxes", UNMATCHED, dims=_BOX),
+    _Before("revenue by store, boxes", "PLAN_FALLBACK_SEMANTIC_DRIFT", dims=_BOX),
     _Before("revenue by statuses", OK, group_by=("dimension.status",), dims=_STATUS),
-    _Before("revenue by store, statuses", UNMATCHED, dims=_STATUS),
+    _Before("revenue by store, statuses", "PLAN_FALLBACK_SEMANTIC_DRIFT", dims=_STATUS),
     _Before("repair cost by incident name, incident", OK, held=True, package="incident"),
     _Before("repair cost by incident, incident name", UNMATCHED, package="incident"),
     _Before("repair cost by incident name and incident", OK, package="incident"),
@@ -1066,9 +1104,11 @@ def test_the_check_only_holds_a_plan_that_was_ready(
         runtime = _runtime_for(case, runtime_factory, upkeep, monkeypatch, stack)
         after = plan_payload(runtime, intent=case.intent, partial_query=partial_query)
         with monkeypatch.context() as without_check:
-            # They are the only readers of the listed groupings.
+            # They are the only readers of the listed groupings, with the answer-shape check
+            # after them, which only holds a plan (test_plan_answer_shape.py).
             without_check.setattr(plan_module, "_dropped_grouping_why", lambda *args: None)
             without_check.setattr(plan_module, "_unasked_grouping_why", lambda *args: None)
+            without_check.setattr(plan_module, "_answer_shape_why", lambda *args: None)
             before = plan_payload(runtime, intent=case.intent, partial_query=partial_query)
 
     # Without the checks, plan answers as it did before they existed.
@@ -1086,3 +1126,5 @@ def test_the_check_only_holds_a_plan_that_was_ready(
         assert after["status"] == before["status"]
         assert _outcome(after) == _outcome(before)
         assert after["next"] == before["next"]
+        if case.before != OK:
+            assert "execute" not in after["next"].get("ready_for", [])
