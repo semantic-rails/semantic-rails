@@ -327,7 +327,7 @@ SESSIONS: dict[str, list[Step]] = {
     ],
     # The leanest path the surface supports.
     "lean": [
-        ("q1_discover", "discover", {"terms": "monthly revenue by store", **MINIMAL_DISCOVER}),
+        ("q1_discover", "discover", {"terms": "monthly revenue by store name", **MINIMAL_DISCOVER}),
         ("q1_plan", "plan", {"intent": QUESTIONS[0]}),
         ("q1_execute", "execute", {"query": Q1, "row_format": "columns"}),
         ("q2_discover", "discover", {"terms": "top products by revenue", **MINIMAL_DISCOVER}),

@@ -601,31 +601,29 @@ def test_contract_and_release_boundaries_have_codeowners():
         assert f"{path} @wtremml18" in text
 
 
-def test_init_starter_template_ships_as_a_data_file():
+def test_single_file_example_ships_as_a_data_file():
     data_files = _pyproject()["tool"]["setuptools"]["data-files"]
     examples = data_files.get("share/semantic-rails/configs/examples", [])
     assert "configs/examples/semantic_rails_package_starter.yml" in examples, (
-        "`semantic-rails init` reads the starter template at runtime via "
-        "resolve_repo_path; it must ship as a data file or init breaks from "
-        "an installed wheel (the file is not next to the importable package)."
+        "The authored single-file example must remain available in installed wheels."
     )
 
 
-def test_init_produces_a_loadable_single_file_package(tmp_path):
+def test_init_produces_a_loadable_directory_package(tmp_path):
     import argparse
 
-    from semantic_rails.cli.commands.package import cmd_init
+    from semantic_rails.cli.commands.project import cmd_init_project
     from semantic_rails.config import load_package_config
 
     target = tmp_path / "myshop"
-    cmd_init(
-        argparse.Namespace(output=str(target), package_id="myshop", namespace=None, force=False)
+    cmd_init_project(
+        argparse.Namespace(name="myshop", workspace_root=str(tmp_path), json=True, yes=True)
     )
     package_yml = target / "package.yml"
     assert package_yml.is_file(), "init must write package.yml"
-    assert (target / "data" / "seed_example.sql").is_file()
+    assert (target / "graph.yml").is_file()
 
-    config = load_package_config(str(package_yml))
+    config = load_package_config(str(target))
     assert config.package.package_id == "myshop"
     assert config.entities, "the starter package must declare entities"
     assert config.measures, "the starter package must declare measures"

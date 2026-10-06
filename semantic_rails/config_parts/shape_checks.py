@@ -182,7 +182,34 @@ _MODEL_VARIANT_KEYS: frozenset[str] = frozenset(
         "freshness_source",
         "freshness_sla_seconds",
         "freshness_as_of",
-        "requires_certification",
+    }
+)
+_AGGREGATE_RELATION_KEYS: frozenset[str] = frozenset(
+    {
+        "id",
+        "relation",
+        "source_entity",
+        "entity",
+        "measures",
+        "dimensions",
+        "temporal_role",
+        "grain",
+        "time_grain",
+        "entity_grain",
+        "filters",
+        "description",
+        "freshness_source",
+        "freshness_sla_seconds",
+        "freshness_as_of",
+        "model_id",
+        "variant_id",
+        "source",
+        "time_column",
+        "eligible_time_grains",
+        "excluded_entities",
+        "excluded_dimensions",
+        "selection_priority",
+        "equivalence_kind",
     }
 )
 _MODEL_VARIANT_GRAIN_KEYS: frozenset[str] = frozenset({"time", "entities"})
