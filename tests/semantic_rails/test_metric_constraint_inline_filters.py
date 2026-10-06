@@ -358,26 +358,29 @@ def test_an_inline_filter_on_an_allowed_field_still_answers(tmp_path):
         db_path = engine.db_path
     finally:
         engine.close()
-    # Each store's last snapshot in each month, then summed across the stores.
+    # Choose each store's last snapshot first, then sum the selected stores.
+    # An observed month with no selected store is 0; an unobserved month is absent.
     with duckdb.connect(db_path, read_only=True) as connection:
         reference = connection.execute(
             """
             WITH snapshots AS (
                 SELECT i.store_id, DATE_TRUNC('month', i.date_day) AS month, i.date_day,
-                    i.inventory_on_hand
+                    i.inventory_on_hand, s.store_name
                 FROM jaffle_store_inventory_snapshot i JOIN jaffle_store s USING (store_id)
-                WHERE s.store_name IN (?, ?)
             ),
             closing AS (
                 SELECT store_id, month, MAX(date_day) AS date_day FROM snapshots GROUP BY 1, 2
             )
-            SELECT month, SUM(inventory_on_hand)
+            SELECT month,
+                CASE WHEN COUNT(*) FILTER (WHERE store_name IN (?, ?)) = 0 THEN 0
+                    ELSE SUM(inventory_on_hand) FILTER (WHERE store_name IN (?, ?))
+                END
             FROM snapshots JOIN closing USING (store_id, month, date_day)
             GROUP BY 1 ORDER BY 1
             """,
-            stores,
+            stores * 2,
         ).fetchall()
-    assert len(reference) > 1
+    assert len(reference) == 9
     actual = dict(
         (date.fromisoformat(str(row[f"{INVENTORY_DAY}__month"])[:10]), row["inventory"])
         for row in rows
