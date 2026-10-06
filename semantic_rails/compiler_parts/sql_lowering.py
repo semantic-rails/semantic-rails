@@ -5714,9 +5714,8 @@ def lower_to_sql(
     # planner/loader's stock refusal even when a caller supplies a plan that bypasses them.
     measures = _measure_index(config)
     for row in plan.measure_plans:
-        if measures[
-            row.bound_measure.measure_id
-        ].accumulation.kind == "stock" and row.rewrite_strategy in {
+        measure = measures[row.bound_measure.measure_id]
+        if measure.accumulation.kind == "stock" and row.rewrite_strategy in {
             "fanout_dedup",
             "parent_lookup",
         }:
