@@ -504,7 +504,11 @@ def test_key_names_follow_discovery_policy_context(runtime: Runtime, context, vi
         roles=["reader"],
         action="hidden",
     )
-    config = replace(runtime.config, semantic_policies=[policy])
+    config = replace(
+        runtime.config,
+        package=replace(runtime.config.package, environments=["development", "production"]),
+        semantic_policies=[policy],
+    )
     engine = Runtime.from_config(config, source_path=runtime.source_path)
     try:
         with pytest.raises(NonAdditiveRefusal) as raised:

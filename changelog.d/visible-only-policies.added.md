@@ -5,5 +5,5 @@
   with `POLICY_DENIED`. Several policies on one object must all be met, and `hidden`, `deny`,
   `redact` and `withhold_values` still apply to the named roles. See
   [Objects visible only to named roles](docs/PACKAGE_AUTHORING.md#objects-visible-only-to-named-roles).
-  Full catalog payloads filter restricted companions, unknown request environments keep
-  restrictions active, and callers with restrictions cannot conditionally aggregate raw columns.
+  Full catalog payloads filter restricted companions, requests naming environments the package
+  does not declare are refused, and callers with restrictions cannot conditionally aggregate raw columns.

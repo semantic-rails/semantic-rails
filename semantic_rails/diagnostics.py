@@ -966,7 +966,7 @@ def recovery_hints_for_error(
                     "kind": "wrap_policy_context_as_object",
                     "message": (
                         "'policy_context' must be a JSON object with optional "
-                        'keys like {"environment": "prod", "audience": "internal"}.'
+                        'keys like {"environment": "production", "audience": "internal"}.'
                     ),
                     "details": {"field": field, "argument_type": argument_type},
                 }

@@ -465,10 +465,17 @@ package:
 
 `package.environments` declares the environment names the package recognizes.
 `promote-package --environment <name>` rejects undeclared environments with
-`INVALID_CONFIG` (`details.allowed_environments`), and policies that declare
-`environments:` only fire when `policy_context.environment` matches one of
-them. A policy or caveat whose `environments:` names an environment the package
-doesn't declare (`prod` in a package declaring `production`), or that declares
+`INVALID_CONFIG` (`details.allowed_environments`). Every governed runtime request
+with a nonempty `policy_context.environment` must name a declared environment;
+otherwise it is refused with `INVALID_QUERY` before evaluating policies or caveats.
+The error names the declared environments in its message and
+`details.allowed_environments`, including an empty list when none are declared.
+Omitting the request environment preserves the existing scoping behavior.
+Policies that declare `environments:` only fire when the request environment
+matches one of them, except that `visible_only` restrictions also remain in force
+when the request environment is absent. A policy or caveat whose `environments:`
+names an environment the package doesn't declare (`prod` in a package declaring
+`production`), or that declares
 `environments:` in a package declaring none, fails to load with `INVALID_CONFIG`,
 because it would never apply. `validate-config` warns (advisory) when a package
 omits the block.
@@ -788,7 +795,7 @@ that must not see it.
   `INVALID_CONFIG`. An engine release without `visible_only` refuses to load such a
   package, so a package using it never runs on an engine that would ignore it.
 - **In force** when `environments` is empty, lists the request's environment, or the
-  request carries no environment or one the package does not declare. A policy scoped to
+  request carries no environment. A policy scoped to
   `development` does not restrict a declared `production` request.
 - **Eligible** when the request has one of the listed `roles` (case-insensitive) if any
   are listed, and the listed audience if `audiences` are listed. No roles, or a role the

@@ -18,6 +18,7 @@ from .compiler import bind_metadata_objects, bind_query
 from .errors import ERROR_CODES, SemanticLayerError, query_execution_error
 from .expressions import MetricRecipeRefExpr, collect_object_references
 from .policies import enforce_query_policies, withheld_rank_order
+from .policy_rules import check_request_environment
 from .request_context import RequestContext, context_from_policy_context
 from .request_payload import checked_discover_kinds, unknown_discover_kinds_error
 from .runtime_parts.responses import (
@@ -484,6 +485,19 @@ def run_authorized_operation(
     """The existing runtime request boundary calls this for shared operations."""
     name = operation.__name__
     payload = _context_payload(name, args, kwargs)
+    try:
+        check_request_environment(
+            runtime._config,
+            str((payload.get("policy_context") or {}).get("environment") or "").strip(),
+        )
+    except SemanticLayerError as exc:
+        if name in {"validate", "segment_validate"}:
+            return {
+                "ok": False,
+                "status": "error",
+                "errors": [{"code": exc.code, "message": str(exc), "details": exc.details}],
+            }
+        raise
     if (payload.get("policy_context") or {}).get("metric_allowlist") is None:
         return operation(runtime, *args, **kwargs)
     access = ResourceAccess.from_context(runtime._config, payload.get("policy_context"))

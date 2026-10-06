@@ -836,7 +836,7 @@ Use an unconverted role for those queries.
 
 ```jsonc
 {
-  "environment": "prod",
+  "environment": "production",
   "audience": "internal",
   "roles": ["sales", "csm"],
   "now": "2026-05-21T00:00:00Z"   // anchors relative time ranges
@@ -846,6 +846,9 @@ Use an unconverted role for those queries.
 The default `HeaderPolicyContextResolver` lets callers self-assert roles
 in headers or body `policy_context` — operators should swap in an
 identity-derived resolver for production.
+
+A request naming an environment the package does not declare is refused with
+`INVALID_QUERY`, and `details.allowed_environments` lists the declared environments.
 
 ## Limits
 

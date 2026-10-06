@@ -29,7 +29,13 @@ from .expressions import (
     collect_column_refs,
     parse_semantic_expression,
 )
-from .policy_rules import MAX_RANK, hidden_policy_ids, visible_only_listed, withheld_max_rank
+from .policy_rules import (
+    MAX_RANK,
+    check_request_environment,
+    hidden_policy_ids,
+    visible_only_listed,
+    withheld_max_rank,
+)
 from .policy_rules import context_scope_matches as context_scope_matches
 from .policy_rules import policy_action as _policy_action
 from .policy_rules import policy_config as _policy_config
@@ -66,6 +72,7 @@ def policy_effects_for_object(
     audience: str = "",
     roles: Iterable[str] | None = None,
 ) -> list[dict[str, Any]]:
+    check_request_environment(config, environment)
     effects: list[dict[str, Any]] = []
     for policy in config.semantic_policies:
         if not _policy_matches(
@@ -192,6 +199,7 @@ def query_policy_effects(
     query: Mapping[str, Any] | None = None,
     binding: BoundQuery | None = None,
 ) -> list[dict[str, Any]]:
+    check_request_environment(config, environment)
     effects: list[dict[str, Any]] = []
     # Bound at most once per request, and only for a constraint that needs it.
     bound = cache(
@@ -343,6 +351,7 @@ def withheld_object_ids(
 ) -> dict[str, int]:
     """Each object whose values a matching ``withhold_values`` policy keeps from this caller,
     with the smallest ``max_rank`` among those policies."""
+    check_request_environment(config, environment)
     ranks: dict[str, int] = {}
     for policy in config.semantic_policies:
         if _policy_action(policy) != WITHHOLD:
@@ -562,6 +571,7 @@ def row_filters_for_context(
     segment preview) denies a missing attribute instead of compiling unfiltered.
     """
     context = context_from_policy_context(policy_context)
+    check_request_environment(config, context.environment)
     filters = []
     for policy in config.semantic_policies:
         row_policy = is_row_filter(policy)
