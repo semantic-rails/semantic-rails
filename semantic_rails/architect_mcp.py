@@ -1125,6 +1125,8 @@ def create_architect_mcp_server(
         description=(
             "Relate two entities: columns on from_entity's model hold "
             "to_entity's key, in key order. cardinality: many_to_one or one_to_one."
+            " Set keep_existing_routes=true to record every moved pair's previous route "
+            "in this transaction; otherwise unrecorded route changes refuse the write."
         ),
     )
     def upsert_relationship(
@@ -1135,6 +1137,7 @@ def create_architect_mcp_server(
         expected_revision: str,
         idempotency_key: str,
         cardinality: str = "many_to_one",
+        keep_existing_routes: bool = False,
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
         try:
@@ -1145,6 +1148,7 @@ def create_architect_mcp_server(
                     to_entity=to_entity,
                     columns=columns,
                     cardinality=cardinality,
+                    keep_existing_routes=keep_existing_routes,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,
@@ -1169,26 +1173,31 @@ def create_architect_mcp_server(
             "decision of an AMBIGUOUS_PATH clarification option). An off-route path or an "
             "unknown entity or relationship is INVALID_CONFIG with nothing written. Returns "
             "replaced (the previous row) and summary, one sentence for the review."
+            " For several pairs, pass decisions=[{source_entity, target_entity, "
+            "relationship_path, label?}, ...] instead of single-pair fields. All rows are "
+            "validated together in one transaction; one invalid or conflicting row refuses all."
         ),
     )
     def record_route_decision(
         project_path: str,
-        source_entity: str,
-        target_entity: str,
-        relationship_path: list[str],
         expected_revision: str,
         idempotency_key: str,
+        relationship_path: Annotated[list[str], Field(default_factory=list)],
+        source_entity: str = "",
+        target_entity: str = "",
         label: str = "",
+        decisions: list[dict[str, Any]] | None = None,
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
         try:
             return _mutation_result(
                 ArchitectProject(project_path, workspace_root=root)
                 .record_route_decision(
-                    source_entity=source_entity,
-                    target_entity=target_entity,
-                    relationship_path=relationship_path,
+                    source_entity=source_entity or None,
+                    target_entity=target_entity or None,
+                    relationship_path=relationship_path or None,
                     label=label,
+                    decisions=decisions,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,

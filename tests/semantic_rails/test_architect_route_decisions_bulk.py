@@ -1,0 +1,292 @@
+"""Atomic route authoring through the project service and Architect MCP."""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+import yaml
+from mcp.shared.memory import create_connected_server_and_client_session
+
+import semantic_rails.architect_service as service
+from semantic_rails.architect_mcp import create_architect_mcp_server
+from semantic_rails.architect_service import ArchitectProject
+from semantic_rails.config import load_package_config
+from semantic_rails.errors import SemanticLayerError
+from semantic_rails.route_census import census_pairs, resolve_pairs, route_census
+from semantic_rails.runtime import Runtime
+from tests.semantic_rails.test_route_census import (
+    BASE_GOLD,
+    INVOICE_BRANCH,
+    _answers,
+    _files_and_receipts,
+    _impact,
+    _small_package,
+)
+from tests.semantic_rails.test_route_clarification import (
+    ACCOUNT,
+    BALANCE_BY_DISTRICT,
+    BRANCH_BY_KEY,
+    BRANCH_ROUTE,
+    BY_OWNER,
+    DIAMOND_ROW,
+    DISTRICT,
+    _graph_rows,
+    _project,
+    _write_package,
+)
+from tests.semantic_rails.test_route_clarification import _gold as _district_gold
+from tests.semantic_rails.test_route_resolution import (
+    INVOICE,
+    REGION,
+    _gold,
+    _pin,
+    _rows,
+)
+from tests.semantic_rails.test_route_resolution import _write_package as _write_bank
+
+
+@pytest.fixture(autouse=True)
+def _allow_external_package_paths(monkeypatch):
+    monkeypatch.setenv("SEMANTIC_RAILS_ALLOW_EXTERNAL_PACKAGE_PATHS", "1")
+
+
+def _thirteen_routes(root):
+    # A tree with an already-authored invoice -> region definition. Adding the
+    # membership's owner key closes a cycle and moves thirteen unrecorded pairs.
+    pkg = _write_bank(
+        root,
+        relationships=(
+            "invoices_account",
+            "accounts_branch_region",
+            "owners_home_region",
+            "memberships_account",
+        ),
+        pins=[_pin(INVOICE, REGION, INVOICE_BRANCH)],
+    )
+    seed = pkg / "data/seed.sql"
+    seed.write_text(
+        seed.read_text() + "\nALTER TABLE memberships ADD COLUMN owner_id INTEGER;\n"
+        "UPDATE memberships SET owner_id = 10;\n"
+    )
+    return pkg
+
+
+def _mcp_call(root, package, name, **arguments):
+    async def call():
+        server = create_architect_mcp_server(workspace_root=root)
+        async with create_connected_server_and_client_session(server) as session:
+            result = await session.call_tool(name, {"project_path": str(package), **arguments})
+            assert not result.isError, result
+            return dict(result.structuredContent or {})
+
+    return asyncio.run(call())
+
+
+@pytest.mark.parametrize("top_level", [False, True], ids=["graph-rows", "package-rows"])
+def test_one_relationship_call_keeps_thirteen_routes_and_reference_answers(tmp_path, top_level):
+    base = _thirteen_routes(tmp_path / "base")
+    pkg = _thirteen_routes(tmp_path / "head")
+    if top_level:
+        package = yaml.safe_load((pkg / "package.yml").read_text())
+        graph = yaml.safe_load((pkg / "graph.yml").read_text())
+        package["path_preferences"] = graph["graph"].pop("path_preferences")
+        (pkg / "package.yml").write_text(yaml.safe_dump(package))
+        (pkg / "graph.yml").write_text(yaml.safe_dump(graph))
+    project = ArchitectProject(pkg, workspace_root=tmp_path)
+    revision, files = project.revision(), _files_and_receipts(project)
+    config = load_package_config(str(pkg))
+    pairs = census_pairs(config)
+    outcomes = {pair: outcome.shape() for pair, outcome in resolve_pairs(config, pairs).items()}
+    assert _answers(pkg) == {name: _gold(sql) for name, sql in BASE_GOLD.items()}
+    args = {"from_entity": "membership", "to_entity": "owner", "columns": ["owner_id"]}
+    with pytest.raises(SemanticLayerError, match="keep_existing_routes=true") as refused:
+        project.upsert_relationship(**args)
+    assert refused.value.code == "ROUTE_DECISION_NOT_RECORDED"
+    assert len(refused.value.details["route_changes"]) == 13
+    assert _files_and_receipts(project) == files
+
+    preview = project.upsert_relationship(**args, keep_existing_routes=True, dry_run=True).report
+    assert preview["ok"] and preview["status"] == "preview"
+    moved_pairs = {
+        (row["source_entity"], row["target_entity"])
+        for row in refused.value.details["route_changes"]
+    }
+    assert moved_pairs <= {
+        (row["source_entity"], row["target_entity"]) for row in preview["kept_route_decisions"]
+    }
+    assert _files_and_receipts(project) == files
+    committed = _mcp_call(
+        tmp_path,
+        pkg,
+        "upsert_relationship",
+        **args,
+        keep_existing_routes=True,
+        expected_revision=revision,
+        idempotency_key="relate-and-keep",
+    )
+    assert committed["ok"] and committed["status"] == "upserted", committed
+    assert committed["kept_route_decisions"] == preview["kept_route_decisions"]
+    assert committed["revision"] == preview["proposed_revision"]
+    assert committed["route_changes"] == []
+    changed = load_package_config(str(pkg))
+    assert {
+        pair: outcome.shape() for pair, outcome in resolve_pairs(changed, pairs).items()
+    } == outcomes
+    assert route_census(changed) == route_census(config) == {"undecided": [], "assumed": []}
+    assert _impact(base, pkg)["route_changes"] == []
+    assert _answers(pkg) == {name: _gold(sql) for name, sql in BASE_GOLD.items()}
+    assert (
+        project.upsert_relationship(
+            **args,
+            keep_existing_routes=True,
+            expected_revision=revision,
+            idempotency_key="relate-and-keep",
+        ).report["status"]
+        == "replayed"
+    )
+    with pytest.raises(SemanticLayerError) as reused:
+        project.upsert_relationship(
+            **args, expected_revision=revision, idempotency_key="relate-and-keep"
+        )
+    assert reused.value.details["conflict_kind"] == "idempotency_key_reuse"
+
+
+def test_keep_choice_refuses_when_preservation_is_bypassed(tmp_path, monkeypatch):
+    project = ArchitectProject(_thirteen_routes(tmp_path), workspace_root=tmp_path)
+    files = _files_and_receipts(project)
+    monkeypatch.setattr(
+        project,
+        "_prepare_route_decisions",
+        lambda transaction, config, rows, updates: (updates, []),
+    )
+    with pytest.raises(SemanticLayerError) as refused:
+        project.upsert_relationship(
+            from_entity="membership",
+            to_entity="owner",
+            columns=["owner_id"],
+            keep_existing_routes=True,
+            validate_after=False,
+        )
+    assert refused.value.code == "ROUTE_DECISION_NOT_RECORDED"
+    assert len(refused.value.details["route_changes"]) == 13
+    assert _files_and_receipts(project) == files
+
+
+def test_keep_choice_cannot_turn_a_refused_pair_into_a_new_answer(tmp_path):
+    pkg = _small_package(tmp_path, ["a", "b"], {}, "")
+    project = ArchitectProject(pkg, workspace_root=tmp_path)
+    files = _files_and_receipts(project)
+    with pytest.raises(SemanticLayerError) as refused:
+        project.upsert_relationship(
+            from_entity="a", to_entity="b", columns=["b_id"], keep_existing_routes=True
+        )
+    assert refused.value.code == "ROUTE_DECISION_NOT_RECORDED"
+    assert all("refused" in row["base"] for row in refused.value.details["route_changes"])
+    assert _files_and_receipts(project) == files
+
+
+def test_bulk_replaces_conflicting_forward_and_reverse_rows_together(tmp_path):
+    reverse = _pin(DISTRICT, ACCOUNT, BRANCH_ROUTE[::-1])
+    project = ArchitectProject(
+        _write_package(tmp_path, decisions=[BRANCH_BY_KEY, reverse]), workspace_root=tmp_path
+    )
+    rows = [DIAMOND_ROW, _pin(DISTRICT, ACCOUNT, DIAMOND_ROW["relationship_path"][::-1])]
+    files, revision = _files_and_receipts(project), project.revision()
+    with pytest.raises(SemanticLayerError):
+        project.record_route_decision(**DIAMOND_ROW)
+    preview = project.record_route_decision(decisions=rows, dry_run=True).report
+    assert preview["ok"] and preview["status"] == "preview"
+    assert _files_and_receipts(project) == files
+    committed = _mcp_call(
+        tmp_path,
+        project.project_path,
+        "record_route_decision",
+        decisions=rows,
+        expected_revision=revision,
+        idempotency_key="both-directions",
+    )
+    assert committed["ok"] and committed["status"] == "recorded", committed
+    assert committed["revision"] == preview["proposed_revision"]
+    assert [report["replaced"] for report in committed["route_decisions"]] == [
+        BRANCH_BY_KEY,
+        reverse,
+    ]
+    assert _graph_rows(project) == rows
+    runtime = Runtime.from_path(str(project.project_path))
+    try:
+        out = runtime.query(BALANCE_BY_DISTRICT)
+    finally:
+        runtime.close()
+    assert _rows(out, ["dimension.bank_district_name", "v"]) == _district_gold(BY_OWNER)
+    assert (
+        project.record_route_decision(
+            decisions=rows, expected_revision=revision, idempotency_key="both-directions"
+        ).report["status"]
+        == "replayed"
+    )
+    with pytest.raises(SemanticLayerError) as stale:
+        project.record_route_decision(
+            decisions=rows, expected_revision=revision, idempotency_key="new-at-stale-revision"
+        )
+    assert stale.value.code == "CONFIG_CONFLICT"
+
+
+@pytest.mark.parametrize(
+    "bad_row",
+    [
+        {**DIAMOND_ROW, "relationship_path": ["relationship.unknown"]},
+        {**DIAMOND_ROW, "target_entity": "unknown"},
+        {**DIAMOND_ROW, "relationship_path": BRANCH_ROUTE},  # duplicate pair
+        _pin(DISTRICT, ACCOUNT, BRANCH_ROUTE[::-1]),  # contradicts first row
+        {**DIAMOND_ROW, "relationship_path": "accounts_owner"},
+        {**DIAMOND_ROW, "typo": "ignored?"},
+        None,
+    ],
+)
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_one_bad_bulk_row_refuses_all_files_and_receipts(tmp_path, bad_row, dry_run):
+    project = _project(tmp_path)
+    files = _files_and_receipts(project)
+    with pytest.raises(SemanticLayerError) as refused:
+        project.record_route_decision(decisions=[DIAMOND_ROW, bad_row], dry_run=dry_run)
+    assert refused.value.code == "INVALID_CONFIG"
+    assert _files_and_receipts(project) == files
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"decisions": []},
+        {"decisions": [DIAMOND_ROW], **DIAMOND_ROW},
+        {"decisions": [DIAMOND_ROW], "label": "mixed"},
+        {},
+    ],
+)
+def test_bulk_input_requires_exactly_one_nonempty_form(tmp_path, arguments):
+    project = _project(tmp_path)
+    files = _files_and_receipts(project)
+    with pytest.raises(SemanticLayerError) as refused:
+        project.record_route_decision(**arguments)
+    assert refused.value.code == "INVALID_CONFIG"
+    assert _files_and_receipts(project) == files
+
+
+def test_bulk_effectiveness_guard_checks_every_row(tmp_path, monkeypatch):
+    project = _project(tmp_path)
+    files = _files_and_receipts(project)
+    resolve = service.package_route
+    reverse = _pin(DISTRICT, ACCOUNT, DIAMOND_ROW["relationship_path"][::-1])
+
+    def elsewhere(config, *, start, target):
+        resolution = resolve(config, start=start, target=target)
+        if start == DISTRICT:
+            return resolution._replace(routes=(tuple(BRANCH_ROUTE[::-1]),))
+        return resolution
+
+    monkeypatch.setattr(service, "package_route", elsewhere)
+    with pytest.raises(SemanticLayerError) as refused:
+        project.record_route_decision(decisions=[DIAMOND_ROW, reverse])
+    assert refused.value.details["reason"] == "route_decision_not_in_effect"
+    assert refused.value.details["route_decision"] == reverse
+    assert _files_and_receipts(project) == files

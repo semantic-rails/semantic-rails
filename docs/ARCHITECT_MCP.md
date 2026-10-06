@@ -108,6 +108,10 @@ package test and a `.gitignore` for build outputs.
    block would override the columns, and so is a pair that may have several roles
    (role-playing keys: several `graph.relationships` entries in either direction, or an entry
    with its own `via` beside the model's foreign key): edit those in `graph.yml`.
+   To add a relationship while preserving existing routes, pass `keep_existing_routes: true`.
+   The same transaction records each moved pair's previous path and confirms newly ambiguous
+   own-key routes. Its `kept_route_decisions` lists the rows recorded. It refuses if any previous
+   route outcome would still change, including a refusal becoming an answer.
    `record_route_decision(source_entity, target_entity, relationship_path, label="")` records
    which route a question between two entities means, as the package default: it writes the
    pair's row in the `path_preferences` list the loader reads (a top-level list in `package.yml`
@@ -329,13 +333,23 @@ Which route between two entities a question means is a business definition (see
 - Before writing, the transaction compares the package with the change applied. A change that
   would refuse an answered pair whose route still exists, or answer it by another route, refuses
   with `ROUTE_DECISION_NOT_RECORDED` until the author records an explicit decision. Previews use
-  the same guard. Nothing is written and no route rows are generated. The refusal's
+  the same guard. Without an explicit keep choice, nothing is written and no route rows are
+  generated. The refusal's
   `details.route_changes` lists affected pairs. The message names the explicit
   `graph.path_preferences` fields (`source_entity`, `target_entity`, `relationship_path`),
-  without suggesting rows: choose a route and use `record_route_decision` before adding
-  the relationship, or include chosen rows in the authored change. Census and guard
+  without suggesting rows. For `upsert_relationship`, retry with `keep_existing_routes: true`
+  to record the previous routes within the relationship write. Otherwise choose routes and
+  call `record_route_decision(decisions=[...])` before adding the relationship, or include chosen
+  rows in the authored change. Census and guard
   comparisons use package decisions independently of active query route overrides. An ordinary
   change that moves an inherited answer needs that pair's own decision.
+- For several pairs, call `record_route_decision(decisions=[...])` with a nonempty list of
+  rows containing `source_entity`, `target_entity`, `relationship_path`, and optional `label`,
+  instead of single-pair fields. All replacements are staged together and the final package
+  must honor every row. One invalid, duplicate, or conflicting row refuses the entire batch;
+  no files or receipts are written. This lets forward and reverse decisions be changed together.
+  The result's `route_decisions` lists each row, its `replaced` value, and its `summary`.
+  Revision checks, idempotent retries, and write-free previews apply to the whole batch.
 - `record_route_decision` uses the loader location: top-level
   `package.yml` `path_preferences`, else the file holding `graph`. That file is rewritten as
   Architect YAML, dropping comments.

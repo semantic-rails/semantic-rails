@@ -372,7 +372,9 @@ def _routes_not_recorded(unkept: list[dict[str, Any]]) -> SemanticLayerError:
     return SemanticLayerError(
         "ROUTE_DECISION_NOT_RECORDED",
         "This change moves the join route of entity pairs without an explicit decision; "
-        "nothing was written. Record each pair with record_route_decision or include its "
+        "nothing was written. Retry upsert_relationship with keep_existing_routes=true "
+        "to record and keep every existing route, or use record_route_decision(decisions=[...]) "
+        "to record several pairs in one call. Alternatively include each "
         "graph.path_preferences row in the change itself, with source_entity, "
         "target_entity and relationship_path fields.",
         details={"route_changes": unkept},

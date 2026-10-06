@@ -1910,11 +1910,17 @@ through one transaction, which compares the package before and after the
 change. A change that would refuse an answered pair whose route still exists,
 or answer it by another route, is refused with `ROUTE_DECISION_NOT_RECORDED`
 until the author records a decision. Previews use the same guard; nothing is
-written and no route rows are generated. The refusal lists affected pairs in
+written and no route rows are generated without an explicit keep choice. The
+refusal lists affected pairs in
 `details.route_changes`. Its message names the explicit `graph.path_preferences`
 fields (`source_entity`, `target_entity`, `relationship_path`), without suggesting
-rows: choose a route and use `record_route_decision` before adding the relationship,
-or include chosen rows in the authored change. An ordinary change that
+rows. Architect `upsert_relationship(..., keep_existing_routes=True)` records each
+moved pair's previous path in the same transaction and confirms newly ambiguous
+own-key routes. The result lists those rows in `kept_route_decisions`; if any
+previous route outcome still changes (including refusal to answer), it refuses
+without writing. Otherwise choose routes and call
+`record_route_decision(decisions=[...])` with several explicit rows before adding
+the relationship, or include chosen rows in the authored change. An ordinary change that
 moves an inherited answer also needs that pair's own decision.
 
 An explicit route chooses a relationship path, not a promise that orphan keys
@@ -1926,6 +1932,11 @@ a filter on the airport key. Review the chosen route against reference SQL.
 `record_route_decision` writes where the loader reads route rows (a top-level
 `path_preferences` block in `package.yml`, else `graph.yml`, else `package.yml`'s
 `graph` block), rewriting that file as Architect YAML and dropping comments.
+The `decisions` form accepts a nonempty list of rows with `source_entity`,
+`target_entity`, `relationship_path`, and optional `label`, instead of single-pair
+arguments. All pair replacements are validated together: one invalid, duplicate,
+or conflicting row refuses the whole batch without files or receipts. The result's
+`route_decisions` reports each row's `replaced` value and `summary`.
 It deliberately changes the default and reports every moved pair, inherited
 pairs included. `remove_object` uses the same preservation guard: a removed
 route or one beyond the new `max_hops` may leave a pair refused, but switching
