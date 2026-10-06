@@ -1004,6 +1004,7 @@ branch or several: a group none of whose rows meets a branch reads `0`, and such
 never answered from a rollup. An explicit non-NULL `ELSE`, including `ELSE 0`, contributes
 on nonmatching rows, so every row is read: a matching NULL amount plus a nonmatching zero
 sums to `0`, while a group with only matching NULL amounts remains `NULL`.
+Explicit `ELSE` contributions are preserved inside distributions and metric predicates too.
 
 A measure with a `CASE` below its expression's top level, such as
 `CASE WHEN store_id = 'a' THEN amount END / 100.0`, keeps the earlier settlement
@@ -1019,9 +1020,8 @@ A query with a `distribution` output keeps the earlier settlement in every outpu
 a group's unknown amounts like no rows: there a sum is `0` in a group whose amounts are all
 NULL, wherever its measure has data in scope, and arithmetic settles each operand that way, so
 `goods + shipping` beside a median is `0` for a store with no refunds and a number for one
-whose refunds leave a column NULL. Its plan and SQL are the same as before unknown amounts
-stayed `NULL`. Its combined outputs have no probe of their own, so under `dataset` such a
-query with a `where` filter is refused the same way. So is one whose measure's authored
+whose refunds leave a column NULL. Its combined outputs have no probe of their own, so under
+`dataset` such a query with a `where` filter is refused the same way. So is one whose measure's authored
 condition reads a fan-out or a hop valid over time.
 A metric predicate's own per-entity values, a lookup's source and a distribution's branches
 are internal: they settle inside their own scope in both modes.
@@ -1061,8 +1061,12 @@ are internal: they settle inside their own scope in both modes.
   highest of the leaf's own bucket. Coverage gates only
   zero substitution: populated sums and positive counts always survive, including
   NULL time keys and future-dated rows.
-  Filled, dense-series (rolling, prior-period) and combined plans, bounded or not, read
-  the base relation even when rollups are available, so routing cannot change their
+  A window total without a grain records the whole half-open `[start, end)` interval as one
+  bucket, with the same outside-window observation and loaded-range check. A conditional
+  count observed elsewhere therefore reads `0` in a loaded window where it has no matches;
+  a condition never observed still reads `NULL`. Relative windows use their resolved bounds.
+  Window totals, filled, dense-series (rolling, prior-period) and combined plans, bounded or
+  not, read the base relation even when rollups are available, so routing cannot change their
   coverage answers. Other routed
   aggregates, nested, fanout and predicate sources retain the window observation test,
   except that a `dataset` query with a `where` filter probes each

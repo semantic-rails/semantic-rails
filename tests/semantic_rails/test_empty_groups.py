@@ -518,9 +518,9 @@ def test_distribution_sum_keeps_a_measured_else_zero(shop: Runtime, beside_amoun
     )
     assert gold == [{"total": 0}]
     assert response["row_count"] == 1
-    assert response["rows"][0]["total"] == gold[0]["total"]
+    assert typed_rows(response)[0]["total"] == gold[0]["total"]
     if beside_amount:
-        assert response["rows"][0]["amount"] == 0
+        assert typed_rows(response)[0]["amount"] == 0
     assert not _warnings(response)
 
 
@@ -575,6 +575,127 @@ def test_a_window_total_refuses_a_missing_time_scope(
             }
         )
     assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
+
+
+@pytest.mark.parametrize("grain", [None, "week"])
+def test_a_window_count_never_observed_stays_null(shop: Runtime, grain: str | None) -> None:
+    response = shop.query(
+        {
+            "select": _select(huge={"measure": "measure.shop.huge_order_count"}),
+            "time": {
+                "temporal_role": SHOP_MONTH["temporal_role"],
+                "start": "2023-11-27",
+                "end": "2023-12-04",
+                **({"grain": grain} if grain else {}),
+            },
+        }
+    )
+    gold = _gold(
+        shop,
+        "SELECT CASE WHEN EXISTS (SELECT 1 FROM orders WHERE amount >= 1000) THEN 0 END AS huge",
+    )
+    assert [row["huge"] for row in response["rows"]] == [row["huge"] for row in gold] == [None]
+    assert _warnings(response)[0]["details"]["outputs"] == ["huge"]
+
+
+def test_a_predicate_over_several_measures_keeps_explicit_else_zero(shop: Runtime) -> None:
+    response = shop.query(
+        {
+            "select": _select(orders=SHOP_ORDERS),
+            "time": {**SHOP_MONTH, "grain": "week", "start": "2023-11-20", "end": "2023-11-27"},
+            "metric_filters": [
+                {
+                    "expression": {
+                        "kind": "metric_predicate",
+                        "entity": "entity.shop_customer",
+                        "scope_mode": "entity_only",
+                        "time_alignment": "query_window",
+                        "input": {
+                            "kind": "arithmetic",
+                            "op": "add",
+                            "left": {"measure": "measure.shop.store_a_amount"},
+                            "right": SHOP_ORDERS,
+                        },
+                        "op": "<=",
+                        "value": 1,
+                    },
+                    "op": "=",
+                    "value": True,
+                }
+            ],
+        }
+    )
+    gold = _gold(
+        shop,
+        "SELECT COUNT(order_id) AS orders FROM orders WHERE ordered_at >= TIMESTAMP '2023-11-20' "
+        "AND ordered_at < TIMESTAMP '2023-11-27' AND customer_id IN (SELECT customer_id FROM orders "
+        "WHERE ordered_at >= TIMESTAMP '2023-11-20' AND ordered_at < TIMESTAMP '2023-11-27' "
+        "GROUP BY customer_id HAVING SUM(CASE WHEN store_id = 'a' THEN amount ELSE 0 END) "
+        "+ COUNT(order_id) <= 1)",
+    )
+    assert [row["orders"] for row in response["rows"]] == [row["orders"] for row in gold] == [1]
+
+
+@pytest.mark.parametrize("beside_distribution", [False, True])
+def test_an_exact_rollup_of_an_else_zero_sum_matches_the_base(
+    tmp_path: Path, beside_distribution: bool
+) -> None:
+    shop_package = _write_variant(tmp_path, "utc_authored")
+    seed = shop_package / "data" / "seed.sql"
+    seed.write_text(
+        seed.read_text()
+        + "\nCREATE OR REPLACE TABLE orders_monthly AS SELECT CAST(date_trunc('month', ordered_at) "
+        "AS DATE) AS month_start, store_id, SUM(amount) AS revenue, COUNT(order_id) AS order_count, "
+        "SUM(CASE WHEN store_id = 'a' THEN amount ELSE 0 END) AS store_a_amount "
+        "FROM orders GROUP BY 1, 2;\n"
+    )
+    config = load_package_config(str(shop_package))
+    amount = {"measure": "measure.shop.store_a_amount"}
+    config = replace(
+        config,
+        aggregate_relations=[
+            replace(
+                relation,
+                measures=[*relation.measures, amount["measure"]],
+                measure_columns={**relation.measure_columns, amount["measure"]: "store_a_amount"},
+            )
+            for relation in config.aggregate_relations
+        ],
+    )
+    query = {"select": _select(amount=amount), "group_by": [SHOP_STORE], "time": SHOP_MONTH}
+    if beside_distribution:
+        query["select"] += REFUNDS_BESIDE_A_MEDIAN["select"][1:]
+    results = []
+    for current in (config, replace(config, aggregate_relations=[])):
+        rt = Runtime.from_config(current, source_path=str(shop_package))
+        try:
+            response = rt.query(query)
+            assert ("FROM orders_monthly" in response["rendered_sql"]) is bool(
+                current.aggregate_relations
+            )
+            results.append(
+                {
+                    (row[SHOP_STORE], str(row[f"{SHOP_MONTH['temporal_role']}__month"])[:7]): row[
+                        "amount"
+                    ]
+                    for row in typed_rows(response)
+                }
+            )
+            gold = _gold(
+                rt,
+                "SELECT store_id AS s, date_trunc('month', ordered_at) AS month, "
+                "SUM(CASE WHEN store_id = 'a' THEN amount ELSE 0 END) AS amount FROM orders GROUP BY 1, 2",
+            )
+            # A distribution retains earlier settlement for unknown amounts, independently of ELSE.
+            assert results[-1] == {
+                (row["s"], str(row["month"])[:7]): (
+                    0 if row["amount"] is None and beside_distribution else row["amount"]
+                )
+                for row in gold
+            }
+        finally:
+            rt.close()
+    assert results[0] == results[1]
 
 
 @pytest.mark.parametrize(
