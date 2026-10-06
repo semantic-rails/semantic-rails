@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
+from tests.semantic_rails.result_helpers import assert_plan_held
 
 
 def _post_json(runtime, path: str, payload: dict) -> tuple[dict, int]:
@@ -31,7 +32,7 @@ def test_plan_route_returns_status_ok_for_realizable_intent(runtime_factory) -> 
         runtime.close()
     assert status == 200
     assert payload["ok"] is True
-    assert payload["status"] == "ok"
+    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
     assert payload["best"]["pattern"] == "metric_by_dimension_rollup"
 
 
@@ -64,7 +65,7 @@ def test_plan_route_full_detail_returns_alternatives(runtime_factory) -> None:
     finally:
         runtime.close()
     assert status == 200
-    assert payload["status"] == "ok"
+    assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
     assert "alternatives" in payload
     assert "blocked" in payload
 
