@@ -407,6 +407,8 @@ def test_label_without_parenthetical_never_selects(runtime_factory, question: st
         plan = plan_payload(runtime, intent=question)
     finally:
         runtime.close()
+    assert plan["status"] == "ok", plan
+    assert "ready_for" in plan["next"], plan
     select = plan["best"]["query_ir"]["select"]
     assert [item["expression"].get("measure") for item in select] == [subject]
 

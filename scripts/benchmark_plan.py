@@ -151,6 +151,13 @@ def _load_cases() -> list[dict[str, Any]]:
                 "forbidden_query_paths": ["time"],
             },
             {
+                "name": "shared_conversion_rate_label_requires_clarification",
+                "intent": "What is the session-to-order conversion rate?",
+                "expected": "clarify",
+                "expected_status": "needs_clarification",
+                "forbid_ready_for_execute": True,
+            },
+            {
                 "name": "unresolved_time_window_requires_clarification",
                 "intent": "revenue by store over the last few weeks",
                 "expected": "clarify",
