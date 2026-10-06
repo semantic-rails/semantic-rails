@@ -189,13 +189,27 @@ def _leaves(node, text, path=(), seen=None):
         yield path, node
 
 
-@pytest.mark.parametrize("file", YAML_FILES, ids=lambda file: str(file.relative_to(ROOT)))
-def test_bundled_yaml_edit_properties(file):
+@pytest.mark.parametrize(
+    "file,part,parts",
+    [
+        (file, part, 4 if file.stat().st_size > 100_000 else 1)
+        for file in YAML_FILES
+        for part in range(4 if file.stat().st_size > 100_000 else 1)
+    ],
+    ids=[
+        f"{file.relative_to(ROOT)}-{part}"
+        for file in YAML_FILES
+        for part in range(4 if file.stat().st_size > 100_000 else 1)
+    ],
+)
+def test_bundled_yaml_edit_properties(file, part, parts):
     text = file.read_text()
     original = safe_load(text)
     root = yaml.compose(text, Loader=Yaml12SafeLoader)
     assert isinstance(root, MappingNode)
     for key, _node in root.value:
+        if part:
+            continue
         name = safe_load(text[key.start_mark.index : key.end_mark.index])
         for op in ("delete", "rename"):
             edit = Edit("", op, (name,), key="renamed_property")
@@ -215,7 +229,9 @@ def test_bundled_yaml_edit_properties(file):
                     assert result[:start] == text[:start]
                     tail = result[start:]
                     assert text.endswith(tail)
-    for path, node in _leaves(root, text):
+    for index, (path, node) in enumerate(_leaves(root, text)):
+        if index % parts != part:
+            continue
         expected = deepcopy(original)
         parent = expected
         for part in path[:-1]:

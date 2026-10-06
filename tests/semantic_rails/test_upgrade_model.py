@@ -29,7 +29,10 @@ def _normalized_rows(document, iterator):
     if iterator == "graph_entities":
         return list(document["graph"]["entities"].values())
     if iterator == "relationships":
-        rows = list(document["graph"].get("relationships", {}).values())
+        rows = [
+            {**row, "id": row.get("as") or row.get("id") or f"relationship.{key}"}
+            for key, row in document["graph"].get("relationships", {}).items()
+        ]
         for model_id, model in document["models"].items():
             for key, row in model.get("joins", {}).items():
                 rows.append(
@@ -40,11 +43,9 @@ def _normalized_rows(document, iterator):
         return [
             row for model in document["models"].values() for row in model.get(iterator, {}).values()
         ]
-    return (
-        list(document.get(iterator if iterator != "policies" else "semantic_policies", {}).values())
-        if iterator != "policies"
-        else document.get("semantic_policies", [])
-    )
+    if iterator == "policies":
+        return document.get("semantic_policies", [])
+    return list(document.get(iterator, {}).values())
 
 
 @pytest.mark.parametrize("package", PACKAGES)
@@ -100,7 +101,9 @@ def test_iterators_cover_loaded_object_ids(package):
         authored = {value["id"] for value in normalized_rows if value.get("_authored_origin")}
         expected = {row.id for row in getattr(config, field)}
         if iterator == "dimensions":
-            expected -= {role.dimension for role in config.temporal_roles}
+            expected -= {role.dimension for role in config.temporal_roles} - {
+                value["id"] for value in normalized_rows
+            }
         assert observed == authored
         assert {value["id"] for value in normalized_rows} == expected
     assert {row.get("id") for _, _, row in files.package()} == {config.package.package_id}
@@ -304,3 +307,66 @@ def test_file_creation_and_archival_are_virtual(files):
     assert safe_load(result.files["new.yaml"]) == {"package": {"id": "sample"}}
     assert files.source.read_bytes() == original and not (files.root / "new.yaml").exists()
     assert RULES == ()
+
+
+def test_loader_precedence_and_unrelated_sections(tmp_path):
+    (tmp_path / "package.yml").write_text(
+        "package: {id: sample}\ngraph: {entities: {old: {id: old}}}\nmodels: {item: {id: item, legacy: false}}\n"
+    )
+    (tmp_path / "graph.yml").write_text(
+        "graph: {entities: {new: {id: new}}}\nmetrics: {ignored: {id: ignored}}\n"
+    )
+    (tmp_path / "models").mkdir()
+    (tmp_path / "models" / "item.yml").write_text("model: {id: item, legacy: true}\n")
+    files = PackageFiles(tmp_path)
+    assert [row["id"] for _, _, row in files.graph_entities()] == ["new"]
+    assert list(files.models()) == [("models/item.yml", ("model",), {"id": "item", "legacy": True})]
+    assert list(files.metrics()) == []
+
+
+def test_direct_metric_expressions_are_recursive(tmp_path):
+    source = tmp_path / "package.yml"
+    source.write_text(
+        "metrics: {ratio: {kind: ratio, numerator: {measure: old}, denominator: {measure: new}, meta: {measure: ignored}}}\n"
+    )
+    rows = list(PackageFiles(source).expressions())
+    assert {row["measure"] for _, _, row in rows if "measure" in row} == {"old", "new"}
+
+
+def test_one_finding_can_apply_sequential_edits(files):
+    def find(current):
+        for file, path, row in current.package():
+            if "legacy" in row:
+                yield Finding(
+                    "rewrite",
+                    file,
+                    1,
+                    path,
+                    "Rename and replace",
+                    (
+                        Edit(file, "rename", (*path, "legacy"), key="new"),
+                        Edit(file, "replace", (*path, "new"), value=False),
+                    ),
+                )
+
+    rule = Rule("rewrite", "1.0", "same_meaning", "Rewrite legacy", find)
+    assert safe_load(plan(files, (rule,), {}).files["package.yaml"])["package"]["new"] is False
+
+
+@pytest.mark.parametrize(
+    "path,op,key", [(("package",), "replace", ""), (("package",), "insert", "new")]
+)
+def test_overlapping_paths_and_rename_destination_refuse(files, path, op, key):
+    def find(current):
+        yield Finding(
+            "second",
+            "package.yaml",
+            1,
+            path,
+            "Overlap",
+            (Edit("package.yaml", op, path, key=key, value={}),),
+        )
+
+    rule = Rule("second", "1.0", "same_meaning", "Overlap", find)
+    with pytest.raises(SemanticLayerError, match="Rules 'first' and 'second' conflict"):
+        plan(files, (_rule("first", "rename"), rule), {})

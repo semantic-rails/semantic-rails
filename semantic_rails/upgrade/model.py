@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from ..config import _DIRECT_EXPRESSION_FIELDS
 from ..errors import SemanticLayerError
 from ..package_snapshot import capture_package_source
 from ..yaml_loader import safe_load
@@ -134,7 +135,7 @@ class PackageFiles:
         for file, path, value in self._sections(section):
             if Path(file).parts[0] == section and (not path or path[-1] == section[:-1]):
                 key = (
-                    (value.get("name") if section == "metrics" else "")
+                    (value.get("name") if section in {"metrics", "segments"} else "")
                     or value.get("id")
                     or Path(file).stem
                 )
@@ -198,7 +199,12 @@ class PackageFiles:
     def expressions(self) -> Iterator[Row]:
         for file, path, row in (*self.metrics(), *self.segments()):
             for child_path, child in _walk(row, path):
-                if isinstance(child, dict) and (child_path == path or "expression" in child_path):
+                relative = child_path[len(path) :]
+                if isinstance(child, dict) and (
+                    not relative
+                    or "expression" in relative
+                    or relative[0] in _DIRECT_EXPRESSION_FIELDS
+                ):
                     yield file, child_path, child
 
     def queries(self) -> Iterator[Row]:
