@@ -795,7 +795,7 @@ that must not see it.
   `INVALID_CONFIG`. An engine release without `visible_only` refuses to load such a
   package, so a package using it never runs on an engine that would ignore it.
 - **In force** when `environments` is empty, lists the request's environment, or the
-  request carries no environment or one the package does not declare. A policy scoped to
+  request carries no environment. A policy scoped to
   `development` does not restrict a declared `production` request.
 - **Eligible** when the request has one of the listed `roles` (case-insensitive) if any
   are listed, and the listed audience if `audiences` are listed. No roles, or a role the

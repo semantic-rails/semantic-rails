@@ -922,7 +922,8 @@ def test_mcp_jsonrpc_error_envelope_includes_recovery_hints_for_policy_context(r
         "policy_context: 'prod' must surface a recovery hint — empty "
         "array means the agent has to guess the fix"
     )
-    assert any(h.get("kind") == "wrap_policy_context_as_object" for h in hints)
+    hint = next(h for h in hints if h.get("kind") == "wrap_policy_context_as_object")
+    assert '{"environment": "production", "audience": "internal"}' in hint["message"]
     assert "closest_valid_query" not in data
 
 

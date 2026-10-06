@@ -103,7 +103,10 @@ def context_scope_matches(allowed: Iterable[str], value: str) -> bool:
 
 
 def check_request_environment(config: PackageConfig, environment: str) -> None:
-    """A supplied environment must be declared before any policy is evaluated."""
+    """A supplied environment must be declared before any policy is evaluated.
+
+    The boundary refuses early; evaluator guards cover bypasses (direct calls, positional payloads).
+    """
     declared = list(config.package.environments or [])
     if environment and environment not in declared:
         raise SemanticLayerError(

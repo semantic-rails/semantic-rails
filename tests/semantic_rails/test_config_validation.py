@@ -1115,6 +1115,10 @@ def test_shared_catalog_resolver_bypasses_manifest_for_every_policy_context(monk
     from semantic_rails import catalog_service
 
     class FakeRuntime:
+        _config = config_module.load_package_config(
+            resolve_repo_path("configs/semantic_rails/jaffle_shop")
+        )
+
         def request_scope(self):
             return nullcontext(self)
 
@@ -1134,7 +1138,7 @@ def test_shared_catalog_resolver_bypasses_manifest_for_every_policy_context(monk
         {"tenant": "tenant-a"},
         {"actor": "user-a"},
         {"project": "project-a"},
-        {"environment": "prod"},
+        {"environment": "production"},
         {"audience": "internal"},
     ):
         resolved = catalog_service.resolve_catalog(runtime, policy_context=context)

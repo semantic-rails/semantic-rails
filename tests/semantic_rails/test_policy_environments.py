@@ -185,6 +185,18 @@ def test_every_policy_kind_checks_the_request_environment(
         engine.close()
 
 
+@pytest.mark.parametrize("environment", ["production", " production "])
+def test_caveat_matches_declared_environment_with_padding(config, package, environment):
+    config = governed(config, "caveat")
+    engine = Runtime.from_config(config, source_path=str(package))
+    try:
+        compiled = engine.compile({**QUERY, "policy_context": {"environment": environment}})
+        warnings = compiled.get("warnings", [])
+        assert any(warning["code"] == "SEMANTIC_CAVEAT_APPLIED" for warning in warnings)
+    finally:
+        engine.close()
+
+
 DIRECT_GATES = {
     "hidden": lambda config: hidden_object_ids(config, environment="prod"),
     "hidden_policy": lambda config: hidden_policy_ids(config, environment="prod"),

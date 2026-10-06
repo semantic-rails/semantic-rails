@@ -61,7 +61,8 @@ def caveat_warnings(
     """Return structured warnings for caveats relevant to a compiled query."""
     payload = dict(payload or {})
     policy_context = dict(payload.get("policy_context", {}) or {})
-    check_request_environment(config, str(policy_context.get("environment", "") or "").strip())
+    policy_context["environment"] = str(policy_context.get("environment", "") or "").strip()
+    check_request_environment(config, policy_context["environment"])
     caveats = list(getattr(config, "semantic_caveats", []) or [])
     if not caveats:
         return []
