@@ -974,7 +974,7 @@ expression kind names the received kind and its request path (for example,
 | `MISSING_DEPENDENCY` | Required upstream object is missing. |
 | `QUERY_EXECUTION_ERROR` | Warehouse refused or aborted execution. |
 | `PATH_NOT_FOUND` | No valid join path between the requested objects; `details.reason: excluded_by_decision` means every route walks a pair the package's `graph.path_preferences` rows (`details.rows`) record differently. `details.reachable_targets` and suggested group-by dimensions share compilation's path traversal and route-selection rules, respecting relationship directions, hop limits, route ambiguity, and recorded path preferences, including inherited decisions. The lists are exact under these path rules, without caching rejected routes, and are route-eligible: fan-out and policy checks still apply. Unrelated route rows retain bounded reachability scans; inherited-route searches skip branches that cannot reach the target within the remaining hops. |
-| `POLICY_DENIED` | Policy context blocks a referenced object or query cut. |
+| `POLICY_DENIED` | Policy context blocks a referenced object or query cut. When a denied query reads an object hidden from the caller, or one whose visibility cannot be determined, the denial carries only its code and message, with no `blocked_objects`, `policy_effects`, `policy_violations` or hints. |
 | `INVALID_METRIC_PREDICATE` | `metric_predicates[]` entry is malformed. |
 | `PREDICATE_SCOPE_UNSAFE` | Predicate scope is incompatible with query grain. |
 | `PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE` | Predicate context entity disagrees with the surrounding query. |
