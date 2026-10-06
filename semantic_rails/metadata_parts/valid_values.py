@@ -221,6 +221,8 @@ def valid_values_payload(
     if not allow_live_query:
         hint_message = _valid_values_lookup_hint(False)
         return {
+            "ok": False,
+            "status": "needs_live_query",
             "dimension": dimension_id,
             "values": [],
             "total_count": 0,

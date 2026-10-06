@@ -14,6 +14,7 @@ from typing import Any
 from ._base import RuntimeCompositionDraft, _runtime_composition_terms
 from .intent_ir import IntentIR, parse_intent
 from .patterns import PATTERNS
+from .time_reference import with_time_reference
 
 
 @dataclass(frozen=True)
@@ -86,7 +87,10 @@ def _select_draft(
     return best[0], best[1]
 
 
-def compose(runtime: Any, intent: str) -> CompositionResult:
+@with_time_reference
+def compose(
+    runtime: Any, intent: str, *, policy_context: dict[str, Any] | None = None
+) -> CompositionResult:
     """Run the full composition pipeline.
 
     Parses the intent into an ``IntentIR``, then runs score-based
@@ -97,7 +101,7 @@ def compose(runtime: Any, intent: str) -> CompositionResult:
     behavior when no pattern fires.
     """
 
-    intent_ir = parse_intent(runtime, intent)
+    intent_ir = parse_intent(runtime, intent, policy_context=policy_context)
     text = str(intent or "").lower()
     terms = _runtime_composition_terms(text)
     chosen = _select_draft(runtime, text, terms)

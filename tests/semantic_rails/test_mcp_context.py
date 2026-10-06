@@ -17,6 +17,8 @@ from typing import Any
 import pytest
 
 from scripts import mcp_context
+from semantic_rails.mcp import _TOOL_REQUEST_CONTEXT, SemanticLayerMCPAdapter
+from semantic_rails.request_context import RequestContext
 from tests.semantic_rails.result_helpers import assert_plan_held
 
 
@@ -35,6 +37,93 @@ def _plan_baseline() -> dict[str, Any]:
         mcp_context.PLAN_BASELINE_PATH.read_text(encoding="utf-8")
     )
     return baseline
+
+
+@pytest.mark.parametrize("same_adapter", [True, False], ids=["same-adapter", "cross-adapter"])
+def test_nested_tool_calls_enforce_their_own_context(runtime_factory, same_adapter) -> None:
+    outer = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
+    inner = outer if same_adapter else SemanticLayerMCPAdapter(outer.runtime)
+    outer_context = RequestContext(request_id="outer", tenant="tenant-a")
+    inner_context = RequestContext(request_id="inner", tenant="tenant-b", metric_allowlist=())
+    inspect_args = {"object_id": "measure.jaffle.order_count"}
+    execute_args = {
+        "mode": "validate",
+        "query": {
+            "version": 1,
+            "select": [{"expression": {"measure": "measure.jaffle.order_count"}}],
+        },
+    }
+    standalone = {
+        tool: inner.call_tool(tool, args, request_context=inner_context)
+        for tool, args in (("inspect", inspect_args), ("execute", execute_args))
+    }
+    built_in_inspect = outer.tool_handlers["inspect"]
+
+    def nested_calls(arguments: dict[str, Any]) -> dict[str, Any]:
+        results = {
+            tool: inner.call_tool(tool, args, request_context=inner_context)
+            for tool, args in (("inspect", inspect_args), ("execute", execute_args))
+        }
+        assert _TOOL_REQUEST_CONTEXT.get() == outer_context
+        results["outer_read"] = built_in_inspect(
+            {**inspect_args, "policy_context": arguments["policy_context"]}
+        )
+        assert _TOOL_REQUEST_CONTEXT.get() == outer_context
+        return {"nested": results}
+
+    outer.replace_tool_handler("discover", nested_calls)
+    try:
+        response = outer.call_tool("discover", {}, request_context=outer_context)
+        assert response["ok"] is True, response
+        assert response["request_context"]["tenant"] == "tenant-a"
+        assert response["request_id"] == "outer"
+        for tool in ("inspect", "execute"):
+            nested = response["nested"][tool]
+            assert nested["ok"] is False, nested
+            assert nested["errors"][0]["code"] == "RESOURCE_ACCESS_DENIED"
+            assert nested["errors"][0]["code"] == standalone[tool]["errors"][0]["code"]
+            assert nested["request_context"]["tenant"] == "tenant-b"
+            assert nested["request_id"] == "inner"
+        outer_read = response["nested"]["outer_read"]
+        assert outer_read["ok"] is True, outer_read
+        assert outer_read["card"]["id"] == inspect_args["object_id"]
+        assert outer_read["request_context"]["tenant"] == "tenant-a"
+        assert _TOOL_REQUEST_CONTEXT.get() is None
+    finally:
+        outer.close()
+
+
+@pytest.mark.parametrize("same_adapter", [True, False], ids=["same-adapter", "cross-adapter"])
+def test_nested_host_exception_stays_in_the_inner_tool_envelope(runtime_factory, same_adapter):
+    outer = SemanticLayerMCPAdapter(runtime_factory("jaffle_shop"))
+    inner = outer if same_adapter else SemanticLayerMCPAdapter(outer.runtime)
+    outer_context = RequestContext(request_id="outer", tenant="tenant-a")
+    inner_context = RequestContext(request_id="inner", tenant="tenant-b", metric_allowlist=())
+
+    def exploding(_arguments: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError("nested host failure")
+
+    def nested_call(_arguments: dict[str, Any]) -> dict[str, Any]:
+        result = inner.call_tool(
+            "inspect", {"object_id": "measure.jaffle.order_count"}, request_context=inner_context
+        )
+        assert _TOOL_REQUEST_CONTEXT.get() == outer_context
+        return {"nested": result}
+
+    inner.replace_tool_handler("inspect", exploding)
+    outer.replace_tool_handler("discover", nested_call)
+    try:
+        response = outer.call_tool("discover", {}, request_context=outer_context)
+        assert response["ok"] is True, response
+        assert response["request_context"]["tenant"] == "tenant-a"
+        nested = response["nested"]
+        assert nested["ok"] is False
+        assert nested["errors"][0]["code"] == "INTERNAL_ERROR"
+        assert nested["request_context"]["tenant"] == "tenant-b"
+        assert nested["request_id"] == "inner"
+        assert _TOOL_REQUEST_CONTEXT.get() is None
+    finally:
+        outer.close()
 
 
 def test_eval_set_is_frozen(dev_cases: list[dict[str, Any]]) -> None:

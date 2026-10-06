@@ -693,6 +693,7 @@ def _query_execution_error_details(
     payload: dict[str, Any],
     policy_context: dict[str, Any],
     extra: dict[str, Any] | None = None,
+    seed_warnings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build the `details` payload for a QUERY_EXECUTION_ERROR.
 
@@ -711,6 +712,8 @@ def _query_execution_error_details(
             if key not in {"sql", "sql_redacted", "sql_debug_authorized"}:
                 # The runtime owns SQL disclosure, including its authorization flags.
                 details[key] = value
+    if seed_warnings:
+        details["warnings"] = seed_warnings
     return details
 
 
@@ -2745,6 +2748,7 @@ class Runtime:
                     payload=payload,
                     policy_context=policy_context,
                     extra=exc.details if isinstance(exc, SemanticLayerError) else None,
+                    seed_warnings=self._seed_warnings,
                 ),
             ) from exc
         out: dict[str, Any] = {
@@ -3150,6 +3154,7 @@ class Runtime:
                         **(exc.details if isinstance(exc, SemanticLayerError) else {}),
                         "segment_id": segment_id,
                     },
+                    seed_warnings=self._seed_warnings,
                 )
             ) from exc
         visible_rows = strip_segment_preview_metric(list(rows))

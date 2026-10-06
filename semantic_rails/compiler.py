@@ -33,6 +33,7 @@ from .ast import (
     normalize_query,
     plain_filters,
     refuse_child_groups,
+    rewrite_select_shorthand,
     route_decisions_from_payload,
 )
 from .compiler_parts.bind import (
@@ -3227,9 +3228,16 @@ def _query_target_entities(query: NormalizedQuery, config: PackageConfig) -> dic
     temporal_roles = _temporal_role_index(config)
     targets: dict[str, str] = {}
     for dim_id in query.group_by:
+        if dim_id not in dimensions:
+            raise SemanticLayerError(
+                "OBJECT_NOT_FOUND",
+                f"Unknown dimension '{dim_id}'",
+                details={"dimension": dim_id},
+            )
         targets.setdefault(dimensions[dim_id].entity, "group_by")
     for item in refuse_child_groups(query.where, "in a query without a measure"):
-        targets.setdefault(dimensions[item.field].entity, "where")
+        dim = _checked_where_dimension(item, dimensions, _measure_index(config))
+        targets.setdefault(dim.entity, "where")
     if query.time is not None:
         role = temporal_roles.get(query.time.temporal_role)
         if role is None:
@@ -5210,10 +5218,11 @@ def read_routes(plan: LogicalPlan, route_choices: Sequence[RouteChoice]) -> list
 def _bind_query(
     config: PackageConfig, registry: Registry | None, payload: dict[str, Any]
 ) -> BoundQuery:
+    canonical, _ = rewrite_select_shorthand(payload)
     # policy_context carries caller metadata and is never read as expressions;
     # every other request key, including unrecognized ones, is shape-checked.
     validate_expression_shapes(
-        {key: value for key, value in payload.items() if key != "policy_context"}, path="query"
+        {key: value for key, value in canonical.items() if key != "policy_context"}, path="query"
     )
     plan = plan_query(config, registry, payload)
     config = resolve_compile_config(plan, config)

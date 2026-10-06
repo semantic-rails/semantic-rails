@@ -338,7 +338,7 @@ def test_oversized_errors_and_tiny_operator_budgets_are_bounded(
     ("expression", "kind", "path"),
     [
         (
-            {"kind": "group", "dimension": "dimension.store_name"},
+            {"kind": "group", "dimensions": ["dimension.store_name"]},
             "group",
             "query.select[0].expression",
         ),

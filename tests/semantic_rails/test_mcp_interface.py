@@ -373,7 +373,9 @@ def test_mcp_valid_values_requires_explicit_live_lookup(runtime_factory):
             },
         )
 
-        assert default_payload["ok"] is True
+        assert default_payload["ok"] is False
+        assert default_payload["status"] == "needs_live_query"
+        assert default_payload["next_call"]["arguments"]["allow_live_query"] is True
         assert default_payload["source"] == "none"
         assert default_payload["values"] == []
         assert live_payload["ok"] is True
