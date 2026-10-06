@@ -1049,9 +1049,11 @@ role's zone as in the planning zone; otherwise plan holds with
 `why.details.unresolved_phrases` and returns no `query_ir`. With `now` supplied,
 a returned relative range (`time.range`) becomes the `time.start` and `time.end`
 that clock gives it in the role's zone, so the returned Query IR runs the window
-plan checked without `policy_context`. A caller bound with a zone designator (`Z`
-or `±hh:mm`) is read on its written date only when its offset is the role zone's
-at that instant; otherwise it doesn't match the question's window.
+plan checked without `policy_context`. A caller bound is read only at a whole day
+(a date, or 00:00 with no offset or a UTC one), and one with a zone designator (`Z`
+or `±hh:mm`) only when its offset is the role zone's at that instant; a bound with
+another time of day, or a window whose start is not before its end, doesn't match
+the question's window.
 Existing holds on explicit caller windows remain conservative. As-of phrases
 (`now`, `right now`, `currently`, `at the
 moment`, `as of now`, `current` before a metric, `end of <window>`, and `as of
