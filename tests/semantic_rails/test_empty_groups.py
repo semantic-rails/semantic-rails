@@ -495,6 +495,88 @@ def shop(shop_package: Path) -> Iterator[Runtime]:
         rt.close()
 
 
+@pytest.mark.parametrize("beside_amount", [False, True])
+def test_distribution_sum_keeps_a_measured_else_zero(shop: Runtime, beside_amount: bool) -> None:
+    amount = {"measure": "measure.shop.store_a_amount"}
+    distribution = {
+        "kind": "distribution",
+        "function": "sum",
+        "over": {"kind": "entity_value", "entity": "entity.shop_customer", "input": amount},
+    }
+    response = shop.query(
+        {
+            "select": _select(total=distribution, **({"amount": amount} if beside_amount else {})),
+            "time": {**SHOP_MONTH, "grain": "week", "start": "2023-11-20", "end": "2023-11-27"},
+        }
+    )
+    gold = _gold(
+        shop,
+        "SELECT SUM(v) AS total FROM (SELECT customer_id, "
+        "SUM(CASE WHEN store_id = 'a' THEN amount ELSE 0 END) AS v FROM orders "
+        "WHERE ordered_at >= TIMESTAMP '2023-11-20' AND ordered_at < TIMESTAMP '2023-11-27' "
+        "GROUP BY customer_id) per_customer",
+    )
+    assert gold == [{"total": 0}]
+    assert response["row_count"] == 1
+    assert response["rows"][0]["total"] == gold[0]["total"]
+    if beside_amount:
+        assert response["rows"][0]["amount"] == 0
+    assert not _warnings(response)
+
+
+@pytest.mark.parametrize("grain", [None, "week", "month"])
+@pytest.mark.parametrize("relative", [False, True])
+def test_a_window_total_observes_conditional_counts_outside_its_bounds(
+    shop: Runtime, grain: str | None, relative: bool
+) -> None:
+    a = {"measure": "measure.shop.store_a_orders"}
+    b = {"measure": "measure.shop.store_b_orders"}
+    time = (
+        {"range": {"last": {"unit": "week", "value": 1}}}
+        if relative
+        else {"start": "2023-11-27", "end": "2023-12-04"}
+    )
+    if grain:
+        time["grain"] = grain
+    response = shop.query(
+        {
+            "select": _select(
+                a=a, b=b, net={"kind": "arithmetic", "op": "subtract", "left": a, "right": b}
+            ),
+            "time": {"temporal_role": SHOP_MONTH["temporal_role"], **time},
+            "policy_context": {"now": "2023-12-04T00:00:00+00:00"},
+        }
+    )
+    gold = _gold(
+        shop,
+        "SELECT a, b, a - b AS net FROM (SELECT "
+        "COUNT(CASE WHEN store_id = 'a' THEN order_id END) AS a, "
+        "COUNT(CASE WHEN store_id = 'b' THEN order_id END) AS b FROM orders "
+        "WHERE ordered_at >= TIMESTAMP '2023-11-27' AND ordered_at < TIMESTAMP '2023-12-04') counts",
+    )
+    assert gold == [{"a": 1, "b": 0, "net": 1}]
+    assert [{key: row[key] for key in gold[0]} for row in response["rows"]] == gold
+    assert not _warnings(response)
+
+
+def test_a_window_total_refuses_a_missing_time_scope(
+    shop: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sql_lowering, "_record_time_scope", lambda *args, **kwargs: None)
+    with pytest.raises(SemanticLayerError) as raised:
+        shop.query(
+            {
+                "select": _select(b={"measure": "measure.shop.store_b_orders"}),
+                "time": {
+                    "temporal_role": SHOP_MONTH["temporal_role"],
+                    "start": "2023-12-01",
+                    "end": "2023-12-08",
+                },
+            }
+        )
+    assert raised.value.code == "EMPTY_GROUPS_UNSETTLED"
+
+
 @pytest.mark.parametrize(
     ("revenue_alias", "median_alias"),
     [
