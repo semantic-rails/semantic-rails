@@ -147,7 +147,9 @@ def test_a_parent_lookup_source_refuses_stock_and_keeps_flow(package: Path, sour
             "where": [_is(NOTICE_KIND, "renewal")],
         }
         assert (
-            compile_query(engine.config, None, query)["logical_plan"].measure_plans[0].rewrite_strategy
+            compile_query(engine.config, None, query)["logical_plan"]
+            .measure_plans[0]
+            .rewrite_strategy
             == "parent_lookup"
         )
         with duckdb.connect(str(package / "data" / "fees.duckdb"), read_only=True) as connection:
