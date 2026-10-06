@@ -657,7 +657,7 @@ def named_subject_why(
 ) -> dict[str, Any] | None:
     """A shared whole name cannot be settled by the ranking's label or score."""
 
-    rows = _shared_subjects(runtime._config, _target_focus_text(question))
+    rows = _shared_subjects(runtime._config, question)
     if not rows or any(row.id in _projected_subject_ids(partial_query or {}) for row in rows):
         return None
     return _coverage_why(

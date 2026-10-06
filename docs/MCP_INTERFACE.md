@@ -321,6 +321,8 @@ honored clause.
 A multi-word authored synonym consumes only the contiguous question span it matches,
 allowing regular plurals. Two selectable subjects sharing a whole name or synonym, with
 no other words distinguishing them, return `needs_clarification` with both ids.
+Established whole-name metric precedence over a measure and explicit caller selections
+still settle a subject.
 Metric labels match with or without a parenthetical. At plan entry, straight and curly
 apostrophe contractions expand before scope, relevance, parsing and readiness: `what's`
 becomes `what is`, `didn't` becomes `did not`, and possessive `'s` is dropped. Messages
