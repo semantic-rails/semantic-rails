@@ -229,7 +229,11 @@ def test_bundled_yaml_edit_properties(file, part, parts):
                     assert result[:start] == text[:start]
                     tail = result[start:]
                     assert text.endswith(tail)
-    for path, node in list(_leaves(root, text))[part::parts]:
+    leaves = list(_leaves(root, text))
+    if parts > 1 and leaves:
+        # Bound full-document reparses with evenly spaced paths, including both ends.
+        leaves = [leaves[part * (len(leaves) - 1) // (parts - 1)]]
+    for path, node in leaves:
         expected = deepcopy(original)
         parent = expected
         for path_part in path[:-1]:
