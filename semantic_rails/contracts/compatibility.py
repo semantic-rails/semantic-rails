@@ -24,7 +24,7 @@ _JSON_SCHEMA_ARTIFACTS = {
 
 
 # Contracts a release stopped shipping; a baseline that has one reports it removed.
-_RETIRED_CONTRACT_NAMES = ("query_mcp.v1.json",)
+_RETIRED_CONTRACT_NAMES = ("query_mcp.v1.json", "query_ir.preview.v2.json")
 
 
 def load_contract_directory(path: str | Path) -> dict[str, dict[str, Any]]:

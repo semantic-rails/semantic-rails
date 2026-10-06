@@ -70,11 +70,9 @@ class PackageMeta:
 
 ENTITY_KIND_REGULAR = "regular"
 ENTITY_KIND_TIME = "time"
-VALID_ENTITY_KINDS = frozenset({ENTITY_KIND_REGULAR, ENTITY_KIND_TIME})
 
 MODEL_KIND_MODEL = "model"
 MODEL_KIND_FACT = "fact"
-VALID_MODEL_KINDS = frozenset({MODEL_KIND_MODEL, MODEL_KIND_FACT})
 
 
 @dataclass(frozen=True)
@@ -247,6 +245,9 @@ class MeasureConfig:
     # measure's rows; ``expr`` is the foreign key to ``via``.
     lookup_from: str = ""
     lookup_via: str = ""
+    # False when authored ``publish: false`` and no metric aggregates it whole; a metric that
+    # filters it then makes it a building block (``config_parts.measure_governance``).
+    publish: bool = True
 
 
 @dataclass(frozen=True)
@@ -388,8 +389,6 @@ class AggregateRelationConfig:
     excluded_dimensions: list[str] = field(default_factory=list)
     selection_priority: int = 0
     equivalence_kind: str = ""
-    # Routes only while the installed certification provider says it is certified.
-    requires_certification: bool = False
 
 
 @dataclass(frozen=True)

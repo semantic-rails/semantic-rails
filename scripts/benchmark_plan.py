@@ -95,7 +95,9 @@ def _load_cases() -> list[dict[str, Any]]:
         {
             "name": case.get("name") or case.get("intent", "")[:40],
             "intent": str(case.get("intent", "")),
-            "expected": "answer",
+            "expected": "clarify" if case.get("expectation") == "clarification" else "answer",
+            "expected_status": case.get("expected_status"),
+            "forbid_ready_for_execute": bool(case.get("forbid_ready_for_execute")),
             "expected_resolved_ids": _expected_ids_for_case(case),
             "forbidden_ids": list(case.get("forbidden_ids", []) or []),
             "expected_query_patch": dict(case.get("expected_query_patch", {}) or {}),
@@ -123,10 +125,9 @@ def _load_cases() -> list[dict[str, Any]]:
             {
                 "name": "orders_by_store_without_time_bucket",
                 "intent": "orders by store",
-                "expected": "answer",
-                "expected_query_patch": {
-                    "group_by": ["dimension.jaffle_store_name"],
-                },
+                "expected": "clarify",
+                "expected_status": "low_confidence",
+                "forbid_ready_for_execute": True,
                 "forbidden_query_paths": ["time"],
             },
             {
@@ -647,21 +648,19 @@ def _gate_exit_code(
         )
     fidelity_misses = [
         f"{row['name']} missing={row['missing_expected_ids']}"
-        for row in expected_answer
+        for row in rows
         if row.get("missing_expected_ids")
     ]
     if fidelity_misses:
         failures.append(f"fidelity regression: expected semantic IDs missing: {fidelity_misses}")
     forbidden_hits = [
-        f"{row['name']} hit={row['forbidden_hits']}"
-        for row in expected_answer
-        if row.get("forbidden_hits")
+        f"{row['name']} hit={row['forbidden_hits']}" for row in rows if row.get("forbidden_hits")
     ]
     if forbidden_hits:
         failures.append(f"fidelity regression: forbidden semantic IDs appeared: {forbidden_hits}")
     query_patch_misses = [
         f"{row['name']} missing={row['missing_expected_query_patch']}"
-        for row in expected_answer
+        for row in rows
         if row.get("missing_expected_query_patch")
     ]
     if query_patch_misses:

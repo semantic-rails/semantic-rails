@@ -86,7 +86,7 @@ def test_aggregate_filter_accepts_all_or_nothing(filter_spec):
 def _orders_by_year(runtime, filter_spec) -> dict:
     return runtime.validate(
         {
-            "version": 2,
+            "version": 1,
             "select": [{"expression": _aggregate(filter_spec), "as": "orders"}],
             "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "year"},
         }
@@ -126,7 +126,7 @@ def test_legacy_dimension_clause_is_applied_not_ignored(runtime_factory):
         def rows(filter_spec):
             result = runtime.query(
                 {
-                    "version": 2,
+                    "version": 1,
                     "select": [{"expression": _aggregate(filter_spec), "as": "orders"}],
                     "time": {"temporal_role": "temporal_role.jaffle_order_time", "grain": "year"},
                 }

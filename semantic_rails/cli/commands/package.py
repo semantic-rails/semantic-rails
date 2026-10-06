@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ...config import package_root_for_source, resolve_repo_path
+from ...config import package_root_for_source
 from ...config_validation import (
     parse_config_report,
     resolve_package_reference,
@@ -31,7 +31,6 @@ from ...package_tools import (
 )
 from ...runtime import Runtime
 from ..common import _print, _print_stderr
-from .project import cmd_init_project
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
@@ -111,78 +110,6 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             "package": ref.display_name,
             "checks": checks,
             "failing_checks": [str(check.get("name", "")) for check in failing],
-        }
-    )
-
-
-def cmd_init(args: argparse.Namespace) -> None:
-    target = Path(args.output).expanduser().resolve()
-    if target.exists() and any(target.iterdir()) and not args.force:
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            f"Target directory '{target}' is not empty; pass --force to overwrite starter files",
-        )
-    target.mkdir(parents=True, exist_ok=True)
-    # resolve_repo_path checks the repo root and the installed data-files
-    # root (share/semantic-rails/), so this works from a source checkout and
-    # from a pip-installed wheel — the starter template ships as a data file.
-    starter = Path(resolve_repo_path("configs/examples/semantic_rails_package_starter.yml"))
-    if not starter.exists():
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            "Bundled starter template not found "
-            "(configs/examples/semantic_rails_package_starter.yml). Reinstall the "
-            "package or run from a source checkout.",
-        )
-    package_text = starter.read_text(encoding="utf-8")
-    package_id = str(args.package_id or target.name).strip()
-    namespace = str(args.namespace or package_id.replace("-", "_")).strip()
-    package_text = package_text.replace("id: shop_starter", f"id: {package_id}")
-    package_text = package_text.replace("namespace: shop", f"namespace: {namespace}")
-    # Fully-qualified ids in the template are derived from the starter's
-    # `namespace: shop`; rewrite them so expression references (e.g.
-    # measure.shop.line_revenue_usd) keep resolving under the new namespace.
-    for kind in ("entity", "dimension", "measure", "metric", "segment"):
-        package_text = package_text.replace(f"{kind}.shop.", f"{kind}.{namespace}.")
-    package_text = package_text.replace(
-        "default_db: data/shop_starter.duckdb", f"default_db: data/{package_id}.duckdb"
-    )
-    package_text = package_text.replace(
-        "source: data/seed_shop.sql", "source: data/seed_example.sql"
-    )
-    # The starter header tells readers to validate the repo-internal
-    # template path; point the generated file's header at itself instead.
-    package_text = package_text.replace(
-        "uv run semantic-rails parse-config --path "
-        "configs/examples/semantic_rails_package_starter.yml",
-        f"semantic-rails validate-config --path {target / 'package.yml'}",
-    )
-    (target / "package.yml").write_text(package_text, encoding="utf-8")
-    data_dir = target / "data"
-    data_dir.mkdir(exist_ok=True)
-    (data_dir / "seed_example.sql").write_text(
-        """
-CREATE OR REPLACE TABLE shop_customer AS
-SELECT 'customer_1' AS customer_id, 'new' AS customer_type, TIMESTAMP '2026-01-01 00:00:00' AS first_ordered_at;
-
-CREATE OR REPLACE TABLE shop_order AS
-SELECT 'order_1' AS order_id, 'customer_1' AS customer_id, 'web' AS channel, 4200 AS order_total_cents, TIMESTAMP '2026-01-02 00:00:00' AS ordered_at;
-
-CREATE OR REPLACE TABLE shop_order_item AS
-SELECT 'item_1' AS order_item_id, 'order_1' AS order_id, 'product_1' AS product_id, 1 AS quantity, 4200 AS line_total_cents;
-
-CREATE OR REPLACE TABLE shop_product AS
-SELECT 'product_1' AS product_id, 'beverage' AS product_type;
-""".strip()
-        + "\n",
-        encoding="utf-8",
-    )
-    _print(
-        {
-            "ok": True,
-            "path": str(target),
-            "package_id": package_id,
-            "files": ["package.yml", "data/seed_example.sql"],
         }
     )
 
@@ -389,32 +316,3 @@ def _check_cli_payload(report: dict[str, Any], *, full: bool = False) -> dict[st
                 errors.append({"check": name, **dict(error)})
         payload["errors"] = errors
     return payload
-
-
-def cmd_init_dispatch(args: argparse.Namespace) -> None:
-    split_requested = bool(getattr(args, "split", False))
-    single_file_requested = bool(getattr(args, "single_file", False))
-    package_name = str(getattr(args, "name", "") or "")
-    if split_requested and single_file_requested:
-        raise SemanticLayerError(
-            "INVALID_CONFIG", "Choose either --split or --single-file, not both"
-        )
-    if single_file_requested:
-        if package_name and not getattr(args, "package_id", ""):
-            args.package_id = package_name
-        if not getattr(args, "output", ""):
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                "Provide --output when creating a single-file package.",
-            )
-        cmd_init(args)
-        return
-    if split_requested or package_name:
-        cmd_init_project(args)
-        return
-    if not getattr(args, "output", ""):
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            "Provide a package name (`semantic-rails init my_package`) or --output for the legacy single-file scaffold.",
-        )
-    cmd_init(args)

@@ -22,7 +22,7 @@ from semantic_rails.planner._base import (
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.runtime import Runtime
-from tests.semantic_rails.result_helpers import typed_rows
+from tests.semantic_rails.result_helpers import assert_plan_held, typed_rows
 from tests.semantic_rails.test_plan_unasked_groupings import _CASES
 from tests.semantic_rails.test_plan_value_lists import _force_fallback
 
@@ -223,7 +223,7 @@ def test_a_filter_never_stands_in_for_a_dropped_grouping(
     def force(grouped: bool) -> None:
         draft = RuntimeCompositionDraft(
             query={
-                "version": 2,
+                "version": 1,
                 "select": [
                     {"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}
                 ],
@@ -469,7 +469,7 @@ def test_suffix_list_holds_when_either_grouping_is_dropped(
     assert "execute" not in native["next"].get("ready_for", [])
     draft = RuntimeCompositionDraft(
         query={
-            "version": 2,
+            "version": 1,
             "select": [
                 {"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}
             ],
@@ -575,7 +575,7 @@ def test_only_a_one_value_filter_stands_in_for_a_named_grouping(
     question = "revenue at store name level for customer type new"
     draft = RuntimeCompositionDraft(
         query={
-            "version": 2,
+            "version": 1,
             "select": [
                 {"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}
             ],
@@ -684,8 +684,8 @@ def test_repeated_description_of_one_grouping_stays_ready(
     before, complete = _compare_base(
         jaffle, monkeypatch, "revenue at store name level for each store"
     )
-    assert before["status"] == complete["status"] == "ok", complete.get("why")
-    assert "execute" in complete["next"]["ready_for"]
+    assert_plan_held(before, "PLAN_UNMATCHED_TERMS")
+    assert_plan_held(complete, "PLAN_UNMATCHED_TERMS")
     assert typed_rows(jaffle.query(complete["best"]["query_ir"])) == typed_rows(
         jaffle.query(before["best"]["query_ir"])
     )

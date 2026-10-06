@@ -42,6 +42,7 @@ from ._base import (
     _object_by_id,
     _requested_grouping_terms,
     _runtime_composition_terms,
+    _singular,
     _term_matches_value_domain,
     _time_window,
     _with_fiscal_calendar,
@@ -49,7 +50,6 @@ from ._base import (
 from .faithfulness import (
     _dimension_nouns,
     _ranking_request,
-    _singular,
     intent_faithfulness_why,
     intent_subject_why,
     unconsumed_catalog_words,
@@ -360,6 +360,7 @@ def plan_payload(
             )
             or grouping_why
             or _unasked_grouping_why(runtime, intent_str, best_draft.query, partial_query)
+            or _qualifying_entity_why(runtime, intent_ir, best_draft.query)
         )
         if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
         else None
@@ -1152,6 +1153,23 @@ def _dropped_grouping_why(
                 ),
             }
         ],
+    }
+
+
+def _qualifying_entity_why(
+    runtime: Any, intent_ir: IntentIR, query: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Parsed qualifications remain held until their cohort and scope are proven."""
+    # Entity discovery also fills this slot for ordinary entity mentions.
+    # A cohort obligation needs a parsed qualification, not just that hint.
+    if intent_ir.qualifying_entity is None or not (
+        intent_ir.qualification_phrase or intent_ir.threshold is not None
+    ):
+        return None
+    return {
+        "code": "PLAN_INTENT_COVERAGE_GAP",
+        "message": "The draft does not prove the qualifying cohort and its time scope.",
+        "details": {"qualifying_entity": intent_ir.qualifying_entity.id},
     }
 
 

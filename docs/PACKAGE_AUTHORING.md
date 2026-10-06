@@ -155,14 +155,6 @@ source, and pre-rendered catalog variants the runtime can serve without
 recompiling; a stale fingerprint falls back to live compute. Pass `--no-manifest`
 to `validate-config` to skip writing it.
 
-The older single-file starter is still available when you specifically want one
-YAML file:
-
-```bash
-semantic-rails init --single-file --output ./my_single_file_pkg --package-id my_single_file_pkg
-semantic-rails validate-config --path ./my_single_file_pkg/package.yml
-```
-
 Single-file packages are loaded by pointing `--path` at the **file**, not the
 directory. They can still have sibling `examples/` and `tests/` directories next
 to the `package.yml`; `run-examples`, `test-package`, and `check` pick them up
@@ -287,8 +279,8 @@ model:
   # grain: is derived — the graph's `model:` pointer marks this model as
   # primary for `order`. In schema_strict DIRECTORY packages, authoring
   # `grain:` alongside `entities:` is rejected ("Drop 'grain:'"). In
-  # single-file packages both are accepted (the init starter authors
-  # `grain:` explicitly to pin the primary entity).
+  # single-file packages both are accepted (`grain:` explicitly pins
+  # the primary entity).
 
   entities:
     order: {}                         # primary (grain = graph's order.key)
@@ -1254,14 +1246,40 @@ surrogate such as `inventory_row_id` that is unique per snapshot row, and the se
 columns must not be unique per row themselves (`[inventory_row_id, date_day]` passes the
 check below but still sums). Give the snapshot time `class: as_of_time`.
 
-For grouping, the snapshot is chosen per series per period first. A grouped attribute
-stored on the snapshot rows, such as an account's plan that changes mid-week, is read
-from that snapshot, so the series counts once, under the value it holds that day, and
-the summed grouped rows add up to the ungrouped total. A `where` filter on the attribute
-applies before the snapshot is chosen. The stock's own clock and calendar dimensions
-instead split the period: grouped by the snapshot day, each day keeps its own snapshot.
-Ratios whose numerator alone has extra conditions keep one snapshot per series per
-time bucket.
+The snapshot is chosen per series per period first. A grouped attribute stored on the
+snapshot rows, such as an account's plan that changes mid-week, is read from that
+snapshot, so the series counts once, under the value it holds that day, and the summed
+grouped rows add up to the ungrouped total. A filter (a `where` item or a measure's own
+`filter`) on such an attribute, including one reached through a key that changes between
+a series' snapshots, reads the same snapshot: `plan = basic` is the basic row of the
+by-plan breakdown, so it leaves out an account that moved from basic to pro on Thursday.
+Stocks cannot use the row-based fan-out rewrites (including filter-only semi-joins) or
+serve as the source of a `kind: lookup` measure. Child filter paths refuse with
+`MIXED_GRAIN_INVALID`, and stock lookup sources refuse at package load with `INVALID_CONFIG`.
+SQL lowering also refuses a supplied fan-out plan over a stock, and a supplied parent-lookup
+plan whose source is a stock, with `REWRITE_NOT_SUPPORTED`, reason
+`stock_requires_snapshot_selection`, if the plan bypasses those checks.
+An attribute joined through the series key is constant for the series and keeps the same
+answer. Only filters on the stock's clock (the same entity and column) or a calendar
+(`kind: time`) dimension apply before the choice: with `snapshot_day <= Wednesday`, the
+week reads Wednesday's snapshots. Other date or timestamp attributes refuse, as in
+`group_by`, with `REWRITE_NOT_SUPPORTED`, reason `stock_filtered_by_date_attribute`, and
+the dimension id; choosing between a time bound and a closing-snapshot attribute would
+be ambiguous. This also applies to conditions inside child groups. The
+stock's own clock and calendar dimensions instead split the period: grouped by the
+snapshot day, each day keeps its own snapshot. Ratios whose numerator alone has extra
+conditions keep one snapshot per series per time bucket, so grouping one by the clock, a
+calendar or another date or timestamp dimension refuses with `REWRITE_NOT_SUPPORTED`,
+reason `entity_set_ratio_grouped_by_period`; choose the period with the time grain instead.
+
+A stock that adds up its series (`last_value`, `first_value` or `sum`, and not
+`additive: false`) and is grouped only by time reads 0 in a period that has snapshots
+but none passing the filters, and NULL in a period with no snapshot at all. Its other
+aggregations read NULL there, and grouped by an attribute, a group with no snapshot
+passing the filters is left out.
+An entity-set share using those snapshots also keeps an observed period and reads 0
+when every chosen snapshot fails its attribute filters; a kept zero denominator still
+reads NULL. With `observation_scope: query`, unmatched periods have no data.
 
 - Grouping a stock by a date or timestamp attribute that is neither its ordering clock
   nor a calendar dimension is refused with `REWRITE_NOT_SUPPORTED`, with
@@ -1473,6 +1491,33 @@ filter expression. Each `all:` item is either a dimension
 condition with `field`, `op`, and `value`, or an `expression:` containing a
 `metric_predicate`. All items are combined with AND. Other filter combinators,
 including `any:`, are unsupported.
+
+### Building-block measures
+
+A filtered metric is often the governed form of a measure that also counts rows the
+package leaves out: `Active stores` keeps the retail stores of an `Active stores (all kinds)`
+count. `plan` answers a question that names such a metric with the metric, and holds a draft
+that reads the measure instead (see `governed_metric_unrealized` in
+[MCP_INTERFACE.md](MCP_INTERFACE.md)). To keep the measure out of agent search altogether,
+author it with `publish: false`:
+
+```yaml
+measures:
+  active_stores_all_kinds:
+    label: Active stores (all kinds)
+    kind: entity_count
+    entity_key: store_id
+    value_type: count
+    publish: false        # answered through the metrics that filter it
+```
+
+A measure with `publish: false` that a metric reads through a filter (`filter:` on an
+aggregate, or `where:` or `predicates:` on a scoped aggregate), and that no metric aggregates
+whole, is a building block. `discover` doesn't list it. `plan` drafts the metric when it is the
+only one that filters the measure or the question names it, and otherwise holds a draft that
+reads the measure. `inspect` and Query IR still take the measure by id. Without
+`schema_strict`, `publish: false` also keeps the loader from publishing the measure as a
+metric of its own name.
 
 ### Long-tail kind — `derived` (expression AST)
 
@@ -1924,11 +1969,19 @@ through one transaction, which compares the package before and after the
 change. A change that would refuse an answered pair whose route still exists,
 or answer it by another route, is refused with `ROUTE_DECISION_NOT_RECORDED`
 until the author records a decision. Previews use the same guard; nothing is
-written and no route rows are generated. The refusal lists affected pairs in
+written and no route rows are generated without an explicit keep choice. The
+refusal lists affected pairs in
 `details.route_changes`. Its message names the explicit `graph.path_preferences`
 fields (`source_entity`, `target_entity`, `relationship_path`), without suggesting
-rows: choose a route and use `record_route_decision` before adding the relationship,
-or include chosen rows in the authored change. An ordinary change that
+rows. Architect `upsert_relationship(..., keep_existing_routes=True)` records each
+moved pair's previous path in the same transaction and confirms newly ambiguous
+own-key routes. The result lists those rows in `kept_route_decisions`. Previously
+answered pairs must retain their routes. A previously refused pair may take the
+relationship's own outcome, but generated decisions must not change that outcome;
+otherwise the call refuses without writing. The keep retry hint appears only for
+`upsert_relationship` refusals. Otherwise choose routes and call
+`record_route_decision(decisions=[...])` with several explicit rows before adding
+the relationship, or include chosen rows in the authored change. An ordinary change that
 moves an inherited answer also needs that pair's own decision.
 
 An explicit route chooses a relationship path, not a promise that orphan keys
@@ -1940,6 +1993,11 @@ a filter on the airport key. Review the chosen route against reference SQL.
 `record_route_decision` writes where the loader reads route rows (a top-level
 `path_preferences` block in `package.yml`, else `graph.yml`, else `package.yml`'s
 `graph` block), rewriting that file as Architect YAML and dropping comments.
+The `decisions` form accepts a nonempty list of rows with `source_entity`,
+`target_entity`, `relationship_path`, and optional `label`, instead of single-pair
+arguments. All pair replacements are validated together: one invalid, duplicate,
+or conflicting row refuses the whole batch without files or receipts. The result's
+`route_decisions` reports each row's `replaced` value and `summary`.
 It deliberately changes the default and reports every moved pair, inherited
 pairs included. `remove_object` uses the same preservation guard: a removed
 route or one beyond the new `max_hops` may leave a pair refused, but switching
@@ -2094,27 +2152,6 @@ Routing is conservative in the MVP:
   aggregate's `filter`, do not route through variants yet.
 - An `aggregate_relations:` entry that declares `filters` doesn't route yet: it
   holds only the rows its filters kept.
-- A rollup that declares `requires_certification: true` (on a variant or an
-  `aggregate_relations:` entry; default `false`) routes only while the host's
-  certification provider says it is certified, and never when none is installed
-  (`not_certified`). A host installs one at startup with
-  `semantic_rails.acceleration.routing.set_certification_provider(provider)`, where
-  `provider.certified(config, relation)` returns `True` for a certified rollup. To
-  certify one, a host calls
-  `semantic_rails.acceleration.certification.certify_aggregate_relation(config,
-  relation_id)`. For each measure column it gets the rule the rollup fails (or none)
-  and a query's `base_sql` and `rollup_sql` to run and compare: over all time,
-  grouped by every rollup dimension, at the rollup's own grain, so its rows are the
-  rollup's buckets. Every other query the rules let it answer re-aggregates those
-  buckets. A rollup whose own grain its time role can't be queried at (an hour
-  rollup under a role that starts at day) isn't certifiable. A runtime doesn't
-  use its compile cache for a package with such a rollup: every request compiles
-  again, which costs compile time, so that a revoked certification applies to the
-  next request. A rollup under a role whose `timezone:` isn't `UTC` or `Etc/UTC`
-  isn't certifiable yet (`timezone_not_utc`), so its queries use the base tables.
-  On DuckDB, MotherDuck, DuckLake and Postgres, which run each query in its role's
-  zone, build the rollup and run each pair with the session time zone set to UTC
-  (`SET TimeZone = 'UTC'`).
 
 When a rollup can't answer a query exactly, the query runs on the base tables, and
 `logical_plan.measure_plans[].aggregate_relation_rejections` maps each rejected
@@ -2179,7 +2216,11 @@ Both are loaded from **directories only** — the package root's `examples/` and
 them in sibling files.
 
 An `examples/` file maps example IDs to a question, a Query IR, and an expected
-shape (`uv run semantic-rails run-examples` executes them):
+shape (`uv run semantic-rails run-examples` executes them). Columns are checked
+against the result's output descriptors even when a time window returns no rows;
+checks request compact responses even if the example declares `verbosity: minimal`,
+and reports retain the authored query. `min_rows` and `max_rows` still enforce the
+declared row counts:
 
 ```yaml
 # examples/core.yml
@@ -2341,6 +2382,26 @@ is kept or rejected and never dropped to make the metric load:
   do elsewhere in the package. An `anchor` with a `window` is refused when the metric is
   queried, until anchored windows compile (see `docs/CAPABILITIES.md`); it is never
   computed as a lifetime value.
+
+### Runtime probes
+
+Runtime validation probes measures and metrics through the normal query policy
+checks. A probe missing a policy's `required_group_by` retries with those fields,
+including constraints inherited through a metric's measures. If `required_where`
+needs an authored filter, the probe is marked `skipped: true` with a reason and
+the policy effects, rather than failing or inventing a filter value. Skipped
+probes count separately from passed and failed probes; other policy denials
+remain failures. Add an example or package test with an allowed filter to check
+execution of a skipped object.
+
+Segment probes execute the authored preview query without repairs or skips. A
+missing required grouping or filter fails with `POLICY_DENIED`; a non-additive
+basis also fails rather than being regrouped. Fix the segment definition to
+satisfy the runtime's query requirements.
+
+Duplicate-measure warnings compare the IDs of `metric_constraint` policies
+naming each measure as well as its entity, expression, aggregation and default
+clock. Measures with different constraint policies remain distinct.
 
 ### Filter values
 

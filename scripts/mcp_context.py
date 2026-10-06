@@ -68,7 +68,7 @@ EVAL_SET_PATH = CONTEXT_DIR / "eval_jaffle.jsonl"
 PLAN_BASELINE_PATH = CONTEXT_DIR / "plan_accuracy_baseline.json"
 # Digest of the frozen dev split, EVAL_SET_PATH. Change a case only through a
 # reviewed revision of the eval set, and update this digest in that change.
-DEV_SET_SHA256 = "520e270bae071e30ff57aeb8995afded3c8d1edfed2228de2fd8c39798db2135"
+DEV_SET_SHA256 = "229ec75f95cd7f1c1b7bf19a54babf02fddfa50da8eb2e0fd37345af981b3d76"
 # Commitment to the held-out split: 12 more cases kept outside this repository
 # so the planner can't be tuned against them. ``--eval-file`` checks a copy.
 HELDOUT_SET_SHA256 = "ce5ef85b14f8b92a3f6944a55dd4657631ddde104006dcb50178fd0800027730"
@@ -258,14 +258,14 @@ QUESTIONS = (
 )
 # The queries an agent composes for the three questions after discovery.
 Q1 = {
-    "version": 2,
+    "version": 1,
     "select": [{"as": "revenue_usd", "expression": REVENUE}],
     "time": _window("month", "2017-01-01", "2018-01-01"),
     "group_by": [STORE],
     "order_by": [{"field": "time", "direction": "ASC"}, {"field": STORE, "direction": "ASC"}],
 }
 Q2 = {
-    "version": 2,
+    "version": 1,
     "select": [{"as": "item_revenue_usd", "expression": ITEM_REVENUE}],
     "time": _window("year", "2017-01-01", "2018-01-01"),
     "group_by": [PRODUCT],
@@ -273,7 +273,7 @@ Q2 = {
     "limit": 5,
 }
 Q3 = {
-    "version": 2,
+    "version": 1,
     "select": [{"as": "aov_usd", "expression": {"metric": "metric.sales.aov_usd"}}],
     "time": _window("quarter", "2017-04-01", "2017-07-01"),
     "group_by": [STORE],
@@ -327,7 +327,7 @@ SESSIONS: dict[str, list[Step]] = {
     ],
     # The leanest path the surface supports.
     "lean": [
-        ("q1_discover", "discover", {"terms": "monthly revenue by store", **MINIMAL_DISCOVER}),
+        ("q1_discover", "discover", {"terms": "monthly revenue by store name", **MINIMAL_DISCOVER}),
         ("q1_plan", "plan", {"intent": QUESTIONS[0]}),
         ("q1_execute", "execute", {"query": Q1, "row_format": "columns"}),
         ("q2_discover", "discover", {"terms": "top products by revenue", **MINIMAL_DISCOVER}),

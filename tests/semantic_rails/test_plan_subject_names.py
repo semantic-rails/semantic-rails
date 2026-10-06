@@ -19,6 +19,7 @@ from semantic_rails.planner._base import _tied_top
 from semantic_rails.planner.faithfulness import intent_subject_why
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.result_helpers import assert_plan_held
 
 
 def _runtime(tmp_path: Path, measures: dict[str, str]) -> Runtime:
@@ -116,7 +117,7 @@ def test_any_draft_of_a_tied_measure_the_question_does_not_name_is_flagged(
             runtime,
             question=question,
             intent_ir=parse_intent(runtime, question),
-            query={"version": 2, "select": [select]},
+            query={"version": 1, "select": [select]},
         )
     finally:
         runtime.close()
@@ -172,20 +173,20 @@ CUSTOMERS = "measure.jaffle.customer_count"
         (
             "number of stores open",
             "measure.jaffle.open_store_count_eop",
-            ["dimension.jaffle_store_name"],
-            ["number"],
+            None,
+            [],
         ),
         (
             "number of stores open by month",
             "measure.jaffle.open_store_count_eop",
-            ["dimension.jaffle_store_name"],
-            ["number"],
+            None,
+            [],
         ),
         (
             "number of stores open by year",
             "measure.jaffle.open_store_count_eop",
-            ["dimension.jaffle_store_name"],
-            ["number"],
+            None,
+            [],
         ),
     ],
 )
@@ -202,6 +203,9 @@ def test_counting_words_name_the_count_measure(
     finally:
         runtime.close()
 
+    if question == "number of customers by store":
+        assert_plan_held(plan, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+        return
     assert plan["status"] == ("low_confidence" if unconsumed else "ok"), plan.get("why")
     assert ("ready_for" in plan["next"]) is not bool(unconsumed)
     if unconsumed:

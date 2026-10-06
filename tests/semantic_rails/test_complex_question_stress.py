@@ -9,6 +9,7 @@ from semantic_rails.errors import SemanticLayerError
 from semantic_rails.planner import plan_payload
 from semantic_rails.registry import Registry
 from tests.plan_candidate_envelope import plan_candidate_envelope
+from tests.semantic_rails.result_helpers import assert_plan_held
 
 
 def _wire_oracle(rows):
@@ -23,7 +24,7 @@ def _wire_oracle(rows):
 
 def _snapshot_parent_metric_query() -> dict:
     return {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "as": "active_menu_count_from_high_activity_stores",
@@ -154,7 +155,7 @@ def test_snapshot_parent_rollup_with_two_contextual_predicates_executes_once_per
 def test_monthly_snapshot_metric_for_session_qualified_stores_matches_oracle(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     query = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "as": "active_menu_count_from_session_stores",
@@ -454,7 +455,7 @@ def test_plan_composes_exact_complex_question_shapes(runtime_factory):
         assert snapshot["best"]["pattern"] == "qualified_metric_rollup"
         # Its qualifiers are measured on other clocks than the snapshot's, so the engine refuses
         # the draft and the plan does not offer it as ready; the drafted shape is unchanged.
-        assert snapshot["status"] == "low_confidence"
+        assert_plan_held(snapshot, "PLAN_FALLBACK_SEMANTIC_DRIFT")
         assert "ready_for" not in snapshot["next"]
         snapshot_query = snapshot["best"]["query_ir"]
         snapshot_expr = snapshot_query["select"][0]["expression"]
@@ -473,7 +474,7 @@ def test_plan_composes_exact_complex_question_shapes(runtime_factory):
             assert predicate["op"] == ">"
             assert predicate["value"] == 1
             assert "measure" in predicate or "metric" in predicate
-        assert snapshot_query["group_by"] == ["dimension.jaffle_store_name"]
+        assert not snapshot_query.get("group_by")
         assert snapshot_query["time"] == {
             "temporal_role": "temporal_role.jaffle_inventory_day",
             "grain": "month",

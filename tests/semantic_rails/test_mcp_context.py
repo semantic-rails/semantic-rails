@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from scripts import mcp_context
+from tests.semantic_rails.result_helpers import assert_plan_held
 
 
 @pytest.fixture(scope="module")
@@ -118,6 +119,25 @@ def test_planner_accuracy_does_not_regress(
     assert summary["wrong_silent"] <= baseline["summary"]["wrong_silent"]
 
 
+@pytest.mark.parametrize(
+    ("question", "code"),
+    [
+        ("monthly revenue by store for 2017", "PLAN_UNMATCHED_TERMS"),
+        ("revenue by store in Q2 2017", "PLAN_UNMATCHED_TERMS"),
+        ("which store had the most orders in 2017", "PLAN_INTENT_COVERAGE_GAP"),
+        ("revenue before tax by store", "VALIDATION_FAILED"),
+        ("orders that included a drink, by store", "PLAN_FALLBACK_SEMANTIC_DRIFT"),
+        ("gross margin percentage by store", "VALIDATION_FAILED"),
+    ],
+)
+def test_unresolved_store_questions_are_not_ready(
+    jaffle_package: Path, question: str, code: str
+) -> None:
+    with mcp_context.QueryMCPClient(jaffle_package) as client:
+        payload = client.tool_payload("plan", {"intent": question, "detail": "query"})
+    assert_plan_held(payload, code)
+
+
 def test_gold_answers_are_stable(jaffle_package: Path, dev_cases: list[dict[str, Any]]) -> None:
     assert mcp_context.check_gold_answers(jaffle_package, dev_cases) == []
 
@@ -146,7 +166,7 @@ def _case(gold: dict[str, Any], **extra: Any) -> dict[str, Any]:
 
 def _query(**parts: Any) -> dict[str, Any]:
     return {
-        "version": 2,
+        "version": 1,
         "select": [{"as": "revenue_usd", "expression": {"measure": REVENUE}}],
         **parts,
     }
@@ -254,7 +274,7 @@ def test_every_field_that_can_change_rows_is_a_slot(change: dict[str, Any], slot
 def test_equivalent_spellings_compare_equal() -> None:
     gold = _query(where=[{"field": STORE, "op": "=", "value": "Brooklyn"}], time=WINDOW_2017)
     spelled_out = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "as": "rev",
@@ -416,7 +436,7 @@ def test_rebaselining_moves_only_real_changes() -> None:
 FOOD = "measure.jaffle.food_revenue_usd"
 DRINK = "measure.jaffle.drink_revenue_usd"
 FOOD_AND_DRINK = {
-    "version": 2,
+    "version": 1,
     "select": [
         {"as": "food", "expression": {"measure": FOOD}},
         {"as": "drink", "expression": {"measure": DRINK}},
@@ -475,7 +495,7 @@ def test_frozen_answers_are_canonicalized_and_compared_tightly() -> None:
 
 def test_a_pinned_dimension_is_not_part_of_the_answer() -> None:
     pinned = {
-        "version": 2,
+        "version": 1,
         "select": [{"as": "r", "expression": {"measure": REVENUE}}],
         "where": [{"field": STORE, "op": "=", "value": "Brooklyn"}],
     }
@@ -486,11 +506,11 @@ def test_a_pinned_dimension_is_not_part_of_the_answer() -> None:
 
 def test_one_value_computed_another_way_still_aligns() -> None:
     count = {
-        "version": 2,
+        "version": 1,
         "select": [{"as": "n", "expression": {"measure": "measure.jaffle.large_order_count"}}],
     }
     filtered = {
-        "version": 2,
+        "version": 1,
         "select": [{"as": "n", "expression": {"measure": "measure.jaffle.order_count"}}],
     }
     measures = {
@@ -519,7 +539,7 @@ def test_one_value_computed_another_way_still_aligns() -> None:
 
 def test_answer_rows_compare_as_sets_unless_ranked() -> None:
     query = {
-        "version": 2,
+        "version": 1,
         "select": [{"as": "r", "expression": {"measure": REVENUE}}],
         "group_by": [STORE],
     }

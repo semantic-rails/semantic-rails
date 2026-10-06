@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, NoReturn, Protocol, runtime_checkable
 
@@ -32,8 +32,6 @@ from .audit import (  # noqa: F401 — audit names are re-exported from their ol
     set_audit_sink,
 )
 from .sql_preparation import ATTRIBUTE_NAME
-
-CONTEXT_FIELDS = ("actor", "tenant", "project", "roles", "environment", "audience")
 
 AttributeValue = str | int | bool | tuple[str, ...] | tuple[int, ...] | tuple[bool, ...]
 _ATTRIBUTE_SCALARS = frozenset({str, int, bool})
@@ -351,27 +349,9 @@ def warn_if_default_policy_resolver_exposed(host: str, *, transport: str) -> boo
     return True
 
 
-def merge_policy_context(
-    payload: Mapping[str, Any] | None, context: RequestContext | None
-) -> dict[str, Any]:
-    policy_context = dict((payload or {}).get("policy_context", {}) or {})
-    if context is None:
-        return policy_context
-    for key, value in context.to_policy_context().items():
-        policy_context[key] = value
-    return policy_context
-
-
 def request_context_payload(context: RequestContext | Mapping[str, Any] | None) -> dict[str, Any]:
     if context is None:
         return {}
     if isinstance(context, RequestContext):
         return context.to_public_dict()
     return context_from_policy_context(context).to_public_dict()
-
-
-def dataclass_payload(context: RequestContext) -> dict[str, Any]:
-    payload = asdict(context)
-    payload["roles"] = list(context.roles)
-    payload.pop("attributes")
-    return payload

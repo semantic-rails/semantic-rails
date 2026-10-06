@@ -38,20 +38,16 @@ from .ast import (
 from .compiler_parts.bind import (
     _aggregation_expr,
     _bind_measure,
-    _bind_scoped_aggregate,
     _bound_filter_clauses,
     _bound_metric_predicates,
     _collect_conversion_exprs,
     _collect_measure_refs,
-    _config_expr_to_sql,
     _expression_alias,
     _freeze_payload,
     _measure_count_distinct_key_columns,
     _measure_required_entities,
     _parse_public_expr,
-    _resolve_expr_entity,
     _resolve_filter_dimension,
-    _scoped_aggregate_filter_spec,
     _scoped_predicate_expr_payload,
     check_conditional_aggregate_path,
     conditional_aggregate_route_refusal,
@@ -101,13 +97,10 @@ from .compiler_parts.paths import (
     _joins_for_paths,
     _leaf_time_role,
     _resolve_dimension_expr,
-    _split_column_ref,
     inner_lookups,
 )
 from .compiler_parts.post_aggregation import (
     _as_offset_window_expr,
-    _compile_post_expr,
-    _expr_requires_dense_series,
     _namespace_sql_select,
     _summing_window_parts,
 )
@@ -116,6 +109,7 @@ from .compiler_parts.sql_lowering import (
     _expr_contains_distribution,
     _last_token,
     _plan_requires_agent_dag_lowering,
+    _reads_chosen_snapshot,
     _refuse_converted_role,
     _slug,
     child_group_route,
@@ -123,13 +117,10 @@ from .compiler_parts.sql_lowering import (
 )
 from .compiler_parts.temporal import (
     _add_grain,
-    _combine_temporal_roles,
     _expr_compatible_temporal_roles,
-    _expr_leaf_temporal_role_sets,
     _floor_to_grain,
     _is_grain_boundary,
     _parse_time_literal,
-    _recipe_compatible_temporal_roles,
     _requires_query_time,
     _time_bound_relationship_ids,
     _validate_query_temporal_bindings,
@@ -236,7 +227,7 @@ from .sql_ast import (
     validate_single_value_filter_shape,
 )
 from .sql_preparation import ParameterSlot, finalize_parameters
-from .temporal_support import validate_temporal_support
+from .temporal_support import _date_key, validate_temporal_support
 
 __all__ = [
     "AggregateExpr",
@@ -296,111 +287,6 @@ __all__ = [
     "SqlWindow",
     "SqlWithinGroup",
     "TemporalRoleConfig",
-    "_add_grain",
-    "_aggregation_expr",
-    "_all_metric_predicates",
-    "_bind_measure",
-    "_bind_scoped_aggregate",
-    "_bound_filter_clauses",
-    "_bound_metric_predicates",
-    "_calendar_fill_binding",
-    "_can_project_entity_key_from_source",
-    "_candidate_root_summary",
-    "_collect_conversion_exprs",
-    "_collect_measure_refs",
-    "_column_ref",
-    "_combine_temporal_roles",
-    "_compile_post_expr",
-    "_compile_query_sql_ast",
-    "_config_expr_to_sql",
-    "_conversion_dimension_binding",
-    "_conversion_dimension_paths",
-    "_conversion_dimension_requires_binding",
-    "_conversion_entity_key_fields",
-    "_conversion_event_cte",
-    "_conversion_leaf_cte",
-    "_conversion_predicate_set_ctes",
-    "_conversion_sources",
-    "_conversion_supported",
-    "_converted_side_group_dimensions",
-    "_date_key",
-    "_default_temporal_role",
-    "_deterministic_ancestor_grain",
-    "_dimension_index",
-    "_direct_dimension_source_expr",
-    "_direct_entity_key_source_expr",
-    "_entity_determines",
-    "_entity_in_terms_of_rewrite_supported",
-    "_entity_index",
-    "_entity_key_dimension_ids",
-    "_expanded_predicate_range",
-    "_expr_compatible_temporal_roles",
-    "_expr_leaf_temporal_role_sets",
-    "_expr_requires_dense_series",
-    "_expression_alias",
-    "_expression_root_entity",
-    "_floor_to_grain",
-    "_format_time_literal",
-    "_freeze_payload",
-    "_infer_root_entity_for_distinct_query",
-    "_is_grain_boundary",
-    "_join_condition",
-    "_joins_for_paths",
-    "_last_token",
-    "_leaf_path_selections",
-    "_leaf_time_role",
-    "_measure_count_distinct_key_columns",
-    "_measure_index",
-    "_measure_required_entities",
-    "_namespace_sql_select",
-    "_object_default_query_temporal_role",
-    "_parse_public_expr",
-    "_parse_time_literal",
-    "_path_can_project_count_key_from_rewrite_anchor",
-    "_path_has_temporal_validity",
-    "_path_reverse_count_distinct_safe",
-    "_path_selection",
-    "_plural",
-    "_predicate_context_entity_candidates",
-    "_predicate_ctes_and_join",
-    "_predicate_input_root_entity",
-    "_predicate_metric_label",
-    "_predicate_scope",
-    "_predicate_sql_names",
-    "_predicate_time_alias",
-    "_predicate_time_join_expr",
-    "_predicate_time_spec",
-    "_predicate_where_condition",
-    "_preferred_root_order",
-    "_public_time_spec",
-    "_query_metric_predicates",
-    "_query_target_entities",
-    "_range_crosses_window_boundary",
-    "_recipe_compatible_temporal_roles",
-    "_recipe_index",
-    "_reduced_context_entities",
-    "_relationship_index",
-    "_requires_query_time",
-    "_resolve_conversion_source",
-    "_resolve_dimension_expr",
-    "_resolve_expr_entity",
-    "_root_path_summary",
-    "_scoped_aggregate_filter_spec",
-    "_scoped_predicate_expr_payload",
-    "_semantic_dag_for_query",
-    "_semantic_token",
-    "_slug",
-    "_split_column_ref",
-    "_temporal_role_index",
-    "_time_bound_relationship_ids",
-    "_time_output_alias",
-    "_unique_path_selections",
-    "_unsupported_conversion",
-    "_validate_measure_validity_windows",
-    "_validate_metric_predicate_filter_envelope",
-    "_validate_query_temporal_bindings",
-    "_validate_restrictive_time_semantics",
-    "_validate_where_value_type",
     "analyze_fanout",
     "attach_relation_ctes",
     "compile_query",
@@ -1524,10 +1410,6 @@ def _hop_steps(
             details={"paths": crossed},
         )
     ]
-
-
-def _date_key(value: Any) -> str:
-    return str(value or "").split("T", 1)[0].split(" ", 1)[0]
 
 
 def _range_crosses_window_boundary(
@@ -4743,6 +4625,14 @@ def _plan_query(
         for row in bound_measures
     }
     bound_measures = list(dedup_measures.values())
+    # Check every condition, including child groups, before route planning can refuse a
+    # stock's child path. Lowering uses this same classifier for when to apply the filter.
+    for bound in bound_measures:
+        measure = measures[bound.measure_id]
+        for item in every_filter(query.where):
+            _reads_chosen_snapshot(measure, bound.temporal_role, item.field, config)
+        for clause in _bound_filter_clauses(bound, config):
+            _reads_chosen_snapshot(measure, bound.temporal_role, str(clause["field"]), config)
     _validate_measure_validity_windows(bound_measures, config, query)
     _validate_non_additive_sums(bound_measures, config, query)
     measure_plans: list[MeasurePlan] = []
@@ -5054,6 +4944,8 @@ class BoundQuery:
     stock_key_gaps: tuple[dict[str, Any], ...] = ()
     # Every output that reads 0 or NULL for an empty group, with the measures behind it.
     zero_outputs: tuple[dict[str, Any], ...] = ()
+    # Root leaf output aliases whose observed buckets lowering retained.
+    retained_filtered_series: tuple[str, ...] = ()
     # Every route the SQL reads, nested compiles included (the plan's own root and leaf paths
     # are in the plan).
     route_choices: tuple[RouteChoice, ...] = ()
@@ -5357,6 +5249,7 @@ def _bind_query(
         frozenset(rollup_scans),
         stock_key_gaps=tuple(stock_key_gaps),
         zero_outputs=tuple(zero_outputs),
+        retained_filtered_series=tuple(sorted(leaves.retained_filtered_series)),
         route_choices=tuple(route_choices),
     )
 
@@ -5385,7 +5278,7 @@ def compile_query(
     dialect = dialect_for_warehouse(config.package.warehouse)
     rendered = render_select_for_profile(
         sql_ast,
-        str(payload.get("sql_profile", payload.get("render_profile", "audit")) or "audit"),
+        str(payload.get("sql_profile", "audit") or "audit"),
         dialect=dialect,
     )
     prepared = replace(dialect.prepare_query(rendered), parameters=bound.parameters)
@@ -5394,7 +5287,7 @@ def compile_query(
     if limit_order_keys and sql_ast.limit is not None and sql_ast.limit > 0:
         probe_sql = render_select_for_profile(
             replace(sql_ast, limit=sql_ast.limit + 1),
-            str(payload.get("sql_profile", payload.get("render_profile", "audit")) or "audit"),
+            str(payload.get("sql_profile", "audit") or "audit"),
             dialect=dialect,
         )
         limit_probe = finalize_parameters(
@@ -5457,6 +5350,7 @@ def compile_query(
         "compile_stats": compile_stats,
         "stock_key_gaps": list(bound.stock_key_gaps),
         "zero_outputs": list(bound.zero_outputs),
+        "retained_filtered_series": list(bound.retained_filtered_series),
         "route_choices": list(bound.route_choices),
         "route_decisions": list(bound.route_decisions),
     }

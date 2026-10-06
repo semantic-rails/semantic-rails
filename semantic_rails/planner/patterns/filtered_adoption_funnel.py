@@ -38,11 +38,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         return None
 
     query: dict[str, Any] = {
-        # All other patterns emit v2 IR; v1 here was a leftover that
-        # eroded agent trust ("why does this one tool use a different
-        # version?"). Snapshot tests pin behavior, not the version
-        # number, so bumping is safe.
-        "version": 2,
+        "version": 1,
         "select": [{"as": "signup_to_send_28d", "expression": {"metric": metric.id}}],
     }
     if getattr(metric, "temporal_role", ""):

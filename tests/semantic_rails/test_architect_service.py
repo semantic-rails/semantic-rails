@@ -144,9 +144,13 @@ def test_combined_undo_ignores_noop_parts_without_losing_active_changes(
     before = _authored_bytes(project_path)
 
     def noop() -> ArchitectMutation:
-        return project.write_file(
-            relative_path="package.yml",
-            content=(project_path / "package.yml").read_text(encoding="utf-8"),
+        return project.write_files(
+            [
+                {
+                    "path": "package.yml",
+                    "content": (project_path / "package.yml").read_text(encoding="utf-8"),
+                }
+            ],
             validate_after=False,
         )
 
@@ -384,8 +388,8 @@ def test_in_process_project_lock_excludes_threads_across_collection(
 @pytest.mark.parametrize(
     ("operation", "reported", "refusal"),
     [
-        ("write", "created", "exists and overwrite=false"),
-        ("archive", "archived", "does not exist"),
+        ("write", "written", "exists and overwrite=false"),
+        ("archive", "written", "does not exist"),
     ],
 )
 def test_a_retried_file_write_or_archive_replays(
@@ -397,15 +401,13 @@ def test_a_retried_file_write_or_archive_replays(
 
     def call(key: str, revision: str) -> ArchitectMutation:
         if operation == "write":
-            return project.write_file(
-                relative_path="notes/today.md",
-                content="done\n",
-                overwrite=False,
+            return project.write_files(
+                [{"path": "notes/today.md", "content": "done\n", "overwrite": False}],
                 expected_revision=revision,
                 idempotency_key=key,
             )
-        return project.archive_file(
-            relative_path="notes.md", expected_revision=revision, idempotency_key=key
+        return project.write_files(
+            [{"path": "notes.md", "archive": True}], expected_revision=revision, idempotency_key=key
         )
 
     before = project.revision()
@@ -515,3 +517,228 @@ def test_mcp_upsert_model_returns_dropped_fields(tmp_path: Path) -> None:
     assert relabeled["ok"] is True and "dropped_fields" not in relabeled
     assert rewritten["ok"] is True
     assert rewritten["dropped_fields"] == ["dimensions.event_type.label"]
+
+
+@pytest.mark.parametrize("selection", ["model", "metric", "both"])
+def test_batch_commits_interdependent_measure_and_metric_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selection: str
+) -> None:
+    project_path = _create_project(tmp_path)
+    project = ArchitectProject(project_path, workspace_root=tmp_path)
+    before = _tree_bytes(project_path)
+    paths = {"model": "models/core/events.yml", "metric": "metrics/core.yml"}
+    files = [
+        {
+            "path": path,
+            "content": (project_path / path).read_text().replace("total_amount", "renamed_amount"),
+        }
+        for kind, path in paths.items()
+        if selection in (kind, "both")
+    ]
+    parses = []
+    original = architect_transactions.parse_config_report
+
+    def parse(*args, **kwargs):
+        parses.append(args)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(architect_transactions, "parse_config_report", parse)
+    mutation = project.write_files(files)
+
+    assert len(parses) == 1
+    if selection == "both":
+        assert mutation.report["status"] == "written", mutation.report
+        assert set(mutation.changed_files) == set(paths.values())
+        assert mutation.report["files"] == [entry["path"] for entry in files]
+        for entry in files:
+            assert (project_path / entry["path"]).read_text() == entry["content"]
+    else:
+        assert mutation.report["status"] == "rolled_back_after_parse_error"
+        assert _tree_bytes(project_path) == before
+
+
+def test_batch_rename_updates_metric_example_and_test_and_undo_restores_all(tmp_path: Path) -> None:
+    project_path = _create_project(tmp_path)
+    project = ArchitectProject(project_path, workspace_root=tmp_path)
+    assert project.upsert_check(
+        kind="test",
+        key="amount_columns",
+        spec={
+            "kind": "query_returns_columns",
+            "query": {
+                "version": 1,
+                "select": [
+                    {
+                        "expression": {"metric": "metric.service_core.total_amount"},
+                        "as": "total_amount",
+                    }
+                ],
+            },
+            "columns": ["total_amount"],
+        },
+    ).report["ok"]
+    before = _authored_bytes(project_path)
+    paths = ["metrics/core.yml", "examples/core.yml", "tests/core.yml"]
+    # Rename the metric's public key while retaining its measure reference.
+    metric = yaml_loader.load_yaml_file(project_path / paths[0])
+    metric["metrics"]["renamed_amount"] = metric["metrics"].pop("total_amount")
+    files = [{"path": paths[0], "content": architect_service.dump_project_yaml(metric)}]
+    files.extend(
+        {
+            "path": path,
+            "content": (project_path / path).read_text().replace("total_amount", "renamed_amount"),
+        }
+        for path in paths[1:]
+    )
+    mutation = project.write_files(files)
+
+    assert mutation.report["ok"], mutation.report
+    assert set(mutation.changed_files) == set(paths)
+    for entry in files:
+        assert (project_path / entry["path"]).read_text() == entry["content"]
+    assert mutation.undo()["status"] == "undone"
+    assert _authored_bytes(project_path) == before
+
+
+def test_batch_write_and_archives_share_destination_preserve_modes_and_undo(tmp_path: Path) -> None:
+    project_path = _create_project(tmp_path)
+    project = ArchitectProject(project_path, workspace_root=tmp_path)
+    sources = {"notes/old.md": b"old\n", "notes/old.bin": b"\x00\xff"}
+    (project_path / "notes").mkdir()
+    for path, content in sources.items():
+        (project_path / path).write_bytes(content)
+        (project_path / path).chmod(0o640)
+    (project_path / "notes/current.md").write_text("draft\n")
+    (project_path / "notes/current.md").chmod(0o600)
+    before = _authored_bytes(project_path)
+    mutation = project.write_files(
+        [
+            {"path": "notes/current.md", "content": "done\n"},
+            *({"path": path, "archive": True} for path in sources),
+        ],
+        reason="Replaced notes",
+    )
+
+    assert mutation.report["status"] == "written", mutation.report
+    destinations = mutation.report["archived_to"]
+    roots = {str(Path(destination).parent) for destination in destinations.values()}
+    assert len(roots) == 1
+    for source, destination in destinations.items():
+        assert destination.startswith(".architect/archive/")
+        assert destination.endswith("/" + source)
+        assert not (project_path / source).exists()
+        assert (project_path / destination).read_bytes() == sources[source]
+        assert (project_path / destination).stat().st_mode & 0o777 == 0o640
+    reason_path = project_path / next(iter(destinations.values()))
+    reason_path = reason_path.parent.parent / "ARCHIVE_REASON.txt"
+    assert reason_path.read_text() == "Replaced notes"
+    assert (project_path / "notes/current.md").stat().st_mode & 0o777 == 0o600
+    assert mutation.undo()["ok"]
+    assert _authored_bytes(project_path) == before
+    assert not reason_path.exists()
+    assert all(not (project_path / destination).exists() for destination in destinations.values())
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        [],
+        [{"path": "notes.md", "content": "a"}, {"path": "notes.md", "content": "b"}],
+        [{"path": "notes.md", "content": "a"}, {"path": "./notes.md", "content": "b"}],
+        [{"path": "notes/a.md", "content": "a"}, {"path": "notes\\a.md", "content": "b"}],
+        [{"path": "notes.md", "content": "a"}, {"path": "notes.md", "archive": True}],
+        [{"path": "notes.md", "content": "a", "archive": True}],
+        [{"path": "new.md", "content": "a"}, {"path": "missing.md", "archive": True}],
+        [
+            {"path": "new.md", "content": "a"},
+            {"path": "package.yml", "content": "a", "overwrite": False},
+        ],
+        [{"path": "../outside.yml", "content": "a"}],
+        [{"path": "/outside.yml", "content": "a"}],
+        [
+            {"path": ".architect/archive/manual.md", "content": "a"},
+            {"path": "notes.md", "archive": True},
+        ],
+        [{"path": ".architect/archive/manual.md", "archive": True}],
+        [{"path": ".git/config", "content": "a"}],
+        [{"path": ".", "content": "a"}],
+        [{"path": "notes.md", "archive": False}],
+        [{"path": "notes.md", "content": 123}],
+        [{"path": "notes.md", "content": "a", "overwrite": "false"}],
+        [{"path": "notes.md", "content": "a", "unknown": True}],
+        [{"path": "ARCHIVE_REASON.txt", "archive": True}],
+    ],
+)
+def test_batch_refusals_leave_every_file_and_receipt_unchanged(tmp_path: Path, files: list) -> None:
+    project_path = _create_project(tmp_path)
+    (project_path / "notes.md").write_text("original\n")
+    (project_path / "ARCHIVE_REASON.txt").write_text("original reason\n")
+    project = ArchitectProject(project_path, workspace_root=tmp_path)
+    receipts = tmp_path / ".semantic-rails/architect-transactions"
+    before = (_tree_bytes(project_path), _tree_bytes(receipts))
+
+    with pytest.raises(SemanticLayerError) as caught:
+        project.write_files(files, reason="New reason")
+
+    assert caught.value.code in {"INVALID_MCP_ARGUMENTS", "INVALID_CONFIG"}
+    assert (_tree_bytes(project_path), _tree_bytes(receipts)) == before
+    assert not (project_path.parent / "outside.yml").exists()
+
+
+def test_batch_idempotency_content_digest_and_stale_revision(tmp_path: Path) -> None:
+    project_path = _create_project(tmp_path)
+    project = ArchitectProject(project_path, workspace_root=tmp_path)
+    revision = project.revision()
+    files = [
+        {"path": f"notes/{name}.md", "content": name, "overwrite": False} for name in ("a", "b")
+    ]
+    first = project.write_files(files, expected_revision=revision, idempotency_key="batch-retry")
+    before_retry = _tree_bytes(project_path)
+    replay = project.write_files(files, expected_revision=revision, idempotency_key="batch-retry")
+
+    assert first.report["status"] == "written"
+    assert replay.report["status"] == "replayed"
+    assert replay.report["changes"] == first.report["changes"]
+    for key, changed_files, kind in (
+        ("batch-retry", [files[0], {**files[1], "content": "changed"}], "idempotency_key_reuse"),
+        ("stale-batch", files, "stale_revision"),
+    ):
+        with pytest.raises(SemanticLayerError) as caught:
+            project.write_files(changed_files, expected_revision=revision, idempotency_key=key)
+        assert caught.value.code == "CONFIG_CONFLICT"
+        assert caught.value.details["conflict_kind"] == kind
+    assert _tree_bytes(project_path) == before_retry
+
+
+@pytest.mark.parametrize("valid", [True, False])
+def test_batch_preview_has_per_file_diffs_and_never_writes(tmp_path: Path, valid: bool) -> None:
+    project_path = _create_project(tmp_path)
+    project = ArchitectProject(project_path, workspace_root=tmp_path)
+    (project_path / "notes.md").write_text("draft\n")
+    files = [{"path": "new.md", "content": "new\n"}, {"path": "notes.md", "archive": True}]
+    if not valid:
+        files.append({"path": "package.yml", "content": "schema_version: [\n"})
+    before = _tree_bytes(project_path)
+    revision = project.revision()
+    preview = project.write_files(
+        files, reason="Preview", idempotency_key="preview-batch", dry_run=True
+    )
+
+    assert preview.report["status"] == ("preview" if valid else "preview_invalid")
+    assert preview.report["revision"] == revision
+    assert all(change["diff"] for change in preview.report["changes"])
+    assert {entry["path"] for entry in files} <= {
+        change["path"] for change in preview.report["changes"]
+    }
+    assert _tree_bytes(project_path) == before
+    if not valid:
+        rollback = project.write_files(files, reason="Preview", idempotency_key="preview-batch")
+        assert rollback.report["status"] == "rolled_back_after_parse_error"
+        assert _tree_bytes(project_path) == before
+    else:
+        assert (
+            project.write_files(files, reason="Preview", idempotency_key="preview-batch").report[
+                "status"
+            ]
+            == "written"
+        )

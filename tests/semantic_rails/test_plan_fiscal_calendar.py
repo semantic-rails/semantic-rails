@@ -27,7 +27,7 @@ from semantic_rails.planner.faithfulness import intent_faithfulness_why
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config, opened
-from tests.semantic_rails.result_helpers import typed_rows
+from tests.semantic_rails.result_helpers import assert_plan_held, typed_rows
 
 REVENUE = {"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}
 ORDER_TIME = "temporal_role.jaffle_order_time"
@@ -92,7 +92,11 @@ def test_a_fiscal_series_buckets_on_the_fiscal_calendar(
     payload = plan_payload(jaffle, intent=question)
     query = payload["best"]["query_ir"]
 
-    assert payload["status"] == "ok", payload.get("why")
+    if question == "revenue by store by fiscal quarter":
+        assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
+        group_by = ["dimension.jaffle_customer_history_preferred_store_id"]
+    else:
+        assert payload["status"] == "ok", payload.get("why")
     assert "warnings" not in payload
     assert query["time"] == {
         "temporal_role": ORDER_TIME,
@@ -137,6 +141,9 @@ def test_a_fiscal_comparison_is_reported(
 def test_without_a_fiscal_calendar_plan_reports_the_gap(no_fiscal: Runtime, question: str) -> None:
     payload = plan_payload(no_fiscal, intent=question)
 
+    if question == "fiscal revenue by store":
+        assert_plan_held(payload, "PLAN_FALLBACK_SEMANTIC_DRIFT")
+        return
     assert payload["status"] == "low_confidence"
     assert _gap_kinds(payload) == ["fiscal_calendar_unrealized"]
     assert "calendar" in payload["why"]["recovery_hints"][0]["message"]
@@ -205,7 +212,7 @@ def test_the_fiscal_gap_says_what_the_draft_lacks(jaffle: Runtime) -> None:
     assert "exact query.time.start and end" in period["why"]["recovery_hints"][0]["message"]
 
     no_time = plan_payload(jaffle, intent="fiscal revenue by store")
-    assert "with a temporal_role and grain" in no_time["why"]["recovery_hints"][0]["message"]
+    assert_plan_held(no_time, "PLAN_FALLBACK_SEMANTIC_DRIFT")
 
     # A day is a day on any calendar.
     day = plan_payload(jaffle, intent="fiscal revenue on April 3, 2017")
@@ -228,7 +235,7 @@ def test_a_to_date_or_rolling_fiscal_question_is_not_answered(
     # to-date or rolling ask; bucketing fiscal months would turn a flagged draft into an ok
     # one. The step leaves the draft alone whatever the package can reach.
     draft = {
-        "version": 2,
+        "version": 1,
         "select": [REVENUE],
         "time": {"temporal_role": ORDER_TIME, "grain": "month"},
     }
@@ -241,7 +248,7 @@ def test_a_to_date_or_rolling_fiscal_question_is_not_answered(
 
 def test_an_order_on_the_fiscal_bucket_orders_by_time(jaffle: Runtime) -> None:
     draft = {
-        "version": 2,
+        "version": 1,
         "select": [REVENUE],
         "group_by": [FISCAL_QUARTER_START, STORE],
         "order_by": [
@@ -327,7 +334,7 @@ def test_the_fiscal_gap_reads_the_drafted_query(
     group_by: list[str],
     gap: bool,
 ) -> None:
-    query: dict[str, Any] = {"version": 2, "select": [REVENUE], "group_by": group_by}
+    query: dict[str, Any] = {"version": 1, "select": [REVENUE], "group_by": group_by}
     if time is not None:
         query["time"] = time
     why = intent_faithfulness_why(

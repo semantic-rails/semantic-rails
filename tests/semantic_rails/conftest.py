@@ -22,6 +22,40 @@ def shared_seed_db(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     shared_seed.verify()
 
 
+def write_single_file_package(target: Path, *, namespace: str = "shop") -> Path:
+    """Author a standalone package fixture without relying on CLI scaffolding."""
+    target.mkdir(parents=True, exist_ok=True)
+    template = Path(resolve_repo_path("configs/examples/semantic_rails_package_starter.yml"))
+    text = template.read_text(encoding="utf-8")
+    text = text.replace("id: shop_starter", f"id: {target.name}")
+    text = text.replace("namespace: shop", f"namespace: {namespace}")
+    for kind in ("entity", "dimension", "measure", "metric", "segment"):
+        text = text.replace(f"{kind}.shop.", f"{kind}.{namespace}.")
+    text = text.replace("data/shop_starter.duckdb", f"data/{target.name}.duckdb")
+    text = text.replace("data/seed_shop.sql", "data/seed_example.sql")
+    package_yml = target / "package.yml"
+    package_yml.write_text(text, encoding="utf-8")
+    seed = target / "data" / "seed_example.sql"
+    seed.parent.mkdir(exist_ok=True)
+    seed.write_text(
+        """
+CREATE OR REPLACE TABLE shop_customer AS
+SELECT 'customer_1' AS customer_id, 'new' AS customer_type, TIMESTAMP '2026-01-01 00:00:00' AS first_ordered_at;
+
+CREATE OR REPLACE TABLE shop_order AS
+SELECT 'order_1' AS order_id, 'customer_1' AS customer_id, 'web' AS channel, 4200 AS order_total_cents, TIMESTAMP '2026-01-02 00:00:00' AS ordered_at;
+
+CREATE OR REPLACE TABLE shop_order_item AS
+SELECT 'item_1' AS order_item_id, 'order_1' AS order_id, 'product_1' AS product_id, 1 AS quantity, 4200 AS line_total_cents;
+
+CREATE OR REPLACE TABLE shop_product AS
+SELECT 'product_1' AS product_id, 'beverage' AS product_type;
+""".lstrip(),
+        encoding="utf-8",
+    )
+    return package_yml
+
+
 def copy_package_config(
     tmp_path: Path, package_id: str, *, preseed_db: bool = False, writable: bool = False
 ) -> Path:

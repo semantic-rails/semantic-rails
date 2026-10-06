@@ -7,13 +7,13 @@ import sys
 
 from ...errors import SemanticLayerError
 from ...local_config import init_local_profile, local_profile_report
+from ...naming import slug
 from ..common import (
     _add_optional_reference_args,
     _print_json,
     _prompt,
     _prompts_allowed,
     _ref_from_args,
-    _slug,
     _title,
 )
 from ..output import (
@@ -393,7 +393,7 @@ def cmd_ask(args: argparse.Namespace) -> None:
     if not question:
         raise SemanticLayerError(
             "INVALID_QUERY",
-            "Provide a question, for example: semantic-rails ask 'monthly revenue by store'",
+            "Provide a question, for example: semantic-rails ask 'monthly revenue by store name'",
             details={"path": "question"},
         )
     report = ask_report(
@@ -482,7 +482,9 @@ def cmd_init_project(args: argparse.Namespace) -> None:
             output
             or str(
                 _project_target(
-                    _slug(package_id), output="", workspace_root=getattr(args, "workspace_root", "")
+                    slug(package_id, fallback="semantic_project"),
+                    output="",
+                    workspace_root=getattr(args, "workspace_root", ""),
                 )
             ),
         )

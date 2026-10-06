@@ -14,7 +14,7 @@ Phase 5 contracts (see plan ``snoopy-foraging-crescent.md``):
   ``customer_count``), and falls back to "no match" rather than
   picking an unrelated measure (e.g. ``aov_usd``).
 
-- The produced IR validates against its declared stable/preview schema.
+- The produced IR validates against the version 1 schema.
 
 - "Revenue with YoY"-style intents emit the inline ``prior_period``
   shorthand from Phase 4.
@@ -33,22 +33,15 @@ except ImportError:  # pragma: no cover - matches schema-test guard
     jsonschema = None
 
 from tests.plan_candidate_envelope import plan_candidate_envelope
+from tests.semantic_rails.result_helpers import held_candidate
 
 SCHEMA_PATH = pathlib.Path(__file__).resolve().parents[2] / "schemas" / "query_ir.v1.json"
-PREVIEW_V2_SCHEMA_PATH = (
-    pathlib.Path(__file__).resolve().parents[2] / "schemas" / "query_ir.preview.v2.json"
-)
-
-
-def _load_schema(version: int) -> dict:
-    path = PREVIEW_V2_SCHEMA_PATH if version == 2 else SCHEMA_PATH
-    return json.loads(path.read_text())
 
 
 def _validate_against_schema(query: dict) -> None:
     if jsonschema is None:
         pytest.skip("jsonschema is not installed in this environment")
-    jsonschema.Draft202012Validator(_load_schema(int(query.get("version", 1)))).validate(query)
+    jsonschema.Draft202012Validator(json.loads(SCHEMA_PATH.read_text())).validate(query)
 
 
 def _resolved_ids(candidate: dict) -> list[str]:
@@ -101,7 +94,7 @@ def test_qualified_rollup_synthesizes_metric_filters_order_by_limit(runtime_fact
         # top 3 store-months), so it is held; its synthesized shape is checked here.
         assert not payload["candidates"]
         candidate = payload["blocked"][0]
-        assert candidate["why_blocked"]["code"] == "PLAN_UNASKED_GROUPING"
+        held_candidate(payload, "PLAN_UNMATCHED_TERMS")
         query = candidate["candidate_ir"]
         assert candidate["validation"]["ok"] is True
         # metric_filters must be present and non-empty (phase 5 contract)
@@ -136,9 +129,10 @@ def test_qualified_rollup_without_top_n_returns_every_row(runtime_factory) -> No
             runtime,
             intent="monthly order volume for customers that made more than 10 purchases in that month",
             limit=2,
+            verbosity="full",
         )
-        assert payload["candidates"]
-        query = payload["candidates"][0]["candidate_ir"]
+        candidate = held_candidate(payload, "PLAN_INTENT_COVERAGE_GAP")
+        query = candidate["candidate_ir"]
         assert "limit" not in query
         assert payload["interpreted_intent"]["limit"] is None
         assert query.get("metric_filters")

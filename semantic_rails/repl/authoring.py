@@ -15,7 +15,7 @@ import yaml
 
 from .. import architect_introspection as introspection
 from ..architect_service import ArchitectMutation, ArchitectProject
-from ..cli.common import _quote, _ref_label, _runtime_from_ref, _slug, _title
+from ..cli.common import _quote, _ref_label, _runtime_from_ref, _title
 from ..cli.output import _authoring_error_messages, _authoring_warning_messages
 from ..cli.reports import project_validation_report
 from ..config import _DIRECT_EXPRESSION_FIELDS, _derive_measure_semantics, load_package_config
@@ -28,8 +28,10 @@ from ..expressions import (
     OffsetWindowExpr,
     resolve_filter_dimension,
 )
+from ..naming import slug
 from ..schema import MeasureConfig, MetricConfig, PackageConfig
 from ..segments import metric_root_entity
+from ..yaml_loader import safe_load as yaml_safe_load
 from .backend import current_backend
 from .prompts import (
     _author_choice,
@@ -208,7 +210,7 @@ def _author_model(
     _check_entity_is_free(inventory, entity_key, model=key)
     primary_default = ", ".join(existing_entity.get("primary_key", []) or []) or f"{entity_key}_id"
     primary_key = [
-        _slug(part, fallback=f"{entity_key}_id")
+        slug(part, fallback=f"{entity_key}_id")
         for part in _author_prompt("Primary key column(s), comma separated", primary_default).split(
             ","
         )
@@ -979,7 +981,7 @@ def _metric_change(
             existing=existing,
             target=str(existing.get("relative_path", ""))
             if existing
-            else f"metrics/core/{_slug(key, fallback='metric')}.yml",
+            else f"metrics/core/{slug(key, fallback='metric')}.yml",
             preview={"metrics": {key: spec}},
             apply=lambda: project.upsert_metric(
                 metric_key=key, spec=spec, group="core", replace=True
@@ -1863,9 +1865,9 @@ def _author_key_and_label(
 
     raw = _author_prompt(f"{kind.title()} key", default_key)
     key = (
-        ".".join(_slug(part, fallback="item") for part in raw.split("."))
+        ".".join(slug(part, fallback="item") for part in raw.split("."))
         if kind in {"metric", "segment"} and "." in raw
-        else _slug(raw, fallback=default_key)
+        else slug(raw, fallback=default_key)
     )
     if key != raw:
         print(f"  normalized `{raw}` -> `{key}` (YAML-safe key)")
@@ -2042,7 +2044,7 @@ def _inventory_items(inventory: dict[str, Any], kind: str) -> list[dict[str, Any
 def _model_entity_defaults(project: ArchitectProject, model_id: str) -> dict[str, Any]:
     graph_path = Path(project.project_path) / "graph.yml"
     raw = (
-        dict(yaml.safe_load(graph_path.read_text(encoding="utf-8")) or {})
+        dict(yaml_safe_load(graph_path.read_text(encoding="utf-8")) or {})
         if graph_path.is_file()
         else {}
     )
@@ -2070,10 +2072,11 @@ def _singular(word: str) -> str:
 
 def _authoring_namespace(project: ArchitectProject) -> str:
     package_path = Path(project.project_path) / "package.yml"
-    raw = dict(yaml.safe_load(package_path.read_text(encoding="utf-8")) or {})
+    raw = dict(yaml_safe_load(package_path.read_text(encoding="utf-8")) or {})
     package = dict(raw.get("package", {}) or {})
-    return _slug(
-        str(package.get("namespace") or package.get("id") or Path(project.project_path).name)
+    return slug(
+        str(package.get("namespace") or package.get("id") or Path(project.project_path).name),
+        fallback="semantic_project",
     )
 
 
@@ -2082,7 +2085,7 @@ def _package_block(ref: PackageReference) -> dict[str, Any]:
     source = Path(ref.source_path)
     package_path = source / "package.yml" if source.is_dir() else source
     try:
-        raw = dict(yaml.safe_load(package_path.read_text(encoding="utf-8")) or {})
+        raw = dict(yaml_safe_load(package_path.read_text(encoding="utf-8")) or {})
     except (OSError, yaml.YAMLError):
         return {}
     return dict(raw.get("package", {}) or {})

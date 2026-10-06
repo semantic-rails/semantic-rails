@@ -103,13 +103,10 @@ def test_external_duckdb_project_reads_the_dbt_marts(tmp_path: Path) -> None:
     assert report["ok"] is True, report
 
 
-@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
 @pytest.mark.parametrize(
     "relation", ["sales-data.fct_orders", "main_marts.fct-orders", 'main_marts.fct"orders']
 )
-def test_external_relation_with_quoted_component_runs(
-    tmp_path: Path, through_mcp: bool, relation: str
-) -> None:
+def test_external_relation_with_quoted_component_runs(tmp_path: Path, relation: str) -> None:
     project = tmp_path / "shop"
     db = build_dbt_warehouse(project / "data" / "shop.duckdb")
     with duckdb.connect(str(db)) as conn:
@@ -118,38 +115,8 @@ def test_external_relation_with_quoted_component_runs(
         quoted = ".".join('"' + part.replace('"', '""') + '"' for part in relation.split("."))
         conn.execute(f"CREATE TABLE {quoted} AS SELECT * FROM main_marts.fct_orders")
     spec = replace(EXTERNAL_SHOP, first_model=replace(ORDERS, relation=relation))
-    if through_mcp:
-        server = create_architect_mcp_server(workspace_root=tmp_path)
-        (created,) = _session_call(
-            server,
-            [
-                (
-                    "create_project",
-                    {
-                        "package_id": "shop",
-                        "project_path": "shop",
-                        "expected_revision": "absent",
-                        "idempotency_key": "quoted-relation",
-                        "warehouse": "duckdb",
-                        "data": "external",
-                        "first_entity": "order",
-                        "relation": relation,
-                        "primary_key": "order_id",
-                        "time_column": "ordered_at",
-                        "amount_column": "order_total",
-                        "dimension_column": "status",
-                    },
-                )
-            ],
-        )
-        assert created["ok"] is True, created
-        (runtime,) = _session_call(
-            server, [("validate_project", {"project_path": "shop", "mode": "runtime"})]
-        )
-        assert runtime["ok"] is True, runtime
-    else:
-        assert create_project("shop", spec, workspace_root=tmp_path).report["ok"] is True
-        assert _examples_pass(project)["ok"] is True
+    assert create_project("shop", spec, workspace_root=tmp_path).report["ok"] is True
+    assert _examples_pass(project)["ok"] is True
     assert _yaml(project / "models" / "core" / "orders.yml")["model"]["relation"] == relation
 
 
@@ -576,7 +543,7 @@ def _create_via_route(
     tmp_path: Path,
     spec: ProjectSpec,
     *,
-    through_mcp: bool,
+    through_mcp: bool = False,
     key: str,
     expected_revision: str,
     overwrite: bool = False,
@@ -627,20 +594,18 @@ def _receipt_path(workspace_root: Path, key: str) -> Path:
 
 
 def _make_legacy_creation_receipt(workspace_root: Path, key: str) -> None:
+    """Keep the completed change report, but remove its scaffold provenance."""
     path = _receipt_path(workspace_root, key)
     payload = json.loads(path.read_text(encoding="utf-8"))
     del payload["scaffold_files"]
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
-def test_legacy_receipt_cannot_launder_byte_identical_authored_model(
-    tmp_path: Path, through_mcp: bool
-) -> None:
+def test_legacy_receipt_cannot_launder_byte_identical_authored_model(tmp_path: Path) -> None:
     project = tmp_path / "shop"
-    assert _create_via_route(
-        tmp_path, EXTERNAL_SHOP, through_mcp=through_mcp, key="create", expected_revision="absent"
-    )["ok"]
+    assert _create_via_route(tmp_path, EXTERNAL_SHOP, key="create", expected_revision="absent")[
+        "ok"
+    ]
     _make_legacy_creation_receipt(tmp_path, "create")
     second = replace(
         EXTERNAL_SHOP,
@@ -655,28 +620,17 @@ def test_legacy_receipt_cannot_launder_byte_identical_authored_model(
     for candidate_name, candidate in (("second", second), ("third", third)):
         for dry_run in (True, False):
             key = f"{candidate_name}-{dry_run}"
-            if through_mcp:
-                report = _create_via_route(
+            with pytest.raises(SemanticLayerError) as exc:
+                _create_via_route(
                     tmp_path,
                     candidate,
-                    through_mcp=True,
                     key=key,
                     expected_revision=revision,
                     overwrite=True,
                     dry_run=dry_run,
                 )
-                assert report["ok"] is False, report
-            else:
-                with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
-                    _create_via_route(
-                        tmp_path,
-                        candidate,
-                        through_mcp=False,
-                        key=key,
-                        expected_revision=revision,
-                        overwrite=True,
-                        dry_run=dry_run,
-                    )
+            assert exc.value.code == "INVALID_CONFIG"
+            assert exc.value.details["reason"] == "scaffold_source_modified"
             assert _project_bytes(project) == before
             assert project_revision(project) == revision
             assert not _receipt_path(tmp_path, key).exists()
@@ -684,56 +638,81 @@ def test_legacy_receipt_cannot_launder_byte_identical_authored_model(
     assert model_path.read_bytes() == before["models/core/orders.yml"]
 
 
-@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
-def test_legacy_receipt_proves_complete_original_before_new_snapshot(
-    tmp_path: Path, through_mcp: bool
+@pytest.mark.parametrize("dry_run", [False, True], ids=["apply", "preview"])
+@pytest.mark.parametrize(
+    "change,bypass_source_guard,reason",
+    [
+        ("description", False, "scaffold_source_modified"),
+        ("relation", False, "scaffold_source_modified"),
+        ("relation", True, "scaffold_model_modified"),
+        ("entity", False, "scaffold_source_modified"),
+        ("entity", True, "scaffold_model_modified"),
+    ],
+)
+def test_legacy_receipt_without_snapshot_refuses_overwrite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    dry_run: bool,
+    change: str,
+    bypass_source_guard: bool,
+    reason: str,
 ) -> None:
     project = tmp_path / "shop"
-    assert _create_via_route(
-        tmp_path, EXTERNAL_SHOP, through_mcp=through_mcp, key="create", expected_revision="absent"
-    )["ok"]
+    assert _create_via_route(tmp_path, EXTERNAL_SHOP, key="create", expected_revision="absent")[
+        "ok"
+    ]
     _make_legacy_creation_receipt(tmp_path, "create")
-    for index in (1, 2):
-        spec = replace(EXTERNAL_SHOP, description=f"Description {index}")
-        revision = project_revision(project)
-        preview = _create_via_route(
+    spec = {
+        "description": replace(EXTERNAL_SHOP, description="Description B"),
+        "relation": replace(
+            EXTERNAL_SHOP, first_model=replace(ORDERS, relation="main_marts.orders_v2")
+        ),
+        "entity": replace(EXTERNAL_SHOP, first_model=replace(ORDERS, entity="customer")),
+    }[change]
+    if bypass_source_guard:
+        matches = architect_transactions.ProjectTransaction.matches_creation_files
+        calls = 0
+
+        def bypass_once(self: Any, files: Any) -> bool:
+            nonlocal calls
+            calls += 1
+            return True if calls == 1 else matches(self, files)
+
+        monkeypatch.setattr(
+            architect_transactions.ProjectTransaction, "matches_creation_files", bypass_once
+        )
+    before = _project_bytes(project)
+    revision = project_revision(project)
+    receipt = _receipt_path(tmp_path, "create").read_bytes()
+    with pytest.raises(SemanticLayerError) as exc:
+        _create_via_route(
             tmp_path,
             spec,
-            through_mcp=through_mcp,
-            key=f"preview-{index}",
+            key="refused-overwrite",
             expected_revision=revision,
             overwrite=True,
-            dry_run=True,
+            dry_run=dry_run,
         )
-        assert preview["ok"] is True, preview
-        applied = _create_via_route(
-            tmp_path,
-            spec,
-            through_mcp=through_mcp,
-            key=f"apply-{index}",
-            expected_revision=revision,
-            overwrite=True,
-        )
-        assert applied["ok"] is True, applied
-    assert "scaffold_files" in json.loads(
-        _receipt_path(tmp_path, "apply-1").read_text(encoding="utf-8")
-    )
+    assert exc.value.code == "INVALID_CONFIG"
+    assert exc.value.details["reason"] == reason
+    assert _project_bytes(project) == before
+    assert project_revision(project) == revision
+    assert _receipt_path(tmp_path, "create").read_bytes() == receipt
+    assert not _receipt_path(tmp_path, "refused-overwrite").exists()
 
 
-@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
 @pytest.mark.parametrize("noop_first", [False, True], ids=["direct", "after-noop"])
 def test_partial_legacy_receipt_cannot_claim_complete_scaffold(
-    tmp_path: Path, through_mcp: bool, noop_first: bool
+    tmp_path: Path, noop_first: bool
 ) -> None:
     project = tmp_path / "shop"
-    assert _create_via_route(
-        tmp_path, EXTERNAL_SHOP, through_mcp=through_mcp, key="create", expected_revision="absent"
-    )["ok"]
+    assert _create_via_route(tmp_path, EXTERNAL_SHOP, key="create", expected_revision="absent")[
+        "ok"
+    ]
     second = replace(EXTERNAL_SHOP, description="Description B")
     assert _create_via_route(
         tmp_path,
         second,
-        through_mcp=through_mcp,
         key="second",
         expected_revision=project_revision(project),
         overwrite=True,
@@ -744,7 +723,6 @@ def test_partial_legacy_receipt_cannot_claim_complete_scaffold(
         noop = _create_via_route(
             tmp_path,
             second,
-            through_mcp=through_mcp,
             key="noop",
             expected_revision=revision,
             overwrite=True,
@@ -756,46 +734,32 @@ def test_partial_legacy_receipt_cannot_claim_complete_scaffold(
     before = _project_bytes(project)
     third = replace(EXTERNAL_SHOP, description="Description C")
     for dry_run in (True, False):
-        if through_mcp:
-            report = _create_via_route(
+        with pytest.raises(SemanticLayerError) as exc:
+            _create_via_route(
                 tmp_path,
                 third,
-                through_mcp=True,
                 key=f"third-{dry_run}",
                 expected_revision=revision,
                 overwrite=True,
                 dry_run=dry_run,
             )
-            assert report["ok"] is False, report
-        else:
-            with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
-                _create_via_route(
-                    tmp_path,
-                    third,
-                    through_mcp=False,
-                    key=f"third-{dry_run}",
-                    expected_revision=revision,
-                    overwrite=True,
-                    dry_run=dry_run,
-                )
+        assert exc.value.code == "INVALID_CONFIG"
+        assert exc.value.details["reason"] == "scaffold_source_modified"
+        assert not _receipt_path(tmp_path, f"third-{dry_run}").exists()
         assert _project_bytes(project) == before
         assert project_revision(project) == revision
 
 
-@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
-def test_byte_identical_noop_without_receipt_creates_no_provenance(
-    tmp_path: Path, through_mcp: bool
-) -> None:
+def test_byte_identical_noop_without_receipt_creates_no_provenance(tmp_path: Path) -> None:
     project = tmp_path / "shop"
-    assert _create_via_route(
-        tmp_path, EXTERNAL_SHOP, through_mcp=through_mcp, key="create", expected_revision="absent"
-    )["ok"]
+    assert _create_via_route(tmp_path, EXTERNAL_SHOP, key="create", expected_revision="absent")[
+        "ok"
+    ]
     _receipt_path(tmp_path, "create").unlink()
     revision = project_revision(project)
     noop = _create_via_route(
         tmp_path,
         EXTERNAL_SHOP,
-        through_mcp=through_mcp,
         key="noop",
         expected_revision=revision,
         overwrite=True,
@@ -805,26 +769,14 @@ def test_byte_identical_noop_without_receipt_creates_no_provenance(
         _receipt_path(tmp_path, "noop").read_text(encoding="utf-8")
     )
     changed = replace(EXTERNAL_SHOP, description="Description B")
-    if through_mcp:
-        report = _create_via_route(
+    with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
+        _create_via_route(
             tmp_path,
             changed,
-            through_mcp=True,
             key="changed",
             expected_revision=revision,
             overwrite=True,
         )
-        assert report["ok"] is False, report
-    else:
-        with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
-            _create_via_route(
-                tmp_path,
-                changed,
-                through_mcp=False,
-                key="changed",
-                expected_revision=revision,
-                overwrite=True,
-            )
 
 
 def test_overwrite_does_not_replace_authored_ignored_file_in_absent_project(tmp_path: Path) -> None:
@@ -848,16 +800,14 @@ def test_overwrite_does_not_replace_authored_ignored_file_in_absent_project(tmp_
     assert project_revision(project) == revision
 
 
-@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
 @pytest.mark.parametrize("transition", ["description", "same_graph_model", "moved_model"])
 def test_repeated_scaffold_overwrites_keep_complete_receipt(
-    tmp_path: Path, through_mcp: bool, transition: str
+    tmp_path: Path, transition: str
 ) -> None:
     project = tmp_path / "shop"
     created = _create_via_route(
         tmp_path,
         EXTERNAL_SHOP,
-        through_mcp=through_mcp,
         key="create",
         expected_revision="absent",
     )
@@ -886,7 +836,6 @@ def test_repeated_scaffold_overwrites_keep_complete_receipt(
         preview = _create_via_route(
             tmp_path,
             spec,
-            through_mcp=through_mcp,
             key=f"preview-{index}",
             expected_revision=revision,
             overwrite=True,
@@ -898,7 +847,6 @@ def test_repeated_scaffold_overwrites_keep_complete_receipt(
         applied = _create_via_route(
             tmp_path,
             spec,
-            through_mcp=through_mcp,
             key=f"apply-{index}",
             expected_revision=revision,
             overwrite=True,
@@ -920,16 +868,14 @@ def test_repeated_scaffold_overwrites_keep_complete_receipt(
         assert "graph.yml" not in receipt["report"]["changed_files"]
 
 
-@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
 @pytest.mark.parametrize("edit", ["package", "graph", "model"])
 def test_repeated_overwrite_still_refuses_interleaved_authored_edit(
-    tmp_path: Path, through_mcp: bool, edit: str
+    tmp_path: Path, edit: str
 ) -> None:
     project = tmp_path / "shop"
     assert _create_via_route(
         tmp_path,
         EXTERNAL_SHOP,
-        through_mcp=through_mcp,
         key="create",
         expected_revision="absent",
     )["ok"]
@@ -937,7 +883,6 @@ def test_repeated_overwrite_still_refuses_interleaved_authored_edit(
     assert _create_via_route(
         tmp_path,
         second,
-        through_mcp=through_mcp,
         key="second",
         expected_revision=project_revision(project),
         overwrite=True,
@@ -951,41 +896,24 @@ def test_repeated_overwrite_still_refuses_interleaved_authored_edit(
     revision = project_revision(project)
     third = replace(EXTERNAL_SHOP, description="Description C")
     for dry_run in (True, False):
-        if through_mcp:
-            report = _create_via_route(
+        with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
+            _create_via_route(
                 tmp_path,
                 third,
-                through_mcp=True,
                 key=f"third-{dry_run}",
                 expected_revision=revision,
                 overwrite=True,
                 dry_run=dry_run,
             )
-            assert report["ok"] is False, report
-        else:
-            with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
-                _create_via_route(
-                    tmp_path,
-                    third,
-                    through_mcp=False,
-                    key=f"third-{dry_run}",
-                    expected_revision=revision,
-                    overwrite=True,
-                    dry_run=dry_run,
-                )
         assert _project_bytes(project) == before
         assert project_revision(project) == revision
 
 
-@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
-def test_unchanged_target_does_not_launder_authored_model_into_next_receipt(
-    tmp_path: Path, through_mcp: bool
-) -> None:
+def test_unchanged_target_does_not_launder_authored_model_into_next_receipt(tmp_path: Path) -> None:
     project = tmp_path / "shop"
     assert _create_via_route(
         tmp_path,
         EXTERNAL_SHOP,
-        through_mcp=through_mcp,
         key="create",
         expected_revision="absent",
     )["ok"]
@@ -993,7 +921,6 @@ def test_unchanged_target_does_not_launder_authored_model_into_next_receipt(
     assert _create_via_route(
         tmp_path,
         second,
-        through_mcp=through_mcp,
         key="second",
         expected_revision=project_revision(project),
         overwrite=True,
@@ -1008,41 +935,26 @@ def test_unchanged_target_does_not_launder_authored_model_into_next_receipt(
     before = _project_bytes(project)
     revision = project_revision(project)
     for dry_run in (True, False):
-        if through_mcp:
-            report = _create_via_route(
+        with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
+            _create_via_route(
                 tmp_path,
                 third,
-                through_mcp=True,
                 key=f"third-{dry_run}",
                 expected_revision=revision,
                 overwrite=True,
                 dry_run=dry_run,
             )
-            assert report["ok"] is False, report
-        else:
-            with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
-                _create_via_route(
-                    tmp_path,
-                    third,
-                    through_mcp=False,
-                    key=f"third-{dry_run}",
-                    expected_revision=revision,
-                    overwrite=True,
-                    dry_run=dry_run,
-                )
         assert _project_bytes(project) == before
         assert project_revision(project) == revision
 
 
-@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
 def test_failed_repeated_overwrite_receipt_cannot_claim_scaffold_provenance(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, through_mcp: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = tmp_path / "shop"
     assert _create_via_route(
         tmp_path,
         EXTERNAL_SHOP,
-        through_mcp=through_mcp,
         key="create",
         expected_revision="absent",
     )["ok"]
@@ -1050,7 +962,6 @@ def test_failed_repeated_overwrite_receipt_cannot_claim_scaffold_provenance(
     assert _create_via_route(
         tmp_path,
         second,
-        through_mcp=through_mcp,
         key="second",
         expected_revision=project_revision(project),
         overwrite=True,
@@ -1073,7 +984,6 @@ def test_failed_repeated_overwrite_receipt_cannot_claim_scaffold_provenance(
         failed = _create_via_route(
             tmp_path,
             third,
-            through_mcp=through_mcp,
             key="failed-third",
             expected_revision=revision,
             overwrite=True,
@@ -1092,7 +1002,6 @@ def test_failed_repeated_overwrite_receipt_cannot_claim_scaffold_provenance(
     preview = _create_via_route(
         tmp_path,
         third,
-        through_mcp=through_mcp,
         key="preview-third",
         expected_revision=revision,
         overwrite=True,
@@ -1102,7 +1011,6 @@ def test_failed_repeated_overwrite_receipt_cannot_claim_scaffold_provenance(
     applied = _create_via_route(
         tmp_path,
         third,
-        through_mcp=through_mcp,
         key="apply-third",
         expected_revision=revision,
         overwrite=True,
@@ -1259,12 +1167,11 @@ def test_same_path_entity_overwrite_replaces_unchanged_scaffold_model(tmp_path: 
     assert "orders_count" in _yaml(project / "models" / "core" / "orders.yml")["model"]["measures"]
 
 
-@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
 @pytest.mark.parametrize("dry_run", [False, True], ids=["apply", "preview"])
 @pytest.mark.parametrize("same_path", [False, True], ids=["different-path", "same-path"])
 @pytest.mark.parametrize("edit", ["relation", "dimension"])
 def test_create_overwrite_refuses_semantically_modified_first_model(
-    tmp_path: Path, through_mcp: bool, dry_run: bool, same_path: bool, edit: str
+    tmp_path: Path, dry_run: bool, same_path: bool, edit: str
 ) -> None:
     create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
     project = tmp_path / "shop"
@@ -1283,44 +1190,16 @@ def test_create_overwrite_refuses_semantically_modified_first_model(
     before = _project_bytes(project)
     revision = project_revision(project)
     new_entity = "orders" if same_path else "customer"
-    if through_mcp:
-        server = create_architect_mcp_server(workspace_root=tmp_path)
-        (result,) = _session_call(
-            server,
-            [
-                (
-                    "create_project",
-                    {
-                        "package_id": "shop",
-                        "project_path": "shop",
-                        "expected_revision": revision,
-                        "idempotency_key": f"modified-{edit}-{same_path}-{dry_run}",
-                        "warehouse": "duckdb",
-                        "data": "external",
-                        "first_entity": new_entity,
-                        "relation": "main_marts.fct_orders",
-                        "primary_key": "order_id",
-                        "time_column": "ordered_at",
-                        "amount_column": "order_total",
-                        "dimension_column": "status",
-                        "overwrite": True,
-                        "dry_run": dry_run,
-                    },
-                )
-            ],
+    new_spec = replace(EXTERNAL_SHOP, first_model=replace(ORDERS, entity=new_entity))
+    with pytest.raises(SemanticLayerError, match="modified|provenance"):
+        create_project(
+            "shop",
+            new_spec,
+            workspace_root=tmp_path,
+            expected_revision=revision,
+            overwrite=True,
+            dry_run=dry_run,
         )
-        assert result["ok"] is False, result
-    else:
-        new_spec = replace(EXTERNAL_SHOP, first_model=replace(ORDERS, entity=new_entity))
-        with pytest.raises(SemanticLayerError, match="modified|provenance"):
-            create_project(
-                "shop",
-                new_spec,
-                workspace_root=tmp_path,
-                expected_revision=revision,
-                overwrite=True,
-                dry_run=dry_run,
-            )
     assert _project_bytes(project) == before
     assert project_revision(project) == revision
     assert db.read_bytes() == before["data/shop.duckdb"]
@@ -1415,10 +1294,9 @@ def test_create_overwrite_refuses_when_creation_provenance_is_missing(
     assert db.read_bytes() == before["data/shop.duckdb"]
 
 
-@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
 @pytest.mark.parametrize("dry_run", [False, True], ids=["apply", "preview"])
 def test_create_same_entity_refuses_to_replace_authored_relation(
-    tmp_path: Path, through_mcp: bool, dry_run: bool
+    tmp_path: Path, dry_run: bool
 ) -> None:
     create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
     project = tmp_path / "shop"
@@ -1428,53 +1306,24 @@ def test_create_same_entity_refuses_to_replace_authored_relation(
     )
     before = _project_bytes(project)
     revision = project_revision(project)
-    if through_mcp:
-        server = create_architect_mcp_server(workspace_root=tmp_path)
-        (result,) = _session_call(
-            server,
-            [
-                (
-                    "create_project",
-                    {
-                        "package_id": "shop",
-                        "project_path": "shop",
-                        "expected_revision": revision,
-                        "idempotency_key": f"same-entity-{dry_run}",
-                        "warehouse": "duckdb",
-                        "data": "external",
-                        "first_entity": "order",
-                        "relation": "main_marts.fct_orders",
-                        "primary_key": "order_id",
-                        "time_column": "ordered_at",
-                        "amount_column": "order_total",
-                        "dimension_column": "status",
-                        "overwrite": True,
-                        "dry_run": dry_run,
-                    },
-                )
-            ],
+    with pytest.raises(SemanticLayerError, match="modified|provenance"):
+        create_project(
+            "shop",
+            EXTERNAL_SHOP,
+            workspace_root=tmp_path,
+            expected_revision=revision,
+            overwrite=True,
+            dry_run=dry_run,
         )
-        assert result["ok"] is False, result
-    else:
-        with pytest.raises(SemanticLayerError, match="modified|provenance"):
-            create_project(
-                "shop",
-                EXTERNAL_SHOP,
-                workspace_root=tmp_path,
-                expected_revision=revision,
-                overwrite=True,
-                dry_run=dry_run,
-            )
     assert _project_bytes(project) == before
     assert project_revision(project) == revision
 
 
-@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
 @pytest.mark.parametrize("dry_run", [False, True], ids=["apply", "preview"])
 @pytest.mark.parametrize("same_path", [False, True], ids=["different-path", "same-path"])
 @pytest.mark.parametrize("graph_case", ["multi_entity", "missing", "unrecognized"])
 def test_create_overwrite_refuses_ambiguous_graph_before_model_replacement(
-    tmp_path: Path, through_mcp: bool, dry_run: bool, same_path: bool, graph_case: str
+    tmp_path: Path, dry_run: bool, same_path: bool, graph_case: str
 ) -> None:
     create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
     project = tmp_path / "shop"
@@ -1515,56 +1364,25 @@ def test_create_overwrite_refuses_ambiguous_graph_before_model_replacement(
     before = _project_bytes(project)
     revision = project_revision(project)
     new_entity = "orders" if same_path else "customer"
-    if through_mcp:
-        server = create_architect_mcp_server(workspace_root=tmp_path)
-        (report,) = _session_call(
-            server,
-            [
-                (
-                    "create_project",
-                    {
-                        "package_id": "shop",
-                        "project_path": "shop",
-                        "expected_revision": revision,
-                        "idempotency_key": f"ambiguous-{graph_case}-{same_path}-{dry_run}",
-                        "description": EXTERNAL_SHOP.description,
-                        "warehouse": "duckdb",
-                        "data": "external",
-                        "first_entity": new_entity,
-                        "relation": "main_marts.fct_orders",
-                        "primary_key": "order_id",
-                        "time_column": "ordered_at",
-                        "amount_column": "order_total",
-                        "dimension_column": "status",
-                        "overwrite": True,
-                        "dry_run": dry_run,
-                    },
-                )
-            ],
+    spec = replace(EXTERNAL_SHOP, first_model=replace(ORDERS, entity=new_entity))
+    with pytest.raises(SemanticLayerError, match="modified|receipt|provenance|missing") as exc:
+        create_project(
+            "shop",
+            spec,
+            workspace_root=tmp_path,
+            expected_revision=revision,
+            overwrite=True,
+            dry_run=dry_run,
         )
-        assert report["ok"] is False, report
-        assert report["error"]["details"]["reason"].startswith("scaffold_")
-    else:
-        spec = replace(EXTERNAL_SHOP, first_model=replace(ORDERS, entity=new_entity))
-        with pytest.raises(SemanticLayerError, match="modified|receipt|provenance|missing") as exc:
-            create_project(
-                "shop",
-                spec,
-                workspace_root=tmp_path,
-                expected_revision=revision,
-                overwrite=True,
-                dry_run=dry_run,
-            )
-        assert str(exc.value.details["reason"]).startswith("scaffold_")
+    assert str(exc.value.details["reason"]).startswith("scaffold_")
     assert _project_bytes(project) == before
     assert project_revision(project) == revision
     assert db.read_bytes() == before["data/shop.duckdb"]
 
 
-@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
 @pytest.mark.parametrize("dry_run", [False, True], ids=["apply", "preview"])
 def test_create_overwrite_refuses_modified_shared_scaffold_file(
-    tmp_path: Path, through_mcp: bool, dry_run: bool
+    tmp_path: Path, dry_run: bool
 ) -> None:
     create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
     project = tmp_path / "shop"
@@ -1573,53 +1391,23 @@ def test_create_overwrite_refuses_modified_shared_scaffold_file(
     metrics.write_bytes(metrics.read_bytes() + b"# authored metric note\n")
     before = _project_bytes(project)
     revision = project_revision(project)
-    if through_mcp:
-        server = create_architect_mcp_server(workspace_root=tmp_path)
-        (report,) = _session_call(
-            server,
-            [
-                (
-                    "create_project",
-                    {
-                        "package_id": "shop",
-                        "project_path": "shop",
-                        "expected_revision": revision,
-                        "idempotency_key": f"shared-{dry_run}",
-                        "warehouse": "duckdb",
-                        "data": "external",
-                        "description": EXTERNAL_SHOP.description,
-                        "first_entity": "order",
-                        "relation": "main_marts.fct_orders",
-                        "primary_key": "order_id",
-                        "time_column": "ordered_at",
-                        "amount_column": "order_total",
-                        "dimension_column": "status",
-                        "overwrite": True,
-                        "dry_run": dry_run,
-                    },
-                )
-            ],
+    with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
+        create_project(
+            "shop",
+            EXTERNAL_SHOP,
+            workspace_root=tmp_path,
+            expected_revision=revision,
+            overwrite=True,
+            dry_run=dry_run,
         )
-        assert report["ok"] is False, report
-    else:
-        with pytest.raises(SemanticLayerError, match="modified|receipt|provenance"):
-            create_project(
-                "shop",
-                EXTERNAL_SHOP,
-                workspace_root=tmp_path,
-                expected_revision=revision,
-                overwrite=True,
-                dry_run=dry_run,
-            )
     assert _project_bytes(project) == before
     assert project_revision(project) == revision
     assert db.read_bytes() == before["data/shop.duckdb"]
 
 
-@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
 @pytest.mark.parametrize("dry_run", [False, True], ids=["apply", "preview"])
 def test_create_overwrite_byte_identical_noop_needs_no_receipt(
-    tmp_path: Path, through_mcp: bool, dry_run: bool
+    tmp_path: Path, dry_run: bool
 ) -> None:
     create_project("shop", EXTERNAL_SHOP, workspace_root=tmp_path)
     project = tmp_path / "shop"
@@ -1628,42 +1416,14 @@ def test_create_overwrite_byte_identical_noop_needs_no_receipt(
         receipt.unlink()
     before = _project_bytes(project)
     revision = project_revision(project)
-    if through_mcp:
-        server = create_architect_mcp_server(workspace_root=tmp_path)
-        (report,) = _session_call(
-            server,
-            [
-                (
-                    "create_project",
-                    {
-                        "package_id": "shop",
-                        "project_path": "shop",
-                        "expected_revision": revision,
-                        "idempotency_key": f"noop-{dry_run}",
-                        "warehouse": "duckdb",
-                        "data": "external",
-                        "description": EXTERNAL_SHOP.description,
-                        "first_entity": "order",
-                        "relation": "main_marts.fct_orders",
-                        "primary_key": "order_id",
-                        "time_column": "ordered_at",
-                        "amount_column": "order_total",
-                        "dimension_column": "status",
-                        "overwrite": True,
-                        "dry_run": dry_run,
-                    },
-                )
-            ],
-        )
-    else:
-        report = create_project(
-            "shop",
-            EXTERNAL_SHOP,
-            workspace_root=tmp_path,
-            expected_revision=revision,
-            overwrite=True,
-            dry_run=dry_run,
-        ).report
+    report = create_project(
+        "shop",
+        EXTERNAL_SHOP,
+        workspace_root=tmp_path,
+        expected_revision=revision,
+        overwrite=True,
+        dry_run=dry_run,
+    ).report
     assert report["ok"] is True, report
     assert report["changes"] == []
     assert _project_bytes(project) == before
@@ -1671,10 +1431,9 @@ def test_create_overwrite_byte_identical_noop_needs_no_receipt(
     assert db.read_bytes() == before["data/shop.duckdb"]
 
 
-@pytest.mark.parametrize("through_mcp", [False, True], ids=["service", "mcp"])
 @pytest.mark.parametrize("overwrite", [False, True], ids=["fresh", "overwrite"])
 def test_create_project_parse_failure_restores_every_file_and_revision(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, through_mcp: bool, overwrite: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overwrite: bool
 ) -> None:
     project = tmp_path / "shop"
     if overwrite:
@@ -1695,39 +1454,13 @@ def test_create_project_parse_failure_restores_every_file_and_revision(
             None,
         ),
     )
-    if through_mcp:
-        server = create_architect_mcp_server(workspace_root=tmp_path)
-        (report,) = _session_call(
-            server,
-            [
-                (
-                    "create_project",
-                    {
-                        "package_id": "shop",
-                        "project_path": "shop",
-                        "expected_revision": revision,
-                        "idempotency_key": "parse-failure",
-                        "warehouse": "duckdb",
-                        "data": "external",
-                        "first_entity": "customer",
-                        "relation": "main_marts.fct_orders",
-                        "primary_key": "order_id",
-                        "time_column": "ordered_at",
-                        "amount_column": "order_total",
-                        "dimension_column": "status",
-                        "overwrite": overwrite,
-                    },
-                )
-            ],
-        )
-    else:
-        report = create_project(
-            "shop",
-            spec,
-            workspace_root=tmp_path,
-            expected_revision=revision,
-            overwrite=overwrite,
-        ).report
+    report = create_project(
+        "shop",
+        spec,
+        workspace_root=tmp_path,
+        expected_revision=revision,
+        overwrite=overwrite,
+    ).report
     assert report["ok"] is False
     assert report["status"] == "rolled_back_after_parse_error"
     assert report["rolled_back"] is True

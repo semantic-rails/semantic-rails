@@ -237,7 +237,7 @@ def test_metric_filters_filter_the_rows(tmp_path: Path) -> None:
     assert values["first_delivered"] == [2, 1, 1]
     assert values["first_delivered_list"] == [2, 1, 1]
     assert values["delivered_equals"] == [2, 2, 1]
-    assert values["undelivered"] == [1, 2]  # February and March; January had none
+    assert values["undelivered"] == [0, 1, 2]  # January is observed with no undelivered orders
 
 
 def test_ratio_filters_apply_to_their_side_and_the_metric_to_both(tmp_path: Path) -> None:

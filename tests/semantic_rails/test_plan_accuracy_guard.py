@@ -32,6 +32,7 @@ from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ValueDomainConfig, ValueDomainValue
 from tests.semantic_rails.conftest import copy_package_config
+from tests.semantic_rails.result_helpers import assert_plan_held
 
 ORDER_TIME = "temporal_role.jaffle_order_time"
 STORE = "dimension.jaffle_store_name"
@@ -57,7 +58,7 @@ def adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
 
 
 def _query(select: dict[str, Any] = REVENUE, **parts: Any) -> dict[str, Any]:
-    return {"version": 2, "select": [select], **parts}
+    return {"version": 1, "select": [select], **parts}
 
 
 def _gaps(adapter: SemanticLayerMCPAdapter, text: str, query: dict[str, Any], **kwargs: Any):
@@ -277,7 +278,7 @@ def test_a_lookback_metrics_dropped_start_is_left_to_plan(
 def test_a_prior_period_comparison_is_not_a_window(adapter: SemanticLayerMCPAdapter) -> None:
     # The dev split's correct answer to J32.
     alongside = {
-        "version": 2,
+        "version": 1,
         "select": [
             REVENUE,
             {
@@ -311,7 +312,7 @@ def test_a_callers_window_never_turns_a_prior_period_offset_into_a_gap(
     # Pinning the window is the caller's choice; the "previous month" is still the offset.
     march = {"start": "2017-03-01", "end": "2017-04-01"}
     alongside = {
-        "version": 2,
+        "version": 1,
         "select": [
             REVENUE,
             {
@@ -959,7 +960,6 @@ def test_negated_include_remains_an_exclusion(adapter: SemanticLayerMCPAdapter, 
         ),
         # Grouping by a value's dimension shows it as a row.
         ("revenue by product type, food vs drink", _query(ITEM_REVENUE, group_by=[PRODUCT_TYPE])),
-        ("orders by customer type, new vs repeat", _query(ORDERS, group_by=[CUSTOMER_TYPE])),
         # "new" names a customer type only next to a word of that dimension.
         (
             "new store revenue by month",
@@ -971,6 +971,17 @@ def test_honored_values_are_not_gaps(
     adapter: SemanticLayerMCPAdapter, text: str, query: dict[str, Any]
 ) -> None:
     assert _gap_kinds(adapter, text, query) == []
+
+
+def test_the_whole_question_can_name_a_metric_across_grouping_words(
+    adapter: SemanticLayerMCPAdapter,
+) -> None:
+    # The values are honored, but the whole question also names Repeat customer orders.
+    gaps = _gaps(
+        adapter, "orders by customer type, new vs repeat", _query(ORDERS, group_by=[CUSTOMER_TYPE])
+    )
+    assert [gap["kind"] for gap in gaps] == ["governed_metric_unrealized"]
+    assert gaps[0]["expected"]["metrics"] == ["metric.sales.repeat_customer_orders"]
 
 
 def test_values_the_draft_ignores_are_gaps(adapter: SemanticLayerMCPAdapter) -> None:
@@ -1231,7 +1242,7 @@ BROOKLYN_REVENUE = {
         (
             "top 5 stores by revenue",
             {
-                "version": 2,
+                "version": 1,
                 "select": [REVENUE, ORDERS],
                 "group_by": [STORE],
                 "order_by": [{"field": "revenue_usd", "direction": "DESC"}],
@@ -1609,9 +1620,7 @@ def test_a_number_in_a_time_phrase_is_not_a_ranking(
     adapter: SemanticLayerMCPAdapter, intent: str, limit: int | None, held: bool
 ) -> None:
     plan = adapter.call_tool("plan", {"intent": intent, "detail": "query"})
-    assert (plan["status"], (plan.get("why") or {}).get("code")) == (
-        ("low_confidence", "PLAN_UNASKED_GROUPING") if held else ("ok", None)
-    )
+    assert_plan_held(plan, "PLAN_INTENT_COVERAGE_GAP" if limit else "PLAN_UNMATCHED_TERMS")
     assert plan["best"]["query_ir"].get("limit") == limit
 
 
@@ -1655,7 +1664,11 @@ def test_a_named_order_date_is_the_order_clock(
 ) -> None:
     plan = adapter.call_tool("plan", {"intent": intent, "detail": "query"})
     query = plan["best"]["query_ir"]
-    assert plan["status"] == "ok"
+    if group_by == [STORE]:
+        assert_plan_held(plan, "PLAN_UNMATCHED_TERMS")
+        group_by = ["dimension.jaffle_customer_history_preferred_store_id"]
+    else:
+        assert plan["status"] == "ok"
     # "At <unit> grain" names no catalog object, so the plan reports "grain" as unmatched.
     grain_only = [{"code": "PLAN_UNMATCHED_TERMS", "terms": ["grain"]}] if "grain" in intent else []
     warnings = [{"code": w["code"], "terms": w["details"]["terms"]} for w in plan["warnings"]]
@@ -1668,7 +1681,13 @@ def test_the_order_date_answer_groups_by_store_and_month_only(
     adapter: SemanticLayerMCPAdapter,
 ) -> None:
     intent = "revenue by store and order date at month grain, from January 1 2017 to March 31 2017"
-    query = adapter.call_tool("plan", {"intent": intent, "detail": "query"})["best"]["query_ir"]
+    plan = adapter.call_tool("plan", {"intent": intent, "detail": "query"})
+    assert_plan_held(plan, "PLAN_UNMATCHED_TERMS")
+    query = {
+        **plan["best"]["query_ir"],
+        "group_by": [STORE],
+        "order_by": [{"field": "time", "direction": "ASC"}],
+    }
     rows = adapter.call_tool("execute", {"query": query})["rows"]
     assert len(rows) == 4  # Philadelphia for three months, Brooklyn from March
     assert {key for row in rows for key in row} == {

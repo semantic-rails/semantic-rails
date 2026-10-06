@@ -20,7 +20,12 @@ from dataclasses import asdict, fields
 from typing import Any
 
 from .ast import NormalizedQuery, normalize_partial_query, normalize_query
-from .catalog_search import CatalogSearchDocument, SearchTerms
+from .catalog_search import (
+    CatalogSearchDocument,
+    SearchTerms,
+    normalize_search_value,
+    tokenize_search_value,
+)
 from .compiler import (
     _conversion_supported,
     _predicate_context_entity_candidates,
@@ -30,6 +35,7 @@ from .compiler import (
     bind_query,
     query_route_rows,
 )
+from .config_parts.measure_governance import building_block_measures
 from .diagnostics import relationship_contract_payload
 from .errors import SemanticLayerError
 from .expressions import (
@@ -90,14 +96,11 @@ from .metadata_parts.relevance import (
     _catalog_token_index,
     _intent_passes_relevance_floor,
     _low_relevance_block,
-    _norm,
     _token_idf_weight,
-    _tokenize,
 )
 from .metadata_parts.scope_gate import scope_block_payload as _scope_block_payload
-from .metadata_parts.valid_values import valid_values_payload
+from .metadata_parts.valid_values import _policy_context, valid_values_payload
 from .policies import hidden_object_ids, policy_effects_for_object, row_filters_for_context
-from .request_context import context_from_policy_context
 from .request_payload import DISCOVER_RANKED_KINDS, checked_discover_kinds
 from .runtime import Runtime, runtime_request_scope
 from .schema import MetricConfig, PackageConfig
@@ -431,7 +434,7 @@ def _stage_kind_bonus(stage: str, kind: str) -> float:
 
 
 def _business_priority_adjustment(terms: str, candidate: dict[str, Any]) -> tuple[float, list[str]]:
-    tokens = set(_tokenize(terms))
+    tokens = set(tokenize_search_value(terms))
     if not tokens or not tokens <= {"sale", "sales"}:
         return 0.0, []
     title = " ".join(
@@ -443,8 +446,8 @@ def _business_priority_adjustment(terms: str, candidate: dict[str, Any]) -> tupl
             " ".join(candidate.get("topics", []) or []),
         ]
     ).lower()
-    normalized_id = _norm(str(candidate.get("id", "")))
-    normalized_name = _norm(str(candidate.get("name", "")))
+    normalized_id = normalize_search_value(str(candidate.get("id", "")))
+    normalized_name = normalize_search_value(str(candidate.get("name", "")))
     adjustment = 0.0
     reasons: list[str] = []
 
@@ -589,11 +592,6 @@ def _recommended_actions(kind: str) -> list[str]:
         "segment": ["validate segment", "preview members", "explain derived query"],
     }
     return actions.get(kind, ["inspect object"])
-
-
-def _policy_context(payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    context = dict((payload or {}).get("policy_context", {}) or {})
-    return context_from_policy_context(context).to_policy_context()
 
 
 def _policy_metadata(
@@ -1205,7 +1203,7 @@ def catalog_payload(
     }
     aliases: dict[str, list[str]] = {}
     alias_index: dict[str, list[str]] = {}
-    search_norm = _norm(search)
+    search_norm = normalize_search_value(search)
     for raw_obj in catalog["objects"]:
         if str(raw_obj.get("id", "")) in hidden_ids:
             continue
@@ -1227,7 +1225,7 @@ def catalog_payload(
                 " ".join(dict(raw_obj.get("payload", {}) or {}).get("topics", []) or []),
             ]
         )
-        if search_norm and search_norm not in _norm(haystack):
+        if search_norm and search_norm not in normalize_search_value(haystack):
             continue
         bucket = kind_map.get(str(row["kind"]))
         if not bucket:
@@ -1244,7 +1242,7 @@ def catalog_payload(
             row.get("label"),
             *(row.get("aliases", []) or []),
         ]:
-            alias_key = _norm(str(alias))
+            alias_key = normalize_search_value(str(alias))
             if not alias_key:
                 continue
             alias_index.setdefault(alias_key, [])
@@ -1795,7 +1793,7 @@ def _apply_intent_priority_adjustments(
             str(row.get("name", "") or ""),
             str(row.get("id", "") or ""),
         ):
-            candidate_text_tokens.update(_tokenize(source))
+            candidate_text_tokens.update(tokenize_search_value(source))
         adjustment_reasons: list[str] = []
         if grain and (candidate_text_tokens & _INTENT_GRAIN_TOKENS):
             score -= grain_token_bonus
@@ -1856,9 +1854,9 @@ def _apply_intent_priority_adjustments(
 
 
 def _is_identifier_like_dimension(dim: Any) -> bool:
-    label = _norm(str(getattr(dim, "label", "") or ""))
-    name = _norm(str(getattr(dim, "name", "") or ""))
-    semantic_kind = _norm(
+    label = normalize_search_value(str(getattr(dim, "label", "") or ""))
+    name = normalize_search_value(str(getattr(dim, "name", "") or ""))
+    semantic_kind = normalize_search_value(
         str(getattr(dim, "semantic_kind", "") or getattr(dim, "data_type", "") or "")
     )
     return bool(
@@ -1910,11 +1908,11 @@ def _dimension_builder_score(
     )
     score += 12.0
     reasons = [*reasons, "valid at current root entity"]
-    semantic_kind = _norm(
+    semantic_kind = normalize_search_value(
         str(getattr(dim, "semantic_kind", "") or getattr(dim, "data_type", "") or "")
     )
-    label_norm = _norm(str(card.get("label", "") or ""))
-    focus_tokens = _tokenize(relevance_terms)
+    label_norm = normalize_search_value(str(card.get("label", "") or ""))
+    focus_tokens = tokenize_search_value(relevance_terms)
     time_requested = any(
         token in lowered_focus_terms
         for token in (
@@ -1935,7 +1933,7 @@ def _dimension_builder_score(
             "by year",
         )
     )
-    grouping_tokens = _tokenize(grouping_terms)
+    grouping_tokens = tokenize_search_value(grouping_terms)
     if semantic_kind == "categorical":
         score += 8.0
         reasons.append("categorical breakdown")
@@ -2095,8 +2093,10 @@ def discover_payload(
         _catalog_token_doc_freq(config, search_index=search_index) if enforce_scope else None
     )
 
+    # A building block is offered through the metrics that filter it, never on its own.
+    building_blocks = building_block_measures(config)
     for measure in config.measures:
-        if measure.id in hidden_ids:
+        if measure.id in hidden_ids or measure.id in building_blocks:
             continue
         availability = _availability_for_object(config, root_entity, measure.id, "measure")
         row = {
@@ -2405,7 +2405,9 @@ def discover_payload(
     fallback_token_match_reason: str | None = None
     unique_tokens: list[str] = []
     if no_matches:
-        tokens = [tok for tok in _tokenize(terms) if tok and tok not in _INTENT_STOPWORDS]
+        tokens = [
+            tok for tok in tokenize_search_value(terms) if tok and tok not in _INTENT_STOPWORDS
+        ]
         # Dedupe while preserving order.
         seen: set[str] = set()
         for tok in tokens:
