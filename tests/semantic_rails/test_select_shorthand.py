@@ -72,6 +72,15 @@ def test_expression_dimension_already_in_group_by_is_not_duplicated():
     assert normalize_query(shorthand).group_by == [DIM]
 
 
+@pytest.mark.parametrize("kind", [None, "unknown"])
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_dimension_shorthand_does_not_drop_an_unsupported_kind(kind, wrapped):
+    item = {"kind": kind, "dimension": DIM}
+    with pytest.raises(SemanticLayerError) as excinfo:
+        normalize_query(_query([{"expression": item} if wrapped else item]))
+    assert excinfo.value.code == "INVALID_EXPRESSION_AST"
+
+
 @pytest.mark.parametrize(
     "select",
     [

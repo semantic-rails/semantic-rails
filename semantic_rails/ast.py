@@ -1096,7 +1096,7 @@ def _rewrite_select_item(
         if (
             not isinstance(expression, dict)
             or set(expression) - {"kind"} != {"dimension"}
-            or expression.get("kind") not in (None, "dimension", "group", "ref")
+            or expression.get("kind", "dimension") not in ("dimension", "group", "ref")
         ):
             return row, "", None
         dim_id = str(expression["dimension"] or "").strip()
