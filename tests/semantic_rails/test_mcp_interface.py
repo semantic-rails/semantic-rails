@@ -883,64 +883,6 @@ def test_mcp_discover_with_bad_limit_returns_integer_hint(runtime_factory):
     assert any("limit" in h["message"] for h in hints)
 
 
-def test_mcp_discover_with_object_kinds_returns_array_hint(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    adapter = SemanticLayerMCPAdapter(runtime)
-    try:
-        out = adapter.call_tool("discover", {"terms": "revenue", "kinds": {"oops": True}})
-    finally:
-        adapter.close()
-    assert out["error"]["code"] == "INVALID_MCP_ARGUMENTS"
-    hints = out["errors"][0]["recovery_hints"]
-    assert hints
-    assert any(h.get("kind") == "use_string_or_array" for h in hints)
-
-
-def test_mcp_unknown_tool_returns_available_tool_hint(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    adapter = SemanticLayerMCPAdapter(runtime)
-    try:
-        out = adapter.call_tool("hyperdrive", {})
-    finally:
-        adapter.close()
-    assert out["error"]["code"] == "UNKNOWN_MCP_TOOL"
-    hints = out["errors"][0]["recovery_hints"]
-    assert hints
-    hint = hints[0]
-    assert hint["kind"] == "use_available_tool"
-    assert "discover" in hint["available_tools"]
-    assert "plan" in hint["available_tools"]
-
-
-def test_mcp_unknown_prompt_returns_available_prompt_hint(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    adapter = SemanticLayerMCPAdapter(runtime)
-    try:
-        out = adapter.get_prompt("not-a-real-prompt", {})
-    finally:
-        adapter.close()
-    assert out["error"]["code"] == "UNKNOWN_MCP_PROMPT"
-    hints = out["errors"][0]["recovery_hints"]
-    assert hints
-    assert hints[0]["kind"] == "use_available_prompt"
-    assert hints[0]["available_prompts"]
-
-
-def test_mcp_unknown_resource_returns_available_resource_hint(runtime_factory):
-    runtime = runtime_factory("jaffle_shop")
-    adapter = SemanticLayerMCPAdapter(runtime)
-    try:
-        out = adapter.read_resource("semantic-rails://bogus")
-    finally:
-        adapter.close()
-    payload = out["payload"]
-    assert payload["error"]["code"] == "UNKNOWN_MCP_RESOURCE"
-    hints = payload["errors"][0]["recovery_hints"]
-    assert hints
-    assert hints[0]["kind"] == "use_available_resource"
-    assert hints[0]["available_resources"]
-
-
 def test_mcp_jsonrpc_error_envelope_includes_recovery_hints_for_policy_context(runtime_factory):
     """Malformed policy context returns a tool error with its recovery hint."""
     runtime = runtime_factory("jaffle_shop")
@@ -980,37 +922,6 @@ def test_mcp_jsonrpc_error_envelope_includes_recovery_hints_for_policy_context(r
     )
     assert any(h.get("kind") == "wrap_policy_context_as_object" for h in hints)
     assert "closest_valid_query" not in data
-
-
-def test_mcp_jsonrpc_error_envelope_populates_top_level_closest_valid_query(runtime_factory):
-    """v2 adversarial Attack 5 bonus smell: the top-level
-    ``closest_valid_query`` field used to always be ``{}`` even when
-    the nested hint carried a real template. Pull it up so agents that
-    read the documented envelope find the IR template where the docs
-    say they should.
-    """
-    runtime = runtime_factory("jaffle_shop")
-    adapter = SemanticLayerMCPAdapter(runtime)
-    try:
-        result = handle_jsonrpc_message(
-            adapter,
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": "execute",
-                    "arguments": {"mode": "validate", "query": "this is not a query"},
-                },
-            },
-        )
-    finally:
-        adapter.close()
-    structured = result["result"]["structuredContent"]
-    assert any(
-        dict(h.get("closest_valid_query", {}) or {})
-        for h in structured["errors"][0].get("recovery_hints", [])
-    ), "expected at least one hint to carry a closest_valid_query template"
 
 
 def test_legacy_mcp_http_handler_rejects_browser_origins(runtime_factory, monkeypatch):

@@ -40,7 +40,7 @@ def runtime(runtime_factory: Any) -> Iterator[Runtime]:
 
 
 def _query(select: list[dict[str, Any]], time: dict[str, Any], **extra: Any) -> dict[str, Any]:
-    return {"version": 2, "select": select, "time": {"temporal_role": ORDER_TIME, **time}, **extra}
+    return {"version": 1, "select": select, "time": {"temporal_role": ORDER_TIME, **time}, **extra}
 
 
 def _gold(runtime: Runtime, sql: str) -> list[dict[str, Any]]:

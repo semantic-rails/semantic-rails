@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .config_parts.lookup_measures import lookup_measure_spec, resolve_lookup_measures
+from .config_parts.measure_governance import with_published_flags
 from .config_parts.package_loader import _JOIN_KEYS, normalize_package
 from .config_parts.route_rows import (
     RouteRowError,
@@ -80,6 +81,7 @@ from .schema import (
     ValueDomainConfig,
     ValueDomainValue,
 )
+from .temporal_support import _date_key
 from .yaml_loader import load_yaml_file, safe_load
 
 __all__ = [
@@ -393,10 +395,6 @@ def _parse_external_discontinuities(value: Any) -> list[MeasureExternalDiscontin
 
 _ALLOWED_CAVEAT_KINDS = frozenset({"business_event", "definition_change", "data_quality"})
 _ALLOWED_CAVEAT_SEVERITIES = frozenset({"info", "warning"})
-
-
-def _date_key(value: Any) -> str:
-    return str(value or "").split("T", 1)[0].split(" ", 1)[0]
 
 
 def _require_iso_date(value: Any, *, path: str) -> str:
@@ -900,55 +898,22 @@ def _translate_direct_fields_to_expression(
     return spec
 
 
-def _resolve_metric_ref(value: Any, *, resolve) -> str:
-    """Resolve a metric reference to its full id.
-
-    A bare string like `revenue_usd` may refer to a measure (then we wrap
-    in metric.<package>.<key> via convention) or a metric. Without a
-    metric index, we leave it textual and let downstream validation flag
-    invalid refs.
-
-    NOTE: This helper only knows about the measure index. Use the
-    `resolve_metric` callable built in `_parse_package` (which consults
-    both the metrics index and the measures index, with collision
-    detection) when you need full top-level-metric support. Kept here
-    for back-compat with callers that have not been threaded through
-    yet.
-    """
-    text = str(value or "").strip()
-    if not text:
-        return text
-    if text.startswith("metric."):
-        return text
-    # If it resolves as a measure, treat that measure's auto-published
-    # metric id (`metric.<ns>.<tail>`) as the canonical metric id.
-    measure_id = resolve(text)
-    if measure_id and measure_id.startswith("measure."):
-        return measure_id.replace("measure.", "metric.", 1)
-    return text
-
-
 _MEASURE_REF_KINDS = frozenset(
     {"aggregate", "semi_additive", "scoped_aggregate", "measure", "measure_ref"}
 )
 
 
-def _resolve_refs_in_ast(node: Any, *, resolve, resolve_metric=None, resolve_dimension=None) -> Any:
+def _resolve_refs_in_ast(node: Any, *, resolve, resolve_metric, resolve_dimension=None) -> Any:
     """Best-effort recursive resolution of package-relative refs inside
     an authored expression AST. Walks `kind: metric` nodes and the nodes that
     name a measure (`aggregate`, `scoped_aggregate`, ...) and rewrites the
     `metric:` / `measure:` field via the appropriate resolver.
 
     `resolve` resolves measure refs (returns measure.<ns>.<key>).
-    `resolve_metric` resolves metric refs — falls back to measure-only
-    behavior when None for back-compat. `resolve_dimension(measure_id, key)`
+    `resolve_metric` resolves metric refs. `resolve_dimension(measure_id, key)`
     resolves a short `scoped_aggregate` `where[].field` key against the
     measure's model; a field it does not know is left for query-time lookup.
     """
-    if resolve_metric is None:
-
-        def resolve_metric(value):
-            return _resolve_metric_ref(value, resolve=resolve)
 
     def recurse(child: Any) -> Any:
         return _resolve_refs_in_ast(
@@ -2242,6 +2207,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 additive=_authored_additive(measure_spec, kind, f"{path}: measure '{measure_key}'"),
                 lookup_from=str(measure_spec.get("from", "") or "").strip(),
                 lookup_via=str(measure_spec.get("via", "") or "").strip(),
+                publish=measure_spec.get("publish") is not False,
             )
             measures.append(measure)
             measure_lookup[(model_id, str(measure_key))] = measure_id
@@ -3114,6 +3080,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         operational_contract=operational_contract,
         meta_contract=meta_contract,
     )
+    config = with_published_flags(config)
     from .temporal_support import require_temporal_support
 
     require_temporal_support(config, requested=bool(time_defaults.get("default_query_axis")))

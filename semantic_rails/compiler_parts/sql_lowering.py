@@ -87,6 +87,7 @@ from ..sql_ast import (
     SqlTableRef,
     SqlWindow,
     build_filter_condition,
+    build_negation,
 )
 from .aliasing import AliasRegistry, alias_select
 from .bind import (
@@ -102,6 +103,7 @@ from .bind import (
     _parse_public_expr,
     _row_marker,
     earlier_settlement,
+    earlier_settlement_applies,
 )
 from .conversion import _conversion_leaf_cte
 from .dependencies import (
@@ -116,6 +118,7 @@ from .dependencies import (
     record_bound_object,
     record_ids,
     record_leaf_reference,
+    record_retained_filtered_series,
 )
 from .empty_groups import (
     GUARDED_BASE,
@@ -127,6 +130,7 @@ from .empty_groups import (
     expr_resolves_to_zero,
     guard_empty_groups,
     has_nested_case,
+    observation_scope,
     observes_dataset,
     reads_every_row,
     record_leaf_scope,
@@ -451,13 +455,16 @@ def _time_bucket_expr(time: dict[str, Any], raw_expr: Any, config: PackageConfig
 def _emits_time_coverage(plan: LogicalPlan, config: PackageConfig) -> bool:
     """The one boundary for base time coverage: the guard emits it, routing refuses rollups.
 
-    A fill, a dense series or combined branches can show a bucket no leaf has, which reads 0
-    only inside the base's loaded range. Only DuckDB and Postgres execute that coverage.
+    A fill, a dense series or combined branches can show a bucket no leaf has, and a retained
+    filtered series one where its authored filter matched no row: each reads 0 only inside
+    the base's loaded range. Only DuckDB and Postgres execute that coverage.
     Branches are counted unrouted, so the answer never depends on routing.
     """
-    if not plan.time or plan.time.get("window_total") or not _dialect(config).has_time_coverage:
+    if not plan.time or not _dialect(config).has_time_coverage:
         return False
-    if _query_requires_dense_series(plan, config):
+    if plan.time.get("window_total"):
+        return True
+    if _query_requires_dense_series(plan, config) or _retained_filtered_series(plan, config):
         return True
     unrouted = [replace(row, aggregate_relation_id="") for row in plan.measure_plans]
     return len(_measure_plan_groups(replace(plan, measure_plans=unrouted), config)) > 1
@@ -467,7 +474,6 @@ def _needs_time_scope(plan: LogicalPlan, config: PackageConfig) -> bool:
     """Whether base leaves record their scope: for coverage, or a window's observation."""
     return _emits_time_coverage(plan, config) or bool(
         plan.time
-        and not plan.time.get("window_total")
         and (plan.time.get("start") or plan.time.get("end"))
         and _dialect(config).has_time_coverage
     )
@@ -475,6 +481,103 @@ def _needs_time_scope(plan: LogicalPlan, config: PackageConfig) -> bool:
 
 # What a measure plans paths for itself: its filter and expression, never the query's filters.
 _AUTHORED_PURPOSES = frozenset({"aggregate_if", "measure_expr", "metric_filter"})
+
+
+def _filtered_series_candidate(plan: LogicalPlan, row: MeasurePlan, config: PackageConfig) -> bool:
+    """An additive time series whose authored filter can remove observed buckets."""
+    bound = row.bound_measure
+    return bool(
+        (plan.time.get("grain") or plan.time.get("window_total"))
+        and resolves_to_zero(bound.aggregation, _measure_index(config)[bound.measure_id])
+        and bound.filter_spec
+        and any(
+            expr_resolves_to_zero(_parse_public_expr(payload), config)
+            for payload in plan.post_aggregation_exprs.values()
+        )
+    )
+
+
+def _preserves_filtered_series(plan: LogicalPlan, row: MeasurePlan, config: PackageConfig) -> bool:
+    """Only plain, local-clock leaves can retain their source rows with a conditional operand,
+    and only on a warehouse with loaded coverage, which alone lets a retained bucket read 0.
+
+    Rewrites, predicate populations and earlier settlement keep their existing lowering.
+    The runtime diagnoses their missing buckets through a separately authorized source query.
+    """
+    if not _filtered_series_candidate(plan, row, config):
+        return False
+    measure = _measure_index(config)[row.bound_measure.measure_id]
+    role = _temporal_role_index(config)[
+        _leaf_time_role(row.bound_measure, normalize_query(plan.query), config)
+    ]
+    return bool(
+        _dialect(config).has_time_coverage
+        and row.rewrite_strategy == "direct"
+        and plan_is_root()
+        and not earlier_settlement_applies()
+        and not row.aggregate_relation_id
+        and reads_every_row(measure)
+        and not _all_metric_predicates(plan, row)
+        and not _plan_requires_agent_dag_lowering(plan, config)
+        and all(
+            expr_resolves_to_zero(_parse_public_expr(payload), config)
+            for payload in plan.post_aggregation_exprs.values()
+        )
+        and (not row.path_selections or _paths_are_single_hop_safe(row.path_selections, config))
+        and all(path.analysis.get("status") == "ok" for path in row.path_selections)
+        and _dimension_index(config)[role.dimension].entity == measure.entity
+        and _entity_in_terms_of_anchor_plan(plan, row, config) is None
+    )
+
+
+def _retained_filtered_series(plan: LogicalPlan, config: PackageConfig) -> set[str]:
+    """The leaves that retain their source buckets: each leaf of a group whose leaves all can.
+
+    The one rule lowering, the guard and routing share: a plan that retains one emits loaded
+    coverage (``_emits_time_coverage``), which gates every retained bucket's 0.
+    """
+    return {
+        row.bound_measure.alias
+        for group in _measure_plan_groups(plan, config)
+        if all(_preserves_filtered_series(plan, row, config) for row in group)
+        for row in group
+    }
+
+
+def _filtered_series_operand(value: Any, conditions: list[Any]) -> Any:
+    return SqlCase([SqlCaseWhen(_and_conditions(conditions), value)]) if conditions else value
+
+
+def _require_filtered_series_operand(
+    leaf: SqlSelect, row: MeasurePlan, config: PackageConfig
+) -> None:
+    """Refuse a retained-bucket claim if the leaf bypassed its conditional operand."""
+    measure = _measure_index(config)[row.bound_measure.measure_id]
+    conditions = []
+    for item in _bound_filter_clauses(row.bound_measure, config):
+        value, _ = _direct_dimension_source_expr(
+            measure.entity,
+            str(item["field"]),
+            config,
+            source_relation_override=measure.source_relation,
+        ) or _resolve_dimension_expr(str(item["field"]), config)
+        conditions.append(_value_filter_condition(value, item))
+    aggregate = next(
+        field.expression for field in leaf.select if field.alias == row.bound_measure.alias
+    )
+    expected = SqlCase(
+        [
+            SqlCaseWhen(
+                _and_conditions(conditions), _config_expr_to_sql(measure.expr, measure, config)
+            )
+        ]
+    )
+    if not isinstance(aggregate, SqlCall) or aggregate.args != [expected]:
+        raise SemanticLayerError(
+            "EMPTY_GROUPS_UNSETTLED",
+            "A filtered series bypassed its conditional operand.",
+            details={"missing": "filtered_series_operand"},
+        )
 
 
 def _record_time_scope(
@@ -489,7 +592,7 @@ def _record_time_scope(
     calendar: SqlJoin | None,
     local: bool,
 ) -> None:
-    if not plan.time or plan.time.get("window_total") or leaf.ctes:
+    if not plan.time or leaf.ctes:
         return
     if not _needs_time_scope(plan, config):
         return
@@ -502,6 +605,25 @@ def _record_time_scope(
         role = _temporal_role_index(config)[
             _leaf_time_role(row.bound_measure, normalize_query(plan.query), config)
         ]
+        coverage_bucket = bucket
+        if plan.time.get("window_total"):
+            # The whole [start, end) interval is bucket 0; timestamps before/after it
+            # are -1/1. The central guard can then compare its key to loaded coverage
+            # just as for a grained bucket, using the source clock's bound semantics.
+            window = _source_time_window(
+                _apply_role_timezone(raw_time, role, config), plan.time, config, role_id=role.id
+            )
+            coverage_bucket = SqlCase(
+                [SqlCaseWhen(SqlIsNull(raw_time), SqlLiteral(None))]
+                + [
+                    SqlCaseWhen(
+                        build_negation(condition),
+                        SqlLiteral(-1 if condition.op == ">=" else 1),
+                    )
+                    for condition in window
+                ],
+                else_expr=SqlLiteral(0),
+            )
         record_leaf_scope(
             alias,
             LeafScope(
@@ -509,7 +631,7 @@ def _record_time_scope(
                 joins=tuple(j for j in leaf.joins if j is not calendar),
                 where=tuple(untimed),
                 value=value,
-                bucket=bucket if local else None,
+                bucket=coverage_bucket if local else None,
                 raw_time=raw_time,
                 storage_zone=role.column_timezone or role.timezone or "UTC",
                 calendar=calendar,
@@ -1285,7 +1407,7 @@ def _branch_context_query(
     extra_group_by: list[str] | None = None,
 ) -> dict[str, Any]:
     query: dict[str, Any] = {
-        "version": int(plan.query.get("version", 2) or 2),
+        "version": int(plan.query.get("version", 1) or 1),
         "select": [{"expression": expression, "as": alias}],
         "group_by": [*list(plan.group_by), *list(extra_group_by or [])],
     }
@@ -1593,6 +1715,39 @@ def _and_conditions(conditions: list[Any]) -> Any:
     return current
 
 
+def _stock_period_split(temporal_role_id: str, dim_id: str, config: PackageConfig) -> bool:
+    """Only the stock's clock (same entity and column) or a calendar splits its periods."""
+    dimensions = _dimension_index(config)
+    dimension = dimensions.get(dim_id)
+    if dimension is None:
+        raise SemanticLayerError(
+            "OBJECT_NOT_FOUND", f"Unknown dimension '{dim_id}'", details={"dimension": dim_id}
+        )
+    role = _temporal_role_index(config).get(temporal_role_id)
+    clock = dimensions.get(role.dimension) if role is not None else None
+    return _entity_index(config)[dimension.entity].kind == "time" or (
+        clock is not None and (dimension.entity, dimension.column) == (clock.entity, clock.column)
+    )
+
+
+def _reads_chosen_snapshot(
+    measure, temporal_role_id: str, dim_id: str, config: PackageConfig
+) -> bool:
+    """Read attributes after choosing a stock snapshot; ambiguous date attributes refuse."""
+    if measure.measure_class != "semi_additive":
+        return False
+    if _stock_period_split(temporal_role_id, dim_id, config):
+        return False
+    if _dimension_index(config)[dim_id].data_type in {"date", "timestamp"}:
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            "Filtering a stock by a date or timestamp attribute is ambiguous. "
+            "Filter by the stock's clock or a calendar dimension instead.",
+            details={"reason": "stock_filtered_by_date_attribute", "dimension": dim_id},
+        )
+    return True
+
+
 def _semi_additive_leaf_select(
     *,
     key_fields: list[SqlField],
@@ -1604,6 +1759,8 @@ def _semi_additive_leaf_select(
     from_table: SqlTableRef,
     joins: list[SqlJoin],
     where_clauses: list[Any],
+    snapshot_filters: list[Any],
+    zero_unmatched: bool,
     window_choice: str,
     final_aggregation: str,
     aggregation_params: dict[str, Any],
@@ -1640,6 +1797,37 @@ def _semi_additive_leaf_select(
         SqlField(order_expr, "__snapshot_order"),
         SqlField(value_expr, "__snapshot_value"),
     ]
+    # `snapshot_filters` (on attributes, never on time) keep or drop each chosen snapshot,
+    # as a grouped attribute is read from it: marked here, applied after the choice. With
+    # `zero_unmatched`, grouped only by periods, a period whose chosen snapshots all fail
+    # them reads 0 (data of nothing); a period with no snapshot still reads NULL (no data).
+    if snapshot_filters:
+        kept = SqlCase(
+            [SqlCaseWhen(_and_conditions(snapshot_filters), SqlLiteral(1))], SqlLiteral(0)
+        )
+        base_fields.append(SqlField(kept, "__snapshot_kept"))
+    settles = bool(snapshot_filters) and zero_unmatched and set(key_aliases) <= set(period_aliases)
+    dialect = dialect_for_warehouse(warehouse)
+
+    def chosen_value(source: str) -> tuple[Any, list[Any]]:
+        """The leaf's value over the snapshots chosen in ``source``, and the filter on them."""
+        value: Any = SqlIdentifier(parts=[source, "__snapshot_value"])
+        flag = SqlIdentifier(parts=[source, "__snapshot_kept"])
+        kept_rows = [SqlBinary(flag, "=", SqlLiteral(1))] if snapshot_filters else []
+        if settles:
+            value = SqlCase([SqlCaseWhen(kept_rows[0], value)])
+        total = (
+            SqlCall("SUM", [value])
+            if final_aggregation in {"last_value", "first_value"}
+            else _aggregation_expr(
+                value, final_aggregation, parameters=aggregation_params, dialect=dialect
+            )
+        )
+        if not settles:
+            return total, kept_rows
+        none_kept = SqlBinary(SqlCall("MAX", [flag]), "=", SqlLiteral(0))
+        return SqlCase([SqlCaseWhen(none_kept, SqlLiteral(0))], total), []
+
     complete_fields = [
         *[
             SqlField(SqlIdentifier(parts=["snapshot_base", alias]), alias)
@@ -1654,7 +1842,6 @@ def _semi_additive_leaf_select(
         SqlIdentifier(parts=["snapshot_base", alias]) for alias in partition_aliases
     ]
 
-    dialect = dialect_for_warehouse(warehouse)
     if dialect.capabilities().get("qualify"):
         direction = "ASC" if window_choice == "first_value" else "DESC"
         snapshot_name = "snapshot_rows"
@@ -1663,17 +1850,7 @@ def _semi_additive_leaf_select(
             partition_by=[field.expression for field in period_fields] + list(row_grain_exprs),
             order_by=[SqlOrderTerm(expr=order_expr, direction=direction)],
         )
-        snapshot_value = SqlIdentifier(parts=[snapshot_name, "__snapshot_value"])
-        final_expr = (
-            SqlCall("SUM", [snapshot_value])
-            if final_aggregation in {"last_value", "first_value"}
-            else _aggregation_expr(
-                snapshot_value,
-                final_aggregation,
-                parameters=aggregation_params,
-                dialect=dialect,
-            )
-        )
+        final_expr, kept_rows = chosen_value(snapshot_name)
         return SqlSelect(
             ctes=[
                 *list(ctes or []),
@@ -1696,6 +1873,7 @@ def _semi_additive_leaf_select(
                 SqlField(final_expr, leaf_alias),
             ],
             from_table=SqlTableRef(name=snapshot_name),
+            where=kept_rows,
             group_by=[SqlIdentifier(parts=[snapshot_name, alias]) for alias in key_aliases],
         )
 
@@ -1716,17 +1894,7 @@ def _semi_additive_leaf_select(
     final_key_exprs: list[SqlExpr] = [
         SqlIdentifier(parts=["snapshot_base", alias]) for alias in key_aliases
     ]
-    snapshot_value = SqlIdentifier(parts=["snapshot_base", "__snapshot_value"])
-    final_expr = (
-        SqlCall("SUM", [snapshot_value])
-        if final_aggregation in {"last_value", "first_value"}
-        else _aggregation_expr(
-            snapshot_value,
-            final_aggregation,
-            parameters=aggregation_params,
-            dialect=dialect,
-        )
-    )
+    final_expr, kept_rows = chosen_value("snapshot_base")
     return SqlSelect(
         ctes=[
             *list(ctes or []),
@@ -1763,6 +1931,7 @@ def _semi_additive_leaf_select(
                 on=_and_conditions(join_conditions),
             )
         ],
+        where=kept_rows,
         group_by=final_key_exprs,
     )
 
@@ -2881,6 +3050,8 @@ def _measure_leaf_select(
 
     where_clauses: list[Any] = []
     child_where: list[Any] = []
+    authored_conditions: list[Any] = []
+    preserve_buckets = _preserves_filtered_series(plan, measure_plan, config)
     crossing_filters = {
         (row.target_entity, row.purpose)
         for row in measure_plan.path_selections
@@ -2902,6 +3073,10 @@ def _measure_leaf_select(
         if measure_plan.rewrite_strategy == "fanout_dedup"
         else refuse_child_groups(query.get("where"), "in this measure's leaf")
     )
+    # The conditions a stock applies to the snapshot it chooses, not before choosing it: only
+    # its own leaf below takes them out of `where_clauses`.
+    snapshot_filters: list[Any] = []
+    stock_role = measure_plan.bound_measure.temporal_role
     for item in filters:
         expr, _ = _direct_dimension_source_expr(
             measure.entity,
@@ -2914,7 +3089,9 @@ def _measure_leaf_select(
             if semijoin and (dimensions[item["field"]].entity, "where") in crossing_filters
             else where_clauses
         )
-        target.append(_value_filter_condition(expr, item))
+        target.append(condition := _value_filter_condition(expr, item))
+        if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
+            snapshot_filters.append(condition)
     for item in _bound_filter_clauses(measure_plan.bound_measure, config):
         expr, _ = _direct_dimension_source_expr(
             measure.entity,
@@ -2925,10 +3102,14 @@ def _measure_leaf_select(
         target = (
             child_where
             if semijoin and (dimensions[item["field"]].entity, "metric_filter") in crossing_filters
+            else authored_conditions
+            if preserve_buckets
             else where_clauses
         )
-        target.append(_value_filter_condition(expr, item))
-    untimed = list(where_clauses)
+        target.append(condition := _value_filter_condition(expr, item))
+        if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
+            snapshot_filters.append(condition)
+    untimed = [*where_clauses, *authored_conditions]
     if plan.time:
         where_clauses.extend(
             _source_time_window(raw_expr, plan.time, config, role_id=leaf_time_role)
@@ -2966,6 +3147,7 @@ def _measure_leaf_select(
             ctes=predicate_ctes,
         )
     leaf_value_expr = _config_expr_to_sql(measure.expr, measure, config)
+    leaf_value_expr = _filtered_series_operand(leaf_value_expr, authored_conditions)
     if semijoin:
         return _fanout_filter_leaf_select(
             plan,
@@ -3043,19 +3225,16 @@ def _measure_leaf_select(
             )
         # The query's time bucket, the stock's own clock and calendar dimensions split a
         # series into periods; any other grouped dimension is an attribute of the snapshot.
-        clock = temporal_roles[measure_plan.bound_measure.temporal_role].dimension
         period_aliases = [
             field.alias
             for field in select_fields
-            if field.alias in {time_alias, clock}
-            or field.expression == order_expr
-            or (
-                field.alias in dimensions
-                and entities[dimensions[field.alias].entity].kind == "time"
-            )
+            if field.alias == time_alias
+            or (field.alias in dimensions and _stock_period_split(stock_role, field.alias, config))
         ]
         for dim_id in plan.group_by:
-            if dim_id not in period_aliases and dimensions[dim_id].data_type in {
+            if not _stock_period_split(stock_role, dim_id, config) and dimensions[
+                dim_id
+            ].data_type in {
                 "date",
                 "timestamp",
             }:
@@ -3079,7 +3258,17 @@ def _measure_leaf_select(
                 name=_measure_source_relation(measure, entities[measure.entity])
             ),
             joins=joins,
-            where_clauses=where_clauses,
+            where_clauses=[
+                clause
+                for clause in where_clauses
+                if not any(clause is condition for condition in snapshot_filters)
+            ],
+            snapshot_filters=snapshot_filters,
+            # A stock that adds up its series; judged inside the query's filters
+            # (observation_scope: query), a period with no snapshot passing them has no data.
+            zero_unmatched=measure.additive
+            and measure_plan.bound_measure.aggregation in {"last_value", "first_value", "sum"}
+            and observation_scope(query, config) == "dataset",
             window_choice=window_choice,
             final_aggregation=measure_plan.bound_measure.aggregation,
             aggregation_params=dict(measure_plan.bound_measure.aggregation_params),
@@ -3138,7 +3327,7 @@ def _minimal_predicate_set_ctes(
     group_by_dims = _predicate_key_aliases(predicate, config)
     time_spec = _predicate_time_spec(predicate, query, config)
     mini_query: dict[str, Any] = {
-        "version": 2,
+        "version": 1,
         "select": [{"expression": expr_to_dict(predicate.input), "as": "__predicate_value"}],
         "group_by": list(group_by_dims),
     }
@@ -3295,10 +3484,23 @@ def _anchored_snapshot_ctes(
     plan: LogicalPlan,
     anchored: AnchoredEntitySetPlan,
     config: PackageConfig,
-) -> tuple[list[SqlCte], str, str]:
+) -> tuple[list[SqlCte], str, str, list[Any]]:
+    """The chosen snapshots, their CTE and time alias, and the condition that keeps one."""
     entities = _entity_index(config)
-    measure = _measure_index(config)[anchored.denominator_measure_plan.bound_measure.measure_id]
+    bound = anchored.denominator_measure_plan.bound_measure
+    measure = _measure_index(config)[bound.measure_id]
     source_table = _measure_owned_relation(measure, entities)
+    # One snapshot is chosen per series and time bucket only, so a grouped clock, calendar
+    # or other date would be read from that one snapshot, dropping the bucket's other periods.
+    for dim_id in plan.group_by:
+        period = _stock_period_split(bound.temporal_role, dim_id, config)
+        if period or _dimension_index(config)[dim_id].data_type in {"date", "timestamp"}:
+            raise SemanticLayerError(
+                "REWRITE_NOT_SUPPORTED",
+                "An entity-set ratio can't be grouped by a date, time or calendar dimension. "
+                "Use the query's time grain instead.",
+                details={"reason": "entity_set_ratio_grouped_by_period", "dimension": dim_id},
+            )
     (
         fields,
         partition_exprs,
@@ -3308,19 +3510,30 @@ def _anchored_snapshot_ctes(
         partition_aliases,
         leaf_time_role,
     ) = _snapshot_select_fields(plan, anchored, config)
-    where_clauses: list[Any] = []
-    source_filters = _source_local_filter_conditions(
-        measure.entity,
-        refuse_child_groups(plan.query.get("where"), "in an entity-set ratio"),
-        config,
+    filters = [
+        *refuse_child_groups(plan.query.get("where"), "in an entity-set ratio"),
+        *_bound_filter_clauses(bound, config),
+    ]
+    # As in a stock's own leaf (_semi_additive_leaf_select), a filter on an attribute keeps
+    # or drops the chosen snapshot; only one bounding time applies before the choice.
+    chosen = [
+        item
+        for item in filters
+        if _reads_chosen_snapshot(measure, bound.temporal_role, str(item["field"]), config)
+    ]
+    where_clauses: list[Any] = (
+        _source_local_filter_conditions(
+            measure.entity, [item for item in filters if item not in chosen], config
+        )
+        or []
     )
-    bound_filters = _source_local_filter_conditions(
-        measure.entity,
-        _bound_filter_clauses(anchored.denominator_measure_plan.bound_measure, config),
-        config,
-    )
-    where_clauses.extend(source_filters or [])
-    where_clauses.extend(bound_filters or [])
+    kept_rows: list[Any] = []
+    if chosen_conditions := _source_local_filter_conditions(measure.entity, chosen, config):
+        kept = SqlCase(
+            [SqlCaseWhen(_and_conditions(chosen_conditions), SqlLiteral(1))], SqlLiteral(0)
+        )
+        fields = [*fields, SqlField(kept, "__snapshot_kept")]
+        kept_rows = [SqlBinary(SqlIdentifier(["snapshot", "__snapshot_kept"]), "=", SqlLiteral(1))]
     if plan.time and raw_time_expr is not None:
         where_clauses.extend(
             _source_time_window(raw_time_expr, plan.time, config, role_id=leaf_time_role)
@@ -3354,6 +3567,7 @@ def _anchored_snapshot_ctes(
             ],
             snapshot_name,
             time_alias,
+            kept_rows,
         )
 
     base_name = f"{snapshot_name}_base"
@@ -3421,6 +3635,7 @@ def _anchored_snapshot_ctes(
         ],
         snapshot_name,
         time_alias,
+        kept_rows,
     )
 
 
@@ -3453,7 +3668,9 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
     base_predicate_sets = predicate_sets[:base_predicate_count]
     extra_predicate_sets = predicate_sets[base_predicate_count:]
 
-    snapshot_ctes, snapshot_name, time_alias = _anchored_snapshot_ctes(plan, anchored, config)
+    snapshot_ctes, snapshot_name, time_alias, kept_rows = _anchored_snapshot_ctes(
+        plan, anchored, config
+    )
     if project_is_cut():
         # This path returns before the normal projection loop. Both operands
         # consume the snapshot value; their predicates record separate cuts.
@@ -3472,6 +3689,23 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
     if time_alias:
         anchor_select_fields[time_alias] = SqlIdentifier(parts=["snapshot", time_alias])
     anchor_select_fields["__anchor_value"] = SqlIdentifier(parts=["snapshot", "__anchor_value"])
+    # Keep observed periods when every chosen snapshot fails an attribute filter, just as
+    # the stock leaf does. Base metric predicates still select the series measured first.
+    # Grouped only by periods means ungrouped here: _anchored_snapshot_ctes refuses the rest.
+    settles = (
+        bool(kept_rows)
+        and measure.additive
+        and measure_plan.bound_measure.aggregation == "sum"
+        and observation_scope(plan.query, config) == "dataset"
+        and not plan.group_by
+    )
+    if settles:
+        anchor_select_fields["__snapshot_kept"] = SqlIdentifier(
+            parts=["snapshot", "__snapshot_kept"]
+        )
+        anchor_select_fields["__anchor_value"] = SqlCase(
+            [SqlCaseWhen(_and_conditions(kept_rows), anchor_select_fields["__anchor_value"])]
+        )
 
     joins = _joins_for_paths(
         measure.entity,
@@ -3481,7 +3715,7 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
         time_spec=plan.time,
         table_overrides={measure.entity: "snapshot"},
     )
-    anchor_where: list[Any] = []
+    anchor_where: list[Any] = [] if settles else list(kept_rows)
     for predicate_set in base_predicate_sets:
         join_condition = _join_condition(
             predicate_set.key_aliases
@@ -3556,9 +3790,16 @@ def _anchored_entity_set_select(plan: LogicalPlan, config: PackageConfig) -> Sql
             ],
         )
         denominator_expr = SqlCall("SUM", [value_expr])
-    ratio_expr = SqlBinary(
+    ratio_expr: SqlExpr = SqlBinary(
         numerator_expr, "/", SqlCall("NULLIF", [denominator_expr, SqlLiteral(0)])
     )
+    if settles:
+        none_kept = SqlBinary(
+            SqlCall("MAX", [SqlIdentifier(parts=["anchor", "__snapshot_kept"])]),
+            "=",
+            SqlLiteral(0),
+        )
+        ratio_expr = SqlCase([SqlCaseWhen(none_kept, SqlLiteral(0))], ratio_expr)
 
     key_aliases = _query_key_aliases(plan)
     final_fields = [
@@ -3743,6 +3984,7 @@ def _foldable_leaf_signature(
         _leaf_time_role(measure_plan.bound_measure, normalize_query(plan.query), config),
         _freeze_payload(plan.query.get("where", []) or []),
         _freeze_payload(measure_plan.bound_measure.filter_spec),
+        _preserves_filtered_series(plan, measure_plan, config),
     )
 
 
@@ -4913,6 +5155,8 @@ def _measure_group_leaf_select(
         group_fields.append(time_expr)
 
     where_clauses: list[Any] = []
+    authored_conditions: list[Any] = []
+    preserve_buckets = all(_preserves_filtered_series(plan, row, config) for row in measure_plans)
     for item in refuse_child_groups(query.get("where"), "in a folded leaf"):
         expr, _ = _direct_dimension_source_expr(
             first_measure.entity, str(item["field"]), config
@@ -4922,8 +5166,10 @@ def _measure_group_leaf_select(
         expr, _ = _direct_dimension_source_expr(
             first_measure.entity, str(item["field"]), config
         ) or _resolve_dimension_expr(str(item["field"]), config)
-        where_clauses.append(_value_filter_condition(expr, item))
-    untimed = list(where_clauses)
+        (authored_conditions if preserve_buckets else where_clauses).append(
+            _value_filter_condition(expr, item)
+        )
+    untimed = [*where_clauses, *authored_conditions]
     if plan.time:
         where_clauses.extend(
             _source_time_window(raw_expr, plan.time, config, role_id=leaf_time_role)
@@ -4939,6 +5185,7 @@ def _measure_group_leaf_select(
                 _measure_dim_relation(measure, time_dim, entities), time_dim.column
             )
         value_expr = _config_expr_to_sql(measure.expr, measure, config)
+        value_expr = _filtered_series_operand(value_expr, authored_conditions)
         select_fields.append(
             SqlField(
                 _aggregation_expr(
@@ -5595,6 +5842,31 @@ def lower_to_sql(
     guard_empty: bool = True,
     default_order: bool = True,
 ) -> SqlSelect:
+    # Row-based rewrites do not choose a snapshot per series before filtering. Keep the
+    # planner/loader's stock refusal even when a caller supplies a plan that bypasses them.
+    measures = _measure_index(config)
+    for row in plan.measure_plans:
+        if row.rewrite_strategy not in {"fanout_dedup", "parent_lookup"}:
+            continue
+        measure = measures[row.bound_measure.measure_id]
+        source = (
+            measures[measure.lookup_from] if row.rewrite_strategy == "parent_lookup" else measure
+        )
+        if source.measure_class != "semi_additive":
+            continue
+        details = {
+            "reason": "stock_requires_snapshot_selection",
+            "measure": source.id,
+            "rewrite_strategy": row.rewrite_strategy,
+        }
+        if row.rewrite_strategy == "parent_lookup":
+            details["lookup"] = measure.id
+        raise SemanticLayerError(
+            "REWRITE_NOT_SUPPORTED",
+            "A stock requires snapshot selection before attribute filters; "
+            "row-based fan-out and parent-lookup rewrites cannot preserve that reading.",
+            details=details,
+        )
     if _emits_time_coverage(plan, config) and any(
         row.aggregate_relation_id for row in plan.measure_plans
     ):
@@ -5647,6 +5919,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     # cut. A query metric predicate selects the rows measured, which no such probe reads.
     observed: dict[str, LeafScope] = {}
     probing = guard_empty and observes_dataset() and not _query_metric_predicates(plan)
+    retained = _retained_filtered_series(plan, config)
     if plan.measure_plans or conversion_exprs:
         leaf_ctes: list[SqlCte] = []
         measure_groups = _measure_plan_groups(plan, config)
@@ -5657,6 +5930,10 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 # A folded group shares one scan, so its filters cut every leaf in it.
                 with cut_owners(*(row.bound_measure.alias for row in measure_group)):
                     leaf_select = _measure_group_leaf_select(plan, measure_group, config)
+                    for row in measure_group:
+                        if row.bound_measure.alias in retained:
+                            _require_filtered_series_operand(leaf_select, row, config)
+                            record_retained_filtered_series(row.bound_measure.alias)
                     for row in measure_group if probing else ():
                         if (scope := _dataset_scope(row, config)) is not None:
                             observed[row.bound_measure.alias] = scope
@@ -5878,6 +6155,8 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 time_key=time_alias if _emits_time_coverage(plan, config) else "",
                 dialect=_dialect(config),
                 observed=observed,
+                observed_buckets=retained,
+                bucketed=bool(plan.time),
             )
         )
         base_table = SqlTableRef(name=GUARDED_BASE, alias="base")

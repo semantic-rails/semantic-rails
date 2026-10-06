@@ -420,7 +420,7 @@ def _empty_group_cases(revenue: dict[str, Any], orders: dict[str, Any]) -> Itera
         {"select": [revenue, orders], "where": absent, "observation_scope": "query"},
         "SELECT SUM(amount), NULLIF(COUNT(*), 0) FROM orders WHERE store_id = 'zzz'",
     )
-    # ...also beside an input that has data: only the input that has none reads NULL.
+    # ...also beside an input that has data: an authored filter keeps observed buckets at 0.
     absent_only = _item(
         {"kind": "aggregate", "measure": REVENUE["measure"], "filter": {"all": absent}}, "absent"
     )
@@ -428,7 +428,7 @@ def _empty_group_cases(revenue: dict[str, Any], orders: dict[str, Any]) -> Itera
         "absent_filtered_input_beside_an_observed_one",
         "utc_authored",
         _ask("quarter", revenue, absent_only),
-        _by("quarter", "SUM(o.amount), SUM(CASE WHEN o.store_id = 'zzz' THEN o.amount END)"),
+        _by("quarter", "SUM(o.amount), SUM(CASE WHEN o.store_id = 'zzz' THEN o.amount ELSE 0 END)"),
     )
     # A ratio over an unknown numerator is unknown: store a's May amounts are all NULL, though
     # its one order counts.
@@ -1026,6 +1026,37 @@ def _cases() -> Iterator[Case]:
         "utc_authored",
         {"select": [seats], "group_by": [SEAT_DAY]},
         "SELECT a.snapshot_day, SUM(a.seats) FROM account_days AS a GROUP BY 1",
+    )
+    # A filter on the plan reads the same closing snapshots: builder is the breakdown's builder
+    # row (account 2, not account 1's Wednesday too). A week with snapshots but none on builder
+    # reads 0, and a filled week with no snapshot reads NULL.
+    builder = "a.plan = 'builder'"
+    week = "date_trunc('week', CAST(a.snapshot_day AS TIMESTAMP))"
+    yield Case(
+        "stock_filtered_by_changing_plan",
+        "utc_authored",
+        _ask(
+            "week",
+            seats,
+            role=SEAT_ROLE,
+            start="2024-01-01",
+            end="2024-01-22",
+            fill=True,
+            where=[{"field": PLAN, "op": "=", "value": "builder"}],
+        ),
+        f"""
+        SELECT g.b, CASE WHEN COUNT(CASE WHEN {builder} THEN 1 END) > 0
+            THEN SUM(CASE WHEN {builder} THEN a.seats END)
+          WHEN COUNT(a.b) > 0 THEN 0 END
+        FROM generate_series(TIMESTAMP '2024-01-01', TIMESTAMP '2024-01-15', INTERVAL '7 day')
+          AS g(b)
+        LEFT JOIN (
+          SELECT a.*, {week} AS b, ROW_NUMBER() OVER (
+            PARTITION BY a.account_id, {week} ORDER BY a.snapshot_day DESC) AS n
+          FROM account_days AS a
+        ) AS a ON a.b = g.b AND a.n = 1
+        GROUP BY 1
+        """,
     )
 
 

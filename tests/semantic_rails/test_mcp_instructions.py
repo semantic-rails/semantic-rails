@@ -40,7 +40,7 @@ MINIMAL_ARGUMENTS: dict[str, dict[str, Any]] = {
     "valid-values": {"dimension_id": "dimension.jaffle_store_name"},
     "plan": {"intent": "revenue by store"},
     "execute": {
-        "query": {"version": 2, "select": [{"expression": {"metric": "metric.sales.aov_usd"}}]}
+        "query": {"version": 1, "select": [{"expression": {"metric": "metric.sales.aov_usd"}}]}
     },
     "segment": {
         "segment_id": "segment.jaffle.high_value_customers",

@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from ..errors import SemanticLayerError
+from ..naming import slug as _slug
+from ..naming import title as _titleize
 
 _JOIN_KEYS: frozenset[str] = frozenset(
     {
@@ -36,16 +38,6 @@ def _reject_unconsumed_rollup_safe(spec: dict[str, Any], *, location: str) -> No
             f"{location}.rollup_safe is not supported; use graph.relationships "
             "with rollup_safe.reverse for reverse population-count rewrite permissions",
         )
-
-
-def _slug(value: str) -> str:
-    raw = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or ""))
-    parts = [part for part in raw.split("_") if part]
-    return "_".join(parts)
-
-
-def _titleize(value: str) -> str:
-    return " ".join(part.capitalize() for part in str(value or "").replace("_", " ").split())
 
 
 def _with_default(mapping: dict[str, Any], key: str, value: Any) -> None:

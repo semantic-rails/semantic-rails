@@ -149,8 +149,10 @@ class FakeCursor:
             raise RuntimeError("driver exploded: relation does not exist")
         self.log.append(sql)
 
-    def fetchall(self):
-        return [(1, "x")]
+    def sql(self, sql, *, params):
+        assert params == []
+        self.execute(sql)
+        return SimpleNamespace(description=self.description, fetchall=lambda: [(1, "x")])
 
     def close(self):
         self.log.append("<cursor closed>")

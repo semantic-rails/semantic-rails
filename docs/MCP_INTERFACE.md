@@ -240,6 +240,23 @@ A draft that validates can still leave out part of the question. `plan` returns
   has two words or more and holds every measure the question names ("completed revenue"
   holds "revenue") (`named_metric_unrealized`). `plan` drafts that metric itself, and the
   metric's own name isn't read again as a window, a ranking or a value;
+- answers with a measure, or the metric that is its plain aggregate, while a metric that
+  reads the same measure through a filter fits the question (`governed_metric_unrealized`,
+  the visible metrics in `expected.metrics`). The guard reads the whole question, including
+  relative clauses such as "stores that were active last week". It fits when the question
+  holds every word of its label (with or without a parenthetical), an alias or its id, in any order and
+  with plurals as singulars, or when the measure is a [building
+  block](PACKAGE_AUTHORING.md#building-block-measures). Under `schema_strict`, `publish: false`
+  marks a building block. A published measure remains a legitimate answer when the question
+  doesn't name a governing metric ("stores last week"). Hidden governing metrics are excluded
+  before candidate selection and diagnostics, and their IDs and labels are never named.
+  A building block with no visible governing metric is still held, with a generic message
+  and an empty `expected.metrics`. A one-measure draft answers with the metric itself when
+  it aggregates the measure the same way, the draft's time role equals the metric's own
+  `temporal_role`, the subject phrase names no other such
+  metric as fully nor the measure more fully, and the draft neither filters nor groups by what
+  the metric's filter reads ("demo stores" keeps the measure, held). A measure or metric the
+  caller's `partial_query` names is never held for this;
 - has no filter on a dimension that a "where <dimension> is <value>" clause names, even
   when the catalog declares no values for it (`dimension_filter_unrealized`);
 - carries no time window, or a different one, where the question names one
@@ -600,8 +617,10 @@ Tools surface non-blocking signals in the top-level `warnings` array — read it
 | `UNGRAINED_TIME_PROJECTION` | `execute` | From the runtime: an ungrouped query has a temporal role but no grain and no `start`/`end` window, so rows group by the raw timestamp — set `time.grain` |
 | `UNGRAINED_GROUPED_TIME_PROJECTION` | `execute` | The same for a grouped query: each group returns one row per distinct timestamp. Same shape, with a `SET_TIME_GRAIN` recovery hint |
 | `NO_DATA_IN_SCOPE` | `execute` | A sum, count or distinct count (or a sum or difference of them) read `NULL` on every returned row (or nothing came back and neither a `start`/`end` window nor a metric filter explains it): its measure has no data in this query's scope, so it is `NULL`, not `0`. `details.outputs` names them; check the filter values. Under `observation_scope: "dataset"` an empty answer to a filtered query never gets it. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
-| `FILTER_VALUE_NOT_FOUND` | `execute` | Under `observation_scope: "dataset"` (the default): a string `=` or `IN` `where` value matches no row of its dimension that the caller can read, so its 0 may be a misspelling. One warning; `details.filters` lists each `dimension`, `value` and closest `suggestion`. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
+| `FILTER_VALUE_NOT_FOUND` | `execute` | Under `observation_scope: "dataset"` (the default): a string `=` or `IN` `where` value matches no row of its dimension that the caller can read, so its 0 may be a misspelling. Aggregate-filter literals of a retained additive series are checked in both observation scopes. One warning; `details.filters` lists each `dimension`, `value` and closest `suggestion`. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0) |
 | `MIXED_TIME_ROLES` | `execute` | With no `time` block, the selects read measures of different entities or governed metrics with differing sets of real time roles, mixing at least two distinct roles. Undated measures are ignored; a governed metric counts as one clock. Each period is read on its own role's clock, and measure-level filters can bound those periods. The message names the roles, and `details.clocks` lists them. See [What an answer covers](QUERY_IR_SCHEMA.md#what-an-answer-covers) |
+| `FILTERED_SERIES_BUCKETS_DROPPED` | `execute` | An unsupported filtered additive series omitted observed buckets. `details.dropped_buckets` lists their time and grouping keys from a separately authorized source query; an average over returned rows omits them |
+| `FILTERED_SERIES_BUCKETS_UNVERIFIED` | `execute` | Missing observed buckets could not be established because the source query was denied, failed or capped, or the answer has a limit or population filter. `details.reason` explains why |
 | `QUERY_SHORTHAND_NORMALIZED` | `execute` | A select item was accepted as shorthand and rewritten; `details.canonical` is the form to send next time (`plan` accepts the same shorthand but returns the canonical form in `best.query_ir` instead of a warning) |
 | `SEMANTIC_CAVEAT_APPLIED` | `execute` | Package-authored advisory context matched the query; interpret affected results with that context |
 | `SEMANTIC_CAVEATS_TRUNCATED` | `execute` | More caveats matched than this verbosity returned; increase verbosity to inspect the rest |
@@ -959,8 +978,8 @@ expression kind names the received kind and its request path (for example,
 | `ROLLUP_UNSAFE` | Roll-up combines non-additive primitives; declare the aggregation entity or supply sketch metadata. For an `additive: false` measure summed above its stored grain, group by or filter (=) each key dimension. Keys are named only on validate, compile and run errors made with a request context. The message, `details.key_dimensions` and hint name those dimensions only when every key dimension is visible under the request's policy context; hidden or uncertain visibility keeps the generic refusal. |
 | `MEASURE_VALIDITY_BOUNDARY` | Query crosses a declared measure-validity window; split by sub-window. |
 | `OUT_OF_SCOPE` | Request isn't a governed-data query; hand off to the recommended tool — the semantic layer compiles governed data queries only. |
-| `CUMULATIVE_TIME_FILTER_UNSUPPORTED` | Measure's accumulation semantics forbid the requested time filter. |
-| `WINDOWED_TIME_FILTER_UNSUPPORTED` | Time-windowed filter cannot be applied to this query shape. `details.lookback` carries the metric's window; `recovery_hints` carries a `widen_time_window` patch with a concrete `suggested_start` and a `drop_time_start` patch with `{remove: ["time.start"]}`. |
+| `CUMULATIVE_TIME_FILTER_UNSUPPORTED` | Measure's accumulation semantics forbid the requested time filter: a bounded `time.start`, or a `where` filter on a date or calendar dimension other than an upper bound (`details.where_path`). |
+| `WINDOWED_TIME_FILTER_UNSUPPORTED` | Time-windowed filter cannot be applied to this query shape. `details.lookback` carries the metric's window; `recovery_hints` carries a `widen_time_window` patch with a concrete `suggested_start` and a `drop_time_start` patch with `{remove: ["time.start"]}`. A `where` filter on a date or calendar dimension other than an upper bound refuses the same way: `details.where_path` names it and the patch removes it. |
 | `MIXED_GRAIN_INVALID` | Query mixes incompatible grains; split or rewrite. Compatible measure and dimension replacements rank naming-token overlap (id suffix, name and label) before character similarity. Replacements answer a different question and are suggestions for the caller to judge. |
 | `NO_VALID_VALUES_SOURCE` | No `valid_values` source declared for the requested dimension. |
 | `REWRITE_NOT_SUPPORTED` | Required rewrite is not implemented; try a simpler shape. |

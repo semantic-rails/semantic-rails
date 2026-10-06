@@ -710,7 +710,7 @@ def test_a_filter_never_stands_in_for_a_dropped_grouping(
     def force(grouped: bool) -> None:
         draft = RuntimeCompositionDraft(
             query={
-                "version": 2,
+                "version": 1,
                 "select": [
                     {"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}
                 ],
@@ -956,7 +956,7 @@ def test_suffix_list_holds_when_either_grouping_is_dropped(
     assert "execute" not in native["next"].get("ready_for", [])
     draft = RuntimeCompositionDraft(
         query={
-            "version": 2,
+            "version": 1,
             "select": [
                 {"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}
             ],
@@ -1062,7 +1062,7 @@ def test_only_a_one_value_filter_stands_in_for_a_named_grouping(
     question = "revenue at store name level for customer type new"
     draft = RuntimeCompositionDraft(
         query={
-            "version": 2,
+            "version": 1,
             "select": [
                 {"as": "revenue_usd", "expression": {"measure": "measure.jaffle.revenue_usd"}}
             ],

@@ -52,6 +52,7 @@ from .dialects import (
 )
 from .errors import SemanticLayerError
 from .mcp import SemanticLayerMCPAdapter, json_text
+from .naming import slug as _slug
 from .package_tools import (
     diff_package_report,
     impact_report,
@@ -190,19 +191,6 @@ def _without_titles(schema: Any) -> Any:
     }
 
 
-def _slug(value: str, *, fallback: str = "semantic_project") -> str:
-    out = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or "")).strip("_")
-    while "__" in out:
-        out = out.replace("__", "_")
-    return out or fallback
-
-
-def _title(value: str) -> str:
-    return (
-        " ".join(part.capitalize() for part in str(value or "").replace("_", " ").split()) or value
-    )
-
-
 def _within(path: Path, root: Path) -> bool:
     try:
         os.path.commonpath([str(path), str(root)])
@@ -227,7 +215,7 @@ def _resolve_project_path(
     if not raw:
         if not package_id:
             raise SemanticLayerError("INVALID_CONFIG", "Provide project_path or package_id")
-        raw = f"configs/semantic_rails/{_slug(package_id)}"
+        raw = f"configs/semantic_rails/{_slug(package_id, fallback='semantic_project')}"
     path = Path(raw).expanduser()
     if not path.is_absolute():
         path = workspace_root / path
@@ -376,11 +364,11 @@ def _guidance_payload(goal: str = "", project_path: str = "") -> dict[str, Any]:
             },
             {
                 "step": "edit",
-                "tool": "upsert_model / upsert_relationship / upsert_metric / upsert_segment / upsert_example / upsert_test / write_project_file",
+                "tool": "upsert_model / upsert_relationship / upsert_metric / upsert_segment / upsert_example / upsert_test / write_project_files",
                 "result": (
                     "Preview or atomically commit scoped changes with expected_revision "
-                    "and a caller-generated idempotency_key, one write at a time: each "
-                    "takes the revision the previous write returned."
+                    "and a caller-generated idempotency_key; use write_project_files for changes "
+                    "across files. Separate calls take the revision the previous write returned."
                 ),
             },
             {
@@ -782,10 +770,10 @@ def create_architect_mcp_server(
             "answers; preview_query); review (diff_project, impact_project).\n"
             "Every write previews with dry_run: true and takes expected_revision (from "
             "project_status or the last write) and a new idempotency_key per change; a retry "
-            "with the same key replays. Send writes one at a time: writes sent together with "
-            "one expected_revision apply only the first. A write the package can't parse is "
+            "with the same key replays. Send a change that spans several files as one "
+            "write_project_files call. A write the package can't parse is "
             "rolled back, and a stale revision returns CONFIG_CONFLICT. Prefer the typed tools over "
-            "write_project_file. This server doesn't manage cloud services."
+            "write_project_files. This server doesn't manage cloud services."
         ),
         host=host,
         port=port,
@@ -837,7 +825,9 @@ def create_architect_mcp_server(
         if result.action != "accept" or result.data is None:
             return {"ok": False, "status": str(result.action), "mode": "elicitation", **dialog}
         answers = result.data.model_dump()
-        package_slug = _slug(str(answers.get("package_id") or package_id))
+        package_slug = _slug(
+            str(answers.get("package_id") or package_id), fallback="semantic_project"
+        )
         try:
             draft = _draft_arguments(package_slug, project_path, answers)
         except SemanticLayerError as exc:
@@ -930,7 +920,8 @@ def create_architect_mcp_server(
         except Exception as exc:
             return _mutation_error_result(
                 exc,
-                project_path=project_path or f"configs/semantic_rails/{_slug(package_id)}",
+                project_path=project_path
+                or f"configs/semantic_rails/{_slug(package_id, fallback='semantic_project')}",
                 expected_revision=expected_revision,
                 idempotency_key=idempotency_key,
                 dry_run=dry_run,
@@ -1017,24 +1008,22 @@ def create_architect_mcp_server(
         except Exception as exc:
             return _report_error(exc)
 
-    @mcp.tool(annotations=_mutation_annotations("Write project file"))
-    def write_project_file(
+    @mcp.tool(annotations=_mutation_annotations("Write project files"))
+    def write_project_files(
         project_path: str,
-        relative_path: str,
-        content: str,
+        files: list[dict[str, Any]],
         expected_revision: str,
         idempotency_key: str,
-        overwrite: bool = True,
+        reason: str = "",
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
-        """Write one UTF-8 package file. Gotcha: overwrite: false refuses an existing file."""
+        """Write or archive files in one transaction, validating the final package as a whole."""
         try:
             return _mutation_result(
                 ArchitectProject(project_path, workspace_root=root)
-                .write_file(
-                    relative_path=relative_path,
-                    content=content,
-                    overwrite=overwrite,
+                .write_files(
+                    files,
+                    reason=reason,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,
@@ -1125,6 +1114,8 @@ def create_architect_mcp_server(
         description=(
             "Relate two entities: columns on from_entity's model hold "
             "to_entity's key, in key order. cardinality: many_to_one or one_to_one."
+            " Set keep_existing_routes=true to record every moved pair's previous route "
+            "in this transaction; otherwise unrecorded route changes refuse the write."
         ),
     )
     def upsert_relationship(
@@ -1135,6 +1126,7 @@ def create_architect_mcp_server(
         expected_revision: str,
         idempotency_key: str,
         cardinality: str = "many_to_one",
+        keep_existing_routes: bool = False,
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
         try:
@@ -1145,6 +1137,7 @@ def create_architect_mcp_server(
                     to_entity=to_entity,
                     columns=columns,
                     cardinality=cardinality,
+                    keep_existing_routes=keep_existing_routes,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,
@@ -1169,26 +1162,31 @@ def create_architect_mcp_server(
             "decision of an AMBIGUOUS_PATH clarification option). An off-route path or an "
             "unknown entity or relationship is INVALID_CONFIG with nothing written. Returns "
             "replaced (the previous row) and summary, one sentence for the review."
+            " For several pairs, pass decisions=[{source_entity, target_entity, "
+            "relationship_path, label?}, ...] instead of single-pair fields. All rows are "
+            "validated together in one transaction; one invalid or conflicting row refuses all."
         ),
     )
     def record_route_decision(
         project_path: str,
-        source_entity: str,
-        target_entity: str,
-        relationship_path: list[str],
         expected_revision: str,
         idempotency_key: str,
+        relationship_path: Annotated[list[str], Field(default_factory=list)],
+        source_entity: str = "",
+        target_entity: str = "",
         label: str = "",
+        decisions: list[dict[str, Any]] | None = None,
         dry_run: bool = False,
     ) -> ArchitectMutationResult:
         try:
             return _mutation_result(
                 ArchitectProject(project_path, workspace_root=root)
                 .record_route_decision(
-                    source_entity=source_entity,
-                    target_entity=target_entity,
-                    relationship_path=relationship_path,
+                    source_entity=source_entity or None,
+                    target_entity=target_entity or None,
+                    relationship_path=relationship_path or None,
                     label=label,
+                    decisions=decisions,
                     validate_after=True,
                     expected_revision=expected_revision,
                     idempotency_key=idempotency_key,
@@ -1416,38 +1414,6 @@ def create_architect_mcp_server(
                     kind=kind,
                     key=key,
                     model=model,
-                    reason=reason,
-                    validate_after=True,
-                    expected_revision=expected_revision,
-                    idempotency_key=idempotency_key,
-                    dry_run=dry_run,
-                )
-                .report
-            )
-        except Exception as exc:
-            return _mutation_error_result(
-                exc,
-                project_path=project_path,
-                expected_revision=expected_revision,
-                idempotency_key=idempotency_key,
-                dry_run=dry_run,
-            )
-
-    @mcp.tool(annotations=_mutation_annotations("Archive project file"))
-    def archive_project_file(
-        project_path: str,
-        relative_path: str,
-        expected_revision: str,
-        idempotency_key: str,
-        reason: str = "",
-        dry_run: bool = False,
-    ) -> ArchitectMutationResult:
-        """Move one package file into .architect/archive/; remove_object removes one object."""
-        try:
-            return _mutation_result(
-                ArchitectProject(project_path, workspace_root=root)
-                .archive_file(
-                    relative_path=relative_path,
                     reason=reason,
                     validate_after=True,
                     expected_revision=expected_revision,

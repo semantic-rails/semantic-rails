@@ -27,9 +27,8 @@ from ..common import (
     _confirm,
     _is_bundled_ref,
     _optional_ref_from_args,
-    _package_ref_from_args,
     _print,
-    _required_ref_from_args,
+    _ref_from_args,
     _runtime_from_package_or_path,
     _runtime_from_ref,
     _source_arg_from_ref,
@@ -68,7 +67,7 @@ def cmd_mcp_stdio(args: argparse.Namespace) -> None:
     try:
         # Only protocol replies belong on stdout, including during package loading.
         with redirect_stdout(sys.stderr):
-            ref = _package_ref_from_args(args)
+            ref = _ref_from_args(args)
             source_path = ref.source_path
             try:
                 runtime = _runtime_from_ref(ref)
@@ -151,7 +150,7 @@ def cmd_mcp_doctor(args: argparse.Namespace) -> None:
 
 
 def cmd_mcp_setup(args: argparse.Namespace) -> None:
-    ref = _required_ref_from_args(args)
+    ref = _ref_from_args(args)
     install = bool(getattr(args, "install", False))
     if install and not getattr(args, "yes", False):
         if getattr(args, "json", False) or not sys.stdin.isatty():
@@ -236,7 +235,7 @@ def _print_mcp_setup_report(payload: dict[str, Any]) -> None:
 
 
 def cmd_mcp_start(args: argparse.Namespace) -> None:
-    ref = _required_ref_from_args(args)
+    ref = _ref_from_args(args)
     report = start_mcp_http_server(
         ref,
         name=args.name,
@@ -257,7 +256,7 @@ def cmd_mcp_status(args: argparse.Namespace) -> None:
 
 
 def cmd_mcp_client_config(args: argparse.Namespace) -> None:
-    ref = _required_ref_from_args(args)
+    ref = _ref_from_args(args)
     if args.install and not args.yes:
         raise SemanticLayerError(
             "INVALID_CONFIG",

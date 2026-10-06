@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
+import duckdb
 import pytest
 import yaml
 
@@ -19,9 +22,219 @@ from semantic_rails.contracts.compatibility import (
 )
 from semantic_rails.contracts.generation import PUBLIC_SCHEMA_BASE, generated_artifacts
 from semantic_rails.errors import SemanticLayerError
+from tests.semantic_rails.dbt_warehouse import ORDER_COUNT_QUERY, write_orders_package
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 JAFFLE_SHOP = REPO_ROOT / "configs" / "semantic_rails" / "jaffle_shop"
+
+
+@pytest.fixture
+def typed_contract_project(tmp_path: Path) -> Path:
+    project = tmp_path / "typed_contract"
+    project.mkdir()
+    raw = {
+        "schema_version": 1,
+        "package": {
+            "id": "typed_contract",
+            "warehouse": "duckdb",
+            "default_db": "warehouse.duckdb",
+            "seed": {"kind": "external"},
+        },
+        "graph": {"entities": {"event": {"key": "event_id", "model": "events"}}},
+        "models": {
+            "events": {
+                "relation": "analytics.fct_events",
+                "grain": ["event_id"],
+                "entities": {"event": {}},
+                "times": {"occurred_at": {"kind": "timestamp"}},
+                "dimensions": {
+                    "tenant_id": {"kind": "categorical"},
+                    "local_time": {"kind": "timestamp"},
+                },
+            }
+        },
+    }
+    (project / "package.yml").write_text(yaml.safe_dump(raw), encoding="utf-8")
+    return project
+
+
+@pytest.mark.parametrize("legacy", [False, True], ids=["models", "typed-config"])
+@pytest.mark.parametrize("relation_kind", ["table", "view"])
+@pytest.mark.parametrize("qualified_catalog", [False, True])
+def test_export_semantic_contract_reports_physical_column_types(
+    typed_contract_project: Path, legacy: bool, relation_kind: str, qualified_catalog: bool
+) -> None:
+    from semantic_rails.config import LoadedPackageSnapshot, load_package_snapshot
+
+    database = typed_contract_project / "warehouse.duckdb"
+    with duckdb.connect(str(database)) as connection:
+        connection.execute("CREATE SCHEMA analytics")
+        connection.execute(
+            "CREATE TABLE analytics.source_events "
+            "(event_id BIGINT, tenant_id UUID, occurred_at TIMESTAMPTZ, local_time TIMESTAMP)"
+        )
+        connection.execute(
+            f"CREATE {relation_kind.upper()} analytics.fct_events AS "
+            "SELECT * FROM analytics.source_events"
+        )
+    if qualified_catalog:
+        package_file = typed_contract_project / "package.yml"
+        raw = yaml.safe_load(package_file.read_text())
+        raw["models"]["events"]["relation"] = "warehouse.analytics.fct_events"
+        package_file.write_text(yaml.safe_dump(raw))
+    snapshot = load_package_snapshot(typed_contract_project)
+    if legacy:
+        snapshot = LoadedPackageSnapshot.from_config(
+            snapshot.config, source_path=snapshot.source_path
+        )
+    before = database.read_bytes()
+    payload = export_semantic_contract(snapshot)
+    resource = payload["semantic"]["packages"][0]["resources"][0]
+    columns = {column["name"]: column for column in resource["columns"]}
+    assert columns["occurred_at"]["data_type"] == "timestamp_tz"
+    assert columns["tenant_id"]["data_type"] == "uuid"
+    assert columns["event_id"]["data_type"] == "bigint"
+    assert columns["local_time"]["data_type"] == "timestamp"
+    assert resource["relation"].endswith("analytics.fct_events")
+    assert database.read_bytes() == before
+    assert payload["semantic"]["packages"][0]["semantic_hash"] == snapshot.semantic_fingerprint
+    _jsonschema().Draft202012Validator(load_contract("semantic_contract.v1.json")).validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("catalog_relation", "authored_relation", "catalog_columns", "relation_kind"),
+    [
+        ("JAFFLE_ORDER", "jaffle_order", "CUSTOMER_ID UUID, ORDERED_AT TIMESTAMPTZ", "table"),
+        ("jaffle_order", "jaffle_order", "CUSTOMER_ID UUID, ORDERED_AT TIMESTAMPTZ", "table"),
+        (
+            "Analytics.Fct_Events",
+            "analytics.fct_events",
+            "customer_id UUID, ordered_at TIMESTAMPTZ",
+            "view",
+        ),
+        ("jaffle_order", "jaffle_order", "customer_id UUID, ordered_at TIMESTAMPTZ", "table"),
+        (
+            "jaffle_order",
+            "WAREHOUSE.MAIN.JAFFLE_ORDER",
+            "customer_id UUID, ordered_at TIMESTAMPTZ",
+            "table",
+        ),
+        ("source_events", "missing_events", "customer_id UUID, ordered_at TIMESTAMPTZ", "table"),
+    ],
+    ids=[
+        "table-and-columns",
+        "columns-only",
+        "schema-view",
+        "one-part",
+        "catalog-qualified",
+        "missing-relation",
+    ],
+)
+def test_export_semantic_contract_matches_catalog_identifiers(
+    typed_contract_project: Path,
+    catalog_relation: str,
+    authored_relation: str,
+    catalog_columns: str,
+    relation_kind: str,
+) -> None:
+    package_file = typed_contract_project / "package.yml"
+    raw = yaml.safe_load(package_file.read_text())
+    raw["graph"]["entities"]["event"]["key"] = "customer_id"
+    raw["models"]["events"].update(
+        relation=authored_relation,
+        grain=["customer_id"],
+        times={"ordered_at": {"kind": "timestamp"}},
+        dimensions={"customer_id": {"kind": "categorical"}},
+    )
+    package_file.write_text(yaml.safe_dump(raw))
+    database = typed_contract_project / "warehouse.duckdb"
+    with duckdb.connect(str(database)) as connection:
+        if "." in catalog_relation:
+            connection.execute("CREATE SCHEMA Analytics")
+        connection.execute(f"CREATE TABLE source_columns ({catalog_columns})")
+        connection.execute(
+            f"CREATE {relation_kind.upper()} {catalog_relation} AS SELECT * FROM source_columns"
+        )
+    before = database.read_bytes()
+    files_before = set(typed_contract_project.iterdir())
+    payload = export_semantic_contract(typed_contract_project)
+    columns = {
+        column["name"]: column["data_type"]
+        for column in payload["semantic"]["packages"][0]["resources"][0]["columns"]
+    }
+    assert columns == (
+        {"customer_id": "string", "ordered_at": "timestamp"}
+        if authored_relation == "missing_events"
+        else {"customer_id": "uuid", "ordered_at": "timestamp_tz"}
+    )
+    assert database.read_bytes() == before
+    assert set(typed_contract_project.iterdir()) == files_before
+
+
+@pytest.mark.parametrize("ambiguity", ["column", "relation"])
+def test_export_semantic_contract_keeps_hints_for_ambiguous_catalog(
+    typed_contract_project: Path, monkeypatch: pytest.MonkeyPatch, ambiguity: str
+) -> None:
+    database = typed_contract_project / "warehouse.duckdb"
+    with duckdb.connect(str(database)):
+        pass
+    rows = [
+        {
+            "database_name": "warehouse",
+            "schema_name": "analytics",
+            "table_name": "fct_events",
+            "column_name": "occurred_at",
+            "data_type": "TIMESTAMP WITH TIME ZONE",
+        },
+        {
+            "database_name": "warehouse",
+            "schema_name": "analytics",
+            "table_name": "fct_events",
+            "column_name": "tenant_id",
+            "data_type": "UUID",
+        },
+    ]
+    duplicate = dict(rows[0])
+    duplicate["column_name" if ambiguity == "column" else "schema_name"] = (
+        "OCCURRED_AT" if ambiguity == "column" else "Analytics"
+    )
+    rows.append(duplicate)
+    monkeypatch.setattr(
+        "semantic_rails.architect_introspection.open_duckdb",
+        lambda _: nullcontext(SimpleNamespace(rows=lambda *_: rows)),
+    )
+    payload = export_semantic_contract(typed_contract_project)
+    columns = {
+        column["name"]: column
+        for column in payload["semantic"]["packages"][0]["resources"][0]["columns"]
+    }
+    assert columns["occurred_at"]["data_type"] == "timestamp"
+    assert columns["tenant_id"]["data_type"] == ("uuid" if ambiguity == "column" else "string")
+
+
+def test_export_semantic_contract_does_not_create_missing_database(
+    typed_contract_project: Path,
+) -> None:
+    payload = export_semantic_contract(typed_contract_project)
+    columns = {
+        column["name"]: column
+        for column in payload["semantic"]["packages"][0]["resources"][0]["columns"]
+    }
+    assert columns["occurred_at"]["data_type"] == "timestamp"
+    assert columns["tenant_id"]["data_type"] == "string"
+    assert not (typed_contract_project / "warehouse.duckdb").exists()
+
+
+def test_export_semantic_contract_refuses_unreadable_existing_database(
+    typed_contract_project: Path,
+) -> None:
+    database = typed_contract_project / "warehouse.duckdb"
+    database.write_bytes(b"invalid database")
+    with pytest.raises(SemanticLayerError) as exc:
+        export_semantic_contract(typed_contract_project)
+    assert exc.value.code == "INVALID_CONFIG"
+    assert exc.value.details["reason"] == "database_unreadable"
+    assert database.read_bytes() == b"invalid database"
 
 
 def _jsonschema():
@@ -56,7 +269,6 @@ def test_every_json_schema_is_well_formed() -> None:
     jsonschema = _jsonschema()
     for name in (
         "package.v1.json",
-        "query_ir.preview.v2.json",
         "query_ir.v1.json",
         "semantic_contract.v1.json",
         "metric_portability.v1.json",
@@ -263,10 +475,38 @@ def test_embedding_facade_exposes_supported_host_seams() -> None:
         "normalize_connection_options",
         "PackageReference",
         "validate_runtime_package",
+        "run_examples_report",
         "run_package_tests_report",
     }
     assert required.issubset(set(embedding.__all__))
     assert all(hasattr(embedding, name) for name in required)
+
+
+def test_embedding_facade_runs_passing_and_failing_package_examples(tmp_path: Path) -> None:
+    import semantic_rails.embedding as embedding
+
+    package = write_orders_package(tmp_path, schema="", with_customers=False)
+    examples_dir = package / "examples"
+    examples_dir.mkdir()
+    examples = {
+        name: {
+            "query": ORDER_COUNT_QUERY,
+            "expected_shape": {"min_rows": min_rows, "max_rows": min_rows},
+        }
+        for name, min_rows in [("passing", 1), ("failing", 2)]
+    }
+    (examples_dir / "orders.yml").write_text(
+        yaml.safe_dump({"examples": examples}), encoding="utf-8"
+    )
+
+    report = embedding.run_examples_report(embedding.resolve_package_reference(path=str(package)))
+
+    assert report["ok"] is False
+    assert report["summary"] == {"examples_total": 2, "passed": 1, "failed": 1}
+    assert {row["id"]: row["ok"] for row in report["examples"]} == {
+        "passing": True,
+        "failing": False,
+    }
 
 
 def test_export_contract_cli_prints_unwrapped_canonical_payload(monkeypatch, capsys) -> None:
@@ -301,14 +541,17 @@ def test_compatibility_checker_flags_breaking_schema_http_and_mcp_changes() -> N
     assert {"operation_removed", "tool_removed", "required_added"}.issubset(kinds)
 
 
-def test_compatibility_checker_reports_a_retired_contract_as_removed(tmp_path: Path) -> None:
-    # Removing MCP interface v1 retired query_mcp.v1.json; a baseline with it must not pass silently.
-    (tmp_path / "query_mcp.v1.json").write_text(json.dumps({"tools": []}), encoding="utf-8")
+@pytest.mark.parametrize("name", ["query_mcp.v1.json", "query_ir.preview.v2.json"])
+def test_compatibility_checker_reports_a_retired_contract_as_removed(
+    tmp_path: Path, name: str
+) -> None:
+    # A baseline containing a retired contract must not pass silently.
+    (tmp_path / name).write_text(json.dumps({"tools": []}), encoding="utf-8")
     baseline = load_contract_directory(tmp_path)
-    assert set(baseline) == {"query_mcp.v1.json"}
+    assert set(baseline) == {name}
     removed = compare_contract_bundles(baseline, {})["breaking_changes"]
     assert [(change["artifact"], change["kind"]) for change in removed] == [
-        ("query_mcp.v1.json", "artifact_removed")
+        (name, "artifact_removed")
     ]
 
 

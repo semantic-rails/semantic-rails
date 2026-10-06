@@ -60,7 +60,7 @@ from .mcp import SemanticLayerMCPAdapter
 from .mcp_server import MCP_PROTOCOL_VERSION, MCPAdapter, handle_jsonrpc_message
 from .mcp_streamable_http import MCPHTTPResponse, handle_streamable_http_request
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
-from .package_tools import impact_report, run_package_tests_report
+from .package_tools import impact_report, run_examples_report, run_package_tests_report
 from .request_context import (
     HeaderPolicyContextResolver,
     PolicyContextResolver,
@@ -134,6 +134,7 @@ __all__ = [
     "project_revision",
     "request_context_payload",
     "resolve_package_reference",
+    "run_examples_report",
     "run_package_tests_report",
     "set_audit_sink",
     "set_policy_context_resolver",

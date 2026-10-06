@@ -466,6 +466,63 @@ def test_an_authored_condition_that_never_matched_reads_null(runtime: Runtime, s
     assert "NO_DATA_IN_SCOPE" in _codes(response)
 
 
+@pytest.mark.parametrize("count", [False, True], ids=["sum", "count"])
+@pytest.mark.parametrize("region", ["east", "missing"])
+def test_a_never_matched_case_observes_only_policy_visible_source_rows(
+    runtime: Runtime, count: bool, region: str
+) -> None:
+    selected = SALES if count else QTY
+    expression = parse_config_expression(
+        {
+            "kind": "case",
+            "whens": [
+                {
+                    "when": {
+                        "kind": "comparison",
+                        "op": "=",
+                        "left": {"kind": "column", "column": "product"},
+                        "right": {"kind": "literal", "value": "durian"},
+                    },
+                    "then": {"kind": "column", "column": "sale_id" if count else "qty"},
+                }
+            ],
+        }
+    )
+    config = replace(
+        runtime.config,
+        measures=[
+            replace(measure, expr=expression) if measure.id == selected["measure"] else measure
+            for measure in runtime.config.measures
+        ],
+    )
+    engine = Runtime.from_config(config, source_path=runtime.source_path)
+    try:
+        context = replace(REGIONAL, attributes={"region": region})
+        response = _ask(
+            engine,
+            "dataset",
+            select=_select(value=selected),
+            where=_where(STORE, "s1"),
+            policy_context=context.to_policy_context(),
+        )
+        amount = (
+            "COUNT(CASE WHEN product = 'durian' THEN sale_id END)"
+            if count
+            else (
+                "CASE WHEN COUNT(CASE WHEN product = 'durian' THEN 1 END) = 0 THEN 0 "
+                "ELSE SUM(CASE WHEN product = 'durian' THEN qty END) END"
+            )
+        )
+        expected = _gold(
+            f"SELECT CASE WHEN COUNT(*) > 0 THEN {amount} END FROM sales WHERE region = '{region}'"
+        )
+        assert expected == [(0 if region == "east" else None,)]
+        assert [tuple(row.values()) for row in response["rows"]] == expected
+        assert ("NO_DATA_IN_SCOPE" in _codes(response)) is (region == "missing")
+    finally:
+        engine.close()
+
+
 @pytest.mark.parametrize("scope", ["dataset", "query"])
 def test_a_window_with_no_rows_reads_zero_while_other_dates_have_data(
     runtime: Runtime, scope: str
