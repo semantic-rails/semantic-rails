@@ -917,40 +917,42 @@ def _unsafe_windowed_lookback(expr: SemanticExpr, config: PackageConfig) -> dict
     return None
 
 
+def _column_name(column: str) -> str:
+    """A column as the warehouse resolves an unquoted name: without quotes or case."""
+    return str(column).strip().strip('"`').casefold()
+
+
 def _clock_where_cuts(query: NormalizedQuery, config: PackageConfig) -> list[tuple[str, Filter]]:
     """The ``where`` conditions, child groups' included, that may cut a window's lookback: each
     with its path.
 
     A window can order its rows by any date (the query's clock, a snapshot's own date, or one
-    joined to either), so a condition is judged by its dimension's table column, never by
-    tracing it to that date. A column is temporal when a dimension on it is a time role or of a
-    ``date``, ``timestamp``, ``datetime`` or ``time`` kind, when it belongs to a calendar
-    (``kind: time``) entity, or when a relationship pairs it (either direction) with a temporal
-    column, repeated until nothing changes. A condition cuts when its dimension's column is
-    temporal. Only an upper bound (``<``, ``<=``) on a ``date`` or ``timestamp`` dimension
-    keeps every lookback row, as ``time.end`` does.
+    joined to either), so a condition is judged by its dimension's column, never by tracing it
+    to that date. A column is its name compared without case, on any table, so a column of the
+    same name on an unrelated table counts too. A column is temporal when a dimension on it is
+    a time role or of a ``date``, ``timestamp``, ``datetime`` or ``time`` kind, when it belongs
+    to a calendar (``kind: time``) entity, or when a relationship pairs it (either direction)
+    with a temporal column, repeated until nothing changes. A condition cuts when its
+    dimension's column is temporal. Only an upper bound (``<``, ``<=``) on a ``date`` or
+    ``timestamp`` dimension keeps every lookback row, as ``time.end`` does.
     """
     analysis = get_package_analysis(config)  # unrecorded lookups: the guard binds no object
-
-    def table_column(entity: str, column: str) -> tuple[str, str]:
-        return analysis.entities[entity].table, column
-
     role_dimensions = {role.dimension for role in analysis.temporal_roles.values()}
     temporal_columns = {
-        table_column(dim.entity, dim.column)
+        _column_name(dim.column)
         for dim in analysis.dimensions.values()
         if str(dim.data_type).lower() in {"date", "timestamp", "datetime", "time"}
         or dim.id in role_dimensions
         or analysis.entities[dim.entity].kind == "time"
     }
     temporal_columns.update(
-        (entity.table, column)
+        _column_name(column)
         for entity in analysis.entities.values()
         if entity.kind == "time"
         for column in entity.key or [entity.primary_key]
     )
     pairs = [
-        (table_column(rel.source_entity, source), table_column(rel.target_entity, target))
+        (_column_name(source), _column_name(target))
         for rel in config.relationships
         for source, target in zip(
             rel.source_columns or [rel.source_column],
@@ -976,7 +978,7 @@ def _clock_where_cuts(query: NormalizedQuery, config: PackageConfig) -> list[tup
     cuts = []
     for path, item in conditions:
         dim = analysis.dimensions.get(item.field)
-        if dim is None or table_column(dim.entity, dim.column) not in temporal_columns:
+        if dim is None or _column_name(dim.column) not in temporal_columns:
             continue
         op = " ".join(str(item.op).upper().split())
         if op in {"<", "<="} and dim.data_type in {"date", "timestamp"}:

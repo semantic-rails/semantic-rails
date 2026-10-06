@@ -8,10 +8,10 @@ a cumulative sum and a month-to-date sum on 2026-09-15 read 40 instead of 45, 75
 snapshot's own date cuts the same way when the query's clock is a calendar the snapshot has no
 relationship to. Such a filter is now refused with the same codes and lookback, plus
 ``details.where_path``, when its dimension is temporal (a time role, a date, timestamp,
-datetime or time kind, on the same table column as one of those, or on a column a
-relationship pairs with one) or on a calendar, whatever its relationship to the clock. An
-upper bound on a date or timestamp alone still runs, as ``time.end`` does, and so does a
-filter on any other dimension.
+datetime or time kind, on a column of the same name, compared without case, on any table, as
+one of those, or on a column a relationship pairs with one) or on a calendar, whatever its
+relationship to the clock. An upper bound on a date or timestamp alone still runs, as
+``time.end`` does, and so does a filter on any other dimension.
 """
 
 from __future__ import annotations
@@ -589,7 +589,9 @@ def _edited_runtime(tmp_path: Path, edits: dict[str, dict[str, str] | str]) -> R
         connection.execute("update events set shipped_on = occurred_at::date + 1")
         connection.execute(SNAPSHOT_LABELS_TABLE)
         connection.execute("create table day_infos as select distinct date_day from account_day")
-        connection.execute("create table infos as select distinct date_day as info_day from account_day")
+        connection.execute(
+            "create table infos as select distinct date_day as info_day from account_day"
+        )
     return Runtime.from_path(str(package))
 
 
@@ -628,7 +630,8 @@ DAY_INFO_IN_CAPITALS = {
 OCCURRED_LABEL = "dimension.fees_event_occurred_label"
 OCCURRED_LABEL_EDITS = {
     "events": {
-        CHANNEL_LINE: CHANNEL_LINE + "    occurred_label: {column: OCCURRED_AT, kind: categorical}\n"
+        CHANNEL_LINE: CHANNEL_LINE
+        + "    occurred_label: {column: OCCURRED_AT, kind: categorical}\n"
     }
 }
 # A relationship from the clock's column, in capitals, to a column of another name.
