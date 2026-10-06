@@ -1615,7 +1615,7 @@ def _probe_query_for_metric(recipe, runtime: Runtime) -> dict[str, Any]:
 
 @runtime_request_scope
 def _run_probe(
-    runtime: Runtime, *, kind: str, object_id: str, query: dict[str, Any]
+    runtime: Runtime, *, kind: str, object_id: str, query: dict[str, Any], repair: bool
 ) -> dict[str, Any]:
     started = time.perf_counter()
     try:
@@ -1625,6 +1625,8 @@ def _run_probe(
                 runtime.query(query)
                 break
             except SemanticLayerError as exc:
+                if not repair:
+                    raise
                 missing = exc.dimensions if isinstance(exc, NonAdditiveRefusal) else []
                 effects = exc.details.get("policy_effects", [])
                 violations = exc.details.get("policy_violations", [])
@@ -1695,7 +1697,7 @@ def _probe_failure(probe: dict[str, Any]) -> dict[str, Any]:
 
 def _run_metric_probe(recipe, runtime: Runtime) -> dict[str, Any]:
     query = _probe_query_for_metric(recipe, runtime)
-    result = _run_probe(runtime, kind="metric", object_id=recipe.id, query=query)
+    result = _run_probe(runtime, kind="metric", object_id=recipe.id, query=query, repair=True)
     if result["ok"] or "time" in query:
         return result
     error_code = str(result.get("error", {}).get("code", "") or "")
@@ -1713,7 +1715,7 @@ def _run_metric_probe(recipe, runtime: Runtime) -> dict[str, Any]:
             "timing_ms": result["timing_ms"],
             "error": _error_payload(exc.code, str(exc), details=exc.details),
         }
-    return _run_probe(runtime, kind="metric", object_id=recipe.id, query=retry_query)
+    return _run_probe(runtime, kind="metric", object_id=recipe.id, query=retry_query, repair=True)
 
 
 # A filter with these operators matches rows only when its literal is a value in the data.
@@ -1847,6 +1849,7 @@ def validate_config_report(
                 kind="measure",
                 object_id=measure.id,
                 query=_probe_query_for_measure(measure),
+                repair=True,
             )
             probes.append(probe)
             if not probe["ok"]:
@@ -1875,7 +1878,9 @@ def validate_config_report(
                 include_preview_dimensions=True,
                 limit=1,
             )
-            probe = _run_probe(runtime, kind="segment", object_id=segment.id, query=query)
+            probe = _run_probe(
+                runtime, kind="segment", object_id=segment.id, query=query, repair=False
+            )
             probes.append(probe)
             if not probe["ok"]:
                 failures.append(_probe_failure(probe))

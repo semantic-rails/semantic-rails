@@ -55,7 +55,9 @@ def test_probe_diagnostics_do_not_change_shared_debug_authority(
 
     monkeypatch.setattr(runtime, "query", fail)
     monkeypatch.setattr(runtime, "compile", lambda payload: {"rendered_sql": "SELECT 1"})
-    result = _run_probe(runtime, kind="measure", object_id="measure.example", query=query)
+    result = _run_probe(
+        runtime, kind="measure", object_id="measure.example", query=query, repair=True
+    )
     assert result["rendered_sql"] == "SELECT 1"
     assert result["error"]["message"] == "Redacted failure"
     assert os.environ.get(setting_name) == debug_setting
@@ -277,6 +279,62 @@ def test_runtime_validation_probes_constrained_objects(tmp_path, target, constra
         )
 
 
+@pytest.mark.parametrize("constraint", ["required_group_by", "required_where"])
+def test_runtime_validation_does_not_repair_segment_constraints(tmp_path, constraint):
+    package_dir = tmp_path / "constrained_segment"
+    field = "dimension.demo_order_kind"
+    key = "dimension.demo_order_order_id"
+    segment_id = "segment.demo.orders"
+    _write_minimal_package(
+        package_dir,
+        extra_dimensions={
+            "kind": {"id": field, "column": "kind", "kind": "categorical"},
+            "order_key": {"id": key, "column": "order_id", "kind": "number"},
+        },
+    )
+    (package_dir / "data" / "seed_example.sql").write_text(
+        "CREATE TABLE order_fact (order_id INTEGER, ordered_at TIMESTAMP, kind VARCHAR);\n"
+        "INSERT INTO order_fact VALUES (1, '2024-01-01', 'retail');",
+        encoding="utf-8",
+    )
+    _write_yaml(
+        package_dir / "policies.yml",
+        {
+            "semantic_policies": [
+                {
+                    "id": "policy.orders.cut",
+                    "kind": "metric_constraint",
+                    "object_ids": ["metric.sales.orders"],
+                    constraint: [field],
+                }
+            ]
+        },
+    )
+    where = [{"field": key, "op": ">", "value": 0}]
+    _write_yaml(
+        package_dir / "segments.yml",
+        {
+            "segments": {
+                "orders": {
+                    "id": segment_id,
+                    "entity": "entity.demo_order",
+                    "basis_metric": "metric.sales.orders",
+                    "membership": {"where": where},
+                }
+            }
+        },
+    )
+    report = validate_config_report(resolve_package_reference(path=str(package_dir)))
+    assert report["parse"]["ok"] is True, report["errors"]
+    assert report["ok"] is False, report
+    probe = next(row for row in report["probes"] if row["object_id"] == segment_id)
+    assert probe["ok"] is False
+    assert probe["error"]["code"] == "POLICY_DENIED"
+    assert not probe.get("skipped")
+    assert probe["query"]["group_by"] == [key]
+    assert probe["query"]["where"] == where
+
+
 def test_probe_combines_required_grouping_with_non_additive_grain(tmp_path):
     package_dir = tmp_path / "stored_orders"
     field = "dimension.demo_order_kind"
@@ -361,7 +419,7 @@ def test_constrained_probe_preserves_denials_and_policy_scope(tmp_path, constrai
     runtime = Runtime.from_path(str(package_dir))
     try:
         probe = _run_probe(
-            runtime, kind="measure", object_id="measure.demo.order_count", query=query
+            runtime, kind="measure", object_id="measure.demo.order_count", query=query, repair=True
         )
     finally:
         runtime.close()

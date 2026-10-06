@@ -2233,7 +2233,9 @@ them in sibling files.
 An `examples/` file maps example IDs to a question, a Query IR, and an expected
 shape (`uv run semantic-rails run-examples` executes them). Columns are checked
 against the result's output descriptors even when a time window returns no rows;
-`min_rows` and `max_rows` still enforce the declared row counts:
+checks request compact responses even if the example declares `verbosity: minimal`,
+and reports retain the authored query. `min_rows` and `max_rows` still enforce the
+declared row counts:
 
 ```yaml
 # examples/core.yml
@@ -2406,6 +2408,11 @@ the policy effects, rather than failing or inventing a filter value. Skipped
 probes count separately from passed and failed probes; other policy denials
 remain failures. Add an example or package test with an allowed filter to check
 execution of a skipped object.
+
+Segment probes execute the authored preview query without repairs or skips. A
+missing required grouping or filter fails with `POLICY_DENIED`; a non-additive
+basis also fails rather than being regrouped. Fix the segment definition to
+satisfy the runtime's query requirements.
 
 Duplicate-measure warnings compare the IDs of `metric_constraint` policies
 naming each measure as well as its entity, expression, aggregation and default

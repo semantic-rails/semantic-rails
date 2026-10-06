@@ -1077,7 +1077,7 @@ def _run_example(runtime: Runtime, example_id: str, spec: dict[str, Any]) -> dic
             },
         }
     try:
-        result = runtime.query(query)
+        result = runtime.query({**query, "verbosity": "compact"})
     except SemanticLayerError as exc:
         return {
             "id": example_id,
