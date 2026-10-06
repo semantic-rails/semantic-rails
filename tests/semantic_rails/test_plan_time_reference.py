@@ -573,6 +573,58 @@ def test_a_caller_window_is_read_only_at_whole_days(
     assert not plan.get("next", {}).get("ready_for")
 
 
+@pytest.mark.parametrize("detail", ["best", "full", "query", "debug"])
+@pytest.mark.parametrize(
+    "time",
+    [
+        # Without its end the window also reads October 5.
+        {"grain": "", "start": "2026-10-04", "end": None},
+        {"grain": "day", "start": "2026-10-04", "end": None},
+        {"start": None, "end": "2026-10-05"},
+    ],
+)
+def test_a_caller_window_that_clears_a_bound_is_held(
+    local_subscriptions: Runtime, time: dict[str, Any], detail: str
+) -> None:
+    plan = plan_payload(
+        local_subscriptions,
+        intent="new accounts today",
+        partial_query={"policy_context": {"now": "2026-10-04T12:00:00Z"}, "time": time},
+        detail=detail,
+    )
+    assert plan["status"] == "low_confidence", plan.get("why")
+    assert plan["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP", plan.get("why")
+    assert [gap["kind"] for gap in plan["why"]["details"]["gaps"]] == ["time_window_unrealized"]
+    assert not plan.get("next", {}).get("ready_for")
+
+
+@pytest.mark.parametrize("detail", ["best", "full", "query", "debug"])
+@pytest.mark.parametrize(
+    "time",
+    [
+        {"grain": "", "start": "2026-10-04"},
+        {"grain": "day", "start": "2026-10-04"},
+        {"end": "2026-10-05"},
+    ],
+)
+def test_an_omitted_caller_bound_keeps_the_drafted_one(
+    local_subscriptions: Runtime, time: dict[str, Any], detail: str
+) -> None:
+    plan = plan_payload(
+        local_subscriptions,
+        intent="new accounts today",
+        partial_query={"policy_context": {"now": "2026-10-04T12:00:00Z"}, "time": time},
+        detail=detail,
+    )
+    assert plan["status"] == "ok", plan.get("why")
+    query = plan["best"]["query_ir"]
+    assert (query["time"]["start"], query["time"]["end"]) == ("2026-10-04", "2026-10-05")
+    rows = local_subscriptions.query(query)["rows"]
+    gold = _signups(local_subscriptions, "2026-10-04", "2026-10-05")
+    assert gold == 2
+    assert sum(row[query["select"][0]["as"]] for row in rows) == gold
+
+
 def test_a_whole_day_caller_window_executes(local_subscriptions: Runtime) -> None:
     plan = plan_payload(
         local_subscriptions,

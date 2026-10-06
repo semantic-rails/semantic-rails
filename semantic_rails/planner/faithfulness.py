@@ -2601,8 +2601,8 @@ def _consumed_spans(
 ) -> list[tuple[int, int]]:
     """The character spans of the question the draft's constructs consume.
 
-    A window consumes the date phrases the planner resolved when the draft carries one (a
-    start, an end or a range) that agrees with them (``_window_agrees``), and the phrases it could
+    A window consumes the date phrases the planner resolved when the draft carries one (both
+    bounds, or a range) that agrees with them (``_window_agrees``), and the phrases it could
     not resolve; never a clock time or a bare year. A limit
     consumes the count of the ranking that states it ("top 5", "the 5 customers who spent the
     most"); a threshold, percentile or numeric filter value consumes its own number token, found
@@ -2879,10 +2879,10 @@ def _window_agrees(
 ) -> bool:
     """Whether the draft's window is the one the question's date phrases state.
 
-    The one rule for a window in the draft: every bound it carries, read at the day (the grain
-    of every window plan reads), is the earliest start or the latest end among the windows the
-    question states, and it carries at least one. A draft that cannot be read does not agree. A
-    question that states no window agrees with any draft.
+    The one rule for a window in the draft: it carries both bounds, each read only at a whole
+    day (see ``_window_days``), and they are the earliest start and the latest end among the
+    windows the question states. A missing bound, or a draft that cannot be read, does not
+    agree. A question that states no window agrees with any draft.
     """
 
     if not windows:
@@ -2896,9 +2896,7 @@ def _window_agrees(
             return False
         starts.append(asked[0])
         ends.append(asked[1])
-    if carried is None or carried == (None, None):
-        return False
-    return carried[0] in (None, min(starts)) and carried[1] in (None, max(ends))
+    return carried == (min(starts), max(ends))
 
 
 def _window_spans(
