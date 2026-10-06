@@ -116,6 +116,7 @@ from .compiler_parts.sql_lowering import (
     _expr_contains_distribution,
     _last_token,
     _plan_requires_agent_dag_lowering,
+    _reads_chosen_snapshot,
     _refuse_converted_role,
     _slug,
     child_group_route,
@@ -4743,6 +4744,14 @@ def _plan_query(
         for row in bound_measures
     }
     bound_measures = list(dedup_measures.values())
+    # Check every condition, including child groups, before route planning can refuse a
+    # stock's child path. Lowering uses this same classifier for when to apply the filter.
+    for bound in bound_measures:
+        measure = measures[bound.measure_id]
+        for item in every_filter(query.where):
+            _reads_chosen_snapshot(measure, bound.temporal_role, item.field, config)
+        for clause in _bound_filter_clauses(bound, config):
+            _reads_chosen_snapshot(measure, bound.temporal_role, str(clause["field"]), config)
     _validate_measure_validity_windows(bound_measures, config, query)
     _validate_non_additive_sums(bound_measures, config, query)
     measure_plans: list[MeasurePlan] = []
