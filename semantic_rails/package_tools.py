@@ -800,6 +800,7 @@ def check_package_report(
             "probes_total": validate_report["summary"]["probes_total"],
             "passed": validate_report["summary"]["passed"],
             "failed": validate_report["summary"]["failed"],
+            "skipped": validate_report["summary"]["skipped"],
         },
         "column_reachability": {
             "ok": reachability_report["ok"],
@@ -1076,7 +1077,7 @@ def _run_example(runtime: Runtime, example_id: str, spec: dict[str, Any]) -> dic
             },
         }
     try:
-        result = runtime.query(query)
+        result = runtime.query({**query, "verbosity": "compact"})
     except SemanticLayerError as exc:
         return {
             "id": example_id,
@@ -1086,11 +1087,7 @@ def _run_example(runtime: Runtime, example_id: str, spec: dict[str, Any]) -> dic
         }
     shape = dict(spec.get("expected_shape", {}) or {})
     columns = list(shape.get("columns", []) or [])
-    actual_columns = (
-        list(result["rows"][0].keys())
-        if result["rows"]
-        else list(result["normalized_query"].get("group_by", []))
-    )
+    actual_columns = [column["field"] for column in result["output_columns"]]
     if columns and actual_columns[: len(columns)] != columns:
         return {
             "id": example_id,
