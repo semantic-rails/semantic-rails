@@ -859,7 +859,7 @@ def test_a_same_clock_contextual_anti_join_by_a_grouped_dimension_keeps_only_rea
 )
 def test_an_ungrouped_empty_population_should_read_null_with_a_warning(runtime):
     query = {
-        "version": 2,
+        "version": 1,
         "select": [{"expression": {"measure": "measure.pred.customer_count"}, "as": "n"}],
         "where": [{"field": CUSTOMER_ID, "op": "=", "value": 999}],
     }
@@ -870,7 +870,7 @@ def test_an_ungrouped_empty_population_should_read_null_with_a_warning(runtime):
 def test_a_grouped_empty_population_has_no_groups(runtime):
     result = runtime.query(
         {
-            "version": 2,
+            "version": 1,
             "select": [{"expression": {"measure": "measure.pred.customer_count"}, "as": "n"}],
             "group_by": [CUSTOMER_ID],
             "where": [{"field": CUSTOMER_ID, "op": "=", "value": 999}],
@@ -891,7 +891,7 @@ def test_an_empty_population_predicate_equals_zero_as_documented(runtime):
 def test_a_group_missing_a_population_leaf_reads_null(runtime):
     result = runtime.query(
         {
-            "version": 2,
+            "version": 1,
             "group_by": ["dimension.pred_member_id"],
             "select": [
                 {"expression": {"measure": "measure.pred.activity_count"}, "as": "activities"},

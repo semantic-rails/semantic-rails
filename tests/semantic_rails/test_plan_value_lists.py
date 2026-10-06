@@ -431,7 +431,7 @@ def test_ranked_named_values_keep_exact_groupings_and_combined_totals(
             **query,
             "where": [{**row, "value": sorted(row["value"])} for row in query["where"]],
         } == {
-            "version": 1 if path == "fallback" else 2,
+            "version": 1,
             "select": [
                 {
                     "as": "item_revenue_usd",

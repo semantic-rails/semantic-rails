@@ -117,7 +117,7 @@ def test_any_draft_of_a_tied_measure_the_question_does_not_name_is_flagged(
             runtime,
             question=question,
             intent_ir=parse_intent(runtime, question),
-            query={"version": 2, "select": [select]},
+            query={"version": 1, "select": [select]},
         )
     finally:
         runtime.close()

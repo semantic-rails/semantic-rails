@@ -199,7 +199,7 @@ def test_one_catalog_name_never_consumes_another(
 
 def test_spelling_a_selected_id_uses_its_namespace_only_there(jaffle: Runtime) -> None:
     aov_by_store = {
-        "version": 2,
+        "version": 1,
         "select": [{"as": "aov", "expression": {"metric": "metric.sales.aov_usd"}}],
         "group_by": [STORE],
     }
@@ -215,7 +215,7 @@ def test_spelling_a_selected_id_uses_its_namespace_only_there(jaffle: Runtime) -
 def test_a_time_grain_reads_its_unit_once(jaffle: Runtime) -> None:
     # The predicate's month is "in that month"; no grain groups the orders "by month".
     qualified = {
-        "version": 2,
+        "version": 1,
         "select": [{"as": "orders", "expression": {"measure": "measure.jaffle.order_count"}}],
         "metric_filters": [
             {
@@ -321,7 +321,7 @@ def test_a_cadence_or_request_word_never_consumes_a_dropped_catalog_name(
 
 def test_a_prior_period_shift_never_consumes_a_grouping(jaffle: Runtime) -> None:
     query = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "as": "prior_revenue",
@@ -403,11 +403,11 @@ def test_a_selected_count_valued_measure_reads_number_of_without_an_override(
     runtime = Runtime.from_config(
         replace(config, measures=[*config.measures, visitor]), source_path=jaffle.source_path
     )
-    query = {"version": 2, "select": [{"expression": {"measure": visitor.id}}]}
+    query = {"version": 1, "select": [{"expression": {"measure": visitor.id}}]}
     try:
         assert unconsumed_catalog_words(runtime, "number of visitors", query) == []
         # Naming the count elsewhere in the catalog doesn't let a non-count sum consume it.
-        revenue = {"version": 2, "select": [{"expression": {"measure": original.id}}]}
+        revenue = {"version": 1, "select": [{"expression": {"measure": original.id}}]}
         assert unconsumed_catalog_words(runtime, "number of revenue", revenue) == ["number"]
         for expression in (
             {"measure": visitor.id},
@@ -530,7 +530,7 @@ def test_a_count_reads_only_its_number_of(
         "aggregation": aggregation,
     }
     by_name = {
-        "version": 2,
+        "version": 1,
         "select": [{"as": "orders", "expression": orders}],
         "group_by": ["dimension.jaffle_customer_name"],
     }
@@ -580,7 +580,7 @@ def test_a_description_that_negates_the_word_does_not_answer_it(billing: Runtime
     _not_ready(payload, ["discounts"])
     # The warning names it too: a description no longer accounts for a word.
     assert payload["warnings"][0]["details"]["terms"] == ["discounts", "granted"]
-    charges = {"version": 2, "select": [select]}
+    charges = {"version": 1, "select": [select]}
     assert unmatched_intent_terms(billing, "discounts granted", charges) == [
         "discounts",
         "granted",
@@ -648,7 +648,7 @@ def test_a_long_question_is_read_to_its_last_word(
     intent = f"{filler} revenue by store, customer type"
     draft = RuntimeCompositionDraft(
         query={
-            "version": 2,
+            "version": 1,
             "select": [{"as": "revenue", "expression": {"measure": "measure.jaffle.revenue_usd"}}],
             "group_by": [STORE],
         },

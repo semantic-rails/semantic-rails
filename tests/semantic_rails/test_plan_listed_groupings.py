@@ -217,7 +217,7 @@ def test_a_draft_that_drops_a_listed_grouping_is_not_ready(
     # one-to-one correspondence shows that the draft drops one.
     draft = RuntimeCompositionDraft(
         query={
-            "version": 2,
+            "version": 1,
             "select": [
                 {"as": "repair_cost", "expression": {"metric": "metric.upkeep.repair_cost"}}
             ],
@@ -279,7 +279,7 @@ def test_a_forced_store_grouping_cannot_stand_in_for_order(
     intent = "order count by customer type, order for Brooklyn store"
     draft = RuntimeCompositionDraft(
         query={
-            "version": 2,
+            "version": 1,
             "select": [
                 {"as": "order_count", "expression": {"measure": "measure.jaffle.order_count"}}
             ],
@@ -315,7 +315,7 @@ def test_a_non_key_order_dimension_cannot_stand_in_for_order(
     intent = "order count by customer type, order"
     draft = RuntimeCompositionDraft(
         query={
-            "version": 2,
+            "version": 1,
             "select": [
                 {"as": "order_count", "expression": {"measure": "measure.jaffle.order_count"}}
             ],
@@ -473,7 +473,7 @@ def test_only_the_measures_own_entity_or_the_caller_settles_a_shared_grouping(
     ambiguous: bool,
 ) -> None:
     query = {
-        "version": 2,
+        "version": 1,
         "select": [{"as": measure, "expression": {"measure": f"measure.jaffle.{measure}"}}],
         "group_by": group_by,
     }
@@ -698,7 +698,7 @@ def test_a_geo_entity_keeps_its_plan(upkeep: Callable[[str, str], Runtime]) -> N
 
     assert payload["status"] == "ok", payload.get("why")
     assert payload["best"]["query_ir"] == {
-        "version": 2,
+        "version": 1,
         "select": [{"as": "geo_cost", "expression": {"metric": "metric.upkeep.geo_cost"}}],
         "group_by": ["dimension.upkeep_geo_geo_id"],
         "order_by": [{"field": "dimension.upkeep_geo_geo_id", "direction": "ASC"}],

@@ -276,7 +276,7 @@ trigger phrases and percentile-shaped threshold values.
 
 - duplicate projected output names are rejected with `DUPLICATE_OUTPUT_ALIAS`
 - collisions are checked across explicit select aliases, grouped dimension IDs, and the projected time-axis alias
-- cumulative expressions with a bounded `query.time.start` fail with `CUMULATIVE_TIME_FILTER_UNSUPPORTED` instead of silently computing from truncated history
+- cumulative expressions with a bounded `query.time.start` fail with `CUMULATIVE_TIME_FILTER_UNSUPPORTED` instead of silently computing from truncated history; so does a `where` filter on a date or calendar dimension other than an upper bound, and rolling, prior-period and period-to-date windows fail the same way with `WINDOWED_TIME_FILTER_UNSUPPORTED`
 
 ### Historical Joins
 

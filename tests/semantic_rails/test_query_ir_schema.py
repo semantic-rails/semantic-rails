@@ -22,7 +22,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SCHEMA_PATH = REPO_ROOT / "schemas" / "query_ir.v1.json"
-PREVIEW_V2_SCHEMA_PATH = REPO_ROOT / "schemas" / "query_ir.preview.v2.json"
 
 
 def _load_schema() -> dict[str, Any]:
@@ -210,39 +209,25 @@ def test_schema_rejects_unsupported_query_ir_version() -> None:
     jsonschema = _require_jsonschema()
     validator = jsonschema.Draft202012Validator(_load_schema())
     bad = {
-        "version": 3,
+        "version": 2,
         "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
     }
     errors = list(validator.iter_errors(bad))
     assert errors, "schema should reject unsupported Query IR versions"
 
 
-def test_stable_v1_and_preview_v2_have_disjoint_version_contracts() -> None:
-    jsonschema = _require_jsonschema()
-    v1 = jsonschema.Draft202012Validator(_load_schema())
-    v2 = jsonschema.Draft202012Validator(json.loads(PREVIEW_V2_SCHEMA_PATH.read_text()))
-    base = {
-        "select": [{"expression": {"measure": "measure.jaffle.order_count"}, "as": "orders"}],
-    }
-    assert not list(v1.iter_errors({"version": 1, **base}))
-    assert list(v1.iter_errors({"version": 2, **base}))
-    assert not list(v2.iter_errors({"version": 2, **base}))
-    assert list(v2.iter_errors({"version": 1, **base}))
-
-
-def test_both_schemas_take_a_child_group_and_refuse_a_malformed_one() -> None:
+def test_schema_takes_a_child_group_and_refuses_a_malformed_one() -> None:
     jsonschema = _require_jsonschema()
     beverage = {"field": "dimension.x_item_type", "op": "=", "value": "beverage"}
     group = {"child": "entity.x_item", "match": "none", "where": [beverage]}
     base = {"select": [{"expression": {"measure": "measure.x.count"}, "as": "count"}]}
-    for version, path in ((1, SCHEMA_PATH), (2, PREVIEW_V2_SCHEMA_PATH)):
-        validator = jsonschema.Draft202012Validator(json.loads(path.read_text()))
-        query = {"version": version, **base, "where": [beverage, group]}
-        assert not list(validator.iter_errors(query))
-        for bad in (
-            {**group, "match": "all"},
-            {**group, "where": []},
-            {**group, "where": [group]},
-            {key: value for key, value in group.items() if key != "match"},
-        ):
-            assert list(validator.iter_errors({**query, "where": [bad]})), bad
+    validator = jsonschema.Draft202012Validator(_load_schema())
+    query = {"version": 1, **base, "where": [beverage, group]}
+    assert not list(validator.iter_errors(query))
+    for bad in (
+        {**group, "match": "all"},
+        {**group, "where": []},
+        {**group, "where": [group]},
+        {key: value for key, value in group.items() if key != "match"},
+    ):
+        assert list(validator.iter_errors({**query, "where": [bad]})), bad

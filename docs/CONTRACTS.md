@@ -11,8 +11,7 @@ of those exact released bytes, not an independently edited registry.
 |---|---|---|
 | `architect_mcp.v1.json` | Engine | Stable Architect tools, schemas, annotations, and transaction semantics |
 | `package.v1.json` | Engine | Stable project/package major |
-| `query_ir.v1.json` | Engine | Stable Query IR v1 |
-| `query_ir.preview.v2.json` | Engine | Preview; may change before v2 |
+| `query_ir.v1.json` | Engine | Stable Query IR v1 (the only supported version) |
 | `metric_portability.v1.json` | Engine | Stable read-only metric catalog for BI bindings |
 | `semantic_contract.v1.json` | Engine | Stable framework-neutral validation payload |
 | `validation_report.v1.json` | Engine | Stable cross-validator report envelope |
@@ -47,6 +46,19 @@ The real package loader validates and normalizes the project before export.
 excluding connection, seed, and local database locators. It changes with
 semantic expressions, models, relationships, policies, and other governed
 behavior, but not when files are rearranged or deployment-only paths change.
+
+When the package's local DuckDB database exists, export reads its column catalog
+read-only, with external access disabled. Physical column types take precedence
+over semantic-kind hints: zone-aware timestamps export as `timestamp_tz`, UUIDs
+as `uuid`, and other types use the warehouse's lowercase spelling. This applies
+to tables and views, including schema-qualified relations. Database, schema,
+table, and column names match case-insensitively. Ambiguous relation matches
+preserve all semantic-kind hints; duplicate column matches preserve that column's
+hint. Export never creates or seeds a database or connects to a remote warehouse.
+Without local metadata,
+the existing semantic-kind hints remain; an existing database that cannot be
+opened read-only raises `INVALID_CONFIG`. Physical type metadata can change
+without changing `semantic_hash`, which fingerprints package semantics only.
 
 dbt, SQLMesh, and future integrations own an optional `binding` object. A
 binding schema composes with

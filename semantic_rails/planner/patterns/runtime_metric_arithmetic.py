@@ -38,7 +38,7 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
         "right": {"metric": m1.id},
     }
     query: dict[str, Any] = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "as": "total_messages",

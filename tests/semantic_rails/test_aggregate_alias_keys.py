@@ -36,7 +36,7 @@ def _by_year(rows: list[dict], role: str, select: list[dict]) -> dict[str, list]
 
 
 def _query(runtime, select: list[dict], role: str = _ORDER_TIME, config=None) -> dict[str, list]:
-    query = {"version": 2, "select": select, "time": {"temporal_role": role, "grain": "year"}}
+    query = {"version": 1, "select": select, "time": {"temporal_role": role, "grain": "year"}}
     if config is None:
         rows = runtime.query(query)["rows"]
     else:

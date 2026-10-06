@@ -24,7 +24,7 @@ def _wire_oracle(rows):
 
 def _snapshot_parent_metric_query() -> dict:
     return {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "as": "active_menu_count_from_high_activity_stores",
@@ -155,7 +155,7 @@ def test_snapshot_parent_rollup_with_two_contextual_predicates_executes_once_per
 def test_monthly_snapshot_metric_for_session_qualified_stores_matches_oracle(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     query = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "as": "active_menu_count_from_session_stores",

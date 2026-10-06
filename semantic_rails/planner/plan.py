@@ -42,6 +42,7 @@ from ._base import (
     _object_by_id,
     _requested_grouping_terms,
     _runtime_composition_terms,
+    _singular,
     _term_matches_value_domain,
     _time_window,
     _with_fiscal_calendar,
@@ -49,7 +50,6 @@ from ._base import (
 from .faithfulness import (
     _dimension_nouns,
     _ranking_request,
-    _singular,
     intent_faithfulness_why,
     intent_subject_why,
     unconsumed_catalog_words,

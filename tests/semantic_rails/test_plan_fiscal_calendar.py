@@ -235,7 +235,7 @@ def test_a_to_date_or_rolling_fiscal_question_is_not_answered(
     # to-date or rolling ask; bucketing fiscal months would turn a flagged draft into an ok
     # one. The step leaves the draft alone whatever the package can reach.
     draft = {
-        "version": 2,
+        "version": 1,
         "select": [REVENUE],
         "time": {"temporal_role": ORDER_TIME, "grain": "month"},
     }
@@ -248,7 +248,7 @@ def test_a_to_date_or_rolling_fiscal_question_is_not_answered(
 
 def test_an_order_on_the_fiscal_bucket_orders_by_time(jaffle: Runtime) -> None:
     draft = {
-        "version": 2,
+        "version": 1,
         "select": [REVENUE],
         "group_by": [FISCAL_QUARTER_START, STORE],
         "order_by": [
@@ -334,7 +334,7 @@ def test_the_fiscal_gap_reads_the_drafted_query(
     group_by: list[str],
     gap: bool,
 ) -> None:
-    query: dict[str, Any] = {"version": 2, "select": [REVENUE], "group_by": group_by}
+    query: dict[str, Any] = {"version": 1, "select": [REVENUE], "group_by": group_by}
     if time is not None:
         query["time"] = time
     why = intent_faithfulness_why(

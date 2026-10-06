@@ -62,7 +62,7 @@ def _measures(payload: dict[str, Any]) -> list[str]:
 
 def _draft(measure: str = "measure.jaffle.revenue_usd", **parts: Any) -> dict[str, Any]:
     select = [{"as": "value", "expression": {"measure": measure}}]
-    return {"version": 2, "select": select, **parts}
+    return {"version": 1, "select": select, **parts}
 
 
 # --- hours, zones and windows shorter than a day --------------------------------------

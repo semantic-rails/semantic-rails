@@ -73,6 +73,42 @@ def test_combined_unbounded_answer_is_identical_with_and_without_rollups(tmp_pat
     assert (december["v0"], december["v1"]) == (7, 0)  # a loaded month without refunds
 
 
+@pytest.mark.parametrize("variant", ["utc_authored", "ny_implicit", "date_authored", "tz_implicit"])
+@pytest.mark.parametrize("future", [False, True])
+def test_window_total_coverage_keeps_unknown_amounts_and_positive_counts(tmp_path, variant, future):
+    package = _write_variant(tmp_path, variant)
+    if future:
+        seed = package / "data" / "seed.sql"
+        seed.write_text(
+            seed.read_text()
+            + "\nINSERT INTO orders (order_id, store_id, ordered_at, order_date, ordered_at_tz) "
+            "VALUES (999, 'a', TIMESTAMP '2098-01-15 12:00:00', DATE '2098-01-15', "
+            "TIMESTAMP '2098-01-15 12:00:00' AT TIME ZONE 'UTC');\n"
+        )
+    start, end = ("2098-01-15", "2098-01-16") if future else ("2024-05-06", "2024-05-07")
+    b = {"measure": "measure.shop.store_b_orders"}
+    query = _query(REVENUE, {"measure": "measure.shop.order_count"}, b, start=start, end=end)
+    query["time"].pop("grain")
+    config = load_package_config(str(package))
+    answers = []
+    for current in (config, replace(config, aggregate_relations=[])):
+        runtime = Runtime.from_config(current, source_path=str(package))
+        try:
+            result = runtime.query(query)
+            assert "FROM orders_monthly" not in result["rendered_sql"]
+            # Raw amounts are unknown, the row count is positive, and only loaded empties are zero.
+            gold = runtime._get_adapter().query(
+                "SELECT SUM(amount) AS v0, COUNT(order_id) AS v1 FROM orders "
+                f"WHERE ordered_at >= TIMESTAMP '{start}' AND ordered_at < TIMESTAMP '{end}'"
+            )
+            assert gold == [{"v0": None, "v1": 1}]
+            answers.append(typed_rows(result))
+            assert answers[-1] == [{**gold[0], "v2": None if future else 0}]
+        finally:
+            runtime.close()
+    assert answers[0] == answers[1]
+
+
 ROUTING_CASES = {
     "plain": ((REVENUE,), {}, "duckdb", True),
     "plain-bounded": ((REVENUE,), {"start": "2024-02-01", "end": "2024-03-01"}, "duckdb", True),
@@ -131,9 +167,13 @@ def test_a_refused_route_keeps_the_leafs_own_strategy(tmp_path):
     }
 
 
-def test_injected_rollup_cannot_bypass_the_coverage_guard(tmp_path):
+@pytest.mark.parametrize("window_total", [False, True])
+def test_injected_rollup_cannot_bypass_the_coverage_guard(tmp_path, window_total):
     config = load_package_config(str(_write_variant(tmp_path, "utc_authored")))
-    compiled = compile_query(config, Registry(config), _query(fill=True))
+    query = _query(start="2023-11-01", end="2023-12-01") if window_total else _query(fill=True)
+    if window_total:
+        query["time"].pop("grain")
+    compiled = compile_query(config, Registry(config), query)
     plan = compiled["logical_plan"]
     bypass = replace(
         plan,

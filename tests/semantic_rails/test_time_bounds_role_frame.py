@@ -146,7 +146,7 @@ def _session_conversion(config, data_type, column_timezone):
         "converted": {"kind": "aggregate", "measure": "measure.jaffle.order_count"},
     }
     query = {
-        "version": 2,
+        "version": 1,
         "select": [{"as": "rate", "expression": conversion}],
         "time": {
             "temporal_role": SESSION_ROLE,

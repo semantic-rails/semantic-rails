@@ -308,6 +308,9 @@ Non-DB-API drivers (BigQuery client, clickhouse-connect) subclass
 `db_parts.base`. Translate driver failures with `errors.query_execution_error`;
 never include driver messages or stderr in public errors, because they may
 contain SQL, result values, or credentials.
+DuckDB-family result reads use `materialized_duckdb_result` instead of DB-API
+cursor fetches, which can hang on window-function queries. Apply row caps with
+the helper's relation limit; calling `fetchmany` would reopen a streamed result.
 
 **Final SQL preparation.** The compiler renders the selected profile, then calls
 `SqlDialect.prepare_query` to produce a driver-free `PreparedQuery`: the exact

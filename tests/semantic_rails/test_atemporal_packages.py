@@ -709,7 +709,7 @@ def test_scalar_date_arithmetic_without_time_matches_independent_sql(runtime) ->
         "date": column("delivery_date"),
     }
     query = {
-        "version": 2,
+        "version": 1,
         "select": [
             {
                 "expression": {

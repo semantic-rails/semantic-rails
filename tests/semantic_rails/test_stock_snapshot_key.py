@@ -172,7 +172,7 @@ def test_surrogate_key_on_other_clocks_warns(tmp_path: Path, clock_class: str) -
             "execute",
             {
                 "query": {
-                    "version": 2,
+                    "version": 1,
                     "select": [{"as": "v", "expression": {"measure": "measure.f4stock.stars"}}],
                     "time": {"temporal_role": ROLE, "grain": "week"},
                 }

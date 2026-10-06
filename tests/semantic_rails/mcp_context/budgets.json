@@ -6,11 +6,11 @@
   "query.error.inspect_label_not_id_tokens": 211,
   "query.error.validate_fanout_tokens": 812,
   "query.error.validate_unknown_dimension_tokens": 250,
-  "query.hosted.discover_tokens": 7118,
+  "query.hosted.discover_tokens": 1335,
   "query.hosted.inspect_tokens": 962,
   "query.prompts_list_tokens": 225,
   "query.resource.capabilities-summary_tokens": 545,
-  "query.resource.capabilities_tokens": 3856,
+  "query.resource.capabilities_tokens": 3614,
   "query.resource.catalog-full_tokens": 199989,
   "query.resource.catalog-index_tokens": 2344,
   "query.resource.catalog-summary_tokens": 44596,
@@ -25,7 +25,7 @@
   "query.v2.default.max_structured_tokens": 2411,
   "query.v2.default.max_text_tokens": 2411,
   "query.v2.default.plan_tokens": 371,
-  "query.v2.default.segment_explain_tokens": 1507,
+  "query.v2.default.segment_explain_tokens": 1404,
   "query.v2.default.segment_preview_tokens": 2424,
   "query.v2.default.segment_validate_tokens": 710,
   "query.v2.default.valid_values_tokens": 265,
@@ -37,15 +37,15 @@
   "query.v2.session.lean.structured_tokens": 4548,
   "query.v2.session.lean.text_tokens": 4548,
   "query.v2.tools_list.largest_tool_tokens": 1136,
-  "query.v2.tools_list.model_visible_tokens": 2829,
+  "query.v2.tools_list.model_visible_tokens": 2486,
   "query.v2.tools_list.tools": 6,
-  "query.v2.tools_list.wire_tokens": 3633
+  "query.v2.tools_list.wire_tokens": 3291
  },
  "tracked": {
   "architect.instructions_tokens": 274,
   "architect.tools_list.largest_tool_tokens": 512,
   "architect.tools_list.model_visible_tokens": 4472,
-  "architect.tools_list.tools": 28,
+  "architect.tools_list.tools": 27,
   "architect.tools_list.wire_tokens": 12382
  }
 }
