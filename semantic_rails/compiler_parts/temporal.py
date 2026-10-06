@@ -35,7 +35,7 @@ from ..expressions import (
     expr_kind,
     expr_to_dict,
 )
-from ..schema import DimensionConfig, MetricConfig, PackageConfig
+from ..schema import MetricConfig, PackageConfig
 from .indexes import (
     _dimension_index,
     _measure_index,
@@ -922,24 +922,49 @@ def _clock_where_cuts(query: NormalizedQuery, config: PackageConfig) -> list[tup
     with its path.
 
     A window can order its rows by any date (the query's clock, a snapshot's own date, or one
-    joined to either), so a condition is judged by its dimension's type, never by tracing it to
-    that date. A condition cuts when its dimension is temporal (a time role, of a ``date``,
-    ``timestamp``, ``datetime`` or ``time`` kind, or on the same table column as one of those)
-    or is on a calendar (``kind: time``) entity. Only an upper bound (``<``, ``<=``) on a
-    ``date`` or ``timestamp`` dimension keeps every lookback row, as ``time.end`` does.
+    joined to either), so a condition is judged by its dimension's table column, never by
+    tracing it to that date. A column is temporal when a dimension on it is a time role or of a
+    ``date``, ``timestamp``, ``datetime`` or ``time`` kind, when it belongs to a calendar
+    (``kind: time``) entity, or when a relationship pairs it (either direction) with a temporal
+    column, repeated until nothing changes. A condition cuts when its dimension's column is
+    temporal. Only an upper bound (``<``, ``<=``) on a ``date`` or ``timestamp`` dimension
+    keeps every lookback row, as ``time.end`` does.
     """
     analysis = get_package_analysis(config)  # unrecorded lookups: the guard binds no object
 
-    def table_column(dim: DimensionConfig) -> tuple[str, str]:
-        return analysis.entities[dim.entity].table, dim.column
+    def table_column(entity: str, column: str) -> tuple[str, str]:
+        return analysis.entities[entity].table, column
 
     role_dimensions = {role.dimension for role in analysis.temporal_roles.values()}
     temporal_columns = {
-        table_column(dim)
+        table_column(dim.entity, dim.column)
         for dim in analysis.dimensions.values()
         if str(dim.data_type).lower() in {"date", "timestamp", "datetime", "time"}
         or dim.id in role_dimensions
+        or analysis.entities[dim.entity].kind == "time"
     }
+    temporal_columns.update(
+        (entity.table, column)
+        for entity in analysis.entities.values()
+        if entity.kind == "time"
+        for column in entity.key or [entity.primary_key]
+    )
+    pairs = [
+        (table_column(rel.source_entity, source), table_column(rel.target_entity, target))
+        for rel in config.relationships
+        for source, target in zip(
+            rel.source_columns or [rel.source_column],
+            rel.target_columns or [rel.target_column],
+            strict=True,
+        )
+    ]
+    added = True
+    while added:
+        added = False
+        for pair in pairs:
+            if len(temporal_columns.intersection(pair)) == 1:
+                temporal_columns.update(pair)
+                added = True
     conditions: list[tuple[str, Filter]] = []
     for index, item in enumerate(query.where):
         if isinstance(item, ChildGroup):
@@ -951,10 +976,7 @@ def _clock_where_cuts(query: NormalizedQuery, config: PackageConfig) -> list[tup
     cuts = []
     for path, item in conditions:
         dim = analysis.dimensions.get(item.field)
-        if dim is None or (
-            table_column(dim) not in temporal_columns
-            and analysis.entities[dim.entity].kind != "time"
-        ):
+        if dim is None or table_column(dim.entity, dim.column) not in temporal_columns:
             continue
         op = " ".join(str(item.op).upper().split())
         if op in {"<", "<="} and dim.data_type in {"date", "timestamp"}:

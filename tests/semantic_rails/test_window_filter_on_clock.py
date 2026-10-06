@@ -169,7 +169,9 @@ def runtime(tmp_path: Path) -> Iterator[Runtime]:
     runtime.close()
 
 
-SNAPSHOT_LABEL_ENTITY = "    snapshot_label: {key: [account_id, date_day], model: snapshot_labels}\n"
+SNAPSHOT_LABEL_ENTITY = (
+    "    snapshot_label: {key: [account_id, date_day], model: snapshot_labels}\n"
+)
 OBSERVED_DATE_LINE = "    observed_date: {column: date_day, kind: date}\n"
 # The clock is on the target side of this non-calendar, composite-key relationship.
 SNAPSHOT_LABELS = (
@@ -179,7 +181,9 @@ SNAPSHOT_LABELS = (
     "  entities: {snapshot_label: {}, account_day: {}}\n"
     "  dimensions:\n" + OBSERVED_DATE_LINE
 )
-SNAPSHOT_LABELS_TABLE = "create table snapshot_labels as select account_id, date_day from account_day"
+SNAPSHOT_LABELS_TABLE = (
+    "create table snapshot_labels as select account_id, date_day from account_day"
+)
 
 
 @pytest.fixture
