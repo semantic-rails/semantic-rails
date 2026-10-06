@@ -57,7 +57,7 @@ from ._base import (
 )
 from .generators import _target_focus_text
 from .intent_ir import IntentIR
-from .visibility import visible_dimensions, visible_value_domains
+from .visibility import visible_dimensions, visible_object_ids, visible_value_domains
 
 
 @dataclass(frozen=True)
@@ -575,12 +575,11 @@ def _governed_metric_gaps(
 
     The draft selects the measure itself, or the metric that is its plain aggregate, and does
     not select a metric that aggregates the measure through a filter while the question's
-    target phrase names that metric, or the measure is a building block. A measure or metric
+    whole question names that metric, or the measure is a building block. A measure or metric
     the caller's ``partial_query`` names is the caller's choice; ``reported`` already has its
     own gap.
     """
 
-    focus = _target_focus_text(question) or question
     caller = set(_referenced_ids(partial_query))
     selected = list(
         dict.fromkeys(
@@ -597,14 +596,17 @@ def _governed_metric_gaps(
         measure_id = published_measure(plain) if plain is not None else object_id
         if not measure_id or {object_id, measure_id} & caller:
             continue
+        governing = governing_metrics(config, measure_id)
+        visible = set(visible_object_ids(config, (metric.id for metric in governing)))
+        governing = [metric for metric in governing if metric.id in visible]
         metrics = [
             metric.id
-            for metric in governing_metrics(config, measure_id)
+            for metric in governing
             if metric.id not in selected
             and metric.id != reported
-            and (measure_id in building_blocks or _said_name(metric, focus))
+            and (measure_id in building_blocks or _said_name(metric, question))
         ]
-        if not metrics:
+        if not metrics and (measure_id not in building_blocks or governing):
             continue
         measure = _object_by_id(config.measures, measure_id)
         gaps.append(
@@ -614,6 +616,8 @@ def _governed_metric_gaps(
                 message=(
                     "The draft reads this measure without the filter of a governed metric "
                     "that fits the question."
+                    if metrics
+                    else "The draft reads a building-block measure without a visible governed metric."
                 ),
                 expected={"metrics": metrics},
                 actual={"measure": measure_id},

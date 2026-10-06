@@ -21,7 +21,7 @@ from ..config_parts.measure_governance import (
 )
 from ..errors import SemanticLayerError
 from ..expressions import MeasureRefExpr, collect_object_references, expr_to_dict
-from .visibility import visible_dimensions, visible_value_domains
+from .visibility import visible_dimensions, visible_object_ids, visible_value_domains
 
 
 @dataclass(frozen=True)
@@ -411,10 +411,10 @@ def _named_metric(config: Any, text: str) -> tuple[Any, str] | None:
 def _said_name(row: Any, text: str) -> frozenset[str]:
     """The words of the longest name of ``row`` that ``text`` says, in any order.
 
-    ``text`` is the question's target phrase (``_target_focus_text``), so a grouping or its
-    values ("orders by customer type, new vs repeat") name no metric. The names are its
-    label, with or without a parenthetical, the last part of its id and its aliases; a plural
-    counts as its singular. Empty when the phrase says none.
+    The swap matches the target phrase (``_target_focus_text``); the readiness guard matches
+    the whole question. The names are its label, with or without a parenthetical, the last
+    part of its id and its aliases; a plural counts as its singular. Empty when the text
+    says none.
     """
 
     said = {_singular(word) for word in _tokens(text)}
@@ -453,6 +453,8 @@ def _governed_target(config: Any, focus: str, query: dict[str, Any]) -> Any | No
         return None
     aggregation = aggregation or expression.get("aggregation") or measure.default_aggregation
     governing = governing_metrics(config, measure.id)
+    visible = set(visible_object_ids(config, (metric.id for metric in governing)))
+    governing = [metric for metric in governing if metric.id in visible]
     candidates = {
         metric.id: (metric, governed[2])
         for metric in governing

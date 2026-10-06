@@ -196,7 +196,10 @@ def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft 
     # The governed metric over the chosen measure answers instead ("how many stores were
     # active" means Active stores, not the all-kinds count it filters).
     governed = _governed_target(config, target_focus or text, query)
-    if governed is not None:
+    if (
+        governed is not None
+        and (query.get("time") or {}).get("temporal_role", "") == governed.temporal_role
+    ):
         target, target_id, is_measure = governed, str(governed.id), False
         select_alias = _semantic_token(target_id, fallback="value")
         query["select"] = [{"as": select_alias, "expression": {"metric": target_id}}]

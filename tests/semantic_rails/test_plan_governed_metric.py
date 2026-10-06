@@ -10,6 +10,8 @@ names the measure by id still runs. Gold values come from plain SQL over the see
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,7 @@ from semantic_rails.metadata import discover_payload
 from semantic_rails.planner import plan_payload
 from semantic_rails.planner.patterns import metric_by_dimension_rollup
 from semantic_rails.runtime import Runtime
+from semantic_rails.schema import SemanticPolicyConfig
 
 SEED = """
 CREATE TABLE visits (visit_id INTEGER, store_id VARCHAR, day DATE, channel VARCHAR);
@@ -43,7 +46,12 @@ QUESTION = "How many stores were active last week?"
 
 
 def _package(
-    root: Path, *, publish: bool, label: str = "Active stores", domain: bool = True
+    root: Path,
+    *,
+    publish: bool,
+    label: str = "Active stores",
+    domain: bool = True,
+    schema_strict: bool = True,
 ) -> Path:
     def put(name: str, doc: dict[str, Any]) -> None:
         (root / name).parent.mkdir(parents=True, exist_ok=True)
@@ -53,7 +61,7 @@ def _package(
         "schema_version": 1,
         "package": {"id": "shop", "namespace": "shop", "name": "shop", "description": "Stores",
                     "warehouse": "duckdb", "default_db": "shop.duckdb", "seed": {"kind": "external"},
-                    "schema_strict": True},
+                    "schema_strict": schema_strict},
         "defaults": {"time": {"timezone": "UTC"}},
     })  # fmt: skip
     put("graph.yml", {"graph": {"entities": {
@@ -210,13 +218,13 @@ def test_plan_answers_a_building_block_with_its_only_metric(runtime: Runtime) ->
     plan = _plan(runtime, "stores last week")
     building_block = not next(row for row in runtime._config.measures if row.id == MEASURE).publish
     expected = {"metric": METRIC} if building_block else {"measure": MEASURE}
+    assert plan["status"] == "ok", plan.get("why")
     assert {
         key: value
         for key, value in plan["best"]["query_ir"]["select"][0]["expression"].items()
         if key != "aggregation"
     } == expected
     if building_block:
-        assert plan["status"] == "ok", plan.get("why")
         assert _value(runtime, plan["best"]["query_ir"]) == 3
 
 
@@ -232,3 +240,151 @@ def test_mcp_and_http_plan_agree(runtime: Runtime) -> None:
         assert response["status"] == direct["status"] == "ok"
         assert response["best"]["query_ir"] == direct["best"]["query_ir"]
         assert response["best"]["query_ir"]["select"][0]["expression"] == {"metric": METRIC}
+
+
+@pytest.mark.parametrize(
+    ("schema_strict", "plain_draft"),
+    [(True, False), (False, False), (False, True)],
+    ids=["strict", "non_strict", "plain_metric"],
+)
+@pytest.mark.parametrize(
+    ("intent", "status", "value"),
+    [
+        ("How many stores that were active last week?", "low_confidence", 5),
+        ("Number of stores that were active last week", "low_confidence", 5),
+        (QUESTION, "ok", 3),
+    ],
+)
+def test_the_whole_question_is_checked_against_reference_sql(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    schema_strict: bool,
+    plain_draft: bool,
+    intent: str,
+    status: str,
+    value: int,
+) -> None:
+    root = _package(tmp_path / "shop", publish=True, schema_strict=schema_strict)
+    engine = Runtime.from_path(str(root))
+    try:
+        if plain_draft:
+            # Exercise a draft selecting the non-strict package's auto-published plain metric.
+            plain = next(metric for metric in engine._config.metric_recipes if metric.id != METRIC)
+            monkeypatch.setattr(metric_by_dimension_rollup, "_preferred_measure", lambda *_: None)
+            monkeypatch.setattr(metric_by_dimension_rollup, "_preferred_metric", lambda *_: plain)
+        plan = _plan(engine, intent)
+        assert plan["status"] == status, plan.get("why")
+        query = plan["best"]["query_ir"]
+        assert _value(engine, query) == value
+        assert value == _gold(
+            LAST_WEEK if status == "low_confidence" else f"{LAST_WEEK} AND channel = 'retail'"
+        )
+        assert _gold(f"{LAST_WEEK} AND channel = 'retail'") == 3
+        if status == "low_confidence":
+            assert "execute" not in plan["next"].get("ready_for", [])
+            assert [gap["expected"]["metrics"] for gap in _gaps(plan)] == [[METRIC]]
+            if plain_draft:
+                assert query["select"][0]["expression"]["metric"] != METRIC
+            else:
+                assert query["select"][0]["expression"]["measure"] == MEASURE
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("intent", ["active stores all kinds last week", "stores last week"])
+@pytest.mark.parametrize("detail", ["query", "best", "full", "debug"])
+def test_hidden_governing_metrics_are_never_selected_or_disclosed(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch, intent: str, detail: str
+) -> None:
+    hidden_id, hidden_label = "metric.shop.restricted_cohort", "Restricted cohort"
+    hidden = replace(runtime._config.metric_recipes[0], id=hidden_id, label=hidden_label)
+    policy = SemanticPolicyConfig(
+        id="policy.hide_cohort",
+        kind="object_visibility",
+        object_ids=[hidden_id],
+        action="hidden",
+        audiences=["external"],
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_config",
+        replace(
+            runtime._config,
+            metric_recipes=[hidden],
+            semantic_policies=[policy],
+        ),
+    )
+    arguments = {
+        "intent": intent,
+        "query": {"policy_context": {**NOW, "audience": "external"}},
+        "detail": detail,
+    }
+    mcp = SemanticLayerMCPAdapter(runtime).call_tool("plan", arguments)
+    http, status = SemanticHTTPService(runtime).handle(
+        "POST", normalize_route("/api/v1/plan"), arguments
+    )
+    assert status == 200
+    building_block = not runtime._config.measures[0].publish
+    for response in (mcp, http):
+        serialized = json.dumps(response)
+        assert hidden_id not in serialized
+        assert hidden_label not in serialized
+        expression = response["best"]["query_ir"]["select"][0]["expression"]
+        assert expression["measure"] == MEASURE
+        if building_block:
+            assert response["status"] == "low_confidence", response.get("why")
+            assert "execute" not in response.get("next", {}).get("ready_for", [])
+            assert [gap["expected"]["metrics"] for gap in _gaps(response)] == [[]]
+        else:
+            assert response["status"] == "ok", response.get("why")
+            assert _gaps(response) == []
+    # The same policy leaves the metric visible to a different caller, on the next call.
+    internal = _plan(runtime, intent, policy_context={**NOW, "audience": "internal"})
+    assert hidden_id in [subject["id"] for subject in internal["intent_ir"]["subjects"]]
+
+
+@pytest.mark.parametrize("both_compatible", [False, True], ids=["own_clock", "both_clocks"])
+@pytest.mark.parametrize("publish", [True, False], ids=["published", "building_block"])
+def test_a_governed_swap_cannot_change_the_metrics_clock(
+    tmp_path: Path, publish: bool, both_compatible: bool
+) -> None:
+    root = _package(tmp_path / "shop", publish=publish)
+    model_path = root / "models/visits.yml"
+    model = yaml.safe_load(model_path.read_text())
+    model["model"]["times"]["ship_time"] = {
+        "column": "ship_day",
+        "kind": "date",
+        "class": "event_time",
+    }
+    model_path.write_text(yaml.safe_dump(model))
+    metrics_path = root / "metrics/stores.yml"
+    metrics = yaml.safe_load(metrics_path.read_text())
+    metric = metrics["metrics"]["active_stores"]
+    metric["temporal_role"] = "temporal_role.shop_visit_ship_time"
+    metric["compatible_temporal_roles"] = [metric["temporal_role"]]
+    if both_compatible:
+        metric["compatible_temporal_roles"].append("temporal_role.shop_visit_day")
+    metrics_path.write_text(yaml.safe_dump(metrics))
+    with duckdb.connect(str(root / "shop.duckdb")) as connection:
+        connection.execute("ALTER TABLE visits ADD COLUMN ship_day DATE")
+        connection.execute("UPDATE visits SET ship_day = day + INTERVAL '7 days'")
+    engine = Runtime.from_path(str(root))
+    try:
+        plan = _plan(engine, QUESTION)
+        assert plan["status"] == "low_confidence", plan.get("why")
+        assert "execute" not in plan["next"].get("ready_for", [])
+        query = plan["best"]["query_ir"]
+        assert query["select"][0]["expression"]["measure"] == MEASURE
+        assert query["time"]["temporal_role"] == "temporal_role.shop_visit_day"
+        assert [gap["expected"]["metrics"] for gap in _gaps(plan)] == [[METRIC]]
+        assert _value(engine, query) == _gold(LAST_WEEK) == 5
+        with duckdb.connect(":memory:") as connection:
+            connection.execute(SEED)
+            actual = connection.execute(
+                "SELECT COUNT(DISTINCT store_id) FROM visits WHERE channel = 'retail' "
+                "AND day + INTERVAL '7 days' >= DATE '2026-09-28' "
+                "AND day + INTERVAL '7 days' < DATE '2026-10-05'"
+            ).fetchone()
+        assert actual == (1,)
+    finally:
+        engine.close()
