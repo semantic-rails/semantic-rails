@@ -43,6 +43,16 @@ Key authoring principles:
 - Active package: [configs/semantic_rails/jaffle_shop](../configs/semantic_rails/jaffle_shop)
 - Focused semantic tests: `tests/semantic_rails/`
 
+## Package Upgrade Planning
+
+`semantic_rails.upgrade` plans YAML edits in memory. Finding identities include the
+rule, source file and full YAML path; author decisions remain pending until answered.
+Duplicate identities, overlapping edits and incompatible list edit orders refuse
+with `CONFIG_CONFLICT`. Independent list edits run from higher indexes to lower
+indexes, preserving each original target and each finding's own edit sequence.
+Source iterators retain loader identities, and expression traversal skips metadata,
+literal data and parameters. The rule registry is empty; no command invokes it yet.
+
 ## Architecture Principles
 
 - AST first: query input is normalized before planning, and SQL is rendered only after lowering from typed semantic structures.

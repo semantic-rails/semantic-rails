@@ -224,7 +224,7 @@ def test_choice_pending_and_answered(files, stop):
     result = plan(files, (rule,), {})
     assert len(result.pending) == 1 and result.files == {}
     key = files.choice_key(result.pending[0])
-    assert key == "rewrite:sample"
+    assert key == '["rewrite","package.yaml",["package"]]'
     if stop:
         with pytest.raises(SemanticLayerError):
             plan(files, (rule,), {key: "rewrite"})
@@ -419,3 +419,255 @@ def test_planner_batches_shared_alias_edits(tmp_path):
         "other": {"x": 3, "y": 4},
     }
     assert result.reformatted == ("package.yml",)
+
+
+@pytest.mark.parametrize("model_id", [None, "orders"])
+def test_sibling_choices_apply_independent_answers(tmp_path, model_id):
+    source = tmp_path / "package.yml"
+    model = {"dimensions": {name: {"legacy": True} for name in ("first", "second", "name")}}
+    if model_id is not None:
+        model["id"] = model_id
+    source.write_text(dump_project_yaml({"models": {"orders": model}}))
+    files = PackageFiles(source)
+
+    def find(current):
+        for file, path, row in current.dimensions():
+            if row.get("legacy"):
+                yield Finding(
+                    "rewrite",
+                    file,
+                    1,
+                    path,
+                    "Choose a replacement",
+                    options=tuple(
+                        Option(
+                            value,
+                            value,
+                            True,
+                            (
+                                Edit(file, "delete", (*path, "legacy")),
+                                Edit(file, "insert", path, key="expression", value=value),
+                            ),
+                        )
+                        for value in ("left", "right")
+                    ),
+                )
+
+    rule = Rule("rewrite", "1.0", "retired", "Choose replacements", find)
+    pending = plan(files, (rule,), {}).pending
+    keys = [files.choice_key(finding) for finding in pending]
+    assert len(set(keys)) == 3
+    assert all("legacy" not in key for key in keys)
+    answers = dict(zip(keys[:2], ("left", "right"), strict=True))
+    result = plan(files, (rule,), answers)
+    dimensions = safe_load(result.files["package.yml"])["models"]["orders"]["dimensions"]
+    assert dimensions == {
+        "first": {"expression": "left"},
+        "second": {"expression": "right"},
+        "name": {"legacy": True},
+    }
+    assert len(result.choices) == 2 and len(result.pending) == 1
+
+
+@pytest.mark.parametrize("answered", [False, True])
+def test_duplicate_choice_identity_refuses(files, answered):
+    rule = _rule("rewrite", "delete", choice=True)
+    [finding] = rule.find(files)
+    duplicate = Rule("rewrite", "1.0", "retired", "Duplicate", lambda _: (finding, finding))
+    choices = {files.choice_key(finding): "rewrite"} if answered else {}
+    with pytest.raises(SemanticLayerError, match="Rules 'rewrite' and 'rewrite' conflict") as exc:
+        plan(files, (duplicate,), choices)
+    assert exc.value.code == "CONFIG_CONFLICT"
+
+
+def test_pending_choice_survives_changed_line_and_message(files):
+    files = PackageFiles(
+        files.source,
+        contents={"package.yaml": b"package:\n  id: sample\n  legacy: true\n  choose: true\n"},
+    )
+
+    def find(current):
+        for file, path, row in current.package():
+            if "choose" in row:
+                line = next(
+                    index
+                    for index, text in enumerate(current.contents[file].splitlines(), 1)
+                    if b"choose:" in text
+                )
+                yield Finding(
+                    "choice",
+                    file,
+                    line,
+                    (*path, "choose"),
+                    f"Choice on line {line}",
+                    options=(
+                        Option("drop", "Drop", True, (Edit(file, "delete", (*path, "choose")),)),
+                    ),
+                )
+
+    choice = Rule("choice", "1.0", "retired", "Choose", find)
+    result = plan(files, (_rule("delete", "delete"), choice), {})
+    assert len(result.pending) == 1 and result.pending[0].line == 4
+    assert safe_load(result.files["package.yaml"])["package"] == {"id": "sample", "choose": True}
+    updated = PackageFiles(files.source, contents=result.files)
+    [shifted] = choice.find(updated)
+    assert shifted.line == 3 and shifted.message != result.pending[0].message
+
+
+@pytest.mark.parametrize(
+    "names,replace,expected",
+    [
+        (["a", "b", "c"], False, [{"id": "c"}]),
+        (["a", "b"], False, []),
+        (["a", "b", "c"], True, [{"id": "kept"}, {"id": "c"}]),
+    ],
+)
+def test_independent_list_edits_keep_original_targets(files, names, replace, expected):
+    files = PackageFiles(
+        files.source,
+        contents={
+            "package.yaml": dump_project_yaml(
+                {"semantic_policies": [{"id": name} for name in names]}
+            ).encode()
+        },
+    )
+
+    def find(current):
+        for file, path, row in current.policies():
+            if row["id"] in {"a", "b"}:
+                edit = (
+                    Edit(file, "replace", path, value={"id": "kept"})
+                    if (replace and row["id"] == "b")
+                    else Edit(file, "delete", path)
+                )
+                yield Finding("retire", file, 1, path, "Retire policy", (edit,))
+
+    rule = Rule("retire", "1.0", "retired", "Retire policies", find)
+    result = plan(files, (rule,), {})
+    assert safe_load(result.files["package.yaml"])["semantic_policies"] == expected
+
+
+def test_incompatible_list_edit_orders_refuse(files):
+    files = PackageFiles(
+        files.source, contents={"package.yaml": b"semantic_policies: [{id: a}, {id: b}, {id: c}]\n"}
+    )
+    first = Finding(
+        "outer",
+        "package.yaml",
+        1,
+        ("semantic_policies", 0),
+        "Delete outer",
+        (
+            Edit("package.yaml", "delete", ("semantic_policies", 2)),
+            Edit("package.yaml", "delete", ("semantic_policies", 0)),
+        ),
+    )
+    second = Finding(
+        "middle",
+        "package.yaml",
+        1,
+        ("semantic_policies", 1),
+        "Delete middle",
+        (Edit("package.yaml", "delete", ("semantic_policies", 1)),),
+    )
+    rules = tuple(
+        Rule(f.rule, "1.0", "retired", f.message, lambda _, f=f: (f,)) for f in (first, second)
+    )
+    with pytest.raises(SemanticLayerError, match="outer.*middle") as exc:
+        plan(files, rules, {})
+    assert exc.value.code == "CONFIG_CONFLICT"
+
+
+@pytest.mark.parametrize(
+    "opaque",
+    [
+        {"meta": {"expression": {"measure": "metadata_only", "legacy": True}}},
+        {"expression": {"kind": "literal", "value": {"measure": "metadata_only", "legacy": True}}},
+        {
+            "expression": {
+                "measure": "real",
+                "parameters": {"expression": {"measure": "metadata_only", "legacy": True}},
+            }
+        },
+        {
+            "expression": {
+                "kind": "value_filter",
+                "field": "real",
+                "value": {"measure": "metadata_only", "legacy": True},
+            }
+        },
+        {
+            "expression": {
+                "kind": "aggregate_if",
+                "condition": {"kind": "literal", "value": True},
+                "value": {"measure": "real"},
+                "meta": {"expression": {"measure": "metadata_only", "legacy": True}},
+            }
+        },
+    ],
+)
+def test_expression_rules_never_see_opaque_data(opaque):
+    source = ROOT / "configs/examples/semantic_rails_package_starter.yml"
+    files = PackageFiles(source)
+    doc = deepcopy(files.documents[source.name])
+    doc["metrics"]["revenue_usd"].update(opaque)
+    files = PackageFiles(source, contents={source.name: dump_project_yaml(doc).encode()})
+
+    def find(current):
+        for file, path, row in current.expressions():
+            if row.get("legacy"):
+                yield Finding(
+                    "expression",
+                    file,
+                    1,
+                    path,
+                    "Drop legacy",
+                    (Edit(file, "delete", (*path, "legacy")),),
+                )
+
+    rule = Rule("expression", "1.0", "same_meaning", "Expression rewrite", find)
+    assert plan(files, (rule,), {}).findings == ()
+    rows = list(files.expressions())
+    assert not any(row.get("measure") == "metadata_only" for _, _, row in rows)
+    if "expression" in opaque:
+        assert all(path[-1:] != ("revenue_usd",) for _, path, _ in rows)
+    if opaque.get("expression", {}).get("kind") == "aggregate_if":
+        assert any(row.get("measure") == "real" for _, _, row in rows)
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_inline_model_identity_matches_loader_mapping_keys(duplicate):
+    source = ROOT / "configs/examples/semantic_rails_package_starter.yml"
+    files = PackageFiles(source)
+    doc = deepcopy(files.documents[source.name])
+    for key in ("customers", "orders"):
+        doc["models"][key]["id"] = "legacy" if duplicate else f"legacy_{key}"
+    data = dump_project_yaml(doc).encode()
+    files = PackageFiles(source, contents={source.name: data})
+    loaded = _load_package_source(
+        str(source), captured=CapturedSource(str(source), False, ((source.name, data),))
+    )
+    rows = list(files.models())
+    assert {path[-1] for _, path, _ in rows} == set(loaded["models"])
+    assert len(rows) == 4
+
+
+@pytest.mark.parametrize(
+    "content,iterator",
+    [
+        ("graph:\n", "graph_entities"),
+        ("graph: {entities: null, relationships: null}\n", "relationships"),
+        ("models: {orders: {dimensions: null}}\n", "dimensions"),
+        ("models: {orders: {times: null}}\n", "times"),
+        ("models: {orders: {measures: null, joins: null}}\n", "relationships"),
+        ("model:\n", "models"),
+    ],
+)
+def test_null_sections_iterate_empty(tmp_path, content, iterator):
+    (tmp_path / "package.yml").write_text("package: {id: sample}\n")
+    if content.startswith("model:\n"):
+        (tmp_path / "models").mkdir()
+        (tmp_path / "models/orders.yml").write_text(content)
+    else:
+        (tmp_path / "package.yml").write_text(content)
+    assert list(getattr(PackageFiles(tmp_path), iterator)()) == []

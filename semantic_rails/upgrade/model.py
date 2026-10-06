@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from itertools import groupby
@@ -10,11 +11,18 @@ from typing import Any, Literal
 
 from ..config import _DIRECT_EXPRESSION_FIELDS
 from ..errors import SemanticLayerError
+from ..expressions import _opaque_expression_data
 from ..package_snapshot import capture_package_source
 from ..yaml_loader import safe_load
 
 YamlPath = tuple[str | int, ...]
 Row = tuple[str, YamlPath, dict[str, Any]]
+_EXPRESSION_CHILDREN = frozenset(
+    ("expression", "numerator", "denominator", "left", "right", "input", "args")
+    + ("expr", "values", "low", "high", "value", "null_value", "date", "whens")
+    + ("when", "then", "else", "condition", "over", "base", "converted", "filter")
+    + ("where", "predicates", "membership", "metric_filters", "select")
+)
 _SECTION_FILES = {
     "defaults": "defaults.yml",
     "graph": "graph.yml",
@@ -74,13 +82,19 @@ class Rule:
 
 
 def _walk(
-    value: Any, path: YamlPath = (), ancestors: tuple[int, ...] = ()
+    value: Any, path: YamlPath = (), ancestors: tuple[int, ...] = (), *, expression: bool = False
 ) -> Iterator[tuple[YamlPath, Any]]:
     yield path, value
     if isinstance(value, (dict, list)) and id(value) not in ancestors:
         items = value.items() if isinstance(value, dict) else enumerate(value)
         for key, child in items:
-            yield from _walk(child, (*path, key), (*ancestors, id(value)))
+            if (
+                expression
+                and isinstance(value, dict)
+                and (key not in _EXPRESSION_CHILDREN or _opaque_expression_data(value, key))
+            ):
+                continue
+            yield from _walk(child, (*path, key), (*ancestors, id(value)), expression=expression)
 
 
 class PackageFiles:
@@ -138,6 +152,8 @@ class PackageFiles:
     def _objects(self, section: str) -> Iterator[Row]:
         rows: dict[str | int, Row] = {}
         for file, path, value in self._sections(section):
+            if value is None:
+                continue
             if Path(file).parts[0] == section and (not path or path[-1] == section[:-1]):
                 key = (
                     (value.get("name") if section in {"metrics", "segments"} else "")
@@ -150,7 +166,11 @@ class PackageFiles:
                 entries = [(key, (*path, key), row) for key, row in items if isinstance(row, dict)]
             for key, child_path, row in entries:
                 if section in {"models", "relations", "metrics", "segments"}:
-                    identity = row.get("id") or key if section in {"models", "relations"} else key
+                    identity = (
+                        str(row.get("id") or key)
+                        if (Path(file).parts[0] == section and section in {"models", "relations"})
+                        else key
+                    )
                     rows[identity] = (file, child_path, row)
                 else:
                     yield file, child_path, row
@@ -171,7 +191,7 @@ class PackageFiles:
 
     def _graph(self, section: str) -> Iterator[Row]:
         for file, path, graph in self._sections("graph"):
-            for key, row in graph.get(section, {}).items():
+            for key, row in ((graph or {}).get(section) or {}).items():
                 yield file, (*path, section, key), row
 
     def models(self) -> Iterator[Row]:
@@ -188,7 +208,7 @@ class PackageFiles:
 
     def _members(self, section: str) -> Iterator[Row]:
         for file, path, model in self.models():
-            for key, row in model.get(section, {}).items():
+            for key, row in (model.get(section) or {}).items():
                 if isinstance(row, dict):
                     yield file, (*path, section, key), row
 
@@ -203,12 +223,16 @@ class PackageFiles:
 
     def expressions(self) -> Iterator[Row]:
         for file, path, row in (*self.metrics(), *self.segments()):
-            for child_path, child in _walk(row, path):
+            for child_path, child in _walk(row, path, expression=True):
                 relative = child_path[len(path) :]
                 if isinstance(child, dict) and (
-                    not relative
+                    (
+                        not relative
+                        and "expression" not in row
+                        and any(field in row for field in _DIRECT_EXPRESSION_FIELDS)
+                    )
                     or "expression" in relative
-                    or relative[0] in _DIRECT_EXPRESSION_FIELDS
+                    or (relative and relative[0] in {"numerator", "denominator"})
                 ):
                     yield file, child_path, child
 
@@ -222,16 +246,7 @@ class PackageFiles:
                 yield file, (*path, "membership"), row["membership"]
 
     def choice_key(self, finding: Finding) -> str:
-        value = self.documents[finding.file]
-        object_id = ""
-        for part in (None, *finding.path):
-            if part is not None:
-                value = value[part]
-            if isinstance(value, dict):
-                object_id = str(value.get("id") or value.get("name") or object_id)
-        return (
-            f"{finding.rule}:{object_id or finding.file + ':' + '.'.join(map(str, finding.path))}"
-        )
+        return json.dumps((finding.rule, finding.file, finding.path), separators=(",", ":"))
 
 
 @dataclass
@@ -254,9 +269,17 @@ def plan(files: PackageFiles, rules: Iterable[Rule], choices: Mapping[str, str])
     pending: list[Finding] = []
     answered: dict[str, Option] = {}
     selected: list[tuple[Edit, list[YamlPath], int]] = []
+    identities: dict[str, int] = {}
+    before: set[tuple[int, int]] = set()
     for index, finding in enumerate(findings):
+        key = files.choice_key(finding)
+        if key in identities:
+            raise SemanticLayerError(
+                "CONFIG_CONFLICT",
+                f"Rules '{findings[identities[key]].rule}' and '{finding.rule}' conflict at {finding.file}:{finding.path}",
+            )
+        identities[key] = index
         if finding.options or not finding.edits:
-            key = files.choice_key(finding)
             if key not in choices:
                 pending.append(finding)
                 continue
@@ -285,7 +308,36 @@ def plan(files: PackageFiles, rules: Iterable[Rule], choices: Mapping[str, str])
                         "CONFIG_CONFLICT",
                         f"Rules '{findings[owner].rule}' and '{finding.rule}' conflict at {edit.file}:{edit.path}",
                     )
+                if owner != index and other.file == edit.file:
+                    for a in paths:
+                        for b in other_paths:
+                            for left, right in zip(a, b, strict=False):
+                                if left != right:
+                                    if isinstance(left, int) and isinstance(right, int):
+                                        before.add(
+                                            (index, owner) if left > right else (owner, index)
+                                        )
+                                    break
             selected.append((edit, paths, index))
+    order: list[int] = []
+    remaining = list(dict.fromkeys(owner for _, _, owner in selected))
+    while remaining:
+        next_owner = next(
+            (
+                owner
+                for owner in remaining
+                if not any(after == owner and prior in remaining for prior, after in before)
+            ),
+            None,
+        )
+        if next_owner is None:
+            raise SemanticLayerError(
+                "CONFIG_CONFLICT",
+                f"Rules {[findings[index].rule for index in remaining]} conflict in list edit order",
+            )
+        order.append(next_owner)
+        remaining.remove(next_owner)
+    selected.sort(key=lambda item: order.index(item[2]))
     result: dict[str, bytes | None] = {}
     if set(choices) - set(answered) - {files.choice_key(finding) for finding in pending}:
         raise SemanticLayerError("INVALID_CONFIG", "Unknown upgrade choice")
@@ -326,8 +378,9 @@ def plan(files: PackageFiles, rules: Iterable[Rule], choices: Mapping[str, str])
         contents={key: value for key, value in contents.items() if value is not None},
         _directory=files.directory,
     )
+    pending_keys = {files.choice_key(finding) for finding in pending}
     for rule in rules:
         for finding in rule.find(updated):
-            if finding not in pending:
+            if updated.choice_key(finding) not in pending_keys:
                 raise SemanticLayerError("INVALID_CONFIG", f"rule '{rule.id}' is not idempotent")
     return Plan(findings, tuple(pending), result, tuple(reformatted), answered)
