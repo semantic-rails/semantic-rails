@@ -624,10 +624,13 @@ _SHIP_TO_KEY = {
             id="distinct-fact-model-row-key",
         ),
         pytest.param(
-            ({"days_monthly": _DAYS_MONTHLY}, {"fact_days": True}),
+            (
+                {"days_monthly": _DAYS_MONTHLY},
+                {"fact_days": True, "day_measure": {"kind": "aggregate", "expr": "1"}},
+            ),
             {
                 **_DAYS_QUERY,
-                "select": _rollup_query("measure.day_rows", "sum", "quarter")["select"],
+                "select": _rollup_query("measure.days", "sum", "quarter")["select"],
             },
             None,
             id="fact-model-additive",
