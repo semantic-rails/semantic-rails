@@ -285,8 +285,9 @@ def test_a_window_resolved_in_utc_is_held_for_a_local_role(
     assert plan["status"] == "low_confidence"
     assert plan["why"]["code"] == "TIME_WINDOW_UNRESOLVED", plan.get("why")
     assert plan["why"]["details"]["unresolved_phrases"] == [phrase]
-    assert not plan["next"].get("ready_for")
+    assert not plan.get("next", {}).get("ready_for")
     assert not (plan.get("best") or {}).get("query_ir")
+    assert not plan.get("query_ir")
     assert not any(
         row.get("query_ir") for row in plan.get("alternatives", []) + plan.get("blocked", [])
     )
