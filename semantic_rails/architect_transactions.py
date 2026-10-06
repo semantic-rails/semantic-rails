@@ -368,12 +368,17 @@ def route_rows_update(
     return ProjectFileUpdate(relative, dump_project_yaml(document).encode("utf-8")), replaced
 
 
-def _routes_not_recorded(unkept: list[dict[str, Any]]) -> SemanticLayerError:
+def _routes_not_recorded(unkept: list[dict[str, Any]], operation: str) -> SemanticLayerError:
+    keep_hint = (
+        "Retry upsert_relationship with keep_existing_routes=true "
+        "to record and keep every existing route. "
+        if operation == "upsert_relationship"
+        else ""
+    )
     return SemanticLayerError(
         "ROUTE_DECISION_NOT_RECORDED",
         "This change moves the join route of entity pairs without an explicit decision; "
-        "nothing was written. Retry upsert_relationship with keep_existing_routes=true "
-        "to record and keep every existing route, or use record_route_decision(decisions=[...]) "
+        f"nothing was written. {keep_hint}Use record_route_decision(decisions=[...]) "
         "to record several pairs in one call. Alternatively include each "
         "graph.path_preferences row in the change itself, with source_entity, "
         "target_entity and relationship_path fields.",
@@ -600,6 +605,7 @@ class ProjectTransaction:
                     normalized_updates,
                     guard=routes == "guard",
                     validate_after=validate_after,
+                    operation=str(intent.get("operation", "")),
                 )
 
             snapshots = tuple(self._snapshot(update.relative_path) for update in normalized_updates)
@@ -853,6 +859,7 @@ class ProjectTransaction:
         *,
         guard: bool,
         validate_after: bool,
+        operation: str = "",
     ) -> dict[str, Any]:
         """Refuse unapproved route changes; every Architect write passes here.
 
@@ -894,7 +901,7 @@ class ProjectTransaction:
                 # The parse gate reports invalid staged input and restores the valid base.
                 return {}
         if guard and (unkept := unkept_route_changes(base, head)):
-            raise _routes_not_recorded(unkept)
+            raise _routes_not_recorded(unkept, operation)
         return {
             "route_decisions_added": [],
             "route_changes": route_changes(base, head),

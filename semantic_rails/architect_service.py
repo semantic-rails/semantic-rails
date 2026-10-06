@@ -52,7 +52,7 @@ from .expressions import expr_to_dict
 from .fanout import package_route, pair_routes, route_reading
 from .package_snapshot import load_package_snapshot
 from .package_tools import impact_report
-from .route_census import route_census, route_changes
+from .route_census import resolve_pairs, route_census, route_changes
 from .schema import PackageConfig, PathPreferenceConfig
 from .yaml_loader import safe_load as yaml_safe_load
 
@@ -1525,9 +1525,25 @@ class ArchitectProject:
                     updates, reports = self._prepare_route_decisions(
                         transaction, changed, rows, updates
                     )
-                # Pins can affect inherited pairs too. The explicit keep choice must preserve
-                # every previous outcome, including refusals, rather than open new answers.
-                remaining = route_changes(base, self._proposed_config(transaction, updates))
+                # Preserve every previously answered pair. For refused pairs, allow the
+                # relationship's own outcome, but refuse any additional change from pins.
+                final = self._proposed_config(transaction, updates)
+                remaining = [
+                    change
+                    for change in route_changes(base, final)
+                    if "refused" not in change["base"]
+                ]
+                pin_changes = route_changes(changed, final)
+                base_outcomes = resolve_pairs(
+                    base, [(row["source_entity"], row["target_entity"]) for row in pin_changes]
+                )
+                remaining.extend(
+                    {**row, "base": outcome.shape()}
+                    for row in pin_changes
+                    if (
+                        outcome := base_outcomes[(row["source_entity"], row["target_entity"])]
+                    ).refused
+                )
                 if remaining:
                     raise SemanticLayerError(
                         "ROUTE_DECISION_NOT_RECORDED",

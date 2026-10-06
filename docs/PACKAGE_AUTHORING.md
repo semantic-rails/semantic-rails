@@ -1916,9 +1916,11 @@ refusal lists affected pairs in
 fields (`source_entity`, `target_entity`, `relationship_path`), without suggesting
 rows. Architect `upsert_relationship(..., keep_existing_routes=True)` records each
 moved pair's previous path in the same transaction and confirms newly ambiguous
-own-key routes. The result lists those rows in `kept_route_decisions`; if any
-previous route outcome still changes (including refusal to answer), it refuses
-without writing. Otherwise choose routes and call
+own-key routes. The result lists those rows in `kept_route_decisions`. Previously
+answered pairs must retain their routes. A previously refused pair may take the
+relationship's own outcome, but generated decisions must not change that outcome;
+otherwise the call refuses without writing. The keep retry hint appears only for
+`upsert_relationship` refusals. Otherwise choose routes and call
 `record_route_decision(decisions=[...])` with several explicit rows before adding
 the relationship, or include chosen rows in the authored change. An ordinary change that
 moves an inherited answer also needs that pair's own decision.

@@ -601,6 +601,7 @@ def test_removing_an_issued_region_key_refuses_a_switch_to_branch_region(tmp_pat
     with pytest.raises(SemanticLayerError, match="nothing was written") as raised:
         project.remove_object(kind="relationship", key="region", model="invoices", dry_run=dry_run)
     assert raised.value.code == "ROUTE_DECISION_NOT_RECORDED"
+    assert "keep_existing_routes" not in str(raised.value)
     changes = {
         (row["source_entity"], row["target_entity"]): row
         for row in raised.value.details["route_changes"]

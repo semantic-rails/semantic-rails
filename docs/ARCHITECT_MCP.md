@@ -110,8 +110,9 @@ package test and a `.gitignore` for build outputs.
    with its own `via` beside the model's foreign key): edit those in `graph.yml`.
    To add a relationship while preserving existing routes, pass `keep_existing_routes: true`.
    The same transaction records each moved pair's previous path and confirms newly ambiguous
-   own-key routes. Its `kept_route_decisions` lists the rows recorded. It refuses if any previous
-   route outcome would still change, including a refusal becoming an answer.
+   own-key routes. Its `kept_route_decisions` lists the rows recorded. It refuses if a previously
+   answered pair still changes, or if generated decisions change a previously refused pair's
+   outcome compared with the relationship alone. The relationship's own new answers are allowed.
    `record_route_decision(source_entity, target_entity, relationship_path, label="")` records
    which route a question between two entities means, as the package default: it writes the
    pair's row in the `path_preferences` list the loader reads (a top-level list in `package.yml`
