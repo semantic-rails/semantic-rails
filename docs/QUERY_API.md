@@ -1025,6 +1025,11 @@ For `status="low_confidence"`, inspect `why` before execution. In particular,
 `PLAN_FALLBACK_SEMANTIC_DRIFT` means a fallback draft validated but changed or dropped requested
 intent slots such as target, grouping, qualification, filters, or time scope; the runtime keeps the
 closest primary draft instead of silently returning a semantically different answer.
+Parsed qualification drafts are held with `PLAN_INTENT_COVERAGE_GAP` until their cohort
+and time scope can be proven. Grouping by entity keys or selecting a key count alone does not
+prove that the qualification was applied. Store grouping terms use the same
+dimension resolution as other entities. A bare "by store" can therefore require clarification;
+name the intended dimension, such as "by store id" or "by store name".
 
 `best.query_ir` is the canonical Query IR for the selected draft. When
 `status="ok"`, `plan` has already called `validate`, which pays the

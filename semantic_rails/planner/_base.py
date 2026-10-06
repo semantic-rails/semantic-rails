@@ -1832,10 +1832,6 @@ def _maybe_group_by(
         dim = _object_by_id(visible_dimensions(config), "dimension.jaffle_customer_history_segment")
         if dim is not None:
             group_by.append(dim.id)
-    if "store" in terms:
-        dim = _dimension(config, ["store", "name"])
-        if dim is not None:
-            group_by.append(dim.id)
     if any(term in lowered for term in ("geo", "geography", "region", "parent")):
         dim = _dimension(config, ["geo"], prefer_parent="parent" in lowered)
         if dim is not None:
@@ -1843,7 +1839,7 @@ def _maybe_group_by(
     for term in _requested_grouping_terms(text):
         term_tokens = set(_tokens(term))
         if (
-            term_tokens & {"store", "geo"}
+            "geo" in term_tokens
             or _is_temporal_grouping_term(term)
             or _names_time_axis(term, clock)
             or _term_matches_value_domain(config, term)

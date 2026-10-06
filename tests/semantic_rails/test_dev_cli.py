@@ -657,7 +657,14 @@ def test_dbt_style_debug_ls_and_ask_commands_are_human_readable() -> None:
     every = _run_json("ls", "--package", "jaffle_shop", "--json")  # as that hint says
     assert every["truncated"] is False and len(every["objects"]) == every["count"] > 50
 
-    planned = _run_json("ask", "--package", "jaffle_shop", "monthly revenue by store", "--json")
+    refused = _run_cli("ask", "--package", "jaffle_shop", "monthly revenue by store", "--json")
+    assert refused.returncode == 1
+    report = json.loads(refused.stdout)
+    assert report["errors"][0]["code"] == "PLAN_UNMATCHED_TERMS"
+    assert report["ok"] is False
+    planned = _run_json(
+        "ask", "--package", "jaffle_shop", "monthly revenue by store name", "--json"
+    )
     assert planned["ok"] is True, planned
     assert planned["plan"]["pattern"]
     assert planned["query"]["group_by"] == ["dimension.jaffle_store_name"]
@@ -669,11 +676,16 @@ def test_ls_time_alias_and_ask_compile_have_real_output() -> None:
     assert "temporal_role." in times.stdout
     assert "0 time object" not in times.stdout
 
+    refused = _run_cli("ask", "--package", "jaffle_shop", "monthly revenue by store", "--json")
+    assert refused.returncode == 1
+    report = json.loads(refused.stdout)
+    assert report["errors"][0]["code"] == "PLAN_UNMATCHED_TERMS"
+    assert report["ok"] is False
     compiled = _run_json(
         "ask",
         "--package",
         "jaffle_shop",
-        "monthly revenue by store",
+        "monthly revenue by store name",
         "--compile",
         "--json",
     )
