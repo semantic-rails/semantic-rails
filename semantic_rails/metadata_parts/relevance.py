@@ -22,14 +22,26 @@ This module owns:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Collection, Mapping
+from dataclasses import replace
 from typing import Any
 
 from ..catalog_search import (
     CatalogSearchIndex,
     tokenize_search_value,
 )
+from ..policy_rules import visible_object_ids
 from ..schema import PackageConfig
+
+_CATALOG_FIELDS = (
+    "measures",
+    "metric_recipes",
+    "dimensions",
+    "segments",
+    "entities",
+    "temporal_roles",
+)
 
 # Stopwords stripped before computing token-overlap relevance against the
 # catalog. These tokens appear in nearly any business intent and would
@@ -129,6 +141,42 @@ def _catalog_token_index(
     """
     index = search_index or CatalogSearchIndex.from_config(config)
     return index.catalog_tokens
+
+
+def _visible_catalog(config: Any, hidden_ids: frozenset[str] | None) -> Any:
+    """The catalog one caller may see; ``config`` itself when nothing is hidden.
+
+    The cached search index stays policy-independent, so a hidden object's words are
+    dropped here. Unknown visibility (``None``) withholds every object.
+    """
+    rows = [row for field in _CATALOG_FIELDS for row in getattr(config, field)]
+    visible = set(visible_object_ids(config, (row.id for row in rows), hidden_ids=hidden_ids))
+    if all(row.id in visible for row in rows):
+        return config
+    return replace(
+        config,
+        **{
+            field: [row for row in getattr(config, field) if row.id in visible]
+            for field in _CATALOG_FIELDS
+        },
+        value_domains=[
+            replace(domain, dimensions=dimensions)
+            for domain in config.value_domains
+            if (dimensions := [dim for dim in domain.dimensions if dim in visible])
+        ],
+    )
+
+
+def _apostrophe_names(config: Any) -> list[str]:
+    """Declared labels, names, synonyms and values spelled with an apostrophe."""
+
+    rows = [row for field in _CATALOG_FIELDS for row in getattr(config, field)]
+    values = [value for domain in config.value_domains for value in domain.values or []]
+    names = [
+        *(name for row in rows for name in (row.label, row.name, *(row.aliases or []))),
+        *(name for value in values for name in (value.value, value.label, *(value.aliases or []))),
+    ]
+    return [str(name) for name in names if re.search(r"['’]", str(name or ""))]
 
 
 def _catalog_token_doc_freq(

@@ -37,12 +37,15 @@
     "metrics": {
       "oneOf": [
         {
-          "type": "object"
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/Metric"
+          }
         },
         {
           "type": "array",
           "items": {
-            "type": "object"
+            "$ref": "#/$defs/Metric"
           }
         }
       ]
@@ -160,6 +163,17 @@
         }
       },
       "additionalProperties": false
+    },
+    "Metric": {
+      "type": "object",
+      "properties": {
+        "synonyms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     }
   }
 }

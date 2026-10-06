@@ -44,12 +44,14 @@ from ._base import (
     _canonical_metric,
     _explicit_grain,
     _fiscal_calendar,
+    _name_matches,
     _named_metric,
     _names_time_axis,
     _object_by_id,
     _object_text,
     _requested_grouping_spans,
     _said_name,
+    _shared_subjects,
     _singular,
     _tied_top,
     _time_window,
@@ -659,6 +661,33 @@ def _coverage_why(gaps: list[CoverageGap]) -> dict[str, Any] | None:
     }
 
 
+def named_subject_why(
+    runtime: Any, question: str, partial_query: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    """A shared whole name cannot be settled by the ranking's label or score."""
+
+    rows = _shared_subjects(runtime._config, question)
+    if not rows or any(row.id in _projected_subject_ids(partial_query or {}) for row in rows):
+        return None
+    return _coverage_why(
+        [
+            CoverageGap(
+                kind="subject_ambiguous",
+                clause=_target_focus_text(question),
+                message="The question names more than one selectable subject.",
+                expected={"candidates": [row.id for row in rows], "candidate_count": len(rows)},
+                actual={},
+                recovery_hint={
+                    "kind": "name_one_subject",
+                    "message": "Ask again naming the one you mean: "
+                    + " or ".join(f"{row.label} ({row.id})" for row in rows)
+                    + ".",
+                },
+            )
+        ]
+    )
+
+
 def intent_subject_why(
     runtime: Any,
     *,
@@ -675,6 +704,9 @@ def intent_subject_why(
     """
 
     config, text = runtime._config, str(question or "")
+    collision = named_subject_why(runtime, text, partial_query)
+    if collision is not None:
+        return collision
     subjects = _projected_subject_ids(query)
     measure = bool(subjects) and subjects[0].startswith("measure.")
     terms = set(intent_ir.target_measure_terms)
@@ -2461,7 +2493,9 @@ def _unconsumed_words(
         if str(getattr(row, "id", "")) in referenced or (
             calendar_id != "default" and getattr(row, "calendar_id", "") == calendar_id
         ):
-            used |= own
+            # Multi-word synonyms consume only their contiguous spans.
+            used |= _own_words(row, phrase_words=False)
+            spans.extend((start, end) for _, start, end in _name_matches(row, lowered))
             # The question spelling its whole id or name ("metric.sales.aov_usd") uses that span.
             for attr in ("id", "name"):
                 path = re.escape(str(getattr(row, attr, "") or "").lower())
@@ -2530,7 +2564,7 @@ def _unconsumed_words(
     return out, unknown
 
 
-def _own_words(row: Any) -> set[str]:
+def _own_words(row: Any, *, phrase_words: bool = True) -> set[str]:
     """The words that name an object, as written: those of its label and aliases, and those of
     the last dotted part of its id and name that aren't one of its own namespaces ("sales" in
     "metric.sales.aov_usd", which is named "jaffle.sales_aov_usd")."""
@@ -2538,7 +2572,12 @@ def _own_words(row: Any) -> set[str]:
     paths = [str(getattr(row, attr, "") or "") for attr in ("id", "name")]
     spaces = set(_plain(" ".join(path.rpartition(".")[0] for path in paths)).split())
     leaves = set(_plain(" ".join(path.rpartition(".")[2] for path in paths)).split())
-    declared = [getattr(row, "label", "") or "", *(getattr(row, "aliases", None) or [])]
+    aliases = [
+        alias
+        for alias in (getattr(row, "aliases", None) or [])
+        if phrase_words or len(_TERM_RE.findall(str(alias))) == 1
+    ]
+    declared = [getattr(row, "label", "") or "", *aliases]
     return (leaves - spaces) | set(_plain(" ".join(map(str, declared))).split())
 
 
@@ -2624,8 +2663,8 @@ def _consumed_spans(
         ):
             # An object's own names only: a description that says "per hour" consumes nothing.
             names = [str(getattr(row, attr, "") or "") for attr in ("id", "name", "label")]
-            names.extend(str(alias) for alias in getattr(row, "aliases", None) or [])
             spans.extend(_name_spans(tokens, normal, names, whole=False))
+            spans.extend((start, end) for _, start, end in _name_matches(row, lowered))
     labels = _value_phrases(runtime._config)
     fields = {str(getattr(row, "id", "")): row for row in rows}
     for node in _dict_nodes(query):

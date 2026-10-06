@@ -95,7 +95,10 @@ def test_plan_drafts_a_qualified_ranking(runtime_factory) -> None:
     ("intent", "expected_id"),
     [
         ("new customer orders over time", "measure.jaffle.new_customer_order_count"),
-        ("session to order conversion rate", "metric.sales.session_to_order_conversion_rate_7d"),
+        (
+            "session to order conversion rate (7d)",
+            "metric.sales.session_to_order_conversion_rate_7d",
+        ),
         ("repeat customer orders by store", "metric.sales.repeat_customer_orders"),
         ("high value customer orders by store", "metric.sales.high_value_customer_orders"),
         (
@@ -749,7 +752,7 @@ def test_parse_intent_remains_internal_debug_helper(runtime_factory) -> None:
     [
         "top stores by revenue",
         "monthly orders from customers who made more than 10 purchases in that month",
-        "what is the session-to-order conversion rate",
+        "what is the session-to-order conversion rate (7d)",
     ],
 )
 def test_plan_payload_stays_token_tight(runtime_factory, intent: str) -> None:
@@ -770,7 +773,7 @@ def test_plan_payload_stays_token_tight(runtime_factory, intent: str) -> None:
     [
         "top stores by revenue",
         "monthly orders from customers who made more than 10 purchases in that month",
-        "what is the session-to-order conversion rate",
+        "what is the session-to-order conversion rate (7d)",
     ],
 )
 def test_plan_query_detail_matches_best_query_ir_and_stays_compact(

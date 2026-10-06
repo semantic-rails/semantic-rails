@@ -570,7 +570,7 @@ def test_metadata_endpoints_and_ui_smoke_path(runtime_factory, package_config_fa
             base + "/api/v1/plan", {"intent": "ordered vs delivered revenue by month"}
         )
         conversion_plan = _post(
-            base + "/api/v1/plan", {"intent": "session to order conversion rate"}
+            base + "/api/v1/plan", {"intent": "session to order conversion rate (7d)"}
         )
         segment_validated = _post(
             base + "/api/v1/segment-validate",

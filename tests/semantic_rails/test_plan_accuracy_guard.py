@@ -1183,8 +1183,10 @@ def test_mcp_plan_reports_what_it_could_not_honor(
     assert clean["status"] == "ok"
     assert clean["warnings"] == []
     weather = adapter.call_tool("plan", {"intent": "what's the weather in Philadelphia tomorrow"})
-    codes = [warning["code"] for warning in weather["warnings"]]
-    assert "PLAN_UNMATCHED_TERMS" in codes
+    expanded = adapter.call_tool("plan", {"intent": "what is the weather in Philadelphia tomorrow"})
+    # The contraction must not leave a stray "s" that passes catalog relevance.
+    assert weather["status"] == expanded["status"] == "out_of_scope"
+    assert weather["why"]["code"] == "LOW_RELEVANCE"
     # A draft that drops the ranked products validates, but isn't ready.
     _draft_plan(
         monkeypatch,

@@ -2628,6 +2628,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             compatible_temporal_roles=metric_compatible_temporal_roles,
             filter_spec=expression.get("filter", {}) or {},
             window_spec=expression.get("window", {}) or {},
+            aliases=list(spec.get("synonyms", []) or []),
             name=str(spec.get("name", metric_key)),
             label=str(spec.get("label", _titleize(metric_key))),
             description=str(spec.get("description", spec.get("label", ""))),

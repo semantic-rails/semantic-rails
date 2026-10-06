@@ -61,6 +61,15 @@ def with_dimension_visibility(operation: Callable[_P, _R]) -> Callable[_P, _R]:
     return wrapped
 
 
+def caller_hidden_ids(config: Any) -> frozenset[str] | None:
+    """The pinned caller's hidden object ids; ``None`` means visibility is uncertain."""
+
+    current = _visibility.get()
+    if current is not None and current.config is config:
+        return current.hidden_ids
+    return policies.diagnostic_hidden_object_ids(config, {})
+
+
 def visible_object_ids(
     config: Any,
     object_ids: Iterable[str],
@@ -70,12 +79,7 @@ def visible_object_ids(
     """Filter candidates before ranking or text; explicit uncertainty withholds all."""
 
     if isinstance(hidden_ids, EllipsisType):
-        current = _visibility.get()
-        hidden_ids = (
-            current.hidden_ids
-            if current is not None and current.config is config
-            else policies.diagnostic_hidden_object_ids(config, {})
-        )
+        hidden_ids = caller_hidden_ids(config)
     return _visible_object_ids(config, object_ids, hidden_ids=hidden_ids)
 
 

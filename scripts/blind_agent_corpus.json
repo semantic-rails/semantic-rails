@@ -84,7 +84,7 @@
     },
     {
       "name": "session_to_order_conversion_rate",
-      "intent": "What is the session-to-order conversion rate?",
+      "intent": "What is the session-to-order conversion rate (7d)?",
       "expectation": "candidate",
       "expected_resolved_ids": [
         "metric.sales.session_to_order_conversion_rate_7d"

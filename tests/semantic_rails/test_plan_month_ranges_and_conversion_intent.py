@@ -83,7 +83,7 @@ def test_conversion_intent_with_non_conversion_draft_is_low_confidence(runtime_f
 
 def test_conversion_intent_resolved_to_conversion_metric_stays_ok(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
-    payload = _plan(runtime, "session to order conversion rate by month")
+    payload = _plan(runtime, "session to order conversion rate (7d) by month")
     assert payload["status"] == "ok"
     select = (payload.get("best") or {}).get("query_ir", {}).get("select") or []
     assert "conversion" in str(select)

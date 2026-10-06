@@ -1026,7 +1026,7 @@ def test_plan_supports_guided_query_building(runtime_factory):
         )
         conversion = plan_candidate_envelope(
             runtime,
-            intent="session to order conversion rate",
+            intent="session to order conversion rate (7d)",
             limit=2,
             verbosity="full",
         )

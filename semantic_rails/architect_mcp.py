@@ -1206,7 +1206,7 @@ def create_architect_mcp_server(
     @mcp.tool(
         annotations=_mutation_annotations("Upsert metric"),
         description=(
-            "Upsert a metric from spec (kind, measure or inputs, value_type, label, description). "
+            "Upsert a metric from spec (kind, measure or inputs, value_type, label, synonyms, description). "
             "A new metric goes in metrics/<file_name>, or metrics/<group>/<metric_key>.yml; an "
             "existing one stays in its file. Fields merge; replace: true rewrites it, keeping its "
             "id. Gotcha: strict packages need an explicit value_type."
@@ -1215,7 +1215,20 @@ def create_architect_mcp_server(
     def upsert_metric(
         project_path: str,
         metric_key: str,
-        spec: dict[str, Any],
+        spec: Annotated[
+            dict[str, Any],
+            Field(
+                json_schema_extra={
+                    "properties": {
+                        "synonyms": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Other declared names for this metric.",
+                        }
+                    },
+                }
+            ),
+        ],
         expected_revision: str,
         idempotency_key: str,
         file_name: str = "",

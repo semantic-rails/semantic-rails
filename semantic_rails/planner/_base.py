@@ -372,61 +372,162 @@ def _canonical_metric(config: Any, term_set: set[str]) -> Any | None:
     return None
 
 
-def _named_metric(config: Any, text: str) -> tuple[Any, str] | None:
-    """The metric the question names by its label, an alias or its id, and the
-    question with that name replaced by the id.
+def _declared_name_forms(row: Any) -> list[str]:
+    """The declared forms of one name, shared by selection and readiness."""
 
-    The name has two words or more, and every measure the question names lies
-    inside it, so the metric is the more specific reading: "completed revenue
-    by month" means the Completed Revenue metric, not the Revenue measure. So
-    does a measure with the same name ("rolling 28-day revenue" is both). A
-    measure named elsewhere ("revenue and orders") leaves the question to
-    measure-first resolution. The id stands in for the
-    name so its words ("revenue, trailing 7 days") aren't read again as a
-    window, a count or a value.
-    """
+    label = str(getattr(row, "label", "") or "")
+    return [
+        label,
+        re.sub(r"\s*\(.*?\)", "", label),
+        str(row.id),
+        _last_token(row.id),
+        *(getattr(row, "aliases", None) or []),
+    ]
+
+
+def _name_matches(row: Any, text: str, *, short_label: bool = True) -> list[tuple[int, int, int]]:
+    """Whole contiguous declared names, as (word count, start, end) spans."""
 
     words = list(re.finditer(r"[^\W_]+", text.lower()))
-    said = [word.group() for word in words]
+    said = [_singular(word.group()) for word in words]
+    matches = set()
+    forms = _declared_name_forms(row)
+    for name in forms if short_label else [forms[0], *forms[2:]]:
+        parts = [_singular(word) for word in re.findall(r"[^\W_]+", name.lower())]
+        for start in range(len(said) - len(parts) + 1):
+            if parts and said[start : start + len(parts)] == parts:
+                matches.add((len(parts), words[start].start(), words[start + len(parts) - 1].end()))
+    return sorted(matches)
 
-    def named(rows: Iterable[Any]) -> Iterable[tuple[int, int, Any]]:
-        for row in rows:
-            for name in (row.label, row.id, *(getattr(row, "aliases", None) or [])):
-                parts = re.findall(r"[^\W_]+", str(name or "").lower())
-                for start in range(len(said) - len(parts) + 1):
-                    if parts and said[start : start + len(parts)] == parts:
-                        yield len(parts), start, row
 
-    size, start, metric = max(
-        (item for item in named(config.metric_recipes) if item[0] > 1),
-        key=lambda item: item[0],
-        default=(0, 0, None),
-    )
-    if metric is None or any(
-        not (start <= begin and begin + length <= start + size)
-        for length, begin, _row in named(config.measures)
+def _name_fit(text: str, spans: Iterable[tuple[int, int, int]]) -> set[str]:
+    """The words inside a subject's matched name spans; no other word of the question."""
+
+    return {
+        _singular(word)
+        for _, start, end in spans
+        for word in re.findall(r"[^\W_]+", text[start:end].lower())
+    }
+
+
+def _named_metric(config: Any, text: str) -> tuple[Any, str] | None:
+    """A whole metric name containing every named measure, replaced by its id.
+
+    Ties never select a metric. Single-word synonyms also name a metric; label and
+    id forms retain the multi-word requirement used for ordinary measure-first lookup.
+    A label without its parenthetical never selects: it is a readiness form only.
+    """
+
+    spans = {row.id: _name_matches(row, text, short_label=False) for row in config.metric_recipes}
+    matches = [
+        (size, start, end, row)
+        for row in config.metric_recipes
+        for size, start, end in spans[row.id]
+        if size > 1
+        or any(
+            _singular(alias.lower()) == _singular(text[start:end].lower())
+            for alias in (row.aliases or [])
+        )
+    ]
+    size = max((item[0] for item in matches), default=0)
+    fits = {row.id: _name_fit(text, spans[row.id]) for _, _, _, row in matches}
+    longest = [
+        item
+        for item in matches
+        if item[0] == size and not any(fits[item[3].id] < words for words in fits.values())
+    ]
+    if not longest or len({item[3].id for item in longest}) != 1:
+        return None
+    _, first, last, metric = longest[0]
+    if any(
+        not (first <= begin and end <= last)
+        for row in config.measures
+        for _size, begin, end in _name_matches(row, text)
     ):
         return None
-    first, last = words[start].start(), words[start + size - 1].end()
     return metric, f"{text[:first]}{metric.id}{text[last:]}"
 
 
 def _said_name(row: Any, text: str) -> frozenset[str]:
-    """The words of the longest name of ``row`` that ``text`` says, in any order.
+    """Words of the longest whole name said, allowing plurals.
 
-    The swap matches the target phrase (``_target_focus_text``); the readiness guard matches
-    the whole question. The names are its label, with or without a parenthetical, the last
-    part of its id and its aliases; a plural counts as its singular. Empty when the text
-    says none.
+    Labels and ids retain their any-order rule. A multi-word synonym must be
+    contiguous, so separate fragments cannot stand in for its declared phrase.
     """
 
     said = {_singular(word) for word in _tokens(text)}
-    label = str(getattr(row, "label", "") or "")
-    names = [label, re.sub(r"\s*\(.*?\)", "", label), _last_token(row.id), *(row.aliases or [])]
+    aliases = getattr(row, "aliases", None) or []
+    contiguous = {text[start:end].lower() for _, start, end in _name_matches(row, text)}
     return max(
-        (words for name in names if (words := frozenset(map(_singular, _tokens(name)))) <= said),
+        (
+            words
+            for name in _declared_name_forms(row)
+            if (words := frozenset(map(_singular, _tokens(name)))) <= said
+            and (
+                name not in aliases
+                or len(words) == 1
+                or any(frozenset(map(_singular, _tokens(span))) == words for span in contiguous)
+            )
+        ),
         key=len,
         default=frozenset(),
+    )
+
+
+def _shared_subjects(config: Any, text: str) -> list[Any]:
+    """Whole analytic names that remain indistinguishable, independent of ranking.
+
+    A label without its parenthetical counts, so the shared base of two variants
+    ("Conversion rate (7d)", "Conversion rate (7d, same store)") never picks one.
+    """
+
+    rows = [
+        *config.metric_recipes,
+        *(row for row in config.measures if getattr(row, "publish", True)),
+    ]
+    visible = set(visible_object_ids(config, (row.id for row in rows)))
+    rows = [row for row in rows if row.id in visible]
+    # A generated plain mirror and its measure are the same authored answer.
+    measures = {row.id: row for row in config.measures}
+    mirrors = set()
+    for metric in config.metric_recipes:
+        wrapped = whole_aggregate(metric)
+        other = measures.get(wrapped[0]) if wrapped is not None and not wrapped[2] else None
+        if other is not None and other.label == metric.label and other.name == metric.name:
+            mirrors.add(metric.id)
+    rows = [row for row in rows if row.id not in mirrors]
+    fits = {}
+    for row in rows:
+        spans = _name_matches(row, text)
+        if spans:
+            fits[row.id] = (row, _name_fit(text, spans), spans)
+    contenders = [
+        row
+        for row, words, _ in fits.values()
+        if not any(words < other_words for _, other_words, _ in fits.values())
+    ]
+    return (
+        sorted(contenders, key=lambda row: row.id)
+        if len(contenders) > 1
+        and any(
+            (start, end) == (other_start, other_end)
+            for row in contenders
+            for _, start, end in fits[row.id][2]
+            for other in contenders
+            if other.id != row.id
+            and (
+                row.id.split(".")[0] == other.id.split(".")[0]
+                # Existing whole-name metric precedence settles measure/metric labels.
+                # An authored synonym crossing that boundary must still clarify.
+                or any(
+                    _singular(text[start:end].lower()) == _singular(alias.lower())
+                    for candidate in (row, other)
+                    for alias in (candidate.aliases or [])
+                )
+            )
+            for _, other_start, other_end in fits[other.id][2]
+        )
+        else []
     )
 
 
