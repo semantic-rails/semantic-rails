@@ -48,7 +48,7 @@ from .db_parts.base import (
     _limit_timeout_milliseconds,
     restore_column_names,
 )
-from .db_parts.common import session_time_zone, set_duckdb_time_zone
+from .db_parts.common import materialized_duckdb_result, session_time_zone, set_duckdb_time_zone
 from .db_parts.duckdb_confinement import confine_duckdb, confinement_directory, require_inside
 from .db_parts.duckdb_setup import configure_duckdb_connection
 from .db_parts.snowflake import (
@@ -88,8 +88,8 @@ __all__ = [
 ]
 
 
-def _row_to_dict(cursor: Any, row: Any) -> dict[str, Any]:
-    return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+def _row_to_dict(description: Any, row: Any) -> dict[str, Any]:
+    return {col[0]: row[idx] for idx, col in enumerate(description)}
 
 
 _SQL_SCRIPT_TOKEN = re.compile(
@@ -215,13 +215,16 @@ class Database:
             on_cursor(cur)  # e.g. a statement timeout must interrupt this cursor, not self.conn
         if self.engine == "duckdb":
             set_duckdb_time_zone(cur, time_zone)
-        cur.execute(sql, list(params or []))
-        fetched = cur.fetchmany(max_rows + 1) if max_rows is not None else cur.fetchall()
+            description, fetched = materialized_duckdb_result(cur, sql, params, max_rows=max_rows)
+        else:
+            cur.execute(sql, list(params or []))
+            description = cur.description
+            fetched = cur.fetchmany(max_rows + 1) if max_rows is not None else cur.fetchall()
         truncated = max_rows is not None and len(fetched) > max_rows
         if truncated:
             fetched = fetched[:max_rows]
         return QueryRows(
-            [_row_to_dict(cur, row) for row in fetched],
+            [_row_to_dict(description, row) for row in fetched],
             truncated=truncated,
         )
 
