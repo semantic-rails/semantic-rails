@@ -11,7 +11,7 @@ from .schema import PackageConfig, SemanticPolicyConfig
 # with an implicit effect; row filters are enforced separately on base scans.
 POLICY_ACTIONS = {
     "package_release": {"": "label", "label": "label"},
-    "object_visibility": {"hidden": "hidden", "visible": "visible"},
+    "object_visibility": {"hidden": "hidden", "visible_only": "visible_only"},
     "object_access": {"deny": "deny", "redact": "redact", "withhold_values": "withhold_values"},
     "protected_object": {"": "protected", "protected": "protected"},
     "metric_constraint": {"": "constrain", "constrain": "constrain"},
@@ -19,6 +19,9 @@ POLICY_ACTIONS = {
 }
 DEFAULT_MAX_RANK = 10
 MAX_RANK = 100
+# Besides object_ids, roles, audiences and environments, a visible_only policy takes only
+# its action and rationale text: an ignored key could narrow whom it names.
+VISIBLE_ONLY_KEYS = {"action", "visibility", "rule", "rationale", "description"}
 
 
 def policy_config(policy: SemanticPolicyConfig) -> dict[str, Any]:
@@ -54,7 +57,26 @@ def policy_action(policy: SemanticPolicyConfig) -> str:
         )
     if allowed[action] == "withhold_values":
         withheld_max_rank(policy)
+    if allowed[action] == "visible_only":
+        _check_visible_only(policy)
     return allowed[action]
+
+
+def _names(values: Iterable[str] | None) -> set[str]:
+    return {str(value).strip().lower() for value in list(values or []) if str(value).strip()}
+
+
+def _check_visible_only(policy: SemanticPolicyConfig) -> None:
+    """The objects and whom they are visible to; an empty list would name everyone."""
+    extra = sorted(set(policy_config(policy)) - VISIBLE_ONLY_KEYS)
+    if extra or not _names(policy.object_ids) or not _names([*policy.roles, *policy.audiences]):
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"policy '{policy.id}' with action 'visible_only' takes non-empty object_ids and "
+            "roles and/or audiences"
+            + (f", and no other keys (got {', '.join(extra)})" if extra else "")
+            + ".",
+        )
 
 
 def withheld_max_rank(policy: SemanticPolicyConfig) -> int:
@@ -81,11 +103,8 @@ def context_scope_matches(allowed: Iterable[str], value: str) -> bool:
 
 
 def role_scope_matches(allowed: Iterable[str], roles: Iterable[str] | None) -> bool:
-    allowed_set = {str(role).strip().lower() for role in list(allowed or []) if str(role).strip()}
-    if not allowed_set:
-        return True
-    role_set = {str(role).strip().lower() for role in list(roles or []) if str(role).strip()}
-    return bool(allowed_set & role_set)
+    allowed_set = _names(allowed)
+    return not allowed_set or bool(allowed_set & _names(roles))
 
 
 def policy_matches(
@@ -105,13 +124,15 @@ def policy_matches(
     return role_scope_matches(policy.roles, roles)
 
 
-def hidden_object_ids(
+def hidden_policy_ids(
     config: PackageConfig,
     *,
     environment: str = "",
     audience: str = "",
     roles: Iterable[str] | None = None,
 ) -> set[str]:
+    """Objects a matching ``hidden`` policy hides; ``policies.hidden_object_ids`` is the
+    complete set."""
     return {
         object_id
         for policy in config.semantic_policies
@@ -127,6 +148,33 @@ def hidden_object_ids(
     }
 
 
+def visible_only_listed(
+    config: PackageConfig,
+    *,
+    environment: str = "",
+    audience: str = "",
+    roles: Iterable[str] | None = None,
+) -> set[str]:
+    """Objects an in-force ``visible_only`` policy keeps from this context, before dependents.
+
+    In force: no ``environments``, or the context's environment is listed or blank (an unknown
+    environment never lifts a restriction). Eligible: one of ``roles`` when any are listed, and
+    the audience when ``audiences`` are listed. An object listed by several policies needs all.
+    """
+    listed: set[str] = set()
+    for policy in config.semantic_policies:
+        if policy_action(policy) != "visible_only":
+            continue
+        if environment and not context_scope_matches(policy.environments, environment):
+            continue
+        if not (
+            role_scope_matches(policy.roles, roles)
+            and context_scope_matches(policy.audiences, audience)
+        ):
+            listed.update(policy.object_ids)
+    return listed
+
+
 def visible_object_ids(
     config: PackageConfig,
     object_ids: Iterable[str],
@@ -136,7 +184,10 @@ def visible_object_ids(
     """Filter resolved candidates; uncertain visibility withholds every alternative."""
     if isinstance(hidden_ids, EllipsisType):
         try:
-            hidden_ids = frozenset(hidden_object_ids(config))
+            # Objects computed from a visible_only one need the compiler; without them, withhold.
+            hidden_ids = (
+                None if visible_only_listed(config) else frozenset(hidden_policy_ids(config))
+            )
         except Exception:  # noqa: BLE001 — uncertain visibility cannot authorize disclosure
             hidden_ids = None
     return [

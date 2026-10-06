@@ -10,6 +10,7 @@ on ``validate`` / ``compile`` / ``execute``.
 
 from __future__ import annotations
 
+import contextvars
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from functools import cache
@@ -17,17 +18,24 @@ from typing import Any
 
 from .ast import every_filter, normalize_query, plain_filters
 from .compiler import BoundQuery, bind_metadata_objects, bind_query
+from .compiler_parts.indexes import get_package_analysis
 from .errors import SemanticLayerError
-from .policy_rules import MAX_RANK, withheld_max_rank
+from .policy_rules import MAX_RANK, hidden_policy_ids, visible_only_listed, withheld_max_rank
 from .policy_rules import context_scope_matches as context_scope_matches
-from .policy_rules import hidden_object_ids as hidden_object_ids
 from .policy_rules import policy_action as _policy_action
 from .policy_rules import policy_config as _policy_config
 from .policy_rules import policy_matches as _policy_matches
 from .policy_rules import role_scope_matches as role_scope_matches
 from .request_context import context_from_policy_context
 from .row_filters import RowFilter, is_row_filter, row_filter
-from .schema import PackageConfig, SemanticPolicyConfig
+from .schema import (
+    PackageConfig,
+    RelationshipConfig,
+    SegmentConfig,
+    SemanticPolicyConfig,
+    ValueDomainConfig,
+)
+from .segments import build_segment_query, normalize_segment
 from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral, SqlOrder
 from .sql_preparation import checked_slot_value
 
@@ -62,6 +70,85 @@ def policy_effects_for_object(
             continue
         effects.append(_base_policy_effect(policy, action=action))
     return effects
+
+
+def hidden_object_ids(
+    config: PackageConfig,
+    *,
+    environment: str = "",
+    audience: str = "",
+    roles: Iterable[str] | None = None,
+) -> set[str]:
+    """The one visibility set catalog, discovery, inspect, valid values, planning and
+    diagnostics read: ``hidden`` policies and :func:`restricted_object_ids`."""
+    scope: dict[str, Any] = {"environment": environment, "audience": audience, "roles": roles}
+    return hidden_policy_ids(config, **scope) | restricted_object_ids(config, **scope)
+
+
+def restricted_object_ids(
+    config: PackageConfig,
+    *,
+    environment: str = "",
+    audience: str = "",
+    roles: Iterable[str] | None = None,
+) -> frozenset[str]:
+    """What ``visible_only`` policies keep from this context: each listed object it is not
+    eligible for, and every object whose reads reach one or cannot be bound."""
+    listed = visible_only_listed(config, environment=environment, audience=audience, roles=roles)
+    if not listed:
+        return frozenset()
+    return frozenset(listed).union(
+        object_id
+        for object_id, reads in _object_reads(config).items()
+        if reads is None or reads & listed
+    )
+
+
+def bound_object_ids(binding: BoundQuery) -> frozenset[str]:
+    """Every object a bound query reads, including what each root leaf computes."""
+    return binding.object_ids.union(*binding.leaf_objects.values())
+
+
+def _object_reads(config: PackageConfig) -> dict[str, frozenset[str] | None]:
+    analysis = get_package_analysis(config)
+    if analysis.object_reads is None:
+        # A fresh context, so an outer binding never records these reads as its own.
+        analysis.object_reads = contextvars.Context().run(_bind_object_reads, config)
+    return analysis.object_reads
+
+
+def _bind_object_reads(config: PackageConfig) -> dict[str, frozenset[str] | None]:
+    """What the compiler reads to answer each object: a recipe's default invocation, a
+    segment's query, a value domain's dimensions, a relationship's entities."""
+    reads: dict[str, frozenset[str] | None] = {}
+    rows: list[Any] = [
+        *config.entities,
+        *config.dimensions,
+        *config.temporal_roles,
+        *config.relationships,
+        *config.value_domains,
+        *config.measures,
+        *config.metric_recipes,
+        *config.segments,
+    ]
+    for row in rows:
+        try:
+            if isinstance(row, SegmentConfig):
+                segment = normalize_segment(config, row.id)
+                query = build_segment_query(segment, include_preview_dimensions=True)
+                reads[row.id] = bound_object_ids(bind_query(config, None, query))
+                continue
+            linked = (
+                row.dimensions
+                if isinstance(row, ValueDomainConfig)
+                else [row.source_entity, row.target_entity]
+                if isinstance(row, RelationshipConfig)
+                else []
+            )
+            reads[row.id] = bind_metadata_objects(config, [row.id, *linked])
+        except Exception:  # noqa: BLE001 — unknown reads cannot authorize disclosure
+            reads[row.id] = None
+    return reads
 
 
 def diagnostic_hidden_object_ids(
@@ -161,6 +248,20 @@ def enforce_query_policies(
     binding: BoundQuery | None = None,
 ) -> list[dict[str, Any]]:
     object_ids = list(object_ids)  # read twice: the effects, then the withheld objects
+    # visible_only is checked against everything the query reads, never policy by policy.
+    restricted = restricted_object_ids(
+        config, environment=environment, audience=audience, roles=roles
+    ).intersection(object_ids, bound_object_ids(binding) if binding is not None else ())
+    if restricted:
+        raise SemanticLayerError(
+            "POLICY_DENIED",
+            "Query references a semantic object blocked by policy.",
+            details={
+                "blocked_objects": sorted(restricted),
+                "policy_effects": [],
+                "policy_violations": [],
+            },
+        )
     effects = query_policy_effects(
         config,
         object_ids,

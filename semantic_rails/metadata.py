@@ -802,7 +802,7 @@ def _conversion_metadata(
             audience=str(policy_context.get("audience", "")),
             roles=policy_context.get("roles", []),
         )
-        if any(effect["action"] not in {"visible", "label"} for effect in effects):
+        if any(effect["action"] not in {"visible_only", "label"} for effect in effects):
             return {}
     units = "|".join(CONVERSION_WINDOW_UNITS)
     return {
