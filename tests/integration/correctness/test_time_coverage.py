@@ -336,7 +336,13 @@ def test_filled_monthly_answers_match_with_and_without_rollups(request, backend_
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize("hours", [-1, 1], ids=["past", "future"])
-def test_aware_coverage_cutoff_ignores_the_session_zone(changed_runtime, backend_name, hours):
+@pytest.mark.parametrize("expression", [REVENUE, ORDERS], ids=["sum", "count"])
+@pytest.mark.parametrize("scope", ["dataset", "query"])
+@pytest.mark.parametrize("fill", [False, True], ids=["unfilled", "filled"])
+@pytest.mark.parametrize("bounded", [True, False], ids=["bounded", "unbounded"])
+def test_aware_coverage_cutoff_ignores_the_session_zone(
+    changed_runtime, backend_name, hours, expression, scope, fill, bounded
+):
     rt = changed_runtime(
         "tz_implicit",
         "INSERT INTO orders (order_id, ordered_at_tz, amount) VALUES "
@@ -350,20 +356,32 @@ def test_aware_coverage_cutoff_ignores_the_session_zone(changed_runtime, backend
         "date_trunc('day', ordered_at_tz AT TIME ZONE 'UTC') + INTERVAL '1 day' "
         "FROM orders WHERE order_id = 999",
     )[0]
-    # Store b's revenue has no row that day (order 999 has no store), so it reads 0 exactly
-    # where the day is loaded.
+    options = {
+        **({"start": str(start), "end": str(end)} if bounded else {}),
+        **({"fill": True} if fill else {}),
+    }
+    # Order 999 has no store, so only its own bucket holds it: store b reads 0 there exactly
+    # where the bucket is loaded, filled or not, and NULL after the last loaded timestamp.
     store_b = {
         "kind": "aggregate",
-        **REVENUE,
+        **expression,
         "filter": {"all": [{"field": STORE, "op": "=", "value": "b"}]},
     }
-    result = rt.query(_ask("day", _item(store_b, "v"), start=str(start), end=str(end), fill=True))
     gold = _rows(
         rt,
         "SELECT CASE WHEN ordered_at_tz <= CURRENT_TIMESTAMP THEN 0 END "
         "FROM orders WHERE order_id = 999",
     )
-    assert [r["v"] for r in typed_rows(result)] == [r[0] for r in gold]
+
+    def bucket_values(query):
+        rows = typed_rows(rt.query({**query, "observation_scope": scope}))
+        return [r["v"] for r in rows if str(r[f"{ROLE}__day"])[:10] == str(start)[:10]]
+
+    assert bucket_values(_ask("day", _item(store_b, "v"), **options)) == [r[0] for r in gold]
+    if fill and bounded:
+        query = _ask("day", _item(expression, "v"), **options)
+        query["where"] = [{"field": STORE, "op": "=", "value": "b"}]
+        assert bucket_values(query) == [r[0] for r in gold]
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])

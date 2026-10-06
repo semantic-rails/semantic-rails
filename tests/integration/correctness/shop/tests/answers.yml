@@ -2109,7 +2109,7 @@ tests:
   shop/absent_filtered_input_beside_an_observed_one:
     kind: query_matches_snapshot
     expect: answer
-    why: Freeze the declared inputs and independent reference for absent filtered input beside an observed one.
+    why: Observed source buckets define zero for an authored filter that never matches, even beside an unfiltered input.
     cites:
       - tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id
       - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
@@ -2138,12 +2138,12 @@ tests:
         temporal_role: temporal_role.shop_order_ordered_at
         grain: quarter
     reference_sql: SELECT date_trunc('quarter', o.ordered_at) AS b, SUM(o.amount), SUM(CASE WHEN o.store_id = 'zzz'
-      THEN o.amount END) FROM orders AS o WHERE TRUE GROUP BY 1
+      THEN o.amount ELSE 0 END) FROM orders AS o WHERE TRUE GROUP BY 1
     expected_rows:
-      - {temporal_role.shop_order_ordered_at__quarter: '2023-10-01T00:00:00', revenue: 22, absent: null}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-01-01T00:00:00', revenue: 32, absent: null}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-04-01T00:00:00', revenue: 9, absent: null}
-      - {temporal_role.shop_order_ordered_at__quarter: '2024-07-01T00:00:00', revenue: 11, absent: null}
+      - {temporal_role.shop_order_ordered_at__quarter: '2023-10-01T00:00:00', revenue: 22, absent: 0}
+      - {temporal_role.shop_order_ordered_at__quarter: '2024-01-01T00:00:00', revenue: 32, absent: 0}
+      - {temporal_role.shop_order_ordered_at__quarter: '2024-04-01T00:00:00', revenue: 9, absent: 0}
+      - {temporal_role.shop_order_ordered_at__quarter: '2024-07-01T00:00:00', revenue: 11, absent: 0}
   shop/ratio_over_an_unknown_numerator:
     kind: query_matches_snapshot
     expect: answer
@@ -7138,6 +7138,42 @@ tests:
     reference_sql: SELECT SUM(amount), NULLIF(COUNT(*), 0) FROM orders WHERE store_id = 'zzz'
     expected_rows:
       - {revenue: null, orders: null}
+  shop/filtered_count_keeps_observed_weeks:
+    kind: query_matches_snapshot
+    expect: answer
+    why: An authored store filter contributes zero in an observed week with no matches; unloaded weeks stay absent.
+    cites:
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.order_count
+      - tests/integration/correctness/shop/models/orders.yml#model.dimensions.store_id
+      - tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at
+      - docs/QUERY_IR_SCHEMA.md#empty-groups-null-or-0
+    tags: [null-vs-zero, time-window]
+    variant: utc_authored
+    query:
+      select:
+        - expression:
+            kind: aggregate
+            measure: measure.shop.order_count
+            filter:
+              all: [{field: dimension.shop_order_store_id, op: '=', value: b}]
+          as: orders
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: week}
+    reference_sql: |-
+      SELECT date_trunc('week', ordered_at),
+             COUNT(CASE WHEN store_id = 'b' THEN order_id END)
+      FROM orders GROUP BY 1
+    expected_rows:
+      - {temporal_role.shop_order_ordered_at__week: '2023-10-30T00:00:00', orders: 0}
+      - {temporal_role.shop_order_ordered_at__week: '2023-11-20T00:00:00', orders: 1}
+      - {temporal_role.shop_order_ordered_at__week: '2023-11-27T00:00:00', orders: 0}
+      - {temporal_role.shop_order_ordered_at__week: '2024-01-15T00:00:00', orders: 0}
+      - {temporal_role.shop_order_ordered_at__week: '2024-02-26T00:00:00', orders: 1}
+      - {temporal_role.shop_order_ordered_at__week: '2024-03-25T00:00:00', orders: 0}
+      - {temporal_role.shop_order_ordered_at__week: '2024-05-06T00:00:00', orders: 0}
+      - {temporal_role.shop_order_ordered_at__week: '2024-05-20T00:00:00', orders: 0}
+      - {temporal_role.shop_order_ordered_at__week: '2024-06-24T00:00:00', orders: 1}
+      - {temporal_role.shop_order_ordered_at__week: '2024-07-01T00:00:00', orders: 1}
+      - {temporal_role.shop_order_ordered_at__week: '2024-07-29T00:00:00', orders: 0}
   shop/stock_by_changing_plan:
     kind: query_matches_snapshot
     expect: answer

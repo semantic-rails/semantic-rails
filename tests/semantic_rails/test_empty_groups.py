@@ -187,19 +187,49 @@ def test_a_filter_that_matches_nothing_reads_null_and_says_so(runtime: Runtime) 
     ]
 
 
-def test_only_the_input_with_no_data_reads_null_beside_one_that_has_data(runtime: Runtime) -> None:
+@pytest.mark.parametrize("scope", ["dataset", "query"])
+def test_a_never_matched_authored_filter_reads_zero_in_observed_buckets(
+    runtime: Runtime, scope: str
+) -> None:
     none = {**REVENUE, "kind": "aggregate", "filter": {"all": NO_SUCH_STORE}}
     response = runtime.query(
         {
             "version": 2,
             "select": _select(revenue=REVENUE, none=none),
+            "observation_scope": scope,
             "time": {"temporal_role": ORDER_TIME, "grain": "quarter"},
         }
     )
     assert response["row_count"] > 1
-    assert all(row["revenue"] is not None and row["none"] is None for row in response["rows"])
-    (warning,) = _warnings(response)
-    assert warning["details"]["outputs"] == ["none"]
+    gold = _gold(
+        runtime,
+        "SELECT date_trunc('quarter', o.ordered_at) AS bucket, SUM(o.order_total_cents) / 100.0 AS revenue, "
+        "SUM(CASE WHEN s.store_name = 'No such store' THEN o.order_total_cents / 100.0 ELSE 0 END) AS none "
+        "FROM jaffle_order o LEFT JOIN jaffle_store s ON s.store_id = o.store_id GROUP BY 1 ORDER BY 1",
+    )
+    assert [(row["revenue"], row["none"]) for row in response["rows"]] == [
+        (pytest.approx(row["revenue"]), row["none"]) for row in gold
+    ]
+    assert not _warnings(response)
+    (warning,) = _warnings(response, "FILTER_VALUE_NOT_FOUND")
+    assert warning["details"]["filters"][0]["value"] == NO_SUCH_STORE[0]["value"]
+    real = runtime.query(
+        {
+            "version": 2,
+            "select": _select(
+                revenue=REVENUE,
+                filtered={
+                    **REVENUE,
+                    "kind": "aggregate",
+                    "filter": {"all": [{"field": STORE, "op": "=", "value": "Philadelphia"}]},
+                },
+            ),
+            "observation_scope": scope,
+            "time": {"temporal_role": ORDER_TIME, "grain": "quarter"},
+        }
+    )
+    assert not _warnings(real, "FILTER_VALUE_NOT_FOUND")
+    assert not _warnings(real, "FILTER_VALUE_UNVERIFIED")
 
 
 def test_an_average_of_nothing_is_undefined_not_missing_data(runtime: Runtime) -> None:

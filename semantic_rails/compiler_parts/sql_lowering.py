@@ -103,6 +103,7 @@ from .bind import (
     _parse_public_expr,
     _row_marker,
     earlier_settlement,
+    earlier_settlement_applies,
 )
 from .conversion import _conversion_leaf_cte
 from .dependencies import (
@@ -117,6 +118,7 @@ from .dependencies import (
     record_bound_object,
     record_ids,
     record_leaf_reference,
+    record_retained_filtered_series,
 )
 from .empty_groups import (
     GUARDED_BASE,
@@ -453,15 +455,16 @@ def _time_bucket_expr(time: dict[str, Any], raw_expr: Any, config: PackageConfig
 def _emits_time_coverage(plan: LogicalPlan, config: PackageConfig) -> bool:
     """The one boundary for base time coverage: the guard emits it, routing refuses rollups.
 
-    A fill, a dense series or combined branches can show a bucket no leaf has, which reads 0
-    only inside the base's loaded range. Only DuckDB and Postgres execute that coverage.
+    A fill, a dense series or combined branches can show a bucket no leaf has, and a retained
+    filtered series one where its authored filter matched no row: each reads 0 only inside
+    the base's loaded range. Only DuckDB and Postgres execute that coverage.
     Branches are counted unrouted, so the answer never depends on routing.
     """
     if not plan.time or not _dialect(config).has_time_coverage:
         return False
     if plan.time.get("window_total"):
         return True
-    if _query_requires_dense_series(plan, config):
+    if _query_requires_dense_series(plan, config) or _retained_filtered_series(plan, config):
         return True
     unrouted = [replace(row, aggregate_relation_id="") for row in plan.measure_plans]
     return len(_measure_plan_groups(replace(plan, measure_plans=unrouted), config)) > 1
@@ -478,6 +481,103 @@ def _needs_time_scope(plan: LogicalPlan, config: PackageConfig) -> bool:
 
 # What a measure plans paths for itself: its filter and expression, never the query's filters.
 _AUTHORED_PURPOSES = frozenset({"aggregate_if", "measure_expr", "metric_filter"})
+
+
+def _filtered_series_candidate(plan: LogicalPlan, row: MeasurePlan, config: PackageConfig) -> bool:
+    """An additive time series whose authored filter can remove observed buckets."""
+    bound = row.bound_measure
+    return bool(
+        (plan.time.get("grain") or plan.time.get("window_total"))
+        and resolves_to_zero(bound.aggregation, _measure_index(config)[bound.measure_id])
+        and bound.filter_spec
+        and any(
+            expr_resolves_to_zero(_parse_public_expr(payload), config)
+            for payload in plan.post_aggregation_exprs.values()
+        )
+    )
+
+
+def _preserves_filtered_series(plan: LogicalPlan, row: MeasurePlan, config: PackageConfig) -> bool:
+    """Only plain, local-clock leaves can retain their source rows with a conditional operand,
+    and only on a warehouse with loaded coverage, which alone lets a retained bucket read 0.
+
+    Rewrites, predicate populations and earlier settlement keep their existing lowering.
+    The runtime diagnoses their missing buckets through a separately authorized source query.
+    """
+    if not _filtered_series_candidate(plan, row, config):
+        return False
+    measure = _measure_index(config)[row.bound_measure.measure_id]
+    role = _temporal_role_index(config)[
+        _leaf_time_role(row.bound_measure, normalize_query(plan.query), config)
+    ]
+    return bool(
+        _dialect(config).has_time_coverage
+        and row.rewrite_strategy == "direct"
+        and plan_is_root()
+        and not earlier_settlement_applies()
+        and not row.aggregate_relation_id
+        and reads_every_row(measure)
+        and not _all_metric_predicates(plan, row)
+        and not _plan_requires_agent_dag_lowering(plan, config)
+        and all(
+            expr_resolves_to_zero(_parse_public_expr(payload), config)
+            for payload in plan.post_aggregation_exprs.values()
+        )
+        and (not row.path_selections or _paths_are_single_hop_safe(row.path_selections, config))
+        and all(path.analysis.get("status") == "ok" for path in row.path_selections)
+        and _dimension_index(config)[role.dimension].entity == measure.entity
+        and _entity_in_terms_of_anchor_plan(plan, row, config) is None
+    )
+
+
+def _retained_filtered_series(plan: LogicalPlan, config: PackageConfig) -> set[str]:
+    """The leaves that retain their source buckets: each leaf of a group whose leaves all can.
+
+    The one rule lowering, the guard and routing share: a plan that retains one emits loaded
+    coverage (``_emits_time_coverage``), which gates every retained bucket's 0.
+    """
+    return {
+        row.bound_measure.alias
+        for group in _measure_plan_groups(plan, config)
+        if all(_preserves_filtered_series(plan, row, config) for row in group)
+        for row in group
+    }
+
+
+def _filtered_series_operand(value: Any, conditions: list[Any]) -> Any:
+    return SqlCase([SqlCaseWhen(_and_conditions(conditions), value)]) if conditions else value
+
+
+def _require_filtered_series_operand(
+    leaf: SqlSelect, row: MeasurePlan, config: PackageConfig
+) -> None:
+    """Refuse a retained-bucket claim if the leaf bypassed its conditional operand."""
+    measure = _measure_index(config)[row.bound_measure.measure_id]
+    conditions = []
+    for item in _bound_filter_clauses(row.bound_measure, config):
+        value, _ = _direct_dimension_source_expr(
+            measure.entity,
+            str(item["field"]),
+            config,
+            source_relation_override=measure.source_relation,
+        ) or _resolve_dimension_expr(str(item["field"]), config)
+        conditions.append(_value_filter_condition(value, item))
+    aggregate = next(
+        field.expression for field in leaf.select if field.alias == row.bound_measure.alias
+    )
+    expected = SqlCase(
+        [
+            SqlCaseWhen(
+                _and_conditions(conditions), _config_expr_to_sql(measure.expr, measure, config)
+            )
+        ]
+    )
+    if not isinstance(aggregate, SqlCall) or aggregate.args != [expected]:
+        raise SemanticLayerError(
+            "EMPTY_GROUPS_UNSETTLED",
+            "A filtered series bypassed its conditional operand.",
+            details={"missing": "filtered_series_operand"},
+        )
 
 
 def _record_time_scope(
@@ -2950,6 +3050,8 @@ def _measure_leaf_select(
 
     where_clauses: list[Any] = []
     child_where: list[Any] = []
+    authored_conditions: list[Any] = []
+    preserve_buckets = _preserves_filtered_series(plan, measure_plan, config)
     crossing_filters = {
         (row.target_entity, row.purpose)
         for row in measure_plan.path_selections
@@ -3000,12 +3102,14 @@ def _measure_leaf_select(
         target = (
             child_where
             if semijoin and (dimensions[item["field"]].entity, "metric_filter") in crossing_filters
+            else authored_conditions
+            if preserve_buckets
             else where_clauses
         )
         target.append(condition := _value_filter_condition(expr, item))
         if _reads_chosen_snapshot(measure, stock_role, str(item["field"]), config):
             snapshot_filters.append(condition)
-    untimed = list(where_clauses)
+    untimed = [*where_clauses, *authored_conditions]
     if plan.time:
         where_clauses.extend(
             _source_time_window(raw_expr, plan.time, config, role_id=leaf_time_role)
@@ -3043,6 +3147,7 @@ def _measure_leaf_select(
             ctes=predicate_ctes,
         )
     leaf_value_expr = _config_expr_to_sql(measure.expr, measure, config)
+    leaf_value_expr = _filtered_series_operand(leaf_value_expr, authored_conditions)
     if semijoin:
         return _fanout_filter_leaf_select(
             plan,
@@ -3879,6 +3984,7 @@ def _foldable_leaf_signature(
         _leaf_time_role(measure_plan.bound_measure, normalize_query(plan.query), config),
         _freeze_payload(plan.query.get("where", []) or []),
         _freeze_payload(measure_plan.bound_measure.filter_spec),
+        _preserves_filtered_series(plan, measure_plan, config),
     )
 
 
@@ -5049,6 +5155,8 @@ def _measure_group_leaf_select(
         group_fields.append(time_expr)
 
     where_clauses: list[Any] = []
+    authored_conditions: list[Any] = []
+    preserve_buckets = all(_preserves_filtered_series(plan, row, config) for row in measure_plans)
     for item in refuse_child_groups(query.get("where"), "in a folded leaf"):
         expr, _ = _direct_dimension_source_expr(
             first_measure.entity, str(item["field"]), config
@@ -5058,8 +5166,10 @@ def _measure_group_leaf_select(
         expr, _ = _direct_dimension_source_expr(
             first_measure.entity, str(item["field"]), config
         ) or _resolve_dimension_expr(str(item["field"]), config)
-        where_clauses.append(_value_filter_condition(expr, item))
-    untimed = list(where_clauses)
+        (authored_conditions if preserve_buckets else where_clauses).append(
+            _value_filter_condition(expr, item)
+        )
+    untimed = [*where_clauses, *authored_conditions]
     if plan.time:
         where_clauses.extend(
             _source_time_window(raw_expr, plan.time, config, role_id=leaf_time_role)
@@ -5075,6 +5185,7 @@ def _measure_group_leaf_select(
                 _measure_dim_relation(measure, time_dim, entities), time_dim.column
             )
         value_expr = _config_expr_to_sql(measure.expr, measure, config)
+        value_expr = _filtered_series_operand(value_expr, authored_conditions)
         select_fields.append(
             SqlField(
                 _aggregation_expr(
@@ -5808,6 +5919,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
     # cut. A query metric predicate selects the rows measured, which no such probe reads.
     observed: dict[str, LeafScope] = {}
     probing = guard_empty and observes_dataset() and not _query_metric_predicates(plan)
+    retained = _retained_filtered_series(plan, config)
     if plan.measure_plans or conversion_exprs:
         leaf_ctes: list[SqlCte] = []
         measure_groups = _measure_plan_groups(plan, config)
@@ -5818,6 +5930,10 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 # A folded group shares one scan, so its filters cut every leaf in it.
                 with cut_owners(*(row.bound_measure.alias for row in measure_group)):
                     leaf_select = _measure_group_leaf_select(plan, measure_group, config)
+                    for row in measure_group:
+                        if row.bound_measure.alias in retained:
+                            _require_filtered_series_operand(leaf_select, row, config)
+                            record_retained_filtered_series(row.bound_measure.alias)
                     for row in measure_group if probing else ():
                         if (scope := _dataset_scope(row, config)) is not None:
                             observed[row.bound_measure.alias] = scope
@@ -6039,6 +6155,7 @@ def _lower_query_to_sql(plan: LogicalPlan, config: PackageConfig, guard_empty: b
                 time_key=time_alias if _emits_time_coverage(plan, config) else "",
                 dialect=_dialect(config),
                 observed=observed,
+                observed_buckets=retained,
                 bucketed=bool(plan.time),
             )
         )

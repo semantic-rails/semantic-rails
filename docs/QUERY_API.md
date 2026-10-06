@@ -200,8 +200,10 @@ IR; each subsequent request must independently resolve its trusted grants. Restr
 compile/query results retain SQL and result rows but omit package-wide diagnostics,
 dependency descriptions, and related-object suggestions. Grant responses carry only
 listed engine diagnostics (`NO_DATA_IN_SCOPE`, `VALUES_WITHHELD`, `FILTER_VALUE_NOT_FOUND`,
-and `FILTER_VALUE_UNVERIFIED`) whose named objects are all granted. Requests cannot replace the
-resolved grants with top-level or nested `policy_context` claims over HTTP or hosted MCP.
+`FILTER_VALUE_UNVERIFIED`, `FILTERED_SERIES_BUCKETS_DROPPED`, and
+`FILTERED_SERIES_BUCKETS_UNVERIFIED`) whose named objects are all granted. Bucket diagnostics
+re-enter authorization and reveal no bucket keys when the source read is denied. Requests
+cannot replace the resolved grants with top-level or nested `policy_context` claims over HTTP or hosted MCP.
 
 Restricted responses reuse the ordinary catalog formatter and output-column builder.
 Compact catalogs retain the 200-row cap per kind, `counts`, `counts_total`, and
@@ -1240,8 +1242,15 @@ The response `warnings` array can carry these non-error signals:
 - `FILTER_VALUE_NOT_FOUND` — fires on `execute` under `observation_scope: "dataset"` (the
   default) when a string `=` or `IN` `where` value matches no row of its dimension that the
   caller can read: there a sum reads `0`, which a misspelled value shouldn't produce silently.
+  Aggregate-filter literals of a retained additive series are checked in both observation scopes.
   One warning per query; `details.filters` lists each `dimension`, `value` and the closest
   `suggestion`.
+- `FILTERED_SERIES_BUCKETS_DROPPED` — an unsupported filtered additive series omits
+  observed buckets. `details.dropped_buckets` lists their time and grouping keys from a
+  separately authorized source query; averages over returned rows omit those buckets.
+- `FILTERED_SERIES_BUCKETS_UNVERIFIED` — that source query was denied, failed or capped,
+  or the answer has a limit or population filter. `details.reason` explains why the
+  missing buckets could not be established. See [Empty groups](QUERY_IR_SCHEMA.md#empty-groups-null-or-0).
 - `MIXED_TIME_ROLES` — fires on `validate`, `compile` and `execute` when a query with no
   `time` block selects measures of different entities or governed metrics with differing
   sets of real time roles, mixing at least two distinct roles. Undated measures are ignored;
