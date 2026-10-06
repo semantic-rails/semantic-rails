@@ -60,6 +60,7 @@ from .faithfulness import (
 from .generators import _grouping_term_matches, blocked_object_not_found, fallback_drafts
 from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
+from .time_reference import with_time_reference
 from .visibility import (
     require_visible_dimensions,
     visible_dimensions,
@@ -73,6 +74,7 @@ _VERSION = 1
 # ---------------------------------------------------------------------------
 @runtime_request_scope
 @with_dimension_visibility
+@with_time_reference
 def plan_payload(
     runtime: Any,
     *,
@@ -185,6 +187,7 @@ def plan_payload(
             return _query_detail_payload(payload) if detail_level == "query" else payload
 
     validate_temporal_support(runtime._config, partial_query or {})
+    # compose and every fallback helper inherit the request's time reference.
     result = compose(runtime, intent)
     if result.draft is not None:
         validate_temporal_support(runtime._config, result.draft.query)
@@ -2200,13 +2203,13 @@ def _unresolved_time_why(
         _SUPPORTED_WINDOW_FORMS,
     )
 
-    window = _time_window(intent)
+    window = _time_window(intent, policy_context=(partial_query or {}).get("policy_context"))
     phrases = list(window.unresolved)
     too_long = len(intent) > _MAX_TIME_TEXT
     if not phrases and not too_long:
         return None
     caller_time = (partial_query or {}).get("time")
-    if isinstance(caller_time, dict):
+    if isinstance(caller_time, dict) and not window.as_of:
         # An unread suffix may supply either missing endpoint. Only a
         # complete caller window can settle an overlong question's scope.
         complete = caller_time.get("range") or (caller_time.get("start") and caller_time.get("end"))

@@ -57,6 +57,7 @@ from ._base import (
 )
 from .generators import _target_focus_text
 from .intent_ir import IntentIR
+from .time_reference import time_policy_context
 from .visibility import visible_dimensions, visible_object_ids, visible_value_domains
 
 
@@ -2604,7 +2605,7 @@ def _consumed_spans(
     spans: list[tuple[int, int]] = []
     time = _time_block(query)
     if any(time.get(key) for key in ("start", "end", "range")):
-        spans.extend(_window_spans(lowered, time))
+        spans.extend(_window_spans(lowered, time, query.get("policy_context")))
     normal = [_singular(_TERM_SYNONYMS.get(word, word)) for word, _start, _end in tokens]
     referenced = set(_referenced_ids(query))
     calendar_id = str(time.get("calendar_id") or "default")
@@ -2759,6 +2760,7 @@ _MIDNIGHT_RE = re.compile(r"(?:[t ]00:00(?::00(?:\.0+)?)?(?:z|[+-]00:?00)?)?")
 
 def _question_time(
     lowered: str,
+    policy_context: dict[str, Any] | None = None,
 ) -> tuple[list[tuple[tuple[int, int], dict[str, Any]]], list[tuple[int, int]]]:
     """The windows plan reads from the question, and the other spans it reads as time.
 
@@ -2784,10 +2786,13 @@ def _question_time(
             (span, {"start": f"{year:04d}-01-01", "end": f"{year + 1:04d}-01-01"})
             for span, year in years
         ], []
-    read = _time_window(lowered)
+    read = _time_window(lowered, policy_context=policy_context)
     windows = list(read.windows)
     others: list[tuple[int, int]] = []
     for low, high in read.spans:
+        if any(cue.span == (low, high) for cue in read.as_of):
+            # An interval cannot consume a snapshot request.
+            continue
         if any(start <= low and high <= end for (start, end), _bounds in windows):
             continue
         if _YEAR_WORD_RE.fullmatch(lowered[low:high].strip()):
@@ -2801,7 +2806,9 @@ def _question_time(
     return windows, others
 
 
-def _window_days(bounds: dict[str, Any]) -> tuple[date | None, date | None] | None:
+def _window_days(
+    bounds: dict[str, Any], policy_context: dict[str, Any] | None = None
+) -> tuple[date | None, date | None] | None:
     """The first day a window covers and the first day after it, or None where unreadable.
 
     A bound with a time of day is floored (a start) or rounded up (an end) to the day, the
@@ -2810,7 +2817,9 @@ def _window_days(bounds: dict[str, Any]) -> tuple[date | None, date | None] | No
 
     if bounds.get("range"):
         try:
-            bounds = _relative_range_bounds(bounds["range"], policy_context=None)
+            bounds = _relative_range_bounds(
+                bounds["range"], policy_context=time_policy_context(policy_context)
+            )
         except SemanticLayerError:
             return None
     days: list[date | None] = []
@@ -2832,7 +2841,9 @@ def _window_days(bounds: dict[str, Any]) -> tuple[date | None, date | None] | No
 
 
 def _window_agrees(
-    windows: list[tuple[tuple[int, int], dict[str, Any]]], time: dict[str, Any]
+    windows: list[tuple[tuple[int, int], dict[str, Any]]],
+    time: dict[str, Any],
+    policy_context: dict[str, Any] | None = None,
 ) -> bool:
     """Whether the draft's window is the one the question's date phrases state.
 
@@ -2844,11 +2855,11 @@ def _window_agrees(
 
     if not windows:
         return True
-    carried = _window_days(time)
+    carried = _window_days(time, policy_context)
     starts: list[date] = []
     ends: list[date] = []
     for _span, bounds in windows:
-        asked = _window_days(bounds)
+        asked = _window_days(bounds, policy_context)
         if asked is None or asked[0] is None or asked[1] is None:
             return False
         starts.append(asked[0])
@@ -2858,7 +2869,9 @@ def _window_agrees(
     return carried[0] in (None, min(starts)) and carried[1] in (None, max(ends))
 
 
-def _window_spans(lowered: str, time: dict[str, Any]) -> list[tuple[int, int]]:
+def _window_spans(
+    lowered: str, time: dict[str, Any], policy_context: dict[str, Any] | None = None
+) -> list[tuple[int, int]]:
     """The spans of the question a window in the draft's ``query.time`` consumes.
 
     One rule: the draft's window consumes the date phrases plan resolved only if it agrees with
@@ -2868,8 +2881,8 @@ def _window_spans(lowered: str, time: dict[str, Any]) -> list[tuple[int, int]]:
     refused rather than matched to the window by value.
     """
 
-    windows, others = _question_time(lowered)
-    if not _window_agrees(windows, time):
+    windows, others = _question_time(lowered, policy_context)
+    if not _window_agrees(windows, time, policy_context):
         return []
     return [span for span, _bounds in windows] + others
 
@@ -2878,9 +2891,10 @@ def _caller_window_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[
     """The window a caller passed is not the one the question's date phrases state."""
 
     lowered = text.lower()
-    windows, _others = _question_time(lowered)
+    context = query.get("policy_context")
+    windows, _others = _question_time(lowered, context)
     time = _time_block(query)
-    if _window_agrees(windows, time) or _is_prior_period_offset(
+    if _window_agrees(windows, time, context) or _is_prior_period_offset(
         runtime, query, [bounds for _span, bounds in windows]
     ):
         return []

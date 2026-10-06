@@ -10,10 +10,11 @@ import copy
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from functools import lru_cache
 from typing import Any
 
+from ..ast import _parse_now, _relative_range_bounds
 from ..config_parts.measure_governance import (
     building_block_measures,
     governing_metrics,
@@ -21,6 +22,7 @@ from ..config_parts.measure_governance import (
 )
 from ..errors import SemanticLayerError
 from ..expressions import MeasureRefExpr, collect_object_references, expr_to_dict
+from .time_reference import time_policy_context
 from .visibility import visible_dimensions, visible_object_ids, visible_value_domains
 
 
@@ -1159,6 +1161,15 @@ _SUBDAY_WINDOW_RE = re.compile(
 
 
 @dataclass(frozen=True)
+class _AsOfCue:
+    """A snapshot request, kept separate from an ordinary interval."""
+
+    kind: str
+    span: tuple[int, int]
+    bounds: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class _TimeWindow:
     """What a question says about time: its window, or what couldn't be resolved."""
 
@@ -1176,6 +1187,7 @@ class _TimeWindow:
     # Every window the question states that plan resolved, as (span, bounds), whether or not
     # another phrase left the question unresolved.
     windows: tuple[tuple[tuple[int, int], dict[str, Any]], ...] = ()
+    as_of: tuple[_AsOfCue, ...] = ()
 
 
 def _overlaps(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
@@ -1301,7 +1313,7 @@ def _is_restatement(
     )
 
 
-def _time_window(text: str) -> _TimeWindow:
+def _time_window(text: str, policy_context: dict[str, Any] | None = None) -> _TimeWindow:
     """Resolve the question's time window, or report why it can't be resolved.
 
     A window resolves only when the question names exactly one calendar or
@@ -1320,7 +1332,16 @@ def _time_window(text: str) -> _TimeWindow:
         # contradict its window. The plan honesty gate reports this limit.
         return _TimeWindow()
     lowered = text.lower()
-    return copy.deepcopy(_resolved_time_window(lowered, date.today()))
+    context = time_policy_context(policy_context)
+    today = date.today()
+    if context and context.get("now") not in (None, ""):
+        now = _parse_now(context)
+        today = (
+            now.astimezone(UTC).date()
+            if isinstance(now, datetime) and now.tzinfo
+            else (now.date() if isinstance(now, datetime) else now)
+        )
+    return copy.deepcopy(_resolved_time_window(lowered, today))
 
 
 # Longer questions are left unresolved; the resolver's cost grows with the
@@ -1328,10 +1349,51 @@ def _time_window(text: str) -> _TimeWindow:
 _MAX_TIME_TEXT = 2000
 
 
+_AS_OF_NOW_RE = re.compile(
+    rf"\b(?:(?:as\s+of\s+|right\s+)?now|currently|at\s+the\s+moment|"
+    rf"current(?!\s+(?:{_TIME_UNIT_ALT}|hour|minute|second)s?\b))\b"
+)
+_AS_OF_WINDOW_RE = re.compile(
+    r"\b(?:(?:as\s+of\s+)?(?:at\s+the\s+|the\s+)?end\s+of|as\s+of)\s+(?:the\s+)?"
+)
+
+
+def _as_of_cues(lowered: str, today: date) -> tuple[_AsOfCue, ...]:
+    """Read complete as-of phrases before interval parsing can claim their suffix."""
+
+    cues = [
+        _AsOfCue("latest_complete_day", match.span()) for match in _AS_OF_NOW_RE.finditer(lowered)
+    ]
+    for lead in _AS_OF_WINDOW_RE.finditer(lowered):
+        if _overlaps(lead.span(), [cue.span for cue in cues]):
+            continue
+        suffix = lowered[lead.end() :]
+        accepted, rejected = _calendar_windows(suffix)
+        candidates = [(span, bounds) for span, bounds, _form in accepted]
+        candidates += [(span, bounds) for span, bounds, _unit in _relative_window(suffix, today)]
+        candidates += [(span, {}) for span in rejected + _time_cues(suffix)]
+        candidates = [row for row in candidates if row[0][0] == 0]
+        if not candidates:
+            # Keep an unread as-of lead held as well; never admit its suffix as an interval.
+            cues.append(_AsOfCue("closing_day", lead.span()))
+            continue
+        span, bounds = max(candidates, key=lambda row: row[0][1])
+        if bounds.get("range"):
+            bounds = _relative_range_bounds(bounds["range"], policy_context={"now": today})
+        cues.append(_AsOfCue("closing_day", (lead.start(), lead.end() + span[1]), bounds))
+    return tuple(sorted(cues, key=lambda cue: cue.span))
+
+
 @lru_cache(maxsize=512)
 def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
-    accepted, rejected = _calendar_windows(lowered)
-    relative = _relative_window(lowered, today)
+    as_of = _as_of_cues(lowered, today)
+    # Mask exactly the recorded spans: no parser may resolve part of an as-of phrase.
+    interval_text = lowered
+    for cue in reversed(as_of):
+        start, end = cue.span
+        interval_text = interval_text[:start] + " " * (end - start) + interval_text[end:]
+    accepted, rejected = _calendar_windows(interval_text)
+    relative = _relative_window(interval_text, today)
     if _FISCAL_RE.search(lowered):
         # A fiscal question's "last quarter" or "this year" is a fiscal period.
         rejected += [row[0] for row in relative if row[2] != "day"]
@@ -1344,7 +1406,9 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
             windows.append(row)
     windows.sort(key=lambda row: row[0])
     covered = [row[0] for row in windows]
-    unresolved_spans = [span for span in rejected if not _overlaps(span, covered)]
+    unresolved_spans = [cue.span for cue in as_of] + [
+        span for span in rejected if not _overlaps(span, covered)
+    ]
     assumptions: list[str] = []
     if len(windows) > 1 and _is_restatement(lowered, windows):
         span = (windows[0][0][0], windows[-1][0][1])
@@ -1379,6 +1443,7 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
             conflicts=conflicts,
             sub_day=tuple(dict.fromkeys(_phrase(lowered, span) for span in sorted(sub_day))),
             windows=tuple((row[0], dict(row[1])) for row in windows),
+            as_of=as_of,
         )
     if not windows:
         return _TimeWindow()
