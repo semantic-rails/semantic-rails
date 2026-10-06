@@ -408,13 +408,6 @@ def _build_graph(
     }
 
 
-def _has_primary_entity_in_list(sm: dict[str, Any]) -> bool:
-    for ent in sm.get("entities") or []:
-        if (ent.get("type") or "").lower() in ("primary", "unique"):
-            return True
-    return False
-
-
 # ---------------------------------------------------------------------------
 # Model translation
 # ---------------------------------------------------------------------------

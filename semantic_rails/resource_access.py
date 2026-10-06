@@ -191,7 +191,6 @@ class ResourceAccess:
             "request_id",
             "verbosity",
             "sql_profile",
-            "render_profile",
             "limits",
             "debug",
             "explain",
