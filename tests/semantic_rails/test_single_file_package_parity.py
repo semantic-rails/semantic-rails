@@ -14,7 +14,6 @@ must behave like a directory package at the packaging boundary:
 
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 import tarfile
@@ -24,7 +23,6 @@ import pytest
 import yaml
 
 from semantic_rails import cli as cli_module
-from semantic_rails.cli.commands.package import cmd_init
 from semantic_rails.config import load_package_config
 from semantic_rails.config_validation import resolve_package_reference
 from semantic_rails.errors import SemanticLayerError
@@ -32,19 +30,11 @@ from semantic_rails.package_tools import (
     ARTIFACT_MANIFEST_NAME,
     build_package_artifact_report,
 )
+from tests.semantic_rails.conftest import write_single_file_package
 
 
 def _scaffold_single_file_package(tmp_path: Path, package_id: str = "starter_demo") -> Path:
-    """Scaffold via ``semantic-rails init`` and return the package.yml path.
-
-    ``namespace="shop"`` keeps the starter's hard-coded derived-metric
-    reference (``measure.shop.line_revenue_usd``) consistent.
-    """
-    target = tmp_path / package_id
-    cmd_init(
-        argparse.Namespace(output=str(target), package_id=package_id, namespace="shop", force=False)
-    )
-    return target / "package.yml"
+    return write_single_file_package(tmp_path / package_id)
 
 
 def _write_examples_and_tests(package_yml: Path) -> None:

@@ -52,7 +52,7 @@ UV_VERSION = "0.12.17"
 STEP_TIMEOUT_SECONDS = 600
 MCP_TIMEOUT_SECONDS = 120
 
-TRY = 'uvx semantic-rails ask --package jaffle_shop "revenue by store" --run'
+TRY = 'uvx semantic-rails ask --package jaffle_shop "revenue by store name" --run'
 INIT = "uvx semantic-rails init my_package --yes"
 VALIDATE = "uvx semantic-rails project validate --path ./my_package"
 ASK = 'uvx semantic-rails ask --path ./my_package "total amount by event type" --run'
