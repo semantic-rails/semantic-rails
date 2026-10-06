@@ -298,11 +298,12 @@ def materialized_duckdb_result(
         else:
             is_select = len(statements) == 1 and statements[0].type == duckdb.StatementType.SELECT
         if is_select and max_rows is not None:
-            # Strip terminal delimiters using DuckDB tokens (which omit comments).
+            # DuckDB tokens omit comments and locate delimiters by UTF-8 byte offset.
+            encoded = sql.encode()
             for token_start, _ in reversed(duckdb.tokenize(sql)):
-                if sql[token_start] != ";":
+                if encoded[token_start : token_start + 1] != b";":
                     break
-                statement_sql = sql[:token_start]
+                statement_sql = encoded[:token_start].decode()
             statement_sql = f"SELECT * FROM ({statement_sql}\n) AS q LIMIT {max_rows + 1}"
     relation = cursor.sql(statement_sql, params=values)
     if relation is None:

@@ -214,6 +214,7 @@ def test_parameterized_non_select_matches_dbapi(path, cap, sql):
         connection.close()
 
 
+@pytest.mark.parametrize("path", ["database", "duckdb"])
 @pytest.mark.parametrize(
     "sql",
     [
@@ -222,14 +223,29 @@ def test_parameterized_non_select_matches_dbapi(path, cap, sql):
         "SELECT ? AS n;; -- tail",
         "SELECT ? AS n -- tail",
         "WITH t AS (SELECT ? AS n) SELECT n FROM t;",
+        "SELECT ? AS n, 'é' AS x",
+        "SELECT 'é' AS s, ? AS n;",
+        "SELECT 'é' AS s, ? AS n;\n",
+        "SELECT 'é' AS s, ? AS n; -- tail",
     ],
 )
-def test_parameterized_select_cap_preserves_statement_terminators_and_comments(sql):
+def test_parameterized_select_cap_preserves_statement_terminators_and_comments(path, sql):
+    with duckdb.connect() as reference:
+        cursor = reference.execute(sql, [42])
+        columns = [column[0] for column in cursor.description]
+        expected = [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
     database = db.Database.connect_in_memory()
     try:
-        rows = database.query(sql, [42], max_rows=1)
-        assert rows == [{"n": 42}]
-        assert rows.truncated is False
+        if path == "database":
+            rows = database.query(sql, [42], max_rows=1)
+        else:
+            adapter = db.DuckDBAdapter.__new__(db.DuckDBAdapter)
+            adapter._db = database
+            prepared = PreparedQuery(sql, parameters=(ParameterSlot("n", "integer"),))
+            rows = adapter.query_prepared(prepared, parameters=[42], limits={"max_rows": 1})
+        assert rows == expected[:1]
+        assert list(rows[0]) == columns
+        assert rows.truncated is (len(expected) > 1)
     finally:
         database.close()
 
