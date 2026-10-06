@@ -783,7 +783,9 @@ that must not see it.
   it (directly, through another metric, a filter or a metric filter), segments whose
   basis metric, conditions or preview dimensions read it, value domains of a restricted
   dimension, and relationships to a restricted entity. An object whose dependencies cannot
-  be resolved is restricted whenever anything is.
+  be resolved is restricted whenever anything is. The policy governs objects, not columns:
+  list every measure that computes the sensitive value, since another measure over the
+  same column (a filtered, windowed or rolled-up variant) is a separate object.
 - For an ineligible request, restricted objects are left out of `catalog`, `discover`,
   `build-options`, `plan`, other objects' `inspect` cards (related measures and metrics,
   companions, starter queries) and diagnostic suggestions; `inspect` of one, and `valid-values`
