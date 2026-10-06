@@ -890,9 +890,10 @@ def test_own_key_route_notes_never_offer_hidden_waypoints(tmp_path, monkeypatch,
         assert notes[0]["details"] == {"route": resolution.BRANCH, "alternatives": alternatives}
 
 
-@pytest.mark.parametrize("visibility", ["missing", "unresolved"])
+@pytest.mark.parametrize("visibility", ["missing", "unresolved", "hidden"])
+@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
 def test_route_notes_withhold_switches_when_visibility_is_unknown(
-    tmp_path, monkeypatch, visibility
+    tmp_path, monkeypatch, visibility, verbosity
 ):
     config = load_package_config(str(_write_package(tmp_path)))
     config = replace(
@@ -908,16 +909,25 @@ def test_route_notes_withhold_switches_when_visibility_is_unknown(
     )
     query = {
         **BALANCE_BY_DISTRICT,
-        "route_decisions": [{**DIAMOND_ROW, "relationship_path": BRANCH_ROUTE}],
+        "route_decisions": [
+            {
+                **DIAMOND_ROW,
+                "relationship_path": OWNER_ROUTE if visibility == "hidden" else BRANCH_ROUTE,
+            }
+        ],
+        "verbosity": verbosity,
     }
     compiled = compile_query(config, Registry(config), query)
     if visibility == "unresolved":
         monkeypatch.setattr("semantic_rails.runtime.diagnostic_hidden_object_ids", lambda *_: None)
     notes = _route_notes(
-        config, compiled, query, **({"policy_context": {}} if visibility == "unresolved" else {})
+        config, compiled, query, **({"policy_context": {}} if visibility != "missing" else {})
     )
-    assert notes[0]["details"] == {"row": query["route_decisions"][0], "replaced": "undecided"}
-    assert all(relationship not in json.dumps(notes) for relationship in OWNER_ROUTE)
+    assert len(notes) == 1
+    assert notes[0]["code"] == "ROUTE_CHOSEN_BY_QUERY"
+    assert notes[0]["message"] == "a route chosen by this query"
+    assert notes[0]["details"] == {}
+    assert "relationship." not in json.dumps(notes)
 
 
 def _many_route_config(tmp_path):
@@ -1004,7 +1014,7 @@ def test_many_route_compact_execute_keeps_rows_and_caps_switch_metadata(
     try:
         refusal = runtime.validate(BALANCE_BY_DISTRICT)
         options = refusal["errors"][0]["details"]["clarification"]["options"]
-        assert len(config.entities) == 17 and len(options) == 125
+        assert len(config.entities) == 17 and len(options) == (100 if hidden else 125)
         assert execute.call_count == 0
         out = adapter.call_tool(
             "execute",

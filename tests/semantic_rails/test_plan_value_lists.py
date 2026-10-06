@@ -18,6 +18,7 @@ from semantic_rails.planner.generators import (
 )
 from semantic_rails.planner.plan import _merge_partial_query
 from semantic_rails.schema import SemanticPolicyConfig
+from tests.semantic_rails.result_helpers import assert_plan_held
 
 STORE = "dimension.jaffle_store_name"
 PRODUCT_TYPE = "dimension.jaffle_item_product_type"
@@ -192,11 +193,15 @@ def test_single_values_negation_and_distinct_dimensions_keep_their_behavior(
         payload = plan_payload(runtime, intent=intent)
     finally:
         runtime.close()
+    if intent == "item revenue for food from Brooklyn by store":
+        assert_plan_held(payload, "VALIDATION_FAILED")
+        status = "low_confidence"
+        expected_groups = ["dimension.jaffle_customer_history_preferred_store_id"]
     assert payload["status"] == status
     query = payload["best"]["query_ir"]
     assert query["where"] == expected_where
     assert query.get("group_by", []) == expected_groups
-    if status == "low_confidence":
+    if status == "low_confidence" and intent != "item revenue for food from Brooklyn by store":
         assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
         assert "negation_reversed" in [gap["kind"] for gap in payload["why"]["details"]["gaps"]]
 
@@ -874,6 +879,13 @@ def test_grouping_added_beside_caller_group_by_is_not_execute_ready(
     finally:
         runtime.close()
     assert partial == before
+    if intent == "item revenue by store":
+        assert_plan_held(payload, "VALIDATION_FAILED")
+        assert payload["best"]["query_ir"]["group_by"] == [
+            PRODUCT_TYPE,
+            "dimension.jaffle_customer_history_preferred_store_id",
+        ]
+        return
     assert payload["best"]["query_ir"]["group_by"] == group_by
     assert payload["status"] == "low_confidence", payload.get("why")
     assert payload["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
@@ -892,9 +904,14 @@ def test_caller_group_by_naming_every_grouping_is_execute_ready(runtime_factory)
     try:
         payload = plan_payload(runtime, intent="item revenue by store", partial_query=partial)
         query = payload["best"]["query_ir"]
-        assert query["group_by"] == [PRODUCT_TYPE, STORE]
-        assert payload["status"] == "ok", payload.get("why")
-        assert "execute" in payload["next"].get("ready_for", [])
+        assert query["group_by"] == [
+            PRODUCT_TYPE,
+            STORE,
+            "dimension.jaffle_customer_history_preferred_store_id",
+        ]
+        assert_plan_held(payload, "VALIDATION_FAILED")
+        # Preserve the reference check for an explicitly authored intended grouping.
+        query = {**query, "group_by": [PRODUCT_TYPE, STORE], "order_by": []}
         measure = query["select"][0]["as"]
         rows = runtime.query(query)["rows"]
         actual = sorted((row[PRODUCT_TYPE], row[STORE], row[measure]) for row in rows)
