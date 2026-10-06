@@ -1247,6 +1247,12 @@ grouped rows add up to the ungrouped total. A filter (a `where` item or a measur
 `filter`) on such an attribute, including one reached through a key that changes between
 a series' snapshots, reads the same snapshot: `plan = basic` is the basic row of the
 by-plan breakdown, so it leaves out an account that moved from basic to pro on Thursday.
+Stocks cannot use the row-based fan-out rewrites (including filter-only semi-joins) or
+serve as the source of a `kind: lookup` measure. Child filter paths refuse with
+`MIXED_GRAIN_INVALID`, and stock lookup sources refuse at package load with `INVALID_CONFIG`.
+SQL lowering also refuses a supplied fan-out plan over a stock, and a supplied parent-lookup
+plan whose source is a stock, with `REWRITE_NOT_SUPPORTED`, reason
+`stock_requires_snapshot_selection`, if the plan bypasses those checks.
 An attribute joined through the series key is constant for the series and keeps the same
 answer. Only filters on the stock's clock (the same entity and column) or a calendar
 (`kind: time`) dimension apply before the choice: with `snapshot_day <= Wednesday`, the
