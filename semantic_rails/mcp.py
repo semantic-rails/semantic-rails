@@ -32,6 +32,7 @@ from .diagnostics import (
     semantic_issue,
 )
 from .errors import SemanticLayerError
+from .mcp_query import normalize_arguments, normalize_query_spellings, normalize_routes
 from .mcp_session import MCPQuerySession
 from .metadata import (
     _slim_discover_minimal,
@@ -47,6 +48,7 @@ from .request_context import (
     RequestContext,
     context_from_policy_context,
     request_context_payload,
+    without_trusted_attributes,
 )
 from .request_payload import (
     build_query_payload,
@@ -62,6 +64,7 @@ from .request_payload import (
 )
 from .resource_access import GRANT_DISCOVER_KINDS
 from .runtime import Runtime
+from .runtime_parts.limits import max_valid_values_limit, max_valid_values_offset
 from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL, resolve_verbosity
 from .schema import PackageConfig
 
@@ -131,6 +134,9 @@ _MAX_RESULT_CHARS_ENV = "SEMANTIC_RAILS_MCP_MAX_RESULT_CHARS"
 _TOOL_REQUEST_CONTEXT: ContextVar[RequestContext | None] = ContextVar(
     "semantic_rails_mcp_tool_request_context", default=None
 )
+_BUILTIN_TOOL_DISPATCH: ContextVar[bool] = ContextVar(
+    "semantic_rails_mcp_builtin_tool_dispatch", default=False
+)
 
 
 JSON_OBJECT_SCHEMA: dict[str, Any] = {
@@ -185,9 +191,9 @@ POLICY_CONTEXT_SCHEMA: dict[str, Any] = {
 }
 
 QUERY_SCHEMA: dict[str, Any] = {
-    "type": "object",
+    "type": ["object", "string"],
     "description": (
-        "Semantic Layer Query IR: select [{expression: {measure: '<id>'}, as: '<alias>'}], "
+        "Query IR (object or JSON string): select [{expression: {measure: '<id>'}, as: '<alias>'}], "
         "group_by ['<dimension_id>'], where [{field: '<dimension_id>', op: '=', value: ...}]. "
         "Unknown keys rejected as "
         "INVALID_QUERY (offenders under details.unsupported_keys)."
@@ -269,14 +275,12 @@ QUERY_SCHEMA: dict[str, Any] = {
 
 # Slim Query-IR schema for tools/list dedupe. The full QUERY_SCHEMA
 # (with the detailed time-block spec) ships once, on 'execute', and the
-# other tools point there. Runtime acceptance is unchanged: both schemas are
-# `additionalProperties: true` documentation hints, not validators.
+# other tools point there. Both schemas document accepted inputs.
 QUERY_SCHEMA_SLIM: dict[str, Any] = {
-    "type": "object",
+    "type": ["object", "string"],
     "additionalProperties": True,
     "description": (
-        "Semantic Layer Query IR (JSON object). IR + time-block shape: "
-        "use the expression shapes listed in the 'execute' tool schema."
+        "Query IR (object or JSON string). IR and time shapes: execute's query schema."
     ),
 }
 
@@ -619,19 +623,19 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="execute",
         description=(
-            "Run Query IR: plan's best.query_ir (call plan first) or your "
-            "fix of it. time.end is exclusive. Returns at most "
-            "max_rows rows; a capped one reports truncated and total_row_count. "
-            "'validate' checks; 'sql' adds rendered_sql; "
-            "neither runs. 'query' is a JSON object; 'run' costs "
-            "warehouse time. validate checks a query before it runs; a query that already ran "
-            "needs no validate. select may be empty: group_by alone lists rows. "
+            "Run plan's best.query_ir (call plan first). time.end is exclusive. "
+            "'validate' checks; 'sql' adds rendered_sql; neither runs. "
+            "query: object or JSON string; run costs warehouse time; "
+            "a query that already ran needs no validate. "
+            "select may be empty: group_by alone lists rows. "
             "IR: select[]={expression:{...},as}, group_by[]=[<dim>,...], "
             "where[]={field,op,value}, order_by[]={field,direction}. select.expression:\n"
             "{aggregation, measure} | {metric} | "
             "{kind: prior_period|rolling|cumulative|ratio|conversion|aggregate_if|between|arithmetic|...}\n"
             "ratio: per-order sum / order count.\n"
-            "arithmetic adds measures; aggregate_if: conditional count.\n"
+            "arithmetic composes expressions; aggregate_if aggregates "
+            "condition/value: {kind: aggregate_if, aggregation: avg, condition: {...}, "
+            "value: {kind: call, name: date_diff, args: [...]}}.\n"
             "Empty groups: 0 if data exists (observation_scope=query: in filters)."
         ),
         input_schema=_schema(
@@ -1807,6 +1811,7 @@ class SemanticLayerMCPAdapter:
             "execute": self._handle_execute_mode,
             "segment": self._handle_segment_action,
         }
+        self._builtin_tool_handlers = self._tool_handlers.copy()
 
     @property
     def instructions(self) -> str:
@@ -1844,7 +1849,7 @@ class SemanticLayerMCPAdapter:
         """
         if name not in self._tool_handlers:
             raise ValueError(f"Unknown MCP tool {name!r}; tools: {sorted(self._tool_handlers)}")
-        self._tool_handlers[name] = lambda arguments: self._guarded(arguments, handler)
+        self._tool_handlers[name] = handler
 
     def close(self) -> None:
         self.runtime.close()
@@ -1879,7 +1884,32 @@ class SemanticLayerMCPAdapter:
         ``session`` enables advisory repeat hints for calls in that session.
         """
 
+        # A new invocation owns its identity even when a host handler calls it
+        # from another tool. Isolate argument-error envelopes and finish too.
+        context_token = _TOOL_REQUEST_CONTEXT.set(None)
+        dispatch_token = _BUILTIN_TOOL_DISPATCH.set(False)
+        try:
+            return self._call_tool(
+                name, arguments, request_context=request_context, session=session
+            )
+        finally:
+            _BUILTIN_TOOL_DISPATCH.reset(dispatch_token)
+            _TOOL_REQUEST_CONTEXT.reset(context_token)
+
+    def _call_tool(
+        self,
+        name: str,
+        arguments: Mapping[str, Any] | None,
+        *,
+        request_context: RequestContext | None,
+        session: MCPQuerySession | None,
+    ) -> dict[str, Any]:
+        normalized: list[str] = []
+        args_dict: dict[str, Any] = {}
+
         def finish(response: dict[str, Any]) -> dict[str, Any]:
+            if normalized:
+                response["normalized"] = normalized
             if request_context is not None:
                 response["request_context"] = request_context_payload(request_context)
                 if request_context.request_id:
@@ -1889,7 +1919,7 @@ class SemanticLayerMCPAdapter:
             with contextlib.suppress(SemanticLayerError):
                 # Response shaping needs query/options only, never another identity resolution.
                 shaped_query = build_query_payload(
-                    arguments if isinstance(arguments, Mapping) else {},
+                    args_dict,
                     object_payload=_object_argument,
                     policy_context={},
                 )
@@ -1897,9 +1927,7 @@ class SemanticLayerMCPAdapter:
                     shaped_query["verbosity"] = MCP_DEFAULT_QUERY_VERBOSITY
             compact = resolve_verbosity(shaped_query) == "compact"
             sql_required = not (
-                name == "execute"
-                and isinstance(arguments, Mapping)
-                and str(arguments.get("mode") or "run").strip().lower() == "run"
+                name == "execute" and str(args_dict.get("mode") or "run").strip().lower() == "run"
             )
             response = _bound_response(
                 response,
@@ -1958,8 +1986,19 @@ class SemanticLayerMCPAdapter:
                     sanitized,
                 )
             )
+        try:
+            decoded, normalized = normalize_arguments(
+                arguments or {},
+                _KNOWN_ARGS.get(name, frozenset())
+                - (QUERY_INPUT_KEYS - {"request_id", "verbosity", "sql_profile"}),
+            )
+        except SemanticLayerError as exc:
+            args_dict = _arguments_with_trusted_context(
+                arguments, request_context, inject_policy_context=policy_aware
+            )
+            return finish(self._error_response(exc, args_dict))
         args_dict = _arguments_with_trusted_context(
-            arguments, request_context, inject_policy_context=policy_aware
+            decoded, request_context, inject_policy_context=policy_aware
         )
         handler = self._tool_handlers.get(name)
         available_tools = {tool["name"] for tool in self.list_tools()}
@@ -1991,7 +2030,39 @@ class SemanticLayerMCPAdapter:
         # handler with their domain-specific guidance; this generic
         # pass catches everything else.
         unknown_arg_warnings = _unknown_argument_warnings(tool_name=name, arguments=args_dict)
-        response = handler(args_dict)
+
+        def dispatch(args: dict[str, Any]) -> dict[str, Any]:
+            nested_query = isinstance(args.get("query"), dict)
+            if nested_query or (name == "execute" and "query" not in args):
+                query = normalize_query_spellings(
+                    args["query"] if nested_query else args, normalized
+                )
+                if nested_query:
+                    args["query"] = query
+                else:
+                    args.clear()
+                    args.update(query)
+                routes = query.get("route_decisions")
+                route_query = query
+                if isinstance(routes, list) and any(isinstance(row, str) for row in routes):
+                    route_query = _query_payload(
+                        _strip_execute_transport_args(
+                            {key: value for key, value in args.items() if key != "mode"}
+                        )
+                        if name == "execute"
+                        else args
+                    )
+                routed = normalize_routes(route_query, normalized, self.runtime.validate)
+                if "route_decisions" in routed:
+                    query["route_decisions"] = routed["route_decisions"]
+            # Only this invocation's built-in handler may reuse the boundary.
+            token = _BUILTIN_TOOL_DISPATCH.set(handler is self._builtin_tool_handlers.get(name))
+            try:
+                return handler(args)
+            finally:
+                _BUILTIN_TOOL_DISPATCH.reset(token)
+
+        response = self._guarded(args_dict, dispatch)
         if unknown_arg_warnings:
             existing = list(response.get("warnings") or [])
             # Avoid duplicating per-handler typo warnings that already
@@ -2249,6 +2320,10 @@ class SemanticLayerMCPAdapter:
     def _guarded(
         self, arguments: dict[str, Any], handler: Callable[[dict[str, Any]], dict[str, Any]]
     ) -> dict[str, Any]:
+        if _BUILTIN_TOOL_DISPATCH.get():
+            # Consume dispatch's one-use marker before entering the builder.
+            _BUILTIN_TOOL_DISPATCH.set(False)
+            return handler(arguments)
         started = time.perf_counter()
         token = None
         try:
@@ -2263,6 +2338,14 @@ class SemanticLayerMCPAdapter:
             return self._success(handler(arguments), arguments, started)
         except SemanticLayerError as exc:
             return self._error_response(exc, arguments, started_at=started)
+        except RecursionError:
+            return self._error_response(
+                SemanticLayerError(
+                    "INVALID_QUERY", "Query nesting is too deep.", details={"path": "query"}
+                ),
+                arguments,
+                started_at=started,
+            )
         except Exception as exc:  # noqa: BLE001 — defensive MCP boundary
             # Bare exceptions (KeyError, AttributeError, TypeError, ...)
             # must never escape as raw tracebacks. Log the trace for ops
@@ -2473,21 +2556,32 @@ class SemanticLayerMCPAdapter:
         )
 
     def _handle_valid_values(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        return self._guarded(
-            arguments,
-            lambda args: valid_values_payload(
-                self.runtime,
-                dimension_id=str(args.get("dimension_id", "")),
-                query=_partial_query_payload(args)
+        def build(args: dict[str, Any]) -> dict[str, Any]:
+            call_arguments: dict[str, Any] = {
+                "dimension_id": str(args.get("dimension_id", "")),
+                "query": _partial_query_payload(args)
                 if args.get("query") or args.get("policy_context")
                 else None,
-                search=str(args.get("search", "")),
-                limit=_coerce_int(args.get("limit"), 100, field="limit", minimum=1),
-                offset=_coerce_int(args.get("offset"), 0, field="offset", minimum=0),
-                include_counts=_coerce_bool(args.get("include_counts"), False),
-                allow_live_query=_coerce_bool(args.get("allow_live_query"), False),
-            ),
-        )
+                "search": str(args.get("search", "")),
+                "limit": min(
+                    _coerce_int(args.get("limit"), 100, field="limit", minimum=1),
+                    max_valid_values_limit(),
+                ),
+                "offset": min(
+                    _coerce_int(args.get("offset"), 0, field="offset", minimum=0),
+                    max_valid_values_offset(),
+                ),
+                "include_counts": _coerce_bool(args.get("include_counts"), False),
+                "allow_live_query": _coerce_bool(args.get("allow_live_query"), False),
+            }
+            payload = valid_values_payload(self.runtime, **call_arguments)
+            if payload.get("status") == "needs_live_query":
+                call_arguments["allow_live_query"] = True
+                call_arguments["query"] = without_trusted_attributes(call_arguments["query"] or {})
+                payload["next_call"] = {"tool": "valid-values", "arguments": call_arguments}
+            return payload
+
+        return self._guarded(arguments, build)
 
     def _handle_plan(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return self._guarded(

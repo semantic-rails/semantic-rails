@@ -1651,8 +1651,8 @@ def _parse_path_preferences(
     return out
 
 
-def _validate_caveat_refs(config: PackageConfig, *, path: str) -> None:
-    object_ids = {
+def _package_object_ids(config: PackageConfig) -> set[str]:
+    return {
         *[row.id for row in config.entities],
         *[row.id for row in config.dimensions],
         *[row.id for row in config.temporal_roles],
@@ -1662,6 +1662,36 @@ def _validate_caveat_refs(config: PackageConfig, *, path: str) -> None:
         *[row.id for row in config.metric_recipes],
         *[row.id for row in config.segments],
     }
+
+
+def _validate_policy_scopes(config: PackageConfig, *, path: str) -> None:
+    """Policy and caveat environments are the package's own; visible_only names real objects.
+
+    An environment spelled unlike the one requests carry would never put its row in force."""
+    declared = set(config.package.environments or [])
+    for label, row_id, environments in [
+        *(("policy", row.id, row.environments) for row in config.semantic_policies),
+        *(("caveat", row.id, row.environments) for row in config.semantic_caveats),
+    ]:
+        undeclared = sorted(set(environments) - declared)
+        if undeclared:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{path}: {label} {row_id} environments {undeclared} are not declared in "
+                f"package.environments ({sorted(declared) or 'none declared'})",
+            )
+    object_ids = _package_object_ids(config)
+    for policy in config.semantic_policies:
+        unknown = sorted(set(policy.object_ids) - object_ids)
+        if unknown and policy_action(policy) == "visible_only":
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{path}: policy {policy.id} references unknown object_ids {unknown}",
+            )
+
+
+def _validate_caveat_refs(config: PackageConfig, *, path: str) -> None:
+    object_ids = _package_object_ids(config)
     entity_ids = {row.id for row in config.entities}
     dimension_ids = {row.id for row in config.dimensions}
     for caveat in config.semantic_caveats:
@@ -3093,6 +3123,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     validate_row_filters(config)
     for policy in config.semantic_policies:
         policy_action(policy)
+    _validate_policy_scopes(config, path=path)
     validate_expression_calls(config, config)
     return config
 

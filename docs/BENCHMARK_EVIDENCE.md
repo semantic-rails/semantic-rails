@@ -24,8 +24,9 @@ The gate uses `scripts/blind_agent_corpus.json` plus built-in adversarial probes
 - `detail="best"` is smaller than `detail="full"` overall and per expected-answer case
 - expected semantic IDs and Query IR patches survive planning
 - forbidden hallucinated IDs are not emitted
-- `status="ok"` plans compile through the plan-warmed cache
-- cache-hit compile p95 stays under the configured threshold
+- `status="ok"` plans compile through the plan-warmed cache, on the first and every repeated compile
+- cache-hit compile p95 stays under the configured threshold; each case's cache-hit time is the
+  fastest of six compiles of the same query, so one scheduler or GC pause does not fail the gate
 
 The optional JSON scorecard is intended for release evidence. Treat latency fields as local-run observations, not universal service-level claims.
 

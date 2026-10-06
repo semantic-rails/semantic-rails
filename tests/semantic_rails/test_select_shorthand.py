@@ -72,6 +72,15 @@ def test_expression_dimension_already_in_group_by_is_not_duplicated():
     assert normalize_query(shorthand).group_by == [DIM]
 
 
+@pytest.mark.parametrize("kind", [None, "unknown"])
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_dimension_shorthand_does_not_drop_an_unsupported_kind(kind, wrapped):
+    item = {"kind": kind, "dimension": DIM}
+    with pytest.raises(SemanticLayerError) as excinfo:
+        normalize_query(_query([{"expression": item} if wrapped else item]))
+    assert excinfo.value.code == "INVALID_EXPRESSION_AST"
+
+
 @pytest.mark.parametrize(
     "select",
     [
@@ -184,7 +193,8 @@ def test_runtime_accepts_shorthand_compiles_identically_and_warns(runtime_factor
         runtime.close()
 
 
-def test_runtime_reports_expression_dimension_shorthand(runtime_factory):
+@pytest.mark.parametrize("kind", [None, "dimension", "group", "ref"])
+def test_runtime_reports_expression_dimension_shorthand(runtime_factory, kind):
     runtime = runtime_factory("jaffle_shop")
     try:
         canonical = runtime.compile(
@@ -196,7 +206,10 @@ def test_runtime_reports_expression_dimension_shorthand(runtime_factory):
         )
         compiled = runtime.compile(
             _query(
-                [{"expression": {"dimension": DIM}}, {"metric": METRIC, "as": "aov"}],
+                [
+                    {"expression": {**({"kind": kind} if kind else {}), "dimension": DIM}},
+                    {"metric": METRIC, "as": "aov"},
+                ],
                 sql_profile="audit",
             )
         )

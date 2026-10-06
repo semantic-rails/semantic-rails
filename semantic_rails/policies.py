@@ -10,28 +10,47 @@ on ``validate`` / ``compile`` / ``execute``.
 
 from __future__ import annotations
 
+import contextvars
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import replace
+from dataclasses import fields, is_dataclass, replace
 from functools import cache
 from typing import Any
 
-from .ast import every_filter, normalize_query, plain_filters
+from .ast import NormalizedQuery, every_filter, normalize_query, plain_filters
 from .compiler import BoundQuery, bind_metadata_objects, bind_query
+from .compiler_parts.indexes import get_package_analysis
 from .errors import SemanticLayerError
-from .policy_rules import MAX_RANK, withheld_max_rank
+from .expressions import (
+    AggregateExpr,
+    ConditionalAggregateExpr,
+    ConversionExpr,
+    MetricPredicateExpr,
+    ScopedAggregateExpr,
+    collect_column_refs,
+    parse_semantic_expression,
+)
+from .policy_rules import MAX_RANK, hidden_policy_ids, visible_only_listed, withheld_max_rank
 from .policy_rules import context_scope_matches as context_scope_matches
-from .policy_rules import hidden_object_ids as hidden_object_ids
 from .policy_rules import policy_action as _policy_action
 from .policy_rules import policy_config as _policy_config
 from .policy_rules import policy_matches as _policy_matches
 from .policy_rules import role_scope_matches as role_scope_matches
 from .request_context import context_from_policy_context
 from .row_filters import RowFilter, is_row_filter, row_filter
-from .schema import PackageConfig, SemanticPolicyConfig
+from .schema import (
+    PackageConfig,
+    RelationshipConfig,
+    SegmentConfig,
+    SemanticPolicyConfig,
+    ValueDomainConfig,
+)
+from .segments import build_segment_query, normalize_segment
 from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral, SqlOrder
 from .sql_preparation import checked_slot_value
 
 WITHHOLD = "withhold_values"
+# A conditional aggregate's condition reads columns, not fields: no allowed_where lists it.
+INLINE_CONDITION = "aggregate_if.condition"
 WITHHELD_SHAPE = (
     "Select the withheld metric directly, put it first in order_by, then every group key in "
     "the same direction (added for you when order_by names only the metric), with a limit of "
@@ -62,6 +81,85 @@ def policy_effects_for_object(
             continue
         effects.append(_base_policy_effect(policy, action=action))
     return effects
+
+
+def hidden_object_ids(
+    config: PackageConfig,
+    *,
+    environment: str = "",
+    audience: str = "",
+    roles: Iterable[str] | None = None,
+) -> set[str]:
+    """The one visibility set catalog, discovery, inspect, valid values, planning and
+    diagnostics read: ``hidden`` policies and :func:`restricted_object_ids`."""
+    scope: dict[str, Any] = {"environment": environment, "audience": audience, "roles": roles}
+    return hidden_policy_ids(config, **scope) | restricted_object_ids(config, **scope)
+
+
+def restricted_object_ids(
+    config: PackageConfig,
+    *,
+    environment: str = "",
+    audience: str = "",
+    roles: Iterable[str] | None = None,
+) -> frozenset[str]:
+    """What ``visible_only`` policies keep from this context: each listed object it is not
+    eligible for, and every object whose reads reach one or cannot be bound."""
+    listed = visible_only_listed(config, environment=environment, audience=audience, roles=roles)
+    if not listed:
+        return frozenset()
+    return frozenset(listed).union(
+        object_id
+        for object_id, reads in _object_reads(config).items()
+        if reads is None or reads & listed
+    )
+
+
+def bound_object_ids(binding: BoundQuery) -> frozenset[str]:
+    """Every object a bound query reads, including what each root leaf computes."""
+    return binding.object_ids.union(*binding.leaf_objects.values())
+
+
+def _object_reads(config: PackageConfig) -> dict[str, frozenset[str] | None]:
+    analysis = get_package_analysis(config)
+    if analysis.object_reads is None:
+        # A fresh context, so an outer binding never records these reads as its own.
+        analysis.object_reads = contextvars.Context().run(_bind_object_reads, config)
+    return analysis.object_reads
+
+
+def _bind_object_reads(config: PackageConfig) -> dict[str, frozenset[str] | None]:
+    """What the compiler reads to answer each object: a recipe's default invocation, a
+    segment's query, a value domain's dimensions, a relationship's entities."""
+    reads: dict[str, frozenset[str] | None] = {}
+    rows: list[Any] = [
+        *config.entities,
+        *config.dimensions,
+        *config.temporal_roles,
+        *config.relationships,
+        *config.value_domains,
+        *config.measures,
+        *config.metric_recipes,
+        *config.segments,
+    ]
+    for row in rows:
+        try:
+            if isinstance(row, SegmentConfig):
+                segment = normalize_segment(config, row.id)
+                query = build_segment_query(segment, include_preview_dimensions=True)
+                reads[row.id] = bound_object_ids(bind_query(config, None, query))
+                continue
+            linked = (
+                row.dimensions
+                if isinstance(row, ValueDomainConfig)
+                else [row.source_entity, row.target_entity]
+                if isinstance(row, RelationshipConfig)
+                else []
+            )
+            reads[row.id] = bind_metadata_objects(config, [row.id, *linked])
+        except Exception:  # noqa: BLE001 — unknown reads cannot authorize disclosure
+            reads[row.id] = None
+    return reads
 
 
 def diagnostic_hidden_object_ids(
@@ -161,6 +259,32 @@ def enforce_query_policies(
     binding: BoundQuery | None = None,
 ) -> list[dict[str, Any]]:
     object_ids = list(object_ids)  # read twice: the effects, then the withheld objects
+    # visible_only is checked against everything the query reads, never policy by policy.
+    restricted = restricted_object_ids(
+        config, environment=environment, audience=audience, roles=roles
+    )
+    if restricted and binding is None and query is not None:
+        binding = bind_query(config, None, dict(query))
+    blocked = restricted & {
+        *object_ids,
+        *(bound_object_ids(binding) if binding is not None else ()),
+    }
+    # Caller-created measures have no authored object id to govern their raw columns.
+    raw_aggregate = bool(
+        restricted
+        and binding is not None
+        and any(collect_column_refs(row.expr) for row in binding.plan.synthetic_measures.values())
+    )
+    if blocked or raw_aggregate:
+        raise SemanticLayerError(
+            "POLICY_DENIED",
+            "Query references a semantic object blocked by policy.",
+            details={
+                "blocked_objects": sorted(blocked),
+                "policy_effects": [],
+                "policy_violations": [],
+            },
+        )
     effects = query_policy_effects(
         config,
         object_ids,
@@ -576,6 +700,13 @@ def _metric_constraint_violations(
 
     # A required filter must cut the query's own rows; a child group's condition cuts child
     # rows, so it never meets one. Every condition, a group's included, must be allowed.
+    # An expression filter never meets required_where; it must be allowed when it counts
+    # for the governed object, including whole-query attribution for nested filters.
+    inline = cache(
+        lambda: _governed_inline_fields(
+            _inline_filters(query), bound, object_id, package_wide=not policy.object_ids
+        )
+    )
     where_rows = [
         {"field": item.field, "op": item.op, "value": item.value}
         for item in plain_filters(query.where)
@@ -604,6 +735,16 @@ def _metric_constraint_violations(
             violations.append(
                 {"kind": "disallowed_where", "disallowed": disallowed, "allowed": sorted(allowed)}
             )
+        disallowed = [field for field in inline() if field not in allowed]
+        if disallowed:
+            violations.append(
+                {
+                    "kind": "disallowed_where",
+                    "disallowed": disallowed,
+                    "allowed": sorted(allowed),
+                    "source": "inline_expression",
+                }
+            )
 
     if "allowed_temporal_roles" in policy_config:
         allowed = set(_config_str_list(policy_config, "allowed_temporal_roles"))
@@ -628,6 +769,15 @@ def _metric_constraint_violations(
     refs = metric_filter_refs(object_id) if filters_denied or allowlists else {}
     if filters_denied and bound().object_cuts(object_id):
         violations.append({"kind": "metric_filters_not_allowed", "metric_filter_refs": refs})
+    elif filters_denied and inline():
+        # Every inline filter is a cut, whether or not the compiler recorded one.
+        violations.append(
+            {
+                "kind": "metric_filters_not_allowed",
+                "metric_filter_refs": refs,
+                "source": "inline_expression",
+            }
+        )
     if allowlists and refs.get("unresolved"):
         violations.append({"kind": "unresolved_metric_filter", "unresolved": refs["unresolved"]})
     if "allowed_metric_filter_entities" in policy_config:
@@ -678,6 +828,82 @@ def _where_spec_matches(row: Mapping[str, Any], spec: Mapping[str, Any]) -> bool
     if "op" in spec and str(row.get("op", "")).upper() != str(spec.get("op", "")).upper():
         return False
     return "value" not in spec or row.get("value") == spec.get("value")
+
+
+def _inline_filters(query: NormalizedQuery) -> list[tuple[str | None, str]]:
+    """``(measure, field)`` for each filter the caller wrote inside a select or metric-filter
+    expression: an aggregate's ``filter`` and a scoped aggregate's ``where``, at any depth,
+    predicate inputs included. A conditional aggregate's condition has no declared measure and
+    is ``("", INLINE_CONDITION)``. ``measure=None`` marks whole-query attribution under
+    predicates, metric filters and conversion operands. Recipes are not read here.
+    """
+    found: list[tuple[str | None, str]] = []
+
+    def visit(expr: Any, *, whole_query: bool = False) -> None:
+        whole_query = whole_query or isinstance(expr, (MetricPredicateExpr, ConversionExpr))
+        nested: list[Any] = []
+        if isinstance(expr, AggregateExpr):
+            for clause in expr.filter.get("all", []):
+                if "expression" in clause:
+                    nested.append(dict(clause["expression"]))
+                else:
+                    found.append((None if whole_query else expr.measure, str(clause["field"])))
+        elif isinstance(expr, ScopedAggregateExpr):
+            found.extend(
+                (None if whole_query else expr.measure, str(item.get("field", "")))
+                for item in expr.where
+            )
+            nested.extend(
+                dict(item["input"])
+                for item in expr.predicates
+                if isinstance(item.get("input"), dict)
+            )
+        elif isinstance(expr, ConditionalAggregateExpr):
+            found.append((None if whole_query else "", INLINE_CONDITION))
+        for payload in nested:
+            visit(parse_semantic_expression(payload, context="query"), whole_query=True)
+        for item in fields(expr) if is_dataclass(expr) else ():
+            value = getattr(expr, item.name)
+            for child in value if isinstance(value, list) else [value]:
+                if is_dataclass(child):
+                    visit(child, whole_query=whole_query)
+
+    for row in query.select:
+        visit(row.expression)
+    for metric_filter in query.metric_filters:
+        visit(metric_filter.expression, whole_query=True)
+    return found
+
+
+def _governed_inline_fields(
+    filters: list[tuple[str | None, str]],
+    bound: Callable[[], BoundQuery],
+    object_id: str,
+    *,
+    package_wide: bool,
+) -> list[str]:
+    """The fields of the inline filters that cut ``object_id``.
+
+    A filter is owned by the query's root leaves over its measure, and counts by the rule
+    that attributes the compiler's own cuts (:meth:`BoundQuery.cut_counts`). A filter on the
+    governed measure itself, under a package-wide constraint, or marked whole-query
+    (``measure=None``) always counts.
+    """
+
+    def owners(measure: str) -> frozenset[str]:
+        return frozenset(
+            row.alias for row in bound().plan.bound_measures if row.measure_id == measure
+        )
+
+    out = [
+        field
+        for measure, field in filters
+        if package_wide
+        or measure is None
+        or measure == object_id
+        or bound().cut_counts(object_id, owners(measure))
+    ]
+    return list(dict.fromkeys(out))
 
 
 def _metric_filter_refs(

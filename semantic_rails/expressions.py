@@ -474,13 +474,17 @@ def resolve_measure_temporal_role(
 
 
 def _opaque_expression_data(node: Mapping[str, Any], key: str) -> bool:
-    if key == "parameters":
+    if key in {"meta", "parameters"}:
         return True
     return key == "value" and (
         str(node.get("kind", "")).strip() in {"literal", "value_filter"}
         or "field" in node
         or "dimension" in node
     )
+
+
+def _expression_children(node: Mapping[str, Any]) -> Iterable[tuple[str, Any]]:
+    return ((key, child) for key, child in node.items() if not _opaque_expression_data(node, key))
 
 
 def _unsupported_expression_kind(kind: Any, path: str) -> SemanticLayerError:
@@ -503,9 +507,7 @@ def validate_expression_shapes(value: Any, *, path: str = "expression") -> None:
             or (kind.strip() and kind.strip() not in _reference_expression_kinds())
         ):
             raise _unsupported_expression_kind(raw_kind, path)
-        for key, child in value.items():
-            if _opaque_expression_data(value, key):
-                continue
+        for key, child in _expression_children(value):
             validate_expression_shapes(child, path=f"{path}.{key}")
     elif isinstance(value, (list, tuple)):
         for index, child in enumerate(value):
@@ -1132,6 +1134,35 @@ def _aggregate_filter(raw: Any) -> dict[str, Any]:
         ),
         details={"received": shape},
     )
+
+
+def _entity_value_where(raw: Any) -> list[dict[str, Any]]:
+    """Only conditions on the per-entity value belong in this filter slot."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise SemanticLayerError(
+            "INVALID_QUERY", "entity_value.where must be a list of per-entity value filters"
+        )
+    filters: list[dict[str, Any]] = []
+    for index, item in enumerate(raw):
+        allowed = {"kind", "op", "value"}
+        unsupported = sorted(set(item) - allowed) if isinstance(item, dict) else []
+        if (
+            not isinstance(item, dict)
+            or unsupported
+            or item.get("kind", "value_filter") != "value_filter"
+        ):
+            path = f"entity_value.where[{index}]"
+            raise SemanticLayerError(
+                "INVALID_QUERY",
+                f"{path} must be a per-entity value filter with only 'op', 'value', "
+                "and optional 'kind': 'value_filter'. Put dimension filters in the "
+                "query's top-level 'where'.",
+                details={"path": path, "unsupported_keys": unsupported},
+            )
+        filters.append(dict(item))
+    return filters
 
 
 NULL_BEHAVIOR_REMOVED = (
@@ -2040,7 +2071,7 @@ def parse_semantic_expression(raw: Any, *, context: str, path: str = "") -> Sema
         return EntityValueExpr(
             entity=entity,
             input=parse_semantic_expression(expr.get("input"), context=context),
-            where=[dict(item) for item in list(expr.get("where", []) or [])],
+            where=_entity_value_where(expr.get("where")),
         )
     if kind == "distribution":
         over = parse_semantic_expression(expr.get("over"), context=context)

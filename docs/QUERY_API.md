@@ -965,6 +965,7 @@ Request fields:
 Response keys:
 
 - `ok`
+- `status`
 - `dimension`
 - `values`
 - `source`
@@ -979,7 +980,13 @@ Response keys:
 - `estimated_cost`
 - `anchor_measure`
 
-`source` is typically `value_domain` or `duckdb`.
+`source` is typically `value_domain` or `duckdb`. Without a declared domain and
+with `allow_live_query=false` (the default), HTTP 200 returns `ok: false`,
+`status: "needs_live_query"`, `source: "none"`, empty `values`, and a
+`VALID_VALUES_NO_DOMAIN` warning. Retry with `allow_live_query=true` to permit a
+live lookup. A declared empty domain remains a successful empty result. This
+payload is shared with MCP; only MCP adds `next_call` naming its tool. HTTP
+returns no `next_call`.
 
 ### `POST /api/v1/plan`
 
@@ -1040,12 +1047,38 @@ compile cost and warms the runtime compile cache. Agents can forward
 they need the full diagnostics envelope or are editing the IR by hand.
 
 Planning applies the caller's `policy_context` (carried in `partial_query`)
-before matching or ranking dimensions, including catalog fallback and Intent IR
-groupings. Hidden dimensions are omitted from drafts, alternatives, diagnostics
-and composition hints in every detail mode. If visibility cannot be determined,
-dimensions are withheld. Naming a hidden dimension has the same outcome as naming
-an absent dimension; a draft that bypasses the visibility check is refused with
-`OBJECT_NOT_FOUND` without naming the dimension.
+to the time reference as well: when `policy_context.now` is supplied, `today`,
+`yesterday`, `this/current <day|week|month|quarter|year>` and relative ranges use
+that clock. Plan drafts and checks every window in one planning zone: the package's
+default zone (UTC when unset). An aware `now` (or, without `now`, the current
+instant) is read in each zone; a naive `now` is already local. A draft is `ok`
+only when the question's window reads the same days in the selected temporal
+role's zone as in the planning zone; otherwise plan holds with
+`TIME_WINDOW_UNRESOLVED`, names the window phrases in
+`why.details.unresolved_phrases` and returns no `query_ir`. With `now` supplied,
+a returned relative range (`time.range`) becomes the `time.start` and `time.end`
+that clock gives it in the role's zone, so the returned Query IR runs the window
+plan checked without `policy_context`. A caller bound is read only at a whole day
+(a date, or 00:00 with no offset or a UTC one), and one with a zone designator (`Z`
+or `±hh:mm`) only when its offset is the role zone's at that instant; a window
+missing either bound, a bound with another time of day, or a window whose start is
+not before its end, doesn't match the question's window.
+Existing holds on explicit caller windows remain conservative. As-of phrases
+(`now`, `right now`, `currently`, `at the
+moment`, `as of now`, `current` before a metric, `end of <window>`, and `as of
+<window or date>`) remain `low_confidence` with `TIME_WINDOW_UNRESOLVED` naming
+the complete cue. An explicit interval cannot consume an as-of request. A range
+ending in an as-of cue (`2026-01-01 to now`) stays unresolved in full, and an
+unrepresentable closing-day bound also returns this hold rather than an exception.
+
+Planning also applies the caller's `policy_context`
+before matching or ranking dimensions, measures and metrics, including catalog
+fallback and Intent IR groupings and subjects. Hidden objects are omitted from
+drafts, alternatives, diagnostics and composition hints in every detail mode. If
+visibility cannot be determined, they are withheld. Naming a hidden dimension has
+the same outcome as naming an absent dimension; a draft that reads a hidden object
+(a dimension, measure, metric, entity, relationship or temporal role) is refused with
+`OBJECT_NOT_FOUND` without naming it.
 
 When a grouping word names available dimensions on several entities and none
 belongs to the selected measure's root entity, planning holds the draft with
@@ -1232,6 +1265,14 @@ Canonical public error codes:
   when the metric is at a discrete grain). When a `where` filter on a
   date or calendar dimension caused it, `details.where_path` names the
   filter and `drop_time_start` removes that filter instead.
+  For a filter on the window's measure input or an applied row policy
+  (`details.filter_source`), no time-boundary
+  recovery patch is offered; query an unwindowed measure or ask the package author
+  for a supported metric. Removing `time.start` cannot restore rows removed by
+  those filters, and the engine never widens a row policy to read lookback history.
+  Separately filtered aggregates and policies on unread tables do not truncate
+  the window's input. Source refusals follow object authorization and omit
+  authored conditions and values; a denied caller receives `POLICY_DENIED`.
 
 ### Warning Codes
 
@@ -1320,7 +1361,17 @@ The response `warnings` array can carry these non-error signals:
   one-step query switches; alternatives are never executed. The warning mentions
   a reviewed package default using `details.row` once, without a duplicate
   recovery hint. Pairs the package already resolves keep their existing message
-  and details. Own-key notes also omit hidden alternative routes. See
+  and details. Route clarifications, conflict rows, inherited-row notes, and
+  plan candidates name only routes whose relationships and every waypoint
+  are visible to the caller. If visibility cannot be resolved under an
+  `object_visibility` policy, route identifiers and package-route notes are withheld.
+  If the query's chosen route is hidden or its visibility is unresolved,
+  `ROUTE_CHOSEN_BY_QUERY` remains at every verbosity with the message
+  "a route chosen by this query", without `details.row` or `details.meaning`.
+  Filtering every clarification option still returns `AMBIGUOUS_PATH`, with
+  a message asking the caller to contact their admin; it never selects the
+  remaining visible route automatically. These projections do not change
+  route selection, readiness, SQL, or results. See
   [`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions).
 
 HTTP failures return:

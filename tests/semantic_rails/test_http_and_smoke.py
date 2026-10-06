@@ -742,7 +742,9 @@ def test_valid_values_http_route_requires_explicit_live_lookup(runtime_factory):
             },
         )
 
-        assert default_payload["ok"] is True
+        assert default_payload["ok"] is False
+        assert default_payload["status"] == "needs_live_query"
+        assert "next_call" not in default_payload
         assert default_payload["source"] == "none"
         assert default_payload["values"] == []
         assert default_payload["value_source_type"] == "none"

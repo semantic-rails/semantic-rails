@@ -45,6 +45,15 @@ top-level extras accepted by the runtime and schema are
 underscore-prefixed annotations such as `_note`, which are ignored before
 planning and SQL generation.
 
+### Per-entity value filters
+
+In a `distribution` expression, `entity_value.where` filters the computed
+value for each entity. Each item accepts only `op`, `value`, and an optional
+`kind: "value_filter"`; omitting `op` defaults to `=`, and omitting `value`
+defaults to null. An item with `field` or another unsupported key is refused
+with `INVALID_QUERY`, which names its index. Put dimension filters in the
+query's top-level `where` so they apply before the per-entity aggregation.
+
 ### Removed: `path_policy`
 
 `path_policy` (`preference`, `ask_if_ambiguous`) is no longer a Query IR key,
@@ -211,8 +220,8 @@ numbered in the rewritten `select`: an unaliased expression after it gets a defa
 |---|---|
 | `{ "metric": "..." }` as the select item itself, with no `expression` wrapper (plus optional `as`) | `{ "expression": {"kind": "metric", "metric": "..."}, "as": ... }` |
 | `{ "measure": "...", "aggregation": "sum" }` as the select item itself (`aggregation` optional, plus optional `as`) | `{ "expression": {"kind": "measure", ...}, "as": ... }` |
-| `{ "dimension": "..." }` as the whole select item (no `as`) | that id added to `group_by[]`, whatever it already holds |
-| `{ "expression": { "dimension": "..." } }` as the whole select item (no `as`), when `group_by` is empty or already lists it | that id on `group_by[]` |
+| `{ "dimension": "..." }` as the whole select item (no `as`, optional `kind: dimension\|group\|ref`) | that id added to `group_by[]`, whatever it already holds |
+| `{ "expression": { "dimension": "..." } }` as the whole select item (no `as`, optional `kind: dimension\|group\|ref` inside `expression`), when `group_by` is empty or already lists it | that id on `group_by[]` |
 
 Everything else is refused with `INVALID_EXPRESSION_AST`, and the message shows the canonical
 form: an item naming more than one of `metric`, `measure` and `dimension`, a dimension item
@@ -279,6 +288,34 @@ the same name on an unrelated table. Only an upper bound (`<`, `<=`) on a
 `date` or `timestamp` dimension runs, as `time.end` does. The refusal is
 `WINDOWED_TIME_FILTER_UNSUPPORTED` or `CUMULATIVE_TIME_FILTER_UNSUPPORTED`; for a `where`
 filter, `details.where_path` names it.
+
+The same rule applies to dimension conditions bound to the window's own aggregate
+inputs, including conditions authored inside metric recipes
+(`details.filter_source: "measure"`). A separately filtered aggregate in another
+select, in `metric_filters`, or beside the window in arithmetic does not cut that
+window's input. A row policy applied to a scan in this statement that keeps a
+single value of a temporal column also refuses a full-history window
+(`details.filter_source: "policy"`, `details.policy_id`); unsupported row-policy scan
+shapes retain `POLICY_DENIED`. Policies on unread tables do not trigger this guard.
+Source refusal details include only `filter_source`, `policy_id` for a policy, and
+the caller's expression (plus window lookback when applicable). They omit authored
+measure IDs, conditions and values. Object authorization runs before a source
+refusal is returned: denied callers receive `POLICY_DENIED`, with policy details
+omitted when they would name hidden blocked objects.
+A policy restricts the caller's readable rows, and an authored filter restricts the
+measure's population. Neither promises complete lookback history. The engine refuses
+these combinations rather than widening the readable population or reporting a
+truncated window. Non-temporal filters and aggregate date/timestamp upper bounds
+keep their existing behavior. These refusals offer no patch to remove a policy or
+an authored filter; query an unwindowed measure or ask the package author for a
+supported metric.
+
+A separately stored month or date must declare a temporal kind or another structural
+link described above. A categorical label on a different column, with no declared
+relationship to a temporal column, carries no temporal semantics: the engine cannot
+infer that filtering it removes lookback history. Declare a physical date as
+`kind: date`; categorical period labels need a package contract before they can be
+used safely to bound a full-history window.
 
 `period_to_date` currently supports only the default calendar. A non-default
 `time.calendar_id`, or a time role bound to a non-default calendar, refuses with

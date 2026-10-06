@@ -2,6 +2,124 @@ fixture:
   tables: [orders, refunds, signups, dim_fiscal, customer_history, account_days]
   data_sha256: 9c846589d4cc8d72b7e3f7bd19ea9d9a21ef246a87d6de79fe4727ea578223e5
 tests:
+  shop/sibling-input-clock-filter-keeps-independent-history:
+    kind: query_matches_snapshot
+    expect: answer
+    why: The recent aggregate cuts its own population while the cumulative input retains November history.
+    cites: [docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union, tests/integration/correctness/shop/models/orders.yml#model.measures.revenue]
+    tags: [time-window]
+    query:
+      select:
+        - as: history
+          expression: {kind: cumulative, input: {measure: measure.shop.revenue}}
+        - as: recent
+          expression:
+            kind: aggregate
+            measure: measure.shop.revenue
+            filter:
+              all: [{field: dimension.shop_order_ordered_at, op: '>=', value: '2023-12-01'}]
+      metric_filters:
+        - {expression: {kind: cumulative, input: {measure: measure.shop.revenue}}, op: '>=', value: 22}
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month, end: '2024-01-01'}
+    expected_rows:
+      - {temporal_role.shop_order_ordered_at__month: '2023-12-01T00:00:00', history: 22, recent: 7}
+    reference_sql: |
+      WITH monthly AS (
+        SELECT date_trunc('month', ordered_at) AS period, SUM(amount) AS revenue,
+          SUM(CASE WHEN ordered_at >= TIMESTAMP '2023-12-01' THEN amount ELSE 0 END) AS recent
+        FROM orders WHERE ordered_at < TIMESTAMP '2024-01-01' GROUP BY 1
+      ), history AS (
+        SELECT period, SUM(revenue) OVER (ORDER BY period ROWS UNBOUNDED PRECEDING) AS total, recent
+        FROM monthly
+      )
+      SELECT period, total, recent FROM history WHERE total >= 22
+  shop/metric-input-clock-filter-keeps-independent-history:
+    kind: query_matches_snapshot
+    expect: answer
+    why: Filtering the recent metric output does not remove November from the cumulative input.
+    cites: [docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union, tests/integration/correctness/shop/models/orders.yml#model.measures.revenue]
+    tags: [time-window]
+    query:
+      select:
+        - {as: history, expression: {kind: cumulative, input: {measure: measure.shop.revenue}}}
+      metric_filters:
+        - expression:
+            kind: aggregate
+            measure: measure.shop.revenue
+            filter:
+              all: [{field: dimension.shop_order_ordered_at, op: '>=', value: '2023-12-01'}]
+          op: '>'
+          value: 0
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month, end: '2024-01-01'}
+    expected_rows:
+      - {temporal_role.shop_order_ordered_at__month: '2023-12-01T00:00:00', history: 22}
+    reference_sql: |
+      WITH monthly AS (
+        SELECT date_trunc('month', ordered_at) AS period, SUM(amount) AS revenue,
+          SUM(CASE WHEN ordered_at >= TIMESTAMP '2023-12-01' THEN amount ELSE 0 END) AS recent
+        FROM orders WHERE ordered_at < TIMESTAMP '2024-01-01' GROUP BY 1
+      ), history AS (
+        SELECT period, SUM(revenue) OVER (ORDER BY period ROWS UNBOUNDED PRECEDING) AS total, recent
+        FROM monthly
+      )
+      SELECT period, total FROM history WHERE recent > 0
+  shop/cumulative-input-clock-filter-refuses-truncated-history:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: CUMULATIVE_TIME_FILTER_UNSUPPORTED
+    why: A lower bound on the input clock removes history needed by the cumulative sum.
+    cites: [docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union, tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at]
+    tags: [time-window]
+    query:
+      select:
+        - as: total
+          expression:
+            kind: cumulative
+            input:
+              kind: aggregate
+              measure: measure.shop.revenue
+              filter:
+                all: [{field: dimension.shop_order_ordered_at, op: '>=', value: '2023-12-01'}]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month}
+  shop/rolling-input-clock-filter-refuses-truncated-history:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: WINDOWED_TIME_FILTER_UNSUPPORTED
+    why: A lower bound on the input clock removes earlier buckets needed by the rolling sum.
+    cites: [docs/QUERY_IR_SCHEMA.md#selectexpression-discriminated-union, tests/integration/correctness/shop/models/orders.yml#model.times.ordered_at]
+    tags: [time-window]
+    query:
+      select:
+        - as: total
+          expression:
+            kind: rolling
+            window: {unit: month, value: 2}
+            input:
+              kind: aggregate
+              measure: measure.shop.revenue
+              filter:
+                all: [{field: dimension.shop_order_ordered_at, op: '>=', value: '2023-12-01'}]
+      time: {temporal_role: temporal_role.shop_order_ordered_at, grain: month}
+  shop/distribution-value-filter-refuses-a-dimension:
+    kind: validate_fails_with_code
+    expect: refuse
+    code: INVALID_QUERY
+    why: A field condition must not be applied to the computed per-order value.
+    cites:
+      - tests/integration/correctness/shop/models/orders.yml#model.measures.revenue
+      - docs/QUERY_IR_SCHEMA.md#per-entity-value-filters
+    tags: [refusal]
+    query:
+      select:
+        - as: average
+          expression:
+            kind: distribution
+            function: avg
+            over:
+              kind: entity_value
+              entity: entity.shop_order
+              input: {measure: measure.shop.revenue}
+              where: [{field: dimension.shop_order_store_id, op: '=', value: a}]
   shop/net-growth-from-a-never-matched-count:
     kind: query_matches_snapshot
     expect: answer

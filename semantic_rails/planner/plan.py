@@ -26,12 +26,18 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from ..ast import every_filter, is_child_group, rewrite_select_shorthand
+from ..ast import (
+    _time_spec_from_payload,
+    every_filter,
+    is_child_group,
+    rewrite_select_shorthand,
+)
 from ..errors import SemanticLayerError
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
 from ._base import (
     _NAME_CONNECTORS,
+    _TERM_SYNONYMS,
     _TIME_UNITS,
     _grouping_matches,
     _is_temporal_grouping_term,
@@ -41,6 +47,7 @@ from ._base import (
     _names_time_axis,
     _names_whole_entity,
     _object_by_id,
+    _requested_grouping_spans,
     _requested_grouping_terms,
     _runtime_composition_terms,
     _singular,
@@ -49,7 +56,13 @@ from ._base import (
     _with_fiscal_calendar,
 )
 from .faithfulness import (
+    _FRAMING_WORDS,
+    _TERM_RE,
+    CoverageGap,
+    _coverage_why,
     _dimension_nouns,
+    _name_spans,
+    _query_contains_prior_period,
     _ranking_request,
     intent_faithfulness_why,
     intent_subject_why,
@@ -62,9 +75,10 @@ from .faithfulness import (
 from .generators import _grouping_term_matches, blocked_object_not_found, fallback_drafts
 from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
+from .time_reference import with_time_reference
 from .visibility import (
     caller_hidden_ids,
-    require_visible_dimensions,
+    require_visible_objects,
     visible_dimensions,
     with_dimension_visibility,
 )
@@ -103,6 +117,7 @@ def _normalize_question(text: str, declared: Iterable[str] = ()) -> str:
 
 @runtime_request_scope
 @with_dimension_visibility
+@with_time_reference
 def plan_payload(
     runtime: Any,
     *,
@@ -225,11 +240,12 @@ def plan_payload(
         return _query_detail_payload(payload) if detail_level == "query" else payload
 
     validate_temporal_support(runtime._config, partial_query or {})
+    # compose and every fallback helper inherit the request's time reference.
     result = compose(runtime, intent)
     if result.draft is not None:
         validate_temporal_support(runtime._config, result.draft.query)
     intent_ir = result.intent_ir
-    require_visible_dimensions(runtime._config, {}, intent_ir.to_dict().get("grouping", []))
+    require_visible_objects(runtime._config, {}, intent_ir.to_dict().get("grouping", []))
     draft_rows: list[tuple[Any, str]] = []
     blocked: list[dict[str, Any]] = []
     primary_query_keys: set[str] = set()
@@ -342,6 +358,7 @@ def plan_payload(
     time_why = (
         atemporal_why
         or _unresolved_time_why(intent_str, partial_query)
+        or _unclocked_window_why(runtime._config, intent_str, best_draft.query, partial_query)
         or _start_dropped_why(
             best.get("start_dropped")
             or _pattern_dropped_start(intent_str, best_draft.query, partial_query)
@@ -395,6 +412,7 @@ def plan_payload(
                 intent_str, unconsumed_catalog_words(runtime, intent_str, best_draft.query)
             )
             or _dropped_value_why(
+                intent_str,
                 unconsumed_unknown_words(runtime, intent_str, best_draft.query),
                 set(intent_ir.unresolved),
             )
@@ -405,8 +423,18 @@ def plan_payload(
         if best_ok and not (faithfulness_why or time_why or conversion_why or subject_why)
         else None
     )
+    # Last, the draft's result holds what the question's shape asks for: the listed entity's
+    # rows for "who" or "which", a row per item for "each", a value to compare with for a
+    # comparison, and a select of its own for each of several questions. It runs only when
+    # nothing else holds the draft.
+    shape_why = (
+        _answer_shape_why(runtime, intent_str, best_draft.query, partial_query)
+        if best_ok
+        and not (faithfulness_why or time_why or conversion_why or subject_why or value_why)
+        else None
+    )
     ready = best_ok and not (
-        faithfulness_why or time_why or conversion_why or subject_why or value_why
+        faithfulness_why or time_why or conversion_why or subject_why or value_why or shape_why
     )
     payload = {
         "plan_version": _VERSION,
@@ -434,8 +462,13 @@ def plan_payload(
                 reason["actual"] = f"why.details.fallback_slots.{slot}"
             payload["why"] = {**fallback_drift_why, "details": details}
     elif faithfulness_why is not None:
-        # One why, but an unresolved or shortened window stays visible.
-        payload["why"] = _with_time_gap(faithfulness_why, time_why)
+        # One why, but an unresolved or shortened window stays visible. A hold that returns
+        # no query leaves no rows to filter from a shortened window.
+        unrunnable = faithfulness_why["code"] == "TIME_WINDOW_UNRESOLVED"
+        dropped = (time_why or {}).get("code") == "TIME_WINDOW_START_DROPPED"
+        payload["why"] = _with_time_gap(
+            faithfulness_why, None if unrunnable and dropped else time_why
+        )
     elif time_why is not None:
         payload["why"] = time_why
     elif conversion_why is not None:
@@ -444,6 +477,8 @@ def plan_payload(
         payload["why"] = subject_why
     elif value_why is not None:
         payload["why"] = value_why
+    elif shape_why is not None:
+        payload["why"] = shape_why
     elif not best_ok:
         errors = list(best_validation.get("errors") or [])
         payload["why"] = _trim_why_errors(errors)
@@ -481,11 +516,21 @@ def plan_payload(
             if row is not best
         ][: max(0, int(limit or 1) - 1)]
         payload["blocked"] = blocked
-    if time_why is not None and time_why["code"] == "TIME_WINDOW_UNRESOLVED":
+    # Every returned query runs the window plan checked, without the caller's clock.
+    for row in [payload["best"], *payload.get("alternatives", []), *blocked]:
+        if "query_ir" in row:
+            clocked = _with_query_clock(runtime._config, row["query_ir"], partial_query)
+            if clocked is None:
+                row.pop("query_ir")
+            else:
+                row["query_ir"] = clocked
+    if any(
+        (why or {}).get("code") == "TIME_WINDOW_UNRESOLVED" for why in (time_why, faithfulness_why)
+    ):
         # Offer no runnable draft, as ask and the REPL refuse to run one: without
         # the question's window it answers a different question.
         for row in [payload["best"], *payload.get("alternatives", []), *blocked]:
-            row.pop("query_ir")
+            row.pop("query_ir", None)
     if detail_level == "debug":
         payload["compose_hints"] = compose_hints(intent_ir)
     if detail_level == "best":
@@ -586,7 +631,7 @@ def _planned_row(
     merged_draft = replace(
         draft, query=_merge_partial_query(runtime._config, fiscal_query, partial_query)
     )
-    require_visible_dimensions(
+    require_visible_objects(
         runtime._config,
         merged_draft.query,
         merged_draft.resolved,
@@ -728,7 +773,8 @@ def _unconsumed_terms_why(terms: list[str]) -> dict[str, Any] | None:
                 "message": (
                     "Add the filter or limit to best.query_ir, or (plan resolves days and "
                     "coarser windows only) state an hour range as query.time start and end "
-                    "ISO timestamps, or ask again without those words, then validate."
+                    "ISO timestamps, then validate. Asking again without those words changes "
+                    "the question."
                 ),
             }
         ],
@@ -766,7 +812,8 @@ def _unconsumed_catalog_why(question: str, words: list[str]) -> dict[str, Any] |
                 "message": (
                     "Find what these words name with discover, add it to best.query_ir (a "
                     "group_by for a grouping, the select for a measure), then validate; or ask "
-                    "again without those words."
+                    "the user what they mean. They name catalog objects, so asking again "
+                    "without them changes the question."
                 ),
             }
         ],
@@ -1177,7 +1224,8 @@ def _dropped_grouping_why(
                 "kind": "clarify_grouping" if unclear else "use_named_objects",
                 "message": (
                     "Find a dimension for each grouping with discover, add the missing ones to "
-                    "best.query_ir group_by, then validate; or ask again without those groupings."
+                    "best.query_ir group_by, then validate; or ask the user which grouping they "
+                    "mean."
                     + (
                         " Two groupings could replace the same draft dimension, so plan offers "
                         "no options: ask the user which dimension each grouping the question "
@@ -1478,16 +1526,382 @@ def _ranking_why(
     }
 
 
-def _dropped_value_why(unconsumed: list[str], unresolved: set[str]) -> dict[str, Any] | None:
+# Words asking for more than one value (``_answer_shape_why``). "per" is not one: "revenue per
+# order" is a ratio.
+_PERSON_WORDS = frozenset({"who", "whom", "whose"})
+_LIST_WORDS = _PERSON_WORDS | {"which", "list"}
+_EACH_WORDS = frozenset({"each", "every"})
+_COMPARISON_WORDS = frozenset(
+    {"against", "compare", "compared", "compares", "comparing", "comparison", "versus", "vs"}
+)
+_COMPARISON_PHRASE_RE = re.compile(r"\b(?:up\s+or\s+down|down\s+or\s+up)\b")
+# A question asking for one value: "how many", "how much", "what is", "what was", "what's".
+_VALUE_QUESTION_RE = re.compile(r"\bhow\s+(?:many|much)\b|\bwhat(?:['’]s|\s+(?:is|was|are|were))\b")
+# Where a clause starts: after punctuation, or after "and" ("How many orders and who placed
+# them?").
+_CLAUSE_BREAK_RE = re.compile(r"[,;:.?!\n]|\band\b")
+
+
+def _answer_shape_why(
+    runtime: Any,
+    question: str,
+    query: dict[str, Any],
+    partial_query: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """The draft's result holds the part each of the question's shape words asks for, or the
+    plan is not ready.
+
+    "who", "whom" or "whose" opening a clause, or "which" or "list" opening one, asks for an
+    entity's rows: the draft's group_by needs its declared key (``_lists_entity_rows``). "each"
+    or "every" needs a row per item (a group_by, or a grain that splits the rows). A comparison
+    word ("compared", "vs", "versus", "against", "up or down") needs a value to compare with: a
+    prior-period select. A second select (which may spell the first one again), a group_by or a
+    grain doesn't show what the question compares. Two or more questions for a value ("how
+    many", "how much", "what is", "what was") need a select of their own each, which names what
+    the question asks about (``_questions_answered``). A word opens a clause when
+    every word before it in its clause (from punctuation or "and") is a stopword, a framing word
+    or a word of a time window the question states ("show me which stores", "last week, who",
+    "how many orders and who"); in "customers who ordered" it is a relative pronoun. A word
+    inside a declared name asks nothing. The check only holds a plan: it never changes a draft
+    or makes one ready.
+    """
+
+    from ..metadata_parts.relevance import _INTENT_STOPWORDS  # noqa: WPS433
+
+    config = runtime._config
+    lowered = str(question or "").lower()
+    names = list(_declared_name_spans(config, lowered))
+    windows = list(_time_window(question).spans)
+    framing = _INTENT_STOPWORDS | _FRAMING_WORDS
+    tokens = list(re.finditer(r"[^\W_]+", lowered))
+    breaks = [match.start() for match in _CLAUSE_BREAK_RE.finditer(lowered)]
+
+    def outside(span: tuple[int, int], spans: list[tuple[int, int]]) -> bool:
+        return not any(low <= span[0] and span[1] <= high for low, high in spans)
+
+    def opens_clause(index: int) -> bool:
+        clause = max((at for at in breaks if at < tokens[index].start()), default=-1)
+        return all(
+            (token.group() in framing and outside(token.span(), names))
+            or not outside(token.span(), windows)
+            for token in tokens[:index]
+            if token.start() > clause
+        )
+
+    def clause_end(at: int) -> int:
+        return min((end for end in breaks if end >= at), default=len(lowered))
+
+    asked: dict[str, list[str]] = {"person": [], "list": [], "each": [], "comparison": []}
+    unlisted: list[str] = []
+    keys: set[str] = set()
+    for index, token in enumerate(tokens):
+        word = token.group()
+        kind = (
+            ("person" if word in _PERSON_WORDS else "list")
+            if word in _LIST_WORDS and opens_clause(index)
+            else "each"
+            if word in _EACH_WORDS
+            else "comparison"
+            if word in _COMPARISON_WORDS
+            else ""
+        )
+        if not kind or not outside(token.span(), names):
+            continue
+        if word not in asked[kind]:
+            asked[kind].append(word)
+        if kind in ("person", "list"):
+            listed, wanted = _lists_entity_rows(
+                config,
+                lowered,
+                windows,
+                (token.end(), clause_end(token.end())),
+                kind == "person",
+                query,
+                partial_query or {},
+            )
+            keys |= wanted
+            if not listed and word not in unlisted:
+                unlisted.append(word)
+    for match in _COMPARISON_PHRASE_RE.finditer(lowered):
+        if (phrase := " ".join(match.group().split())) not in asked["comparison"]:
+            asked["comparison"].append(phrase)
+    matches = list(_VALUE_QUESTION_RE.finditer(lowered))
+    questions = [" ".join(match.group().split()) for match in matches]
+    # What each question for a value asks about: the first run of words after it that are not
+    # stopwords, framing words, numbers or a window's words ("orders" in "how many orders did
+    # we get last week"), up to its clause's end or the next question.
+    subjects: list[list[tuple[int, int]]] = []
+    for index, match in enumerate(matches):
+        stop = min([clause_end(match.end()), *(later.start() for later in matches[index + 1 :])])
+        subject: list[tuple[int, int]] = []
+        for token in tokens:
+            if not (match.end() <= token.start() and token.end() <= stop):
+                continue
+            filler = (
+                token.group() in framing
+                or not outside(token.span(), windows)
+                or any(char.isdigit() for char in token.group())
+            )
+            if filler and subject:
+                break
+            if not filler:
+                subject.append(token.span())
+        subjects.append(subject)
+
+    values = [item for item in query.get("select") or [] if isinstance(item, dict)]
+    split = bool(query.get("group_by")) or _grain_splits(_time_of(query))
+    compared = _query_contains_prior_period(runtime, query)
+    # (kind, the words asking, whether the draft's shape leaves them unanswered, message,
+    # expected, hint kind, hint).
+    shapes: list[tuple[str, list[str], bool, str, dict[str, Any], str, str]] = [
+        (
+            "list_unrealized",
+            unlisted,
+            bool(unlisted),
+            "The question asks for the rows of what it lists ({words}), but the draft's "
+            "group_by has no declared key of that entity, or plan can't tell which entity it "
+            "lists, so it doesn't list them: a name can repeat across rows.",
+            {"answer": "rows", **({"key_dimensions": sorted(keys)} if keys else {})},
+            "group_by_listed_rows",
+            "Find what the question lists with discover, add its key dimension to "
+            "best.query_ir group_by (a name may go beside it), then validate; or ask the user "
+            "what to list.",
+        ),
+        (
+            "each_unrealized",
+            asked["each"],
+            bool(asked["each"]) and not split,
+            "The question asks for a row per item ({words}), but the draft has no group_by or "
+            "time grain that splits the rows, so it returns one total.",
+            {"answer": "row per item"},
+            "group_by_each_item",
+            "Add the dimension or time grain the question asks for each of to best.query_ir, "
+            "then validate; or ask the user what it means.",
+        ),
+        (
+            "comparison_unrealized",
+            asked["comparison"],
+            bool(asked["comparison"]) and not compared,
+            "The question asks for a comparison ({words}), but the draft has no prior-period "
+            "select, so it has nothing to compare with: a second select, a group_by or a time "
+            "grain doesn't say what the question compares.",
+            {"answer": "values to compare"},
+            "add_compared_value",
+            "Add what the question compares with to best.query_ir (a prior_period select for "
+            "an earlier period), then validate; or ask the user what to compare.",
+        ),
+        (
+            "multiple_questions_unrealized",
+            questions,
+            len(questions) > 1 and not _questions_answered(config, lowered, subjects, values),
+            f"The question asks {len(questions)} questions for a value ({{words}}), but the "
+            "draft has no select of its own for each that names what it asks about.",
+            {"select_count": len(questions)},
+            "plan_each_question",
+            "Plan each question on its own, or give best.query_ir one select per value asked "
+            "for, then validate.",
+        ),
+    ]
+    actual = {
+        "select_count": len(values),
+        "group_by": list(query.get("group_by") or []),
+        "time_grain": _time_of(query).get("grain"),
+    }
+    gaps = []
+    for kind, words, unmet, message, expected, hint, text in shapes:
+        if unmet:
+            clause = ", ".join(f'"{word}"' for word in words)
+            gaps.append(
+                CoverageGap(
+                    kind=kind,
+                    clause=clause,
+                    message=message.format(words=clause),
+                    expected=expected,
+                    actual=actual,
+                    recovery_hint={"kind": hint, "message": text},
+                )
+            )
+    return _coverage_why(gaps)
+
+
+def _lists_entity_rows(
+    config: Any,
+    lowered: str,
+    windows: list[tuple[int, int]],
+    clause: tuple[int, int],
+    person: bool,
+    query: dict[str, Any],
+    caller: dict[str, Any],
+) -> tuple[bool, set[str]]:
+    """Whether the draft's group_by lists the rows a list or person word asks for, with the key
+    dimensions that would list them.
+
+    The rows are those of the entity the word's clause names: its first word, outside a window
+    and a grouping the question lists ("by store"), that names an entity. With none, "list" or
+    "which" lists the entity a grouping in its clause names ("List revenue by store"). Only the
+    entity's declared one-column key lists them: the key among its stand-ins
+    (``_entity_grouping_dimensions``). A display name may sit beside the key, but lists nothing
+    on its own, because a name can repeat ("Customer name"); nor does any other dimension of the
+    entity, whatever it declares. When "who" names no entity ("Who ordered last week?"), plan
+    can't tell whose rows it asks for, so only the caller's group_by says: one of its dimensions
+    that reads no grouping the question lists ("Who ordered by store?" asks for more than
+    stores) and is the key of its own entity. A time grain, a category, a name or an entity the
+    clause doesn't name never lists them, and when "list" or "which" names no entity, nothing
+    does.
+    """
+
+    chosen = set(caller.get("group_by") or [])
+    grouped = [
+        row
+        for item in dict.fromkeys(query.get("group_by") or [])
+        if (row := _object_by_id(config.dimensions, item)) is not None
+    ]
+
+    def keys_of(term: str) -> set[str]:
+        stand_ins = _entity_grouping_dimensions(config, term) or set()
+        return {
+            row.id
+            for row in config.dimensions
+            if row.id in stand_ins
+            and (entity := _object_by_id(config.entities, row.entity)) is not None
+            and row.column == entity.key[0]
+        }
+
+    groupings = _requested_grouping_spans(lowered)
+    words = [
+        match
+        for match in re.finditer(r"[^\W_]+", lowered[: clause[1]])
+        if match.start() >= clause[0]
+        and not any(low <= match.start() < high for low, high in windows)
+    ]
+
+    def named(listed: bool) -> str | None:
+        return next(
+            (
+                match.group()
+                for match in words
+                if any(low <= match.start() < high for low, high in groupings) is listed
+                and _entity_grouping_dimensions(config, match.group()) is not None
+            ),
+            None,
+        )
+
+    term = named(False) or (None if person else named(True))
+    if term is not None:
+        keys = keys_of(term)
+        return any(row.id in keys for row in grouped), keys
+    if not person:
+        return False, set()
+    terms = _listed_grouping_terms(lowered, config)
+    for row in grouped:
+        entity = _object_by_id(config.entities, row.entity)
+        if (
+            row.id not in chosen
+            or entity is None
+            or any(
+                _reads_grouping(term, _entity_grouping_dimensions(config, term), row)
+                for term in terms
+            )
+        ):
+            continue
+        if row.id in keys_of(str(entity.label or _last_token(entity.name))):
+            return True, set()
+    return False, set()
+
+
+def _questions_answered(
+    config: Any, lowered: str, subjects: list[list[tuple[int, int]]], values: list[dict[str, Any]]
+) -> bool:
+    """Whether each question for a value has a select of its own that names what it asks about.
+
+    ``subjects`` holds, per question, the spans of the words it asks about. A select names them
+    when each lies where the question spells a whole name (label, alias, or the last part of
+    its id or name) of the measure, at its declared aggregation, or the metric that the select's
+    expression is. A clock, filter, grouping or description names nothing, nor does an
+    expression built on an object (a ratio, a filtered or prior-period aggregate). Selects with
+    one expression (``_select_key``) are one select, and each question needs another one.
+    """
+
+    tokens = [(match.group(0), *match.span()) for match in _TERM_RE.finditer(lowered)]
+    normal = [_singular(_TERM_SYNONYMS.get(word, word)) for word, _start, _end in tokens]
+    measures = {row.id: row for row in config.measures}
+    metrics = {row.id: row for row in config.metric_recipes}
+    named: dict[str, list[tuple[int, int]]] = {}
+    for item in values:
+        raw = item.get("expression")
+        expression = raw if isinstance(raw, dict) else {}
+        kind = expression.get("kind", "measure" if "measure" in expression else "metric")
+        if kind in ("measure", "measure_ref"):
+            row = measures.get(str(expression.get("measure")))
+            declared = row is not None and expression.get("aggregation") in (
+                None,
+                "",
+                row.default_aggregation,
+            )
+        else:
+            row = metrics.get(str(expression.get("metric"))) if kind == "metric" else None
+            declared = row is not None
+        if row is None or not declared:
+            continue
+        aliases = [str(alias) for alias in row.aliases or []]
+        names = [str(row.label or ""), *aliases, _last_token(row.id), _last_token(row.name)]
+        spans = named.setdefault(_select_key(config, item), [])
+        spans.extend(_name_spans(tokens, normal, names, whole=True))
+    options = [
+        [
+            key
+            for key, spans in named.items()
+            if subject
+            and all(
+                any(low <= start and end <= high for low, high in spans) for start, end in subject
+            )
+        ]
+        for subject in subjects
+    ]
+    owner: dict[str, int] = {}
+
+    def assign(index: int, seen: set[str]) -> bool:
+        # A question takes a free select, or one whose question can take another.
+        for key in options[index]:
+            if key not in seen:
+                seen.add(key)
+                if key not in owner or assign(owner[key], seen):
+                    owner[key] = index
+                    return True
+        return False
+
+    return all(assign(index, set()) for index in range(len(subjects)))
+
+
+def _contraction_tail(question: str, term: str) -> bool:
+    """Whether the question writes "s" only as the end of a contraction or possessive ("what's",
+    "store's"): with it gone, the question means the same. No other tail is: without its "t",
+    "can't" says the opposite."""
+
+    if term != "s":
+        return False
+    lowered = str(question or "").lower()
+    found = list(re.finditer(rf"(?<![^\W_]){re.escape(term)}(?![^\W_])", lowered))
+    return bool(found) and all(
+        re.search(r"[^\W_]['’]$", lowered[: match.start()]) for match in found
+    )
+
+
+def _dropped_value_why(
+    question: str, unconsumed: list[str], unresolved: set[str]
+) -> dict[str, Any] | None:
     """Unknown words left unresolved by the intent parse make the draft not ready.
 
     The parse records a word as it normalizes it ("messages" as "message", "sent" as
     "received"), so membership compares that form; the message names the question's spelling.
+    The hint offers to ask again without the words only when each is the end of a contraction
+    (``_contraction_tail``): plan can't tell whether any other word changes the question.
     """
 
     unknown = [term for term in unconsumed if _runtime_composition_terms(term) & unresolved]
     if not unknown:
         return None
+    filler = all(_contraction_tail(question, term) for term in unknown)
     return {
         "code": "PLAN_UNMATCHED_TERMS",
         "message": (
@@ -1499,8 +1913,13 @@ def _dropped_value_why(unconsumed: list[str], unresolved: set[str]) -> dict[str,
             {
                 "kind": "add_missing_condition",
                 "message": (
-                    "Find the values with valid_values, add the filter to best.query_ir, "
-                    "then validate; or ask again without those words."
+                    "Ask again without those words: each ends a contraction or possessive "
+                    '("s" in "what\'s"), so the question means the same without them.'
+                    if filler
+                    else "Find the values with valid_values, add the filter to "
+                    "best.query_ir, then validate; or ask the user what these words mean. "
+                    "Plan can't tell whether they change the question, so asking again "
+                    "without them may answer another one."
                 ),
             }
         ],
@@ -1536,6 +1955,68 @@ def _start_dropped_why(start: Any) -> dict[str, Any] | None:
             {
                 "kind": "filter_rows_after_execution",
                 "message": f"Execute best.query_ir and keep the rows dated {start} or later.",
+            }
+        ],
+    }
+
+
+def _with_query_clock(
+    config: Any, query: dict[str, Any], partial_query: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """The query with a relative window as the dates the caller's clock gives it.
+
+    Query IR carries no ``policy_context`` (the merge drops it), so a returned ``time.range``
+    would run on the executing caller's clock. With ``policy_context.now`` supplied, the range
+    becomes the bounds execution computes from that clock in the role's zone. None when they
+    can't be computed.
+    """
+
+    context = (partial_query or {}).get("policy_context")
+    time = query.get("time")
+    if not (
+        isinstance(context, dict)
+        and context.get("now") not in (None, "")
+        and isinstance(time, dict)
+        and time.get("range")
+    ):
+        return query
+    try:
+        spec = _time_spec_from_payload(time, policy_context=context, config=config)
+    except (SemanticLayerError, ValueError, OverflowError):
+        return None
+    if spec is None or not spec.start or not spec.end:
+        return None
+    bounded = {key: value for key, value in time.items() if key != "range"}
+    return {**query, "time": {**bounded, "start": spec.start, "end": spec.end}}
+
+
+def _unclocked_window_why(
+    config: Any, intent: str, query: dict[str, Any], partial_query: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """Hold a draft whose relative window can't take the supplied clock."""
+
+    if _with_query_clock(config, query, partial_query) is not None:
+        return None
+    lowered = intent.lower()
+    return {
+        "code": "TIME_WINDOW_UNRESOLVED",
+        "message": (
+            "The draft's relative window could not be bounded on policy_context.now, so plan "
+            "returns no query: run on another clock it would answer a different question."
+        ),
+        "details": {
+            "path": "time.range",
+            "unresolved_phrases": [
+                lowered[low:high].strip() for (low, high), _bounds in _time_window(intent).windows
+            ],
+        },
+        "recovery_hints": [
+            {
+                "kind": "provide_explicit_bounds",
+                "message": (
+                    "Pass query.time.start and query.time.end (end-exclusive) in the plan "
+                    "tool's query argument instead of a relative window."
+                ),
             }
         ],
     }
@@ -2258,13 +2739,13 @@ def _unresolved_time_why(
         _SUPPORTED_WINDOW_FORMS,
     )
 
-    window = _time_window(intent)
+    window = _time_window(intent, policy_context=(partial_query or {}).get("policy_context"))
     phrases = list(window.unresolved)
     too_long = len(intent) > _MAX_TIME_TEXT
     if not phrases and not too_long:
         return None
     caller_time = (partial_query or {}).get("time")
-    if isinstance(caller_time, dict):
+    if isinstance(caller_time, dict) and not window.as_of:
         # An unread suffix may supply either missing endpoint. Only a
         # complete caller window can settle an overlong question's scope.
         complete = caller_time.get("range") or (caller_time.get("start") and caller_time.get("end"))

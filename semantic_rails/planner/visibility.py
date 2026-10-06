@@ -108,13 +108,24 @@ def visible_value_domains(config: Any) -> list[Any]:
     ]
 
 
-def require_visible_dimensions(
+def require_visible_objects(
     config: Any, query: dict[str, Any], resolved: list[dict[str, Any]]
 ) -> None:
     """Refuse a bypassing draft before its IR or diagnostics can be returned."""
 
-    visible_ids = {row.id for row in visible_dimensions(config)}
-    forbidden = {row.id for row in config.dimensions} - visible_ids
+    ids = [
+        row.id
+        for rows in (
+            config.entities,
+            config.dimensions,
+            config.temporal_roles,
+            config.relationships,
+            config.measures,
+            config.metric_recipes,
+        )
+        for row in rows
+    ]
+    forbidden = set(ids) - set(visible_object_ids(config, ids))
     if not forbidden:
         return
 
@@ -126,4 +137,4 @@ def require_visible_dimensions(
         references = set(collect_object_references(query, config))
     references.update(str(row["id"]) for row in resolved if row.get("id"))
     if forbidden & references:
-        raise SemanticLayerError("OBJECT_NOT_FOUND", "The requested dimension was not found.")
+        raise SemanticLayerError("OBJECT_NOT_FOUND", "The requested object was not found.")
