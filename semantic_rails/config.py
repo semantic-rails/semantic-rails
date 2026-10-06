@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from .config_parts.lookup_measures import lookup_measure_spec, resolve_lookup_measures
+from .config_parts.measure_governance import with_published_flags
 from .config_parts.package_loader import _JOIN_KEYS, normalize_package
 from .config_parts.route_rows import (
     RouteRowError,
@@ -2242,6 +2243,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 additive=_authored_additive(measure_spec, kind, f"{path}: measure '{measure_key}'"),
                 lookup_from=str(measure_spec.get("from", "") or "").strip(),
                 lookup_via=str(measure_spec.get("via", "") or "").strip(),
+                publish=measure_spec.get("publish") is not False,
             )
             measures.append(measure)
             measure_lookup[(model_id, str(measure_key))] = measure_id
@@ -3114,6 +3116,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         operational_contract=operational_contract,
         meta_contract=meta_contract,
     )
+    config = with_published_flags(config)
     from .temporal_support import require_temporal_support
 
     require_temporal_support(config, requested=bool(time_defaults.get("default_query_axis")))

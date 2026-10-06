@@ -480,6 +480,13 @@ exception to the `_joins_for_paths` rule above. Its CTE allocator skips a source
 when any occupied relation or CTE name contains it, ignoring case, so gate and nested
 names remain distinct from physical relations after namespacing.
 
+Stocks require snapshot selection before attribute filters. Planning refuses stock
+fan-out paths, and package loading refuses a stock lookup source. `lower_to_sql` centrally
+refuses a supplied `fanout_dedup` plan over a stock (including its semi-join leaf), and a
+supplied `parent_lookup` plan whose source is a stock, with `REWRITE_NOT_SUPPORTED`, reason
+`stock_requires_snapshot_selection`. The refusal names the stock source and, for a parent
+lookup, its consumer, including with empty-group guards off.
+
 ### Loaded semantics and executable SQL
 
 `load_package_snapshot(path)` captures a stable source inventory and parses it
