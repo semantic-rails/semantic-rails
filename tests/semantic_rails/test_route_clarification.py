@@ -787,6 +787,7 @@ def test_query_route_switches_never_disclose_hidden_waypoints(
     config = load_package_config(str(pkg))
     config = replace(
         config,
+        package=replace(config.package, environments=["production"]),
         entities=[
             replace(entity, label="Private Owner") if entity.id == OWNER else entity
             for entity in config.entities

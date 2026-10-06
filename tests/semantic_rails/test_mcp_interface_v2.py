@@ -531,7 +531,10 @@ def test_every_v2_call_works_behind_an_authenticated_transport(
     v2: SemanticLayerMCPAdapter, tool: str, arguments: dict[str, Any]
 ) -> None:
     context = RequestContext(
-        request_id="trusted", actor="analyst@example.com", roles=("analyst",), environment="dev"
+        request_id="trusted",
+        actor="analyst@example.com",
+        roles=("analyst",),
+        environment="development",
     )
     claimed = {**arguments, "request_id": "caller", "policy_context": {"roles": ["admin"]}}
     message = {

@@ -543,7 +543,7 @@ SCOPES = {
     "prod_request_against_production_policy": (
         {"environments": ["production"]},
         {"environment": "prod"},
-        False,
+        None,
     ),
 }
 
@@ -553,6 +553,14 @@ def test_scoping_separates_applicability_from_eligibility(package, name):
     extra, context, visible = SCOPES[name]
     runtime = _engine(package, {**FINANCE_ONLY, **extra})
     try:
+        if visible is None:
+            with pytest.raises(SemanticLayerError) as exc:
+                hidden_object_ids(runtime._config, environment=context["environment"])
+            assert exc.value.code == "INVALID_QUERY"
+            assert {code for code, _, _ in _refusals(runtime, _with(BY_STORE, context))} == {
+                "INVALID_QUERY"
+            }
+            return
         hidden = hidden_object_ids(
             runtime._config,
             environment=context.get("environment", ""),

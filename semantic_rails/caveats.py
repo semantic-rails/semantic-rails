@@ -15,6 +15,7 @@ from .ast import child_groups, every_filter
 from .diagnostics import semantic_issue
 from .expressions import collect_object_references, expr_to_dict
 from .policies import context_scope_matches
+from .policy_rules import check_request_environment
 from .schema import PackageConfig, SemanticCaveatConfig
 from .temporal_support import _date_key, _range_intersects
 
@@ -58,15 +59,16 @@ def caveat_warnings(
     payload: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Return structured warnings for caveats relevant to a compiled query."""
+    payload = dict(payload or {})
+    policy_context = dict(payload.get("policy_context", {}) or {})
+    check_request_environment(config, str(policy_context.get("environment", "") or "").strip())
     caveats = list(getattr(config, "semantic_caveats", []) or [])
     if not caveats:
         return []
-    payload = dict(payload or {})
     verbosity = str(payload.get("verbosity", "") or "compact").strip().lower()
     if verbosity not in {"minimal", "compact", "full"}:
         verbosity = "compact"
     signals = _signals_for_query(config, compiled, payload)
-    policy_context = dict(payload.get("policy_context", {}) or {})
     matches: list[_Match] = []
     for caveat in caveats:
         match = _match_caveat(caveat, config, signals, policy_context)

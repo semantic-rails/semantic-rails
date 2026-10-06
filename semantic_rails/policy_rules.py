@@ -102,6 +102,18 @@ def context_scope_matches(allowed: Iterable[str], value: str) -> bool:
     return not allowed_set or (bool(value) and value in allowed_set)
 
 
+def check_request_environment(config: PackageConfig, environment: str) -> None:
+    """A supplied environment must be declared before any policy is evaluated."""
+    declared = list(config.package.environments or [])
+    if environment and environment not in declared:
+        raise SemanticLayerError(
+            "INVALID_QUERY",
+            f"Request environment {environment!r} is not declared for this package. "
+            f"Declared environments: {', '.join(declared) or 'none'}.",
+            details={"environment": environment, "allowed_environments": declared},
+        )
+
+
 def role_scope_matches(allowed: Iterable[str], roles: Iterable[str] | None) -> bool:
     allowed_set = _names(allowed)
     return not allowed_set or bool(allowed_set & _names(roles))
@@ -133,6 +145,7 @@ def hidden_policy_ids(
 ) -> set[str]:
     """Objects a matching ``hidden`` policy hides; ``policies.hidden_object_ids`` is the
     complete set."""
+    check_request_environment(config, environment)
     return {
         object_id
         for policy in config.semantic_policies
@@ -157,12 +170,11 @@ def visible_only_listed(
 ) -> set[str]:
     """Objects an in-force ``visible_only`` policy keeps from this context, before dependents.
 
-    In force: no ``environments``, or the context's environment is listed or blank (an unknown
-    environment never lifts a restriction). Eligible: one of ``roles`` when any are listed, and
+    In force: no ``environments``, or the context's environment is listed or blank.
+    Eligible: one of ``roles`` when any are listed, and
     the audience when ``audiences`` are listed. An object listed by several policies needs all.
     """
-    if environment not in config.package.environments:
-        environment = ""
+    check_request_environment(config, environment)
     listed: set[str] = set()
     for policy in config.semantic_policies:
         if policy_action(policy) != "visible_only":
