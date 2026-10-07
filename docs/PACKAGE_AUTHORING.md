@@ -2550,8 +2550,9 @@ uv run semantic-rails project upgrade --path ./my_pkg --write   # write the chan
 Every rewrite is proven or certified, and the report gives each rule's tier:
 
 - `proven`: the package loads on this engine before the rewrite, and the rewrite leaves its semantic
-  fingerprint and the compiled SQL of every example and test query unchanged. Queries are compiled,
-  never run.
+  fingerprint and the SQL of every example and test query the baseline compiles unchanged. A
+  non-retired rule touching a baseline-refused query must make it compile on its own above all
+  retired rewrites, or be `unverified`. Queries are compiled, never run.
 - `certified`: this engine refuses the legacy form, so there is nothing to compare it with. The rule
   was checked when it was added, and the release notes say what changed: a rule with effect
   `retired` follows a release that removed the meaning, and claims no equivalence.
@@ -2559,7 +2560,8 @@ Every rewrite is proven or certified, and the report gives each rule's tier:
   `CONFIG_CONFLICT`, `details.conflict_kind: "upgrade_not_equivalent"`, `details.rule` and the
   first difference. Nothing is written.
 - A preview reports `unverified` when no baseline loads, or a non-retired rule cannot make its
-  affected baseline-refused queries compile by itself. A write refuses any `unverified` rule with
+  affected baseline-refused queries compile on its own above all retired rewrites. A write refuses
+  any `unverified` rule with
   `CONFIG_CONFLICT`, `details.conflict_kind: "upgrade_not_equivalent"` and `details.rule`; nothing
   is written.
 - The upgrade never picks a join route. Pairs left ambiguous appear in `next_actions`, to record as

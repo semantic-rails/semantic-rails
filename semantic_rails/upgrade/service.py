@@ -257,16 +257,14 @@ def upgrade_project(
         if rule in prefix:
             return "certified"
         edits = [f for f in hits[rule.id] if f.edits and not f.options]
+        affected = {key for key in refused if any(_in_refused_query(f, {key}) for f in edits)}
+        if affected and rule.effect != "retired":
+            isolated = _stage(transaction, files, plan(files, [*retired, rule], {}).files)
+            if isolated.error is not None or any(
+                isolated.queries.get(key, ("error",))[0] != "sql" for key in affected
+            ):
+                return "unverified"
         if all(_in_refused_query(f, refused) for f in edits):
-            if rule.effect != "retired":
-                isolated = _stage(transaction, files, plan(files, [*prefix, rule], {}).files)
-                affected = {
-                    key for key in refused if any(_in_refused_query(f, {key}) for f in edits)
-                }
-                if isolated.error is not None or any(
-                    isolated.queries.get(key, ("error",))[0] != "sql" for key in affected
-                ):
-                    return "unverified"
             return "certified"
         return "proven"
 

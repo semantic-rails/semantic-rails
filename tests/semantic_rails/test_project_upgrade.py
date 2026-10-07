@@ -692,6 +692,96 @@ def _default_version(files):
             yield Finding("default-version", file, 1, path, "1 is the default", (edit,))
 
 
+@pytest.mark.parametrize("surface", ["cli", "architect"])
+@pytest.mark.parametrize("version", ["2", '"2"'])
+@pytest.mark.parametrize(
+    ("retired_key", "legacy_line"),
+    [
+        ("query-path-policy", "      path_policy: {max_hops: 2}\n"),
+        ("null-behavior", "      null_behavior: null_if_zero\n"),
+    ],
+)
+def test_query_rewrites_are_isolated_after_all_retired_forms(
+    tmp_path, monkeypatch, capsys, surface, version, retired_key, legacy_line
+):
+    files = {
+        **UPGRADED,
+        "examples/core.yml": UPGRADED["examples/core.yml"].replace(
+            "      version: 1\n", f"      version: {version}\n{legacy_line}"
+        ),
+    }
+    project = _package(tmp_path, files)
+    if surface == "cli":
+        code, text = _cli(
+            monkeypatch, capsys, tmp_path, "upgrade", "--path", str(project), "--write", "--json"
+        )
+        assert code == 0, text
+        report = json.loads(text)
+    else:
+        revision = _architect(tmp_path, "project_status", project_path=str(project))["revision"]
+        report = _architect(
+            tmp_path,
+            "upgrade_project",
+            project_path=str(project),
+            dry_run=False,
+            expected_revision=revision,
+            idempotency_key="combined-query-rewrites",
+        )
+    assert report["status"] == "upgraded", report
+    assert {row["id"]: row["tier"] for row in report["rules"]} == {
+        retired_key: "certified",
+        "query-ir-version": "certified",
+    }
+    assert _contents(project) == UPGRADED
+    runtime = Runtime.from_snapshot(load_package_snapshot(project))
+    try:
+        for _, _, query in PackageFiles(project).queries():
+            assert runtime.compile(dict(query))["rendered_sql"]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("surface", ["cli", "architect"])
+def test_mixed_query_hits_cannot_prove_a_rule_with_an_unrelated_failure(
+    tmp_path, monkeypatch, capsys, surface
+):
+    files = {
+        **UPGRADED,
+        "examples/core.yml": UPGRADED["examples/core.yml"].replace(
+            "metric.shop.amount_per_event", "metric.shop.missing"
+        ),
+    }
+    project = _package(tmp_path, files)
+    rule = Rule("default-version", "9.9", "same_meaning", "Delete version: 1", _default_version)
+    _with_rules(monkeypatch, (rule,))
+    preview = _architect(tmp_path, "upgrade_project", project_path=str(project))
+    assert preview["status"] == "preview"
+    assert preview["rules"][0]["tier"] == preview["proof"]["tier"] == "unverified"
+    assert (preview["proof"]["examples"], preview["proof"]["tests"]) == (0, 1)
+    if surface == "cli":
+        code, text = _cli(
+            monkeypatch, capsys, tmp_path, "upgrade", "--path", str(project), "--write", "--json"
+        )
+        assert code == 1, text
+        report = json.loads(text)
+    else:
+        report = _architect(
+            tmp_path,
+            "upgrade_project",
+            project_path=str(project),
+            dry_run=False,
+            expected_revision=preview["revision"],
+            idempotency_key="mixed-query-hits",
+        )
+    assert report["error"]["code"] == "CONFIG_CONFLICT"
+    details = report["error"]["details"]
+    assert (details["conflict_kind"], details["rule"]) == (
+        "upgrade_not_equivalent",
+        "default-version",
+    )
+    assert _contents(project) == files
+
+
 def test_next_actions_name_undecided_routes_and_examples_that_fail(tmp_path):
     project = tmp_path / "jaffle_shop"
     shutil.copytree(
@@ -707,7 +797,7 @@ def test_next_actions_name_undecided_routes_and_examples_that_fail(tmp_path):
 
     report = service.upgrade_project(project, workspace_root=tmp_path, rules=(rule,))
 
-    assert (report["status"], report["proof"]["tier"]) == ("preview", "proven")
+    assert (report["status"], report["proof"]["tier"]) == ("preview", "unverified")
     assert report["proof"]["examples"] > 10 and report["proof"]["tests"] > 10
     routes, broken = report["next_actions"]
     assert re.match(r"Decide the join route of \d+ entity pairs \(entity\.jaffle_", routes)
