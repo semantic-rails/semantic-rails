@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 from ..ast import _relative_range_bounds, is_child_group
 from ..compiler import bind_query
+from ..compiler_parts.sql_lowering import _snapshot_series_columns
 from ..config_parts.measure_governance import (
     building_block_measures,
     governing_metrics,
@@ -29,6 +30,7 @@ from ..config_parts.measure_governance import (
     published_measure,
 )
 from ..errors import SemanticLayerError
+from ..expressions import expr_to_dict
 from ._base import (
     _BOUNDARY_BEFORE_RE,
     _FISCAL_BUCKET_RE,
@@ -535,6 +537,9 @@ def intent_faithfulness_why(
         gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
     gaps.extend(_subject_window_gaps(runtime._config, query))
+    if not _time_window(question, policy_context=query.get("policy_context")).as_of:
+        # As-of cues already hold as TIME_WINDOW_UNRESOLVED, without a query.
+        gaps.extend(_stock_as_of_gaps(runtime._config, query))
     gaps.extend(_ranking_gaps(runtime, text, query))
     gaps.extend(_ambiguous_grouping_gaps(text, query, partial_query or {}))
     gaps.extend(_where_clause_gaps(runtime, text, query))
@@ -918,6 +923,93 @@ def _subject_window_gaps(config: Any, query: dict[str, Any]) -> list[CoverageGap
             )
         )
     return gaps
+
+
+def _stock_as_of_gaps(config: Any, query: dict[str, Any]) -> list[CoverageGap]:
+    """Hold predicate stocks at any grain, and direct stocks without one as-of day."""
+    grain = _time_block(query).get("grain") or None
+    try:
+        stocks = _multi_series_stocks(config, query)
+    except Exception:  # noqa: BLE001 — an unreadable stock cannot make a draft ready
+        stocks = None
+    if stocks is not None and grain == "day":
+        stocks = {stock: True for stock, predicate in stocks.items() if predicate}
+    if stocks == {}:
+        return []
+    shown = visible_object_ids(config, stocks or [])
+    period = f"each {grain}" if grain else "the whole history (no time block)"
+    selected = (
+        visible_object_ids(config, _projected_subject_ids(query)) if stocks is not None else []
+    )
+    recipes = {row.id: row for row in config.metric_recipes} if selected else {}
+    metric = next((recipes[subject] for subject in selected if subject in recipes), None)
+    label = str(getattr(metric, "label", "") or "")
+    if not label and shown:
+        label = str(getattr(_object_by_id(config.measures, shown[0]), "label", "") or "")
+    label = label or "the balance"
+    predicate_stock = any((stocks or {}).values())
+    return [
+        CoverageGap(
+            kind="stock_as_of_unrealized",
+            clause=", ".join(shown) or "stock",
+            message=(
+                "A balance read through a predicate may have its own time scope; "
+                "the outer grain does not prove a one-day read."
+                if predicate_stock
+                else f"Read a balance on one day; this draft adds each series' last value over {period}."
+            ),
+            expected={"grain": "day", "stocks": shown},
+            actual={"grain": grain},
+            recovery_hint={
+                "kind": "ask_for_one_day",
+                "message": (
+                    "Choose a metric without a stock predicate, or select the balance directly."
+                    if predicate_stock
+                    else f"Ask for '{label} yesterday' or '{label} on <YYYY-MM-DD>', "
+                    "or set time.grain: day with that day's start and end."
+                ),
+            },
+        )
+    ]
+
+
+def _multi_series_stocks(config: Any, query: dict[str, Any]) -> dict[str, bool]:
+    """Map each stock to whether any path to it crosses a predicate, including recipes."""
+    measures = {row.id: row for row in config.measures}
+    recipes = {row.id: row for row in config.metric_recipes}
+    pending: list[tuple[Any, bool]] = [
+        (query.get(key) or [], False) for key in ("select", "metric_filters", "where")
+    ]
+    seen: set[tuple[str, bool]] = set()
+    stocks: dict[str, bool] = {}
+    while pending:
+        node, predicate = pending.pop()
+        if isinstance(node, list):
+            pending.extend((child, predicate) for child in node)
+            continue
+        if not isinstance(node, dict):
+            continue
+        predicate = predicate or node.get("kind") == "metric_predicate"
+        pending.extend(
+            (child, predicate or (node.get("kind") == "scoped_aggregate" and key == "predicates"))
+            for key, child in node.items()
+            if isinstance(child, (dict, list))
+        )
+        for object_id in (node.get(key) for key in ("measure", "metric", "metric_recipe")):
+            if not isinstance(object_id, str) or (object_id, predicate) in seen:
+                continue
+            seen.add((object_id, predicate))
+            if (recipe := recipes.get(object_id)) is not None:
+                pending.append((expr_to_dict(recipe.expression), predicate))
+            elif (
+                row := measures.get(object_id)
+            ) is not None and row.measure_class == "semi_additive":
+                clock = row.default_temporal_role or next(
+                    iter(row.compatible_temporal_roles or []), ""
+                )
+                if _snapshot_series_columns(row, clock, config):
+                    stocks[object_id] = stocks.get(object_id, False) or predicate
+    return stocks
 
 
 def _fiscal_calendar_gaps(config: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
