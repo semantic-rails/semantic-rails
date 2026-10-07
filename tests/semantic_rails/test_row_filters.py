@@ -349,8 +349,10 @@ def test_driver_errors_never_echo_a_bound_value(runtime, caplog):
         ({"dimension": "dimension.rf_order_store_id"}, "an id dimension needs 'type'"),
         ({"dimension": "dimension.nope"}, "must name a dimension"),
         ({"attribute": "Customer-ID"}, "attribute names must match"),
-        ({"op": "!="}, "unsupported keys ['op']"),
-        ({"object_ids": ["measure.rf.revenue"]}, "unsupported keys ['object_ids']"),
+        ({"op": "!="}, "unknown key 'op'"),
+        ({"object_ids": ["measure.rf.revenue"]}, "unknown key 'object_ids'"),
+        ({"object_ids": []}, "unknown key 'object_ids'"),
+        ({"action": ""}, "unknown key 'action'"),
         ({"type": "integer"}, "has type 'string'"),
         ({"kind": "row_filters"}, "looks like a row filter"),
         ({"kind": "Row-Filter"}, "looks like a row filter"),
@@ -369,16 +371,34 @@ def test_the_package_rejects_a_row_filter_it_cannot_enforce(tmp_path, change, pr
 
 def test_an_id_dimension_takes_an_explicit_type(tmp_path):
     policy = {**OWN_ORDERS, "dimension": "dimension.rf_order_store_id", "type": "string",
-              "description": "Accepted as the rationale, as for other kinds."}  # fmt: skip
+              "rationale": "An id dimension needs an explicit type."}  # fmt: skip
     load_package_config(str(_package(tmp_path / "rf", [policy])))
 
 
-def test_a_row_filter_that_skipped_the_loader_still_fails_closed(runtime):
+def test_nested_row_filter_stays_refused_at_load(tmp_path):
+    policy = {
+        "id": "policy.rf.nested",
+        "kind": "row_filter",
+        "config": {"dimension": OWN_ORDERS["dimension"], "attribute": "customer_id"},
+    }
+    with pytest.raises(SemanticLayerError) as exc:
+        load_package_config(str(_package(tmp_path / "rf", [policy])))
+    assert exc.value.code == "INVALID_CONFIG"
+    assert "config" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("fields", "key"),
+    [({"object_ids": ["measure.rf.revenue"]}, "object_ids"), ({"action": "label"}, "action")],
+)
+@pytest.mark.parametrize("audiences", [[], ["external"]])
+def test_a_row_filter_that_skipped_the_loader_still_fails_closed(runtime, fields, key, audiences):
     unscoped = {"dimension": OWN_ORDERS["dimension"], "attribute": "customer_id"}
-    policy = SemanticPolicyConfig("p", "row_filter", unscoped, object_ids=["measure.rf.revenue"])
+    policy = SemanticPolicyConfig("p", "row_filter", unscoped, audiences=audiences, **fields)
     config = replace(runtime._config, semantic_policies=[policy])
-    with pytest.raises(SemanticLayerError, match="unsupported keys"):
+    with pytest.raises(SemanticLayerError, match=f"unknown key '{key}'") as exc:
         row_filters_for_context(config, _ctx(audience="internal").to_policy_context())
+    assert exc.value.code == "INVALID_CONFIG"
 
 
 def test_a_pipeline_backed_relation_cannot_be_filtered(runtime):

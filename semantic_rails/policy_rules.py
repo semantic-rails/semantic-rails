@@ -1,8 +1,7 @@
 """The closed policy kind/action contract shared by loading and evaluation."""
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from types import EllipsisType
-from typing import Any
 
 from .errors import SemanticLayerError
 from .schema import PackageConfig, SemanticPolicyConfig
@@ -12,26 +11,41 @@ from .schema import PackageConfig, SemanticPolicyConfig
 POLICY_ACTIONS = {
     "package_release": {"": "label", "label": "label"},
     "object_visibility": {"hidden": "hidden", "visible_only": "visible_only"},
-    "object_access": {"deny": "deny", "redact": "redact", "withhold_values": "withhold_values"},
+    "object_access": {"deny": "deny", "withhold_values": "withhold_values"},
     "protected_object": {"": "protected", "protected": "protected"},
     "metric_constraint": {"": "constrain", "constrain": "constrain"},
     "row_filter": {"": ""},
 }
 DEFAULT_MAX_RANK = 10
 MAX_RANK = 100
-# Besides object_ids, roles, audiences and environments, a visible_only policy takes only
-# its action and rationale text: an ignored key could narrow whom it names.
-VISIBLE_ONLY_KEYS = {"action", "visibility", "rule", "rationale", "description"}
-
-
-def policy_config(policy: SemanticPolicyConfig) -> dict[str, Any]:
-    """Return top-level policy config with legacy nested ``config:`` flattened."""
-    out: dict[str, Any] = {}
-    nested = policy.config.get("config") if isinstance(policy.config, dict) else None
-    if isinstance(nested, Mapping):
-        out.update(dict(nested))
-    out.update({key: value for key, value in dict(policy.config or {}).items() if key != "config"})
-    return out
+POLICY_KEYS = {
+    "package_release": {"label"},
+    "object_visibility": set(),
+    "object_access": {"max_rank"},
+    "protected_object": set(),
+    "metric_constraint": {
+        "required_group_by",
+        "allowed_group_by",
+        "required_where",
+        "allowed_where",
+        "allow_metric_filters",
+        "allowed_metric_filter_entities",
+        "allowed_metric_filter_metrics",
+        "allowed_temporal_roles",
+    },
+    "row_filter": {"dimension", "attribute", "type"},
+}
+_COMMON_KEYS = {
+    "id",
+    "kind",
+    "object_ids",
+    "audiences",
+    "environments",
+    "roles",
+    "action",
+    "rationale",
+}
+_UPGRADE_HINT = "(semantic-rails project upgrade rewrites it)"
 
 
 def policy_action(policy: SemanticPolicyConfig) -> str:
@@ -43,17 +57,24 @@ def policy_action(policy: SemanticPolicyConfig) -> str:
             f"policy '{policy.id}' has unknown kind {policy.kind!r}. "
             f"Valid kinds: {', '.join(POLICY_ACTIONS)}.",
         )
-    config = policy_config(policy)
-    action = (
-        str(policy.action or config.get("action", "") or config.get("visibility", ""))
-        .strip()
-        .lower()
-    )
+    extra = set(policy.config) - POLICY_KEYS[policy.kind]
+    keys = _COMMON_KEYS | POLICY_KEYS[policy.kind]
+    if policy.kind == "row_filter":
+        keys = keys - {"object_ids", "action"}
+        extra.update(key for key in ("object_ids", "action") if getattr(policy, key))
+    unknown = sorted(extra, key=str)
+    if unknown:
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"policy '{policy.id}' (kind {policy.kind}) has unknown key {unknown[0]!r}; "
+            f"allowed: {', '.join(sorted(keys))}. {_UPGRADE_HINT}",
+        )
+    action = str(policy.action).strip().lower()
     if action not in allowed:
         raise SemanticLayerError(
             "INVALID_CONFIG",
             f"policy '{policy.id}' of kind {policy.kind!r} has unsupported action {action!r}. "
-            f"Allowed actions: {', '.join(repr(value) for value in allowed)}.",
+            f"Allowed actions: {', '.join(repr(value) for value in allowed)}. {_UPGRADE_HINT}",
         )
     if allowed[action] == "withhold_values":
         withheld_max_rank(policy)
@@ -68,20 +89,17 @@ def _names(values: Iterable[str] | None) -> set[str]:
 
 def _check_visible_only(policy: SemanticPolicyConfig) -> None:
     """The objects and whom they are visible to; an empty list would name everyone."""
-    extra = sorted(set(policy_config(policy)) - VISIBLE_ONLY_KEYS)
-    if extra or not _names(policy.object_ids) or not _names([*policy.roles, *policy.audiences]):
+    if not _names(policy.object_ids) or not _names([*policy.roles, *policy.audiences]):
         raise SemanticLayerError(
             "INVALID_CONFIG",
             f"policy '{policy.id}' with action 'visible_only' takes non-empty object_ids and "
-            "roles and/or audiences"
-            + (f", and no other keys (got {', '.join(extra)})" if extra else "")
-            + ".",
+            "roles and/or audiences.",
         )
 
 
 def withheld_max_rank(policy: SemanticPolicyConfig) -> int:
-    """The most rows a rank by a withheld object may return: ``config.max_rank``, 1 to 100."""
-    value = policy_config(policy).get("max_rank", DEFAULT_MAX_RANK)
+    """The most rows a rank by a withheld object may return: ``max_rank``, 1 to 100."""
+    value = policy.config.get("max_rank", DEFAULT_MAX_RANK)
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_RANK:
         raise SemanticLayerError(
             "INVALID_CONFIG",

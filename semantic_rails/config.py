@@ -2729,13 +2729,14 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                         "action",
                         "rationale",
                     }
+                    or (row_dict["kind"] == "row_filter" and key in {"object_ids", "action"})
                 },
                 object_ids=_ensure_list(row_dict.get("object_ids")),
                 audiences=_ensure_list(row_dict.get("audiences")),
                 environments=_ensure_list(row_dict.get("environments")),
                 roles=_ensure_list(row_dict.get("roles")),
                 action=str(row_dict.get("action", "")),
-                rationale=str(row_dict.get("rationale", row_dict.get("rule", ""))),
+                rationale=str(row_dict.get("rationale", "")),
             )
         )
 

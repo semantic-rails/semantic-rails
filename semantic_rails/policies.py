@@ -41,7 +41,6 @@ from .policy_rules import (
 )
 from .policy_rules import context_scope_matches as context_scope_matches
 from .policy_rules import policy_action as _policy_action
-from .policy_rules import policy_config as _policy_config
 from .policy_rules import policy_matches as _policy_matches
 from .policy_rules import role_scope_matches as role_scope_matches
 from .request_context import context_from_policy_context
@@ -335,7 +334,7 @@ def enforce_query_policies(
         query=query,
         binding=binding,
     )
-    blocking = [row for row in effects if row["action"] in {"deny", "redact", "hidden"}]
+    blocking = [row for row in effects if row["action"] in {"deny", "hidden"}]
     if blocking:
         raise SemanticLayerError(
             "POLICY_DENIED",
@@ -628,21 +627,11 @@ def package_release_labels(config: PackageConfig) -> list[str]:
     labels = []
     for policy in config.semantic_policies:
         if policy.kind == "package_release":
-            policy_config = _policy_config(policy)
+            policy_config = policy.config
             label = str(policy_config.get("label", "") or policy.action or "").strip()
             if label:
                 labels.append(label)
     return list(dict.fromkeys(labels))
-
-
-def _policy_rationale(policy: SemanticPolicyConfig) -> str:
-    policy_config = _policy_config(policy)
-    return str(
-        policy.rationale
-        or policy_config.get("rule", "")
-        or policy_config.get("rationale", "")
-        or policy_config.get("description", "")
-    )
 
 
 def _base_policy_effect(policy: SemanticPolicyConfig, *, action: str) -> dict[str, Any]:
@@ -650,7 +639,7 @@ def _base_policy_effect(policy: SemanticPolicyConfig, *, action: str) -> dict[st
         "policy_id": policy.id,
         "kind": policy.kind,
         "action": action,
-        "rationale": _policy_rationale(policy),
+        "rationale": policy.rationale,
         "object_ids": list(policy.object_ids),
         "audiences": list(policy.audiences),
         "environments": list(policy.environments),
@@ -741,7 +730,7 @@ def _synthetic_constraint_sources(
 
 
 def _metric_constraint_summary(policy: SemanticPolicyConfig) -> dict[str, Any]:
-    policy_config = _policy_config(policy)
+    policy_config = policy.config
     summary_keys = (
         "required_group_by",
         "allowed_group_by",
@@ -778,7 +767,7 @@ def _metric_constraint_violations(
     bound: Callable[[], BoundQuery],
     object_id: str,
 ) -> list[dict[str, Any]]:
-    policy_config = _policy_config(policy)
+    policy_config = policy.config
     query = normalize_query(dict(query_payload or {}))
     violations: list[dict[str, Any]] = []
 

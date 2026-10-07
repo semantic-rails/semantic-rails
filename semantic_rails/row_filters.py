@@ -12,6 +12,7 @@ from dataclasses import dataclass, fields, is_dataclass, replace
 from typing import Any, cast
 
 from .errors import SemanticLayerError
+from .policy_rules import policy_action
 from .schema import PackageConfig, SemanticPolicyConfig
 from .sql_ast import (
     SqlBinary,
@@ -29,7 +30,6 @@ from .sql_ast import (
 from .sql_preparation import ParameterSlot
 
 ROW_FILTER = "row_filter"
-_KEYS = frozenset({"dimension", "attribute", "type", "rule", "description"})  # rationale aliases
 _SLOT_TYPES = frozenset({"string", "integer", "boolean"})
 _COLUMN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
@@ -45,16 +45,11 @@ class RowFilter:
 def row_filter(config: PackageConfig, policy: SemanticPolicyConfig) -> RowFilter:
     """Resolve one ``row_filter`` policy; anything it can't enforce is a config error."""
 
+    policy_action(policy)
+
     def invalid(problem: str) -> SemanticLayerError:
         return SemanticLayerError("INVALID_CONFIG", f"row_filter policy '{policy.id}': {problem}")
 
-    extra = sorted(set(policy.config) - _KEYS)
-    if policy.object_ids:
-        extra.append("object_ids")
-    if policy.action:
-        extra.append("action")
-    if extra:
-        raise invalid(f"unsupported keys {extra}; a row filter takes a dimension and an attribute")
     dimension_id = policy.config.get("dimension")
     dimension = next((row for row in config.dimensions if row.id == dimension_id), None)
     if dimension is None:
@@ -87,12 +82,7 @@ def is_row_filter(policy: SemanticPolicyConfig) -> bool:
     if policy.kind == ROW_FILTER:
         return True
     kind = re.sub(r"[^a-z]", "", str(policy.kind).lower()).rstrip("s")
-    nested = policy.config.get("config")
-    if (
-        kind == "rowfilter"
-        or "attribute" in policy.config
-        or (isinstance(nested, dict) and "attribute" in nested)
-    ):
+    if kind == "rowfilter" or "attribute" in policy.config:
         raise SemanticLayerError(
             "INVALID_CONFIG",
             f"policy '{policy.id}' of kind {policy.kind!r} looks like a row filter; "

@@ -50,7 +50,7 @@ def relationship_config(config, reverse):
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("restricted", [False, True])
 @pytest.mark.parametrize("scope", ["roles", "audiences"])
-@pytest.mark.parametrize("action", ["deny", "redact"])
+@pytest.mark.parametrize("action", ["deny"])
 def test_bound_relationship_shortcuts_deny_before_output(
     config, monkeypatch, reverse, restricted, scope, action
 ):
