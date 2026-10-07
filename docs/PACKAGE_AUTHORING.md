@@ -2558,6 +2558,10 @@ Every rewrite is proven or certified, and the report gives each rule's tier:
 - A rule that changes the fingerprint or an example's or test's SQL is refused with
   `CONFIG_CONFLICT`, `details.conflict_kind: "upgrade_not_equivalent"`, `details.rule` and the
   first difference. Nothing is written.
+- A preview reports `unverified` when no baseline loads, or a non-retired rule cannot make its
+  affected baseline-refused queries compile by itself. A write refuses any `unverified` rule with
+  `CONFIG_CONFLICT`, `details.conflict_kind: "upgrade_not_equivalent"` and `details.rule`; nothing
+  is written.
 - The upgrade never picks a join route. Pairs left ambiguous appear in `next_actions`, to record as
   `graph.path_preferences` rows; examples that don't compile appear there with their codes.
 
@@ -2573,7 +2577,7 @@ one chose; an option that changes answers is reported as "changes answers by you
 | `forward-rollup-hints` | 0.3.2rc3 | `rollup_safe_aggregations` and `rollup_safe` in `defaults.relationship` and on model joins; `rollup_safe.forward`, or a `rollup_safe` list, in `graph.relationships` | Deleted; `rollup_safe.reverse` in `graph.relationships` stays |
 | `relationship-path-preference` | 0.3.2rc3 | `path_preference` on relationships and model joins | Deleted; record a route as a `graph.path_preferences` row |
 | `query-path-policy` | 0.3.2rc3 | The query key `path_policy` in example, test and segment membership queries | Deleted; `graph.path_policy` is unchanged |
-| `query-ir-version` | 0.3.2 | `version: 2` in example, test and segment membership queries | `version: 1`, which has the same query shape |
+| `query-ir-version` | 0.3.2 | `version: 2` (including quoted `"2"`) in example and test queries | `version: 1`, which has the same query shape |
 
 ## Reference
 

@@ -15,8 +15,9 @@ import pytest
 from semantic_rails.architect_mcp import create_architect_mcp_server
 from semantic_rails.cli import app
 from semantic_rails.package_snapshot import load_package_snapshot
+from semantic_rails.runtime import Runtime
 from semantic_rails.upgrade import service
-from semantic_rails.upgrade.model import Edit, Finding, Option, Rule
+from semantic_rails.upgrade.model import Edit, Finding, Option, PackageFiles, Rule
 from semantic_rails.upgrade.registry import RULES
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -300,6 +301,143 @@ def test_rule_on_a_form_that_still_loads_is_proven(tmp_path, monkeypatch, capsys
     assert _contents(project) == UPGRADED
 
 
+@pytest.mark.parametrize("position", ["first", "last"])
+def test_legacy_package_cannot_certify_a_meaning_changing_rule(tmp_path, monkeypatch, position):
+    project = _package(tmp_path)
+    rules = (SUM_TO_MAX, *RULES) if position == "first" else (*RULES, SUM_TO_MAX)
+    _with_rules(monkeypatch, rules)
+    revision = _architect(tmp_path, "project_status", project_path=str(project))["revision"]
+
+    report = _architect(
+        tmp_path,
+        "upgrade_project",
+        project_path=str(project),
+        dry_run=False,
+        expected_revision=revision,
+        idempotency_key="wrong-rule",
+    )
+
+    assert report["error"]["code"] == "CONFIG_CONFLICT"
+    details = report["error"]["details"]
+    assert (details["conflict_kind"], details["rule"]) == (
+        "upgrade_not_equivalent",
+        "sum-to-max",
+    )
+    assert _contents(project) == LEGACY
+
+
+def test_only_retired_rules_form_the_baseline(tmp_path):
+    files = {**LEGACY, "metrics/core.yml": LEGACY["metrics/core.yml"].replace(*AS_FORM, 1)}
+    project = _package(tmp_path, files)
+
+    report = service.upgrade_project(project, workspace_root=tmp_path, rules=(METRIC_AS, *RULES))
+
+    assert report["proof"]["baseline"] == "after_certified_rules"
+    assert {row["id"]: row["tier"] for row in report["rules"]} == {
+        "metric-as": "proven",
+        "null-behavior": "certified",
+        "measure-parent-rollup": "certified",
+    }
+    assert _contents(project) == files
+
+
+@pytest.mark.parametrize("surface", ["cli", "architect"])
+def test_rule_cannot_certify_an_unrelated_query_failure(tmp_path, monkeypatch, capsys, surface):
+    files = {
+        **UPGRADED,
+        "examples/core.yml": UPGRADED["examples/core.yml"]
+        .replace("version: 1", "version: 2")
+        .replace("metric.shop.amount_per_event", "metric.shop.missing"),
+    }
+    project = _package(tmp_path, files)
+    preview = _architect(tmp_path, "upgrade_project", project_path=str(project))
+    assert preview["status"] == "preview"
+    assert preview["rules"][0]["tier"] == preview["proof"]["tier"] == "unverified"
+
+    if surface == "cli":
+        code, text = _cli(
+            monkeypatch, capsys, tmp_path, "upgrade", "--path", str(project), "--write", "--json"
+        )
+        assert code == 1, text
+        report = json.loads(text)
+    else:
+        report = _architect(
+            tmp_path,
+            "upgrade_project",
+            project_path=str(project),
+            dry_run=False,
+            expected_revision=preview["revision"],
+            idempotency_key="unverified-rule",
+        )
+    assert report["error"]["code"] == "CONFIG_CONFLICT"
+    details = report["error"]["details"]
+    assert (details["conflict_kind"], details["rule"]) == (
+        "upgrade_not_equivalent",
+        "query-ir-version",
+    )
+    assert _contents(project) == files
+
+
+def test_no_loadable_baseline_is_reported_as_none(tmp_path):
+    files = {
+        **LEGACY,
+        "package.yml": LEGACY["package.yml"].replace("warehouse: duckdb", "warehouse: unsupported"),
+    }
+    project = _package(tmp_path, files)
+
+    report = service.upgrade_project(project, workspace_root=tmp_path)
+
+    assert report["proof"]["baseline"] == "none"
+    assert report["proof"]["tier"] == "unverified"
+    assert _contents(project) == files
+
+
+def test_cli_write_uses_a_fresh_receipt_after_restoring_legacy_files(tmp_path, monkeypatch, capsys):
+    project = _package(tmp_path)
+    args = ("upgrade", "--path", str(project), "--write", "--json")
+    code, text = _cli(monkeypatch, capsys, tmp_path, *args)
+    assert code == 0, text
+    first = json.loads(text)
+    assert _contents(project) == UPGRADED
+    for name, legacy in LEGACY.items():
+        (project / name).write_text(legacy)
+
+    code, text = _cli(monkeypatch, capsys, tmp_path, *args)
+
+    assert code == 0, text
+    second = json.loads(text)
+    assert second["status"] == "upgraded"
+    assert second["idempotency_key"] != first["idempotency_key"]
+    assert _contents(project) == UPGRADED
+
+
+@pytest.mark.parametrize("version", [2, "2"])
+def test_upgraded_query_version_compiles(tmp_path, monkeypatch, capsys, version):
+    files = {
+        **UPGRADED,
+        "examples/core.yml": UPGRADED["examples/core.yml"].replace(
+            "version: 1", f"version: {version!r}"
+        ),
+    }
+    project = _package(tmp_path, files)
+
+    code, text = _cli(
+        monkeypatch, capsys, tmp_path, "upgrade", "--path", str(project), "--write", "--json"
+    )
+
+    assert code == 0, text
+    report = json.loads(text)
+    assert report["status"] == "upgraded"
+    assert report["rules"][0]["tier"] == "certified"
+    assert _contents(project) == UPGRADED
+    runtime = Runtime.from_snapshot(load_package_snapshot(project))
+    try:
+        _, _, query = next(PackageFiles(project).queries())
+        assert runtime.compile(dict(query))["rendered_sql"]
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize(
     "rules,refused,difference",
     [
@@ -401,6 +539,87 @@ def test_architect_write_needs_a_revision_and_key(tmp_path):
 
     assert report["error"]["code"] == "INVALID_MCP_ARGUMENTS"
     assert _contents(project) == LEGACY
+
+
+@pytest.mark.parametrize("refusal", ["expected_revision", "idempotency_key", "stale_revision"])
+def test_current_package_checks_write_arguments_and_revision_before_planning(tmp_path, refusal):
+    project = _package(tmp_path, UPGRADED)
+    revision = _architect(tmp_path, "project_status", project_path=str(project))["revision"]
+    arguments = {"expected_revision": revision, "idempotency_key": "current-package"}
+    if refusal == "stale_revision":
+        arguments["expected_revision"] = "old-revision"
+    else:
+        arguments[refusal] = ""
+
+    report = _architect(
+        tmp_path,
+        "upgrade_project",
+        project_path=str(project),
+        dry_run=False,
+        choices={"unknown-rule:object": "unknown-option"},
+        **arguments,
+    )
+
+    if refusal == "stale_revision":
+        assert report["error"]["code"] == "CONFIG_CONFLICT"
+        assert report["error"]["details"]["conflict_kind"] == refusal
+    else:
+        assert report["error"]["code"] == "INVALID_MCP_ARGUMENTS"
+        assert report["error"]["details"]["argument"] == refusal
+    assert _contents(project) == UPGRADED
+
+
+@pytest.mark.parametrize("intervening_edit", [False, True])
+@pytest.mark.parametrize("same_intent", [True, False])
+def test_architect_retry_uses_the_original_receipt_before_planning(
+    tmp_path, intervening_edit, same_intent
+):
+    project = _package(tmp_path)
+    revision = _architect(tmp_path, "project_status", project_path=str(project))["revision"]
+    arguments = {
+        "project_path": str(project),
+        "dry_run": False,
+        "expected_revision": revision,
+        "idempotency_key": "upgrade-retry",
+    }
+    first = _architect(tmp_path, "upgrade_project", **arguments)
+    assert first["status"] == "upgraded"
+    if intervening_edit:
+        path = project / "examples/core.yml"
+        path.write_text(path.read_text().replace("version: 1", "version: 2"))
+    before = _contents(project)
+    if not same_intent:
+        arguments["choices"] = {"unknown-rule:object": "unknown-option"}
+
+    report = _architect(tmp_path, "upgrade_project", **arguments)
+
+    if same_intent:
+        assert report["status"] == "replayed"
+        assert report["original_status"] == "upgraded"
+        assert report["changes"] == first["changes"]
+        assert report["proof"] == first["proof"]
+        assert report["rules"] == first["rules"]
+    else:
+        assert report["error"]["code"] == "CONFIG_CONFLICT"
+        assert report["error"]["details"]["conflict_kind"] == "idempotency_key_reuse"
+    assert _contents(project) == before
+
+
+def test_fresh_architect_write_on_a_current_package_is_up_to_date(tmp_path):
+    project = _package(tmp_path, UPGRADED)
+    revision = _architect(tmp_path, "project_status", project_path=str(project))["revision"]
+
+    report = _architect(
+        tmp_path,
+        "upgrade_project",
+        project_path=str(project),
+        dry_run=False,
+        expected_revision=revision,
+        idempotency_key="current-package",
+    )
+
+    assert report["status"] == "up_to_date"
+    assert _contents(project) == UPGRADED
 
 
 @pytest.mark.parametrize("dry_run", [False, True])

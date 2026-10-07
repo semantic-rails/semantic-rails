@@ -9,7 +9,13 @@ from .model import Edit, Finding, PackageFiles, Rule
 
 def _version_two(files: PackageFiles) -> Iterator[Finding]:
     for file, path, query in files.queries():
-        if query.get("version") == 2:
+        if not path or path[-1] != "query" or isinstance(query.get("version"), bool):
+            continue
+        try:
+            version = int(query.get("version", 1))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if version == 2:
             edit = Edit(file, "replace", (*path, "version"), value=1)
             line = files.line(file, edit.path)
             yield Finding("query-ir-version", file, line, path, "version: 2 becomes 1", (edit,))
@@ -20,8 +26,7 @@ RULES: tuple[Rule, ...] = (
         "query-ir-version",
         "0.3.2",
         "same_meaning",
-        "Write version: 1 in example, test and segment membership queries; version 2 had the "
-        "same query shape.",
+        "Write version: 1 in example and test queries; version 2 had the same query shape.",
         _version_two,
     ),
 )

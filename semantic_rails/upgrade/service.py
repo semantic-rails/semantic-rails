@@ -13,7 +13,8 @@ import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
+from uuid import uuid4
 
 import yaml
 
@@ -133,9 +134,24 @@ def _in_refused_query(finding: Finding, refused: set[str]) -> bool:
     )
 
 
-def _derived_key(intent: Mapping[str, Any], revision: str, preview: bool) -> str:
-    payload = json.dumps([intent, revision, preview], sort_keys=True).encode("utf-8")
+def _derived_key(intent: Mapping[str, Any], revision: str) -> str:
+    payload = json.dumps([intent, revision], sort_keys=True).encode("utf-8")
     return "upgrade-" + hashlib.sha256(payload).hexdigest()[:32]
+
+
+def _refuse_rule(
+    rule: str, difference: Mapping[str, Any], reason: str = "changes what the package answers"
+) -> NoReturn:
+    raise SemanticLayerError(
+        "CONFIG_CONFLICT",
+        f"Upgrade rule '{rule}' {reason}; nothing was written. "
+        "Rewrite this form by hand, and report the rule.",
+        details={
+            "conflict_kind": "upgrade_not_equivalent",
+            "rule": rule,
+            "difference": dict(difference),
+        },
+    )
 
 
 def _package_directory(source: Path) -> bool:
@@ -152,8 +168,8 @@ def upgrade_project(
     idempotency_key: str | None = None,
     rules: tuple[Rule, ...] = RULES,
 ) -> dict[str, Any]:
-    """Preview or write one upgrade. ``None`` revision and key mean the current revision and
-    a key derived from the intent; a write through the Architect passes its own."""
+    """Preview or write one upgrade. ``None`` uses the current revision and a fresh write
+    key (a derived key for previews); a write through the Architect passes its own."""
     source = Path(project).expanduser().resolve()
     if not _package_directory(source):
         raise SemanticLayerError(
@@ -163,8 +179,33 @@ def upgrade_project(
         )
     transaction = ProjectTransaction(source, workspace_root=workspace_root)
     revision = transaction.current_revision()
-    files = PackageFiles(source)
     choices = dict(choices or {})
+    intent = {"operation": "upgrade_project", "choices": choices}
+    expected = (
+        revision
+        if expected_revision is None or (dry_run and not expected_revision)
+        else expected_revision
+    )
+    key = (
+        (_derived_key(intent, revision) if dry_run else str(uuid4()))
+        if idempotency_key is None or (dry_run and not idempotency_key)
+        else idempotency_key
+    )
+    if not dry_run:
+        # An empty, non-validating preview reuses the transaction's argument, receipt and
+        # revision checks before planning. The real apply checks them again under its lock.
+        checked = transaction.apply(
+            [],
+            expected_revision=expected,
+            idempotency_key=key,
+            intent=intent,
+            dry_run=True,
+            validate_after=False,
+            routes="off",
+        )
+        if checked.report["status"] == "replayed":
+            return checked.report
+    files = PackageFiles(source)
     result = plan(files, rules, choices)
     if not result.findings:
         return {
@@ -179,15 +220,17 @@ def upgrade_project(
     hits = {rule.id: [f for f in result.findings if f.rule == rule.id] for rule in rules}
     mechanical = [rule for rule in rules if any(f.edits and not f.options for f in hits[rule.id])]
 
-    # Baseline: the package as it is, else the shortest prefix of rules after which it loads.
+    # Only retired forms may be deleted to obtain a loadable baseline. All other
+    # mechanical rules must pass the proof, regardless of their registry position.
+    retired = [rule for rule in mechanical if rule.effect == "retired"]
     prefix: list[Rule] | None = None
-    for count in range(len(mechanical) + 1):
-        changed = plan(files, mechanical[:count], {}).files if count else {}
+    for count in range(len(retired) + 1):
+        changed = plan(files, retired[:count], {}).files if count else {}
         baseline = _stage(transaction, files, changed)
         if baseline.error is None:
-            prefix = mechanical[:count]
+            prefix = retired[:count]
             break
-    after = mechanical[len(prefix or []) :]
+    after = [rule for rule in mechanical if rule not in (prefix or [])]
     final = baseline
     if prefix is not None and after:
         final = _stage(transaction, files, plan(files, mechanical, {}).files)
@@ -202,16 +245,7 @@ def upgrade_project(
             if (step_difference := _difference(baseline, step, step_masks)) is not None:
                 rule, difference = after[count - 1], step_difference
                 break
-        raise SemanticLayerError(
-            "CONFIG_CONFLICT",
-            f"Upgrade rule '{rule.id}' changes what the package answers; nothing was written. "
-            "Rewrite this form by hand, and report the rule.",
-            details={
-                "conflict_kind": "upgrade_not_equivalent",
-                "rule": rule.id,
-                "difference": difference,
-            },
-        )
+        _refuse_rule(rule.id, difference)
 
     refused = {key for key, outcome in baseline.queries.items() if outcome[0] == "error"}
 
@@ -220,13 +254,23 @@ def upgrade_project(
             return "choice"
         if prefix is None:
             return "unverified"
-        if rule in prefix or all(
-            _in_refused_query(f, refused) for f in hits[rule.id] if f.edits and not f.options
-        ):
+        if rule in prefix:
+            return "certified"
+        edits = [f for f in hits[rule.id] if f.edits and not f.options]
+        if all(_in_refused_query(f, refused) for f in edits):
+            if rule.effect != "retired":
+                isolated = _stage(transaction, files, plan(files, [*prefix, rule], {}).files)
+                affected = {
+                    key for key in refused if any(_in_refused_query(f, {key}) for f in edits)
+                }
+                if isolated.error is not None or any(
+                    isolated.queries.get(key, ("error",))[0] != "sql" for key in affected
+                ):
+                    return "unverified"
             return "certified"
         return "proven"
 
-    rule_rows = [
+    rule_rows: list[dict[str, Any]] = [
         {
             "id": rule.id,
             "since": rule.since,
@@ -242,11 +286,19 @@ def upgrade_project(
         if hits[rule.id]
     ]
     tiers = {row["tier"] for row in rule_rows}
+    if not dry_run:
+        for row in rule_rows:
+            if row["tier"] == "unverified":
+                _refuse_rule(row["id"], {"tier": "unverified"}, "cannot be verified")
     compared = [key for key in baseline.queries if key not in refused]
     loaded = prefix is not None
     proof = {
         "tier": next((t for t in ("unverified", "certified", "proven") if t in tiers), "choice"),
-        "baseline": "as_is" if not prefix else "after_certified_rules",
+        "baseline": "none"
+        if prefix is None
+        else "as_is"
+        if not prefix
+        else "after_certified_rules",
         "fingerprint_before": json_fingerprint(_masked(baseline, masks)) if loaded else None,
         "fingerprint_after": json_fingerprint(_masked(final, masks)) if loaded else None,
         "masks": masks,
@@ -276,24 +328,11 @@ def upgrade_project(
             if key.startswith("examples/") and outcome[0] == "error"
         )
 
-    intent = {
-        "operation": "upgrade_project",
-        "rules": [row["id"] for row in rule_rows],
-        "choices": choices,
-    }
     preview = dry_run or bool(result.pending)
     outcome = transaction.apply(
         [ProjectFileUpdate(name, data) for name, data in result.files.items()],
-        expected_revision=(
-            revision
-            if expected_revision is None or (preview and not expected_revision)
-            else expected_revision
-        ),
-        idempotency_key=(
-            _derived_key(intent, revision, preview)
-            if idempotency_key is None or (preview and not idempotency_key)
-            else idempotency_key
-        ),
+        expected_revision=expected,
+        idempotency_key=key,
         intent=intent,
         dry_run=preview,
         validate_after=True,
