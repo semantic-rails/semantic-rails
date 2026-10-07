@@ -5,10 +5,8 @@
 This repo accepts changes only against the public `semantic_rails` runtime and its supported docs/package surface:
 
 - `semantic_rails/`
-- `mf2sr/` (MetricFlow import)
 - `configs/semantic_rails/`
 - `tests/semantic_rails/`
-- `tests/mf2sr/`
 - `docs/`
 
 ## Active Source Of Truth
@@ -95,7 +93,7 @@ Run these before opening a PR (`make install lint typecheck test-backend contrac
 
 ```bash
 uv sync --group dev --locked
-uv run pytest -q tests/semantic_rails tests/mf2sr -n auto
+uv run pytest -q tests/semantic_rails -n auto
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy semantic_rails

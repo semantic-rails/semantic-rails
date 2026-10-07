@@ -2,7 +2,7 @@
 # Distribution, import package, and CLI all use the `semantic-rails` /
 # `semantic_rails` name. (The unrelated PyPI project `semantic-layer` claims
 # the `semantic_layer` import namespace, so we renamed away from it before the
-# first publish. The wheel ships `semantic_rails` plus `mf2sr`; it does not
+# first publish. The wheel ships `semantic_rails`; it does not
 # ship a `semantic_layer` rename shim because nothing was ever published
 # under the old names, and installing a `semantic_layer` top-level package
 # would collide with the unrelated project that owns it.)
@@ -118,18 +118,13 @@ requires = ["setuptools>=82.0.1", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-# The wheel ships the core package plus `mf2sr`, the MetricFlow
-# translator behind `semantic-rails import --from metricflow` (its tests
-# run in every gate via testpaths). The `semantic_layer` rename shim was
-# dropped before first publish (it would collide with the unrelated PyPI
-# project that owns that import namespace).
-include = ["semantic_rails", "semantic_rails.*", "mf2sr", "mf2sr.*"]
+# The wheel ships only the core package and its subpackages.
+include = ["semantic_rails", "semantic_rails.*"]
 
 # Ship the PEP 561 marker so type checkers consume the package's inline
 # annotations from the wheel.
 [tool.setuptools.package-data]
 semantic_rails = ["py.typed", "contracts/*.json", "contracts/fixtures/*.json"]
-mf2sr = ["py.typed"]
 
 [tool.setuptools.data-files]
 # Starter + reference templates that `semantic-rails init` reads at runtime;
@@ -197,7 +192,7 @@ dev = [
 
 [tool.pytest.ini_options]
 tmp_path_retention_policy = "failed"
-testpaths = ["tests/semantic_rails", "tests/mf2sr"]
+testpaths = ["tests/semantic_rails"]
 timeout = 300
 faulthandler_timeout = 240
 timeout_method = "thread"

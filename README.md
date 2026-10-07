@@ -204,23 +204,6 @@ is a stale capture on an older dataset and is excluded from that count; it match
 14 questions and differs on q07 and q16. The authored models and shared data leave
 some intended semantics weakly tested, so matching outputs are not a ranking.
 
-Coming from MetricFlow? Translate a MetricFlow YAML directory or a dbt
-`semantic_manifest.json` into a new package. The importer is partial: models and
-measures it can't translate are listed as warnings, but a metric that used them can
-still be written out. `project validate --mode parse` then fails and names that
-metric; remove it, or define the measure it names, before you rely on the import.
-
-```bash
-uvx semantic-rails import --from metricflow --source target/semantic_manifest.json \
-  --output . --package-id my_dbt_package
-```
-
-The imported package targets DuckDB and names a seed script,
-`data/seed_my_dbt_package.sql`, that the import doesn't create. Before
-`project validate`, replace `seed` with your warehouse's `connection` (see
-[`package.yml`](https://github.com/semantic-rails/semantic-rails/blob/main/docs/PACKAGE_AUTHORING.md#packageyml))
-or add that script.
-
 ## Warehouses
 
 DuckDB 1.5.6 or newer is included; this minimum version fixes parallel window
@@ -279,8 +262,6 @@ In the current release:
 - `ask` rounds its tables, but JSON results (`query`, `ask --json`, MCP `execute` and the
   HTTP API) return the warehouse's floating-point values as they are, for example
   `486468.17999985756` for a currency total.
-- The MetricFlow importer is partial. It can keep a metric whose model or measure it
-  dropped, and package validation then fails, naming that metric.
 
 ### Roadmap
 
@@ -350,8 +331,7 @@ uv run python scripts/verify_package_distribution.py --dist-dir dist --no-build
 
 Semantic Rails is the public product name. The PyPI distribution is
 `semantic-rails`, the Python import package is `semantic_rails`, and the CLI is
-`semantic-rails`. The published distribution also includes `mf2sr`, the
-MetricFlow translator behind `semantic-rails import`.
+`semantic-rails`.
 
 ## Support, security and license
 

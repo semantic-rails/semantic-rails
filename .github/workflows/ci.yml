@@ -54,7 +54,6 @@ jobs:
               - "security/**"
               - "schemas/**"
               - "semantic_rails/**"
-              - "mf2sr/**"
               - "tests/**"
               - "uv.lock"
             docs:
@@ -92,7 +91,7 @@ jobs:
           uv sync --group dev --extra snowflake-adbc --extra postgres --locked
           uv run --no-sync python -c "import pyarrow, adbc_driver_manager.dbapi, adbc_driver_postgresql.dbapi"
       - run: uv run python scripts/changelog_fragments.py check
-      - run: uv run pytest -q tests/semantic_rails tests/mf2sr -n auto --validate-quarantine --junitxml=backend-results.xml
+      - run: uv run pytest -q tests/semantic_rails -n auto --validate-quarantine --junitxml=backend-results.xml
       - name: Verify DuckDB confinement tests ran without skips
         run: |
           uv run --no-sync python - <<'PY'

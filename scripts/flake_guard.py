@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TEST_ROOTS = ("tests/semantic_rails", "tests/mf2sr")
+TEST_ROOTS = ("tests/semantic_rails",)
 MAX_FILES = 20
 BUDGET_SECONDS = 290
 # Leave headroom above measured test durations when sizing or starting a repetition.

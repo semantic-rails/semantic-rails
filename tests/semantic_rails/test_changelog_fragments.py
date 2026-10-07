@@ -193,3 +193,14 @@ def test_readiness_scans_pending_fragments_like_the_changelog(root, monkeypatch)
         "changelog.d/leak.fixed.md contains public private repo reference",
         "changelog.d/leak.fixed.md still contains stale license posture wording: commercial license",
     ]
+
+
+def test_readiness_checks_current_changelog_links_but_preserves_history(root, monkeypatch):
+    _write(root, "README.md", "# Changelog fragments\n")
+    monkeypatch.setattr(verify_release_readiness, "REPO_ROOT", root)
+    (root / "CHANGELOG.md").write_text(
+        TOP + "- [Current](current.md)\n\n" + REST + "- [Retired](retired.md)\n"
+    )
+    errors = []
+    validate_local_links(errors)
+    assert errors == ["CHANGELOG.md has broken local link: current.md"]
