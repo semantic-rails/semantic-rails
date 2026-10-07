@@ -1692,6 +1692,11 @@ metrics:
 rejects `as:` whose namespace doesn't match `package.namespace` and warns when
 `as:` produces an ID identical to the auto-derived one (use is unnecessary).
 
+Model `relation`, dimension `kind`, time `class`, metric `temporal_role`, segment
+`basis_metric`, and nested `accumulation.snapshot` are the canonical spellings.
+`project upgrade` rewrites their aliases with the `authoring-aliases` rule;
+conflicting spellings require an author decision.
+
 ## Validation profile
 
 When `schema_strict: true` is set on the package, the loader rejects the
