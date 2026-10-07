@@ -2,7 +2,7 @@
 
 from collections.abc import Iterator, Mapping
 
-from .model import Edit, Finding, Option, PackageFiles, Rule
+from .model import Edit, Finding, PackageFiles, Rule
 
 ALIASES = {"config", "visibility", "rule", "description"}
 COMMON = {"id", "kind", "object_ids", "audiences", "environments", "roles", "action", "rationale"}
@@ -14,103 +14,94 @@ def _flat(files: PackageFiles) -> Iterator[Finding]:
             continue
         nested = row.get("config", {})
         if not isinstance(nested, Mapping):
-            continue
-        if (COMMON - {"action", "rationale"}).intersection(nested):
             yield Finding(
                 "policy-flat",
                 file,
                 files.line(file, path),
                 path,
-                "Rewrite nested scope fields by hand; they were not policy scopes.",
+                f"Policy '{row['id']}': config must be a mapping; rewrite it by hand.",
             )
             continue
-
-        def edits_for(values, nested=nested, row=row, file=file, path=path):
-            merged = {**nested, **values}
-            config = {
-                **nested,
-                **{key: value for key, value in values.items() if key not in COMMON | {"config"}},
-            }
-            action = (
-                str(
-                    values.get("action", "")
-                    or config.get("action")
-                    or config.get("visibility")
-                    or ""
-                )
-                .strip()
-                .lower()
+        conflict = next(iter(sorted((COMMON - {"action", "rationale"}).intersection(nested))), "")
+        twins = [(key, nested[key], row[key]) for key in nested.keys() & row.keys()]
+        for aliases in (("action", "visibility"), ("rationale", "rule", "description")):
+            values = [
+                (key, values[key]) for values in (row, nested) for key in aliases if key in values
+            ]
+            twins.extend((key, value, values[0][1]) for key, value in values[1:])
+        conflict = conflict or next(
+            (key for key, left, right in twins if type(left) is not type(right) or left != right),
+            "",
+        )
+        if conflict:
+            yield Finding(
+                "policy-flat",
+                file,
+                files.line(file, path),
+                path,
+                f"Policy '{row['id']}': key '{conflict}' cannot be rewritten automatically.",
             )
-            rationale = (
-                values.get("rationale", values.get("rule", ""))
-                or config.get("rule")
-                or config.get("rationale")
-                or config.get("description")
-                or ""
-            )
-            target = {key: value for key, value in merged.items() if key not in ALIASES | COMMON}
-            target.update({key: value for key, value in values.items() if key in COMMON})
-            if action:
-                target["action"] = (
-                    "deny"
-                    if values.get("kind") == "object_access"
-                    and str(action).strip().lower() == "redact"
-                    else action
-                )
-            if rationale:
-                target["rationale"] = rationale
-            return tuple(
-                Edit(file, "delete", (*path, key)) for key in row if key not in target
-            ) + tuple(
-                Edit(file, "replace", (*path, key), value=value)
-                if key in row
-                else Edit(file, "insert", path, key=key, value=value)
-                for key, value in target.items()
-                if key not in row or row[key] != value
-            )
-
-        edits = edits_for(row)
-        alternatives = {
-            f"config.{key}": {**row, key: nested[key]}
-            for key in nested.keys() & row.keys()
-            if nested[key] != row[key]
+            continue
+        config = {
+            **nested,
+            **{key: value for key, value in row.items() if key not in COMMON | {"config"}},
         }
-        actions = {
+        action = (
+            str(
+                str(row.get("action", ""))
+                or config.get("action", "")
+                or config.get("visibility", "")
+            )
+            .strip()
+            .lower()
+        )
+        rationale = str(
+            str(row.get("rationale", row.get("rule", "")))
+            or config.get("rule", "")
+            or config.get("rationale", "")
+            or config.get("description", "")
+        )
+        if (
+            row.get("kind") == "package_release"
+            and str(config.get("label", "") or str(row.get("action", "")) or "").strip()
+            != str(config.get("label", "") or action or "").strip()
+        ):
+            yield Finding(
+                "policy-flat",
+                file,
+                files.line(file, path),
+                path,
+                f"Policy '{row['id']}': key 'action' would change the release label.",
+            )
+            continue
+        target = {
             key: value
-            for key, value in (
-                ("action", row.get("action")),
-                ("config.action", nested.get("action")),
-                ("visibility", row.get("visibility")),
-                ("config.visibility", nested.get("visibility")),
-            )
-            if value
+            for key, value in config.items()
+            if key not in ALIASES | {"action", "rationale"}
         }
-        if len({str(value).strip().lower() for value in actions.values()}) > 1:
-            alternatives.update({key: {**row, "action": value} for key, value in actions.items()})
-        options = (
-            (
-                Option("keep-effective", "Keep current enforcement.", False, edits),
-                *(
-                    Option(
-                        f"use-{key}",
-                        f"Use {key}; other fields keep current enforcement.",
-                        True,
-                        edits_for(values),
-                    )
-                    for key, values in sorted(alternatives.items())
-                ),
+        target.update({key: value for key, value in row.items() if key in COMMON})
+        if action or "action" in row:
+            target["action"] = (
+                "deny" if row.get("kind") == "object_access" and action == "redact" else action
             )
-            if alternatives
-            else ()
+        if rationale or "rationale" in row:
+            target["rationale"] = rationale
+        edits = tuple(
+            Edit(file, "delete", (*path, key)) for key in row if key not in target
+        ) + tuple(
+            Edit(file, "replace", (*path, key), value=value)
+            if key in row
+            else Edit(file, "insert", path, key=key, value=value)
+            for key, value in target.items()
+            if key not in row or type(row[key]) is not type(value) or row[key] != value
         )
         yield Finding(
             "policy-flat",
             file,
             files.line(file, path),
             path,
-            "Flatten policy config and write action and rationale explicitly.",
-            () if options else edits,
-            options,
+            "Flatten policy config and rationale/action aliases.",
+            edits,
         )
 
 

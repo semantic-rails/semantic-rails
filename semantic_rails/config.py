@@ -1767,9 +1767,11 @@ def _canonical_policy(row: dict[str, Any]) -> SemanticPolicyConfig:
         action=str(row.get("action", "")),
         rationale=str(row.get("rationale", row.get("rule", ""))),
     )
-    action = authored_policy_action(policy)
-    rationale = _policy_rationale(policy)
-    return replace(
+    return _canonical_policy_config(policy)
+
+
+def _canonical_policy_config(policy: SemanticPolicyConfig) -> SemanticPolicyConfig:
+    canonical = replace(
         policy,
         config={
             key: value
@@ -1778,9 +1780,16 @@ def _canonical_policy(row: dict[str, Any]) -> SemanticPolicyConfig:
             ).items()
             if key not in {"action", "visibility", "rule", "description", "rationale"}
         },
-        action="deny" if policy.kind == "object_access" and action == "redact" else action,
-        rationale=rationale,
+        action=authored_policy_action(policy),
+        rationale=_policy_rationale(policy),
     )
+    # A release label also reads the raw action field; unsupported rewrites leave it alone.
+    if policy.kind == "package_release":
+        before = str(policy_config(policy).get("label", "") or policy.action or "").strip()
+        after = str(canonical.config.get("label", "") or canonical.action or "").strip()
+        if before != after:
+            return policy
+    return canonical
 
 
 def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
