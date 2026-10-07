@@ -34,6 +34,25 @@ def policy_config(policy: SemanticPolicyConfig) -> dict[str, Any]:
     return out
 
 
+def authored_policy_action(policy: SemanticPolicyConfig) -> str:
+    config = policy_config(policy)
+    return (
+        str(policy.action or config.get("action", "") or config.get("visibility", ""))
+        .strip()
+        .lower()
+    )
+
+
+def _policy_rationale(policy: SemanticPolicyConfig) -> str:
+    config = policy_config(policy)
+    return str(
+        policy.rationale
+        or config.get("rule", "")
+        or config.get("rationale", "")
+        or config.get("description", "")
+    )
+
+
 def policy_action(policy: SemanticPolicyConfig) -> str:
     """Resolve a supported effect, or refuse an invalid policy with INVALID_CONFIG."""
     allowed = POLICY_ACTIONS.get(policy.kind)
@@ -43,12 +62,7 @@ def policy_action(policy: SemanticPolicyConfig) -> str:
             f"policy '{policy.id}' has unknown kind {policy.kind!r}. "
             f"Valid kinds: {', '.join(POLICY_ACTIONS)}.",
         )
-    config = policy_config(policy)
-    action = (
-        str(policy.action or config.get("action", "") or config.get("visibility", ""))
-        .strip()
-        .lower()
-    )
+    action = authored_policy_action(policy)
     if action not in allowed:
         raise SemanticLayerError(
             "INVALID_CONFIG",

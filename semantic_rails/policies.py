@@ -34,6 +34,7 @@ from .expressions import (
 )
 from .policy_rules import (
     MAX_RANK,
+    _policy_rationale,
     check_request_environment,
     hidden_policy_ids,
     visible_only_listed,
@@ -633,16 +634,6 @@ def package_release_labels(config: PackageConfig) -> list[str]:
             if label:
                 labels.append(label)
     return list(dict.fromkeys(labels))
-
-
-def _policy_rationale(policy: SemanticPolicyConfig) -> str:
-    policy_config = _policy_config(policy)
-    return str(
-        policy.rationale
-        or policy_config.get("rule", "")
-        or policy_config.get("rationale", "")
-        or policy_config.get("description", "")
-    )
 
 
 def _base_policy_effect(policy: SemanticPolicyConfig, *, action: str) -> dict[str, Any]:

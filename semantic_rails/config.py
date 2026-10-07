@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import re
 import sysconfig
-from collections.abc import Mapping
+from dataclasses import replace
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
@@ -59,7 +59,7 @@ from .operational import (
     validate_operational_payload,
 )
 from .package_snapshot import CapturedSource, LoadedPackageSnapshot, load_package_snapshot
-from .policy_rules import policy_action
+from .policy_rules import _policy_rationale, authored_policy_action, policy_action, policy_config
 from .row_filters import validate_row_filters
 from .schema import (
     DEFAULT_PATH_HOP_LIMIT,
@@ -1742,49 +1742,44 @@ def _validate_caveat_refs(config: PackageConfig, *, path: str) -> None:
 
 
 def _canonical_policy(row: dict[str, Any]) -> SemanticPolicyConfig:
-    nested = row.get("config")
-    flat = {**(dict(nested) if isinstance(nested, Mapping) else {}), **row}
-    action = str(
-        row.get("action")
-        or (nested.get("action") if isinstance(nested, Mapping) else "")
-        or flat.get("visibility")
-        or ""
-    )
-    action = action.strip().lower()
-    if row["kind"] == "object_access" and action == "redact":
-        action = "deny"
-    rationale = str(
-        row.get("rationale")
-        or row.get("rule")
-        or flat.get("rule")
-        or flat.get("rationale")
-        or flat.get("description")
-        or ""
-    )
-    common = {
-        "id",
-        "kind",
-        "object_ids",
-        "audiences",
-        "environments",
-        "roles",
-        "action",
-        "rationale",
-    }
-    return SemanticPolicyConfig(
+    policy = SemanticPolicyConfig(
         id=str(row["id"]),
         kind=str(row["kind"]),
-        action=action,
-        rationale=rationale,
         config={
             key: value
-            for key, value in flat.items()
-            if key not in common | {"config", "visibility", "rule", "description"}
+            for key, value in row.items()
+            if key
+            not in {
+                "id",
+                "kind",
+                "object_ids",
+                "audiences",
+                "environments",
+                "roles",
+                "action",
+                "rationale",
+            }
         },
         object_ids=_ensure_list(row.get("object_ids")),
         audiences=_ensure_list(row.get("audiences")),
         environments=_ensure_list(row.get("environments")),
         roles=_ensure_list(row.get("roles")),
+        action=str(row.get("action", "")),
+        rationale=str(row.get("rationale", row.get("rule", ""))),
+    )
+    action = authored_policy_action(policy)
+    rationale = _policy_rationale(policy)
+    return replace(
+        policy,
+        config={
+            key: value
+            for key, value in (
+                policy.config if policy.kind == "row_filter" else policy_config(policy)
+            ).items()
+            if key not in {"action", "visibility", "rule", "description", "rationale"}
+        },
+        action="deny" if policy.kind == "object_access" and action == "redact" else action,
+        rationale=rationale,
     )
 
 

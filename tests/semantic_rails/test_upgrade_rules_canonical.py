@@ -52,7 +52,7 @@ def test_policy_golden_rewrite(tmp_path, before, after, rule):
     assert all(rule.effect == "same_meaning" and not rule.masks for rule in POLICY_RULES)
 
 
-@pytest.mark.parametrize("option", ["flat", "nested"])
+@pytest.mark.parametrize("option", ["keep-effective", "use-config.max_rank"])
 def test_conflicting_policy_values_require_a_choice(tmp_path, option):
     source = tmp_path / "pkg.yml"
     source.write_text(
@@ -65,7 +65,7 @@ def test_conflicting_policy_values_require_a_choice(tmp_path, option):
     finding = pending.pending[0]
     result = plan(files, POLICY_RULES, {files.choice_key(finding): option})
     row = safe_load(result.files["pkg.yml"])["semantic_policies"][0]
-    assert row["max_rank"] == (3 if option == "flat" else 5)
+    assert row["max_rank"] == (3 if option == "keep-effective" else 5)
     assert "config" not in row
     assert (
         plan(PackageFiles(source, contents={**files.contents, **result.files}), RULES, {}).findings
@@ -89,3 +89,37 @@ def test_flow_policy_rewrites_are_idempotent(tmp_path, body):
     assert result.findings and not result.pending
     upgraded = PackageFiles(source, contents={**files.contents, **result.files})
     assert plan(upgraded, RULES, {}).findings == ()
+
+
+@pytest.mark.parametrize(
+    ("fields", "effective", "alternate"),
+    [
+        ("action: deny, config: {action: withhold_values}", "deny", "config.action"),
+        ("action: deny, visibility: withhold_values", "deny", "visibility"),
+        ("config: {action: deny, visibility: withhold_values}", "deny", "config.visibility"),
+    ],
+)
+def test_action_alias_disagreements_are_choices(tmp_path, fields, effective, alternate):
+    source = tmp_path / "pkg.yml"
+    source.write_text(f"semantic_policies:\n- {{id: policy.test, kind: object_access, {fields}}}\n")
+    files = PackageFiles(source)
+    pending = plan(files, POLICY_RULES, {})
+    assert len(pending.pending) == 1 and not pending.files
+    finding = pending.pending[0]
+    for option, expected in [
+        ("keep-effective", effective),
+        (f"use-{alternate}", "withhold_values"),
+    ]:
+        selected = next(value for value in finding.options if value.id == option)
+        assert selected.changes_answers == (option != "keep-effective")
+        result = plan(files, POLICY_RULES, {files.choice_key(finding): option})
+        row = safe_load(result.files["pkg.yml"])["semantic_policies"][0]
+        assert row["action"] == expected
+
+
+def test_nested_row_filter_is_not_flattened(tmp_path):
+    source = tmp_path / "pkg.yml"
+    source.write_text(
+        "semantic_policies:\n- {id: policy.test, kind: row_filter, config: {dimension: dimension.shop.customer, attribute: customer}}\n"
+    )
+    assert plan(PackageFiles(source), POLICY_RULES, {}).findings == ()
