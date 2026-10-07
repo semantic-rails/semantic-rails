@@ -267,8 +267,8 @@ A draft that validates can still leave out part of the question. `plan` returns
   with plurals as singulars, or when the measure is a [building
   block](PACKAGE_AUTHORING.md#building-block-measures). Under `schema_strict`, a measure
   authored `publish: false` that no metric aggregates whole is not offered to agents:
-  `discover` doesn't list it, and `plan` doesn't answer with it unless `partial_query` names
-  it by id in Query IR fields; request metadata never names it. When a metric reads the measure
+  `discover` doesn't list it, and `plan` doesn't answer with it unless `partial_query.select`
+  names it by id; no other part of the request names it. When a metric reads the measure
   through a filter, it is a building block: `plan` answers with the metric when it is the only
   one that filters the measure or the question names it, and otherwise holds the draft. Without
   `schema_strict`, the flag also suppresses auto-publishing a metric of the measure's own name.
@@ -287,7 +287,7 @@ A draft that validates can still leave out part of the question. `plan` returns
   `temporal_role`, the subject phrase names no other such
   metric as fully nor the measure more fully, and the draft neither filters nor groups by what
   the metric's filter reads ("demo stores" keeps the measure, held). A measure or metric the
-  caller's `partial_query` names is never held for this;
+  caller's `partial_query.select` names is never held for this;
 - has no filter on a dimension that a "where <dimension> is <value>" clause names, even
   when the catalog declares no values for it (`dimension_filter_unrealized`);
 - carries no time window, or a different one, where the question names one

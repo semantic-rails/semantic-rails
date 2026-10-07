@@ -594,31 +594,64 @@ def test_request_metadata_cannot_name_an_unpublished_measure(
     _assert_unoffered_hold(plan)
 
 
+def _transport_plan(engine: Runtime, transport: str, query: dict[str, Any]) -> dict[str, Any]:
+    arguments = {"intent": "teams last week", "query": query, "detail": "best"}
+    if transport == "direct":
+        return plan_payload(engine, intent="teams last week", partial_query=query, detail="best")
+    if transport == "mcp":
+        return SemanticLayerMCPAdapter(engine).call_tool("plan", arguments)
+    plan, status = SemanticHTTPService(engine).handle(
+        "POST", normalize_route("/api/v1/plan"), arguments
+    )
+    assert status == 200
+    return plan
+
+
+def _unreadable_offer(*_: Any) -> Any:
+    raise RuntimeError("unreadable measure offering")
+
+
 @pytest.mark.parametrize("transport", ["mcp", "http"])
 def test_transport_plan_holds_a_measure_named_only_in_policy_metadata(
     unpublished_teams: dict[bool, Runtime], transport: str
 ) -> None:
-    engine = unpublished_teams[True]
-    arguments = {
-        "intent": "teams last week",
-        "query": {"policy_context": {**NOW, "measure": TEAMS}},
-        "detail": "best",
-    }
-    if transport == "mcp":
-        plan = SemanticLayerMCPAdapter(engine).call_tool("plan", arguments)
-    else:
-        plan, status = SemanticHTTPService(engine).handle(
-            "POST", normalize_route("/api/v1/plan"), arguments
-        )
-        assert status == 200
-    _assert_unoffered_hold(plan)
+    query = {"policy_context": {**NOW, "measure": TEAMS}}
+    _assert_unoffered_hold(_transport_plan(unpublished_teams[True], transport, query))
 
 
-def test_policy_metadata_does_not_exempt_a_draft_over_a_governed_measure(runtime: Runtime) -> None:
+@pytest.mark.parametrize("offer", ["readable", "unreadable"])
+@pytest.mark.parametrize("transport", ["direct", "mcp", "http"])
+@pytest.mark.parametrize("option", ["debug", "explain", "export"])
+def test_a_response_option_cannot_name_an_unpublished_measure(
+    unpublished_teams: dict[bool, Runtime],
+    monkeypatch: pytest.MonkeyPatch,
+    option: str,
+    transport: str,
+    offer: str,
+) -> None:
+    """Only ``partial_query.select`` makes a choice; an option's nested value never does."""
+
+    if offer == "unreadable":
+        monkeypatch.setattr(faithfulness, "unoffered_measures", _unreadable_offer)
+    query = {"policy_context": NOW, option: {"measure": TEAMS}}
+    _assert_unoffered_hold(_transport_plan(unpublished_teams[True], transport, query))
+
+
+@pytest.mark.parametrize(
+    "request_fields",
+    [
+        {"policy_context": {**NOW, "measure": MEASURE}},
+        {"policy_context": NOW, "debug": {"measure": MEASURE}},
+    ],
+    ids=["policy_context", "debug"],
+)
+def test_request_fields_outside_select_do_not_exempt_a_draft_over_a_governed_measure(
+    runtime: Runtime, request_fields: dict[str, Any]
+) -> None:
     plan = plan_payload(
         runtime,
         intent="active stores all kinds last week",
-        partial_query={"policy_context": {**NOW, "measure": MEASURE}},
+        partial_query=request_fields,
         detail="best",
     )
     assert plan["status"] == "low_confidence", plan.get("why")
@@ -627,9 +660,35 @@ def test_policy_metadata_does_not_exempt_a_draft_over_a_governed_measure(runtime
         ({"metrics": [METRIC]}, {"measure": MEASURE})
     ]
     assert [hint["message"] for hint in plan["why"]["recovery_hints"]] == [
-        "Select the governed metric in Query IR. Name the measure by id in partial_query "
-        "only when the question asks for every row it counts."
+        "Select the governed metric in Query IR. Name the measure by id in "
+        "partial_query.select only when the question asks for every row it counts."
     ]
+
+
+@pytest.mark.parametrize(
+    ("outside", "code"),
+    [
+        ({"order_by": [{"field": TEAMS, "direction": "desc"}]}, "VALIDATION_FAILED"),
+        (
+            {"where": [{"field": TEAM_CLASS, "op": "=", "value": {"measure": TEAMS}}]},
+            "VALIDATION_FAILED",
+        ),
+        (
+            {"metric_filters": [{"expression": {"measure": TEAMS}, "op": ">", "value": 0}]},
+            "PLAN_INTENT_COVERAGE_GAP",
+        ),
+    ],
+    ids=["order_by", "where_value", "metric_filters"],
+)
+def test_a_measure_named_only_outside_select_is_never_executable(
+    unpublished_teams: dict[bool, Runtime], outside: dict[str, Any], code: str
+) -> None:
+    plan = _plan(unpublished_teams[True], "teams last week", **outside)
+    assert plan["status"] == "low_confidence", plan.get("why")
+    assert "execute" not in plan.get("next", {}).get("ready_for", [])
+    assert plan["why"]["code"] == code
+    if code == "PLAN_INTENT_COVERAGE_GAP":
+        _assert_unoffered_hold(plan)
 
 
 def test_mcp_plan_holds_a_strict_unpublished_measure(
@@ -697,10 +756,7 @@ def test_a_failing_unoffered_measure_check_holds_the_draft(
     monkeypatch: pytest.MonkeyPatch,
     metadata_reference: bool,
 ) -> None:
-    def unreadable(*_: Any) -> Any:
-        raise RuntimeError("unreadable measure offering")
-
-    monkeypatch.setattr(faithfulness, "unoffered_measures", unreadable)
+    monkeypatch.setattr(faithfulness, "unoffered_measures", _unreadable_offer)
     _assert_unoffered_hold(
         _plan(
             unpublished_teams[True],

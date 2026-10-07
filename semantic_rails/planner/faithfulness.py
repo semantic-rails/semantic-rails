@@ -20,7 +20,7 @@ from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ..ast import _QUERY_IR_KEYS, _relative_range_bounds, is_child_group
+from ..ast import _relative_range_bounds, is_child_group
 from ..compiler import bind_query
 from ..compiler_parts.sql_lowering import _snapshot_series_columns
 from ..config_parts.measure_governance import (
@@ -597,14 +597,21 @@ def _governed_metric_gaps(
     The draft selects the measure itself, or the metric that is its plain aggregate, and does
     not select a metric that aggregates the measure through a filter while the question's
     whole question names that metric, or the package doesn't offer the measure. Otherwise a visible
-    metric that narrows its rows holds it (``_population_hold``). A measure or metric
-    the caller's ``partial_query`` names in Query IR fields is the caller's choice; request
-    metadata never names either. ``reported`` already has its own gap.
+    metric that narrows its rows holds it (``_population_hold``). A measure or metric the
+    caller's ``partial_query.select`` names by id is the caller's choice; nothing else in the
+    request names one. ``reported`` already has its own gap.
     """
 
-    caller = set(
-        _referenced_ids({key: partial_query[key] for key in _QUERY_IR_KEYS if key in partial_query})
-    )
+    choices = partial_query.get("select")
+    caller = {
+        node[key]
+        for item in (choices if isinstance(choices, list) else [])
+        if isinstance(item, dict)
+        for node in (item, item.get("expression"))
+        if isinstance(node, dict)
+        for key in ("measure", "metric")
+        if isinstance(node.get(key), str)
+    }
     selected = list(
         dict.fromkeys(
             node[key]
@@ -658,8 +665,8 @@ def _governed_metric_gaps(
                 recovery_hint={
                     "kind": "use_governed_metric",
                     "message": (
-                        "Select the governed metric in Query IR. Name the measure by id in partial_query "
-                        "only when the question asks for every row it counts."
+                        "Select the governed metric in Query IR. Name the measure by id in "
+                        "partial_query.select only when the question asks for every row it counts."
                         if expected["metrics"] or "narrowed_by" in expected
                         else "Name the measure by id in partial_query.select when the question asks "
                         "for every row it counts, or pick an offered metric."
