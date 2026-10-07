@@ -279,7 +279,7 @@ def test_introspection_materializes_catalog_profile_sample_and_composite_key_rea
         assert len(helper_calls) > 1
         assert len(queries) == len([entry for entry in log if entry[0] == "relation.fetchall"])
         assert any("SELECT DISTINCT" in entry[1] for entry in queries)
-        assert any("count(DISTINCT (" in entry[1] for entry in queries)
+        assert any("count(DISTINCT system.main.row(" in entry[1] for entry in queries)
         assert not any(entry[0] == "cursor.execute" for entry in log)
     finally:
         connection.close()

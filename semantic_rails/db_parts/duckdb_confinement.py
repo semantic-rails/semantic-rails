@@ -74,7 +74,7 @@ def require_inside(directory: str, path: str, *, option: str, relative_to: str =
 
 
 def _setting(conn: Any, name: str) -> Any:
-    return conn.execute("SELECT current_setting(?)", [name]).fetchone()[0]
+    return conn.execute("SELECT system.main.current_setting(?)", [name]).fetchone()[0]
 
 
 def confine_duckdb(conn: Any, directory: str) -> None:

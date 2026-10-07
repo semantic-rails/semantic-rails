@@ -171,6 +171,9 @@ class FakeConnection:
     def fetchone(self):
         return ("",)
 
+    def fetchall(self):
+        return []
+
     def cursor(self):
         return FakeCursor(self.log, fail_on=self.fail_on)
 
@@ -275,8 +278,9 @@ def test_adapter_connects_with_token_and_defaults_namespace(monkeypatch: pytest.
     assert captured["config"] == {"motherduck_token": "tok-value"}
     # Lazy database creation + namespace defaulting so unqualified
     # table names (jaffle_order, …) resolve.
-    assert captured["log"][:6] == [
-        "SELECT current_setting('disabled_optimizers')",
+    assert captured["log"][:7] == [
+        "SELECT database_name, function_name, function_type FROM system.main.duckdb_functions()",
+        "SELECT system.main.current_setting('disabled_optimizers')",
         "SET disabled_optimizers = ?",
         'CREATE DATABASE IF NOT EXISTS "sr_jaffle"',
         'USE "sr_jaffle"',
