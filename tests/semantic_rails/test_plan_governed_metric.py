@@ -6,11 +6,17 @@ out demo and staff stores. A question that names the metric gets the metric's nu
 that still reads the measure is never ``ok``. With ``publish: false`` the measure is a
 building block: discover doesn't offer it, plan answers with the metric, and a query that
 names the measure by id still runs. Gold values come from plain SQL over the seed.
+
+A second package counts teams. ``Teams (all classes)`` counts every team; the governed
+``New teams`` counts customer teams only, either by filtering that count (``same``) or by
+counting ``team_created`` events of customer teams (``event``). A draft that counts every
+team is held unless the question asks for the class or the caller selects the count.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -22,7 +28,7 @@ import yaml
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import discover_payload
-from semantic_rails.planner import plan_payload
+from semantic_rails.planner import faithfulness, plan_payload
 from semantic_rails.planner.patterns import metric_by_dimension_rollup
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
@@ -213,19 +219,26 @@ def test_a_building_block_is_left_out_of_discover_and_runs_by_id(runtime: Runtim
 
 
 def test_plan_answers_a_building_block_with_its_only_metric(runtime: Runtime) -> None:
-    """The question names neither; only the building block is answered with the metric."""
+    """The question names neither. The building block is answered with the metric; a draft
+    over the published measure is held, since the metric leaves out some of its stores."""
 
     plan = _plan(runtime, "stores last week")
     building_block = not next(row for row in runtime._config.measures if row.id == MEASURE).publish
     expected = {"metric": METRIC} if building_block else {"measure": MEASURE}
-    assert plan["status"] == "ok", plan.get("why")
     assert {
         key: value
         for key, value in plan["best"]["query_ir"]["select"][0]["expression"].items()
         if key != "aggregation"
     } == expected
     if building_block:
+        assert plan["status"] == "ok", plan.get("why")
         assert _value(runtime, plan["best"]["query_ir"]) == 3
+    else:
+        assert plan["status"] == "low_confidence"
+        assert "execute" not in plan["next"].get("ready_for", [])
+        assert [gap["expected"] for gap in _gaps(plan)] == [
+            {"metrics": [METRIC], "narrowed_by": ["dimension.shop_visit_channel"]}
+        ]
 
 
 def test_mcp_and_http_plan_agree(runtime: Runtime) -> None:
@@ -388,3 +401,243 @@ def test_a_governed_swap_cannot_change_the_metrics_clock(
         assert actual == (1,)
     finally:
         engine.close()
+
+
+TEAMS_SEED = """
+CREATE TABLE teams (team_id VARCHAR, created_at TIMESTAMP, class VARCHAR);
+INSERT INTO teams VALUES
+  ('t1', TIMESTAMP '2026-09-28 10:00', 'customer'),
+  ('t2', TIMESTAMP '2026-09-30 10:00', 'customer'),
+  ('t3', TIMESTAMP '2026-10-02 10:00', 'customer'),
+  ('t4', TIMESTAMP '2026-10-03 10:00', 'test'),
+  ('t5', TIMESTAMP '2026-09-21 10:00', 'customer'),
+  ('t6', TIMESTAMP '2026-09-15 10:00', 'test'),
+  ('t7', TIMESTAMP '2026-09-16 10:00', 'test');
+CREATE TABLE team_events (event_id VARCHAR, team_id VARCHAR, event_type VARCHAR, event_time TIMESTAMP);
+INSERT INTO team_events SELECT 'c-' || team_id, team_id, 'team_created', created_at FROM teams;
+INSERT INTO team_events VALUES
+  ('j1', 't1', 'member_joined', TIMESTAMP '2026-09-29 10:00'),
+  ('j2', 't4', 'member_joined', TIMESTAMP '2026-10-03 11:00');
+"""
+WEEK = "created_at >= TIMESTAMP '2026-09-28' AND created_at < TIMESTAMP '2026-10-05'"
+MONTH = "created_at >= TIMESTAMP '2026-09-01' AND created_at < TIMESTAMP '2026-10-01'"
+TEAMS = "measure.org.teams"
+NEW_TEAMS = "metric.org.new_teams"
+TEAM_CLASS = "dimension.org_team_class"
+SHAPES = ["same", "event"]
+
+
+def _teams_package(root: Path, *, shape: str, synonyms: bool) -> Path:
+    def put(name: str, doc: dict[str, Any]) -> None:
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+
+    customer = {"field": TEAM_CLASS, "op": "=", "value": "customer"}
+    put("package.yml", {
+        "schema_version": 1,
+        "package": {"id": "org", "namespace": "org", "name": "org", "description": "Teams",
+                    "warehouse": "duckdb", "default_db": "org.duckdb", "seed": {"kind": "external"},
+                    "schema_strict": True},
+        "defaults": {"time": {"timezone": "UTC"}},
+    })  # fmt: skip
+    put("graph.yml", {"graph": {"entities": {
+        "team": {"key": ["team_id"], "model": "teams", "allowed_as_root": True},
+        "team_event": {"key": ["event_id"], "model": "team_events", "allowed_as_root": True},
+    }}})  # fmt: skip
+    put("models/teams.yml", {"model": {
+        "id": "teams", "label": "Teams", "relation": "teams", "entities": {"team": {}},
+        "times": {"created_at": {"label": "Team created", "column": "created_at",
+                                 "kind": "timestamp", "class": "event_time", "default": True}},
+        "dimensions": {"class": {"kind": "categorical", "label": "Team class",
+                                 "domain": ["customer", "test"]}},
+        "measures": {"teams": {"kind": "entity_count", "entity_key": "team_id",
+                               "label": "Teams (all classes)", "value_type": "count"}},
+    }})  # fmt: skip
+    put("models/team_events.yml", {"model": {
+        "id": "team_events", "label": "Team events", "relation": "team_events",
+        "entities": {"team_event": {}, "team": {}},
+        "times": {"event_time": {"label": "Event time", "column": "event_time",
+                                 "kind": "timestamp", "class": "event_time", "default": True}},
+        "dimensions": {"event_type": {"kind": "categorical", "label": "Event type"}},
+        "measures": {"team_events": {"kind": "entity_count", "entity_key": "event_id",
+                                     "label": "Team events (all classes)", "value_type": "count"}},
+    }})  # fmt: skip
+    if shape == "same":
+        metric = {
+            "kind": "aggregate", "temporal_role": "temporal_role.org_team_created_at",
+            "expression": {"kind": "aggregate", "measure": TEAMS, "aggregation": "count_distinct",
+                           "filter": {"all": [customer]}},
+        }  # fmt: skip
+    else:
+        created = {
+            "field": "dimension.org_team_event_event_type",
+            "op": "=",
+            "value": "team_created",
+        }
+        metric = {
+            "kind": "aggregate", "temporal_role": "temporal_role.org_team_event_event_time",
+            "expression": {"kind": "aggregate", "measure": "measure.org.team_events",
+                           "aggregation": "count_distinct", "filter": {"all": [created, customer]}},
+        }  # fmt: skip
+    put("metrics/teams.yml", {"metrics": {"new_teams": {
+        "label": "New teams", "description": "Customer teams created in the period.",
+        "value_type": "count", **metric,
+        **({"synonyms": ["teams created", "created teams"]} if synonyms else {}),
+    }}})  # fmt: skip
+    with duckdb.connect(str(root / "org.duckdb")) as connection:
+        connection.execute(TEAMS_SEED)
+    return root
+
+
+@pytest.fixture(scope="module")
+def teams(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[tuple[str, bool], Runtime]]:
+    """One runtime per metric shape, with and without a "teams created" synonym."""
+
+    engines: dict[tuple[str, bool], Runtime] = {}
+    try:
+        for shape in SHAPES:
+            for synonyms in (False, True):
+                root = tmp_path_factory.mktemp(f"teams_{shape}") / "org"
+                engine = Runtime.from_path(
+                    str(_teams_package(root, shape=shape, synonyms=synonyms))
+                )
+                engines[shape, synonyms] = engine
+                engine._get_adapter()
+        yield engines
+    finally:
+        for engine in engines.values():
+            engine.close()
+
+
+def _teams_gold(where: str) -> int:
+    with duckdb.connect(":memory:") as connection:
+        connection.execute(TEAMS_SEED)
+        return int(connection.execute(f"SELECT COUNT(*) FROM teams WHERE {where}").fetchone()[0])
+
+
+def test_the_team_count_counts_the_test_teams_new_teams_leaves_out() -> None:
+    assert (_teams_gold(WEEK), _teams_gold(f"{WEEK} AND class = 'customer'")) == (4, 3)
+    assert (_teams_gold(MONTH), _teams_gold(f"{MONTH} AND class = 'customer'")) == (5, 3)
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+@pytest.mark.parametrize(
+    ("intent", "synonyms"),
+    [
+        ("How many teams were created last week?", False),
+        ("How many teams were created last week?", True),
+        ("How many teams were created last month?", False),
+        ("How many teams were created last month?", True),
+        ("teams created last week", False),
+        ("teams last week", False),
+        ("teams last week", True),
+    ],
+)
+def test_a_draft_counting_teams_new_teams_leaves_out_is_held(
+    teams: dict[tuple[str, bool], Runtime], shape: str, intent: str, synonyms: bool
+) -> None:
+    engine = teams[shape, synonyms]
+    window = MONTH if "month" in intent else WEEK
+    for detail in ("best", "full", "query", "debug"):
+        plan = plan_payload(
+            engine, intent=intent, partial_query={"policy_context": NOW}, detail=detail
+        )
+        assert plan["status"] == "low_confidence", (detail, plan.get("why"))
+        assert "execute" not in plan.get("next", {}).get("ready_for", [])
+        assert [(gap["expected"], gap["actual"]) for gap in _gaps(plan)] == [
+            ({"metrics": [NEW_TEAMS], "narrowed_by": [TEAM_CLASS]}, {"measure": TEAMS})
+        ], detail
+    # The held draft counts the test teams as well.
+    assert _value(engine, plan["best"]["query_ir"]) == _teams_gold(window)
+    assert _teams_gold(window) > _teams_gold(f"{window} AND class = 'customer'")
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+@pytest.mark.parametrize(
+    ("intent", "synonyms", "expression"),
+    [
+        ("new teams last week", False, {"metric": NEW_TEAMS}),
+        ("teams created last week", True, {"metric": NEW_TEAMS}),
+        # The draft filters by the class the metric narrows on.
+        ("How many customer teams were created last week?", False, {"measure": TEAMS}),
+    ],
+)
+def test_a_draft_counting_customer_teams_stays_ready(
+    teams: dict[tuple[str, bool], Runtime],
+    shape: str,
+    intent: str,
+    synonyms: bool,
+    expression: dict[str, str],
+) -> None:
+    engine = teams[shape, synonyms]
+    plan = _plan(engine, intent)
+    assert plan["status"] == "ok", plan.get("why")
+    assert "execute" in plan["next"]["ready_for"]
+    query = plan["best"]["query_ir"]
+    selected = query["select"][0]["expression"]
+    assert {key: value for key, value in selected.items() if key != "aggregation"} == expression
+    assert _value(engine, query) == _teams_gold(f"{WEEK} AND class = 'customer'") == 3
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+def test_a_caller_selecting_the_team_count_counts_every_team(
+    teams: dict[tuple[str, bool], Runtime], shape: str
+) -> None:
+    engine = teams[shape, False]
+    select = [{"as": "teams", "expression": {"measure": TEAMS}}]
+    plan = _plan(engine, "teams created last week", select=select)
+    assert plan["status"] == "ok", plan.get("why")
+    assert _gaps(plan) == []
+    assert _value(engine, plan["best"]["query_ir"]) == _teams_gold(WEEK) == 4
+
+
+def test_mcp_plan_holds_the_count_of_every_team(teams: dict[tuple[str, bool], Runtime]) -> None:
+    mcp = SemanticLayerMCPAdapter(teams["event", False])
+    plan = mcp.call_tool(
+        "plan",
+        {"intent": "How many teams were created last week?", "query": {"policy_context": NOW}},
+    )
+    assert plan["status"] == "low_confidence", plan.get("why")
+    assert "execute" not in plan.get("next", {}).get("ready_for", [])
+    assert [gap["expected"]["metrics"] for gap in _gaps(plan)] == [[NEW_TEAMS]]
+
+
+def test_a_failing_governor_check_holds_the_draft(
+    teams: dict[tuple[str, bool], Runtime], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unreadable(*_: Any) -> Any:
+        raise RuntimeError("unreadable metric")
+
+    monkeypatch.setattr(faithfulness, "population_governors", unreadable)
+    plan = _plan(teams["same", False], "How many customer teams were created last week?")
+    assert plan["status"] == "low_confidence", plan.get("why")
+    assert "execute" not in plan["next"].get("ready_for", [])
+    assert [gap["expected"] for gap in _gaps(plan)] == [{"metrics": []}]
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+def test_a_hidden_governor_is_neither_counted_nor_named(
+    teams: dict[tuple[str, bool], Runtime], monkeypatch: pytest.MonkeyPatch, shape: str
+) -> None:
+    engine = teams[shape, False]
+    policy = SemanticPolicyConfig(
+        id="policy.hide_new_teams",
+        kind="object_visibility",
+        object_ids=[NEW_TEAMS],
+        action="hidden",
+        audiences=["external"],
+    )
+    monkeypatch.setattr(engine, "_config", replace(engine._config, semantic_policies=[policy]))
+    external = {**NOW, "audience": "external"}
+    for detail in ("best", "full", "query", "debug"):
+        plan = plan_payload(
+            engine,
+            intent="How many teams were created last week?",
+            partial_query={"policy_context": external},
+            detail=detail,
+        )
+        assert plan["status"] == "ok", (detail, plan.get("why"))
+        assert _gaps(plan) == []
+        serialized = json.dumps(plan)
+        assert NEW_TEAMS not in serialized and "New teams" not in serialized
+    assert _value(engine, plan["best"]["query_ir"]) == _teams_gold(WEEK) == 4

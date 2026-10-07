@@ -25,6 +25,7 @@ from ..compiler import bind_query
 from ..config_parts.measure_governance import (
     building_block_measures,
     governing_metrics,
+    population_governors,
     published_measure,
 )
 from ..errors import SemanticLayerError
@@ -396,7 +397,12 @@ def intent_faithfulness_why(
         )
     gaps.extend(
         _governed_metric_gaps(
-            runtime._config, question, query, partial_query or {}, named[0].id if named else ""
+            runtime._config,
+            question,
+            query,
+            partial_query or {},
+            named[0].id if named else "",
+            [term.id for term in intent_ir.subjects],
         )
     )
     partition_match = _PARTITIONED_RANK_RE.search(text)
@@ -581,15 +587,21 @@ def _ambiguous_grouping_gaps(
 
 
 def _governed_metric_gaps(
-    config: Any, question: str, query: dict[str, Any], partial_query: dict[str, Any], reported: str
+    config: Any,
+    question: str,
+    query: dict[str, Any],
+    partial_query: dict[str, Any],
+    reported: str,
+    subjects: list[str],
 ) -> list[CoverageGap]:
     """Hold a draft that answers with a measure a metric filters, where that metric fits.
 
     The draft selects the measure itself, or the metric that is its plain aggregate, and does
     not select a metric that aggregates the measure through a filter while the question's
-    whole question names that metric, or the measure is a building block. A measure or metric
-    the caller's ``partial_query`` names is the caller's choice; ``reported`` already has its
-    own gap.
+    whole question names that metric, or the measure is a building block. Otherwise it is
+    held when a visible metric narrows the measure's rows (``_narrowing_governors``, listed in
+    the ranked ``subjects`` order first). A measure or metric the caller's ``partial_query``
+    names is the caller's choice; ``reported`` already has its own gap.
     """
 
     caller = set(_referenced_ids(partial_query))
@@ -618,8 +630,13 @@ def _governed_metric_gaps(
             and metric.id != reported
             and (measure_id in building_blocks or _said_name(metric, question))
         ]
+        expected: dict[str, Any] | None = {"metrics": metrics}
         if not metrics and (measure_id not in building_blocks or governing):
-            continue
+            expected = _narrowing_governors(
+                config, measure_id, query, [*selected, reported], subjects
+            )
+            if expected is None:
+                continue
         measure = _object_by_id(config.measures, measure_id)
         gaps.append(
             CoverageGap(
@@ -629,9 +646,12 @@ def _governed_metric_gaps(
                     "The draft reads this measure without the filter of a governed metric "
                     "that fits the question."
                     if metrics
+                    else "The package's governed metrics leave out some of this measure's rows, "
+                    "and the draft counts all of them."
+                    if "narrowed_by" in expected
                     else "The draft reads a building-block measure without a visible governed metric."
                 ),
-                expected={"metrics": metrics},
+                expected=expected,
                 actual={"measure": measure_id},
                 recovery_hint={
                     "kind": "use_governed_metric",
@@ -643,6 +663,39 @@ def _governed_metric_gaps(
             )
         )
     return gaps
+
+
+def _narrowing_governors(
+    config: Any, measure_id: str, query: dict[str, Any], skipped: list[str], subjects: list[str]
+) -> dict[str, Any] | None:
+    """The visible metrics that narrow the measure's rows and the draft ignores, or ``None``.
+
+    A metric narrows the measure on a dimension of its entity (``population_governors``). The
+    draft heeds it by selecting it (``skipped``) or by filtering or grouping by one of those
+    dimensions. A failure to read the metrics holds the draft without naming any.
+    """
+
+    drafted = set(
+        _referenced_ids({key: query.get(key) for key in ("where", "group_by", "metric_filters")})
+    )
+    try:
+        governors = population_governors(config, measure_id)
+    except Exception:  # noqa: BLE001 — an unreadable metric cannot make a draft ready
+        return {"metrics": []}
+    visible = set(visible_object_ids(config, (metric.id for metric, _ in governors)))
+    found = {
+        metric.id: narrowed_by
+        for metric, narrowed_by in governors
+        if metric.id in visible and metric.id not in skipped and not narrowed_by & drafted
+    }
+    if not found:
+        return None
+    return {
+        "metrics": sorted(
+            found, key=lambda key: (subjects.index(key) if key in subjects else len(subjects), key)
+        )[:5],
+        "narrowed_by": sorted(visible_object_ids(config, set().union(*found.values()))),
+    }
 
 
 def _coverage_why(gaps: list[CoverageGap]) -> dict[str, Any] | None:
