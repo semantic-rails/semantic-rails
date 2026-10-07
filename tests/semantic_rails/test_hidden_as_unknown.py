@@ -387,6 +387,7 @@ def test_omitting_policy_metadata_never_disables_value_withholding(governed, act
     runtime = governed(_policy(action, REVENUE), policy)
     query = {
         **_query("metric", CUSTOMERS),
+        "group_by": [STORE],
         "order_by": [{"field": "value", "direction": "DESC"}],
         "limit": 1,
     }
