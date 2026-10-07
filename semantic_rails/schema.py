@@ -456,5 +456,10 @@ def require_boolean_mnpi(meta: Mapping[str, Any], where: str) -> None:
 
 def require_boolean_mnpi_package(config: PackageConfig) -> None:
     """:func:`require_boolean_mnpi` for every record of a package built in code."""
-    for row in [*config.measures, *config.metric_recipes, *config.relations]:
+    rows: list[MeasureConfig | MetricConfig | RelationConfig] = [
+        *config.measures,
+        *config.metric_recipes,
+        *config.relations,
+    ]
+    for row in rows:
         require_boolean_mnpi(row.meta, row.id)

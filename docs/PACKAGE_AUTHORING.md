@@ -873,20 +873,39 @@ whole package, so hiding an object never removes or changes a `deny`,
   block](#building-block-measures) stays one when its metric is hidden, and `plan` still
   holds a draft over a measure that a metric narrows when that metric is hidden only because
   something it reads is hidden. The hold names nothing hidden.
-- **Authored text is shown or left out whole, never edited.** A description, topic, example,
-  caveat or other text of a visible object that names a hidden object (its id, or a name,
-  label or alias no visible object shares) is left out. A policy that lists a hidden object,
+- **Authored text never names a hidden object.** A field of a visible object, or of the
+  package, that names a hidden object (its id, or a name, label or alias no visible object
+  shares) is shown without it, by what the field is: a text field (description, label,
+  `currency`, `comparison_family`, `join_semantics`, a freshness note, a window's `semantics`)
+  reads `""`; a list (aliases, topics, examples) or a mapping (`meta`, `operational`, extra
+  `temporal_validity` keys) loses the items or entries that name one; a name is rebuilt from
+  the object's id (a value's label from the value) and is never blank. Ids, references,
+  numbers, flags, enums and physical names (`table`, `column`, `expr`) are shown as authored;
+  they never name a hidden object, since an object that references one is hidden with it. A
+  caveat that names a hidden object is left out whole. A policy that lists a hidden object,
   or whose words name one, is shown in a generic form: no `policy_id`, and its action's
-  fixed text instead of the rationale. Text that describes a hidden object without naming
-  it can't be detected: don't paraphrase a sensitive object in another object's
-  description.
-- **Semantic structure survives text omission.** Measure validity windows and external
-  discontinuities keep their dates, magnitudes and cross-window policy. Only their `semantics`
-  or `what` text is blanked when it names a hidden object. Omitted `meta` and `operational`
-  text retains `mnpi`, so export warnings still apply. A caller's route decision is refused
-  under a row filter on any package route for that pair, including routes hidden from them;
-  the refusal discloses only policy ids visible in the caller's view. `default_metric_id`
-  names a metric only when that metric exists in the caller's view; otherwise it is empty.
+  fixed text instead of the rationale.
+- **Semantic structure survives.** Measure validity windows and external discontinuities
+  keep their dates, magnitudes and cross-window policy. `mnpi` in `meta` must be `true` or
+  `false` (any other value is `INVALID_CONFIG`), and it is always kept, so export warnings
+  still apply. A caller's route decision is refused under a row filter on any package route
+  for that pair, including routes hidden from them; time-filter refusals under a row filter
+  read the whole package too, and either refusal discloses only policy ids visible in the
+  caller's view. `default_metric_id` names a metric only when that metric exists in the
+  caller's view; otherwise it is empty.
+
+The guarantee: a hidden object's id, names, aliases and authored text appear on no response
+to the caller, over MCP, HTTP or the CLI; a reference to it gets the error a reference to an
+absent object gets; and enforcement is unchanged. What it does not cover:
+
+- Text that describes a hidden object without naming it. Don't paraphrase a sensitive object
+  in another object's description.
+- A hidden object's name that equals a visible object's id, name, label or alias, or a
+  physical name (a table or column), is not treated as naming it.
+- The refusals the design keeps on purpose, each of which says only that something is
+  unavailable: a pair whose package route goes through a hidden object has no route, an
+  ambiguous pair stays ambiguous among its visible routes, and raw-column aggregates are
+  refused while anything is hidden.
 
 ### Ranking by withheld values
 

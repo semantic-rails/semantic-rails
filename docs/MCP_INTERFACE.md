@@ -1109,12 +1109,13 @@ expression kind names the received kind and its request path (for example,
 }
 ```
 
-`INTERNAL_ERROR` when a bare exception escapes the handler:
+`INTERNAL_ERROR` when a bare exception escapes the handler. The message is fixed engine text
+over MCP, JSON-RPC and HTTP alike; the exception's own text goes to the server log only:
 
 ```json
 {
   "code": "INTERNAL_ERROR",
-  "message": "KeyError: 'field'",
+  "message": "An unexpected engine error occurred; the detail is in the server log.",
   "details": {"exception_type": "KeyError"},
   "recovery_hints": [{"kind": "file_bug_report",
                        "message": "...file a bug at .../issues..."}]

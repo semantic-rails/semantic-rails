@@ -12,6 +12,7 @@ import pytest
 
 from semantic_rails.api import AppState, Handler
 from semantic_rails.asgi import PackageLoadFailureApp, SemanticLayerASGIApp
+from semantic_rails.errors import UNEXPECTED_ERROR_MESSAGE
 from semantic_rails.http_core import SemanticHTTPService
 from semantic_rails.request_context import (
     HeaderPolicyContextResolver,
@@ -805,7 +806,8 @@ def test_query_route_returns_structured_error_on_unexpected_runtime_failure(
             assert exc.code == 500
             assert payload["ok"] is False
             assert payload["error"]["code"] == "INTERNAL_ERROR"
-            assert "boom" in payload["error"]["message"]
+            assert payload["error"]["message"] == UNEXPECTED_ERROR_MESSAGE
+            assert "boom" not in json.dumps(payload)
     finally:
         httpd.shutdown()
         thread.join(timeout=5)

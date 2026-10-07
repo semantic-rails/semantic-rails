@@ -2,9 +2,10 @@
 
 ``absent(config, hidden)`` deletes the hidden rows, trims and drops what names them (policies,
 ``path_preferences``, aggregate relations, caveats) and drops the visibility policies. Authored
-prose that names a hidden object is left out whole, as the authoring guide states: an object's
-text field, a caveat. It is built from the package's own dataclasses, independently of the
-engine's visible view. A response to a caller with ``hidden`` objects is compared, whole, with
+text that names a hidden object is left out as the authoring guide states: a text field reads
+"", a list or mapping loses the items naming one, a name is rebuilt from the id, a caveat is
+dropped. Every field not in ``ENGINE_READ`` is authored. It is built from the package's own
+dataclasses, independently of the engine's visible view. A response to a caller with ``hidden`` objects is compared, whole, with
 the response from the absent package, and searched for every token of the hidden objects: each
 id, and each name, label or alias that no visible object shares.
 """
