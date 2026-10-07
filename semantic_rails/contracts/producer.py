@@ -358,7 +358,9 @@ def _apply_physical_column_types(
                     )
 
 
-def export_semantic_contract(path: str | Path | LoadedPackageSnapshot) -> dict[str, Any]:
+def export_semantic_contract(
+    path: str | Path | LoadedPackageSnapshot, *, physical_types: bool = True
+) -> dict[str, Any]:
     """Export a framework-neutral validation contract from a project.
 
     ``path`` may name a split project directory or a single-file package.
@@ -366,6 +368,9 @@ def export_semantic_contract(path: str | Path | LoadedPackageSnapshot) -> dict[s
     errors as normal runtime startup. The returned payload is deliberately
     unwrapped so adapters can add ``binding`` without translating an
     engine-specific envelope.
+
+    Set ``physical_types=False`` to use only authored type hints, without
+    inspecting or opening the package's local database.
     """
 
     snapshot = _load_validated_snapshot(path)
@@ -387,7 +392,8 @@ def export_semantic_contract(path: str | Path | LoadedPackageSnapshot) -> dict[s
             fallback_config=config,
         ),
     }
-    _apply_physical_column_types(package["resources"], snapshot)
+    if physical_types:
+        _apply_physical_column_types(package["resources"], snapshot)
     return {
         "contract_format_version": CONTRACT_FORMAT_VERSION,
         "semantic": {
