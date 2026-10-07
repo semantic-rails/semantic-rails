@@ -8,16 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .._base import (
-    RuntimeCompositionDraft,
-    _add_order,
-    _entity,
-    _measure,
-    _object_text,
-    _product_filter,
-    _resolved,
-    _time_spec,
-)
+from .._base import RuntimeCompositionDraft, _entity, _measure, _object_text, _resolved
+from ..groupings import _time_spec
+from ..qualifiers import _add_order, _product_filter
 from ._protocol import IntentPattern
 
 

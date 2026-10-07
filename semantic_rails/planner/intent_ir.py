@@ -20,22 +20,18 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from ._base import (
-    _maybe_group_by,
-    _object_text,
-    _period_shift_grain,
-    _preferred_measure,
-    _preferred_metric,
+from ._base import _object_text, _preferred_measure, _preferred_metric, _runtime_composition_terms
+from .generators import _target_focus_text
+from .groupings import _maybe_group_by, _time_spec
+from .qualifiers import (
     _qualification_phrase,
     _qualification_phrase_token_groups,
     _qualifying_entity,
-    _runtime_composition_terms,
     _target_measure_terms,
     _threshold_from_text,
-    _time_spec,
     _top_n_intent,
 )
-from .generators import _target_focus_text
+from .time_phrases import _period_shift_grain
 from .time_reference import with_time_reference
 from .visibility import visible_dimensions, visible_object_ids
 

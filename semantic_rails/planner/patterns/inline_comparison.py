@@ -20,16 +20,15 @@ from typing import Any
 
 from .._base import (
     RuntimeCompositionDraft,
-    _add_order,
     _aggregation_from_text,
-    _maybe_group_by,
     _preferred_measure,
     _preferred_metric,
     _resolved,
     _runtime_composition_terms,
     _semantic_token,
-    _time_spec,
 )
+from ..groupings import _maybe_group_by, _time_spec
+from ..qualifiers import _add_order
 from ._protocol import IntentPattern
 
 _VS_RE = re.compile(r"^(?P<left>.+?)\s+(?:vs|versus)\s+(?P<right>.+?)$", re.IGNORECASE)

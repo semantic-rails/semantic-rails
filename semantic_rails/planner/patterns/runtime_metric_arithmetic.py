@@ -8,13 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .._base import (
-    RuntimeCompositionDraft,
-    _add_order,
-    _maybe_group_by,
-    _metric,
-    _resolved,
-)
+from .._base import RuntimeCompositionDraft, _metric, _resolved
+from ..groupings import _maybe_group_by
+from ..qualifiers import _add_order
 from ._protocol import IntentPattern
 
 

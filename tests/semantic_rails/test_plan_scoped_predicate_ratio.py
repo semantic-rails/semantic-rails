@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from semantic_rails.planner import plan_payload
-from semantic_rails.planner._base import _metric_predicate
+from semantic_rails.planner.patterns.scoped_predicate_ratio import _metric_predicate
 from semantic_rails.runtime import Runtime
 
 SEED_SQL = """

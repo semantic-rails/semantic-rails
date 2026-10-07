@@ -9,8 +9,8 @@ import duckdb
 import pytest
 
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.planner import grouping_checks, plan_payload
 from semantic_rails.planner import plan as plan_module
-from semantic_rails.planner import plan_payload
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.schema import SemanticPolicyConfig, ValueDomainConfig, ValueDomainValue
@@ -346,11 +346,11 @@ def test_hidden_underscore_objects_are_excluded_from_name_spans(runtime_factory,
     query = {"group_by": []}
     try:
         # The check reads names through its caller-scoped view, never the raw config.
-        assert plan_module._named_groupings_unmet(config, question, query) == (
-            plan_module._named_groupings_unmet(replace(config, **{kind: []}), question, query)
+        assert grouping_checks._named_groupings_unmet(config, question, query) == (
+            grouping_checks._named_groupings_unmet(replace(config, **{kind: []}), question, query)
         )
         visible = replace(config, semantic_policies=runtime._config.semantic_policies)
-        assert "revenue_usd" in plan_module._named_groupings_unmet(visible, question, query)[0]
+        assert "revenue_usd" in grouping_checks._named_groupings_unmet(visible, question, query)[0]
     finally:
         runtime.close()
 
@@ -432,12 +432,12 @@ def test_hidden_entity_and_temporal_role_names_cannot_change_the_name_obligation
     config, _ = package_config_factory("jaffle_shop")
     spellings = ["New", "new month", "Month", "Store", "Store name", "Customer type", "Revenue"]
     for row in [*config.entities, *config.temporal_roles]:
-        base = plan_module._named_groupings_unmet(
+        base = grouping_checks._named_groupings_unmet(
             _new_month_alias(config, row.id), question, NEW_MONTH_PARTIAL
         )
         for changes in [*({"label": s} for s in spellings), *({"aliases": [s]} for s in spellings)]:
             changed = _new_month_alias(config, row.id, **changes)
-            unmet = plan_module._named_groupings_unmet(changed, question, NEW_MONTH_PARTIAL)
+            unmet = grouping_checks._named_groupings_unmet(changed, question, NEW_MONTH_PARTIAL)
             assert unmet == base, (row.id, changes)
 
 

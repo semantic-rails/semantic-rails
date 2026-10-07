@@ -18,15 +18,15 @@ from typing import Any
 import pytest
 
 from semantic_rails.planner import plan_payload
-from semantic_rails.planner._base import (
+from semantic_rails.planner.consumed_spans import unconsumed_terms as _unconsumed_terms
+from semantic_rails.planner.groupings import _time_spec
+from semantic_rails.planner.patterns.metric_by_dimension_rollup import (
     _named_measure,
-    _time_bounds_from_text,
-    _time_spec,
-    _time_window,
     _unresolved_time_phrases,
 )
-from semantic_rails.planner.faithfulness import _caller_window_gaps, unmatched_intent_terms
-from semantic_rails.planner.faithfulness import unconsumed_terms as _unconsumed_terms
+from semantic_rails.planner.time_checks import _caller_window_gaps
+from semantic_rails.planner.time_windows import _time_bounds_from_text, _time_window
+from semantic_rails.planner.unmatched_words import unmatched_intent_terms
 from tests.semantic_rails.result_helpers import assert_plan_held
 
 MARCH_15 = "2017-03-15"

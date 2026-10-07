@@ -12,14 +12,11 @@ import pytest
 import yaml
 
 from semantic_rails.expressions import AggregateExpr
+from semantic_rails.planner import grouping_checks, plan_payload
 from semantic_rails.planner import plan as plan_module
-from semantic_rails.planner import plan_payload
-from semantic_rails.planner._base import (
-    RuntimeCompositionDraft,
-    _listed_grouping_terms,
-    _named_grouping_spans,
-    _named_grouping_terms,
-)
+from semantic_rails.planner._base import RuntimeCompositionDraft
+from semantic_rails.planner.grouping_checks import _named_grouping_spans, _named_grouping_terms
+from semantic_rails.planner.groupings import _listed_grouping_terms
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.runtime import Runtime
@@ -146,10 +143,12 @@ def test_each_spelling_records_the_exact_named_term(
     spans = _named_grouping_spans(question, jaffle._config)
     assert [question[start:end] for start, end in spans] == named
     assert _named_grouping_terms(question, jaffle._config) == named
-    unmet = plan_module._level_groupings_unmet(jaffle._config, question, {"group_by": []})
+    unmet = grouping_checks._level_groupings_unmet(jaffle._config, question, {"group_by": []})
     assert unmet == (["customer type"] if level else [])
     assert (
-        plan_module._level_groupings_unmet(jaffle._config, question, {"group_by": [CUSTOMER_TYPE]})
+        grouping_checks._level_groupings_unmet(
+            jaffle._config, question, {"group_by": [CUSTOMER_TYPE]}
+        )
         == []
     )
     _compare_base(jaffle, monkeypatch, question)
@@ -196,9 +195,9 @@ def _compare_base(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     after = plan_payload(runtime, intent=question, partial_query=partial)
     with monkeypatch.context() as base:
-        base.setattr(plan_module, "_named_grouping_terms", _listed_grouping_terms)
-        base.setattr(plan_module, "_level_groupings_unmet", lambda *args: [])
-        base.setattr(plan_module, "_named_groupings_unmet", lambda *args: ([], []))
+        base.setattr(grouping_checks, "_named_grouping_terms", _listed_grouping_terms)
+        base.setattr(grouping_checks, "_level_groupings_unmet", lambda *args: [])
+        base.setattr(grouping_checks, "_named_groupings_unmet", lambda *args: ([], []))
         before = plan_payload(runtime, intent=question, partial_query=partial)
     # Both paths generate exactly the same draft. Only readiness may change.
     assert after["best"] == before["best"]
@@ -226,7 +225,7 @@ def _compare_declared_name_base(
     with monkeypatch.context() as base:
         # Reproduce the base without the name obligation, retaining its whitespace-only
         # level/grain reader and all its listed, unknown-noun and other readiness checks.
-        base.setattr(plan_module, "_named_groupings_unmet", lambda *args: ([], []))
+        base.setattr(grouping_checks, "_named_groupings_unmet", lambda *args: ([], []))
         before = plan_payload(runtime, intent=question, partial_query=partial)
     assert after["best"] == before["best"]
     if before["status"] == "ok" and after["status"] != "ok":
@@ -268,11 +267,11 @@ def test_declared_grouping_names_preserve_underscore_space_and_case_spans(
         **{"dimensions" if kind == "dimension" else "entities": [changed]},
     )
     question = f"revenue at {term} and store name level"
-    spans = plan_module._declared_name_spans(config, question.lower(), underscores=True)
+    spans = grouping_checks._declared_name_spans(config, question.lower(), underscores=True)
     assert [
         question[low:high] for (low, high), named in spans.items() if (kind, changed) in named
     ] == [term]
-    unmet, _ = plan_module._named_groupings_unmet(config, question, {"group_by": []})
+    unmet, _ = grouping_checks._named_groupings_unmet(config, question, {"group_by": []})
     assert term.lower() in unmet
 
 
@@ -292,7 +291,7 @@ def test_boundary_underscores_do_not_hide_a_space_joined_declared_name(
         **{"dimensions" if kind == "dimension" else "entities": [changed]},
     )
     question = f"revenue at {term} and store name level"
-    spans = plan_module._declared_name_spans(config, question, underscores=True)
+    spans = grouping_checks._declared_name_spans(config, question, underscores=True)
     assert [
         question[low:high] for (low, high), named in spans.items() if (kind, changed) in named
     ] == ["client_category"]
@@ -464,7 +463,7 @@ def test_a_value_inside_a_declared_grouping_name_only_adds_a_hold(
     after = plan_payload(jaffle, intent=question, partial_query=partial)
     with monkeypatch.context() as base:
         # Keep the whitespace level reader and every other readiness check.
-        base.setattr(plan_module, "_named_groupings_unmet", lambda *args: ([], []))
+        base.setattr(grouping_checks, "_named_groupings_unmet", lambda *args: ([], []))
         before = plan_payload(jaffle, intent=question, partial_query=partial)
     assert after["best"] == before["best"]
     query = after["best"]["query_ir"]
@@ -483,10 +482,10 @@ def test_a_value_inside_a_declared_grouping_name_only_adds_a_hold(
         assert after["why"]["details"]["filter_inside_grouping"] == collision
     # Even a caller-supplied complete grouping cannot authorize the narrowed answer, and the
     # hold names the filter to confirm or remove, not a grouping to add.
-    unmet, inside = plan_module._named_groupings_unmet(jaffle._config, question, query)
+    unmet, inside = grouping_checks._named_groupings_unmet(jaffle._config, question, query)
     assert alias in unmet
     assert inside == collision
-    why = plan_module._dropped_grouping_why(jaffle, question, query, partial)
+    why = grouping_checks._dropped_grouping_why(jaffle, question, query, partial)
     assert why is not None
     assert why["code"] == "PLAN_UNMATCHED_TERMS"
     assert alias in why["details"]["dropped_groupings"]
@@ -537,7 +536,7 @@ def test_a_value_outside_grouping_names_adds_no_hold(
         ],
     )
     query = {"group_by": [STORE, CUSTOMER_TYPE], "where": where}
-    assert plan_module._named_groupings_unmet(config, question, query) == ([], [])
+    assert grouping_checks._named_groupings_unmet(config, question, query) == ([], [])
 
 
 @pytest.mark.parametrize("path", ["primary", "fallback"])
@@ -566,7 +565,7 @@ def test_a_fully_grouped_alias_without_a_value_collision_matches_reference_sql(
         "where": [JAFFLE_FILTER, {"field": CUSTOMER_TYPE, "op": "IN", "value": ["new", "repeat"]}],
     }
     before, after = _compare_declared_name_base(jaffle, monkeypatch, question, partial)
-    assert plan_module._named_groupings_unmet(
+    assert grouping_checks._named_groupings_unmet(
         jaffle._config, question, after["best"]["query_ir"]
     ) == ([], [])
     listed = phrasing.startswith(("revenue by ", "revenue for each ", "revenue per "))
@@ -694,7 +693,7 @@ def test_a_named_grouping_without_a_filter_keeps_its_obligation(
     partial = {"group_by": [STORE], "where": [JAFFLE_FILTER]}
     before, after = _compare_declared_name_base(jaffle, monkeypatch, question, partial)
     query = after["best"]["query_ir"]
-    unmet, inside = plan_module._named_groupings_unmet(jaffle._config, question, query)
+    unmet, inside = grouping_checks._named_groupings_unmet(jaffle._config, question, query)
     assert unmet == ["_new_type"]
     assert after["status"] == "low_confidence"
     assert "execute" not in after["next"].get("ready_for", [])
@@ -759,7 +758,7 @@ def test_a_grouped_or_pinned_name_keeps_its_answer(
         assert before["status"] == after["status"] == "low_confidence"
         return
     query = after["best"]["query_ir"]
-    assert plan_module._named_groupings_unmet(jaffle._config, question, query) == ([], [])
+    assert grouping_checks._named_groupings_unmet(jaffle._config, question, query) == ([], [])
     assert before["status"] == after["status"] == "ok", after.get("why")
     assert "execute" in after["next"]["ready_for"]
     reference = _in_memory_reference(jaffle, sql)
@@ -814,7 +813,7 @@ def test_a_filter_never_stands_in_for_a_dropped_grouping(
         assert complete["status"] == "ok", complete.get("why")
         assert "execute" in complete["next"]["ready_for"]
     query = complete["best"]["query_ir"]
-    assert plan_module._dropped_grouping_why(jaffle, question, query) is None
+    assert grouping_checks._dropped_grouping_why(jaffle, question, query) is None
     actual = typed_rows(jaffle.query(query))
     assert len(actual) == 2
     assert actual == typed_rows(jaffle.query(before["best"]["query_ir"]))
@@ -835,7 +834,7 @@ def test_a_filter_never_stands_in_for_a_dropped_grouping(
     assert dropped["best"]["validation_ok"] is True
     assert dropped["status"] == "low_confidence"
     assert dropped["why"]["code"] == "PLAN_UNMATCHED_TERMS"
-    why = plan_module._dropped_grouping_why(jaffle, question, dropped["best"]["query_ir"])
+    why = grouping_checks._dropped_grouping_why(jaffle, question, dropped["best"]["query_ir"])
     assert why is not None
     assert why["details"]["dropped_groupings"] == ["customer type"]
     if "grain" not in phrasing:
@@ -864,7 +863,7 @@ def test_a_second_named_term_cannot_be_discharged_by_a_filter(
     before, complete = _compare_base(retail, monkeypatch, question, partial)
     assert before["status"] == complete["status"] == "ok", complete.get("why")
     query = complete["best"]["query_ir"]
-    assert plan_module._dropped_grouping_why(retail, question, query) is None
+    assert grouping_checks._dropped_grouping_why(retail, question, query) is None
     actual = typed_rows(retail.query(query))
     alias = query["select"][0]["as"]
     assert sorted((row[STORE_ID], row[STORE_NAME], row[alias]) for row in actual) == [
@@ -879,7 +878,7 @@ def test_a_second_named_term_cannot_be_discharged_by_a_filter(
         ).fetchall()
     assert sorted((row[STORE_ID], row[STORE_NAME], row[alias]) for row in actual) == reference
     incomplete = {**query, "group_by": [STORE_NAME]}
-    why = plan_module._dropped_grouping_why(retail, question, incomplete)
+    why = grouping_checks._dropped_grouping_why(retail, question, incomplete)
     assert why is not None
     assert why["code"] == "PLAN_UNMATCHED_TERMS"
     assert why["details"]["dropped_groupings"] == ["store id"]
@@ -999,7 +998,7 @@ def test_complete_suffix_list_matches_reference_sql(
         assert before["status"] == complete["status"] == "ok", complete.get("why")
         assert "execute" in complete["next"]["ready_for"]
     query = complete["best"]["query_ir"]
-    assert plan_module._dropped_grouping_why(jaffle, question, query) is None
+    assert grouping_checks._dropped_grouping_why(jaffle, question, query) is None
     reference = _in_memory_reference(
         jaffle,
         "SELECT s.store_name, c.customer_type, SUM(o.order_total_cents / 100.0) "
@@ -1012,7 +1011,7 @@ def test_complete_suffix_list_matches_reference_sql(
     assert len(actual) == len(reference) == 4
     assert sorted(actual) == reference
     assert [row[2] for row in reference] == pytest.approx([90.48, 259334.37, 6.36, 486461.82])
-    assert plan_module._level_groupings_unmet(jaffle._config, question, query) == []
+    assert grouping_checks._level_groupings_unmet(jaffle._config, question, query) == []
 
 
 @pytest.mark.parametrize("question", _SUFFIX_LISTS)
@@ -1046,7 +1045,7 @@ def test_suffix_list_holds_when_either_grouping_is_dropped(
     assert dropped["status"] == "low_confidence"
     assert dropped["why"]["code"] == "PLAN_UNMATCHED_TERMS"
     name = "store name" if missing == STORE else "customer type"
-    why = plan_module._dropped_grouping_why(jaffle, question, dropped["best"]["query_ir"])
+    why = grouping_checks._dropped_grouping_why(jaffle, question, dropped["best"]["query_ir"])
     assert why is not None
     assert why["details"]["dropped_groupings"] == [name]
     if "grain" not in question:
@@ -1076,7 +1075,7 @@ def test_level_in_a_measure_name_asks_for_no_level(
         query = complete["best"]["query_ir"]
         assert query["group_by"] == [STORE]
         assert query["select"][0]["expression"]["measure"] == "measure.jaffle.revenue_usd"
-        assert plan_module._level_groupings_unmet(runtime._config, question, query) == []
+        assert grouping_checks._level_groupings_unmet(runtime._config, question, query) == []
     finally:
         runtime.close()
 
@@ -1111,8 +1110,8 @@ def test_measure_words_before_a_level_add_no_grouping(
     assert "execute" in complete["next"]["ready_for"]
     query = complete["best"]["query_ir"]
     assert query["group_by"] == partial["group_by"]
-    assert plan_module._level_groupings_unmet(jaffle._config, question, query) == []
-    assert plan_module._level_groupings_unmet(
+    assert grouping_checks._level_groupings_unmet(jaffle._config, question, query) == []
+    assert grouping_checks._level_groupings_unmet(
         jaffle._config, question, {**query, "group_by": []}
     ) == [name]
 
@@ -1207,7 +1206,7 @@ def test_level_words_need_every_named_grouping(
     unmet: list[str],
 ) -> None:
     query = {"group_by": group_by, **({"time": time} if time else {})}
-    assert plan_module._level_groupings_unmet(jaffle._config, question, query) == unmet
+    assert grouping_checks._level_groupings_unmet(jaffle._config, question, query) == unmet
 
 
 def _in_memory_reference(runtime: Runtime, sql: str) -> list[tuple[Any, ...]]:
