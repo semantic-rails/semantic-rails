@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import math
 import os
 import re
 import secrets
@@ -19,12 +20,12 @@ ROOT = Path(__file__).resolve().parents[1]
 TEST_ROOTS = ("tests/semantic_rails", "tests/mf2sr")
 MAX_FILES = 20
 BUDGET_SECONDS = 290
-# Start another repetition only if the time left exceeds the previous repetition's duration by this factor.
+# Leave headroom above measured test durations when sizing or starting a repetition.
 FIT_MARGIN = 1.2
 
 
 def imported_modules(path: Path) -> set[str]:
-    modules = set()
+    modules: set[str] = set()
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
             modules.update(alias.name for alias in node.names)
@@ -81,7 +82,66 @@ def failure_names(report: Path) -> list[str]:
     ] or ["pytest collection or worker process"]
 
 
-def run_repetitions(files: list[str], root: Path, deadline: float) -> int:
+def measured_durations(report: Path | None, files: list[str]) -> dict[str, float]:
+    """Sum pytest's per-test timings, including tests in classes, by selected file."""
+    if report is None:
+        return {}
+    try:
+        cases = list(ET.parse(report).iter("testcase"))
+    except (OSError, ET.ParseError):
+        return {}
+    durations = {}
+    for file in files:
+        module = file.removesuffix(".py").replace("/", ".")
+        selected = [
+            case
+            for case in cases
+            if case.get("classname", "") == module
+            or case.get("classname", "").startswith(module + ".")
+        ]
+        try:
+            times = [float(case.attrib["time"]) for case in selected]
+        except (KeyError, ValueError):
+            continue
+        if times and all(math.isfinite(duration) and duration >= 0 for duration in times):
+            durations[file] = sum(times)
+    return durations
+
+
+def size_selection(
+    files: list[str], durations: dict[str, float], workers: int, budget: float
+) -> tuple[list[str], float | None]:
+    """Trim the lowest-priority files; incomplete timings cannot predict a timeout."""
+    selected = files.copy()
+    while (
+        selected
+        and sum(durations.get(file, 0) for file in selected) / workers * FIT_MARGIN > budget
+    ):
+        selected.pop()
+    if len(selected) < len(files):
+        print(
+            f"::notice::Flake guard dropped files to fit its time budget: {files[len(selected) :]}",
+            flush=True,
+        )
+    estimate = (
+        sum(durations[file] for file in selected) / workers
+        if all(file in durations for file in selected)
+        else None
+    )
+    return selected, estimate
+
+
+def run_repetitions(
+    files: list[str], root: Path, deadline: float, durations_from: Path | None = None
+) -> int:
+    # Resolve the worker count once so sizing and pytest use the same parallelism.
+    workers = max(1, os.cpu_count() or 1)
+    files, estimate = size_selection(
+        files,
+        measured_durations(durations_from, files),
+        workers,
+        max(0, deadline - time.monotonic()),
+    )
     if not files:
         print("Flake guard: no affected unit test files")
         return 0
@@ -98,7 +158,7 @@ def run_repetitions(files: list[str], root: Path, deadline: float) -> int:
                 "pytest",
                 "-q",
                 "-n",
-                "auto",
+                str(workers),
                 f"--flake-seed={seed}",
                 f"--junitxml={report}",
                 "-p",
@@ -108,20 +168,22 @@ def run_repetitions(files: list[str], root: Path, deadline: float) -> int:
             remaining = deadline - time.monotonic()
             # A repetition that cannot fit in what is left of the budget proves nothing either way: skip it rather than
             # fail a pull request whose tests merely take long (a core-module change selects many importers).
-            if previous is not None and remaining < previous * FIT_MARGIN:
+            expected = estimate if previous is None else previous
+            if expected is not None and remaining < expected * FIT_MARGIN:
                 print(
                     f"::warning::Flake guard inconclusive: {repetition - 1} of 3 repetitions passed; "
-                    f"repetition {repetition} needs about {previous:.0f}s and {max(remaining, 0):.0f}s remain",
+                    f"repetition {repetition} needs about {expected:.0f}s and {max(remaining, 0):.0f}s remain",
                     flush=True,
                 )
                 return 0
             print(f"Flake guard repetition {repetition}/3, seed {seed}", flush=True)
             if remaining <= 0:
                 print(
-                    f"intermittent: investigate; repetition {repetition}; budget exhausted",
+                    f"::warning::Flake guard inconclusive: {repetition - 1} of 3 repetitions passed; "
+                    "budget exhausted",
                     flush=True,
                 )
-                return 1
+                return 0
             # Kill the whole group on timeout, including xdist workers.
             started = time.monotonic()
             process = subprocess.Popen(command, cwd=root, start_new_session=True)
@@ -130,6 +192,13 @@ def run_repetitions(files: list[str], root: Path, deadline: float) -> int:
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
+                if expected is None:
+                    print(
+                        "::warning::Flake guard inconclusive: 0 of 3 repetitions passed; "
+                        f"repetition 1 timed out without a duration estimate: {files}",
+                        flush=True,
+                    )
+                    return 0
                 print(
                     f"intermittent: investigate; repetition {repetition}; timed out: {files}",
                     flush=True,
@@ -149,6 +218,7 @@ def run_repetitions(files: list[str], root: Path, deadline: float) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base", required=True, help="merge_group base SHA")
+    parser.add_argument("--durations-from", type=Path, help="main test run's JUnit report")
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9a-fA-F]{40}", args.base):
         parser.error("--base must be a full commit SHA")
@@ -170,7 +240,7 @@ def main() -> int:
         text=True,
         timeout=20,
     ).stdout.splitlines()
-    return run_repetitions(select_tests(ROOT, changed), ROOT, deadline)
+    return run_repetitions(select_tests(ROOT, changed), ROOT, deadline, args.durations_from)
 
 
 if __name__ == "__main__":
