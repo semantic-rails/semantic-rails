@@ -29,7 +29,6 @@ _FIXED = frozenset(
         "suggested_aggregations",
         "additive",
         "accumulation",
-        "snapshot_policy",
         "entity_key",
         "value_type",
         "currency",

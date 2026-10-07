@@ -1042,7 +1042,8 @@ own model's row grain; parent-rollup declarations are not supported.
 To migrate existing packages, delete `subject_entity` and `aggregation_entity`
 lines from `defaults.measure` and individual measures, or let
 [`semantic-rails project upgrade`](#upgrading-a-package) delete them. Defaults are checked once
-per package, with an error naming `defaults.measure.<key>` and the line to delete.
+per package, with an `INVALID_CONFIG` unknown-key error naming `defaults.measure`
+and the refused key.
 In `graph.relationships`, `rollup_safe` must be a mapping containing only `reverse`;
 forward declarations, the former list form, and `rollup_safe_aggregations` in model
 joins or relationship defaults fail loading with `INVALID_CONFIG` naming the authored location.
@@ -1693,6 +1694,14 @@ metrics:
 rejects `as:` whose namespace doesn't match `package.namespace` and warns when
 `as:` produces an ID identical to the auto-derived one (use is unnecessary).
 
+Model `relation`, dimension `kind`, time `class`, metric `temporal_role`, segment
+`basis_metric`, and nested `accumulation.snapshot` are the canonical spellings.
+`project upgrade` rewrites their aliases with the `authoring-aliases` rule;
+conflicting spellings require an author decision. Alternate spellings are unknown
+keys in both layouts, with `INVALID_CONFIG`. Retired `primitive`, parent-rollup,
+relationship-weight, and `null_behavior` keys use the generic unknown-key errors
+(`INVALID_EXPRESSION_KEY` for keys inside expressions).
+
 ## Validation profile
 
 When `schema_strict: true` is set on the package, the loader rejects the
@@ -1707,7 +1716,7 @@ checks (which is why the `init` starter can author `grain:` alongside `entities:
 | `id:` on semantic objects (graph entities, dimensions, measures) | Auto-derived from `namespace + key`; use `as:` only to preserve a public reference. Does NOT apply to model files — `model.id:` is the model's identity field in the directory layout (in single-file form, an authored model `id:` is only rejected when it differs from the `models:` mapping key) |
 | `name:` matching the auto-derived value | Remove — auto-derived from key |
 | Duplicate date/timestamp dimension when `times:` covers the same column | Drop the dimension; loader auto-creates it |
-| `accumulation: stock` + sibling `snapshot_policy:` | Nested `accumulation: { kind: stock, snapshot: end_of_period }` |
+| Sibling `snapshot_policy:` (refused in every mode) | Nested `accumulation: { kind: stock, snapshot: end_of_period }` for a stock measure |
 | Model-level `entity:` (singular) + `keys.foreign:` + `joins:` blocks | `model.entities:` block; explicit overrides in `graph.relationships:` |
 | Authored `model.grain:` alongside an `entities:` block (directory packages; single-file packages accept both) | Derived from the primary entity's key via `graph.entities.<x>.model:` |
 | Names appearing in any entity's `disallowed_names:` | Use the canonical column or `expr:` rename |
@@ -2624,6 +2633,7 @@ named definition by hand before upgrading.
 
 | Rule | Since | Legacy form | Current form |
 |---|---|---|---|
+| `authoring-aliases` | 0.3.2 | Model `relation_ref`, dimension `type`, time `temporal_class`, metric `time`, segment `metric`, measure `snapshot_policy`; dimension/time aliases also under `defaults` | `relation`, `kind`, `class`, `temporal_role`, `basis_metric`, nested `accumulation.snapshot`; equal spellings delete the alias. Disagreements, member aliases with canonical dimension/time defaults, member snapshots with accumulation/snapshot defaults, and every `defaults.measure.snapshot_policy` stop without edits: rewrite by hand |
 | `null-behavior` | 0.3.2rc3 | `null_behavior` on metrics, in expressions, and in example, test and segment membership queries | Deleted: aggregation and `observation_scope` decide empty groups |
 | `measure-parent-rollup` | 0.3.2rc3 | `subject_entity` and `aggregation_entity` on measures and under `defaults.measure` | Deleted: measures aggregate at their own model's grain |
 | `forward-rollup-hints` | 0.3.2rc3 | `rollup_safe_aggregations` and `rollup_safe` in `defaults.relationship` and on model joins; `rollup_safe.forward`, or a `rollup_safe` list, in `graph.relationships` | Deleted; `rollup_safe.reverse` in `graph.relationships` stays |

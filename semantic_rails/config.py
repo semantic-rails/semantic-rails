@@ -20,7 +20,7 @@ from typing import Any
 
 from .config_parts.lookup_measures import lookup_measure_spec, resolve_lookup_measures
 from .config_parts.measure_governance import with_published_flags
-from .config_parts.package_loader import _JOIN_KEYS, normalize_package
+from .config_parts.package_loader import _JOIN_KEYS, _check_binding_keys, normalize_package
 from .config_parts.route_rows import (
     RouteRowError,
     check_route_row,
@@ -28,13 +28,18 @@ from .config_parts.route_rows import (
     require_rows_agree,
 )
 from .config_parts.shape_checks import (
+    _DIMENSION_KEYS,
     _MEASURE_KEYS,
+    _METRIC_KEYS,
+    _MODEL_KEYS,
     _MODEL_VARIANT_EQUIVALENCE_KEYS,
     _MODEL_VARIANT_EXCLUDES_KEYS,
     _MODEL_VARIANT_GRAIN_KEYS,
     _MODEL_VARIANT_KEYS,
     _MODEL_VARIANT_SELECTION_KEYS,
     _MODEL_VARIANT_TIME_KEYS,
+    _SEGMENT_KEYS,
+    _TIME_KEYS,
 )
 from .dialects import (
     connection_option_errors,
@@ -45,7 +50,6 @@ from .dialects import (
 )
 from .errors import SemanticLayerError
 from .expressions import (
-    NULL_BEHAVIOR_REMOVED,
     parse_config_expression,
     parse_semantic_expression,
     validate_expression_calls,
@@ -260,15 +264,6 @@ _TIME_GRAIN_ORDER = ["transaction", "minute", "hour", "day", "week", "month", "q
 _ROLLUP_HOLDS = frozenset({"sum", "min", "max", "count_distinct"})
 _MEASURE_BINDING_KEYS = frozenset({"column", "rollup", "aggregation", "holds"})
 _DIMENSION_BINDING_KEYS = frozenset({"column", "path"})
-
-
-def _check_binding_keys(binding: dict[str, Any], allowed: frozenset[str], *, label: str) -> None:
-    """A misspelled key would silently change what a rollup column is trusted to hold."""
-    unknown = sorted(key for key in set(binding) - allowed if not str(key).startswith("_"))
-    if unknown:
-        raise SemanticLayerError(
-            "INVALID_CONFIG", f"{label} has unknown keys {unknown}; use {sorted(allowed)}"
-        )
 
 
 def _coarser_time_grains(grain: str) -> list[str]:
@@ -1403,24 +1398,14 @@ def _map_dimension_kind(kind: str) -> str:
 
 
 def _normalize_accumulation(spec: dict[str, Any]) -> AccumulationConfig:
-    """Normalize accumulation YAML into AccumulationConfig.
-
-    Accepts both the canonical nested form
-        accumulation: {kind: stock, snapshot: end_of_period}
-    and the legacy flat form
-        accumulation: stock
-        snapshot_policy: end_of_period
-    The legacy flat form will be rejected once schema_strict lands; for
-    now it's normalized transparently.
-    """
+    """Normalize the nested accumulation block or a kind-only scalar."""
     raw = spec.get("accumulation", "")
-    legacy_snapshot = str(spec.get("snapshot_policy", "")).strip().lower()
     if isinstance(raw, dict):
-        kind = str(raw.get("kind", "") or "").strip().lower()
-        snapshot = str(raw.get("snapshot", legacy_snapshot) or legacy_snapshot).strip().lower()
-        return AccumulationConfig(kind=kind, snapshot=snapshot)
-    kind = str(raw or "").strip().lower()
-    return AccumulationConfig(kind=kind, snapshot=legacy_snapshot)
+        return AccumulationConfig(
+            kind=str(raw.get("kind", "") or "").strip().lower(),
+            snapshot=str(raw.get("snapshot", "") or "").strip().lower(),
+        )
+    return AccumulationConfig(kind=str(raw or "").strip().lower())
 
 
 def _authored_additive(spec: dict[str, Any], kind: str, where: str) -> bool:
@@ -1771,6 +1756,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     fact_models: dict[str, dict[str, Any]] = {}
     regular_model_rows: dict[str, dict[str, Any]] = {}
     for model_id, model in model_rows.items():
+        _check_binding_keys(model, _MODEL_KEYS, label=f"{path}: model '{model_id}'")
         model_kind = str(model.get("kind", "model") or "model").strip().lower()
         if model_kind == "fact":
             fact_models[model_id] = model
@@ -1834,7 +1820,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         entity_id = str(entity_spec.get("id", f"entity.{_slug(entity_key)}"))
         entity_name = str(entity_spec.get("name", entity_key))
         entity_label = str(entity_spec.get("label", _titleize(entity_key)))
-        relation_ref = str(model.get("relation_ref", model.get("relation", ""))).strip()
+        relation_ref = str(model.get("relation", "")).strip()
         relation_id = relation_aliases.get(relation_ref, "")
         relation_table = (
             relations_by_id[relation_id].output_name
@@ -1844,7 +1830,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         if not relation_table:
             raise SemanticLayerError(
                 "INVALID_CONFIG",
-                f"{path}: model '{model_id}' must declare relation or relation_ref",
+                f"{path}: model '{model_id}' must declare relation",
             )
         entities.append(
             EntityConfig(
@@ -1898,15 +1884,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     dim_defaults = dict(defaults.get("dimension", {}) or {})
     time_defaults = dict(defaults.get("time", {}) or {})
     measure_defaults = dict(defaults.get("measure", {}) or {})
-    removed_measure_defaults = sorted(
-        set(measure_defaults) & {"subject_entity", "aggregation_entity"}
-    )
-    if removed_measure_defaults:
-        locations = ", ".join(f"defaults.measure.{key}" for key in removed_measure_defaults)
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            f"{path}: {locations}: delete this line; parent-rollup declarations were removed",
-        )
+    _check_binding_keys(measure_defaults, _MEASURE_KEYS, label=f"{path}: defaults.measure")
     relationship_defaults = dict(defaults.get("relationship", {}) or {})
     operational_contract = load_operational_contract(defaults, path=path)
     meta_contract = load_meta_contract(defaults, path=path)
@@ -1940,7 +1918,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             entity_id = time_entity_id
             # Resolve the fact model's own relation (its FROM table) — measures
             # built from this model carry this as `source_relation`.
-            fact_relation_ref = str(model.get("relation_ref", model.get("relation", ""))).strip()
+            fact_relation_ref = str(model.get("relation", "")).strip()
             fact_relation_id = relation_aliases.get(fact_relation_ref, "")
             fact_source_relation = (
                 relations_by_id[fact_relation_id].output_name
@@ -1967,10 +1945,11 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
 
         for dim_key, dim_spec_raw in dims.items():
             dim_spec = {**dim_defaults, **dict(dim_spec_raw or {})}
+            _check_binding_keys(dim_spec, _DIMENSION_KEYS, label=f"{path}: dimension '{dim_key}'")
             dim_id = str(dim_spec.get("id", f"dimension.{_slug(entity_cfg.name)}_{_slug(dim_key)}"))
             label = str(dim_spec.get("label", _titleize(dim_key)))
             name = str(dim_spec.get("name", f"{entity_cfg.name}.{dim_key}"))
-            kind = str(dim_spec.get("kind", dim_spec.get("type", "categorical")))
+            kind = str(dim_spec.get("kind", "categorical"))
             domain_values = list(dim_spec.get("domain", dim_spec.get("valid_values", [])) or [])
             value_domain_id = ""
             if domain_values:
@@ -2033,6 +2012,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
 
         for time_key, time_spec_raw in times.items():
             time_spec = {**time_defaults, **dict(time_spec_raw or {})}
+            _check_binding_keys(time_spec, _TIME_KEYS, label=f"{path}: time '{time_key}'")
             dim_id = str(
                 time_spec.get(
                     "dimension_id", f"dimension.{_slug(entity_cfg.name)}_{_slug(time_key)}"
@@ -2066,9 +2046,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 TemporalRoleConfig(
                     id=temporal_id,
                     dimension=dimension_lookup[(model_id, time_key)],
-                    temporal_class=str(
-                        time_spec.get("class", time_spec.get("temporal_class", "event_time"))
-                    ),
+                    temporal_class=str(time_spec.get("class", "event_time")),
                     name=name,
                     label=label,
                     supported_grains=list(
@@ -2107,11 +2085,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         for measure_key, measure_spec_raw in dict(model.get("measures", {}) or {}).items():
             raw_measure_spec = dict(measure_spec_raw or {})
             measure_spec = {**measure_defaults, **raw_measure_spec}
-            if "primitive" in measure_spec:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: measure '{measure_key}' uses 'primitive:' shorthand which has been removed; expand to explicit 'kind' / 'accumulation' / 'value_type' fields",
-                )
             _check_binding_keys(
                 measure_spec, _MEASURE_KEYS, label=f"{path}: measure '{measure_key}'"
             )
@@ -2326,16 +2299,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     f"{path}: join '{model_id}.{edge_key}' has invalid safety '{safety}' (must be 'safe', 'requires_rewrite', or 'unsafe')",
                 )
             rel_id = str(join_spec.get("id", f"relationship.{_slug(model_id)}_{_slug(edge_key)}"))
-            if "path_preference" in join_spec:
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"{path}: relationship '{rel_id}' sets path_preference, which was removed: "
-                    "a weight never decides which route a question means. Delete it, and "
-                    "record the route for each entity pair that needs one as a "
-                    "graph.path_preferences row (source_entity, target_entity, "
-                    "relationship_path).",
-                    details={"relationship": rel_id, "fix": "graph.path_preferences"},
-                )
             _check_binding_keys(
                 join_spec,
                 _JOIN_KEYS,
@@ -2534,16 +2497,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     known_dimension_ids = frozenset(dimension_lookup.values())
     for metric_key, metric_spec_raw in metrics_rows.items():
         spec = dict(metric_spec_raw or {})
-        if "primitive" in spec:
-            raise SemanticLayerError(
-                "INVALID_CONFIG",
-                f"{path}: metric '{metric_key}' uses 'primitive:' shorthand which has been removed; expand to explicit 'kind' / 'comparison_mode' fields",
-            )
-
-        if "null_behavior" in spec:
-            raise SemanticLayerError(
-                "INVALID_CONFIG", f"{path}: metric '{metric_key}': {NULL_BEHAVIOR_REMOVED}"
-            )
+        _check_binding_keys(spec, _METRIC_KEYS, label=f"{path}: metric '{metric_key}'")
 
         # Translate direct named fields per metric kind into the runtime
         # expression AST shape. Authors can still write the AST directly
@@ -2611,7 +2565,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 "INVALID_CONFIG",
                 f"{path}: metric '{metric_key}' produced no expression — {detail}",
             )
-        temporal_role = str(spec.get("temporal_role", spec.get("time", ""))).strip()
+        temporal_role = str(spec.get("temporal_role", "")).strip()
         metric_id = str(spec.get("id", f"metric.{metric_key}"))
         _, metric_example_entries = _normalize_examples(spec.get("examples"))
         metric_compatible_temporal_roles = list(
@@ -2676,6 +2630,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     segments: list[SegmentConfig] = []
     for segment_key, segment_spec_raw in segments_rows.items():
         spec = dict(segment_spec_raw or {})
+        _check_binding_keys(spec, _SEGMENT_KEYS, label=f"{path}: segment '{segment_key}'")
         segment_id = str(spec.get("id", f"segment.{segment_key}"))
         entity_ref = str(spec.get("entity", "")).strip()
         entity_id = entity_lookup.get(entity_ref, entity_ref)
@@ -2690,7 +2645,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             SegmentConfig(
                 id=segment_id,
                 entity=entity_id,
-                basis_metric=str(spec.get("basis_metric", spec.get("metric", ""))),
+                basis_metric=str(spec.get("basis_metric", "")),
                 preview_dimensions=preview_dimensions,
                 where=list(membership.get("where", []) or []),
                 metric_filters=list(membership.get("metric_filters", []) or []),
@@ -2892,8 +2847,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     def _aggregate_rows_from_model_variants() -> list[AggregateRelationConfig]:
         rows: list[AggregateRelationConfig] = []
         for model_id, model in model_rows.items():
-            if "default_variant" in model:
-                raise SemanticLayerError("INVALID_CONFIG", f"{path}: delete model default_variant")
             variants_raw = dict(model.get("variants", {}) or {})
             if not variants_raw:
                 continue

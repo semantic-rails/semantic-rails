@@ -727,7 +727,7 @@ def _authored_metric(recipe: str, ref: str, *, count: str, status: str) -> dict[
 AUTHORED = [
     # recipe, how revenue is named, how the clock is written; the ratio's
     # denominator uses the order count's custom name
-    ("aggregate", "revenue", "time"),
+    ("aggregate", "revenue", "temporal_role"),
     ("filtered", "shop.revenue", "temporal_role"),
     ("ratio", "shop.revenue", "temporal_role"),
     ("cumulative", REVENUE, "temporal_role"),
@@ -915,10 +915,10 @@ def test_editing_a_window_keeps_the_partition_and_scope_the_prompts_cannot_write
     _assert_has(metric, {**kept, "description": "A new business definition."})
 
 
-def test_an_explicit_clock_replaces_a_saved_time_alias(tmp_path: Path) -> None:
+def test_an_explicit_clock_replaces_a_saved_temporal_role(tmp_path: Path) -> None:
     project = _shop(tmp_path, shipped=True)
     spec = _authored_metric("aggregate", "revenue", count="", status="")
-    _write_metric(project, "m", {**spec, "time": SHIPPED})
+    _write_metric(project, "m", {**spec, "temporal_role": SHIPPED})
 
     script, metric = _author(project, {"Metric key": "m", "Time axis for this metric": "Ordered"})
 

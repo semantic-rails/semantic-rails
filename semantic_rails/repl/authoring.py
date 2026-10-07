@@ -1097,9 +1097,6 @@ def _metric_change(
     else:
         spec.pop("currency", None)
     temporal = _metric_time_role(config, inventory, inputs, current=saved.clock if retain else "")
-    # One canonical effective clock: `temporal_role` takes precedence over
-    # the loader's legacy `time` alias, so do not retain both after editing.
-    spec.pop("time", None)
     if temporal:
         spec["temporal_role"] = temporal
     else:

@@ -221,6 +221,8 @@ def _validate_runtime_package_file(source_path: Path) -> list[str]:
     try:
         config = load_package_config(str(source_path))
     except Exception as exc:
+        if errors and isinstance(exc, SemanticLayerError) and exc.details.get("unknown_keys"):
+            return errors
         add_error(errors, f"{source_path}: failed to load package config: {exc}")
         return errors
     errors.extend(_compiled_package_errors(config, source_path))
@@ -269,6 +271,8 @@ def _validate_runtime_package_dir(path: Path) -> list[str]:
     try:
         config = load_package_config(str(path))
     except Exception as exc:
+        if errors and isinstance(exc, SemanticLayerError) and exc.details.get("unknown_keys"):
+            return errors
         add_error(errors, f"{path}: failed to load package config: {exc}")
         return errors
 
@@ -475,11 +479,11 @@ def _validate_split_package(
                 add_error(errors, f"{model_file}: model.id is required")
                 continue
             models[model_id] = model
-            relation_ref = str(model.get("relation_ref", model.get("relation", "")) or "").strip()
+            relation_ref = str(model.get("relation", "") or "").strip()
             if not relation_ref:
                 add_error(
                     errors,
-                    f"{model_path}.relation must be declared unless relation_ref is supplied",
+                    f"{model_path}.relation must be declared",
                 )
             elif relation_ref.startswith("relation.") or relation_ref in relation_refs:
                 relation_refs.add(relation_ref)
@@ -789,15 +793,7 @@ def _check_strict_raw_yaml(
                     f"Declare 'kind: aggregate' (most measures), 'kind: entity_count' "
                     f"(distinct counts), or another canonical kind.",
                 )
-            # Legacy flat `accumulation: stock` + sibling `snapshot_policy:`
             accumulation = measure_raw.get("accumulation")
-            if "snapshot_policy" in measure_raw:
-                add_error(
-                    errors,
-                    f"{path}: measure {model_id}.{measure_key} authors "
-                    f"snapshot_policy: alongside accumulation:. Use the nested "
-                    f"form: accumulation: {'{ kind: stock, snapshot: ... }'}.",
-                )
             # accumulation enum
             if isinstance(accumulation, str) and accumulation.strip().lower() not in {
                 "",
