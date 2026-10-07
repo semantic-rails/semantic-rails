@@ -825,6 +825,13 @@ semantic-rails mcp client-config --path "$PACKAGE_PATH" --client codex --mcp bot
 for each server, replacing a user-scope server of the same name; a local or
 project server with that name still takes precedence in its project. Each
 install keeps the file's other servers.
+
+**Claude Desktop:** quit it completely (Quit, not closing the window) before
+`--install`, then start it. It writes its configuration back when it quits, so an
+edit made while it runs is lost and the old server keeps answering.
+**Claude Code:** use `--client claude-code`; it registers the server with
+`claude mcp add-json`, live in the next session.
+
 Use `--mcp query`, `--mcp architect`, or `--mcp both` depending on whether the
 client should answer governed analytics questions, author packages, or do both.
 

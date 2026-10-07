@@ -91,6 +91,12 @@ semantic-rails mcp setup --path "$PACKAGE_PATH"
 semantic-rails mcp setup --path "$PACKAGE_PATH" --client both --mcp both --install --yes
 ```
 
+**Claude Desktop:** quit it completely (Quit, not closing the window) before
+`--install`, then start it. It writes its configuration back when it quits, so an
+edit made while it runs is lost and the old server keeps answering.
+**Claude Code:** use `--client claude-code`; it registers the server with
+`claude mcp add-json`, live in the next session.
+
 For lower-level client config control:
 
 ```bash
