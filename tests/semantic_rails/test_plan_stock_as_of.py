@@ -254,7 +254,7 @@ def test_a_stock_read_through_a_metric_filter_or_a_nested_metric_is_held(
     _assert_held(_plan(runtime, "MRR", partial=selected), None)
 
 
-def test_a_stock_read_through_a_where_predicate_is_held(qualifying_runtime: Runtime) -> None:
+def test_a_where_item_with_a_stock_expression_is_refused(qualifying_runtime: Runtime) -> None:
     where = [
         {
             "field": "dimension.billing_account_day_plan",
@@ -272,9 +272,17 @@ def test_a_stock_read_through_a_where_predicate_is_held(qualifying_runtime: Runt
     ]
     select = [{"expression": {"measure": "measure.billing.account_count"}, "as": "accounts"}]
     plan = _plan(qualifying_runtime, "Account count", partial={"select": select, "where": where})
-    assert plan["best"]["validation_ok"] is True, plan.get("why")
+    assert plan["status"] == "low_confidence"
+    assert plan["best"]["validation_ok"] is False
     assert plan["best"]["query_ir"]["where"] == where
-    _assert_held(plan, None)
+    assert plan["why"]["code"] == "VALIDATION_FAILED"
+    report = qualifying_runtime.validate(plan["best"]["query_ir"])
+    assert report["ok"] is False
+    [error] = report["errors"]
+    assert error["code"] == "INVALID_QUERY"
+    assert error["details"]["path"] == "where[0]"
+    assert error["details"]["unsupported_keys"] == ["expression"]
+    assert "execute" not in plan.get("next", {}).get("ready_for", [])
 
 
 @pytest.mark.parametrize("detail", ["best", "full"])
