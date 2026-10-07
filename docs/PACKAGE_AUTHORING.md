@@ -1591,8 +1591,8 @@ A filtered metric is often the governed form of a measure that also counts rows 
 package leaves out: `Active stores` keeps the retail stores of an `Active stores (all kinds)`
 count. `plan` answers a question that names such a metric with the metric, and holds a draft
 that reads the measure instead (see `governed_metric_unrealized` in
-[MCP_INTERFACE.md](MCP_INTERFACE.md)). To keep the measure out of agent search altogether,
-author it with `publish: false`:
+[MCP_INTERFACE.md](MCP_INTERFACE.md)). In a strict package, author an unoffered measure
+with `publish: false`:
 
 ```yaml
 measures:
@@ -1604,13 +1604,12 @@ measures:
     publish: false        # answered through the metrics that filter it
 ```
 
-A measure with `publish: false` that a metric reads through a filter (`filter:` on an
-aggregate, or `where:` or `predicates:` on a scoped aggregate), and that no metric aggregates
-whole, is a building block. `discover` doesn't list it. `plan` drafts the metric when it is the
-only one that filters the measure or the question names it, and otherwise holds a draft that
-reads the measure. `inspect` and Query IR still take the measure by id. Without
-`schema_strict`, `publish: false` also keeps the loader from publishing the measure as a
-metric of its own name. `plan` also holds a draft over a published measure while a metric
+A measure authored `publish: false` is not offered to agents: `discover` doesn't list it,
+and `plan` doesn't answer with it unless the query names it by id. When a metric reads it
+through a filter, it is a building block, and `plan` answers with that metric. `inspect` and
+Query IR still take the measure by id. Without `schema_strict`, `publish: false` only keeps
+the loader from publishing the measure as a metric of its own name. A metric that aggregates
+the measure whole publishes it. `plan` also holds a draft over a published measure while a metric
 filters its rows on a dimension of the measure's entity, such as a class; to count every row,
 select the measure by id, or filter or group by that class dimension.
 

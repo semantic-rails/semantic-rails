@@ -265,8 +265,11 @@ A draft that validates can still leave out part of the question. `plan` returns
   relative clauses such as "stores that were active last week". It fits when the question
   holds every word of its label (with or without a parenthetical), an alias or its id, in any order and
   with plurals as singulars, or when the measure is a [building
-  block](PACKAGE_AUTHORING.md#building-block-measures). Under `schema_strict`, `publish: false`
-  marks a building block. When the question names no governing metric, a published measure is
+  block](PACKAGE_AUTHORING.md#building-block-measures). Under `schema_strict`, a measure
+  authored `publish: false` that no metric aggregates whole is not offered to agents:
+  `discover` doesn't list it, and `plan` doesn't answer with it unless `partial_query` names
+  it by id. Without `schema_strict`, the flag only suppresses auto-publishing a metric of the
+  measure's own name. When the question names no governing metric, a published measure is
   still held while a visible metric narrows its rows: an aggregate in that metric, over this
   measure or another one, filters on a dimension of the measure's entity ("New teams" counts
   the creation events of customer teams, so "teams last week" over a count of every team is
@@ -274,7 +277,7 @@ A draft that validates can still leave out part of the question. `plan` returns
   first, and `expected.narrowed_by` the dimensions they filter on. A draft that selects the
   metric, or filters or groups by one of those dimensions ("customer teams"), isn't held for
   it. Hidden governing metrics are excluded before candidate selection and diagnostics, and
-  their IDs and labels are never named. A building block with no visible governing metric, or
+  their IDs and labels are never named. An unoffered measure with no visible governing metric, or
   a draft whose governing metrics can't be read, is still held, with a generic message and an
   empty `expected.metrics`. A one-measure draft answers with the metric itself when
   it aggregates the measure the same way, the draft's time role equals the metric's own
