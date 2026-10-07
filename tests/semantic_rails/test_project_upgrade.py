@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from semantic_rails.architect_mcp import create_architect_mcp_server
+from semantic_rails.architect_transactions import ProjectFileUpdate, ProjectTransaction
 from semantic_rails.cli import app
 from semantic_rails.package_snapshot import load_package_snapshot
 from semantic_rails.runtime import Runtime
@@ -675,14 +676,184 @@ def test_cli_never_writes_receipts_inside_the_package(tmp_path, monkeypatch, cap
     assert receipts[0].is_relative_to(workspace / ".semantic-rails")
 
 
-def test_single_file_package_is_refused_without_writing(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("cwd", ["parent", "elsewhere"])
+def test_single_file_starter_preview_and_apply(tmp_path, monkeypatch, capsys, cwd):
     source = tmp_path / "starter.yml"
-    source.write_text((ROOT / "configs/examples/semantic_rails_package_starter.yml").read_text())
+    original = (ROOT / "configs/examples/semantic_rails_package_starter.yml").read_text()
+    # Exercise the registered retired-form rule in the real starter.
+    legacy = original.replace("defaults:\n", "defaults:\n  measure: {subject_entity: self}\n")
+    source.write_text(legacy)
+    examples = tmp_path / "examples"
+    examples.mkdir()
+    (examples / "revenue.yml").write_text(
+        "examples:\n  revenue:\n    query:\n"
+        "      select: [{expression: {metric: metric.shop.revenue_usd}, as: revenue}]\n"
+    )
+    directory = tmp_path if cwd == "parent" else tmp_path / "elsewhere"
+    directory.mkdir(exist_ok=True)
+    args = ("upgrade", "--path", str(source))
 
-    code, text = _cli(monkeypatch, capsys, tmp_path, "upgrade", "--path", str(source), "--write")
+    code, text = _cli(monkeypatch, capsys, directory, *args)
+    assert code == 0 and "certified" in text
+    assert source.read_text() == legacy
+    assert not list(tmp_path.rglob("architect-transactions/*/*.json"))
+    code, text = _cli(monkeypatch, capsys, directory, *args, "--json")
+    preview = json.loads(text)
+    assert code == 0 and preview["status"] == "preview"
+    assert preview["proof"]["fingerprint_before"] == preview["proof"]["fingerprint_after"]
+    assert preview["proof"]["examples"] == 1
+    assert [(row["id"], row["tier"]) for row in preview["rules"]] == [
+        ("measure-parent-rollup", "certified")
+    ]
 
-    assert code == 1 and "package directory with package.yml" in text
-    assert [path.name for path in tmp_path.iterdir()] == ["starter.yml"]
+    code, text = _cli(monkeypatch, capsys, directory, *args, "--write", "--json")
+    report = json.loads(text)
+    assert code == 0 and report["status"] == "upgraded", text
+    assert report["proof"] == preview["proof"]
+    assert source.read_text() == original
+    snapshot = load_package_snapshot(source)
+    assert snapshot.semantic_fingerprint == report["proof"]["fingerprint_after"]
+    receipts = list(tmp_path.rglob("architect-transactions/*/*.json"))
+    assert len(receipts) == 1
+    assert receipts[0].is_relative_to(tmp_path / ".semantic-rails")
+    assert not receipts[0].is_relative_to(examples)
+    code, text = _cli(monkeypatch, capsys, directory, *args, "--write", "--json")
+    assert code == 0 and json.loads(text)["status"] == "up_to_date"
+
+
+def test_single_file_choices_use_the_same_cli_flow(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "starter.yml"
+    original = (ROOT / "configs/examples/semantic_rails_package_starter.yml").read_text()
+    source.write_text(original.replace("label: Revenue (USD)", "label: Amount per event"))
+    assert "Amount per event" in source.read_text()
+    _with_rules(monkeypatch, (RELABEL,))
+    args = ("upgrade", "--path", str(source), "--write")
+    before = source.read_bytes()
+    code, text = _cli(monkeypatch, capsys, tmp_path, *args, "--json")
+    report = json.loads(text)
+    assert code == 2 and report["status"] == "choices_pending"
+    assert source.read_bytes() == before
+    key = report["choices_pending"][0]["key"]
+    code, text = _cli(monkeypatch, capsys, tmp_path, *args, f"--choose={key}=average")
+    assert code == 0 and "= average: changes answers by your choice" in text
+    assert "label: Average amount" in source.read_text()
+    load_package_snapshot(source)
+
+
+@pytest.mark.parametrize("layout", ["directory", "single-file"])
+def test_unparseable_package_refuses_write_with_the_same_error(tmp_path, layout):
+    if layout == "directory":
+        source = _package(tmp_path)
+        path = source / "package.yml"
+    else:
+        source = tmp_path / "starter.yml"
+        source.write_text(
+            (ROOT / "configs/examples/semantic_rails_package_starter.yml")
+            .read_text()
+            .replace("defaults:\n", "defaults:\n  measure: {subject_entity: self}\n")
+        )
+        path = source
+    path.write_text(path.read_text().replace("warehouse: duckdb", "warehouse: unsupported"))
+    before = path.read_bytes()
+    with pytest.raises(service.SemanticLayerError) as exc:
+        service.upgrade_project(source, workspace_root=tmp_path, dry_run=False)
+    assert exc.value.code == "CONFIG_CONFLICT"
+    assert exc.value.details["difference"] == {"tier": "unverified"}
+    assert path.read_bytes() == before
+    assert not list(tmp_path.rglob("architect-transactions/*/*.json"))
+
+
+@pytest.mark.parametrize("layout", ["directory", "single-file"])
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_unparseable_current_package_refuses_with_its_load_error(tmp_path, layout, dry_run):
+    content = "schema_version: 1\npackage: {id: broken, warehouse: unsupported}\n"
+    if layout == "directory":
+        source = _package(tmp_path, {"package.yml": content})
+        path = source / "package.yml"
+    else:
+        source = path = tmp_path / "broken.yml"
+        path.write_text(content)
+    before = path.read_bytes()
+    assert not service.plan(PackageFiles(source), RULES, {}).findings
+    with pytest.raises(service.SemanticLayerError) as load_error:
+        load_package_snapshot(source)
+
+    with pytest.raises(service.SemanticLayerError) as exc:
+        service.upgrade_project(source, workspace_root=tmp_path, dry_run=dry_run)
+
+    assert exc.value.code == load_error.value.code == "INVALID_CONFIG"
+    root = source if layout == "directory" else source.parent
+    assert str(exc.value) == str(load_error.value).replace(str(root), "<package>")
+    assert path.read_bytes() == before
+    assert not list(tmp_path.rglob("architect-transactions/*/*.json"))
+
+
+@pytest.mark.parametrize("sibling_kind", ["file", "directory"])
+def test_single_file_upgrade_ignores_unrelated_sibling_symlinks(tmp_path, sibling_kind):
+    source = tmp_path / "starter.yml"
+    original = (ROOT / "configs/examples/semantic_rails_package_starter.yml").read_text()
+    legacy = original.replace("defaults:\n", "defaults:\n  measure: {subject_entity: self}\n")
+    source.write_text(legacy)
+    target = tmp_path / "unrelated"
+    if sibling_kind == "directory":
+        target.mkdir()
+        (target / "notes.txt").write_text("Unrelated notes.\n")
+    else:
+        target.write_text("Unrelated notes.\n")
+    sibling = tmp_path / "unrelated-link"
+    sibling.symlink_to(target, target_is_directory=sibling_kind == "directory")
+    transaction = ProjectTransaction(tmp_path, workspace_root=tmp_path, package_file=source.name)
+    assert transaction.proposed_files([]) == {source.name: legacy.encode()}
+
+    preview = service.upgrade_project(source, workspace_root=tmp_path)
+    assert preview["status"] == "preview"
+    assert source.read_text() == legacy
+    report = service.upgrade_project(
+        source, workspace_root=tmp_path, dry_run=False, expected_revision=preview["revision"]
+    )
+
+    assert report["status"] == "upgraded"
+    assert source.read_text() == original
+    assert sibling.is_symlink()
+
+
+def test_single_file_upgrade_revision_ignores_unrelated_sibling_edits(tmp_path):
+    source = tmp_path / "starter.yml"
+    original = (ROOT / "configs/examples/semantic_rails_package_starter.yml").read_text()
+    source.write_text(
+        original.replace("defaults:\n", "defaults:\n  measure: {subject_entity: self}\n")
+    )
+    sibling = tmp_path / "other.yml"
+    sibling.write_text(original)
+    preview = service.upgrade_project(source, workspace_root=tmp_path)
+    sibling.write_text("Unrelated edited package.\n")
+
+    report = service.upgrade_project(
+        source, workspace_root=tmp_path, dry_run=False, expected_revision=preview["revision"]
+    )
+
+    assert report["status"] == "upgraded"
+    assert source.read_text() == original
+    assert sibling.read_text() == "Unrelated edited package.\n"
+
+
+@pytest.mark.parametrize("companion", ["examples", "tests"])
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_single_file_upgrade_refuses_symlinked_companions(tmp_path, companion, dry_run):
+    source = tmp_path / "starter.yml"
+    original = (ROOT / "configs/examples/semantic_rails_package_starter.yml").read_bytes()
+    source.write_bytes(original)
+    target = tmp_path / "unrelated"
+    target.mkdir()
+    (tmp_path / companion).symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(service.SemanticLayerError) as exc:
+        service.upgrade_project(source, workspace_root=tmp_path, dry_run=dry_run)
+
+    assert exc.value.code == "INVALID_CONFIG"
+    assert str(exc.value) == "Architect revisions refuse symlinked project directories"
+    assert source.read_bytes() == original
+    assert not list(tmp_path.rglob("architect-transactions/*/*.json"))
 
 
 def _default_version(files):
@@ -810,3 +981,50 @@ def test_every_rule_is_documented():
     guide = (ROOT / "docs/PACKAGE_AUTHORING.md").read_text()
     assert len({rule.id for rule in RULES}) == len(RULES)
     assert [rule.id for rule in RULES if f"`{rule.id}`" not in guide] == []
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_single_file_transaction_parse_gate_restores_invalid_updates(tmp_path, dry_run):
+    source = tmp_path / "starter.yml"
+    original = (ROOT / "configs/examples/semantic_rails_package_starter.yml").read_bytes()
+    source.write_bytes(original)
+    transaction = ProjectTransaction(tmp_path, workspace_root=tmp_path, package_file=source.name)
+    report = transaction.apply(
+        [ProjectFileUpdate(source.name, original.replace(b"warehouse: duckdb", b"warehouse: bad"))],
+        expected_revision=transaction.current_revision(),
+        idempotency_key="invalid-update",
+        intent={"operation": "test"},
+        dry_run=dry_run,
+    ).report
+    assert report["status"] == ("preview_invalid" if dry_run else "rolled_back_after_parse_error")
+    assert report["errors"][0]["code"] == "INVALID_CONFIG"
+    assert source.read_bytes() == original
+    receipts = list(tmp_path.rglob("architect-transactions/*/*.json"))
+    assert len(receipts) == (0 if dry_run else 1)
+    load_package_snapshot(source)
+
+
+def test_architect_upgrades_a_single_file_and_replays_its_receipt(tmp_path):
+    source = tmp_path / "starter.yml"
+    original = (ROOT / "configs/examples/semantic_rails_package_starter.yml").read_text()
+    source.write_text(
+        original.replace("defaults:\n", "defaults:\n  measure: {subject_entity: self}\n")
+    )
+    preview = _architect(tmp_path, "upgrade_project", project_path=str(source))
+    assert preview["status"] == "preview", preview
+    arguments = dict(
+        project_path=str(source),
+        dry_run=False,
+        expected_revision=preview["revision"],
+        idempotency_key="single-file-upgrade",
+    )
+    report = _architect(tmp_path, "upgrade_project", **arguments)
+    assert report["status"] == "upgraded", report
+    assert source.read_text() == original
+    replay = _architect(tmp_path, "upgrade_project", **arguments)
+    assert replay["status"] == "replayed"
+    assert replay["proof"] == report["proof"]
+    sibling = tmp_path / "other.yml"
+    sibling.write_text(original)
+    refused = _architect(tmp_path, "upgrade_project", **{**arguments, "project_path": str(sibling)})
+    assert refused["error"]["details"]["conflict_kind"] == "idempotency_key_reuse"
