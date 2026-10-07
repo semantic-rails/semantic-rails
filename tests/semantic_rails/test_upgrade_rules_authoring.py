@@ -135,13 +135,20 @@ def _write_defaults(source, doc, defaults, layout):
         doc = deepcopy(doc)
         doc.pop("defaults", None)
         (source.parent / "defaults.yml").write_text(yaml.safe_dump({"defaults": defaults}))
-        (source.parent / "graph.yml").write_text(yaml.safe_dump({"graph": doc.pop("graph")}))
+        graph = doc.pop("graph")
         models = source.parent / "models"
         models.mkdir(exist_ok=True)
         for name, row in doc.pop("models").items():
-            row.pop("grain", None)
+            grain = row.pop("grain")
+            primary = next(
+                entity for entity in row["entities"] if [graph["entities"][entity]["key"]] == grain
+            )
+            graph["entities"][primary]["model"] = name
             row["id"] = name
             (models / f"{name}.yml").write_text(yaml.safe_dump({"model": row}))
+        for entity in graph["entities"].values():
+            entity["key"] = [entity["key"]]
+        (source.parent / "graph.yml").write_text(yaml.safe_dump({"graph": graph}))
     source.write_text(yaml.safe_dump(doc, sort_keys=False))
     return source if layout == "single-file" else source.parent
 
