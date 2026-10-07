@@ -25,6 +25,7 @@ import duckdb
 import pytest
 import yaml
 
+from semantic_rails.config_parts import measure_governance
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import discover_payload
@@ -870,10 +871,10 @@ def test_the_hold_names_the_question_s_metrics_first_and_at_most_five(
     test_teams = {"where": [{"field": TEAM_CLASS, "op": "=", "value": "test"}]}
     for heeded in ({"group_by": [TEAM_CLASS]}, test_teams):
         assert hold(config, TEAMS, heeded, [], []) is None
-    # Only the measure's own entity counts: the team class never narrows the event count, and
-    # the event type narrows it only where the metric counts events.
+    # The team class, on the entity each event joins to, narrows the event count only where the
+    # metric counts events; so does the event type. A metric over the team count never does.
     events = hold(config, "measure.org.team_events", {}, [], []) or {}
-    event_type = ["dimension.org_team_event_event_type"] if shape == "event" else None
+    event_type = [TEAM_CLASS, "dimension.org_team_event_event_type"] if shape == "event" else None
     assert events.get("narrowed_by") == event_type
 
 
@@ -933,3 +934,262 @@ def test_a_hidden_narrowing_dimension_still_holds_and_is_not_named(
     plan = _plan(engine, "teams last week", policy_context={**NOW, "audience": "external"})
     assert plan["status"] == "low_confidence", plan.get("why")
     assert [gap["expected"] for gap in _gaps(plan)] == [{"metrics": [NEW_TEAMS], "narrowed_by": []}]
+
+
+CALLS_SEED = """
+CREATE TABLE teams (team_id VARCHAR, class VARCHAR);
+INSERT INTO teams VALUES
+  ('t1', 'customer'), ('t2', 'customer'), ('t3', 'customer'), ('t4', 'test'), ('t5', 'test');
+CREATE TABLE team_days (team_id VARCHAR, day DATE, calls INTEGER);
+INSERT INTO team_days VALUES
+  ('t1', DATE '2026-09-29', 10),
+  ('t2', DATE '2026-09-30', 5),
+  ('t4', DATE '2026-10-01', 100),
+  ('t5', DATE '2026-10-02', 40),
+  ('t3', DATE '2026-09-22', 7),
+  ('t4', DATE '2026-09-23', 9);
+CREATE TABLE team_events (event_id VARCHAR, team_id VARCHAR, event_time TIMESTAMP);
+INSERT INTO team_events VALUES
+  ('e1', 't1', TIMESTAMP '2026-09-29 10:00'),
+  ('e2', 't4', TIMESTAMP '2026-10-01 10:00'),
+  ('e3', 't5', TIMESTAMP '2026-10-02 10:00');
+"""
+DAYS = "day >= DATE '2026-09-28' AND day < DATE '2026-10-05'"
+CALLS = "measure.org.team_calls"
+ACTIVE = "measure.org.active_teams"
+PAYING_CALLS = "metric.org.paying_team_calls"
+ACTIVE_PAYING = "metric.org.active_paying_teams"
+PAYING_EVENTS = "metric.org.paying_call_events"
+CALL_QUESTIONS = ["How many team calls last week?", "team calls last week"]
+ACTIVE_QUESTIONS = ["How many teams were active last week?", "active teams last week"]
+
+
+def _calls_package(root: Path, *, governors: tuple[str, ...]) -> Path:
+    """Teams hold the class; the measures live on a daily team fact joined to them."""
+
+    def put(name: str, doc: dict[str, Any]) -> None:
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+
+    customer = {"all": [{"field": TEAM_CLASS, "op": "=", "value": "customer"}]}
+    put("package.yml", {
+        "schema_version": 1,
+        "package": {"id": "org", "namespace": "org", "name": "org", "description": "Team calls",
+                    "warehouse": "duckdb", "default_db": "org.duckdb", "seed": {"kind": "external"},
+                    "schema_strict": True},
+        "defaults": {"time": {"timezone": "UTC"}},
+    })  # fmt: skip
+    put("graph.yml", {"graph": {"entities": {
+        "team": {"key": ["team_id"], "model": "teams", "allowed_as_root": True},
+        "team_day": {"key": ["team_id", "day"], "model": "team_days", "allowed_as_root": True},
+        "team_event": {"key": ["event_id"], "model": "team_events", "allowed_as_root": True},
+    }}})  # fmt: skip
+    put("models/teams.yml", {"model": {
+        "id": "teams", "label": "Teams", "relation": "teams", "entities": {"team": {}},
+        "dimensions": {"class": {"kind": "categorical", "label": "Team class",
+                                 "domain": ["customer", "test"]}},
+    }})  # fmt: skip
+    put("models/team_days.yml", {"model": {
+        "id": "team_days", "label": "Team days", "relation": "team_days",
+        "entities": {"team_day": {}, "team": {}},
+        "times": {"day": {"label": "Day", "column": "day", "kind": "date",
+                          "class": "event_time", "default": True}},
+        "measures": {
+            "team_calls": {"kind": "aggregate", "expr": "calls", "label": "Team calls (all classes)",
+                           "accumulation": {"kind": "flow"}, "value_type": "count"},
+            "active_teams": {"kind": "entity_count", "entity_key": "team_id",
+                             "label": "Active teams (all classes)", "value_type": "count"},
+        },
+    }})  # fmt: skip
+    put("models/team_events.yml", {"model": {
+        "id": "team_events", "label": "Team events", "relation": "team_events",
+        "entities": {"team_event": {}, "team": {}},
+        "times": {"event_time": {"label": "Event time", "column": "event_time",
+                                 "kind": "timestamp", "class": "event_time", "default": True}},
+        "measures": {"call_events": {"kind": "entity_count", "entity_key": "event_id",
+                                     "label": "Call events (all classes)", "value_type": "count"}},
+    }})  # fmt: skip
+    day = "temporal_role.org_team_day_day"
+    metrics = {
+        "calls": ("paying_team_calls", "Calls by paying teams", CALLS, "sum", day),
+        "active": ("active_paying_teams", "Active paying teams", ACTIVE, "count_distinct", day),
+        "events": ("paying_call_events", "Call events from paying teams",
+                   "measure.org.call_events", "count_distinct",
+                   "temporal_role.org_team_event_event_time"),
+    }  # fmt: skip
+    put("metrics/teams.yml", {"metrics": {
+        key: {"label": label, "kind": "aggregate", "value_type": "count", "temporal_role": role,
+              "expression": {"kind": "aggregate", "measure": measure, "aggregation": aggregation,
+                             "filter": customer}}
+        for key, label, measure, aggregation, role in (metrics[name] for name in governors)
+    }})  # fmt: skip
+    with duckdb.connect(str(root / "org.duckdb")) as connection:
+        connection.execute(CALLS_SEED)
+    return root
+
+
+@pytest.fixture(scope="module")
+def calls(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, Runtime]]:
+    """The package with every governor (``all``), and with only the event-count one."""
+
+    engines: dict[str, Runtime] = {}
+    try:
+        for name, governors in {"all": ("calls", "active", "events"), "events": ("events",)}.items():
+            root = _calls_package(tmp_path_factory.mktemp(f"calls_{name}") / "org", governors=governors)
+            engine = engines[name] = Runtime.from_path(str(root))
+            engine._get_adapter()
+        yield engines
+    finally:
+        for engine in engines.values():
+            engine.close()
+
+
+def _calls_gold(select: str, where: str = "") -> int:
+    with duckdb.connect(":memory:") as connection:
+        connection.execute(CALLS_SEED)
+        sql = f"SELECT {select} FROM team_days JOIN teams USING (team_id) WHERE {DAYS} {where}"
+        return int(connection.execute(sql).fetchone()[0])
+
+
+def test_the_team_measures_count_the_test_teams_their_metrics_leave_out() -> None:
+    customer = "AND class = 'customer'"
+    assert (_calls_gold("SUM(calls)"), _calls_gold("SUM(calls)", customer)) == (155, 15)
+    assert (_calls_gold("COUNT(DISTINCT team_id)"), _calls_gold("COUNT(DISTINCT team_id)", customer)) == (4, 2)  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("intent", "measure", "governor", "select"),
+    [
+        *((intent, CALLS, PAYING_CALLS, "SUM(calls)") for intent in CALL_QUESTIONS),
+        *((intent, ACTIVE, ACTIVE_PAYING, "COUNT(DISTINCT team_id)") for intent in ACTIVE_QUESTIONS),
+    ],
+)
+def test_a_class_on_a_joined_entity_holds_a_draft_over_the_measure_its_metric_narrows(
+    calls: dict[str, Runtime], intent: str, measure: str, governor: str, select: str
+) -> None:
+    engine = calls["all"]
+    for detail in ("best", "full", "query", "debug"):
+        plan = plan_payload(engine, intent=intent, partial_query={"policy_context": NOW}, detail=detail)
+        assert plan["status"] == "low_confidence", (detail, plan.get("why"))
+        assert "execute" not in plan.get("next", {}).get("ready_for", [])
+        assert [(gap["expected"], gap["actual"]) for gap in _gaps(plan)] == [
+            ({"metrics": [governor], "narrowed_by": [TEAM_CLASS]}, {"measure": measure})
+        ], detail
+    # The held draft counts the test teams as well.
+    assert _value(engine, plan["best"]["query_ir"]) == _calls_gold(select)
+    assert _calls_gold(select) > _calls_gold(select, "AND class = 'customer'")
+
+
+def test_mcp_plan_holds_a_measure_a_joined_class_narrows(calls: dict[str, Runtime]) -> None:
+    plan = SemanticLayerMCPAdapter(calls["all"]).call_tool(
+        "plan", {"intent": "team calls last week", "query": {"policy_context": NOW}}
+    )
+    assert plan["status"] == "low_confidence", plan.get("why")
+    assert "execute" not in plan.get("next", {}).get("ready_for", [])
+    assert [gap["expected"]["metrics"] for gap in _gaps(plan)] == [[PAYING_CALLS]]
+
+
+@pytest.mark.parametrize(
+    ("intent", "expression", "where"),
+    [
+        # The question names the metric.
+        ("active paying teams last week", {"metric": ACTIVE_PAYING}, "AND class = 'customer'"),
+        # The draft filters by the class the metric narrows on.
+        ("team calls from test teams last week", {"measure": CALLS}, "AND class = 'test'"),
+    ],
+)
+def test_a_draft_that_settles_the_joined_class_stays_ready(
+    calls: dict[str, Runtime], intent: str, expression: dict[str, str], where: str
+) -> None:
+    engine = calls["all"]
+    plan = _plan(engine, intent)
+    assert plan["status"] == "ok", plan.get("why")
+    assert "execute" in plan["next"]["ready_for"]
+    query = plan["best"]["query_ir"]
+    selected = query["select"][0]["expression"]
+    assert {key: value for key, value in selected.items() if key != "aggregation"} == expression
+    select = "SUM(calls)" if expression.get("measure") == CALLS else "COUNT(DISTINCT team_id)"
+    assert _value(engine, query) == _calls_gold(select, where) == (140 if "test" in where else 2)
+
+
+def test_a_draft_grouped_by_the_joined_class_stays_ready(calls: dict[str, Runtime]) -> None:
+    engine = calls["all"]
+    plan = _plan(engine, "team calls by team class last week")
+    assert plan["status"] == "ok", plan.get("why")
+    query = plan["best"]["query_ir"]
+    assert query["group_by"] == [TEAM_CLASS]
+    rows = engine.query({**query, "policy_context": NOW})["rows"]
+    alias = query["select"][0]["as"]
+    with duckdb.connect(":memory:") as connection:
+        connection.execute(CALLS_SEED)
+        reference = connection.execute(
+            f"SELECT class, SUM(calls) FROM team_days JOIN teams USING (team_id) WHERE {DAYS} "
+            "GROUP BY class ORDER BY class"
+        ).fetchall()
+    assert sorted((row[TEAM_CLASS], row[alias]) for row in rows) == reference
+    assert reference == [("customer", 15), ("test", 140)]
+
+
+def test_a_caller_selecting_the_joined_measure_counts_every_team(calls: dict[str, Runtime]) -> None:
+    engine = calls["all"]
+    select = [{"as": "team_calls", "expression": {"measure": CALLS}}]
+    plan = _plan(engine, "team calls last week", select=select)
+    assert plan["status"] == "ok", plan.get("why")
+    assert _gaps(plan) == []
+    assert _value(engine, plan["best"]["query_ir"]) == _calls_gold("SUM(calls)") == 155
+
+
+@pytest.mark.parametrize("intent", CALL_QUESTIONS)
+def test_a_governor_over_another_measure_narrows_only_through_the_measure_s_own_entity(
+    calls: dict[str, Runtime], intent: str
+) -> None:
+    """The event metric filters the team class, but over another measure: the call count's
+    draft is not held by it."""
+
+    engine = calls["events"]
+    plan = _plan(engine, intent)
+    assert plan["status"] == "ok", plan.get("why")
+    assert _gaps(plan) == []
+    assert _value(engine, plan["best"]["query_ir"]) == _calls_gold("SUM(calls)") == 155
+
+
+def test_a_hidden_joined_governor_is_neither_counted_nor_named(
+    calls: dict[str, Runtime], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = calls["all"]
+    policy = SemanticPolicyConfig(
+        id="policy.hide_paying_calls",
+        kind="object_visibility",
+        object_ids=[PAYING_CALLS],
+        action="hidden",
+        audiences=["external"],
+    )
+    monkeypatch.setattr(engine, "_config", replace(engine._config, semantic_policies=[policy]))
+    external = {**NOW, "audience": "external"}
+    for detail in ("best", "full", "query", "debug"):
+        plan = plan_payload(
+            engine,
+            intent="team calls last week",
+            partial_query={"policy_context": external},
+            detail=detail,
+        )
+        assert plan["status"] == "ok", (detail, plan.get("why"))
+        assert _gaps(plan) == []
+        serialized = json.dumps(plan)
+        assert PAYING_CALLS not in serialized and "Calls by paying teams" not in serialized
+    assert _value(engine, plan["best"]["query_ir"]) == _calls_gold("SUM(calls)") == 155
+
+
+def test_a_failing_entity_walk_holds_the_draft(
+    calls: dict[str, Runtime], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unreadable(*_: Any) -> Any:
+        raise RuntimeError("unreadable relationships")
+
+    monkeypatch.setattr(measure_governance, "_reachable_entities", unreadable)
+    plan = _plan(calls["events"], "team calls last week")
+    assert plan["status"] == "low_confidence", plan.get("why")
+    assert "execute" not in plan["next"].get("ready_for", [])
+    gaps = _gaps(plan)
+    assert [(gap["expected"], gap["actual"]) for gap in gaps] == [({"metrics": []}, {"measure": CALLS})]
+    assert gaps[0]["message"] == "The package doesn't offer this measure."
