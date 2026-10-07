@@ -114,3 +114,13 @@ def building_block_measures(config: PackageConfig) -> frozenset[str]:
         for measure_id, narrowed in _measure_reads(expr_to_dict(metric.expression))
         if narrowed and measure_id in unpublished
     )
+
+
+def unoffered_measures(config: PackageConfig) -> frozenset[str]:
+    """Building blocks, plus every unpublished measure in a strict package."""
+
+    return building_block_measures(config) | frozenset(
+        measure.id
+        for measure in config.measures
+        if config.package.schema_strict and not measure.publish
+    )
