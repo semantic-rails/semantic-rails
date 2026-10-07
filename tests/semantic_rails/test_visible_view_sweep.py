@@ -263,10 +263,7 @@ def test_the_sweep_covers_every_object_of_every_kind():
 
 @pytest.mark.parametrize("target", TARGETS)
 def test_no_response_names_or_answers_from_a_hidden_object(package, target):
-    try:  # WIP: the base engine's set, to record the failures there
-        from semantic_rails.visible_view import hidden_object_ids
-    except ImportError:
-        from semantic_rails.policies import hidden_object_ids
+    from semantic_rails.visible_view import hidden_object_ids
 
     root, config = package
     started = time.perf_counter()

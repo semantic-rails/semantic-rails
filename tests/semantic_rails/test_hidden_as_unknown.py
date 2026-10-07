@@ -434,11 +434,7 @@ def package(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, PackageConf
 
 def engine_hidden(config: PackageConfig, context: dict[str, Any]) -> frozenset[str]:
     from semantic_rails.request_context import context_from_policy_context
-
-    try:  # WIP: the base engine's set, to record the failures there
-        from semantic_rails.visible_view import hidden_object_ids
-    except ImportError:
-        from semantic_rails.policies import hidden_object_ids
+    from semantic_rails.visible_view import hidden_object_ids
 
     caller = context_from_policy_context(context)
     return frozenset(

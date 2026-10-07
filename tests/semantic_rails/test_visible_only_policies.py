@@ -32,10 +32,11 @@ from semantic_rails.metadata import (
 from semantic_rails.metadata_parts.valid_values import valid_values_payload
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.plan import plan_payload
-from semantic_rails.policies import enforce_query_policies, hidden_object_ids
+from semantic_rails.policies import enforce_query_policies
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime, runtime_request_scope
 from semantic_rails.schema import SemanticPolicyConfig
+from semantic_rails.visible_view import hidden_object_ids
 from tests.semantic_rails import test_route_clarification as route
 from tests.semantic_rails.conftest import copy_package_config, opened
 

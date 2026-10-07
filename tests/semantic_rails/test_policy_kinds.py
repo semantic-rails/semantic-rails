@@ -11,11 +11,11 @@ from semantic_rails.contracts import load_contract
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.policies import (
     enforce_query_policies,
-    hidden_object_ids,
     policy_effects_for_object,
 )
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
+from semantic_rails.visible_view import hidden_object_ids
 
 MEASURE = "measure.jaffle.revenue_usd"
 INVALID_POLICIES = [

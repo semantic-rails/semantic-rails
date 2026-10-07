@@ -18,7 +18,6 @@ from semantic_rails.metadata_parts.valid_values import valid_values_payload
 from semantic_rails.planner.plan import plan_payload
 from semantic_rails.policies import (
     enforce_query_policies,
-    hidden_object_ids,
     policy_effects_for_object,
     query_policy_effects,
     row_filters_for_context,
@@ -28,6 +27,7 @@ from semantic_rails.policy_rules import hidden_policy_ids, visible_only_listed
 from semantic_rails.request_context import TrustedAttributes
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticCaveatConfig, SemanticPolicyConfig
+from semantic_rails.visible_view import hidden_object_ids
 from tests.semantic_rails.conftest import copy_package_config
 
 MEASURE = "measure.jaffle.revenue_usd"
