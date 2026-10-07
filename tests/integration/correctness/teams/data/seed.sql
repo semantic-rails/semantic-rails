@@ -37,6 +37,9 @@ INSERT INTO team_signups VALUES
   (300, 30, TIMESTAMP '2024-03-05 09:00:00'),
   (400, 40, TIMESTAMP '2024-03-15 09:00:00');
 
+CREATE TABLE signup_events (event_id INTEGER, signup_id INTEGER, event_kind VARCHAR(8));
+INSERT INTO signup_events VALUES (1, 100, 'join'), (2, 100, 'post'), (3, 200, 'join');
+
 CREATE TABLE team_billing_history (
   team_id INTEGER, valid_from TIMESTAMP, valid_to TIMESTAMP, plan_id INTEGER, seats INTEGER
 );

@@ -7,6 +7,7 @@ graph:
       model: team_billing_history}
     plan: {label: Plan, key: [plan_id], model: plans}
     team_signup: {label: Team signup, key: [signup_id], model: team_signups}
+    signup_event: {label: Signup event, key: [event_id], model: signup_events}
   relationships:
     billing_version_team:
       id: relationship.billing_version_team

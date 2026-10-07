@@ -25,13 +25,15 @@ from typing import Any
 import pytest
 import yaml
 
+from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.fanout import route_reading
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.package_snapshot import load_package_snapshot
-from semantic_rails.runtime import Runtime
-from tests.semantic_rails.hidden_absent import visibility_policy, with_policies
+from semantic_rails.planner import plan_payload
+from semantic_rails.runtime import Runtime, _history_result_warnings
+from tests.semantic_rails.hidden_absent import access_policy, visibility_policy, with_policies
 
 from .conftest import _postgres, _rows, _runtime, _strict
 
@@ -274,6 +276,45 @@ def test_the_pass_through_warning_shows_on_every_surface(teams):
     assert "ROUTE_PASS_THROUGH" in json.dumps(response)
 
 
+@pytest.mark.parametrize("surface", ["runtime", "mcp"])
+def test_minimal_answers_disclose_the_route_basis(teams, surface):
+    runtime = teams.runtimes["base"]
+    out = (
+        runtime.query({**MEMBERS_BY_TIER, "verbosity": "minimal"})
+        if surface == "runtime"
+        else SemanticLayerMCPAdapter(runtime).call_tool(
+            "execute", {"query": MEMBERS_BY_TIER, "mode": "run", "verbosity": "minimal"}
+        )
+    )
+    details = _pass_through(out)["details"]
+    assert details["route_basis"] == "only_route"
+    assert [row["entity"] for row in details["through"]] == [MEMBER_EVENT]
+
+
+@pytest.mark.parametrize("detail", ["query", "best", "full"])
+@pytest.mark.parametrize("surface", ["runtime", "mcp"])
+def test_plan_drafts_disclose_the_routes_they_validate(teams, detail, surface):
+    runtime = teams.runtimes["base"]
+    arguments = {
+        "intent": "members by plan tier",
+        "partial_query": MEMBERS_BY_TIER,
+        "detail": detail,
+    }
+    out = (
+        plan_payload(runtime, **arguments)
+        if surface == "runtime"
+        else SemanticLayerMCPAdapter(runtime).call_tool("plan", arguments)
+    )
+    assert out["status"] == "ok"
+    drafts = [out["best"], *out.get("alternatives", [])]
+    assert _pass_through(out)
+    for draft in drafts:
+        expected = _codes(runtime.validate(draft["query_ir"]), "ROUTE_PASS_THROUGH")
+        assert expected
+        assert _codes(draft, "ROUTE_PASS_THROUGH") == expected
+    assert _values(runtime.query(out["best"]["query_ir"])) == teams.reference("members_by_tier")
+
+
 def test_the_key_fix_names_a_column_the_start_already_reads(teams):
     out = teams.runtimes["home_team"].query(MEMBERS_BY_TIER)
     assert _values(out) == teams.reference("members_by_tier")
@@ -380,6 +421,126 @@ def _history(out: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 STATIC = "Plan: the Billing version valid at each row's time; rows with none read an empty Plan."
+
+
+def test_a_withheld_rank_never_discloses_its_values_in_history_warnings(packages):
+    config = load_package_config(str(packages["base"]))
+    policy = access_policy("withhold_values", "measure.teams.new_teams", config={"max_rank": 3})
+    runtime = Runtime.from_config(with_policies(config, policy), source_path=str(packages["base"]))
+    query = _new_teams(
+        JANUARY,
+        order_by=[{"field": "new_teams", "direction": "DESC"}],
+        limit=3,
+        verbosity="minimal",
+        policy_context={"roles": ["support"]},
+    )
+    try:
+        out = runtime.query(query)
+        assert out["rows"] == [{PLAN_NAME: None}]
+        (warning,) = _history(out)
+        assert warning["message"] == STATIC
+        assert "measures" not in warning["details"]
+        assert "2 of 2" not in json.dumps(out["warnings"])
+    finally:
+        runtime.close()
+
+
+def test_complete_redacted_rows_use_only_visible_outputs_for_history_totals(teams, packages):
+    runtime = teams.runtimes["base"]
+    query = _new_teams(JANUARY)
+    compiled = compile_query(runtime.config, None, query)
+    # The complete-result diagnostic consumes the same rows the caller sees.
+    visible_rows = [{PLAN_NAME: None}]
+    warnings = runtime.validate(query)["warnings"]
+    (warning,) = _history(
+        {"warnings": _history_result_warnings(runtime.config, compiled, visible_rows, warnings)}
+    )
+    assert warning["message"].startswith("1 of 1 rows are")
+    assert "measures" not in warning["details"]
+    # Unlimited ranks remain denied; this diagnostic never changes policy acceptance.
+    config = load_package_config(str(packages["base"]))
+    policy = access_policy("withhold_values", "measure.teams.new_teams", config={"max_rank": 3})
+    governed = Runtime.from_config(with_policies(config, policy), source_path=str(packages["base"]))
+    try:
+        with pytest.raises(SemanticLayerError) as refused:
+            governed.query(
+                {
+                    **query,
+                    "order_by": [{"field": "new_teams", "direction": "DESC"}],
+                    "policy_context": {"roles": ["support"]},
+                }
+            )
+        assert refused.value.code == "POLICY_DENIED"
+        assert refused.value.details["reason"] == "withheld_rank_limit"
+    finally:
+        governed.close()
+
+
+@pytest.mark.parametrize("incomplete", ["limit", "metric_filter", "truncated"])
+def test_an_incomplete_empty_history_group_keeps_the_static_warning(teams, incomplete):
+    from semantic_rails.db import QueryRows
+
+    runtime = teams.runtimes["base"]
+    extras = {
+        "limit": {"limit": 3},
+        "metric_filter": {
+            "metric_filters": [
+                {"expression": {"measure": "measure.teams.new_teams"}, "op": ">", "value": 0}
+            ]
+        },
+        "truncated": {},
+    }[incomplete]
+    query = _new_teams(JANUARY, **extras)
+    if incomplete == "truncated":
+        compiled = compile_query(runtime.config, None, query)
+        rows = QueryRows([{PLAN_NAME: None, "new_teams": 2}], truncated=True)
+        out = {
+            "warnings": _history_result_warnings(
+                runtime.config, compiled, rows, runtime.validate(query)["warnings"]
+            )
+        }
+    else:
+        out = runtime.query(query)
+        assert _values(out) == [(None, 2)]
+    assert [row["message"] for row in _history(out)] == [STATIC]
+
+
+def test_history_totals_are_not_summed_across_a_fanout_grouping(teams):
+    runtime = teams.runtimes["base"]
+    query = {
+        **_new_teams(JANUARY),
+        "group_by": [PLAN_NAME, "dimension.teams_signup_event_event_kind"],
+    }
+    out = runtime.query(query)
+    reference = "SELECT p.plan_name, e.event_kind, COUNT(DISTINCT s.signup_id) FROM team_signups s"
+    reference += VALID_PLAN.format(team="s.team_id", at="s.signed_up_at")
+    reference += " JOIN signup_events e ON e.signup_id = s.signup_id"
+    reference += " WHERE s.signed_up_at >= TIMESTAMP '2024-01-01'"
+    reference += " AND s.signed_up_at < TIMESTAMP '2024-02-01' GROUP BY p.plan_name, e.event_kind"
+    assert _values(out) == sorted(_rows(runtime, reference), key=repr)
+    (warning,) = _history(out)
+    assert warning["message"].startswith(f"{len(out['rows'])} of {len(out['rows'])} rows are")
+    assert "measures" not in warning["details"]
+
+
+@pytest.mark.parametrize("op", ["IS NULL", "="])
+def test_a_null_accepting_history_filter_never_says_it_leaves_rows_out(teams, op):
+    runtime = teams.runtimes["base"]
+    query = _select(
+        "new_teams",
+        "new_teams",
+        where=[{"field": PLAN_NAME, "op": op, "value": None}],
+        time={"temporal_role": SIGNED_UP, **JANUARY},
+    )
+    out = runtime.query(query)
+    reference = "SELECT COUNT(*) FROM team_signups s"
+    reference += VALID_PLAN.format(team="s.team_id", at="s.signed_up_at")
+    reference += " WHERE s.signed_up_at >= TIMESTAMP '2024-01-01'"
+    reference += " AND s.signed_up_at < TIMESTAMP '2024-02-01' AND p.plan_name IS NULL"
+    assert _values(out) == _rows(runtime, reference) == [(2,)]
+    for response in (out, runtime.validate(query), runtime.compile(query)):
+        assert not _history(response)
+        assert "left out" not in json.dumps(response["warnings"])
 
 
 def test_an_empty_history_group_is_counted_from_the_returned_rows(teams):
