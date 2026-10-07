@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -29,10 +30,11 @@ import pytest
 from semantic_rails.compiler import bind_metadata_objects, bind_query
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
+from semantic_rails.expressions import AggregateExpr
 from semantic_rails.fanout import package_route
 from semantic_rails.mcp import _MAX_RESULT_CHARS_ENV
 from semantic_rails.runtime import Runtime
-from semantic_rails.schema import PackageConfig
+from semantic_rails.schema import MetricConfig, PackageConfig
 from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.hidden_absent import (
     ACTIONS,
@@ -240,14 +242,28 @@ def _whole_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(scope="module")
 def package(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, PackageConfig]:
     root = copy_package_config(tmp_path_factory.mktemp("sweep"), "jaffle_shop", preseed_db=True)
-    return root, load_package_config(str(root))
+    return root, _with_default_metric(load_package_config(str(root)))
 
 
-TARGETS = [row.id for row in object_rows(load_package_config("configs/semantic_rails/jaffle_shop"))]
+def _with_default_metric(config: PackageConfig) -> PackageConfig:
+    metric = MetricConfig(
+        id="metric.jaffle.order_count",
+        kind="aggregate",
+        expression=AggregateExpr("measure.jaffle.order_count", "sum"),
+    )
+    return replace(config, metric_recipes=[*config.metric_recipes, metric])
+
+
+TARGETS = [
+    row.id
+    for row in object_rows(
+        _with_default_metric(load_package_config("configs/semantic_rails/jaffle_shop"))
+    )
+]
 
 
 def test_the_sweep_covers_every_object_of_every_kind():
-    config = load_package_config("configs/semantic_rails/jaffle_shop")
+    config = _with_default_metric(load_package_config("configs/semantic_rails/jaffle_shop"))
     assert len(TARGETS) == len(set(TARGETS)) == len(object_rows(config))
     assert {type(row).__name__ for row in object_rows(config)} == {
         "EntityConfig",

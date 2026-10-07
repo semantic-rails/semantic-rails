@@ -905,7 +905,7 @@ def _compiled_warnings(
     warnings: list[dict[str, Any]] = [
         *(rewrite_warning_payload(step) for step in compiled["logical_plan"].rewrite_steps),
         *_history_warnings(config, compiled["logical_plan"]),
-        *_measure_validity_warnings(config, compiled["logical_plan"]),
+        *_measure_validity_warnings(visible_view.base_of(config), compiled["logical_plan"], config),
         *_stock_key_gap_warnings(compiled),
         *_route_notes(config, compiled, payload),
         *_time_zone_warnings(config, compiled),
@@ -934,8 +934,9 @@ def _withheld_columns(policy_effects: list[dict[str, Any]]) -> set[str]:
     return {row["withheld_column"] for row in policy_effects if row.get("withheld_column")}
 
 
-def _withhold_values(out: dict[str, Any], policy_effects: list[dict[str, Any]]) -> None:
+def _withhold_values(out: dict[str, Any], policy_effects: list[dict[str, Any]], config) -> None:
     """Drop the column of a rank by withheld values, and name the withheld objects instead."""
+    visible_view.require_base(config)
     effects = [row for row in policy_effects if row.get("withheld_column")]
     if not effects:
         return
@@ -1539,7 +1540,8 @@ def _filter_value_warnings(runtime: Runtime, compiled, payload) -> list[dict[str
     return warnings
 
 
-def _measure_validity_warnings(config, logical_plan) -> list[dict[str, Any]]:
+def _measure_validity_warnings(config, logical_plan, display_config=None) -> list[dict[str, Any]]:
+    visible_view.require_base(config)
     time_spec = dict(getattr(logical_plan, "time", {}) or {})
     start = _date_key(time_spec.get("start"))
     end = _date_key(time_spec.get("end"))
@@ -1551,13 +1553,15 @@ def _measure_validity_warnings(config, logical_plan) -> list[dict[str, Any]]:
         measure = measures.get(bound.measure_id)
         if measure is None:
             continue
-        for window in list(measure.validity_windows or []):
+        display = next(row for row in (display_config or config).measures if row.id == measure.id)
+        for index, window in enumerate(measure.validity_windows):
             window_start = _date_key(window.from_)
             window_end = _date_key(window.to)
             if (
                 _crosses_boundary(start, end, window_start, window_end)
                 and str(measure.cross_window_policy or "caveat").lower() != "refuse"
             ):
+                window = display.validity_windows[index]
                 warnings.append(
                     semantic_issue(
                         code="MEASURE_BOUNDARY_CROSSED",
@@ -1576,10 +1580,11 @@ def _measure_validity_warnings(config, logical_plan) -> list[dict[str, Any]]:
                         object_ids=[measure.id],
                     )
                 )
-        for discontinuity in list(measure.external_discontinuities or []):
+        for index, discontinuity in enumerate(measure.external_discontinuities):
             if _range_intersects(
                 start, end, _date_key(discontinuity.from_), _date_key(discontinuity.to)
             ):
+                discontinuity = display.external_discontinuities[index]
                 warnings.append(
                     semantic_issue(
                         code="EXTERNAL_DISCONTINUITY_PRESENT",
@@ -2514,7 +2519,7 @@ class Runtime:
                 "trace",
             }
             out.update({key: value for key, value in metadata.items() if key in validate_keep})
-            _withhold_values(out, policy_effects)
+            _withhold_values(out, policy_effects, self.package_config)
             if verbosity == "full":
                 out["compile_stats"] = dict(compiled.get("compile_stats", {}) or {})
                 out["performance_plan"] = asdict(compiled["performance_plan"])
@@ -2608,7 +2613,7 @@ class Runtime:
             "explain": asdict(compiled["explain"]),
             **compile_response_metadata(self, payload, compiled),
         }
-        _withhold_values(out, policy_effects)
+        _withhold_values(out, policy_effects, self.package_config)
         return apply_response_verbosity(
             out, verbosity=verbosity, sql_profile=sql_profile, kind="compile"
         )
@@ -2880,7 +2885,7 @@ class Runtime:
                         },
                     }
                 )
-        _withhold_values(out, policy_effects)
+        _withhold_values(out, policy_effects, self.package_config)
         if verbosity == "full":
             out["physical_plan"] = asdict(compiled["physical_plan"])
             out["performance_plan"] = asdict(compiled["performance_plan"])

@@ -204,6 +204,8 @@ from .schema import (
     PathPreferenceConfig,
     RelationshipConfig,
     TemporalRoleConfig,
+    base_of,
+    require_base,
 )
 from .sql_ast import (
     SqlBinary,
@@ -1423,8 +1425,12 @@ def _range_crosses_window_boundary(
 
 
 def _validate_measure_validity_windows(
-    bound_measures: Iterable[BoundMeasure], config: PackageConfig, query: NormalizedQuery
+    bound_measures: Iterable[BoundMeasure],
+    config: PackageConfig,
+    query: NormalizedQuery,
+    display_config: PackageConfig | None = None,
 ) -> None:
+    require_base(config)
     if query.time is None:
         return
     start = _date_key(query.time.start)
@@ -1436,13 +1442,15 @@ def _validate_measure_validity_windows(
         measure = measures[bound.measure_id]
         if str(measure.cross_window_policy or "caveat").lower() != "refuse":
             continue
-        for window in measure.validity_windows:
+        display = get_package_analysis(display_config or config).measures[measure.id]
+        for index, window in enumerate(measure.validity_windows):
             if _range_crosses_window_boundary(
                 start=start,
                 end=end,
                 window_from=_date_key(window.from_),
                 window_to=_date_key(window.to),
             ):
+                window = display.validity_windows[index]
                 raise SemanticLayerError(
                     "MEASURE_VALIDITY_BOUNDARY",
                     f"Measure '{measure.id}' crosses declared validity window '{window.semantics or window.from_ or window.to}'",
@@ -4648,7 +4656,7 @@ def _plan_query(
             _reads_chosen_snapshot(measure, bound.temporal_role, item.field, config)
         for clause in _bound_filter_clauses(bound, config):
             _reads_chosen_snapshot(measure, bound.temporal_role, str(clause["field"]), config)
-    _validate_measure_validity_windows(bound_measures, config, query)
+    _validate_measure_validity_windows(bound_measures, base_of(config), query, config)
     _validate_non_additive_sums(bound_measures, config, query)
     measure_plans: list[MeasurePlan] = []
     leaf_strategies: list[str] = []  # each leaf's strategy before rollup routing
@@ -5170,8 +5178,7 @@ def query_route_rows(
     if not rows:
         return {}
     entities = entity_references(config.entities)
-    analysis = get_package_analysis(config)
-    tables = {row_filter.table for row_filter in row_filters}
+    base = base_of(config)
     decided: dict[tuple[str, str], tuple[int, PathPreferenceConfig]] = {}
     for index, raw in enumerate(rows):
         where = f"route_decisions[{index}]"
@@ -5206,33 +5213,41 @@ def query_route_rows(
                     "refusal offered.",
                 },
             )
-        on_routes = {
-            entity
-            for path in routes
-            for entity in walk_entities(analysis.relationships, pair[0], path)
-        }
-        if any(analysis.entities[entity].table in tables for entity in on_routes):
-            raise SemanticLayerError(
-                "POLICY_DENIED",
-                f"{where} chooses a route from '{pair[0]}' to '{pair[1]}' under a row filter; "
-                "a query cannot choose a route under a row filter",
-                details={
-                    "reason": "route_override_under_row_policy",
-                    "path": where,
-                    "policy_ids": sorted(
-                        {
-                            row_filter.policy_id
-                            for row_filter in row_filters
-                            if row_filter.table
-                            in {analysis.entities[entity].table for entity in on_routes}
-                        }
-                    ),
-                    "hint": "Under a row filter only a reviewed graph.path_preferences row "
-                    "(record_route_decision) changes which route the package means.",
-                },
-            )
+        _guard_route_row_filters(base, pair, row_filters, where, config)
         decided[pair] = (index, row)
     return decided
+
+
+def _guard_route_row_filters(
+    config: PackageConfig,
+    pair: tuple[str, str],
+    row_filters: Sequence[RowFilter],
+    where: str,
+    display_config: PackageConfig,
+) -> None:
+    require_base(config)
+    analysis = get_package_analysis(config)
+    on_routes = {
+        entity
+        for path in pair_routes(config, *pair)
+        for entity in walk_entities(analysis.relationships, pair[0], path)
+    }
+    tables = {analysis.entities[entity].table for entity in on_routes}
+    policies = {row.policy_id for row in row_filters if row.table in tables}
+    if policies:
+        shown = {row.id for row in display_config.semantic_policies}
+        raise SemanticLayerError(
+            "POLICY_DENIED",
+            f"{where} chooses a route from '{pair[0]}' to '{pair[1]}' under a row filter; "
+            "a query cannot choose a route under a row filter",
+            details={
+                "reason": "route_override_under_row_policy",
+                "path": where,
+                "policy_ids": sorted(policies & shown),
+                "hint": "Under a row filter only a reviewed graph.path_preferences row "
+                "(record_route_decision) changes which route the package means.",
+            },
+        )
 
 
 def read_routes(plan: LogicalPlan, route_choices: Sequence[RouteChoice]) -> list[RouteChoice]:

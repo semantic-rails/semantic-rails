@@ -35,6 +35,7 @@ from .compiler import (
     bind_query,
     query_route_rows,
 )
+from .compiler_parts.indexes import get_package_analysis
 from .config_parts.measure_governance import building_block_measures
 from .diagnostics import relationship_contract_payload
 from .errors import SemanticLayerError
@@ -315,13 +316,17 @@ def _selection_context(config: PackageConfig, partial_query: dict[str, Any]) -> 
     }
 
 
-def _measure_default_metric_id(measure: Any) -> str:
+def _measure_default_metric_id(config: PackageConfig, measure: Any) -> str:
     default_metric_name = measure.name or measure.id.split("measure.", 1)[-1]
-    return f"metric.{default_metric_name}"
+    metric_id = f"metric.{default_metric_name}"
+    view = get_package_analysis(config).view
+    return "" if view is not None and metric_id in view.hidden else metric_id
 
 
 def _is_auto_metric(config: PackageConfig, metric_id: str) -> bool:
-    return any(_measure_default_metric_id(measure) == metric_id for measure in config.measures)
+    return any(
+        _measure_default_metric_id(config, measure) == metric_id for measure in config.measures
+    )
 
 
 def _expr_summary(config: PackageConfig, expr: SemanticExpr) -> str:
@@ -574,7 +579,7 @@ def _metric_object_payload(config: PackageConfig, object_id: str, kind: str) -> 
             "disabled_grouping_entities": disabled_grouping_entities,
             "provenance": {},
             **_aggregation_guidance(measure),
-            "default_metric_id": _measure_default_metric_id(measure),
+            "default_metric_id": _measure_default_metric_id(config, measure),
             "executable": True,
             "unsupported_reason": "",
             "coverage_notes": _metric_history_coverage_notes(config, measure.entity),
@@ -675,7 +680,7 @@ def _metric_executable(
 
 
 def _related_metric_ids_for_measure(config: PackageConfig, measure: Any) -> list[str]:
-    out = [_measure_default_metric_id(measure)]
+    out = [metric_id] if (metric_id := _measure_default_metric_id(config, measure)) else []
     for recipe in config.metric_recipes:
         summary = _expr_summary(config, recipe.expression).lower()
         if (
@@ -914,7 +919,7 @@ def _object_card(
                     if metric_id in maps["metric_recipes"]
                     and not _is_auto_metric(config, metric_id)
                 ],
-                "default_metric_id": _measure_default_metric_id(measure),
+                "default_metric_id": _measure_default_metric_id(config, measure),
                 "coverage_notes": list(payload.get("coverage_notes", []) or []),
                 **_operational_metadata(measure),
                 **_review_metadata(measure),
@@ -943,7 +948,7 @@ def _object_card(
                 or [
                     measure.id
                     for measure in config.measures
-                    if _measure_default_metric_id(measure) == recipe.id
+                    if _measure_default_metric_id(config, measure) == recipe.id
                     or measure.label.lower() in payload.get("expression_summary", "").lower()
                 ],
                 "executable": payload.get("executable", True),

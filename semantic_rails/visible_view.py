@@ -1,18 +1,10 @@
 """The caller's visible view: the package without the objects hidden from them.
 
-Every caller-facing computation reads the caller's view; every enforcement decision reads the
-whole package (the base); visibility never removes or changes a deny, withhold, constraint or
-row filter. A hidden id is then the binder's own unknown id, in every position it reads.
-
-The hidden set is what a matching ``hidden`` policy or an ineligible ``visible_only`` policy
-lists, closed over every object whose compiler reads (``_object_reads``) or declared references
-(a field of its row equal to an id) reach it; while anything is hidden, an object that cannot be
-bound is hidden too. The view removes those rows and whatever names them (route rows, rollups,
-caveats, policies, which it keeps for display only), and omits whole any authored prose that
-names a hidden object (``FIELDS`` classifies every package field).
-
-``resource_access.run_authorized_operation`` pins one :class:`RequestView` per request
-(:func:`request_view`); ``Runtime._config`` and ``Runtime.registry`` serve it.
+Caller-facing work reads the view; enforcement reads the whole package. Hidden objects are
+closed over compiler reads and declared references, including unbindable dependents. The
+builder marks the view's provenance, filters rows and omits display text naming hidden objects
+without changing enforcement inputs. ``resource_access.run_authorized_operation`` pins the
+view for the request; ``Runtime._config`` and ``Runtime.registry`` serve it.
 """
 
 from __future__ import annotations
@@ -26,7 +18,7 @@ from dataclasses import MISSING, dataclass, field, fields, is_dataclass, replace
 from typing import Any
 
 from .compiler import BoundQuery, bind_metadata_objects, bind_query
-from .compiler_parts.indexes import ViewOf, get_package_analysis
+from .compiler_parts.indexes import ViewOf, VisiblePackageConfig, get_package_analysis
 from .errors import SemanticLayerError
 from .policy_rules import hidden_policy_ids, visible_only_listed
 from .registry import Registry
@@ -39,6 +31,8 @@ from .schema import (
     SemanticPolicyConfig,
     ValueDomainConfig,
 )
+from .schema import base_of as base_of
+from .schema import require_base as require_base
 from .segments import build_segment_query, normalize_segment
 
 OBJECT_FIELDS = (
@@ -67,18 +61,7 @@ FIELDS = {
     "meta_contract": "prose",
 }
 # Authored text on a row: omitted whole when it names a hidden object.
-PROSE = frozenset(
-    {
-        "description",
-        "topics",
-        "example_entries",
-        "meta",
-        "operational",
-        "authoring_warnings",
-        "validity_windows",
-        "external_discontinuities",
-    }
-)
+PROSE = frozenset({"description", "label", "topics", "example_entries", "authoring_warnings"})
 # A policy's own words, replaced by its action's engine text when they may name a hidden object.
 POLICY_TEXT = ("rule", "rationale", "description")
 ENGINE_TEXT = {
@@ -241,28 +224,29 @@ def _mentions(value: Any, tokens: re.Pattern[str] | None) -> bool:
     return bool(tokens.search(text))
 
 
-def _empty(item: Any) -> Any:
-    return item.default_factory() if item.default is MISSING else item.default
-
-
 def _without_prose(row: Any, tokens: re.Pattern[str] | None) -> Any:
     """``row`` with each authored text field that names a hidden object omitted, whole."""
     if tokens is None:
         return row
     changes = {
-        item.name: _empty(item)
+        item.name: item.default_factory() if item.default_factory is not MISSING else item.default
         for item in fields(row)
         if item.name in PROSE and _mentions(getattr(row, item.name), tokens)
     }
-    if isinstance(row, ValueDomainConfig) and _mentions(
-        [v.description for v in row.values], tokens
+    for name in ("meta", "operational"):
+        value = getattr(row, name, {})
+        if _mentions(value, tokens):
+            changes[name] = {"mnpi": value["mnpi"]} if "mnpi" in value else {}
+    for name, text in (
+        ("values", "description"),
+        ("validity_windows", "semantics"),
+        ("external_discontinuities", "what"),
     ):
-        changes["values"] = [
-            replace(value, description="") if _mentions(value.description, tokens) else value
-            for value in row.values
-        ]
-    if hasattr(row, "relationship_path") and _mentions(row.label, tokens):
-        changes["label"] = ""
+        if hasattr(row, name):
+            changes[name] = [
+                replace(item, **{text: ""}) if _mentions(getattr(item, text), tokens) else item
+                for item in getattr(row, name)
+            ]
     return replace(row, **changes) if changes else row
 
 
@@ -316,35 +300,34 @@ def _display_caveat(
 
 def build_view(base: PackageConfig, hidden: frozenset[str]) -> PackageConfig:
     """The package as a caller with ``hidden`` objects sees it."""
+    if not hidden:
+        return base
     tokens = token_pattern(base, hidden)
 
-    def filtered(name: str) -> list[Any]:
-        rows = getattr(base, name)
-        shown: Iterable[Any]
-        if name in OBJECT_FIELDS:
-            return [_without_prose(row, tokens) for row in rows if row.id not in hidden]
-        if name == "semantic_policies":
-            shown = (display_policy(row, hidden, tokens) for row in rows)
-        elif name == "semantic_caveats":
-            shown = (_display_caveat(row, hidden, tokens) for row in rows)
-        else:  # route rows and rollups: routes come from the base, rollups give the same numbers
-            shown = (_without_prose(row, tokens) for row in rows if not _names(row, hidden))
-        return [row for row in shown if row is not None]
-
-    def prose(name: str) -> Any:
-        value: Any = getattr(base, name)
-        if isinstance(value, list):
-            return [_without_prose(row, tokens) for row in value]
-        if name == "package":
-            return replace(value, description="") if _mentions(value.description, tokens) else value
-        return type(value)() if _mentions(value, tokens) else value
-
-    changes: dict[str, Any] = {
-        name: filtered(name) if kind == "filtered" else prose(name)
-        for name, kind in FIELDS.items()
-        if kind != "kept"
-    }
-    return replace(base, **changes)
+    changes: dict[str, Any] = {}
+    for name, kind in FIELDS.items():
+        value = getattr(base, name)
+        if kind == "filtered":
+            if name == "semantic_policies":
+                value = [display_policy(row, hidden, tokens) for row in value]
+            elif name == "semantic_caveats":
+                value = [_display_caveat(row, hidden, tokens) for row in value]
+            else:
+                value = [
+                    _without_prose(row, tokens)
+                    for row in value
+                    if (row.id not in hidden if name in OBJECT_FIELDS else not _names(row, hidden))
+                ]
+            value = [row for row in value if row is not None]
+        elif kind == "prose":
+            if isinstance(value, list):
+                value = [_without_prose(row, tokens) for row in value]
+            elif is_dataclass(value):
+                value = _without_prose(value, tokens)
+            elif _mentions(value, tokens):
+                value = type(value)()
+        changes[name] = value
+    return VisiblePackageConfig(**changes, view=ViewOf(base, hidden, tokens))
 
 
 def public_effects(private: list[dict[str, Any]], config: PackageConfig) -> list[dict[str, Any]]:
@@ -427,12 +410,6 @@ def visibility_key(context: RequestContext) -> tuple[str, str, frozenset[str]]:
     return (context.environment, context.audience, roles)
 
 
-def base_of(config: PackageConfig) -> PackageConfig:
-    """The whole package ``config`` was cut from, or ``config`` itself when it is no view."""
-    view = get_package_analysis(config).view
-    return config if view is None else view.base
-
-
 def hidden_on_its_own(config: PackageConfig, object_id: str) -> bool:
     """Whether ``config`` hides ``object_id`` in its own right, not for what it reads or names."""
     view = get_package_analysis(config).view
@@ -455,19 +432,9 @@ def _hidden_from(
     )
 
 
-def _cut(base: PackageConfig, hidden: frozenset[str]) -> PackageConfig:
-    """``build_view``, marked with what it was cut from (routes, the binding guard and public
-    effects read the mark). Nothing hidden: the whole package itself."""
-    if not hidden:
-        return base
-    config = build_view(base, hidden)
-    get_package_analysis(config).view = ViewOf(base, hidden, token_pattern(base, hidden))
-    return config
-
-
 def view_of(base: PackageConfig, context: RequestContext | Mapping[str, Any] | None) -> Any:
     """A caller's view of ``base``, uncached, for code that holds no runtime (the CLI)."""
-    return _cut(base, _hidden_from(base, context))
+    return build_view(base, _hidden_from(base, context))
 
 
 def view_for(runtime: Any, context: RequestContext | Mapping[str, Any] | None) -> ViewEntry:
@@ -476,7 +443,7 @@ def view_for(runtime: Any, context: RequestContext | Mapping[str, Any] | None) -
     with runtime._cache_lock:
         entry = runtime._views.get(hidden)
     if entry is None:
-        config = _cut(runtime.package_config, hidden)
+        config = build_view(runtime.package_config, hidden)
         with runtime._cache_lock:
             entry = runtime._views.setdefault(hidden, ViewEntry(config, Registry(config), hidden))
     return entry
@@ -499,12 +466,8 @@ def pinned_view(runtime: Any) -> RequestView | None:
 def request_view(
     runtime: Any, policy_context: Mapping[str, Any] | None
 ) -> AbstractContextManager[RequestView]:
-    """Resolve the caller's view for one operation; entering the result pins it.
-
-    A nested operation inherits the pinned view; one naming a caller who sees otherwise is
-    refused, so a request never widens what it sees. An uncertain view refuses, naming
-    nothing, and is never served from the base.
-    """
+    """Pin the caller's view; nested operations inherit it and refuse a visibility change.
+    An uncertain view refuses, naming nothing, without serving the base."""
     context = context_from_policy_context(policy_context)
     current = pinned_view(runtime)
     if current is not None:

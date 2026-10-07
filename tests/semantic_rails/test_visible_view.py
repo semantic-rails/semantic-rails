@@ -1142,12 +1142,21 @@ def test_a_visible_route_cannot_step_around_a_hidden_row_filter(
     }
     try:
         for method in (runtime.validate, runtime.compile, runtime.query):
-            response = outcome(lambda: method(query))
-            error = response["errors"][0]
+            response = outcome(lambda method=method: method(query))
+            error = (
+                response["errors"][0]
+                if "errors" in response
+                else {"code": response["raised"], "details": response["details"]}
+            )
             assert error["code"] == "POLICY_DENIED", response
             assert error["details"]["reason"] == "route_override_under_row_policy"
             assert error["details"]["policy_ids"] == []
-            assert not leaks(response, hidden_tokens(config, runtime.view_for(CALLER)))
+            from semantic_rails.compiler_parts.indexes import get_package_analysis
+
+            assert not leaks(
+                response,
+                hidden_tokens(config, get_package_analysis(runtime.view_for(CALLER)).view.hidden),
+            )
         assert spy.calls == 0
     finally:
         runtime.close()
@@ -1180,7 +1189,7 @@ def test_hidden_prose_never_removes_validity_or_discontinuities(package, action,
     query = {
         "select": [{"expression": {"measure": ORDERS}, "as": "value"}],
         "time": {
-            "temporal_role": "time.jaffle_ordered_at",
+            "temporal_role": "temporal_role.jaffle_order_time",
             "start": "2019-01-01",
             "end": "2022-01-01",
             "grain": "month",
@@ -1279,8 +1288,8 @@ def test_prose_stripping_is_a_closed_display_field_allowlist():
     from semantic_rails import schema
     from semantic_rails.visible_view import PROSE
 
-    display = {"description", "topics", "example_entries", "authoring_warnings"}
-    assert PROSE == display
+    display = {"description", "label", "topics", "example_entries", "authoring_warnings"}
+    assert display == PROSE
     for cls in vars(schema).values():
         if isinstance(cls, type) and hasattr(cls, "__dataclass_fields__"):
             for field in fields(cls):

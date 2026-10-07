@@ -428,3 +428,19 @@ class PackageConfig:
     relations: list[RelationConfig] = field(default_factory=list)
     operational_contract: dict[str, Any] = field(default_factory=dict)
     meta_contract: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, kw_only=True)
+class VisiblePackageConfig(PackageConfig):
+    """A caller view whose provenance survives dataclass replacement."""
+
+    view: Any
+
+
+def require_base(config: PackageConfig) -> None:
+    if isinstance(config, VisiblePackageConfig):
+        raise TypeError("Policy enforcement takes the whole package, never a visible view.")
+
+
+def base_of(config: PackageConfig) -> PackageConfig:
+    return config.view.base if isinstance(config, VisiblePackageConfig) else config

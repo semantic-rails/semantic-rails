@@ -18,7 +18,6 @@ from typing import Any
 from .ast import NormalizedQuery, every_filter, normalize_query, plain_filters
 from .compiler import BoundQuery, bind_metadata_objects, bind_query
 from .compiler_parts.bind import measure_column_ref
-from .compiler_parts.indexes import get_package_analysis
 from .errors import SemanticLayerError
 from .expressions import (
     AggregateExpr,
@@ -40,7 +39,7 @@ from .policy_rules import role_scope_matches as role_scope_matches
 from .policy_rules import visible_only_listed as _visible_only_listed
 from .request_context import context_from_policy_context
 from .row_filters import RowFilter, is_row_filter, row_filter
-from .schema import MeasureConfig, PackageConfig, SemanticPolicyConfig
+from .schema import MeasureConfig, PackageConfig, SemanticPolicyConfig, require_base
 from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral, SqlOrder
 from .sql_preparation import checked_slot_value
 
@@ -80,12 +79,6 @@ def policy_effects_for_object(
     return effects
 
 
-def require_base(config: PackageConfig) -> None:
-    """Enforcement reads the whole package: a view lacks the policies and objects it needs."""
-    if get_package_analysis(config).view is not None:
-        raise TypeError("Policy enforcement takes the whole package, never a visible view.")
-
-
 def query_policy_effects(
     config: PackageConfig,
     object_ids: Iterable[str],
@@ -96,6 +89,7 @@ def query_policy_effects(
     query: Mapping[str, Any] | None = None,
     binding: BoundQuery | None = None,
 ) -> list[dict[str, Any]]:
+    require_base(config)
     check_request_environment(config, environment)
     effects: list[dict[str, Any]] = []
     # Bound at most once per request, and only for a constraint that needs it.
@@ -315,6 +309,7 @@ def withheld_shape(
     records, then a binding of the query without that item, so a filter, threshold, segment,
     derived metric or comparison reading it is caught. Anything else is ``POLICY_DENIED``.
     """
+    require_base(config)
 
     def refuse(reason: str, message: str) -> SemanticLayerError:
         return SemanticLayerError(

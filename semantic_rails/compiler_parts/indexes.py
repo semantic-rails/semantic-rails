@@ -17,6 +17,7 @@ from ..schema import (
     PackageConfig,
     RelationshipConfig,
     TemporalRoleConfig,
+    VisiblePackageConfig,
 )
 from .dependencies import binding_index
 
@@ -122,6 +123,7 @@ class PackageAnalysis:
             temporal_relationship_ids={
                 row.id for row in config.relationships if row.temporal_validity
             },
+            view=config.view if isinstance(config, VisiblePackageConfig) else None,
         )
 
 

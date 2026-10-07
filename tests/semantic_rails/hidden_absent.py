@@ -54,13 +54,10 @@ VOLATILE = frozenset(
 # An object's authored text: left out whole when it names a hidden object.
 PROSE = (
     "description",
+    "label",
     "topics",
     "example_entries",
-    "meta",
-    "operational",
     "authoring_warnings",
-    "validity_windows",
-    "external_discontinuities",
 )
 # metric_constraint config keys that list object ids.
 CONSTRAINT_LISTS = (
@@ -157,6 +154,16 @@ def _unnamed(row: Any, tokens: Mapping[str, re.Pattern[str]]) -> Any:
         for field in fields(row)
         if field.name in PROSE and _named(getattr(row, field.name), tokens)
     }
+    for key in ("meta", "operational"):
+        value = getattr(row, key, {})
+        if _named(value, tokens):
+            changes[key] = {"mnpi": value["mnpi"]} if "mnpi" in value else {}
+    for key, text in (("validity_windows", "semantics"), ("external_discontinuities", "what")):
+        if hasattr(row, key):
+            changes[key] = [
+                replace(value, **{text: ""}) if _named(getattr(value, text), tokens) else value
+                for value in getattr(row, key)
+            ]
     if hasattr(row, "values") and isinstance(row.values, list):  # a value domain's values
         values = [
             replace(value, description="") if _named(value.description, tokens) else value
@@ -164,8 +171,6 @@ def _unnamed(row: Any, tokens: Mapping[str, re.Pattern[str]]) -> Any:
         ]
         if values != row.values:
             changes["values"] = values
-    if hasattr(row, "relationship_path") and _named(row.label, tokens):
-        changes["label"] = ""
     return replace(row, **changes) if changes else row
 
 

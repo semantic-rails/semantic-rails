@@ -197,7 +197,6 @@ def test_explicit_hidden_name_behaves_like_an_absent_dimension(
                 ],
             ),
         )
-        runtime._catalog_search_index = None
         _force_fallback(runtime, monkeypatch, intent, path)
         absent = plan_payload(runtime, intent=intent, detail=detail)
         assert hidden == absent
@@ -260,7 +259,6 @@ def test_hidden_underscore_dimension_behaves_like_an_absent_dimension(
                 dimensions=[dim for dim in runtime._config.dimensions if dim.id != hidden_id],
             ),
         )
-        runtime._catalog_search_index = None
         _force_fallback(runtime, monkeypatch, intent, path)
         absent = plan_payload(runtime, intent=intent, detail=detail, partial_query=partial)
         assert hidden == absent
@@ -316,7 +314,6 @@ def test_hidden_name_holding_a_filter_value_behaves_like_an_absent_dimension(
     try:
         hidden = plan_payload(runtime, intent=intent, detail=detail, partial_query=partial)
         monkeypatch.setattr(runtime, "_config", base)
-        runtime._catalog_search_index = None
         _force_fallback(runtime, monkeypatch, intent, path)
         absent = plan_payload(runtime, intent=intent, detail=detail, partial_query=partial)
         assert hidden == absent
@@ -413,7 +410,6 @@ def test_a_hidden_calendar_label_cannot_change_a_response(
         # Labelled "New", a visible calendar would make "new month" the time block's clock.
         for label in ("Calendar", "New"):
             monkeypatch.setattr(runtime, "_config", _new_month_alias(base, CALENDAR, label=label))
-            runtime._catalog_search_index = None
             _force_fallback(runtime, monkeypatch, NEW_MONTH, path)
             payloads.append(
                 plan_payload(
@@ -469,12 +465,10 @@ def test_hidden_name_cannot_ground_an_intent_or_enter_catalog_hints(
                     dimensions=[dim for dim in dimensions if dim.id != CUSTOMER_DISTRICT],
                 ),
             )
-            runtime._catalog_search_index = None
             absent = plan_payload(runtime, intent=intent, detail=detail)
             assert hidden == absent
             payloads.append(hidden)
             monkeypatch.setattr(runtime, "_config", replace(runtime._config, dimensions=dimensions))
-            runtime._catalog_search_index = None
         # The unrelated question's catalog hints cannot introduce the hidden name.
         assert "aardvarksecret" not in json.dumps(payloads[1]).lower()
     finally:
