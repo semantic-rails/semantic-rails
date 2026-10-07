@@ -602,6 +602,30 @@ def test_mcp_plan_holds_the_count_of_every_team(teams: dict[tuple[str, bool], Ru
     assert [gap["expected"]["metrics"] for gap in _gaps(plan)] == [[NEW_TEAMS]]
 
 
+@pytest.mark.parametrize("shape", SHAPES)
+def test_the_hold_names_the_question_s_metrics_first_and_at_most_five(
+    teams: dict[tuple[str, bool], Runtime], shape: str
+) -> None:
+    config = teams[shape, False]._config
+    governor = next(row for row in config.metric_recipes if row.id == NEW_TEAMS)
+    ids = [f"metric.org.governor_{index}" for index in range(7)]
+    config = replace(config, metric_recipes=[replace(governor, id=row) for row in ids])
+    hold = faithfulness._population_hold
+    # ids[0] is selected; the question's subjects rank ids[6] above ids[3].
+    assert hold(config, TEAMS, {}, [ids[0]], [ids[6], TEAMS, ids[3]]) == {
+        "metrics": [ids[6], ids[3], ids[1], ids[2], ids[4]],
+        "narrowed_by": [TEAM_CLASS],
+    }
+    test_teams = {"where": [{"field": TEAM_CLASS, "op": "=", "value": "test"}]}
+    for heeded in ({"group_by": [TEAM_CLASS]}, test_teams):
+        assert hold(config, TEAMS, heeded, [], []) is None
+    # Only the measure's own entity counts: the team class never narrows the event count, and
+    # the event type narrows it only where the metric counts events.
+    events = hold(config, "measure.org.team_events", {}, [], []) or {}
+    event_type = ["dimension.org_team_event_event_type"] if shape == "event" else None
+    assert events.get("narrowed_by") == event_type
+
+
 def test_a_failing_governor_check_holds_the_draft(
     teams: dict[tuple[str, bool], Runtime], monkeypatch: pytest.MonkeyPatch
 ) -> None:

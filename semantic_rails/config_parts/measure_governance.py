@@ -73,25 +73,15 @@ def governing_metrics(config: PackageConfig, measure_id: str) -> list[MetricConf
 def population_governors(
     config: PackageConfig, measure_id: str
 ) -> list[tuple[MetricConfig, frozenset[str]]]:
-    """The metrics that narrow ``measure_id``'s rows, each with the dimensions it narrows on.
-
-    A metric narrows a measure when an aggregate in it, over that measure or another one, has
-    a narrowing that reads a dimension of the measure's entity: "New teams" counts the creation
-    events of customer teams, so it narrows a count of every team by the team's class.
-    """
+    """Metrics whose aggregates narrow on dimensions of ``measure_id``'s entity, with those ids."""
 
     entity = next((row.entity for row in config.measures if row.id == measure_id), None)
     own = {row.id for row in config.dimensions if row.entity == entity}
     governors = []
     for metric in config.metric_recipes:
-        narrowed_by = frozenset(
-            reference
-            for _, narrowing in _measure_reads(expr_to_dict(metric.expression))
-            for reference in collect_object_references(narrowing, config)
-            if reference in own
-        )
-        if narrowed_by:
-            governors.append((metric, narrowed_by))
+        narrowings = [narrowing for _, narrowing in _measure_reads(expr_to_dict(metric.expression))]
+        if narrowed_by := own.intersection(collect_object_references(narrowings, config)):
+            governors.append((metric, frozenset(narrowed_by)))
     return governors
 
 
