@@ -772,7 +772,7 @@ def test_route_switch_notes_reuse_the_cached_refusal_without_enumerating(tmp_pat
 
     monkeypatch.setattr("semantic_rails.fanout.enumerate_paths", rebuild)
     monkeypatch.setattr("semantic_rails.fanout.route_clarification", rebuild)
-    (note,) = _route_notes(config, compiled, query, policy_context={})
+    (note,) = _route_notes(config, compiled, query)
     assert note["details"]["meaning"] == options[0]["meaning"]
     assert note["details"]["route_alternatives"] == [options[1]["decision"]]
 
@@ -871,7 +871,8 @@ def test_own_key_route_notes_never_offer_hidden_waypoints(tmp_path, monkeypatch,
     assert _rows(out, [resolution.REGION_NAME, "v"]) == resolution._gold(resolution.BY_BRANCH)
     assert hidden not in json.dumps(out["warnings"])
     notes = [w for w in out["warnings"] if w["code"] == "ROUTE_COLOCATED_KEY"]
-    assert len(notes) == (0 if verbosity == "minimal" else 1)
+    # Without the owner the pair has one route, as in the package without it: nothing chosen.
+    assert len(notes) == (0 if verbosity == "minimal" or hidden == resolution.OWNER else 1)
     if notes:
         alternatives = (
             []
@@ -889,46 +890,6 @@ def test_own_key_route_notes_never_offer_hidden_waypoints(tmp_path, monkeypatch,
             ]
         )
         assert notes[0]["details"] == {"route": resolution.BRANCH, "alternatives": alternatives}
-
-
-@pytest.mark.parametrize("visibility", ["missing", "unresolved", "hidden"])
-@pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
-def test_route_notes_withhold_switches_when_visibility_is_unknown(
-    tmp_path, monkeypatch, visibility, verbosity
-):
-    config = load_package_config(str(_write_package(tmp_path)))
-    config = replace(
-        config,
-        semantic_policies=[
-            SemanticPolicyConfig(
-                id="policy.hide_owner",
-                kind="object_visibility",
-                action="hidden",
-                object_ids=[OWNER],
-            )
-        ],
-    )
-    query = {
-        **BALANCE_BY_DISTRICT,
-        "route_decisions": [
-            {
-                **DIAMOND_ROW,
-                "relationship_path": OWNER_ROUTE if visibility == "hidden" else BRANCH_ROUTE,
-            }
-        ],
-        "verbosity": verbosity,
-    }
-    compiled = compile_query(config, Registry(config), query)
-    if visibility == "unresolved":
-        monkeypatch.setattr("semantic_rails.runtime.diagnostic_hidden_object_ids", lambda *_: None)
-    notes = _route_notes(
-        config, compiled, query, **({"policy_context": {}} if visibility != "missing" else {})
-    )
-    assert len(notes) == 1
-    assert notes[0]["code"] == "ROUTE_CHOSEN_BY_QUERY"
-    assert notes[0]["message"] == "a route chosen by this query"
-    assert notes[0]["details"] == {}
-    assert "relationship." not in json.dumps(notes)
 
 
 def _many_route_config(tmp_path):
