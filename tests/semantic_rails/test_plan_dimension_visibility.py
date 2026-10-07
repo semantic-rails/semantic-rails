@@ -14,6 +14,7 @@ from semantic_rails.planner import plan_payload
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.schema import SemanticPolicyConfig, ValueDomainConfig, ValueDomainValue
+from semantic_rails.visible_view import view_of
 from tests.semantic_rails.test_plan_value_lists import (
     CUSTOMER_DISTRICT,
     STORE_DISTRICT,
@@ -347,7 +348,7 @@ def test_hidden_underscore_objects_are_excluded_from_name_spans(runtime_factory,
     query = {"group_by": []}
     try:
         # The check reads names through its caller-scoped view, never the raw config.
-        assert plan_module._named_groupings_unmet(config, question, query) == (
+        assert plan_module._named_groupings_unmet(view_of(config, {}), question, query) == (
             plan_module._named_groupings_unmet(replace(config, **{kind: []}), question, query)
         )
         visible = replace(config, semantic_policies=runtime._config.semantic_policies)
@@ -434,10 +435,10 @@ def test_hidden_entity_and_temporal_role_names_cannot_change_the_name_obligation
     spellings = ["New", "new month", "Month", "Store", "Store name", "Customer type", "Revenue"]
     for row in [*config.entities, *config.temporal_roles]:
         base = plan_module._named_groupings_unmet(
-            _new_month_alias(config, row.id), question, NEW_MONTH_PARTIAL
+            view_of(_new_month_alias(config, row.id), {}), question, NEW_MONTH_PARTIAL
         )
         for changes in [*({"label": s} for s in spellings), *({"aliases": [s]} for s in spellings)]:
-            changed = _new_month_alias(config, row.id, **changes)
+            changed = view_of(_new_month_alias(config, row.id, **changes), {})
             unmet = plan_module._named_groupings_unmet(changed, question, NEW_MONTH_PARTIAL)
             assert unmet == base, (row.id, changes)
 
