@@ -21,17 +21,16 @@ A use reads like the code it came from:
 
 The engine calls the embedder's implementation of a protocol, so a protocol the
 embedder names, or that appears in the annotations of a facade callable it
-calls, is recorded whole, and any change to it fails. A method reached through
-an object the scan can't place is recorded as an attribute read, so only its
-existence is checked.
+calls, is recorded whole, and any change to it fails.
 
-Instances are found by name: within a file, a name or attribute assigned from a
-facade class or from a facade callable annotated to return one; across files,
-an attribute that such an instance was stored on (``Entry(service=service)``
-makes ``entry.service`` one). That guess also matches test doubles and unrelated
-objects of the same name, so uses the engine doesn't have are reported and left
-out. Objects passed around any other way are invisible here; the embedder's own
-tests against engine ``main`` cover them.
+Receivers are tracked within lexical scopes, using facade constructors,
+annotated return types, explicit instance annotations, and assignments from
+known instances. Attribute bindings belong to the exact receiver expression;
+member names are never shared between unrelated objects or files. Adding a use
+requires a resolved receiver. A recorded use is removed only when its last
+identifier no longer appears anywhere in the consumer's code. Local definitions
+and reassignments replace imported bindings, including test doubles that reuse
+a facade name.
 """
 
 from __future__ import annotations
@@ -204,93 +203,299 @@ def _key(node: ast.expr) -> str | None:
     return node.attr if isinstance(node, ast.Attribute) else None
 
 
-def _root(node: ast.expr) -> str | None:
-    while isinstance(node, ast.Attribute):
-        node = node.value
-    return _key(node)
-
-
 def _string(node: ast.expr) -> str | None:
     return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
 
 
-class _FileScan:
+def _names(tree: ast.Module) -> set[str]:
+    """Identifiers present anywhere, regardless of scope, receiver, or expression context."""
+    return {
+        node.id
+        if isinstance(node, ast.Name)
+        else node.attr
+        if isinstance(node, ast.Attribute)
+        else node.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Name, ast.Attribute, ast.alias))
+    }
+
+
+class _FileScan(ast.NodeVisitor):
     def __init__(self, tree: ast.Module) -> None:
-        self.nodes = list(ast.walk(tree))
-        self.names: dict[str, str] = {}  # local alias -> facade name
-        self.modules: set[str] = set()  # expressions that denote the facade module
-        self.imported: set[str] = set()  # names bound by ``import``, which are never instances
-        for node in self.nodes:
-            self._record_import(node)
-        self.instances: dict[str, str] = {}  # name or attribute -> facade class
-        for node in self.nodes:
-            if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(node.value, ast.Call):
-                ref = self._facade_ref(node.value.func)
-                produced = _produces(*ref) if ref else None
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-                keys = filter(None, map(_key, targets))
-                self.instances.update(dict.fromkeys(keys, produced) if produced else {})
-        handoffs = [
-            (kw.arg, kw.value) for n in self.nodes if isinstance(n, ast.Call) for kw in n.keywords
-        ]
-        handoffs += [
-            (target.attr, n.value)
-            for n in self.nodes
-            if isinstance(n, ast.Assign)
-            for target in n.targets
-            if isinstance(target, ast.Attribute)
-        ]
-        self.members = {  # attribute -> facade class, shared with every file
-            key: self.instances[value.id]
-            for key, value in handoffs
-            if key and isinstance(value, ast.Name) and value.id in self.instances
-        }
+        # Bindings are facade names, module aliases, or instance owners. None
+        # explicitly shadows an outer binding without claiming an engine type.
+        self.scopes: list[dict[str, tuple[str, str] | None]] = [{}]
+        self.found: set[str] = set()
+        self.visit(tree)
 
-    def _record_import(self, node: ast.AST) -> None:
-        if isinstance(node, ast.ImportFrom) and node.level == 0:
-            for alias in node.names:
-                if node.module == FACADE:
-                    self.names[alias.asname or alias.name] = alias.name
-                elif f"{node.module}.{alias.name}" == FACADE:
-                    self.modules.add(alias.asname or alias.name)
-        elif isinstance(node, ast.Import):
-            self.modules.update(
-                alias.asname or FACADE for alias in node.names if alias.name == FACADE
-            )
-            self.imported.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+    def _lookup(self, key: str) -> tuple[str, str] | None:
+        for scope in reversed(self.scopes):
+            if key in scope:
+                return scope[key]
+        return None
 
-    def _facade_ref(self, node: ast.expr) -> tuple[str, str | None] | None:
-        """The facade name, and attribute of it, that ``node`` denotes: ``Runtime.from_path``."""
-        if isinstance(node, ast.Name) and node.id in self.names:
-            return self.names[node.id], None
+    def _binding(self, node: ast.expr) -> tuple[str, str] | None:
+        if isinstance(node, ast.Name):
+            return self._lookup(node.id)
         if not isinstance(node, ast.Attribute) or node.attr.startswith("__"):
             return None
-        if ast.unparse(node.value) in self.modules:
-            return node.attr, None
-        base = self._facade_ref(node.value)
-        return (base[0], node.attr) if base and base[1] is None else None
+        exact = ast.unparse(node)
+        root: ast.expr = node
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        for scope in reversed(self.scopes):
+            if exact in scope:
+                return scope[exact]
+            if isinstance(root, ast.Name) and root.id in scope:
+                break
+        base = self._binding(node.value)
+        if base and base[0] == "module":
+            return "symbol", node.attr
+        return None
 
-    def uses(self, members: dict[str, str]) -> set[str]:
-        found: set[str] = set()
-        for node in self.nodes:
-            if isinstance(node, ast.Call):
-                target = self._use(node.func, members)
-                found.update([target + _shape(node)] if target else [])
-                found.update(filter(None, [self._patched(node)]))
-            elif isinstance(node, (ast.Name, ast.Attribute)):
-                found.update(filter(None, [self._use(node, members)]))
-        return found
+    def _facade_ref(self, node: ast.expr) -> tuple[str, str | None] | None:
+        binding = self._binding(node)
+        if binding and binding[0] == "symbol":
+            return binding[1], None
+        if isinstance(node, ast.Attribute) and not node.attr.startswith("__"):
+            base = self._binding(node.value)
+            if base and base[0] == "symbol":
+                return base[1], node.attr
+        return None
 
-    def _use(self, node: ast.expr, members: dict[str, str]) -> str | None:
+    def _instance(self, node: ast.expr) -> str | None:
+        if isinstance(node, ast.Call):
+            binding = self._binding(node.func)
+            if binding and binding[0] == "factory":
+                return binding[1]
+            ref = self._facade_ref(node.func)
+            return _produces(*ref) if ref else None
+        binding = self._binding(node)
+        return binding[1] if binding and binding[0] == "instance" else None
+
+    def _annotation(self, node: ast.expr | None) -> str | None:
+        if node is None:
+            return None
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            try:
+                node = ast.parse(node.value, mode="eval").body
+            except SyntaxError:
+                return None
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            if isinstance(node.right, ast.Constant) and node.right.value is None:
+                return self._annotation(node.left)
+            if isinstance(node.left, ast.Constant) and node.left.value is None:
+                return self._annotation(node.right)
+        ref = self._facade_ref(node)
+        if ref and ref[1] is None and inspect.isclass(getattr(embedding, ref[0], None)):
+            return ref[0]
+        return None
+
+    def _bind(self, target: ast.expr, binding: tuple[str, str] | None) -> None:
+        if isinstance(target, (ast.Tuple, ast.List)):
+            for element in target.elts:
+                self._bind(element, None)
+        elif isinstance(target, (ast.Name, ast.Attribute)):
+            key = ast.unparse(target)
+            # Replacing an object invalidates its previously known members.
+            for member in list(self.scopes[-1]):
+                if member.startswith(key + "."):
+                    del self.scopes[-1][member]
+            self.scopes[-1][key] = binding
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        for alias in node.names:
+            binding = None
+            if node.level == 0 and node.module == FACADE:
+                binding = ("symbol", alias.name)
+            elif node.level == 0 and f"{node.module}.{alias.name}" == FACADE:
+                binding = ("module", FACADE)
+            self.scopes[-1][alias.asname or alias.name] = binding
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            key = alias.asname or alias.name.split(".")[0]
+            self.scopes[-1][key] = None
+            if alias.name == FACADE:
+                self.scopes[-1][alias.asname or FACADE] = ("module", FACADE)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        self.visit(node.value)
+        owner = self._instance(node.value)
+        binding = ("instance", owner) if owner else self._binding(node.value)
+        for target in node.targets:
+            self.visit(target)
+            self._bind(target, binding)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self.visit(node.annotation)
+        if node.value is not None:
+            self.visit(node.value)
+            owner = self._instance(node.value) or self._annotation(node.annotation)
+        else:
+            owner = self._annotation(node.annotation)
+        self.visit(node.target)
+        self._bind(node.target, ("instance", owner) if owner else None)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self.generic_visit(node)
+        self._bind(node.target, None)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for default in [*node.args.defaults, *filter(None, node.args.kw_defaults)]:
+            self.visit(default)
+        arguments = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+        arguments += [arg for arg in (node.args.vararg, node.args.kwarg) if arg]
+        bindings: dict[str, tuple[str, str] | None] = {}
+        for arg in arguments:
+            if arg.annotation is not None:
+                self.visit(arg.annotation)
+            owner = self._annotation(arg.annotation)
+            bindings[arg.arg] = ("instance", owner) if owner else None
+        if node.returns is not None:
+            self.visit(node.returns)
+        returned = self._annotation(node.returns)
+        self.scopes[-1][node.name] = ("factory", returned) if returned else None
+
+        # All function-local names shadow outer bindings even before assignment.
+        class Locals(ast.NodeVisitor):
+            def visit_Name(self, name: ast.Name) -> None:
+                if isinstance(name.ctx, ast.Store):
+                    bindings.setdefault(name.id, None)
+
+            def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+                bindings.setdefault(node.name, None)
+
+            visit_AsyncFunctionDef = visit_FunctionDef
+
+            def visit_ClassDef(self, klass: ast.ClassDef) -> None:
+                bindings.setdefault(klass.name, None)
+
+            def visit_ImportFrom(self, imported: ast.ImportFrom) -> None:
+                for alias in imported.names:
+                    bindings.setdefault(alias.asname or alias.name, None)
+
+            def visit_Import(self, imported: ast.Import) -> None:
+                for alias in imported.names:
+                    bindings.setdefault(alias.asname or alias.name.split(".")[0], None)
+
+        collector = Locals()
+        for statement in node.body:
+            collector.visit(statement)
+        self.scopes.append(bindings)
+        for statement in node.body:
+            self.visit(statement)
+        self.scopes.pop()
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        for expression in [*node.decorator_list, *node.bases]:
+            self.visit(expression)
+        self.scopes[-1][node.name] = None
+        self.scopes.append({})
+        for statement in node.body:
+            self.visit(statement)
+        self.scopes.pop()
+
+    def visit_If(self, node: ast.If) -> None:
+        self.visit(node.test)
+        before = self.scopes[-1].copy()
+        branches = []
+        for body in (node.body, node.orelse):
+            self.scopes[-1] = before.copy()
+            for statement in body:
+                self.visit(statement)
+            branches.append(self.scopes[-1])
+        self.scopes[-1] = {
+            key: branches[0].get(key) if branches[0].get(key) == branches[1].get(key) else None
+            for key in branches[0].keys() | branches[1].keys()
+        }
+
+    def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
+        self.visit(node.iter)
+        self.visit(node.target)
+        self._bind(node.target, None)
+        self._loop(node.body, node.orelse)
+
+    visit_AsyncFor = visit_For
+
+    def visit_While(self, node: ast.While) -> None:
+        self._loop(node.body, node.orelse, node.test)
+
+    def _loop(
+        self, body: list[ast.stmt], otherwise: list[ast.stmt], test: ast.expr | None = None
+    ) -> None:
+        # A later iteration may observe any assignment in the body. Do not
+        # assume that the pre-loop value is still the receiver's type.
+        targets = [
+            child
+            for statement in body
+            for child in ast.walk(statement)
+            if isinstance(child, (ast.Name, ast.Attribute)) and isinstance(child.ctx, ast.Store)
+        ]
+        for target in targets:
+            self._bind(target, None)
+        if test is not None:
+            self.visit(test)
+        for statement in body:
+            self.visit(statement)
+        for target in targets:
+            self._bind(target, None)
+        for statement in otherwise:
+            self.visit(statement)
+
+    def visit_With(self, node: ast.With | ast.AsyncWith) -> None:
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars is not None:
+                self.visit(item.optional_vars)
+                self._bind(item.optional_vars, None)
+        for statement in node.body:
+            self.visit(statement)
+
+    visit_AsyncWith = visit_With
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        args = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+        args += [arg for arg in (node.args.vararg, node.args.kwarg) if arg]
+        self.scopes.append(dict.fromkeys(arg.arg for arg in args))
+        self.visit(node.body)
+        self.scopes.pop()
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.visit(node.value)
+        owner = self._instance(node.value)
+        self._bind(node.target, ("instance", owner) if owner else self._binding(node.value))
+
+    def visit_Call(self, node: ast.Call) -> None:
+        target = self._use(node.func)
+        if target:
+            self.found.add(target + _shape(node))
+        patched = self._patched(node)
+        if patched:
+            self.found.add(patched)
+        self.generic_visit(node)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Load) and (use := self._use(node)):
+            self.found.add(use)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if isinstance(node.ctx, ast.Load) and (use := self._use(node)):
+            self.found.add(use)
+        self.generic_visit(node)
+
+    def _use(self, node: ast.expr) -> str | None:
         ref = self._facade_ref(node)
         if ref:
             return ".".join(filter(None, ref))
-        if not isinstance(node, ast.Attribute) or node.attr.startswith("__"):
-            return None
-        owner = self.instances.get(_key(node.value) or "")
-        if owner is None and isinstance(node.value, ast.Attribute):
-            owner = None if _root(node.value) in self.imported else members.get(node.value.attr)
-        return f"{owner}().{node.attr}" if owner else None
+        if isinstance(node, ast.Attribute) and not node.attr.startswith("__"):
+            owner = self._instance(node.value)
+            return f"{owner}().{node.attr}" if owner else None
+        return None
 
     def _patched(self, call: ast.Call) -> str | None:
         if _key(call.func) not in _PATCHING_CALLS or not call.args:
@@ -301,7 +506,8 @@ class _FileScan:
         attr = _string(call.args[1]) if len(call.args) > 1 else None
         if attr is None:
             return None
-        if ast.unparse(call.args[0]) in self.modules:
+        binding = self._binding(call.args[0])
+        if binding and binding[0] == "module":
             return attr
         ref = self._facade_ref(call.args[0])
         return f"{ref[0]}.{attr}" if ref and ref[1] is None else None
@@ -314,16 +520,23 @@ def scan(consumer: Path) -> tuple[list[str], dict[str, str]]:
         check=True,
         capture_output=True,
         text=True,
+        timeout=120,
     ).stdout.split("\0")
-    files = [
-        _FileScan(ast.parse((consumer / name).read_text(encoding="utf-8"), filename=name))
+    trees = [
+        ast.parse((consumer / name).read_text(encoding="utf-8"), filename=name)
         for name in filter(None, listed)
     ]
-    members = {key: owner for scanned in files for key, owner in scanned.members.items()}
-    found = set().union(*(scanned.uses(members) for scanned in files))
+    files = [_FileScan(tree) for tree in trees]
+    identifiers = set().union(*map(_names, trees))
+    found = set().union(*(scanned.found for scanned in files))
     named = set().union(*map(_mentions, found)) & set(embedding.__all__)
     shapes = {name: _protocol_shape(getattr(embedding, name)) for name in named}
     found |= {f"{name}{{{shape}}}" for name, shape in shapes.items() if shape is not None}
+    for use in USES_FILE.read_text(encoding="utf-8").splitlines():
+        match = _USE.fullmatch(use)
+        if match and (match["attr"] or match["name"]) in identifiers and use not in found:
+            found.add(use)
+            print(f"retained (name still present): {use}", file=sys.stderr)
     failing = {use: reason for use in sorted(found) if (reason := problem(use))}
     working = found - set(failing)
     # ``Runtime`` is implied by ``Runtime.from_path(_)``; keep only the most specific uses.
