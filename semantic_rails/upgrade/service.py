@@ -214,6 +214,9 @@ def upgrade_project(
     files = PackageFiles(source)
     result = plan(files, rules, choices)
     if not result.findings:
+        unchanged = _stage(transaction, files, {})
+        if unchanged.error is not None:
+            raise SemanticLayerError(*unchanged.error)
         return {
             "ok": True,
             "status": "up_to_date",

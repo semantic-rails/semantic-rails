@@ -153,7 +153,9 @@ def _is_authored_relative(relative_path: str) -> bool:
     return path.suffix.lower() not in _GENERATED_SUFFIXES
 
 
-def _authored_project_files(project_path: Path) -> dict[str, bytes]:
+def _authored_project_files(
+    project_path: Path, *, include: Callable[[str], bool] | None = None
+) -> dict[str, bytes]:
     if not project_path.exists():
         return {}
     if not project_path.is_dir():
@@ -171,6 +173,8 @@ def _authored_project_files(project_path: Path) -> dict[str, bytes]:
             relative_dir = path.relative_to(project_path)
             if relative_dir.parts and relative_dir.parts[0] in _INTERNAL_ROOTS:
                 continue
+            if include is not None and not include(relative_dir.as_posix()):
+                continue
             if path.is_symlink():
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
@@ -183,6 +187,8 @@ def _authored_project_files(project_path: Path) -> dict[str, bytes]:
             path = root_path / name
             relative_file = path.relative_to(project_path).as_posix()
             if not _is_authored_relative(relative_file):
+                continue
+            if include is not None and not include(relative_file):
                 continue
             if path.is_symlink():
                 raise SemanticLayerError(
@@ -424,7 +430,15 @@ class ProjectTransaction:
         return root / self.package_file if self.package_file is not None else root
 
     def current_revision(self) -> str:
-        return project_revision(self.project_path)
+        return _revision_from_files(self.proposed_files(()))
+
+    def _includes_source(self, relative_path: str) -> bool:
+        """Single-file packages bind only their file and loader companions."""
+        return (
+            self.package_file is None
+            or relative_path == self.package_file
+            or Path(relative_path).parts[0] in {"examples", "tests"}
+        )
 
     def _matches_receipt_file(self, name: str, digest: str | None) -> bool:
         relative = Path(name)
@@ -796,9 +810,11 @@ class ProjectTransaction:
 
     def proposed_files(self, updates: Iterable[ProjectFileUpdate]) -> dict[str, bytes]:
         """The authored files as they would be with ``updates`` applied."""
-        files = _authored_project_files(self.project_path)
+        files = _authored_project_files(self.project_path, include=self._includes_source)
         for update in updates:
-            if not _is_authored_relative(update.relative_path):
+            if not _is_authored_relative(update.relative_path) or not self._includes_source(
+                update.relative_path
+            ):
                 continue
             if update.content is None:
                 files.pop(update.relative_path, None)
