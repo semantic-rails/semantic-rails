@@ -89,14 +89,9 @@ def _renamed(value: Any, rename: Callable[[str], str]) -> Any:
 
 
 def _names(value: Any) -> set[str]:
-    found: set[str] = set()
-
-    def record(name: str) -> str:
-        found.add(name)
-        return name
-
-    _renamed(value, record)
-    return found
+    found: dict[str, str] = {}
+    _renamed(value, lambda name: found.setdefault(name, name))
+    return set(found)
 
 
 @contextmanager
@@ -118,11 +113,10 @@ def refuse_as_unknown(
 ) -> None:
     """Refuse an object hidden from the caller exactly as if it did not exist.
 
-    Counts each id the caller named that is hidden from the context: the query gate's own
-    :func:`hidden_object_ids` set (a visibility that cannot be determined refuses with its own
-    error). ``resolve`` runs again with those ids swapped for ids no package declares, and its
-    own unknown-id refusal is raised with the caller's ids restored; a request that resolves
-    anyway goes on as sent. An object read only through a visible one is not named.
+    For each id the caller named that :func:`hidden_object_ids` holds, ``resolve`` runs again
+    with it swapped for an id no package declares; its own unknown-id refusal is raised with
+    the caller's ids restored. A request that resolves anyway goes on as sent; an object read
+    only through a visible one is not named.
     """
     named = _names(request)
     caller = _caller_names.get()
@@ -130,12 +124,9 @@ def refuse_as_unknown(
     if not named:
         return
     context = context_from_policy_context(policy_context)
-    scope: dict[str, Any] = {
-        "environment": context.environment,
-        "audience": context.audience,
-        "roles": context.roles,
-    }
-    named &= hidden_policy_ids(config, **scope) | restricted_object_ids(config, **scope)
+    scope = {"environment": context.environment, "audience": context.audience}
+    hidden = hidden_policy_ids(config, roles=context.roles, **scope)
+    named &= hidden | restricted_object_ids(config, roles=context.roles, **scope)
     if not named:
         return
     swap = {name: f"{name}{uuid.uuid4().hex}" for name in named}
@@ -146,20 +137,14 @@ def refuse_as_unknown(
 
 
 def _restored(exc: SemanticLayerError, swap: Mapping[str, str]) -> SemanticLayerError:
-    def restore(value: Any) -> Any:
-        if isinstance(value, str):
-            for name, swapped in swap.items():
-                value = value.replace(swapped, name)
-            return value
-        if isinstance(value, Mapping):
-            return {restore(key): restore(child) for key, child in value.items()}
-        if isinstance(value, list | tuple):
-            return type(value)(restore(child) for child in value)
-        return value
+    def restore(text: str) -> str:
+        for name, swapped in swap.items():
+            text = text.replace(swapped, name)
+        return text
 
     restored = type(exc).__new__(type(exc))  # the same refusal, subclass fields included
-    restored.args = restore(exc.args)
-    vars(restored).update(restore(vars(exc)))
+    restored.args = tuple(_renamed(list(exc.args), restore))
+    vars(restored).update(_renamed(vars(exc), restore))
     return restored
 
 
@@ -387,9 +372,7 @@ def enforce_query_policies(
     )
     if query is not None:
         context = {"environment": environment, "audience": audience, "roles": list(roles or [])}
-        refuse_as_unknown(
-            config, context, query, lambda masked: bind_query(config, None, dict(masked))
-        )
+        refuse_as_unknown(config, context, query, lambda masked: bind_query(config, None, masked))
     if restricted and binding is None and query is not None:
         binding = bind_query(config, None, dict(query))
     blocked = restricted & {
