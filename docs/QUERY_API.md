@@ -1265,7 +1265,9 @@ Canonical public error codes:
 - `FANOUT_UNSAFE`
 - `MIXED_GRAIN_INVALID`
 - `NO_VALID_VALUES_SOURCE`
-- `POLICY_DENIED` — object access or metric-constraint policy blocked the query.
+- `POLICY_DENIED` — object access or metric-constraint policy blocked the query. A
+  request naming an object hidden from the caller gets the refusal of an id that names
+  nothing instead, and a denial names only objects the caller can see.
 - `REWRITE_NOT_SUPPORTED`
 - `INVALID_EXPRESSION_AST` — ships a `USE_OBJECT_SHAPE` recovery hint in
   `details.recovery_hints` when the failure is a window/offset payload

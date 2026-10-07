@@ -656,8 +656,14 @@ action checks. Action text is trimmed and lowercased; kind names must match exac
   (e.g. `stable`, `preview`) surfaces in the package manifest and discovery
   metadata; it gates nothing by itself.
 - **`object_visibility`** — `action: hidden` hides matching objects from `catalog`,
-  `discover`, and `inspect` for the scoped audiences/environments/roles, and refuses a
-  query that reads one with `POLICY_DENIED`. `action: visible_only` does the opposite:
+  `discover`, and `inspect` for the scoped audiences/environments/roles. A request that
+  names a hidden object's id (in a query, a seed query, or as the id `inspect`,
+  `valid-values`, `build-options` or a segment tool takes) is refused exactly as if the
+  object did not exist: the same code, message, details and suggestions as an unknown id
+  in that place (`OBJECT_NOT_FOUND`, `INVALID_TEMPORAL_ROLE` or `PATH_NOT_FOUND`). A query
+  that reads one only through a visible object it names is refused with `POLICY_DENIED`.
+  No refusal or `policy_effects` entry names an object hidden from the caller.
+  `action: visible_only` does the opposite:
   it hides the objects, and everything computed from them, from every context it does
   not name; see [Objects visible only to named roles](#objects-visible-only-to-named-roles).
 - **`object_access`** — enforced at query time. `action: deny` refuses the
@@ -811,11 +817,10 @@ that must not see it.
   While any `visible_only` restriction applies to a caller, that caller cannot aggregate raw columns.
 - For an ineligible request, restricted objects are left out of `catalog`, `discover`,
   `build-options`, `plan`, other objects' `inspect` cards (related measures and metrics,
-  companions, starter queries) and diagnostic suggestions; `inspect` of one, and `valid-values`
-  of a restricted dimension, answer `OBJECT_NOT_FOUND`; `validate`, `compile`, `execute`,
-  `valid-values` and the segment tools refuse any query that reads one, including through
-  an inline expression, a derived metric, a metric filter or an `order_by`, with
-  `POLICY_DENIED`.
+  companions, starter queries) and diagnostic suggestions. A request naming one, on any
+  tool or operation and anywhere in a query (an inline expression, a derived metric, a
+  metric filter, a filter or a grouping), is refused exactly as if it did not exist, like a
+  `hidden` object; a raw-column aggregate is refused with `POLICY_DENIED`.
 - `hidden`, `deny`, `redact` and `withhold_values` still apply to eligible requests:
   explicit restrictions win.
 
