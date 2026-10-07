@@ -14,10 +14,10 @@ from semantic_rails.ast import normalize_query
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.planner import plan_payload
-from semantic_rails.planner._base import _time_window
-from semantic_rails.planner.faithfulness import _window_agrees
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import compose
+from semantic_rails.planner.time_checks import _window_agrees
+from semantic_rails.planner.time_windows import _time_window
 from semantic_rails.runtime import Runtime
 
 NOW = {"now": "2026-10-05T06:00:00Z"}

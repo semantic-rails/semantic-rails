@@ -22,18 +22,15 @@ import yaml
 
 from semantic_rails.planner import plan as plan_module
 from semantic_rails.planner import plan_payload
-from semantic_rails.planner._base import (
-    RuntimeCompositionDraft,
-    _requested_grouping_spans,
-    _requested_grouping_terms,
-)
-from semantic_rails.planner.faithfulness import (
+from semantic_rails.planner._base import RuntimeCompositionDraft
+from semantic_rails.planner.groupings import _requested_grouping_spans, _requested_grouping_terms
+from semantic_rails.planner.intent_ir import parse_intent
+from semantic_rails.planner.orchestrator import CompositionResult
+from semantic_rails.planner.unmatched_words import (
     unconsumed_catalog_words,
     unconsumed_unknown_words,
     unmatched_intent_terms,
 )
-from semantic_rails.planner.intent_ir import parse_intent
-from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.result_helpers import assert_plan_held
 

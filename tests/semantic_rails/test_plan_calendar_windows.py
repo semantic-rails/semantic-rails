@@ -17,11 +17,9 @@ from typing import Any
 import pytest
 
 from semantic_rails.planner import plan_payload
-from semantic_rails.planner._base import (
-    _time_bounds_from_text,
-    _time_spec,
-    _unresolved_time_phrases,
-)
+from semantic_rails.planner.groupings import _time_spec
+from semantic_rails.planner.patterns.metric_by_dimension_rollup import _unresolved_time_phrases
+from semantic_rails.planner.time_windows import _time_bounds_from_text
 from tests.semantic_rails.result_helpers import assert_plan_held
 
 YEAR_2017 = {"start": "2017-01-01", "end": "2018-01-01"}

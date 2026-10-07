@@ -464,7 +464,8 @@ def test_partial_or_noncontiguous_synonym_is_not_consumed(tmp_path: Path, questi
 def test_phrase_consumption_records_exact_span_and_preserves_numbers(tmp_path: Path):
     from dataclasses import replace
 
-    from semantic_rails.planner.faithfulness import _unconsumed_words, unconsumed_terms
+    from semantic_rails.planner.consumed_spans import unconsumed_terms
+    from semantic_rails.planner.unmatched_words import _unconsumed_words
 
     with closing(Runtime.from_path(str(_package(tmp_path / "shop", synonyms=True)))) as runtime:
         metric = next(

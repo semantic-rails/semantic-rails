@@ -12,8 +12,8 @@ import pytest
 import yaml
 
 from semantic_rails.planner import compose, plan_payload
+from semantic_rails.planner.intent_holds import _qualifying_entity_why
 from semantic_rails.planner.intent_ir import parse_intent
-from semantic_rails.planner.plan import _qualifying_entity_why
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.result_helpers import assert_plan_held, typed_rows

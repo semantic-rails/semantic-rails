@@ -22,13 +22,11 @@ import yaml
 
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.planner._base import _named_metric
-from semantic_rails.planner.faithfulness import (
-    _filter_value_gaps,
-    _ranking_request,
-    intent_faithfulness_why,
-    unmatched_intent_terms,
-)
+from semantic_rails.planner.faithfulness import intent_faithfulness_why
+from semantic_rails.planner.filter_checks import _filter_value_gaps
 from semantic_rails.planner.intent_ir import parse_intent
+from semantic_rails.planner.ranking_checks import _ranking_request
+from semantic_rails.planner.unmatched_words import unmatched_intent_terms
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ValueDomainConfig, ValueDomainValue
 from tests.semantic_rails.conftest import copy_package_config

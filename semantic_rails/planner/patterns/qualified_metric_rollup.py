@@ -11,29 +11,155 @@ from typing import Any
 
 from .._base import (
     RuntimeCompositionDraft,
-    _add_order,
     _aggregation_from_text,
-    _maybe_group_by,
     _object_by_id,
-    _predicate_grain,
-    _predicate_input,
-    _predicate_metric_terms,
     _preferred_measure,
-    _preferred_predicate_target,
+    _preferred_metric,
+    _resolved,
+    _score,
+    _semantic_token,
+    _tokens,
+)
+from ..generators import _target_focus_text
+from ..groupings import _maybe_group_by, _time_spec
+from ..qualifiers import (
+    _QUALIFICATION_STOP_TOKENS,
+    _add_order,
     _product_filter,
     _qualification_phrase,
     _qualification_phrase_token_groups,
     _qualifying_entity,
-    _resolved,
-    _semantic_token,
     _target_measure_terms,
     _threshold_from_text,
-    _time_spec,
-    _tokens,
     _top_n_intent,
 )
-from ..generators import _target_focus_text
 from ._protocol import IntentPattern
+
+
+def _predicate_metric_terms(text: str, terms: set[str], target_terms: list[str]) -> list[list[str]]:
+    """Return predicate-metric term groups for ``qualified_metric_rollup``."""
+    phrase_groups = _qualification_phrase_token_groups(text, target_terms)
+    if phrase_groups:
+        return phrase_groups
+    predicate_terms: list[list[str]] = []
+    for channel in ("sms", "push", "email"):
+        if channel in terms:
+            predicate_terms.append([channel])
+    if predicate_terms:
+        return predicate_terms
+    if "order" in terms and "order" not in (target_terms or []):
+        predicate_terms.append(["order"])
+    if "session" in terms and "session" not in (target_terms or []):
+        predicate_terms.append(["session"])
+    if predicate_terms:
+        return predicate_terms
+    if "message" in terms and "message" not in (target_terms or []):
+        return [["message"]]
+    return []
+
+
+def _predicate_grain(text: str, output_grain: str) -> str:
+    lowered = str(text or "").lower()
+    for candidate in ("day", "week", "month", "quarter", "year"):
+        mentioned = (
+            f"that {candidate}" in lowered
+            or f"same {candidate}" in lowered
+            or f"in the {candidate}" in lowered
+            or f"in that {candidate}" in lowered
+            or f"per {candidate}" in lowered
+        )
+        if mentioned and candidate != output_grain:
+            return candidate
+    return ""
+
+
+def _predicate_input(target: Any) -> dict[str, Any]:
+    object_id = str(getattr(target, "id", ""))
+    if object_id.startswith("measure."):
+        return {"measure": object_id}
+    return {"metric": object_id}
+
+
+_CANONICAL_PREDICATE_MEASURES: dict[str, list[str]] = {
+    "order": ["measure.jaffle.order_count"],
+    "session": ["measure.jaffle.session_starts"],
+    "customer": ["measure.jaffle.ordering_customer_count", "measure.jaffle.customer_count"],
+    "revenue": ["measure.jaffle.revenue_usd"],
+    "signup": ["measure.jaffle.signup_count"],
+}
+
+
+def _preferred_predicate_target(
+    config: Any,
+    metric_terms: list[str],
+    *,
+    target_measure: Any,
+) -> Any | None:
+    if not metric_terms:
+        return None
+    term_set = set(metric_terms)
+    has_distinct = "distinct" in term_set
+
+    content_tokens = [t for t in metric_terms if t not in _QUALIFICATION_STOP_TOKENS]
+    if len(content_tokens) == 1:
+        canonical_ids = _CANONICAL_PREDICATE_MEASURES.get(content_tokens[0], [])
+        for measure_id in canonical_ids:
+            match = next((row for row in config.measures if row.id == measure_id), None)
+            if match is not None:
+                return match
+
+    qualifier_prefixes = (
+        "new_",
+        "high_value_",
+        "repeat_",
+        "visiting_",
+        "lifetime_",
+        "delivered_",
+        "drink_",
+        "food_",
+        "cumulative_",
+    )
+    measure_ranked: list[tuple[int, int, int, int, str, Any]] = []
+    target_role = str(getattr(target_measure, "default_temporal_role", "") or "")
+    for row in config.measures:
+        score = _score(row, term_set)
+        if score <= 0:
+            continue
+        role_match = 1 if str(getattr(row, "default_temporal_role", "") or "") == target_role else 0
+        distinct_match = (
+            1
+            if (
+                has_distinct
+                and str(getattr(row, "measure_class", "") or "") == "distinct_population"
+            )
+            else 0
+        )
+        base_id = getattr(row, "id", "").split(".", 2)[-1] if getattr(row, "id", "") else ""
+        unqualified_bonus = 1
+        for prefix in qualifier_prefixes:
+            if base_id.startswith(prefix):
+                prefix_token = prefix.rstrip("_").split("_", 1)[0]
+                if prefix_token not in term_set:
+                    unqualified_bonus = 0
+                    break
+        measure_ranked.append(
+            (-score, -unqualified_bonus, -role_match, -distinct_match, getattr(row, "id", ""), row)
+        )
+    measure_ranked.sort()
+
+    metric_ranked: list[tuple[int, str, Any]] = []
+    for row in config.metric_recipes:
+        score = _score(row, term_set)
+        if score <= 0:
+            continue
+        metric_ranked.append((-score, getattr(row, "id", ""), row))
+    metric_ranked.sort()
+
+    if measure_ranked:
+        return measure_ranked[0][-1]
+    if metric_ranked:
+        return metric_ranked[0][-1]
+    return _preferred_metric(config, term_set)
 
 
 def _match(runtime: Any, text: str, terms: set[str]) -> RuntimeCompositionDraft | None:
