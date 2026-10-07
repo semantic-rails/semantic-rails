@@ -64,20 +64,6 @@ def adapter(runtime_factory: Any) -> Iterator[SemanticLayerMCPAdapter]:
 
 
 @pytest.mark.parametrize(("tool", "arguments"), CALLS, ids=[name for name, _ in CALLS])
-def test_patches_carry_only_query_ir_for_local_callers(
-    adapter: SemanticLayerMCPAdapter, tool: str, arguments: dict[str, Any]
-) -> None:
-    response = adapter.call_tool(
-        tool, {**arguments, "policy_context": POLICY_CONTEXT, "unexpected": 1}
-    )
-    assert response["ok"], response["errors"]
-    patches = list(_patches(response))
-    assert patches, f"{tool} returned no query patches"
-    for patch in patches:
-        assert set(patch) <= QUERY_IR_KEYS, sorted(set(patch) - QUERY_IR_KEYS)
-
-
-@pytest.mark.parametrize(("tool", "arguments"), CALLS, ids=[name for name, _ in CALLS])
 def test_patches_carry_only_query_ir_behind_a_transport_context(
     adapter: SemanticLayerMCPAdapter, tool: str, arguments: dict[str, Any]
 ) -> None:
@@ -117,6 +103,9 @@ def test_every_patch_runs_as_is(
     response = adapter.call_tool(
         tool, {**arguments, "policy_context": POLICY_CONTEXT, "unexpected": 1}
     )
+    assert response["ok"], response["errors"]
+    for patch in _patches(response):
+        assert set(patch) <= QUERY_IR_KEYS, sorted(set(patch) - QUERY_IR_KEYS)
     patches = [patch for patch in _patches(response) if patch.get("select")]
     assert patches
     # Windowed metrics (such as cumulative revenue) carry their default time block.

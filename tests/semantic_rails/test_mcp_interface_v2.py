@@ -7,8 +7,6 @@ and defaults every tool to its smallest response.
 
 from __future__ import annotations
 
-import argparse
-import io
 import json
 import re
 from collections.abc import Iterator
@@ -46,7 +44,7 @@ UNGRAINED = {
     "order_by": [{"field": STORE, "direction": "ASC"}],
 }
 V2_TOOLS = ["discover", "inspect", "valid-values", "plan", "execute", "segment"]
-V1_ONLY_TOOLS = {
+UNAVAILABLE_TOOLS = {
     "capabilities",
     "catalog",
     "build-options",
@@ -69,6 +67,19 @@ def runtime(runtime_factory: Any) -> Iterator[Any]:
 @pytest.fixture()
 def v2(runtime: Any) -> SemanticLayerMCPAdapter:
     return SemanticLayerMCPAdapter(runtime)
+
+
+@pytest.mark.parametrize("interface", ["v2", "v1"])
+def test_adapter_constructor_keeps_the_interface_keyword(runtime: Any, interface: str) -> None:
+    if interface == "v2":
+        adapter = SemanticLayerMCPAdapter(runtime, interface=interface)
+        assert adapter.runtime is runtime
+        assert adapter.interface == "v2"
+    else:
+        with pytest.raises(SemanticLayerError) as caught:
+            SemanticLayerMCPAdapter(runtime, interface=interface)
+        assert caught.value.code == "INVALID_CONFIG"
+        assert caught.value.details == {"interface": interface, "valid_values": ["v2"]}
 
 
 def _stable(response: dict[str, Any]) -> dict[str, Any]:
@@ -149,64 +160,6 @@ def _initialize(adapter: SemanticLayerMCPAdapter) -> dict[str, Any]:
     return result
 
 
-def test_asking_for_the_removed_v1_interface_fails(
-    runtime: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    env = "SEMANTIC_RAILS_MCP_INTERFACE"
-    monkeypatch.setenv(env, " V2 ")
-    assert SemanticLayerMCPAdapter(runtime).interface == "v2"
-    for argument, environment in (("v1", ""), (None, "v1"), (None, "v3"), ("", "v1")):
-        monkeypatch.setenv(env, environment)
-        with pytest.raises(SemanticLayerError) as raised:
-            SemanticLayerMCPAdapter(runtime, interface=argument)
-        assert raised.value.code == "INVALID_CONFIG"
-        assert "v1 MCP interface was removed; v2 is the only interface" in str(raised.value)
-    # mcp stdio, http and doctor build their adapter from the environment.
-    with pytest.raises(SemanticLayerError, match="was removed; v2 is the only interface"):
-        _mcp_tool_check(runtime)
-
-
-def test_a_stdio_client_pinned_to_v1_gets_the_refusal(
-    runtime: Any, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Not a closed connection: the refusal answers initialize and goes to stderr."""
-
-    from semantic_rails.cli.commands import mcp as mcp_commands
-    from semantic_rails.config_validation import PackageReference
-
-    monkeypatch.setenv("SEMANTIC_RAILS_MCP_INTERFACE", "v1")
-    monkeypatch.setattr(
-        mcp_commands, "_ref_from_args", lambda _args: PackageReference(runtime.source_path)
-    )
-
-    def load_runtime(_ref: PackageReference) -> Any:
-        print("Loading package")
-        return runtime
-
-    monkeypatch.setattr(mcp_commands, "_runtime_from_ref", load_runtime)
-    initialize = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
-    initialized = {"jsonrpc": "2.0", "method": "notifications/initialized"}
-    monkeypatch.setattr(
-        "sys.stdin", io.StringIO(f"{json.dumps(initialize)}\n{json.dumps(initialized)}\n")
-    )
-    with pytest.raises(SystemExit):
-        mcp_commands.cmd_mcp_stdio(argparse.Namespace())
-    out, err = capsys.readouterr()
-    [reply] = [json.loads(line) for line in out.splitlines()]
-    assert reply["id"] == 1
-    assert reply["error"]["data"] == {
-        "code": "INVALID_CONFIG",
-        "details": {
-            "config_path": runtime.source_path,
-            "interface": "v1",
-            "valid_values": ["v2"],
-        },
-    }
-    assert "v1 MCP interface was removed" in reply["error"]["message"]
-    assert "v1 MCP interface was removed" in err
-    assert "Loading package" in err
-
-
 def test_the_adapter_serves_the_frozen_contract(v2: SemanticLayerMCPAdapter) -> None:
     manifest = load_contract("query_mcp.v2.json")
     assert v2.list_tools() == manifest["tools"]
@@ -227,7 +180,7 @@ def test_tools_default_to_small_responses_and_state_the_workflow() -> None:
     assert execute["max_rows"]["default"] == MCP_DEFAULT_MAX_ROWS
     assert execute["mode"]["enum"] == ["run", "validate", "sql"]
     assert "exclusive" in execute["query"]["properties"]["time"]["properties"]["end"]["description"]
-    for tool in ("discover", "inspect"):
+    for tool in ("discover", "inspect", "execute"):
         assert tools[tool]["inputSchema"]["properties"]["verbosity"]["default"] == "minimal"
     # Hosts that drop the server instructions still see plan-first and the exclusive end.
     assert "call it before 'execute'" in tools["plan"]["description"]
@@ -257,9 +210,9 @@ def test_v2_text_names_only_v2_tools(v2: SemanticLayerMCPAdapter) -> None:
     ):
         texts.append(v2.get_prompt(prompt, arguments)["messages"][0]["content"]["text"])
     for text in texts:
-        for name in V1_ONLY_TOOLS:
+        for name in UNAVAILABLE_TOOLS:
             assert f"'{name}' tool" not in text and f"{name}(" not in text, (name, text)
-        for name in V1_ONLY_TOOLS - {"validate"}:
+        for name in UNAVAILABLE_TOOLS - {"validate"}:
             assert f"'{name}'" not in text and f"`{name}`" not in text, (name, text)
 
 
@@ -300,16 +253,28 @@ def test_bad_modes_and_actions_are_argument_errors(v2: SemanticLayerMCPAdapter) 
 
 
 @pytest.mark.parametrize("action", ["validate", "explain", "preview"])
+@pytest.mark.parametrize("verbosity", [None, "", "   "])
 def test_segment_actions_default_to_minimal_verbosity(
-    v2: SemanticLayerMCPAdapter, action: str
+    v2: SemanticLayerMCPAdapter, action: str, verbosity: str | None
 ) -> None:
     # limit only applies to previews, and is accepted with any action.
     arguments = {"segment_id": SEGMENT, "limit": 3, "action": action}
+    if verbosity is not None:
+        arguments["verbosity"] = verbosity
     default = v2.call_tool("segment", arguments)
     minimal = v2.call_tool("segment", {**arguments, "verbosity": "minimal"})
     full = v2.call_tool("segment", {**arguments, "verbosity": "full"})
     assert default["ok"] is True, default["errors"]
-    assert set(default) == set(minimal) and len(str(default)) < len(str(full))
+    # Each unordered preview can sample different members; compare its shape.
+    assert _stable({k: v for k, v in default.items() if k != "rows"}) == _stable(
+        {k: v for k, v in minimal.items() if k != "rows"}
+    )
+    if action == "preview":
+        assert len(default["rows"]) == len(minimal["rows"]) == 3
+        assert {tuple(sorted(row)) for row in default["rows"]} == {
+            tuple(sorted(row)) for row in minimal["rows"]
+        }
+    assert len(str(default)) < len(str(full))
     for key in ("status", "member_count", "preview_row_count", "derived_query"):
         assert default.get(key) == full.get(key), key
 
@@ -363,11 +328,17 @@ def test_empty_terms_discover_pages_ids_per_kind(v2: SemanticLayerMCPAdapter) ->
     assert last["warnings"] == [] and "measure_ids" not in last["catalog"]
 
 
-def test_unknown_tool_hint_names_only_tools_the_interface_has(
-    v2: SemanticLayerMCPAdapter,
-) -> None:
-    hint = v2.call_tool("forecast", {})["errors"][0]["recovery_hints"][0]["message"]
-    assert hint.endswith("common entry points are 'discover', 'inspect', 'plan'.")
+@pytest.mark.parametrize("tool", ["forecast", *sorted(UNAVAILABLE_TOOLS)])
+def test_unknown_tools_use_one_refusal(v2: SemanticLayerMCPAdapter, tool: str) -> None:
+    response = v2.call_tool(tool, {})
+    assert response["ok"] is False and response["status"] == "error"
+    error = response["errors"][0]
+    assert error["code"] == "UNKNOWN_MCP_TOOL"
+    assert error["message"] == f"Unknown MCP tool '{tool}'"
+    assert error["details"] == {"tool": tool, "available_tools": sorted(V2_TOOLS)}
+    assert error["recovery_hints"][0]["message"].endswith(
+        "common entry points are 'discover', 'inspect', 'plan'."
+    )
 
 
 AIRSPEED = {"measure": "measure.jaffle.airspeed", "aggregation": "sum"}
@@ -389,7 +360,7 @@ def _sends_to_removed_surface(text: str) -> bool:
 
     # "execute with mode 'validate'" and "segment with action 'preview'" are v2 calls.
     text = re.sub(r"(mode|action) '[a-z]+'", "", text.lower())
-    names = "|".join(re.escape(name) for name in V1_ONLY_TOOLS)
+    names = "|".join(re.escape(name) for name in UNAVAILABLE_TOOLS)
     return "/api/v1/" in text or bool(
         re.search(rf"[`']({names})[`']|\b({names}) tool\b|\bor ({names}) to\b", text)
         or re.search(rf"\b(call|use|run|try)\s+(the\s+)?({names})\b", text)
@@ -462,25 +433,7 @@ def test_hints_built_outside_those_calls_point_at_v2_calls() -> None:
     assert not [text for text in texts if _sends_to_removed_surface(text)]
 
 
-@pytest.mark.parametrize("tool", sorted(V1_ONLY_TOOLS))
-def test_removed_v1_tools_point_to_their_replacement(
-    v2: SemanticLayerMCPAdapter, tool: str
-) -> None:
-    response = v2.call_tool(tool, {})
-    error = response["errors"][0]
-    assert error["code"] == "UNKNOWN_MCP_TOOL"
-    assert error["details"]["available_tools"] == sorted(V2_TOOLS)
-    replacement = error["details"]["replacement"]
-    assert (
-        error["message"]
-        == f"The '{tool}' tool was removed with MCP interface v1; use {replacement}."
-    )
-    assert error["recovery_hints"][0]["message"] == f"Use {replacement} instead."
-    assert not _sends_to_removed_surface(replacement)
-
-
-def test_mcp_doctor_checks_the_v2_tools(runtime: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("SEMANTIC_RAILS_MCP_INTERFACE", raising=False)
+def test_mcp_doctor_checks_the_v2_tools(runtime: Any) -> None:
     check = _mcp_tool_check(runtime)
     assert check["interface"] == "v2"
     assert check["required_tools_present"] is True
