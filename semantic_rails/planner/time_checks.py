@@ -1,3 +1,5 @@
+"""Faithfulness: the draft's window and span match the question's."""
+
 from __future__ import annotations
 
 import re

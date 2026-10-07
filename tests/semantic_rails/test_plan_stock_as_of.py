@@ -20,7 +20,7 @@ import yaml
 
 from semantic_rails.expressions import ArithmeticExpr, LiteralExpr, MetricRecipeRefExpr
 from semantic_rails.mcp import SemanticLayerMCPAdapter
-from semantic_rails.planner import faithfulness, plan_payload
+from semantic_rails.planner import plan_payload, time_checks
 from semantic_rails.runtime import Runtime
 
 NOW = {"now": "2026-10-05T06:00:00Z"}
@@ -233,10 +233,10 @@ def test_a_stock_read_through_a_metric_filter_or_a_nested_metric_is_held(
 ) -> None:
     config = runtime._config
     users = {"expression": {"measure": "measure.billing.registered_users"}, "as": "users"}
-    assert faithfulness._stock_as_of_gaps(config, {"select": [users]}) == []
+    assert time_checks._stock_as_of_gaps(config, {"select": [users]}) == []
     mrr = {"measure": MEASURE, "aggregation": "last_value"}
     filtered = {"select": [users], "metric_filters": [{"expression": mrr, "op": ">", "value": 0}]}
-    [gap] = faithfulness._stock_as_of_gaps(config, filtered)
+    [gap] = time_checks._stock_as_of_gaps(config, filtered)
     assert gap.expected == {"grain": "day", "stocks": [MEASURE]}
     metric = next((row for row in config.metric_recipes if row.id == "metric.billing.mrr"), None)
     if metric is None:
@@ -248,7 +248,7 @@ def test_a_stock_read_through_a_metric_filter_or_a_nested_metric_is_held(
     )
     nested = replace(config, metric_recipes=[*config.metric_recipes, doubled])
     query = {"select": [{"expression": {"metric": doubled.id}, "as": "v"}]}
-    [gap] = faithfulness._stock_as_of_gaps(nested, query)
+    [gap] = time_checks._stock_as_of_gaps(nested, query)
     assert gap.expected == {"grain": "day", "stocks": [MEASURE]}
     selected = {"select": [{"expression": {"metric": metric.id}, "as": "mrr"}]}
     _assert_held(_plan(runtime, "MRR", partial=selected), None)
@@ -328,7 +328,7 @@ def test_a_shared_stock_is_marked_when_reached_through_a_predicate(
     )
     select = [{"expression": stock}, {"expression": expression}]
     query = {"select": select if direct_first else select[::-1], "time": {"grain": "day"}}
-    [gap] = faithfulness._stock_as_of_gaps(config, query)
+    [gap] = time_checks._stock_as_of_gaps(config, query)
     assert gap.expected == {"grain": "day", "stocks": [MEASURE]}
     assert gap.actual == {"grain": "day"}
 
@@ -353,7 +353,7 @@ def test_a_series_key_that_cannot_be_read_is_held(
     def unreadable(*_args: Any, **_kwargs: Any) -> Any:
         raise RuntimeError("series key unreadable")
 
-    monkeypatch.setattr(faithfulness, "_snapshot_series_columns", unreadable)
+    monkeypatch.setattr(time_checks, "_snapshot_series_columns", unreadable)
     plan = _plan(runtime, intent)
     assert plan["status"] == "low_confidence", plan.get("why")
     assert "execute" not in plan.get("next", {}).get("ready_for", [])
@@ -378,4 +378,4 @@ def test_a_direct_daily_stock_with_a_nonstock_predicate_is_unchanged(
         ],
         "time": {"grain": "day"},
     }
-    assert faithfulness._stock_as_of_gaps(qualifying_runtime._config, query) == []
+    assert time_checks._stock_as_of_gaps(qualifying_runtime._config, query) == []

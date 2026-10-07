@@ -1,3 +1,5 @@
+"""Why a draft is held for time, currency or value words it doesn't carry."""
+
 from __future__ import annotations
 
 import re

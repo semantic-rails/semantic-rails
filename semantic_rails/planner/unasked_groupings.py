@@ -1,3 +1,5 @@
+"""Readiness: groupings and grains the draft adds that the question didn't ask for."""
+
 from __future__ import annotations
 
 import re

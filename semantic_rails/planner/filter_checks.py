@@ -1,3 +1,5 @@
+"""Faithfulness: filter values, where clauses, exclusions and contradictions."""
+
 from __future__ import annotations
 
 import re

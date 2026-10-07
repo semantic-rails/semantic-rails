@@ -26,8 +26,8 @@ import duckdb
 import pytest
 
 from semantic_rails.http_core import SemanticHTTPService, normalize_route
+from semantic_rails.planner import answer_shape, intent_holds, plan_payload
 from semantic_rails.planner import plan as plan_module
-from semantic_rails.planner import plan_payload
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config, opened
 from tests.semantic_rails.result_helpers import typed_rows
@@ -338,7 +338,9 @@ def test_only_the_listed_entitys_key_lists_its_rows(
     without a limit before it, too: it adds the store name and can't tell what ranks them."""
 
     partial = {"group_by": group_by}
-    why = plan_module._answer_shape_why(jaffle, question, {**_selects(REVENUE), **partial}, partial)
+    why = answer_shape._answer_shape_why(
+        jaffle, question, {**_selects(REVENUE), **partial}, partial
+    )
 
     assert (why is None) is listed
     if not listed:
@@ -632,7 +634,7 @@ def test_a_meaningful_word_or_tail_is_not_offered(
 def test_a_contraction_end_follows_an_apostrophe_inside_a_word(
     question: str, term: str, tail: bool
 ) -> None:
-    assert plan_module._contraction_tail(question, term) is tail
+    assert intent_holds._contraction_tail(question, term) is tail
 
 
 def test_a_shape_word_inside_a_declared_name_asks_nothing(
@@ -644,7 +646,7 @@ def test_a_shape_word_inside_a_declared_name_asks_nothing(
     runtime = _upkeep(tmp_path / "incident", "incident", "comparison")
     try:
         payload = plan_payload(runtime, intent=question)
-        monkeypatch.setattr(plan_module, "_declared_name_spans", lambda *_args, **_kwargs: {})
+        monkeypatch.setattr(answer_shape, "_declared_name_spans", lambda *_args, **_kwargs: {})
         unnamed = plan_payload(runtime, intent=question)
     finally:
         runtime.close()

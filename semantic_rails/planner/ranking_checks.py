@@ -1,3 +1,5 @@
+"""Faithfulness: rankings the question asks for."""
+
 from __future__ import annotations
 
 import re

@@ -1,3 +1,5 @@
+"""The groupings and time grain a question asks for."""
+
 from __future__ import annotations
 
 import re

@@ -334,7 +334,7 @@ def test_the_catalog_fallback_resolves_windows_the_same_way(
 def test_today_follows_the_date(monkeypatch: pytest.MonkeyPatch) -> None:
     from datetime import UTC, datetime
 
-    from semantic_rails.planner import _base
+    from semantic_rails.planner import time_windows
 
     class OtherDay(datetime):
         @classmethod
@@ -343,7 +343,7 @@ def test_today_follows_the_date(monkeypatch: pytest.MonkeyPatch) -> None:
             return cls(2001, 2, 3, tzinfo=UTC)
 
     before = _time_bounds_from_text("orders today")
-    monkeypatch.setattr(_base, "datetime", OtherDay)
+    monkeypatch.setattr(time_windows, "datetime", OtherDay)
     assert _time_bounds_from_text("orders today") == {"start": "2001-02-03", "end": "2001-02-04"}
     assert _time_bounds_from_text("revenue this month")["start"] == "2001-02-01"
     assert before != _time_bounds_from_text("orders today")

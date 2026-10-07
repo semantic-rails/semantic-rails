@@ -1,3 +1,5 @@
+"""Readiness: the result has the rows, comparison and values the question's shape asks for."""
+
 from __future__ import annotations
 
 import re

@@ -1,3 +1,5 @@
+"""Question words no part of the draft explains."""
+
 from __future__ import annotations
 
 import re
@@ -555,3 +557,10 @@ def _within_one_edit(left: str, right: str) -> bool:
     while index < len(shorter) and shorter[index] == longer[index]:
         index += 1
     return shorter[index:] == longer[index + 1 :]
+
+
+__all__ = [
+    "unconsumed_catalog_words",
+    "unconsumed_unknown_words",
+    "unmatched_intent_terms",
+]

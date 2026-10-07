@@ -1,10 +1,11 @@
 """Conservative intent-to-Query-IR faithfulness diagnostics.
 
 Validation proves that a Query IR is executable; it does not prove that the IR
-answers every clause in the user's question.  This module checks a deliberately
-small set of high-confidence structural cues whose realization is observable in
-Query IR.  A detected gap downgrades a validating plan instead of guessing how
-to repair it.
+answers every clause in the user's question.  ``intent_faithfulness_why`` runs a
+deliberately small set of high-confidence structural checks (this module's subject
+and metric checks, and ``time_checks``, ``ranking_checks`` and ``filter_checks``)
+whose realization is observable in Query IR.  A detected gap downgrades a
+validating plan instead of guessing how to repair it.
 
 The checks are compositional rather than pattern-specific.  A newly added
 planner pattern automatically passes once its Query IR contains the requested
@@ -669,10 +670,5 @@ def _subject_tokens(text: str) -> tuple[str, ...]:
 
 
 __all__ = [
-    "CoverageGap",
     "intent_faithfulness_why",
-    "unconsumed_catalog_words",
-    "unconsumed_terms",
-    "unconsumed_unknown_words",
-    "unmatched_intent_terms",
 ]

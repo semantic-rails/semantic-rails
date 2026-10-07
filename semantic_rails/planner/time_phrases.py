@@ -1,3 +1,5 @@
+"""Time phrases plan reads: calendar and relative-window grammar, bounds, cues and comparison triggers."""
+
 from __future__ import annotations
 
 import re

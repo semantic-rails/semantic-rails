@@ -1,3 +1,5 @@
+"""Resolve a question's time window, as-of cues and fiscal calendar."""
+
 from __future__ import annotations
 
 import copy

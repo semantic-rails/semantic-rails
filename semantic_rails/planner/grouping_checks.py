@@ -1,3 +1,5 @@
+"""Readiness: groupings the question asks for that the draft dropped."""
+
 from __future__ import annotations
 
 import re

@@ -1405,9 +1405,9 @@ def test_the_longest_value_wins() -> None:
 def test_unmatched_terms_read_only_so_far(
     adapter: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from semantic_rails.planner import faithfulness
+    from semantic_rails.planner import unmatched_words
 
-    monkeypatch.setattr(faithfulness, "_MAX_SCANNED_WORDS", 3)
+    monkeypatch.setattr(unmatched_words, "_MAX_SCANNED_WORDS", 3)
     # "weather" is the fifth distinct word, past the three scanned.
     words = unmatched_intent_terms(adapter.runtime, "revenue by month for weather", _query())
     assert words == []

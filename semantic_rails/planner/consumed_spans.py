@@ -1,3 +1,5 @@
+"""Numerals, clock and zone words the draft must consume."""
+
 from __future__ import annotations
 
 import re
@@ -385,3 +387,8 @@ def _number_sets(query: dict[str, Any]) -> tuple[set[str], set[str]]:
 
     walk({key: value for key, value in query.items() if key != "version"})
     return plain, percents
+
+
+__all__ = [
+    "unconsumed_terms",
+]

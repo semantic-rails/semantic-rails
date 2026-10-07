@@ -1,3 +1,5 @@
+"""Pick the best draft by semantic drift, and build the trace and slim payloads."""
+
 from __future__ import annotations
 
 from typing import Any

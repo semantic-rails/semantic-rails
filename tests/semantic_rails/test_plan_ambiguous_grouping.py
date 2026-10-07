@@ -10,7 +10,7 @@ import duckdb
 import pytest
 import yaml
 
-from semantic_rails.planner import generators, plan_payload
+from semantic_rails.planner import generators, grouping_checks, plan_payload
 from semantic_rails.planner import plan as plan_module
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
@@ -192,7 +192,7 @@ def test_discovery_only_match_does_not_satisfy_an_explicit_grouping(shop):
         "select": [{"as": "revenue", "expression": {"measure": "measure.shop.item_revenue"}}],
         "group_by": [STORE],
     }
-    why = plan_module._dropped_grouping_why(
+    why = grouping_checks._dropped_grouping_why(
         shop, "item revenue by district", query, {"group_by": [STORE]}
     )
     assert why is not None
@@ -370,7 +370,7 @@ def test_settled_grouping_overlap_offers_no_options_for_several_terms(runtime_fa
     draft = plan_payload(runtime, intent=intent)["best"]["query_ir"]
     query = {**draft, "group_by": [JAFFLE_STORE, JAFFLE_CUSTOMER, ITEM_PRODUCT_TYPE]}
     assert runtime.validate(query)["ok"]
-    why = plan_module._dropped_grouping_why(runtime, intent, query)
+    why = grouping_checks._dropped_grouping_why(runtime, intent, query)
     _assert_no_grouping_options(why, ["name", "product type"])
 
 
@@ -397,13 +397,13 @@ def test_discovery_cannot_widen_a_whole_dimension_name(shop, monkeypatch, term, 
             dimensions=[customer, *[row for row in shop._config.dimensions if row.id != CUSTOMER]],
         ),
     )
-    monkeypatch.setattr(plan_module, "_grouping_term_matches", lambda *args, **kwargs: [STORE])
+    monkeypatch.setattr(grouping_checks, "_grouping_term_matches", lambda *args, **kwargs: [STORE])
     query = {
         "version": 1,
         "select": [{"as": "revenue", "expression": {"measure": "measure.shop.item_revenue"}}],
         "group_by": [customer.id],
     }
-    why = plan_module._dropped_grouping_why(shop, f"item revenue by {term}", query)
+    why = grouping_checks._dropped_grouping_why(shop, f"item revenue by {term}", query)
     if ambiguous:
         assert why["code"] == "PLAN_UNMATCHED_TERMS"
         assert why["details"]["ambiguous_groupings"] == [term]

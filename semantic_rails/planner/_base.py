@@ -1,7 +1,8 @@
-"""Shared helpers for intent patterns.
+"""Shared helpers for intent patterns: the draft type, tokens, synonyms and catalog matching.
 
 Patterns under ``semantic_rails/planner/patterns/`` import what they
-need from this module so the orchestrator stays thin.
+need from this module and its siblings (``time_phrases``, ``time_windows``,
+``groupings``, ``qualifiers``) so the orchestrator stays thin.
 """
 
 from __future__ import annotations

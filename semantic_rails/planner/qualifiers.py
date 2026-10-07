@@ -1,3 +1,5 @@
+"""Thresholds, qualifying phrases and entities, and top-N requests."""
+
 from __future__ import annotations
 
 import re

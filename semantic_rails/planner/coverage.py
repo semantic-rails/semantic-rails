@@ -1,3 +1,5 @@
+"""Coverage gaps, and the query and text readers every faithfulness check shares."""
+
 from __future__ import annotations
 
 import re
@@ -180,3 +182,8 @@ def _unique_hints(gaps: list[CoverageGap]) -> list[dict[str, Any]]:
         seen.add(key)
         out.append(dict(hint))
     return out
+
+
+__all__ = [
+    "CoverageGap",
+]

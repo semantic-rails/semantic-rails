@@ -21,8 +21,8 @@ import duckdb
 import pytest
 import yaml
 
+from semantic_rails.planner import grouping_checks, plan_payload
 from semantic_rails.planner import plan as plan_module
-from semantic_rails.planner import plan_payload
 from semantic_rails.planner._base import RuntimeCompositionDraft
 from semantic_rails.planner.groupings import _listed_grouping_terms
 from semantic_rails.planner.intent_ir import parse_intent
@@ -392,7 +392,7 @@ def test_a_composite_key_entity_grouping_is_never_ready(
     assert payload["why"]["details"]["dropped_groupings"] == ["incident"]
     # Neither the id alone nor the id with the revision satisfies the guard.
     for group_by in ([INCIDENT_NAME, INCIDENT_ID], [INCIDENT_NAME, INCIDENT_ID, REVISION]):
-        why = plan_module._dropped_grouping_why(runtime, intent, {"group_by": group_by})
+        why = grouping_checks._dropped_grouping_why(runtime, intent, {"group_by": group_by})
         assert why is not None
         assert why["details"]["dropped_groupings"] == ["incident"]
     assert plan_payload(runtime, intent="repair cost by incident name and incident")["why"][
@@ -478,7 +478,7 @@ def test_only_the_measures_own_entity_or_the_caller_settles_a_shared_grouping(
         "select": [{"as": measure, "expression": {"measure": f"measure.jaffle.{measure}"}}],
         "group_by": group_by,
     }
-    why = plan_module._dropped_grouping_why(
+    why = grouping_checks._dropped_grouping_why(
         jaffle, f"{measure} by {term}", query, {"group_by": chosen}
     )
     assert (why is not None) is ambiguous
@@ -595,7 +595,9 @@ def test_a_qualified_name_grouping_stays_ready(
 def test_only_an_entitys_key_or_single_named_dimension_stands_in_for_it(
     jaffle: Runtime, term: str, group_by: list[str], matched: bool
 ) -> None:
-    why = plan_module._dropped_grouping_why(jaffle, f"revenue by {term}", {"group_by": group_by})
+    why = grouping_checks._dropped_grouping_why(
+        jaffle, f"revenue by {term}", {"group_by": group_by}
+    )
     assert (why is None) is matched
     if why:
         assert why["code"] == "PLAN_UNMATCHED_TERMS"
@@ -795,7 +797,7 @@ def test_grouping_correspondence_uses_only_declared_name_words(
     )
     runtime._config = replace(runtime._config, dimensions=[dimension])
     query = {"group_by": [dimension.id]}
-    why = plan_module._dropped_grouping_why(runtime, f"repair cost by {term}", query)
+    why = grouping_checks._dropped_grouping_why(runtime, f"repair cost by {term}", query)
     assert (why is None) is matched
     assert _listed_grouping_terms(f"repair cost by incident, {term}", runtime._config) == (
         ["incident", term] if matched else ["incident"]
@@ -814,7 +816,7 @@ def test_an_entity_name_matches_its_declared_key_only(
         "dimension.reference", runtime._config.entities[0].id, column, "string"
     )
     runtime._config = replace(runtime._config, dimensions=[dimension])
-    why = plan_module._dropped_grouping_why(
+    why = grouping_checks._dropped_grouping_why(
         runtime, "repair cost by incident", {"group_by": [dimension.id]}
     )
     assert (why is None) is (column == "incident_id")
@@ -824,7 +826,7 @@ def test_repeating_one_dimension_never_satisfies_two_listed_groupings(
     upkeep: Callable[[str, str], Runtime],
 ) -> None:
     runtime = upkeep("incident", "repair")
-    why = plan_module._dropped_grouping_why(
+    why = grouping_checks._dropped_grouping_why(
         runtime,
         "repair cost by incident name, incident",
         {"group_by": [INCIDENT_NAME, INCIDENT_NAME, "dimension.unknown"]},
