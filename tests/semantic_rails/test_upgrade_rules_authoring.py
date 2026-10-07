@@ -132,8 +132,16 @@ def _write_defaults(source, doc, defaults, layout):
     if layout == "single-file":
         doc["defaults"] = defaults
     else:
+        doc = deepcopy(doc)
         doc.pop("defaults", None)
         (source.parent / "defaults.yml").write_text(yaml.safe_dump({"defaults": defaults}))
+        (source.parent / "graph.yml").write_text(yaml.safe_dump({"graph": doc.pop("graph")}))
+        models = source.parent / "models"
+        models.mkdir(exist_ok=True)
+        for name, row in doc.pop("models").items():
+            row.pop("grain", None)
+            row["id"] = name
+            (models / f"{name}.yml").write_text(yaml.safe_dump({"model": row}))
     source.write_text(yaml.safe_dump(doc, sort_keys=False))
     return source if layout == "single-file" else source.parent
 
