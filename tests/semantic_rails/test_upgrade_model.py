@@ -18,7 +18,6 @@ from semantic_rails.expressions import (
 from semantic_rails.naming import slug
 from semantic_rails.package_snapshot import CapturedSource
 from semantic_rails.upgrade.model import Edit, Finding, Option, PackageFiles, Rule, _walk, plan
-from semantic_rails.upgrade.registry import RULES
 from semantic_rails.yaml_loader import safe_load
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -358,7 +357,6 @@ def test_file_creation_and_archival_are_virtual(files):
     assert result.files["package.yaml"] is None
     assert safe_load(result.files["new.yaml"]) == {"package": {"id": "sample"}}
     assert files.source.read_bytes() == original and not (files.root / "new.yaml").exists()
-    assert RULES == ()
 
 
 def test_loader_precedence_and_unrelated_sections(tmp_path):

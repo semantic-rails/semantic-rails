@@ -1005,7 +1005,8 @@ declared relative to that pair (`many_to_one` = first is many, second is one).
 when traversing from the second entity to the first. Measures aggregate at their
 own model's row grain; parent-rollup declarations are not supported.
 To migrate existing packages, delete `subject_entity` and `aggregation_entity`
-lines from `defaults.measure` and individual measures. Defaults are checked once
+lines from `defaults.measure` and individual measures, or let
+[`semantic-rails project upgrade`](#upgrading-a-package) delete them. Defaults are checked once
 per package, with an error naming `defaults.measure.<key>` and the line to delete.
 In `graph.relationships`, `rollup_safe` must be a mapping containing only `reverse`;
 forward declarations, the former list form, and `rollup_safe_aggregations` in model
@@ -1895,7 +1896,8 @@ without asking.
 
 A relationship's `path_preference` weight no longer exists: a package that
 still sets one fails to load with `INVALID_CONFIG`, naming the relationship.
-Record the route as a `graph.path_preferences` row instead.
+Record the route as a `graph.path_preferences` row instead;
+[`semantic-rails project upgrade`](#upgrading-a-package) deletes the weights.
 
 ### `graph.path_preferences:` — recording a route
 
@@ -2519,6 +2521,57 @@ by label/name/search_terms from every other in its class. Treat any
 flagged pair as an authoring debt: tighten the label or differentiate
 search_terms so an LLM-driven agent can pick the right object without
 context.
+
+## Upgrading a package
+
+A package written for an earlier release can hold forms this engine refuses. One command rewrites
+them to the current forms in one change:
+
+```bash
+uv run semantic-rails project upgrade --path ./my_pkg           # preview: rules, proof and diff
+uv run semantic-rails project upgrade --path ./my_pkg --write   # write the change
+```
+
+- The preview lists each matching rule with the file, line and path of every hit, a proof line,
+  and the unified diff. It writes nothing. `--json` prints the full report.
+- `--write` writes every file in one transaction: the whole package must parse afterwards, or every
+  file is restored. Edits keep comments and the lines they don't touch.
+- Run it again and it reports `up_to_date`.
+- Exit codes: 0 when the package is current, previewed or upgraded; 1 when the upgrade is refused or
+  the result is invalid; 2 when choices are pending.
+- It upgrades a package directory with `package.yml`, and refuses a single-file package.
+- The transaction's receipt and lock live under `.semantic-rails/` in the current directory when it
+  contains the package, otherwise in the package's parent directory; never inside the package.
+- The Architect tool [`upgrade_project`](ARCHITECT_MCP.md#upgrading-a-package) runs the same
+  upgrade.
+
+Every rewrite is proven or certified, and the report gives each rule's tier:
+
+- `proven`: the package loads on this engine before the rewrite, and the rewrite leaves its semantic
+  fingerprint and the compiled SQL of every example and test query unchanged. Queries are compiled,
+  never run.
+- `certified`: this engine refuses the legacy form, so there is nothing to compare it with. The rule
+  was checked when it was added, and the release notes say what changed: a rule with effect
+  `retired` follows a release that removed the meaning, and claims no equivalence.
+- A rule that changes the fingerprint or an example's or test's SQL is refused with
+  `CONFIG_CONFLICT`, `details.conflict_kind: "upgrade_not_equivalent"`, `details.rule` and the
+  first difference. Nothing is written.
+- The upgrade never picks a join route. Pairs left ambiguous appear in `next_actions`, to record as
+  `graph.path_preferences` rows; examples that don't compile appear there with their codes.
+
+Some rules ask instead of rewriting. The preview lists each pending choice with its key, file,
+line, question and options, and `--write` stops with exit code 2 until each is answered with
+`--choose KEY=OPTION` (the preview prints the exact flag). The proof covers only the rewrites no
+one chose; an option that changes answers is reported as "changes answers by your choice".
+
+| Rule | Since | Legacy form | Current form |
+|---|---|---|---|
+| `null-behavior` | 0.3.2rc3 | `null_behavior` on metrics, in expressions, and in example, test and segment membership queries | Deleted: aggregation and `observation_scope` decide empty groups |
+| `measure-parent-rollup` | 0.3.2rc3 | `subject_entity` and `aggregation_entity` on measures and under `defaults.measure` | Deleted: measures aggregate at their own model's grain |
+| `forward-rollup-hints` | 0.3.2rc3 | `rollup_safe_aggregations` and `rollup_safe` in `defaults.relationship` and on model joins; `rollup_safe.forward`, or a `rollup_safe` list, in `graph.relationships` | Deleted; `rollup_safe.reverse` in `graph.relationships` stays |
+| `relationship-path-preference` | 0.3.2rc3 | `path_preference` on relationships and model joins | Deleted; record a route as a `graph.path_preferences` row |
+| `query-path-policy` | 0.3.2rc3 | The query key `path_policy` in example, test and segment membership queries | Deleted; `graph.path_policy` is unchanged |
+| `query-ir-version` | 0.3.2 | `version: 2` in example, test and segment membership queries | `version: 1`, which has the same query shape |
 
 ## Reference
 
