@@ -140,10 +140,6 @@ _SUPERLATIVES = frozenset(
         "worst",
     }
 )
-# A population hold whose every governor is hidden from the caller names none of them.
-HIDDEN_GOVERNOR = (
-    "A definition you can't see governs this measure, so it can't be answered as a raw number."
-)
 _ASCENDING = frozenset({"bottom", "fewest", "least", "lowest", "smallest", "worst"})
 _RECENCY = frozenset({"earliest", "latest", "least-recent", "most-recent", "newest", "oldest"})
 _WORD_RE = re.compile(r"[a-z0-9]+(?:[-'][a-z0-9]+)*")
@@ -651,7 +647,8 @@ def _governed_metric_gaps(
                     else "The package's governed metrics leave out some of this measure's rows, "
                     "and the draft counts all of them."
                     if expected.get("metrics")
-                    else HIDDEN_GOVERNOR
+                    else "A definition you can't see governs this measure, so it can't be "
+                    "answered as a raw number."
                     if "narrowed_by" in expected
                     else "The draft reads a building-block measure without a visible governed metric."
                 ),
@@ -672,12 +669,9 @@ def _governed_metric_gaps(
 def _population_hold(
     config: Any, measure_id: str, query: dict[str, Any], skipped: list[str], subjects: list[str]
 ) -> dict[str, Any] | None:
-    """The gap's ``expected`` for metrics narrowing the measure's rows that the draft neither
-    selects (``skipped``) nor filters or groups by, else ``None``. Fails closed.
-
-    Governors come from the whole package; a metric hidden in its own right governs nothing for
-    this caller, while one hidden through what it reads still holds, naming only what they see.
-    """
+    """The gap's ``expected`` for whole-package metrics narrowing the measure's rows that the
+    draft neither selects (``skipped``) nor filters or groups by, else ``None``. Fails closed.
+    A metric hidden in its own right counts for nothing; ``expected`` names only the view."""
 
     filters = {key: query.get(key) for key in ("where", "group_by", "metric_filters")}
     drafted = set(_referenced_ids(filters))
@@ -692,13 +686,10 @@ def _population_hold(
     }
     if not found:
         return None
-    shown = {row.id for row in config.metric_recipes}
-    metrics = [*dict.fromkeys([*(key for key in subjects if key in found), *sorted(found)])]
-    narrowed_by = {row.id for row in config.dimensions} & set().union(*found.values())
-    return {
-        "metrics": [key for key in metrics if key in shown][:5],
-        "narrowed_by": sorted(narrowed_by),
-    }
+    shown = {row.id for row in [*config.metric_recipes, *config.dimensions]}
+    ranked = [*dict.fromkeys([*(key for key in subjects if key in found), *sorted(found)])]
+    metrics = [key for key in ranked if key in shown][:5]
+    return {"metrics": metrics, "narrowed_by": sorted(shown & set().union(*found.values()))}
 
 
 def _coverage_why(gaps: list[CoverageGap]) -> dict[str, Any] | None:

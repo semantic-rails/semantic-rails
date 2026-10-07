@@ -2068,8 +2068,7 @@ def discover_payload(
         _catalog_token_doc_freq(config, search_index=search_index) if enforce_scope else None
     )
 
-    # A building block is offered through the metrics that filter it, never on its own.
-    # Governance reads the whole package: a hidden governor still makes one.
+    # A building block (of the whole package) is offered only through the metrics filtering it.
     building_blocks = building_block_measures(base_of(config))
     for measure in config.measures:
         if measure.id in building_blocks:

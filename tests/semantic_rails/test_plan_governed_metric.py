@@ -431,6 +431,9 @@ TEAMS = "measure.org.teams"
 NEW_TEAMS = "metric.org.new_teams"
 TEAM_CLASS = "dimension.org_team_class"
 SHAPES = ["same", "event"]
+HIDDEN_GOVERNOR = (
+    "A definition you can't see governs this measure, so it can't be answered as a raw number."
+)
 
 
 def _teams_package(root: Path, *, shape: str, synonyms: bool) -> Path:
@@ -692,7 +695,7 @@ def test_a_hidden_narrowing_dimension_still_holds_and_is_not_named(
     # neither of them.
     gaps = _gaps(plan)
     assert [gap["expected"] for gap in gaps] == [{"metrics": [], "narrowed_by": []}]
-    assert [gap["message"] for gap in gaps] == [faithfulness.HIDDEN_GOVERNOR]
+    assert [gap["message"] for gap in gaps] == [HIDDEN_GOVERNOR]
     serialized = json.dumps(plan)
     for name in (TEAM_CLASS, "Team class", NEW_TEAMS, "New teams", "Customer teams created"):
         assert name not in serialized
@@ -702,4 +705,4 @@ def test_a_hidden_narrowing_dimension_still_holds_and_is_not_named(
     assert [gap["expected"] for gap in _gaps(visible)] == [
         {"metrics": [NEW_TEAMS], "narrowed_by": [TEAM_CLASS]}
     ]
-    assert [gap["message"] for gap in _gaps(visible)] != [faithfulness.HIDDEN_GOVERNOR]
+    assert [gap["message"] for gap in _gaps(visible)] != [HIDDEN_GOVERNOR]

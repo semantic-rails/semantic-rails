@@ -435,8 +435,7 @@ def base_of(config: PackageConfig) -> PackageConfig:
 
 
 def hidden_on_its_own(config: PackageConfig, object_id: str) -> bool:
-    """Whether ``config`` is a view hiding ``object_id`` while it hides nothing ``object_id``
-    reads or names: hidden in its own right, not as a dependent of a hidden object."""
+    """Whether ``config`` hides ``object_id`` in its own right, not for what it reads or names."""
     view = get_package_analysis(config).view
     if view is None or object_id not in view.hidden:
         return False

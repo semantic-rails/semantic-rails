@@ -31,18 +31,14 @@ from .expressions import (
     collect_column_refs,
     parse_semantic_expression,
 )
-from .policy_rules import (
-    MAX_RANK,
-    check_request_environment,
-    hidden_policy_ids,
-    visible_only_listed,
-    withheld_max_rank,
-)
+from .policy_rules import MAX_RANK, check_request_environment, withheld_max_rank
 from .policy_rules import context_scope_matches as context_scope_matches
+from .policy_rules import hidden_policy_ids as _hidden_policy_ids
 from .policy_rules import policy_action as _policy_action
 from .policy_rules import policy_config as _policy_config
 from .policy_rules import policy_matches as _policy_matches
 from .policy_rules import role_scope_matches as role_scope_matches
+from .policy_rules import visible_only_listed as _visible_only_listed
 from .request_context import context_from_policy_context
 from .row_filters import RowFilter, is_row_filter, row_filter
 from .schema import MeasureConfig, PackageConfig, SemanticPolicyConfig
@@ -208,7 +204,7 @@ def enforce_query_policies(
     )
     # Something is hidden exactly when a visibility policy lists an object for this caller.
     scope: dict[str, Any] = {"environment": environment, "audience": audience, "roles": roles}
-    if unchecked and (hidden_policy_ids(config, **scope) or visible_only_listed(config, **scope)):
+    if unchecked and (_hidden_policy_ids(config, **scope) or _visible_only_listed(config, **scope)):
         raise SemanticLayerError(
             "POLICY_DENIED",
             "Query references a semantic object blocked by policy.",

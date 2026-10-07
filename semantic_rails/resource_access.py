@@ -485,12 +485,8 @@ def _granted_warnings(warnings: list[dict[str, Any]], permitted: set[str]) -> li
 def run_authorized_operation(
     operation: Callable[..., Any], runtime: Any, args: tuple[Any, ...], kwargs: dict[str, Any]
 ) -> Any:
-    """The existing runtime request boundary calls this for shared operations.
-
-    It pins the caller's visible view for the whole operation (``visible_view.request_view``):
-    everything the operation reads through ``runtime._config`` is that view, and a refusal it
-    raises states policy effects as the caller may see them.
-    """
+    """The existing runtime request boundary calls this for shared operations. It pins the
+    caller's visible view (``visible_view.request_view``) for the whole operation."""
     name = operation.__name__
     payload = _context_payload(name, args, kwargs)
     try:
