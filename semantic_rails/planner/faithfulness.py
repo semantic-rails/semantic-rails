@@ -21,6 +21,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..ast import _relative_range_bounds, is_child_group
+from ..compiler import bind_query
 from ..config_parts.measure_governance import (
     building_block_measures,
     governing_metrics,
@@ -2992,56 +2993,80 @@ def _caller_window_gaps(
 
 
 def _role_window_why(runtime: Any, text: str, query: dict[str, Any]) -> dict[str, Any] | None:
-    """Hold a draft whose window reads other days in its temporal role's zone.
+    """Hold a draft whose window reads other days in the zone of a role the query reads it on.
 
     Plan drafts and checks every window in one planning zone (the package default, else UTC),
-    while execution reads it in the role's zone. A draft is ``ok`` only when the question's
-    windows, and a relative range the draft carries for them, read the same days in both.
+    while execution filters it on the query's role and on each leg's own role where the leg
+    can't read the query's (``_leaf_time_role``, as binding records it), each in its zone. A
+    draft is ``ok`` only when the question's windows, and a relative range the draft carries
+    for them, read the same days in every such zone as in the planning zone. If binding can't
+    say which roles are read, every role is taken as read, so the draft is held.
     """
 
     time = _time_block(query)
     role = str(time.get("temporal_role") or "")
     planning = time_timezone(runtime=runtime)
-    zone = time_timezone(role, runtime=runtime) if role else planning
-    if zone == planning:
+    names = [role, *(row.id for row in runtime._config.temporal_roles)]
+    zones = {name: time_timezone(name, runtime=runtime) for name in names if name}
+    if set(zones.values()) <= {planning}:
         return None
     context = query.get("policy_context")
     asked = _time_window(text, context, timezone=planning).windows
     if not asked:
         return None
-    try:
-        read = _time_window(text, context, timezone=zone).windows
-    except (ValueError, OverflowError):
-        read = ()
-    differing = [
-        span
-        for (span, bounds), local in zip(asked, read, strict=False)
-        if span != local[0]
-        or _window_days(bounds, context, timezone=planning)
-        != _window_days(local[1], context, timezone=zone)
-    ] + [span for span, _bounds in asked[len(read) :]]
     carried = {"range": time["range"]} if time.get("range") else {}
-    if carried and _window_days(carried, context, timezone=planning) != _window_days(
-        carried, context, timezone=zone
-    ):
-        differing = [span for span, _bounds in asked]
-    if not differing:
+
+    def differing(zone: str) -> list[tuple[int, int]]:
+        if carried and _window_days(carried, context, timezone=planning) != _window_days(
+            carried, context, timezone=zone
+        ):
+            return [span for span, _bounds in asked]
+        try:
+            read = _time_window(text, context, timezone=zone).windows
+        except (ValueError, OverflowError):
+            read = ()
+        return [
+            span
+            for (span, bounds), local in zip(asked, read, strict=False)
+            if span != local[0]
+            or _window_days(bounds, context, timezone=planning)
+            != _window_days(local[1], context, timezone=zone)
+        ] + [span for span, _bounds in asked[len(read) :]]
+
+    moved = {zone: spans for zone in set(zones.values()) - {planning} if (spans := differing(zone))}
+    if not moved:
         return None
+    try:
+        bound = bind_query(runtime._config, None, query).temporal_roles.values()
+        read_roles = {role}.union(*bound)
+    except Exception:  # any failure: every role may be read
+        read_roles = set(zones)
+    held = {
+        name: zones[name]
+        for name in sorted(read_roles, key=lambda name: (name != role, name))
+        if zones.get(name) in moved
+    }
+    if not held:
+        return None
+    zone = next(iter(held.values()))
+    differing_spans = sorted({span for held_zone in held.values() for span in moved[held_zone]})
     lowered = text.lower()
     return {
         "code": "TIME_WINDOW_UNRESOLVED",
         "message": (
-            f"The question's window reads different days in the temporal role's zone ({zone}) "
-            f"than in the planning zone ({planning}), so plan returns no query: either reading "
-            "may answer a different question."
+            "The question's window reads different days in the zone of a temporal role the "
+            f"query reads it on ({', '.join(dict.fromkeys(held.values()))}) than in the planning "
+            f"zone ({planning}), so plan returns no query: either reading may answer a "
+            "different question."
         ),
         "details": {
             "path": "time",
-            "temporal_role": role,
+            "temporal_role": next(iter(held)),
             "timezone": zone,
+            "temporal_roles": held,
             "planning_timezone": planning,
             "unresolved_phrases": list(
-                dict.fromkeys(lowered[low:high].strip() for low, high in differing)
+                dict.fromkeys(lowered[low:high].strip() for low, high in differing_spans)
             ),
         },
         "recovery_hints": [
