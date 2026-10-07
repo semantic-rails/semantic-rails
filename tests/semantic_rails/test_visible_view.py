@@ -29,7 +29,7 @@ from semantic_rails.request_context import TrustedAttributes
 from semantic_rails.runtime import Runtime, runtime_request_scope
 from semantic_rails.schema import PackageConfig, SemanticPolicyConfig
 from tests.semantic_rails import test_route_clarification as diamond
-from tests.semantic_rails.conftest import copy_package_config, opened
+from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.hidden_absent import (
     ACTIONS,
     CALLER,
@@ -164,7 +164,9 @@ def test_enforcement_never_takes_a_view(runtimes):
     assert view is not runtime.package_config
     binding = None
     calls = {
-        "enforce_query_policies": lambda: enforce_query_policies(view, [CUSTOMERS], roles=["support"]),
+        "enforce_query_policies": lambda: enforce_query_policies(
+            view, [CUSTOMERS], roles=["support"]
+        ),
         "row_filters_for_context": lambda: row_filters_for_context(view, CALLER),
         "withheld_measure_ids": lambda: withheld_measure_ids(view, roles=["support"]),
         "withheld_rank_order": lambda: withheld_rank_order(
@@ -297,15 +299,19 @@ def test_concurrent_callers_get_their_own_responses(on_disk, cold):
         results = []
         for _ in range(2):
             discovered = adapter.call_tool(
-                "discover", {"terms": "revenue", "verbosity": "full", "limit": 20, "policy_context": context}
+                "discover",
+                {"terms": "revenue", "verbosity": "full", "limit": 20, "policy_context": context},
             )
             results.append(envelope(discovered) == cold[name]["discover"])
             for key, object_id in (("inspect_aov", AOV), ("inspect_store", STORE)):
                 card = adapter.call_tool(
-                    "inspect", {"object_id": object_id, "verbosity": "full", "policy_context": context}
+                    "inspect",
+                    {"object_id": object_id, "verbosity": "full", "policy_context": context},
                 )
                 results.append(envelope(card) == cold[name][key])
-            values = adapter.call_tool("valid-values", {"dimension_id": STORE, "policy_context": context})
+            values = adapter.call_tool(
+                "valid-values", {"dimension_id": STORE, "policy_context": context}
+            )
             results.append(envelope(values) == cold[name]["valid_values"])
             catalog = outcome(lambda: resolve_catalog(runtime, policy_context=context))
             results.append(envelope(catalog) == cold[name]["catalog"])
@@ -356,9 +362,15 @@ def test_an_unresolved_hidden_set_refuses_before_the_warehouse(package, monkeypa
                 "execute", {"query": BY_STORE, "mode": "run", "policy_context": CALLER}
             ),
             "validate": runtime.validate({**BY_STORE, "policy_context": CALLER}),
-            "discover": adapter.call_tool("discover", {"terms": "revenue", "policy_context": CALLER}),
-            "plan": adapter.call_tool("plan", {"intent": "customers by store", "policy_context": CALLER}),
-            "inspect": adapter.call_tool("inspect", {"object_id": CUSTOMERS, "policy_context": CALLER}),
+            "discover": adapter.call_tool(
+                "discover", {"terms": "revenue", "policy_context": CALLER}
+            ),
+            "plan": adapter.call_tool(
+                "plan", {"intent": "customers by store", "policy_context": CALLER}
+            ),
+            "inspect": adapter.call_tool(
+                "inspect", {"object_id": CUSTOMERS, "policy_context": CALLER}
+            ),
             "catalog": outcome(lambda: resolve_catalog(runtime, policy_context=CALLER)),
             "http catalog": http_call(runtime, "/catalog", {"policy_context": CALLER}),
         }
@@ -396,7 +408,9 @@ def test_failed_enrichment_suggests_nothing(runtimes, monkeypatch):
     def boom(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("visibility unavailable")
 
-    working_mcp = mcp_call(runtime, "execute", {"query": typo, "mode": "sql", "policy_context": CALLER})
+    working_mcp = mcp_call(
+        runtime, "execute", {"query": typo, "mode": "sql", "policy_context": CALLER}
+    )
     working_http = http_call(runtime, "/compile", {**typo, "policy_context": CALLER})
     assert CUSTOMERS in json.dumps(working_mcp)
     assert CUSTOMERS in json.dumps(working_http)
@@ -404,7 +418,9 @@ def test_failed_enrichment_suggests_nothing(runtimes, monkeypatch):
     from semantic_rails.http_core import SemanticHTTPService
 
     service = SemanticHTTPService(runtime)
-    error = SemanticLayerError("OBJECT_NOT_FOUND", "Unknown metric recipe 'metric.sales.customer_cont'")
+    error = SemanticLayerError(
+        "OBJECT_NOT_FOUND", "Unknown metric recipe 'metric.sales.customer_cont'"
+    )
     payload, _status = service.exception_payload(
         error, stage="http", context=RequestContext(roles=("support",))
     )
@@ -432,7 +448,10 @@ def test_a_hidden_row_kept_by_mistake_is_refused_after_binding(package, monkeypa
         return replace(view, measures=[*view.measures, revenue])
 
     monkeypatch.setattr(visible_view, "build_view", leaky)
-    query = {"select": [{"expression": {"measure": REVENUE}, "as": "revenue"}], "policy_context": CALLER}
+    query = {
+        "select": [{"expression": {"measure": REVENUE}, "as": "revenue"}],
+        "policy_context": CALLER,
+    }
     try:
         for call in (runtime.query, runtime.compile):
             refused = outcome(lambda call=call: call(query))
@@ -504,7 +523,9 @@ def test_every_package_field_is_classified():
     assert set(FIELDS.values()) <= {"filtered", "kept", "prose"}
 
 
-def _diamond(tmp_path: Path, *, decisions: list[dict[str, Any]] | None = None) -> tuple[Path, PackageConfig]:
+def _diamond(
+    tmp_path: Path, *, decisions: list[dict[str, Any]] | None = None
+) -> tuple[Path, PackageConfig]:
     pkg = diamond._write_package(tmp_path, decisions=decisions)
     return pkg, load_package_config(str(pkg))
 
@@ -582,7 +603,9 @@ def test_a_hidden_relationship_on_the_chosen_route_is_no_route(tmp_path):
             assert response["errors"][0]["code"] == "PATH_NOT_FOUND", response
             assert response["errors"][0]["details"]["reason"] == "no_relationship_chain"
             assert "rows" not in response
-            assert not leaks(response, hidden_tokens(config, hidden), request=diamond.BALANCE_BY_DISTRICT)
+            assert not leaks(
+                response, hidden_tokens(config, hidden), request=diamond.BALANCE_BY_DISTRICT
+            )
     finally:
         runtime.close()
 
@@ -601,7 +624,9 @@ def test_an_ambiguous_route_offers_only_visible_options_and_never_answers(tmp_pa
             assert error["code"] == "AMBIGUOUS_PATH", response
             options = error["details"]["clarification"]["options"]
             assert [option["relationship_path"] for option in options] == [diamond.BRANCH_ROUTE]
-            assert not leaks(response, hidden_tokens(config, hidden), request=diamond.BALANCE_BY_DISTRICT)
+            assert not leaks(
+                response, hidden_tokens(config, hidden), request=diamond.BALANCE_BY_DISTRICT
+            )
     finally:
         runtime.close()
 
@@ -633,7 +658,11 @@ def test_prose_naming_a_hidden_object_is_omitted(package):
         kept = _card(runtime, "metric.sales.inventory_on_hand_eop")["card"]["description"]
         assert kept == described["metric.sales.inventory_on_hand_eop"]
         assert REVENUE not in json.dumps(
-            mcp_call(runtime, "discover", {"terms": "customer", "verbosity": "full", "policy_context": CALLER})
+            mcp_call(
+                runtime,
+                "discover",
+                {"terms": "customer", "verbosity": "full", "policy_context": CALLER},
+            )
         )
     finally:
         runtime.close()

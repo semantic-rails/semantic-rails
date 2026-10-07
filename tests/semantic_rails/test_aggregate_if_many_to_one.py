@@ -21,6 +21,7 @@ no row matches, with no joins.
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
 import textwrap
 from pathlib import Path
@@ -926,6 +927,8 @@ def test_the_condition_is_a_cut_on_the_entity_it_reads(package, allowed):
 
 # The policy kind that declares each action refusing a query by the objects it reads.
 POLICY_KINDS = {"deny": "object_access", "redact": "object_access", "hidden": "object_visibility"}
+# A raw column read while anything is hidden: refused, naming nothing.
+NOTHING_NAMED = {"blocked_objects": [], "policy_effects": [], "policy_violations": []}
 
 # Queries whose aggregate_if reads the customer's currency across a hop.
 READS_CURRENCY = {
@@ -1001,7 +1004,7 @@ def test_a_policy_on_a_dimension_the_condition_reads_refuses_it(
     for error in refusals:
         assert error.code == "POLICY_DENIED"
         if action == "hidden":
-            assert error.details == {}
+            assert error.details == NOTHING_NAMED
             continue
         assert error.details["blocked_objects"] == [CURRENCY]
         assert [row["action"] for row in error.details["policy_effects"]] == [action]
@@ -1086,13 +1089,20 @@ def test_a_policy_on_a_dimension_a_single_entity_condition_reads_refuses_it(
         assert runtime.compile(allowed)["rendered_sql"]
         [row] = runtime.query(allowed)["rows"]
         assert float(row["value"]) == expected
-        refusals = _refusals(runtime, monkeypatch, {**query, "policy_context": RESTRICTED})
+        # An authored metric reading the hidden period is hidden with it: unknown.
+        unknown = action == "hidden" and placement == "authored_filter"
+        code = "OBJECT_NOT_FOUND" if unknown else "POLICY_DENIED"
+        refusals = _refusals(
+            runtime, monkeypatch, {**query, "policy_context": RESTRICTED}, code=code
+        )
     finally:
         runtime.close()
 
     for error in refusals:
         if action == "hidden":
-            assert error.details == {}
+            assert PERIOD not in str(error) and PERIOD not in json.dumps(error.details)
+            if not unknown:
+                assert error.details == NOTHING_NAMED
             continue
         assert error.details["blocked_objects"] == [PERIOD]
         assert [row["action"] for row in error.details["policy_effects"]] == [action]
@@ -1146,7 +1156,7 @@ def test_every_dimension_on_an_own_column_is_bound(package, monkeypatch, action,
     finally:
         runtime.close()
     if action == "hidden":
-        assert all(error.details == {} for error in refusals)
+        assert all(error.details == NOTHING_NAMED for error in refusals)
     else:
         assert all(error.details["blocked_objects"] == [dimension.id] for error in refusals)
 
@@ -1208,10 +1218,15 @@ def test_unsupported_authored_and_distribution_conditions_cannot_read_columns(
     runtime = _governed(package, _policy(action, PERIOD))
     try:
         for audience in ("internal", "restricted"):
+            # A metric that cannot be bound is hidden while anything is: unknown, as if absent.
+            unknown = (action, audience, placement) == ("hidden", "restricted", "derived")
             refusals = _refusals(
-                runtime, monkeypatch, {**query, "policy_context": {"audience": audience}}, code=code
+                runtime,
+                monkeypatch,
+                {**query, "policy_context": {"audience": audience}},
+                code="OBJECT_NOT_FOUND" if unknown else code,
             )
-            assert all("aggregate_if" in str(error) for error in refusals)
+            assert all(unknown or "aggregate_if" in str(error) for error in refusals)
     finally:
         runtime.close()
 

@@ -6,7 +6,6 @@ import shutil
 import stat
 import subprocess
 import sys
-from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -1114,23 +1113,20 @@ def test_runtime_manifest_catalog_returns_none_when_no_manifest(tmp_path: Path):
 def test_shared_catalog_resolver_bypasses_manifest_for_every_policy_context(monkeypatch):
     from semantic_rails import catalog_service
 
-    class FakeRuntime:
-        _config = config_module.load_package_config(
-            resolve_repo_path("configs/semantic_rails/jaffle_shop")
-        )
-
-        def request_scope(self):
-            return nullcontext(self)
-
-        def manifest_catalog(self, *, view, verbosity):
-            return {"source": "manifest", "view": view, "verbosity": verbosity}
-
+    runtime = Runtime.from_config(
+        config_module.load_package_config(resolve_repo_path("configs/semantic_rails/jaffle_shop")),
+        source_path=resolve_repo_path("configs/semantic_rails/jaffle_shop"),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "manifest_catalog",
+        lambda *, view, verbosity: {"source": "manifest", "view": view, "verbosity": verbosity},
+    )
     monkeypatch.setattr(
         catalog_service,
         "catalog_payload",
         lambda _runtime, **kwargs: {"source": "live", **kwargs},
     )
-    runtime = FakeRuntime()
 
     assert catalog_service.resolve_catalog(runtime)["source"] == "manifest"
     for context in (

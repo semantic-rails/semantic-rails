@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 import yaml
 
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import CONVERSION_MATCHING_MODES
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.metadata import inspect_payload
@@ -166,6 +167,13 @@ def test_only_conversion_metric_cards_carry_the_conversion_block(adapter):
 @pytest.mark.parametrize("audience", ["no_product", "no_metric"])
 def test_conversion_block_fails_closed_under_a_policy(adapter, audience):
     context = {"policy_context": {"audience": audience}}
+    if audience == "no_product":
+        # The metric reads the hidden product dimension: hidden with it, it is unknown.
+        with pytest.raises(SemanticLayerError) as raised:
+            inspect_payload(adapter.runtime, object_id=FILTERED, partial_query=context)
+        assert raised.value.code == "OBJECT_NOT_FOUND"
+        assert "adele-ade" not in json.dumps(raised.value.details, default=str)
+        return
     card = inspect_payload(adapter.runtime, object_id=FILTERED, partial_query=context)["card"]
     assert "conversion" not in card
     assert "adele-ade" not in json.dumps(card, default=str)

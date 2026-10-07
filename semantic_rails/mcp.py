@@ -1978,7 +1978,9 @@ class SemanticLayerMCPAdapter:
             decoded, request_context, inject_policy_context=policy_aware
         )
         handler = self._tool_handlers.get(name)
-        available_tools = {tool["name"] for tool in self._caller_tools(args_dict)}
+        available_tools = {tool["name"] for tool in self.list_tools()}
+        if handler is None or name not in available_tools or name == "segment":
+            available_tools = {tool["name"] for tool in self._caller_tools(args_dict)}
         if handler is None or name not in available_tools:
             details: dict[str, Any] = {"tool": name, "available_tools": sorted(available_tools)}
             message = f"Unknown MCP tool '{name}'"

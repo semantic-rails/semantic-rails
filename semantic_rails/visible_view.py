@@ -502,7 +502,9 @@ def request_view(
         return nullcontext(current)
     try:
         entry = view_for(runtime, context)
-    except Exception:  # noqa: BLE001 — uncertainty refuses
+    except Exception as exc:  # noqa: BLE001 — uncertainty refuses; an invalid package says so
+        if isinstance(exc, SemanticLayerError) and exc.code == "INVALID_CONFIG":
+            raise
         raise unresolved() from None
     view = RequestView(
         runtime=runtime,

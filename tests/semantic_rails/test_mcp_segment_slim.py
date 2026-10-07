@@ -9,6 +9,7 @@ response.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from typing import Any
 
@@ -150,7 +151,7 @@ def test_minimal_retains_real_missing_segment_diagnostics(
 
 
 @pytest.mark.parametrize("action", ACTIONS)
-def test_minimal_retains_real_policy_denial(runtime_factory: Any, action: str) -> None:
+def test_minimal_retains_a_hidden_segment_refusal(runtime_factory: Any, action: str) -> None:
     original = runtime_factory("jaffle_shop")
     config = original.config
     config.semantic_policies.append(
@@ -179,7 +180,9 @@ def test_minimal_retains_real_policy_denial(runtime_factory: Any, action: str) -
         minimal = mcp.call_tool("segment", {**arguments, "verbosity": "minimal"})
         assert full["ok"] is minimal["ok"] is False
         assert minimal["errors"] == full["errors"]
-        assert minimal["errors"][0]["code"] == "POLICY_DENIED"
+        # The package's only segment is hidden: the caller has no segment tool, as if absent.
+        assert minimal["errors"][0]["code"] == "UNKNOWN_MCP_TOOL"
+        assert SEGMENT not in json.dumps(minimal)
         assert minimal["errors"][0]["recovery_hints"] == full["errors"][0]["recovery_hints"]
     finally:
         mcp.close()

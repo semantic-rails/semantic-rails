@@ -214,7 +214,9 @@ POSITIONS: dict[str, tuple[str, str, Callable[[str], dict[str, Any]]]] = {
         "dimension",
         lambda x: {
             **_select(
-                _conversion(dimension_bindings={x: {"side": "converted", "denominator": "all_base_events"}})
+                _conversion(
+                    dimension_bindings={x: {"side": "converted", "denominator": "all_base_events"}}
+                )
             ),
             "group_by": [x],
         },
@@ -302,10 +304,21 @@ def _variants(config: PackageConfig) -> list[tuple[str, str, str, dict[str, Any]
         for spelling, text in _spellings(config, position, object_id).items():
             query = build(text)
             out.append((position, spelling, "once", query))
-            if position.startswith("select.") and spelling == "id" and kind in {"metric", "measure"}:
-                out.append((position, spelling, "twice", _repeated(query, object_id, reverse=False)))
+            if (
+                position.startswith("select.")
+                and spelling == "id"
+                and kind in {"metric", "measure"}
+            ):
                 out.append(
-                    (position, spelling, "twice_reversed", _repeated(query, object_id, reverse=True))
+                    (position, spelling, "twice", _repeated(query, object_id, reverse=False))
+                )
+                out.append(
+                    (
+                        position,
+                        spelling,
+                        "twice_reversed",
+                        _repeated(query, object_id, reverse=True),
+                    )
                 )
         if position in {"select.metric", "group_by"}:
             denied = {
@@ -363,7 +376,10 @@ QUERY_SURFACES: dict[str, Call] = {
 }
 ID_SURFACES: dict[str, tuple[tuple[str, ...], Call]] = {
     **{
-        f"mcp inspect {verbosity}": (tuple(OBJECTS), _mcp("inspect", verbosity=verbosity, object_id=None))
+        f"mcp inspect {verbosity}": (
+            tuple(OBJECTS),
+            _mcp("inspect", verbosity=verbosity, object_id=None),
+        )
         for verbosity in ("minimal", "compact", "full")
     },
     "mcp valid-values": (tuple(OBJECTS), _mcp("valid-values", dimension_id=None)),
@@ -396,9 +412,7 @@ def test_the_surfaces_are_every_tool_mode_and_route_that_takes_an_id_or_a_query(
     covered |= {" ".join(name.split()[:2]) for name in [*QUERY_SURFACES, *ID_SURFACES]}
     assert tools <= covered, tools - covered
     routes = {
-        row["path"].removeprefix("/api/v1")
-        for row in PUBLIC_V1_ROUTES
-        if row["method"] == "POST"
+        row["path"].removeprefix("/api/v1") for row in PUBLIC_V1_ROUTES if row["method"] == "POST"
     }
     named = {name.split()[1] for name in [*QUERY_SURFACES, *ID_SURFACES] if name.startswith("http")}
     assert routes == named
@@ -468,9 +482,7 @@ def _pair(runtimes, package, action: str, object_id: str, *extra: SemanticPolicy
 def _check(hidden_response, absent_response, config, hidden, request) -> None:
     assert envelope(hidden_response) == envelope(absent_response)
     assert not leaks(hidden_response, hidden_tokens(config, hidden), request=request)
-    assert "POLICY_DENIED" not in json.dumps(hidden_response) or "item_count" in json.dumps(
-        request
-    )
+    assert "POLICY_DENIED" not in json.dumps(hidden_response) or "item_count" in json.dumps(request)
 
 
 def _query_cases() -> list[Any]:
@@ -486,9 +498,9 @@ def _query_cases() -> list[Any]:
     for position, spelling, multiplicity, query in _variants(config):
         for surface in QUERY_SURFACES:
             # Verbosity changes only the shape of one envelope: one spelling covers it.
-            if "execute" in surface and not surface.endswith("full"):
-                if spelling != "id" or multiplicity != "once":
-                    continue
+            short = "execute" in surface and not surface.endswith("full")
+            if short and (spelling != "id" or multiplicity != "once"):
+                continue
             # Seeds reach the binder through the same partial-query normalization: the
             # id, padded and alias spellings cover it (label and name: the named repros).
             seeded = surface.split()[1] in {"plan", "discover", "/plan", "/discover"}
@@ -557,10 +569,20 @@ def test_a_visible_denied_object_keeps_its_policy_denial(runtimes, package, acti
 def test_an_eligible_caller_still_answers(package, action):
     """visible_only names finance as eligible; hidden names only the support role."""
     root, config = package
-    query = {**_select({"metric": CUSTOMERS}), "group_by": [STORE], "policy_context": {"roles": ["finance"]}}
+    query = {
+        **_select({"metric": CUSTOMERS}),
+        "group_by": [STORE],
+        "policy_context": {"roles": ["finance"]},
+    }
     rows = []
-    for policies in ([], [visibility_policy(action, CUSTOMERS)], [visibility_policy(action, STORE)]):
-        runtime = opened(Runtime.from_config(with_policies(config, *policies), source_path=str(root)))
+    for policies in (
+        [],
+        [visibility_policy(action, CUSTOMERS)],
+        [visibility_policy(action, STORE)],
+    ):
+        runtime = opened(
+            Runtime.from_config(with_policies(config, *policies), source_path=str(root))
+        )
         try:
             rows.append(sorted(runtime.query(query)["rows"], key=lambda row: row[STORE]))
         finally:
@@ -589,16 +611,19 @@ def _ranked(alias: str) -> dict[str, Any]:
 @pytest.mark.parametrize(
     "surface", ["mcp run", "mcp validate", "mcp sql", "http /query", "http /validate"]
 )
-def test_an_output_alias_named_like_a_hidden_id_keeps_values_withheld(
-    runtimes, action, surface
-):
+def test_an_output_alias_named_like_a_hidden_id_keeps_values_withheld(runtimes, action, surface):
     runtime = runtimes(WITHHOLD, visibility_policy(action, REVENUE))
 
     def call(alias: str) -> dict[str, Any]:
         query = _ranked(alias)
         if surface.startswith("mcp"):
             mode = surface.split()[1]
-            arguments = {"query": query, "mode": mode, "verbosity": "full", "policy_context": CALLER}
+            arguments = {
+                "query": query,
+                "mode": mode,
+                "verbosity": "full",
+                "policy_context": CALLER,
+            }
             return mcp_call(runtime, "execute", arguments)
         return http_call(runtime, surface.split()[1], {**query, "policy_context": CALLER})
 
@@ -750,9 +775,13 @@ def test_a_policy_rationale_naming_a_hidden_object_is_not_returned(runtimes, pac
     serialized = json.dumps(response)
     assert deny.id not in serialized
     assert deny.rationale not in serialized
-    hidden = engine_hidden(with_policies(config, visibility_policy("hidden", REVENUE), deny), CALLER)
+    hidden = engine_hidden(
+        with_policies(config, visibility_policy("hidden", REVENUE), deny), CALLER
+    )
     assert not leaks(response, hidden_tokens(config, hidden), request=query)
-    card = mcp_call(runtime, "inspect", {"object_id": ORDERS, "verbosity": "full", "policy_context": CALLER})
+    card = mcp_call(
+        runtime, "inspect", {"object_id": ORDERS, "verbosity": "full", "policy_context": CALLER}
+    )
     assert deny.id not in json.dumps(card)
     assert not leaks(card, hidden_tokens(config, hidden), request=ORDERS)
 
@@ -845,7 +874,7 @@ def test_a_metric_over_a_hidden_measure_is_unknown_everywhere(runtimes, package,
             continue
         query = _select({"metric": AOV})
         _check(call(governed, query), call(missing, query), config, hidden, query)
-    for surface, (_, call) in ID_SURFACES.items():
+    for _, call in ID_SURFACES.values():
         _check(call(governed, AOV), call(missing, AOV), config, hidden, AOV)
 
 

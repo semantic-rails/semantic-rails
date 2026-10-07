@@ -82,6 +82,9 @@ def write_policy_package(tmp_path, starter, strict, kind, action, location="acti
         policy.setdefault("config", {})["label"] = "stable"
     if kind == "row_filter":
         policy.update(dimension="dimension.shop_customer_customer_type", attribute="customer_type")
+    if kind == "object_visibility":
+        # Both visibility actions list the objects they hide.
+        policy.setdefault("object_ids", ["metric.shop.revenue_usd"])
     raw["semantic_policies"] = [policy]
     path = tmp_path / "package.yml"
     path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")

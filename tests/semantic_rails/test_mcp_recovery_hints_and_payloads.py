@@ -84,10 +84,9 @@ def test_counterpart_visibility_uses_one_package_snapshot(package_config_factory
             self.runtime = runtime
             self.config_reads = 0
 
-        @property
-        def _config(self):
+        def view_for(self, context):
             self.config_reads += 1
-            return config if self.config_reads == 1 else reloaded_config
+            return self.runtime.view_for(context) if self.config_reads == 1 else reloaded_config
 
         def __getattr__(self, name):
             return getattr(self.runtime, name)

@@ -111,7 +111,7 @@ def test_reload_discards_index_and_rebuilds_from_edited_config(tmp_path: Path) -
 
         result = runtime.reload()
         assert result["changed"] is True
-        assert runtime._catalog_search_index is None
+        assert [entry.search_index for entry in runtime._views.values()] == [None]
 
         rebuilt = runtime._get_catalog_search_index()
         assert rebuilt is not original

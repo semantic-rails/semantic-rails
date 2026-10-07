@@ -435,8 +435,13 @@ def test_refusal_names_keys_only_when_all_are_visible(
         )
         assert response["ok"] is False
         issue = response["errors"][0]
-        assert issue["code"] == "ROLLUP_UNSAFE"
         names = [REPO_DAY, f"dimension.{NS}_traffic_day_day"]
+        if hidden_key == names[1]:
+            # The measure names the day's time role: hidden with it, it is unknown.
+            assert issue["code"] == "OBJECT_NOT_FOUND"
+            assert all(name not in json.dumps(response) for name in names)
+            return
+        assert issue["code"] == "ROLLUP_UNSAFE"
         if hidden_key:
             assert issue["message"] == (
                 f"Measure 'measure.{NS}.daily_visitors' is additive: false, and this query would "
@@ -467,20 +472,17 @@ def test_refusal_names_keys_only_when_all_are_visible(
         engine.close()
 
 
-def test_uncertain_key_visibility_preserves_the_generic_refusal(
-    runtime: Runtime, monkeypatch
-) -> None:
-    from semantic_rails import policies
+def test_uncertain_key_visibility_refuses_naming_no_key(runtime: Runtime, monkeypatch) -> None:
+    from semantic_rails import visible_view
 
     def unavailable(*args, **kwargs):
         raise RuntimeError("Visibility unavailable")
 
-    monkeypatch.setattr(policies, "hidden_object_ids", unavailable)
-    with pytest.raises(NonAdditiveRefusal) as raised:
+    monkeypatch.setattr(visible_view, "hidden_object_ids", unavailable)
+    with pytest.raises(SemanticLayerError) as raised:
         runtime.compile(_query("daily_visitors"))
-    assert "key_dimensions" not in raised.value.details
+    assert raised.value.details == {"reason": "visibility_unresolved"}
     assert REPO_DAY not in str(raised.value)
-    assert REPO_DAY not in json.dumps(raised.value.details)
 
 
 @pytest.mark.parametrize(
