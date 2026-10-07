@@ -31,7 +31,13 @@ from .expressions import (
     collect_column_refs,
     parse_semantic_expression,
 )
-from .policy_rules import MAX_RANK, check_request_environment, withheld_max_rank
+from .policy_rules import (
+    MAX_RANK,
+    check_request_environment,
+    hidden_policy_ids,
+    visible_only_listed,
+    withheld_max_rank,
+)
 from .policy_rules import context_scope_matches as context_scope_matches
 from .policy_rules import policy_action as _policy_action
 from .policy_rules import policy_config as _policy_config
@@ -42,7 +48,6 @@ from .row_filters import RowFilter, is_row_filter, row_filter
 from .schema import MeasureConfig, PackageConfig, SemanticPolicyConfig
 from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral, SqlOrder
 from .sql_preparation import checked_slot_value
-from .visible_view import hidden_object_ids
 
 WITHHOLD = "withhold_values"
 # A conditional aggregate's condition reads columns, not fields: no allowed_where lists it.
@@ -201,9 +206,9 @@ def enforce_query_policies(
         if binding is None
         else any(collect_column_refs(row.expr) for row in binding.plan.synthetic_measures.values())
     )
-    if unchecked and hidden_object_ids(
-        config, environment=environment, audience=audience, roles=roles
-    ):
+    # Something is hidden exactly when a visibility policy lists an object for this caller.
+    scope: dict[str, Any] = {"environment": environment, "audience": audience, "roles": roles}
+    if unchecked and (hidden_policy_ids(config, **scope) or visible_only_listed(config, **scope)):
         raise SemanticLayerError(
             "POLICY_DENIED",
             "Query references a semantic object blocked by policy.",

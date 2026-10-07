@@ -276,7 +276,9 @@ A draft that validates can still leave out part of the question. `plan` returns
   it. Hidden governing metrics are excluded before candidate selection and diagnostics, and
   their IDs and labels are never named. A building block with no visible governing metric, or
   a draft whose governing metrics can't be read, is still held, with a generic message and an
-  empty `expected.metrics`. A one-measure draft answers with the metric itself when
+  empty `expected.metrics`. A metric hidden only because something it reads, such as the
+  dimension it filters on, is hidden still holds the measure it narrows: the message is generic, and `expected` lists only the
+  metrics and dimensions the caller can see. A one-measure draft answers with the metric itself when
   it aggregates the measure the same way, the draft's time role equals the metric's own
   `temporal_role`, the subject phrase names no other such
   metric as fully nor the measure more fully, and the draft neither filters nor groups by what

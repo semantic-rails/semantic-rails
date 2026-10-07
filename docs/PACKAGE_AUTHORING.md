@@ -851,6 +851,10 @@ whole package, so hiding an object never removes or changes a `deny`, `redact`,
   caller (`PATH_NOT_FOUND`); an ambiguous pair offers only its visible routes.
 - **Raw columns:** while anything is hidden from a caller, that caller cannot aggregate raw
   columns (`POLICY_DENIED`, naming nothing).
+- **Governance holds read the whole package:** a [building
+  block](#building-block-measures) stays one when its metric is hidden, and `plan` still
+  holds a draft over a measure that a metric narrows when that metric is hidden only because
+  something it reads is hidden. The hold names nothing hidden.
 - **Authored text is shown or left out whole, never edited.** A description, topic, example,
   caveat or other text of a visible object that names a hidden object (its id, or a name,
   label or alias no visible object shares) is left out. A policy that lists a hidden object,
