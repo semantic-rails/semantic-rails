@@ -24,6 +24,7 @@ from ..config_parts.measure_governance import (
     unoffered_measures,
     whole_aggregate,
 )
+from ..visible_view import base_of, hidden_on_its_own
 from ._base import (
     _canonical_measure,
     _canonical_metric,
@@ -440,8 +441,9 @@ def _governed_metric_gaps(
             if isinstance(node.get(key), str)
         )
     )
+    # Governance is enforcement: it reads the whole package, not the caller's view.
     try:
-        unoffered: frozenset[str] | None = unoffered_measures(config)
+        unoffered: frozenset[str] | None = unoffered_measures(base_of(config))
     except Exception:  # noqa: BLE001 — an unreadable offer cannot make a draft ready
         unoffered = None
     gaps: list[CoverageGap] = []
@@ -477,6 +479,9 @@ def _governed_metric_gaps(
                     if metrics
                     else "The package's governed metrics leave out some of this measure's rows, "
                     "and the draft counts all of them."
+                    if expected.get("metrics")
+                    else "A definition you can't see governs this measure, so it can't be "
+                    "answered as a raw number."
                     if "narrowed_by" in expected
                     else "The package doesn't offer this measure."
                 ),
@@ -500,22 +505,27 @@ def _governed_metric_gaps(
 def _population_hold(
     config: Any, measure_id: str, query: dict[str, Any], skipped: list[str], subjects: list[str]
 ) -> dict[str, Any] | None:
-    """The gap's ``expected`` for visible metrics narrowing the measure's rows that the draft
-    neither selects (``skipped``) nor filters or groups by, else ``None``. Fails closed."""
+    """The gap's ``expected`` for whole-package metrics narrowing the measure's rows that the
+    draft neither selects (``skipped``) nor filters or groups by, else ``None``. Fails closed.
+    A metric hidden in its own right counts for nothing; ``expected`` names only the view."""
 
     filters = {key: query.get(key) for key in ("where", "group_by", "metric_filters")}
     drafted = set(_referenced_ids(filters))
     try:
-        governors = population_governors(config, measure_id)
+        governors = population_governors(base_of(config), measure_id)
     except Exception:  # noqa: BLE001 — an unreadable metric cannot make a draft ready
         return {"metrics": []}
-    visible = set(visible_object_ids(config, (row.id for row, _ in governors))) - set(skipped)
-    found = {row.id: dims for row, dims in governors if row.id in visible and not dims & drafted}
+    found = {
+        row.id: dims
+        for row, dims in governors
+        if row.id not in skipped and not hidden_on_its_own(config, row.id) and not dims & drafted
+    }
     if not found:
         return None
-    metrics = [*dict.fromkeys([*(key for key in subjects if key in found), *sorted(found)])]
-    narrowed_by = sorted(visible_object_ids(config, set().union(*found.values())))
-    return {"metrics": metrics[:5], "narrowed_by": narrowed_by}
+    shown = {row.id for row in [*config.metric_recipes, *config.dimensions]}
+    ranked = [*dict.fromkeys([*(key for key in subjects if key in found), *sorted(found)])]
+    metrics = [key for key in ranked if key in shown][:5]
+    return {"metrics": metrics, "narrowed_by": sorted(shown & set().union(*found.values()))}
 
 
 def named_subject_why(

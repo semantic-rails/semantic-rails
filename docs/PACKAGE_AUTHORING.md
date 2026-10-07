@@ -673,11 +673,13 @@ kind names must match exactly.
 - **`package_release`** — labels the package's release status. `label`
   (e.g. `stable`, `preview`) surfaces in the package manifest and discovery
   metadata; it gates nothing by itself.
-- **`object_visibility`** — `action: hidden` hides matching objects from `catalog`,
-  `discover`, and `inspect` for the scoped audiences/environments/roles, and refuses a
-  query that reads one with `POLICY_DENIED`. `action: visible_only` does the opposite:
-  it hides the objects, and everything computed from them, from every context it does
-  not name; see [Objects visible only to named roles](#objects-visible-only-to-named-roles).
+- **`object_visibility`** — `action: hidden` hides the listed objects, and everything
+  computed from them, from the scoped audiences/environments/roles. `action: visible_only`
+  does the opposite: it hides them from every context it does not name; see
+  [Objects visible only to named roles](#objects-visible-only-to-named-roles). Both actions
+  take a non-empty `object_ids` (an empty list fails to load with `INVALID_CONFIG`), and to
+  a caller they hide, a hidden object is exactly an object the package doesn't have; see
+  [What a caller sees of a hidden object](#what-a-caller-sees-of-a-hidden-object).
 - **`object_access`** — enforced at query time. `action: deny` refuses the
   query with a structured policy error. `redact` never masked values; it refused
   like `deny`. Refusals and inspect now name `deny`. An `aggregate_if` reads every
@@ -836,23 +838,74 @@ that must not see it.
   are listed, and the listed audience if `audiences` are listed. No roles, or a role the
   policy doesn't list, is not eligible: a role the package never names grants nothing.
 - **Several policies** on one object must all be met; adding a policy never widens access.
-- **Everything computed from a restricted object is restricted too:** metrics that read
-  it (directly, through another metric, a filter or a metric filter), segments whose
-  basis metric, conditions or preview dimensions read it, value domains of a restricted
-  dimension, and relationships to a restricted entity. An object whose dependencies cannot
-  be resolved is restricted whenever anything is. The policy governs objects, not columns:
-  list every measure that computes the sensitive value, since another measure over the
-  same column (a filtered, windowed or rolled-up variant) is a separate object.
-  While any `visible_only` restriction applies to a caller, that caller cannot aggregate raw columns.
-- For an ineligible request, restricted objects are left out of `catalog`, `discover`,
-  `build-options`, `plan`, other objects' `inspect` cards (related measures and metrics,
-  companions, starter queries) and diagnostic suggestions; `inspect` of one, and `valid-values`
-  of a restricted dimension, answer `OBJECT_NOT_FOUND`; `validate`, `compile`, `execute`,
-  `valid-values` and the segment tools refuse any query that reads one, including through
-  an inline expression, a derived metric, a metric filter or an `order_by`, with
-  `POLICY_DENIED`.
+- **Everything computed from a restricted object is restricted too**, as with `hidden`:
+  see below. The policy governs objects, not columns: list every measure that computes the
+  sensitive value, since another measure over the same column (a filtered, windowed or
+  rolled-up variant) is a separate object.
 - `hidden`, `deny` and `withhold_values` still apply to eligible requests:
   explicit restrictions win.
+
+### What a caller sees of a hidden object
+
+A caller's requests read the package without the objects hidden from them (by `hidden`, or
+by a `visible_only` policy they are not eligible for). Policy enforcement still reads the
+whole package, so hiding an object never removes or changes a `deny`,
+`withhold_values`, `metric_constraint` or `row_filter`.
+
+- **Hidden with it:** every object that reads a hidden object (a metric over it, directly or
+  through another metric, a filter or a metric filter; a segment whose basis metric,
+  conditions or preview dimensions read it; a conversion metric whose dimension bindings
+  name it), every object that names it in any of its fields (a value domain listing a hidden
+  dimension, a relationship to a hidden entity, a time role over a hidden dimension, a
+  measure listing it among its `comparison_peers`), and, while anything is hidden, every
+  object whose dependencies cannot be resolved.
+- **Exactly like an unknown id:** a request that names a hidden object, in any position and
+  spelling, gets the response the package without it would give (usually
+  `OBJECT_NOT_FOUND`). Discovery, `catalog`, `inspect` cards, `plan`, `build-options`,
+  `valid-values` and diagnostic suggestions never list or name one. A label or alias that is
+  ambiguous only because a hidden object shares it names the visible object.
+- **Routes are never re-chosen per caller:** if the package's route between two visible
+  entities goes through a hidden entity or relationship, that pair has no route for the
+  caller (`PATH_NOT_FOUND`); an ambiguous pair offers only its visible routes.
+- **Raw columns:** while anything is hidden from a caller, that caller cannot aggregate raw
+  columns (`POLICY_DENIED`, naming nothing).
+- **Governance holds read the whole package:** a [building
+  block](#building-block-measures) stays one when its metric is hidden, and `plan` still
+  holds a draft over a measure that a metric narrows when that metric is hidden only because
+  something it reads is hidden. The hold names nothing hidden.
+- **Authored text never names a hidden object.** A field of a visible object, or of the
+  package, that names a hidden object (its id, or a name, label or alias no visible object
+  shares) is shown without it, by what the field is: a text field (description, label,
+  `currency`, `comparison_family`, `join_semantics`, a freshness note, a window's `semantics`)
+  reads `""`; a list (aliases, topics, examples) or a mapping (`meta`, `operational`, extra
+  `temporal_validity` keys) loses the items or entries that name one; a name is rebuilt from
+  the object's id (a value's label from the value) and is never blank. Ids, references,
+  numbers, flags, enums and physical names (`table`, `column`, `expr`) are shown as authored;
+  they never name a hidden object, since an object that references one is hidden with it. A
+  caveat that names a hidden object is left out whole. A policy that lists a hidden object,
+  or whose words name one, is shown in a generic form: no `policy_id`, and its action's
+  fixed text instead of the rationale.
+- **Semantic structure survives.** Measure validity windows and external discontinuities
+  keep their dates, magnitudes and cross-window policy. `mnpi` in `meta` must be `true` or
+  `false` (any other value is `INVALID_CONFIG`), and it is always kept, so export warnings
+  still apply. A caller's route decision is refused under a row filter on any package route
+  for that pair, including routes hidden from them; time-filter refusals under a row filter
+  read the whole package too, and either refusal discloses only policy ids visible in the
+  caller's view. `default_metric_id` names a metric only when that metric exists in the
+  caller's view; otherwise it is empty.
+
+The guarantee: a hidden object's id, names, aliases and authored text appear on no response
+to the caller, over MCP, HTTP or the CLI; a reference to it gets the error a reference to an
+absent object gets; and enforcement is unchanged. What it does not cover:
+
+- Text that describes a hidden object without naming it. Don't paraphrase a sensitive object
+  in another object's description.
+- A hidden object's name that equals a visible object's id, name, label or alias, or a
+  physical name (a table or column), is not treated as naming it.
+- The refusals the design keeps on purpose, each of which says only that something is
+  unavailable: a pair whose package route goes through a hidden object has no route, an
+  ambiguous pair stays ambiguous among its visible routes, and raw-column aggregates are
+  refused while anything is hidden.
 
 ### Ranking by withheld values
 

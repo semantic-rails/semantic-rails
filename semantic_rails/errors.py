@@ -12,6 +12,9 @@ from __future__ import annotations
 
 from typing import Any
 
+# What a caller reads about an unexpected exception; its text goes to the server log only.
+UNEXPECTED_ERROR_MESSAGE = "An unexpected engine error occurred; the detail is in the server log."
+
 
 class SemanticLayerError(Exception):
     def __init__(self, code: str, message: str, *, details: dict[str, Any] | None = None) -> None:

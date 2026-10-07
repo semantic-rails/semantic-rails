@@ -287,7 +287,9 @@ A draft that validates can still leave out part of the question. `plan` returns
   are excluded before candidate selection and diagnostics, and
   their IDs and labels are never named. An unoffered measure with no visible governing metric, or
   a draft whose governing metrics can't be read, is still held, with a generic message and an
-  empty `expected.metrics`. A one-measure draft answers with the metric itself when
+  empty `expected.metrics`. A metric hidden only because something it reads, such as the
+  dimension it filters on, is hidden still holds the measure it narrows: the message is generic, and `expected` lists only the
+  metrics and dimensions the caller can see. A one-measure draft answers with the metric itself when
   it aggregates the measure the same way, the draft's time role equals the metric's own
   `temporal_role`, the subject phrase names no other such
   metric as fully nor the measure more fully, and the draft neither filters nor groups by what
@@ -1045,7 +1047,7 @@ expression kind names the received kind and its request path (for example,
 | `INVALID_TEMPORAL_BINDING` | Time block targets a clock incompatible with a conversion's anchor; filter on `details.anchor_temporal_role` or push the constraint into a conversion metric. |
 | `INCOMPATIBLE_CALENDAR` | Selected calendar grain is not supported by the underlying measure. |
 | `FANOUT_UNSAFE` | Breakdown crosses a 1-to-many relationship without a pre-aggregation boundary, or joins into a `temporal_validity` window without a query `time`. |
-| `ROLLUP_UNSAFE` | Roll-up combines non-additive primitives; declare the aggregation entity or supply sketch metadata. For an `additive: false` measure summed above its stored grain, group by or filter (=) each key dimension. Keys are named only on validate, compile and run errors made with a request context. The message, `details.key_dimensions` and hint name those dimensions only when every key dimension is visible under the request's policy context; hidden or uncertain visibility keeps the generic refusal. |
+| `ROLLUP_UNSAFE` | Roll-up combines non-additive primitives; declare the aggregation entity or supply sketch metadata. For an `additive: false` measure summed above its stored grain, group by or filter (=) each key dimension. Keys are named only on validate, compile and run errors. The message, `details.key_dimensions` and hint name those dimensions only when every key column is a dimension of the caller's view; a key a hidden dimension declares keeps the generic refusal. |
 | `MEASURE_VALIDITY_BOUNDARY` | Query crosses a declared measure-validity window; split by sub-window. |
 | `OUT_OF_SCOPE` | Request isn't a governed-data query; hand off to the recommended tool — the semantic layer compiles governed data queries only. |
 | `CUMULATIVE_TIME_FILTER_UNSUPPORTED` | Measure's accumulation semantics forbid the requested time filter: a bounded `time.start`, or a `where` filter on a date or calendar dimension other than an upper bound (`details.where_path`). Filters on the window's own measure input and applied row policies on temporal columns refuse too (`details.filter_source`), with no patch to remove the authored filter or policy. |
@@ -1054,7 +1056,7 @@ expression kind names the received kind and its request path (for example,
 | `NO_VALID_VALUES_SOURCE` | No `valid_values` source declared for the requested dimension. |
 | `REWRITE_NOT_SUPPORTED` | Required rewrite is not implemented; try a simpler shape. |
 | `INVALID_EXPRESSION_AST` | Expression AST is malformed; check the position-specific shape. An invalid `where` operator lists query filter operators and the null-test form: `op: "IS NULL"` / `"IS NOT NULL"`, omitting `value`. |
-| `OBJECT_NOT_FOUND` | Referenced `object_id` does not exist; see `details.closest_matches`. An existing measure with the exact namespace and name of a missing metric (or the reverse) is the first suggestion when it is visible to the caller; unrelated typos keep same-kind matching. Known hidden IDs are excluded before ranking. Without resolved visibility in a package declaring policies, no counterpart is added and same-kind fuzzy matching is preserved. |
+| `OBJECT_NOT_FOUND` | Referenced `object_id` does not exist for the caller; see `details.closest_matches`. An object hidden from the caller gets exactly the response of one the package doesn't have, and is never suggested. An existing measure with the exact namespace and name of a missing metric (or the reverse) is the first suggestion; unrelated typos keep same-kind matching. When what the caller may see can't be resolved, no suggestion is made. |
 | `INVALID_QUERY` | Query IR fails structural validation. |
 | `INVALID_CONFIG` | Package config is malformed, or the removed MCP interface v1 was requested. |
 | `INVALID_METRIC_FILTER` | `metric_filters[]` entry is malformed; check the shape. |
@@ -1062,7 +1064,7 @@ expression kind names the received kind and its request path (for example,
 | `MISSING_DEPENDENCY` | Required upstream object is missing. |
 | `QUERY_EXECUTION_ERROR` | Warehouse refused or aborted execution. |
 | `PATH_NOT_FOUND` | No valid join path between the requested objects; `details.reason: excluded_by_decision` means every route walks a pair the package's `graph.path_preferences` rows (`details.rows`) record differently. `details.reachable_targets` and suggested group-by dimensions share compilation's path traversal and route-selection rules, respecting relationship directions, hop limits, route ambiguity, and recorded path preferences, including inherited decisions. The lists are exact under these path rules, without caching rejected routes, and are route-eligible: fan-out and policy checks still apply. Unrelated route rows retain bounded reachability scans; inherited-route searches skip branches that cannot reach the target within the remaining hops. |
-| `POLICY_DENIED` | Policy context blocks a referenced object or query cut. When a denied query reads an object hidden from the caller, or one whose visibility cannot be determined, the denial carries only its code and message, with no `blocked_objects`, `policy_effects`, `policy_violations` or hints. |
+| `POLICY_DENIED` | Policy context blocks a referenced object or query cut. `policy_effects` state each policy as the caller may see it: one that lists a hidden object, or whose text names one, appears without `policy_id` and with its action's fixed text. While anything is hidden from the caller, a raw-column aggregate is refused with empty `blocked_objects`, `policy_effects` and `policy_violations`. When what the caller may see can't be resolved, every tool refuses before binding or the warehouse with `details: {"reason": "visibility_unresolved"}`, naming nothing. |
 | `INVALID_METRIC_PREDICATE` | `metric_predicates[]` entry is malformed. |
 | `PREDICATE_SCOPE_UNSAFE` | Predicate scope is incompatible with query grain. |
 | `PREDICATE_CONTEXT_ENTITY_INCOMPATIBLE` | Predicate context entity disagrees with the surrounding query. |
@@ -1112,12 +1114,13 @@ expression kind names the received kind and its request path (for example,
 }
 ```
 
-`INTERNAL_ERROR` when a bare exception escapes the handler:
+`INTERNAL_ERROR` when a bare exception escapes the handler. The message is fixed engine text
+over MCP, JSON-RPC and HTTP alike; the exception's own text goes to the server log only:
 
 ```json
 {
   "code": "INTERNAL_ERROR",
-  "message": "KeyError: 'field'",
+  "message": "An unexpected engine error occurred; the detail is in the server log.",
   "details": {"exception_type": "KeyError"},
   "recovery_hints": [{"kind": "file_bug_report",
                        "message": "...file a bug at .../issues..."}]

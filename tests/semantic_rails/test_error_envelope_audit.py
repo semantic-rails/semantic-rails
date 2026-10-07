@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from semantic_rails.errors import ERROR_CODES
+from semantic_rails.errors import ERROR_CODES, UNEXPECTED_ERROR_MESSAGE
 from semantic_rails.http_core import SemanticHTTPService
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.mcp_server import handle_jsonrpc_message
@@ -157,7 +157,9 @@ def test_mcp_handler_bare_exception_surfaces_as_internal_error(runtime_factory) 
         assert errors
         first = errors[0]
         assert first["code"] == "INTERNAL_ERROR"
-        assert "KeyError" in first["message"]
+        # Fixed engine text: the exception text goes to the server log only.
+        assert first["message"] == UNEXPECTED_ERROR_MESSAGE
+        assert first["details"] == {"exception_type": "KeyError"}
         hints = list(first.get("recovery_hints", []) or [])
         assert hints, "INTERNAL_ERROR envelope must carry recovery_hints"
         # Hint must point at the bug tracker so the surface is at
@@ -206,6 +208,8 @@ def test_mcp_jsonrpc_bare_exception_surfaces_as_structured_envelope(runtime_fact
         assert errors
         first = errors[0]
         assert first["code"] == "INTERNAL_ERROR"
+        assert first["message"] == UNEXPECTED_ERROR_MESSAGE
+        assert "nope" not in json.dumps(response)
         hints = list(first.get("recovery_hints", []) or [])
         assert hints
     finally:
@@ -222,7 +226,8 @@ def test_http_bare_exception_surfaces_as_structured_internal_error(runtime_facto
         assert status == 500
         error = dict(result.get("error", {}) or {})
         assert error.get("code") == "INTERNAL_ERROR"
-        assert "KeyError" in error.get("message", "")
+        assert error["message"] == UNEXPECTED_ERROR_MESSAGE
+        assert "missing_column" not in json.dumps(result)
         hints = list(result.get("recovery_hints", []) or [])
         assert hints, "HTTP INTERNAL_ERROR must carry recovery_hints"
         joined = " ".join(str(h.get("message", "")) for h in hints).lower()

@@ -32,9 +32,9 @@ from .schema import DEFAULT_PATH_HOP_LIMIT, PackageConfig, PathPreferenceConfig,
 
 
 def visible_route(
-    config: PackageConfig, start: str, path: Sequence[str], hidden_ids: frozenset[str] | None
+    config: PackageConfig, start: str, path: Sequence[str], hidden: frozenset[str]
 ) -> bool:
-    """Disclose a route only when its relationships and every waypoint are visible."""
+    """Whether a route of ``config`` reads no hidden relationship or waypoint."""
     relationships = get_package_analysis(config).relationships
     entities = {start} if not path else set()
     for relationship_id in path:
@@ -42,19 +42,7 @@ def visible_route(
         if relationship is None:
             return False
         entities.update((relationship.source_entity, relationship.target_entity))
-    if hidden_ids is None:
-        return not any(policy.kind == "object_visibility" for policy in config.semantic_policies)
-    return not hidden_ids.intersection([*path, *entities])
-
-
-def visible_route_rows(
-    config: PackageConfig, rows: Sequence[dict[str, Any]], hidden_ids: frozenset[str] | None
-) -> list[dict[str, Any]]:
-    return [
-        row
-        for row in rows
-        if visible_route(config, row["source_entity"], row["relationship_path"], hidden_ids)
-    ]
+    return not hidden.intersection([*path, *entities])
 
 
 def package_hop_limit(config: PackageConfig) -> int:
@@ -516,7 +504,7 @@ def resolve_route(config: PackageConfig, *, start: str, target: str) -> RouteRes
 
 def package_route(config: PackageConfig, *, start: str, target: str) -> RouteResolution:
     """Rungs 1-6 of ``resolve_path``: the package's resolution of the pair, whatever a query
-    decides."""
+    decides. A caller's visible view answers by the whole package's route (``_visible_route``)."""
     analysis = get_package_analysis(config)
     pinned = analysis.path_preferences.get((start, target))
     if pinned is not None:
@@ -524,13 +512,70 @@ def package_route(config: PackageConfig, *, start: str, target: str) -> RouteRes
     cached = analysis.path_cache.get((start, target))
     if cached is None:
         try:
-            cached = _resolve_uncached(config, start, target)
+            cached = (
+                _resolve_uncached(config, start, target)
+                if analysis.view is None
+                else _visible_route(config, start, target)
+            )
         except SemanticLayerError as exc:
             cached = RouteRefusal(exc.code, str(exc), deepcopy(exc.details))
         analysis.path_cache[(start, target)] = cached
     if isinstance(cached, RouteRefusal):
         raise cached.error()
     return cached
+
+
+def _no_route(config: PackageConfig, start: str, target: str) -> SemanticLayerError:
+    return SemanticLayerError(
+        "PATH_NOT_FOUND",
+        f"No path from '{start}' to '{target}'",
+        details={
+            "start": start,
+            "target": target,
+            "hop_limit": package_hop_limit(config),
+            "reason": "no_relationship_chain",
+        },
+    )
+
+
+def _visible_route(view: PackageConfig, start: str, target: str) -> RouteResolution:
+    """A view's resolution of the pair: the whole package's, never re-chosen for the caller.
+
+    Routes through a hidden object are dropped from those considered. When the package's chosen
+    route reads one, the pair has no route. An ambiguous pair stays ambiguous, asking among the
+    visible routes only. Otherwise a refused pair gets the view's own PATH_NOT_FOUND, or no
+    route when the view alone could answer it.
+    """
+    base, hidden, _ = get_package_analysis(view).view  # type: ignore[misc]
+
+    def visible(path: Sequence[str]) -> bool:
+        return visible_route(base, start, path, hidden)
+
+    try:
+        resolution = package_route(base, start=start, target=target)
+    except SemanticLayerError as exc:
+        options = exc.details.get("clarification", {}).get("options", [])
+        routes = [
+            option["relationship_path"]
+            for option in options
+            if visible(option["relationship_path"])
+        ]
+        if exc.code == "AMBIGUOUS_PATH" and routes:
+            raise _route_decision_required(view, start, target, routes) from None
+        try:
+            _resolve_uncached(view, start, target)
+        except SemanticLayerError as own:
+            if own.code == "PATH_NOT_FOUND":
+                raise own from None
+        raise _no_route(view, start, target) from None
+    if not visible(resolution.routes[0]):
+        raise _no_route(view, start, target)
+    recorded = get_package_analysis(view).path_preferences
+    return RouteResolution(
+        tuple(path for path in resolution.routes if visible(path)),
+        resolution.basis,
+        tuple(row for row in resolution.rows if row in recorded),
+    )
 
 
 def _resolve_uncached(config: PackageConfig, start: str, target: str) -> RouteResolution:
@@ -558,16 +603,7 @@ def _resolve_uncached(config: PackageConfig, start: str, target: str) -> RouteRe
                     ),
                 },
             )
-        raise SemanticLayerError(
-            "PATH_NOT_FOUND",
-            f"No path from '{start}' to '{target}'",
-            details={
-                "start": start,
-                "target": target,
-                "hop_limit": hop_limit,
-                "reason": "no_relationship_chain",
-            },
-        )
+        raise _no_route(config, start, target)
     own_keys = [
         path
         for path in routes
@@ -706,7 +742,18 @@ def eligible_path_targets(config: PackageConfig, *, start: str) -> list[str]:
                 eligible.append(target)
         elif not _has_multiple_routes(analysis.graph, start, target, hop_limit):
             eligible.append(target)
+    if analysis.view is not None:
+        # A view offers a target only when its route resolution answers the pair.
+        eligible = [target for target in eligible if _resolves(config, start, target)]
     return eligible
+
+
+def _resolves(config: PackageConfig, start: str, target: str) -> bool:
+    try:
+        package_route(config, start=start, target=target)
+    except SemanticLayerError:
+        return False
+    return True
 
 
 def build_hop_profile(

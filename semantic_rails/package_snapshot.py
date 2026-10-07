@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import SemanticLayerError
-from .schema import PackageConfig
+from .schema import PackageConfig, require_boolean_mnpi_package
 
 _SOURCE_SUFFIXES = (".yml", ".yaml", ".json", ".toml")
 _SOURCE_EXCLUDED_DIRS = {".git", ".pytest_cache", ".uv-cache", "__pycache__", ".compiled"}
@@ -171,6 +171,7 @@ class LoadedPackageSnapshot:
     @classmethod
     def from_config(cls, config: PackageConfig, *, source_path: str = "") -> LoadedPackageSnapshot:
         """Freeze explicitly supplied config without attesting unrelated disk bytes."""
+        require_boolean_mnpi_package(config)
         config = deepcopy(config)
         semantic = semantic_payload(config)
         return cls(

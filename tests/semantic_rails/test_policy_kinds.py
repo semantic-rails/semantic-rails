@@ -11,13 +11,13 @@ from semantic_rails.contracts import load_contract
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.policies import (
     enforce_query_policies,
-    hidden_object_ids,
     package_release_labels,
     policy_effects_for_object,
 )
 from semantic_rails.policy_rules import withheld_max_rank
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SemanticPolicyConfig
+from semantic_rails.visible_view import hidden_object_ids
 
 MEASURE = "measure.jaffle.revenue_usd"
 INVALID_POLICIES = [
@@ -85,6 +85,9 @@ def write_policy_package(tmp_path, starter, strict, kind, action, location="acti
         policy["label"] = "stable"
     if kind == "row_filter":
         policy.update(dimension="dimension.shop_customer_customer_type", attribute="customer_type")
+    if kind == "object_visibility":
+        # Both visibility actions list the objects they hide.
+        policy.setdefault("object_ids", ["metric.shop.revenue_usd"])
     raw["semantic_policies"] = [policy]
     path = tmp_path / "package.yml"
     path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")

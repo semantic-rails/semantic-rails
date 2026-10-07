@@ -84,10 +84,9 @@ def test_counterpart_visibility_uses_one_package_snapshot(package_config_factory
             self.runtime = runtime
             self.config_reads = 0
 
-        @property
-        def _config(self):
+        def view_for(self, context):
             self.config_reads += 1
-            return config if self.config_reads == 1 else reloaded_config
+            return self.runtime.view_for(context) if self.config_reads == 1 else reloaded_config
 
         def __getattr__(self, name):
             return getattr(self.runtime, name)
@@ -209,7 +208,7 @@ def test_http_counterpart_suggestions_use_resolved_visibility(
 def test_unavailable_visibility_cannot_add_a_counterpart(
     package_config_factory, monkeypatch, missing_kind, mode
 ):
-    from semantic_rails import policies
+    from semantic_rails import visible_view
 
     config, package = package_config_factory("jaffle_shop")
     config, hidden_id, _ = _counterpart_config(config, missing_kind, True)
@@ -217,7 +216,7 @@ def test_unavailable_visibility_cannot_add_a_counterpart(
     def unavailable(*args, **kwargs):
         raise RuntimeError("Visibility unavailable")
 
-    monkeypatch.setattr(policies, "hidden_object_ids", unavailable)
+    monkeypatch.setattr(visible_view, "hidden_object_ids", unavailable)
     runtime = Runtime.from_config(config, source_path=str(package))
     try:
         response = SemanticLayerMCPAdapter(runtime).call_tool(
@@ -232,7 +231,9 @@ def test_unavailable_visibility_cannot_add_a_counterpart(
                 "policy_context": {"audience": "external"},
             },
         )
-        assert response["errors"][0]["code"] == "OBJECT_NOT_FOUND"
+        # Unresolved visibility refuses before binding, naming nothing.
+        assert response["errors"][0]["code"] == "POLICY_DENIED"
+        assert response["errors"][0]["details"] == {"reason": "visibility_unresolved"}
         assert hidden_id not in json.dumps(response)
     finally:
         runtime.close()

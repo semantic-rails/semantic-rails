@@ -17,6 +17,7 @@ from ..schema import (
     PackageConfig,
     RelationshipConfig,
     TemporalRoleConfig,
+    VisiblePackageConfig,
 )
 from .dependencies import binding_index
 
@@ -31,6 +32,15 @@ class RouteResolution(NamedTuple):
     basis: str
     # The rows that excluded a considered route (``inherited`` only).
     rows: tuple[tuple[str, str], ...] = ()
+
+
+class ViewOf(NamedTuple):
+    """What a caller's visible view was cut from (``visible_view.build_view``)."""
+
+    base: PackageConfig
+    hidden: frozenset[str]
+    # The hidden objects' tokens in text (``visible_view``), or None when there are none.
+    tokens: Any
 
 
 class RouteRefusal(NamedTuple):
@@ -65,8 +75,12 @@ class PackageAnalysis:
     # Pinned-pair notes need only whether two routes fit the hop ceiling.
     route_note_cache: dict[tuple[str, str], bool] = field(default_factory=dict)
     # Object id -> every object the compiler reads to answer it, or None when it cannot be
-    # bound (``policies.restricted_object_ids``). Keyed only by package inputs.
+    # bound (``visible_view.hidden_object_ids``). Keyed only by package inputs.
     object_reads: dict[str, frozenset[str] | None] | None = None
+    # Object id -> every other object a field of its row names.
+    declared_references: dict[str, frozenset[str]] | None = None
+    # Set on a caller's visible view only.
+    view: ViewOf | None = None
 
     @classmethod
     def from_config(cls, config: PackageConfig) -> PackageAnalysis:
@@ -109,6 +123,7 @@ class PackageAnalysis:
             temporal_relationship_ids={
                 row.id for row in config.relationships if row.temporal_validity
             },
+            view=config.view if isinstance(config, VisiblePackageConfig) else None,
         )
 
 

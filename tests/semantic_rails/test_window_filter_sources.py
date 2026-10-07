@@ -47,11 +47,12 @@ def _query(expression=HISTORY):
     }
 
 
+@pytest.mark.parametrize("hide_inputs", [False, True], ids=["visible", "hidden-inputs"])
 @pytest.mark.parametrize("verbosity", ["minimal", "compact", "full"])
 @pytest.mark.parametrize("surface", ["validate", "sql", "run"])
 @pytest.mark.parametrize("source", ["measure", "policy"])
 def test_authorization_precedes_source_refusals(
-    shop_config, tmp_path, monkeypatch, verbosity, surface, source
+    shop_config, tmp_path, monkeypatch, verbosity, surface, source, hide_inputs
 ):
     expression = {**HISTORY, "input": AGGREGATE} if source == "measure" else HISTORY
     metric = MetricConfig(
@@ -68,14 +69,17 @@ def test_authorization_precedes_source_refusals(
             audiences=["reader"],
             action="deny",
         ),
-        SemanticPolicyConfig(
-            "policy.shop.hide_inputs",
-            "object_visibility",
-            object_ids=[REVENUE, CLOCK],
-            audiences=["reader"],
-            action="hidden",
-        ),
     ]
+    if hide_inputs:
+        policies.append(
+            SemanticPolicyConfig(
+                "policy.shop.hide_inputs",
+                "object_visibility",
+                object_ids=[REVENUE, CLOCK],
+                audiences=["reader"],
+                action="hidden",
+            )
+        )
     dimensions = shop_config.dimensions
     if source == "policy":
         clock = next(row for row in dimensions if row.id == CLOCK)
@@ -116,8 +120,11 @@ def test_authorization_precedes_source_refusals(
             )
             reference = adapter.call_tool("execute", arguments, request_context=context)
         assert actual["errors"] == reference["errors"]
-        assert actual["errors"][0]["code"] == "POLICY_DENIED", actual
-        for hidden in (REVENUE, CLOCK, "2023-12-01"):
+        # Hidden inputs hide the metric and the clock's time role too: the query names a time
+        # role the reader cannot see, refused as the package without them refuses it.
+        code = "INVALID_TEMPORAL_ROLE" if hide_inputs else "POLICY_DENIED"
+        assert actual["errors"][0]["code"] == code, actual
+        for hidden in (REVENUE, CLOCK, "2023-12-01") if hide_inputs else ("2023-12-01",):
             assert hidden not in json.dumps(actual)
         if source == "measure":
             allowed = adapter.call_tool(

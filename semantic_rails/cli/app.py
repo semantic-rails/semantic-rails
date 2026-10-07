@@ -12,6 +12,7 @@ from ..diagnostics import exception_issue
 from ..errors import SemanticLayerError
 from ..mcp_manager import CLIENTS, DEFAULT_MCP_HOST, DEFAULT_MCP_PORT, MCP_KINDS
 from ..runtime import _enrich_runtime_error
+from ..visible_view import view_of
 from .commands.mcp import (
     cmd_mcp_client_config,
     cmd_mcp_doctor,
@@ -920,16 +921,18 @@ def main() -> None:
         # (_error_response) — closest_matches on OBJECT_NOT_FOUND etc.
         config = _config_for_error_enrichment(args)
         if config is not None:
-            policy_context: dict[str, Any] | None
             try:
-                policy_context = (
+                # Suggestions come from the caller's view; without one, none are offered.
+                config = view_of(
+                    config,
                     _query_payload_from_args(args).get("policy_context", {})
                     if getattr(args, "query_json", None)
-                    else _policy_context_from_args(args)
+                    else _policy_context_from_args(args),
                 )
-            except Exception:  # noqa: BLE001 — uncertain visibility withholds alternatives
-                policy_context = None
-            exc = _enrich_runtime_error(exc, config, policy_context)
+            except Exception:  # noqa: BLE001 — uncertain visibility suggests nothing
+                config = None
+        if config is not None:
+            exc = _enrich_runtime_error(exc, config)
         issue = exception_issue(exc, stage="cli")
         if getattr(args, "human_cli", False) and not getattr(args, "json", False):
             _print_stderr(f"error [{issue['code']}]: {issue['message']}")

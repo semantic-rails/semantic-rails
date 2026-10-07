@@ -352,6 +352,12 @@ def test_hidden_governing_metrics_are_never_selected_or_disclosed(
         else:
             assert response["status"] == "ok", response.get("why")
             assert _gaps(response) == []
+    # A building block stays one when its governor is hidden: discover still leaves it out.
+    discovered = SemanticLayerMCPAdapter(runtime).call_tool(
+        "discover",
+        {"terms": "active stores", "policy_context": arguments["query"]["policy_context"]},
+    )
+    assert [row["id"] for row in discovered["measures"]] == ([] if building_block else [MEASURE])
     # The same policy leaves the metric visible to a different caller, on the next call.
     internal = _plan(runtime, intent, policy_context={**NOW, "audience": "internal"})
     assert hidden_id in [subject["id"] for subject in internal["intent_ir"]["subjects"]]
@@ -426,6 +432,9 @@ TEAMS = "measure.org.teams"
 NEW_TEAMS = "metric.org.new_teams"
 TEAM_CLASS = "dimension.org_team_class"
 SHAPES = ["same", "event"]
+HIDDEN_GOVERNOR = (
+    "A definition you can't see governs this measure, so it can't be answered as a raw number."
+)
 
 
 def _teams_package(
@@ -933,7 +942,22 @@ def test_a_hidden_narrowing_dimension_still_holds_and_is_not_named(
     monkeypatch.setattr(engine, "_config", replace(engine._config, semantic_policies=[policy]))
     plan = _plan(engine, "teams last week", policy_context={**NOW, "audience": "external"})
     assert plan["status"] == "low_confidence", plan.get("why")
-    assert [gap["expected"] for gap in _gaps(plan)] == [{"metrics": [NEW_TEAMS], "narrowed_by": []}]
+    assert "execute" not in plan.get("next", {}).get("ready_for", [])
+    # "New teams" reads the hidden class, so it is hidden too: the hold still stands, naming
+    # neither of them.
+    gaps = _gaps(plan)
+    assert [gap["expected"] for gap in gaps] == [{"metrics": [], "narrowed_by": []}]
+    assert [gap["message"] for gap in gaps] == [HIDDEN_GOVERNOR]
+    serialized = json.dumps(plan)
+    for name in (TEAM_CLASS, "Team class", NEW_TEAMS, "New teams", "Customer teams created"):
+        assert name not in serialized
+    # The control: for a caller who sees the class, the hold names the metric and the class.
+    visible = _plan(engine, "teams last week", policy_context={**NOW, "audience": "internal"})
+    assert visible["status"] == "low_confidence", visible.get("why")
+    assert [gap["expected"] for gap in _gaps(visible)] == [
+        {"metrics": [NEW_TEAMS], "narrowed_by": [TEAM_CLASS]}
+    ]
+    assert [gap["message"] for gap in _gaps(visible)] != [HIDDEN_GOVERNOR]
 
 
 CALLS_SEED = """

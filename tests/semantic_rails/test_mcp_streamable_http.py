@@ -485,7 +485,9 @@ def test_asgi_mcp_uses_one_trusted_context_for_tools_resources_and_audit(monkeyp
         assert status == 200
         segment_result = json.loads(body)["result"]["structuredContent"]
         assert segment_result["ok"] is False
-        assert segment_result["error"]["code"] == "POLICY_DENIED"
+        # The segment reads an object hidden from ops: with it the package has no segment for
+        # this caller, so there is no segment tool, as if absent.
+        assert segment_result["error"]["code"] == "UNKNOWN_MCP_TOOL"
         assert segment_result["request_context"]["audience"] == "ops"
         assert "rows" not in segment_result
 

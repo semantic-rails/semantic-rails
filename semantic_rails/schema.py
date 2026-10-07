@@ -10,9 +10,11 @@ the loaded config can be safely shared across threads.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from .errors import SemanticLayerError
 from .expressions import SemanticExpr
 
 
@@ -428,3 +430,36 @@ class PackageConfig:
     relations: list[RelationConfig] = field(default_factory=list)
     operational_contract: dict[str, Any] = field(default_factory=dict)
     meta_contract: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, kw_only=True)
+class VisiblePackageConfig(PackageConfig):
+    """A caller view whose provenance survives dataclass replacement."""
+
+    view: Any
+
+
+def require_base(config: PackageConfig) -> None:
+    if isinstance(config, VisiblePackageConfig):
+        raise TypeError("Policy enforcement takes the whole package, never a visible view.")
+
+
+def base_of(config: PackageConfig) -> PackageConfig:
+    return config.view.base if isinstance(config, VisiblePackageConfig) else config
+
+
+def require_boolean_mnpi(meta: Mapping[str, Any], where: str) -> None:
+    """``meta.mnpi`` is ``true`` or ``false``: any other value refuses the package."""
+    if "mnpi" in meta and not isinstance(meta["mnpi"], bool):
+        raise SemanticLayerError("INVALID_CONFIG", f"{where}: meta.mnpi must be true or false")
+
+
+def require_boolean_mnpi_package(config: PackageConfig) -> None:
+    """:func:`require_boolean_mnpi` for every record of a package built in code."""
+    rows: list[MeasureConfig | MetricConfig | RelationConfig] = [
+        *config.measures,
+        *config.metric_recipes,
+        *config.relations,
+    ]
+    for row in rows:
+        require_boolean_mnpi(row.meta, row.id)

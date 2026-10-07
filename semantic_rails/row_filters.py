@@ -13,7 +13,7 @@ from typing import Any, cast
 
 from .errors import SemanticLayerError
 from .policy_rules import policy_action
-from .schema import PackageConfig, SemanticPolicyConfig
+from .schema import PackageConfig, SemanticPolicyConfig, require_base
 from .sql_ast import (
     SqlBinary,
     SqlCall,
@@ -45,6 +45,7 @@ class RowFilter:
 def row_filter(config: PackageConfig, policy: SemanticPolicyConfig) -> RowFilter:
     """Resolve one ``row_filter`` policy; anything it can't enforce is a config error."""
 
+    require_base(config)
     policy_action(policy)
 
     def invalid(problem: str) -> SemanticLayerError:

@@ -86,13 +86,15 @@ def test_segment_operations_enforce_policy_context_before_metadata_or_rows(runti
             "segment.jaffle.high_value_customers", policy_context=context
         )
         assert validated["ok"] is False
-        assert validated["errors"][0]["code"] == "POLICY_DENIED"
+        # A hidden segment is refused exactly like one that does not exist.
+        assert validated["errors"][0]["code"] == "OBJECT_NOT_FOUND"
         assert "normalized_segment" not in validated
         assert validated["request_context"]["audience"] == "external"
 
-        with pytest.raises(SemanticLayerError, match="blocked by policy"):
+        unknown = "Unknown segment 'segment.jaffle.high_value_customers'"
+        with pytest.raises(SemanticLayerError, match=unknown):
             runtime.segment_explain("segment.jaffle.high_value_customers", policy_context=context)
-        with pytest.raises(SemanticLayerError, match="blocked by policy"):
+        with pytest.raises(SemanticLayerError, match=unknown):
             runtime.segment_preview("segment.jaffle.high_value_customers", policy_context=context)
     finally:
         runtime.close()

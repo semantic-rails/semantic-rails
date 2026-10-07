@@ -1,16 +1,15 @@
-"""Visibility / access policy enforcement.
+"""Access policy enforcement.
 
 Evaluates each declared ``semantic_policy`` against the resolved
-request context (``environment``, ``audience``) and returns either a
-list of "applied" effects (for HTTP/MCP response payloads) or the set
-of hidden object ids that ``catalog`` / ``discover`` / ``inspect``
-should filter out. :func:`enforce_query_policies` is the runtime's gate
-on ``validate`` / ``compile`` / ``execute``.
+request context (``environment``, ``audience``) and returns the list of
+"applied" effects. :func:`enforce_query_policies` is the runtime's gate
+on ``validate`` / ``compile`` / ``execute``. Enforcement reads the whole
+package, never a caller's visible view (``visible_view``), and hands its
+effects to execution unchanged; responses carry ``visible_view.public_effects``.
 """
 
 from __future__ import annotations
 
-import contextvars
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import fields, is_dataclass, replace
 from functools import cache
@@ -19,7 +18,6 @@ from typing import Any
 from .ast import NormalizedQuery, every_filter, normalize_query, plain_filters
 from .compiler import BoundQuery, bind_metadata_objects, bind_query
 from .compiler_parts.bind import measure_column_ref
-from .compiler_parts.indexes import get_package_analysis
 from .errors import SemanticLayerError
 from .expressions import (
     AggregateExpr,
@@ -32,28 +30,16 @@ from .expressions import (
     collect_column_refs,
     parse_semantic_expression,
 )
-from .policy_rules import (
-    MAX_RANK,
-    check_request_environment,
-    hidden_policy_ids,
-    visible_only_listed,
-    withheld_max_rank,
-)
+from .policy_rules import MAX_RANK, check_request_environment, withheld_max_rank
 from .policy_rules import context_scope_matches as context_scope_matches
+from .policy_rules import hidden_policy_ids as _hidden_policy_ids
 from .policy_rules import policy_action as _policy_action
 from .policy_rules import policy_matches as _policy_matches
 from .policy_rules import role_scope_matches as role_scope_matches
+from .policy_rules import visible_only_listed as _visible_only_listed
 from .request_context import context_from_policy_context
 from .row_filters import RowFilter, is_row_filter, row_filter
-from .schema import (
-    MeasureConfig,
-    PackageConfig,
-    RelationshipConfig,
-    SegmentConfig,
-    SemanticPolicyConfig,
-    ValueDomainConfig,
-)
-from .segments import build_segment_query, normalize_segment
+from .schema import MeasureConfig, PackageConfig, SemanticPolicyConfig, require_base
 from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral, SqlOrder
 from .sql_preparation import checked_slot_value
 
@@ -93,105 +79,6 @@ def policy_effects_for_object(
     return effects
 
 
-def hidden_object_ids(
-    config: PackageConfig,
-    *,
-    environment: str = "",
-    audience: str = "",
-    roles: Iterable[str] | None = None,
-) -> set[str]:
-    """The one visibility set catalog, discovery, inspect, valid values, planning and
-    diagnostics read: ``hidden`` policies and :func:`restricted_object_ids`."""
-    scope: dict[str, Any] = {"environment": environment, "audience": audience, "roles": roles}
-    return hidden_policy_ids(config, **scope) | restricted_object_ids(config, **scope)
-
-
-def restricted_object_ids(
-    config: PackageConfig,
-    *,
-    environment: str = "",
-    audience: str = "",
-    roles: Iterable[str] | None = None,
-) -> frozenset[str]:
-    """What ``visible_only`` policies keep from this context: each listed object it is not
-    eligible for, and every object whose reads reach one or cannot be bound."""
-    listed = visible_only_listed(config, environment=environment, audience=audience, roles=roles)
-    if not listed:
-        return frozenset()
-    return frozenset(listed).union(
-        object_id
-        for object_id, reads in _object_reads(config).items()
-        if reads is None or reads & listed
-    )
-
-
-def bound_object_ids(binding: BoundQuery) -> frozenset[str]:
-    """Every object a bound query reads, including what each root leaf computes."""
-    return binding.object_ids.union(*binding.leaf_objects.values())
-
-
-def _object_reads(config: PackageConfig) -> dict[str, frozenset[str] | None]:
-    analysis = get_package_analysis(config)
-    if analysis.object_reads is None:
-        # A fresh context, so an outer binding never records these reads as its own.
-        analysis.object_reads = contextvars.Context().run(_bind_object_reads, config)
-    return analysis.object_reads
-
-
-def _bind_object_reads(config: PackageConfig) -> dict[str, frozenset[str] | None]:
-    """What the compiler reads to answer each object: a recipe's default invocation, a
-    segment's query, a value domain's dimensions, a relationship's entities."""
-    reads: dict[str, frozenset[str] | None] = {}
-    rows: list[Any] = [
-        *config.entities,
-        *config.dimensions,
-        *config.temporal_roles,
-        *config.relationships,
-        *config.value_domains,
-        *config.measures,
-        *config.metric_recipes,
-        *config.segments,
-    ]
-    for row in rows:
-        try:
-            if isinstance(row, SegmentConfig):
-                segment = normalize_segment(config, row.id)
-                query = build_segment_query(segment, include_preview_dimensions=True)
-                reads[row.id] = bound_object_ids(bind_query(config, None, query))
-                continue
-            linked = (
-                row.dimensions
-                if isinstance(row, ValueDomainConfig)
-                else [row.source_entity, row.target_entity]
-                if isinstance(row, RelationshipConfig)
-                else []
-            )
-            reads[row.id] = bind_metadata_objects(config, [row.id, *linked])
-        except Exception:  # noqa: BLE001 — unknown reads cannot authorize disclosure
-            reads[row.id] = None
-    return reads
-
-
-def diagnostic_hidden_object_ids(
-    config: PackageConfig, policy_context: Mapping[str, Any] | None
-) -> frozenset[str] | None:
-    """Use discovery's visibility check; uncertainty cannot authorize disclosure."""
-    if policy_context is None:
-        return None
-    try:
-        context = context_from_policy_context(policy_context)
-        return frozenset(
-            hidden_object_ids(
-                config,
-                environment=context.environment,
-                audience=context.audience,
-                roles=context.roles,
-            )
-        )
-    except Exception:  # noqa: BLE001 — diagnostics must fail closed on uncertain visibility
-        return None
-
-
 def query_policy_effects(
     config: PackageConfig,
     object_ids: Iterable[str],
@@ -202,6 +89,7 @@ def query_policy_effects(
     query: Mapping[str, Any] | None = None,
     binding: BoundQuery | None = None,
 ) -> list[dict[str, Any]]:
+    require_base(config)
     check_request_environment(config, environment)
     effects: list[dict[str, Any]] = []
     # Bound at most once per request, and only for a constraint that needs it.
@@ -298,32 +186,22 @@ def enforce_query_policies(
     query: Mapping[str, Any] | None = None,
     binding: BoundQuery | None = None,
 ) -> list[dict[str, Any]]:
+    require_base(config)
     object_ids = list(object_ids)  # read twice: the effects, then the withheld objects
-    # visible_only is checked against everything the query reads, never policy by policy.
-    restricted = restricted_object_ids(
-        config, environment=environment, audience=audience, roles=roles
+    # Caller-created measures have no authored object id to govern their raw columns, and a query
+    # handed over without its binding cannot be checked: both refused while anything is hidden.
+    unchecked = (
+        query is not None
+        if binding is None
+        else any(collect_column_refs(row.expr) for row in binding.plan.synthetic_measures.values())
     )
-    if restricted and binding is None and query is not None:
-        binding = bind_query(config, None, dict(query))
-    blocked = restricted & {
-        *object_ids,
-        *(bound_object_ids(binding) if binding is not None else ()),
-    }
-    # Caller-created measures have no authored object id to govern their raw columns.
-    raw_aggregate = bool(
-        restricted
-        and binding is not None
-        and any(collect_column_refs(row.expr) for row in binding.plan.synthetic_measures.values())
-    )
-    if blocked or raw_aggregate:
+    # Something is hidden exactly when a visibility policy lists an object for this caller.
+    scope: dict[str, Any] = {"environment": environment, "audience": audience, "roles": roles}
+    if unchecked and (_hidden_policy_ids(config, **scope) or _visible_only_listed(config, **scope)):
         raise SemanticLayerError(
             "POLICY_DENIED",
             "Query references a semantic object blocked by policy.",
-            details={
-                "blocked_objects": sorted(blocked),
-                "policy_effects": [],
-                "policy_violations": [],
-            },
+            details={"blocked_objects": [], "policy_effects": [], "policy_violations": []},
         )
     effects = query_policy_effects(
         config,
@@ -383,6 +261,7 @@ def withheld_object_ids(
 ) -> dict[str, int]:
     """Each object whose values a matching ``withhold_values`` policy keeps from this caller,
     with the smallest ``max_rank`` among those policies."""
+    require_base(config)
     check_request_environment(config, environment)
     ranks: dict[str, int] = {}
     for policy in config.semantic_policies:
@@ -430,6 +309,7 @@ def withheld_shape(
     records, then a binding of the query without that item, so a filter, threshold, segment,
     derived metric or comparison reading it is caught. Anything else is ``POLICY_DENIED``.
     """
+    require_base(config)
 
     def refuse(reason: str, message: str) -> SemanticLayerError:
         return SemanticLayerError(
@@ -521,6 +401,7 @@ def withheld_rank_order(
     Only the accepted rank gets this SQL order. The indicators follow the rank direction,
     so NULLs sort first on ASC and last on DESC, including in nullable tie keys.
     """
+    require_base(config)
     query = binding.plan.query
     order = list(query.get("order_by") or [])
     ranked = next(
@@ -602,6 +483,7 @@ def row_filters_for_context(
     Checked before binding, so every surface (validate, compile, plan, execute,
     segment preview) denies a missing attribute instead of compiling unfiltered.
     """
+    require_base(config)
     context = context_from_policy_context(policy_context)
     check_request_environment(config, context.environment)
     filters = []
@@ -636,7 +518,8 @@ def package_release_labels(config: PackageConfig) -> list[str]:
 
 def _base_policy_effect(policy: SemanticPolicyConfig, *, action: str) -> dict[str, Any]:
     effect: dict[str, Any] = {
-        "policy_id": policy.id,
+        # A policy shown in its generic form (``visible_view.display_policy``) has no id.
+        **({"policy_id": policy.id} if policy.id else {}),
         "kind": policy.kind,
         "action": action,
         "rationale": policy.rationale,

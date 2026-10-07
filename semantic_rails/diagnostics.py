@@ -15,11 +15,9 @@ import re
 from collections.abc import Iterable
 from datetime import date, timedelta
 from difflib import get_close_matches
-from types import EllipsisType
 from typing import Any
 
 from .errors import SemanticLayerError
-from .policy_rules import visible_object_ids
 from .schema import PackageConfig, RelationshipConfig
 
 
@@ -1137,112 +1135,6 @@ def recovery_hints_for_error(
     return []
 
 
-def _visible_candidate_ids(
-    config: PackageConfig,
-    ids: Iterable[str],
-    hidden_ids: frozenset[str] | None | EllipsisType,
-) -> list[str]:
-    return visible_object_ids(config, ids, hidden_ids=hidden_ids)
-
-
-def enrich_diagnostic_candidates(
-    exc: SemanticLayerError,
-    config: PackageConfig,
-    *,
-    hidden_ids: frozenset[str] | None,
-) -> SemanticLayerError:
-    """Filter compiler-supplied catalog alternatives before hints become text."""
-    details = dict(exc.details or {})
-    if (
-        exc.code == "POLICY_DENIED"
-        and (blocked := details.get("blocked_objects", []))
-        and set(blocked) != set(_visible_candidate_ids(config, blocked, hidden_ids))
-    ):
-        # Hidden bound inputs cannot be disclosed by the denial's effects or recovery hints.
-        return SemanticLayerError(exc.code, str(exc))
-    message = str(exc)
-    if (
-        exc.code == "AMBIGUOUS_PATH"
-        and details.get("start")
-        and details.get("clarification", {}).get("kind") == "route"
-    ):
-        from .fanout import visible_route, visible_route_rows
-
-        start = details["start"]
-        clarification = dict(details["clarification"])
-        options = []
-        for option in clarification["options"]:
-            if not visible_route(config, start, option["relationship_path"], hidden_ids):
-                continue
-            option = dict(option)
-            if "conflicts_with" in option:
-                option["conflicts_with"] = visible_route_rows(
-                    config, option["conflicts_with"], hidden_ids
-                )
-            options.append(option)
-        clarification["options"] = options
-        if options:
-            message = (
-                f"Ambiguous path from '{start}' to '{details['target']}'. {clarification['question']} "
-                + "; ".join(option["meaning"] for option in options)
-            )
-        else:
-            message = "This question needs a route you can't see; ask your admin."
-            clarification["question"] = message
-            details = {"reason": details["reason"], "hint": message}
-        details["clarification"] = clarification
-    if exc.code == "AMBIGUOUS_ALIAS":
-        rows = details.get("candidates", [])
-        candidate_ids = [row["id"] if isinstance(row, dict) else row for row in rows]
-        visible = set(_visible_candidate_ids(config, candidate_ids, hidden_ids))
-        candidates = [
-            row
-            for row, candidate_id in zip(rows, candidate_ids, strict=True)
-            if candidate_id in visible
-        ]
-        if len(candidates) < 2:
-            if "field" not in details:
-                term = details.get("term", "")
-                return SemanticLayerError(
-                    "OBJECT_NOT_FOUND",
-                    f"No object matched '{term}'",
-                    details={"term": term, "kind": details.get("kind", "")},
-                )
-            return SemanticLayerError(
-                "OBJECT_NOT_FOUND", f"Unknown filter field '{details['field']}'"
-            )
-        details["candidates"] = candidates
-    for key in (
-        "compatible_dimensions",
-        "compatible_group_by_dimensions",
-        "compatible_measures",
-        "candidate_measures",
-        "compatible",
-        "available_temporal_roles",
-        "allowed_temporal_roles",
-        "alternative_temporal_roles",
-        "reachable_targets",
-    ):
-        if key in details:
-            details[key] = _visible_candidate_ids(config, details[key], hidden_ids)
-    for key in ("closest_compatible_measure", "anchor_temporal_role"):
-        if key in details:
-            matches = _visible_candidate_ids(config, [details[key]], hidden_ids)
-            details[key] = matches[0] if matches else ""
-    time_axis = details.get("time_axis_recovery")
-    if (
-        time_axis
-        and time_axis.get("temporal_role")
-        and not _visible_candidate_ids(config, [time_axis["temporal_role"]], hidden_ids)
-    ):
-        details.pop("time_axis_recovery")
-    return (
-        exc
-        if details == exc.details and message == str(exc)
-        else SemanticLayerError(exc.code, message, details=details)
-    )
-
-
 def _object_catalog_ids(config: PackageConfig) -> list[str]:
     ids: list[str] = []
     for collection in (
@@ -1283,7 +1175,6 @@ def object_id_suggestions(
     missing_id: str,
     *,
     limit: int = 3,
-    hidden_ids: frozenset[str] | None | EllipsisType = ...,
 ) -> list[str]:
     """Suggest near-matching object ids for a missing reference.
 
@@ -1305,7 +1196,7 @@ def object_id_suggestions(
     missing = str(missing_id or "").strip()
     if not missing:
         return []
-    candidates = _visible_candidate_ids(config, _object_catalog_ids(config), hidden_ids)
+    candidates = _object_catalog_ids(config)
     if not candidates:
         return []
     lowered = {item.lower(): item for item in candidates}
@@ -1331,8 +1222,7 @@ def object_id_suggestions(
     matches: list[str] = []
     # An exact metric/measure counterpart is more useful than a same-kind typo.
     # Keep fuzzy cross-kind suggestions suppressed for unrelated missing ids.
-    visibility_known = hidden_ids is not None or not config.semantic_policies
-    if visibility_known and len(parts) == 3 and parts[0] in {"metric", "measure"}:
+    if len(parts) == 3 and parts[0] in {"metric", "measure"}:
         other_kind = "measure" if parts[0] == "metric" else "metric"
         counterpart = lowered.get(f"{other_kind}.{parts[1]}.{parts[2]}".lower())
         if counterpart:
@@ -1428,10 +1318,7 @@ def _authored_prior_period_metrics(config: PackageConfig, target_measure_id: str
 
 
 def enrich_expression_ast_error(
-    exc: SemanticLayerError,
-    config: PackageConfig,
-    *,
-    hidden_ids: frozenset[str] | None | EllipsisType = ...,
+    exc: SemanticLayerError, config: PackageConfig
 ) -> SemanticLayerError:
     """Attach ``closest_matches`` to ``INVALID_EXPRESSION_AST`` errors.
 
@@ -1448,33 +1335,21 @@ def enrich_expression_ast_error(
     if kind != "prior_period":
         return exc
     if details.get("closest_matches"):
-        details["closest_matches"] = _visible_candidate_ids(
-            config, details["closest_matches"], hidden_ids
-        )
-        exc = SemanticLayerError(exc.code, str(exc), details=details)
-        if details["closest_matches"]:
-            return exc
+        return exc
     received = dict(details.get("received", {}) or {})
     measure_id = str(received.get("measure", "") or "")
     if not measure_id:
         inner = received.get("input")
         if isinstance(inner, dict):
             measure_id = str(inner.get("measure", "") or "")
-    matches = _visible_candidate_ids(
-        config, _authored_prior_period_metrics(config, measure_id), hidden_ids
-    )
+    matches = _authored_prior_period_metrics(config, measure_id)
     if not matches:
         return exc
     details["closest_matches"] = matches[:5]
     return SemanticLayerError(exc.code, str(exc), details=details)
 
 
-def enrich_path_not_found(
-    exc: SemanticLayerError,
-    config: PackageConfig,
-    *,
-    hidden_ids: frozenset[str] | None | EllipsisType = ...,
-) -> SemanticLayerError:
+def enrich_path_not_found(exc: SemanticLayerError, config: PackageConfig) -> SemanticLayerError:
     """Attach reachable-target context to ``PATH_NOT_FOUND``.
 
     Shared path eligibility approves alternatives: relationship
@@ -1494,9 +1369,7 @@ def enrich_path_not_found(
         return exc
     from .fanout import eligible_path_targets
 
-    reachable_sorted = _visible_candidate_ids(
-        config, eligible_path_targets(config, start=start), hidden_ids
-    )
+    reachable_sorted = list(eligible_path_targets(config, start=start))
     # Walk the dimension index for concrete ``dimension.<id>`` values
     # whose owning entity is ``start`` or any reachable entity. Listing
     # 15 ids keeps the envelope small; agents that need more browse
@@ -1504,10 +1377,7 @@ def enrich_path_not_found(
     # sees the cheapest alternatives at the top.
     compatible_dimensions: list[str] = []
     eligible_entities = {start, *reachable_sorted}
-    visible_ids = set(
-        _visible_candidate_ids(config, (dim.id for dim in config.dimensions), hidden_ids)
-    )
-    dimensions = [dim for dim in config.dimensions if dim.id in visible_ids]
+    dimensions = config.dimensions
     for dim in dimensions:
         dim_id = str(getattr(dim, "id", "") or "")
         dim_entity = str(getattr(dim, "entity", "") or "")
@@ -1538,12 +1408,7 @@ def enrich_path_not_found(
     return SemanticLayerError(exc.code, str(exc), details=details)
 
 
-def enrich_object_not_found(
-    exc: SemanticLayerError,
-    config: PackageConfig,
-    *,
-    hidden_ids: frozenset[str] | None | EllipsisType = ...,
-) -> SemanticLayerError:
+def enrich_object_not_found(exc: SemanticLayerError, config: PackageConfig) -> SemanticLayerError:
     # OBJECT_NOT_FOUND is the canonical "unknown ID" code, but
     # INVALID_TEMPORAL_ROLE is raised with the same shape when an unknown
     # temporal_role id slips through (compiler.py paths). Treat it the
@@ -1552,11 +1417,6 @@ def enrich_object_not_found(
     if exc.code not in {"OBJECT_NOT_FOUND", "INVALID_TEMPORAL_ROLE"}:
         return exc
     details = dict(exc.details or {})
-    if details.get("closest_matches"):
-        details["closest_matches"] = _visible_candidate_ids(
-            config, details["closest_matches"], hidden_ids
-        )
-        exc = SemanticLayerError(exc.code, str(exc), details=details)
     if details.get("closest_matches"):
         return exc
     missing = (
@@ -1572,7 +1432,7 @@ def enrich_object_not_found(
     if not missing:
         match = re.search(r"'([^']+)'", str(exc))
         missing = match.group(1) if match else ""
-    suggestions = object_id_suggestions(config, str(missing), hidden_ids=hidden_ids)
+    suggestions = object_id_suggestions(config, str(missing))
     if not suggestions:
         # Even with no fuzzy matches, persist the parsed object_id into
         # details so downstream recovery-hint logic (the

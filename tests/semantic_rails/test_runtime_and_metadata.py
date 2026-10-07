@@ -1528,8 +1528,8 @@ def test_runtime_reload_rebuilds_state_after_package_edit(tmp_path):
         # Registry rebuilt and still functional (same object count after
         # a comment-only edit).
         assert len(list(runtime.registry.list_objects())) == original_object_count
-        # Catalog cache cleared (rebuilt on next access).
-        assert runtime._catalog_cache is None
+        # Every view and the caches computed from it dropped (rebuilt on next access).
+        assert [entry.catalog for entry in runtime._views.values()] == [None]
 
         runtime.validate(
             {

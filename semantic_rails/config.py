@@ -92,6 +92,7 @@ from .schema import (
     TemporalRoleConfig,
     ValueDomainConfig,
     ValueDomainValue,
+    require_boolean_mnpi,
 )
 from .temporal_support import _date_key
 from .yaml_loader import load_yaml_file, safe_load
@@ -352,8 +353,10 @@ def _key_columns_and_role(value: Any, *, default_role: str) -> tuple[list[str], 
     return columns, role
 
 
-def _normalize_meta(value: Any) -> dict[str, Any]:
-    return dict(value or {}) if isinstance(value, dict) else {}
+def _normalize_meta(value: Any, where: str) -> dict[str, Any]:
+    meta = dict(value or {}) if isinstance(value, dict) else {}
+    require_boolean_mnpi(meta, where)
+    return meta
 
 
 def _merge_meta(parent: dict[str, Any], child: dict[str, Any]) -> dict[str, Any]:
@@ -1372,7 +1375,7 @@ def _parse_relations(
                 name=str(spec.get("name", key)),
                 label=str(spec.get("label", _titleize(key))),
                 description=str(spec.get("description", "")),
-                meta=_normalize_meta(spec.get("meta")),
+                meta=_normalize_meta(spec.get("meta"), f"{path}: relation '{key}'"),
             )
         )
         aliases[key] = relation_id
@@ -1549,7 +1552,10 @@ def _metric_from_measure(
             publish_spec.get("preferred_companion_metrics", spec.get("preferred_companion_metrics"))
         ),
         operational=metric_operational,
-        meta={**dict(measure.meta), **_normalize_meta(publish_spec.get("meta"))},
+        meta={
+            **dict(measure.meta),
+            **_normalize_meta(publish_spec.get("meta"), f"{path}: {metric_id}"),
+        },
         example_entries=metric_example_entries or list(measure.example_entries),
         value_type=str(publish_spec.get("value_type") or measure.value_type or "number"),
     )
@@ -1891,7 +1897,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
 
     for model_id, model in model_rows.items():
         is_fact = model_id in fact_models
-        model_meta = _normalize_meta(model.get("meta"))
+        model_meta = _normalize_meta(model.get("meta"), f"{path}: model '{model_id}'")
         fact_source_relation = ""
         if is_fact:
             # Resolve the declared time entity for this fact model.
@@ -2220,7 +2226,10 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 ),
                 operational=measure_operational,
                 default_temporal_role=default_temporal_role,
-                meta=_merge_meta(model_meta, _normalize_meta(measure_spec.get("meta"))),
+                meta=_merge_meta(
+                    model_meta,
+                    _normalize_meta(measure_spec.get("meta"), f"{path}: measure '{measure_key}'"),
+                ),
                 example_entries=structured_example_entries,
                 validity_windows=_parse_validity_windows(measure_spec.get("validity_windows")),
                 external_discontinuities=_parse_external_discontinuities(
@@ -2604,7 +2613,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                 target="metric",
                 path=f"{path}: metric '{metric_id}' operational",
             ),
-            meta=_normalize_meta(spec.get("meta")),
+            meta=_normalize_meta(spec.get("meta"), f"{path}: {metric_id}"),
             example_entries=metric_example_entries,
             value_type=str(spec.get("value_type", "number") or "number"),
         )

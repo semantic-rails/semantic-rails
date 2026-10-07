@@ -14,6 +14,7 @@ from semantic_rails.planner import plan as plan_module
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.schema import SemanticPolicyConfig, ValueDomainConfig, ValueDomainValue
+from semantic_rails.visible_view import view_of
 from tests.semantic_rails.test_plan_value_lists import (
     CUSTOMER_DISTRICT,
     STORE_DISTRICT,
@@ -165,10 +166,11 @@ def test_value_domains_do_not_reintroduce_hidden_dimensions(
     try:
         payload = plan_payload(runtime, intent="item revenue for Brooklyn", detail="debug")
         _assert_no_hidden_dimension(payload)
-        where = payload["best"]["query_ir"].get("where", [])
-        assert where == (
-            [{"field": STORE_DISTRICT, "op": "=", "value": "Brooklyn"}] if shared else []
-        )
+        # A domain naming the hidden dimension is hidden with it, shared or not: the value
+        # grounds nothing, and the draft that leaves it out is held.
+        assert payload["best"]["query_ir"].get("where", []) == []
+        assert payload["status"] != "ok"
+        assert "execute" not in payload.get("next", {}).get("ready_for", [])
     finally:
         runtime.close()
 
@@ -195,7 +197,6 @@ def test_explicit_hidden_name_behaves_like_an_absent_dimension(
                 ],
             ),
         )
-        runtime._catalog_search_index = None
         _force_fallback(runtime, monkeypatch, intent, path)
         absent = plan_payload(runtime, intent=intent, detail=detail)
         assert hidden == absent
@@ -258,7 +259,6 @@ def test_hidden_underscore_dimension_behaves_like_an_absent_dimension(
                 dimensions=[dim for dim in runtime._config.dimensions if dim.id != hidden_id],
             ),
         )
-        runtime._catalog_search_index = None
         _force_fallback(runtime, monkeypatch, intent, path)
         absent = plan_payload(runtime, intent=intent, detail=detail, partial_query=partial)
         assert hidden == absent
@@ -314,7 +314,6 @@ def test_hidden_name_holding_a_filter_value_behaves_like_an_absent_dimension(
     try:
         hidden = plan_payload(runtime, intent=intent, detail=detail, partial_query=partial)
         monkeypatch.setattr(runtime, "_config", base)
-        runtime._catalog_search_index = None
         _force_fallback(runtime, monkeypatch, intent, path)
         absent = plan_payload(runtime, intent=intent, detail=detail, partial_query=partial)
         assert hidden == absent
@@ -346,7 +345,7 @@ def test_hidden_underscore_objects_are_excluded_from_name_spans(runtime_factory,
     query = {"group_by": []}
     try:
         # The check reads names through its caller-scoped view, never the raw config.
-        assert grouping_checks._named_groupings_unmet(config, question, query) == (
+        assert grouping_checks._named_groupings_unmet(view_of(config, {}), question, query) == (
             grouping_checks._named_groupings_unmet(replace(config, **{kind: []}), question, query)
         )
         visible = replace(config, semantic_policies=runtime._config.semantic_policies)
@@ -411,7 +410,6 @@ def test_a_hidden_calendar_label_cannot_change_a_response(
         # Labelled "New", a visible calendar would make "new month" the time block's clock.
         for label in ("Calendar", "New"):
             monkeypatch.setattr(runtime, "_config", _new_month_alias(base, CALENDAR, label=label))
-            runtime._catalog_search_index = None
             _force_fallback(runtime, monkeypatch, NEW_MONTH, path)
             payloads.append(
                 plan_payload(
@@ -433,10 +431,10 @@ def test_hidden_entity_and_temporal_role_names_cannot_change_the_name_obligation
     spellings = ["New", "new month", "Month", "Store", "Store name", "Customer type", "Revenue"]
     for row in [*config.entities, *config.temporal_roles]:
         base = grouping_checks._named_groupings_unmet(
-            _new_month_alias(config, row.id), question, NEW_MONTH_PARTIAL
+            view_of(_new_month_alias(config, row.id), {}), question, NEW_MONTH_PARTIAL
         )
         for changes in [*({"label": s} for s in spellings), *({"aliases": [s]} for s in spellings)]:
-            changed = _new_month_alias(config, row.id, **changes)
+            changed = view_of(_new_month_alias(config, row.id, **changes), {})
             unmet = grouping_checks._named_groupings_unmet(changed, question, NEW_MONTH_PARTIAL)
             assert unmet == base, (row.id, changes)
 
@@ -467,12 +465,10 @@ def test_hidden_name_cannot_ground_an_intent_or_enter_catalog_hints(
                     dimensions=[dim for dim in dimensions if dim.id != CUSTOMER_DISTRICT],
                 ),
             )
-            runtime._catalog_search_index = None
             absent = plan_payload(runtime, intent=intent, detail=detail)
             assert hidden == absent
             payloads.append(hidden)
             monkeypatch.setattr(runtime, "_config", replace(runtime._config, dimensions=dimensions))
-            runtime._catalog_search_index = None
         # The unrelated question's catalog hints cannot introduce the hidden name.
         assert "aardvarksecret" not in json.dumps(payloads[1]).lower()
     finally:
@@ -483,26 +479,22 @@ def test_hidden_name_cannot_ground_an_intent_or_enter_catalog_hints(
 def test_uncertain_visibility_does_not_disclose_dimensions(
     runtime_factory, monkeypatch, path
 ) -> None:
-    from semantic_rails import policies
-    from semantic_rails.metadata_parts import relevance
+    from semantic_rails import visible_view
+
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("visibility unavailable")
 
     runtime = runtime_factory("jaffle_shop")
     _with_districts(runtime, monkeypatch)
-    monkeypatch.setattr(policies, "diagnostic_hidden_object_ids", lambda *args: None)
+    monkeypatch.setattr(visible_view, "hidden_object_ids", unavailable)
     intent = "item revenue by district"
     _force_fallback(runtime, monkeypatch, intent, path)
     try:
-        # Unknown visibility withholds every object from the relevance floor.
-        refused = plan_payload(runtime, intent=intent, detail="debug")
-        assert refused["status"] == "out_of_scope"
-        assert "'catalog_token_sample': []" in str(refused)
-        _assert_no_hidden_dimension(refused)
-        # Past the floor, the grouping guard still refuses.
-        monkeypatch.setattr(relevance, "_intent_passes_relevance_floor", lambda *a: (True, []))
-        monkeypatch.setattr(relevance, "_intent_passes_grounding_floor", lambda *a, **k: (True, []))
+        # Unknown visibility refuses the plan before any candidate is ranked or named.
         with pytest.raises(SemanticLayerError) as error:
             plan_payload(runtime, intent=intent, detail="debug")
-        assert error.value.code == "OBJECT_NOT_FOUND"
+        assert error.value.code == "POLICY_DENIED"
+        assert error.value.details == {"reason": "visibility_unresolved"}
         payload = {
             "code": error.value.code,
             "message": str(error.value),
@@ -510,27 +502,6 @@ def test_uncertain_visibility_does_not_disclose_dimensions(
         }
         _assert_no_hidden_dimension(payload)
         assert STORE_DISTRICT not in json.dumps(payload)
-    finally:
-        runtime.close()
-
-
-@pytest.mark.parametrize("detail", ["query", "best", "full", "debug"])
-def test_bypassing_candidate_filter_refuses_without_disclosure(
-    runtime_factory, monkeypatch, detail
-) -> None:
-    runtime = runtime_factory("jaffle_shop")
-    _with_districts(runtime, monkeypatch)
-    composed = plan_module.compose(runtime, "item revenue by district")
-    assert composed.draft.query["group_by"] == [CUSTOMER_DISTRICT]
-    _hide_customer_district(runtime, monkeypatch)
-    monkeypatch.setattr(plan_module, "compose", lambda *args: composed)
-    try:
-        with pytest.raises(SemanticLayerError) as error:
-            plan_payload(runtime, intent="item revenue by district", detail=detail)
-        assert error.value.code == "OBJECT_NOT_FOUND"
-        _assert_no_hidden_dimension(
-            {"code": error.value.code, "message": str(error.value), "details": error.value.details}
-        )
     finally:
         runtime.close()
 

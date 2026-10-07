@@ -28,7 +28,7 @@ from urllib.parse import parse_qs, urlparse
 from .api_keys import api_key_auth_result
 from .audit import emit_audit_event
 from .diagnostics import recovery_hints_for_error
-from .errors import SemanticLayerError
+from .errors import UNEXPECTED_ERROR_MESSAGE, SemanticLayerError
 from .http_core import (
     CORS_ALLOW_HEADERS,
     MAX_REQUEST_BODY_BYTES,
@@ -290,7 +290,7 @@ def handle_jsonrpc_message(
         return _jsonrpc_error(
             message_id,
             -32603,
-            f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__,
+            UNEXPECTED_ERROR_MESSAGE,
             data={
                 "code": "INTERNAL_ERROR",
                 "details": {"exception_type": type(exc).__name__},
@@ -607,7 +607,7 @@ def make_mcp_http_handler(adapter: SemanticLayerMCPAdapter) -> type[BaseHTTPRequ
                     _jsonrpc_error(
                         None,
                         -32603,
-                        f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__,
+                        UNEXPECTED_ERROR_MESSAGE,
                         data={
                             "code": "INTERNAL_ERROR",
                             "details": {"exception_type": type(exc).__name__},

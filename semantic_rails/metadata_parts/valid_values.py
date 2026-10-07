@@ -17,7 +17,6 @@ from ..compiler_parts.grain_recovery import _query_measure_ids
 from ..errors import SemanticLayerError
 from ..policies import (
     enforce_query_policies,
-    hidden_object_ids,
     policy_effects_for_object,
     row_filters_for_context,
     withheld_measure_ids,
@@ -105,7 +104,7 @@ def _anchor_measure_id(
         query_route_rows(
             runtime._config,
             probe,
-            row_filters=row_filters_for_context(runtime._config, _policy_context(probe)),
+            row_filters=row_filters_for_context(runtime.package_config, _policy_context(probe)),
         )
     try:
         normalized, synthetic = lift_conditional_aggregates(normalize_query(probe), runtime._config)
@@ -128,9 +127,7 @@ def _anchor_measure_id(
         "audience": str(context.get("audience", "")),
         "roles": context.get("roles", []),
     }
-    unavailable = withheld_measure_ids(runtime._config, **scope) | hidden_object_ids(
-        runtime._config, **scope
-    )
+    unavailable = withheld_measure_ids(runtime.package_config, **scope)
     denied = {
         row.id
         for row in measures
@@ -154,7 +151,7 @@ def _anchor_measure_id(
                 payload = {**candidate, **({"route_decisions": decisions} if decisions else {})}
                 binding = runtime._bind(payload, context)
                 enforce_query_policies(
-                    runtime._config,
+                    runtime.package_config,
                     binding.object_ids,
                     query=payload,
                     binding=binding,
@@ -218,19 +215,6 @@ def valid_values_payload(
     offset = max(0, min(int(offset), max_valid_values_offset()))
     config = runtime._config
     validate_temporal_support(config, query or {})
-    policy_context = _policy_context(query)
-    hidden_ids = hidden_object_ids(
-        config,
-        environment=str(policy_context.get("environment", "")),
-        audience=str(policy_context.get("audience", "")),
-        roles=policy_context.get("roles", []),
-    )
-    if dimension_id in hidden_ids:
-        raise SemanticLayerError(
-            "OBJECT_NOT_FOUND",
-            f"Unknown dimension '{dimension_id}'",
-            details={"dimension": dimension_id},
-        )
     dim = next((row for row in config.dimensions if row.id == dimension_id), None)
     if dim is None:
         raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown dimension '{dimension_id}'")

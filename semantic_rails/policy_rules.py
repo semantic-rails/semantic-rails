@@ -1,7 +1,6 @@
 """The closed policy kind/action contract shared by loading and evaluation."""
 
 from collections.abc import Iterable
-from types import EllipsisType
 
 from .errors import SemanticLayerError
 from .schema import PackageConfig, SemanticPolicyConfig
@@ -80,6 +79,11 @@ def policy_action(policy: SemanticPolicyConfig) -> str:
         withheld_max_rank(policy)
     if allowed[action] == "visible_only":
         _check_visible_only(policy)
+    if allowed[action] == "hidden" and not _names(policy.object_ids):
+        raise SemanticLayerError(
+            "INVALID_CONFIG",
+            f"policy '{policy.id}' with action 'hidden' takes non-empty object_ids.",
+        )
     return allowed[action]
 
 
@@ -164,7 +168,7 @@ def hidden_policy_ids(
     audience: str = "",
     roles: Iterable[str] | None = None,
 ) -> set[str]:
-    """Objects a matching ``hidden`` policy hides; ``policies.hidden_object_ids`` is the
+    """Objects a matching ``hidden`` policy lists; ``visible_view.hidden_object_ids`` is the
     complete set."""
     check_request_environment(config, environment)
     return {
@@ -208,25 +212,3 @@ def visible_only_listed(
         ):
             listed.update(policy.object_ids)
     return listed
-
-
-def visible_object_ids(
-    config: PackageConfig,
-    object_ids: Iterable[str],
-    *,
-    hidden_ids: frozenset[str] | None | EllipsisType = ...,
-) -> list[str]:
-    """Filter resolved candidates; uncertain visibility withholds every alternative."""
-    if isinstance(hidden_ids, EllipsisType):
-        try:
-            # Objects computed from a visible_only one need the compiler; without them, withhold.
-            hidden_ids = (
-                None if visible_only_listed(config) else frozenset(hidden_policy_ids(config))
-            )
-        except Exception:  # noqa: BLE001 — uncertain visibility cannot authorize disclosure
-            hidden_ids = None
-    return [
-        object_id
-        for object_id in object_ids
-        if hidden_ids is not None and object_id not in hidden_ids
-    ]
