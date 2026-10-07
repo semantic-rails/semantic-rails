@@ -129,6 +129,10 @@ def test_connections_a_test_leaves_open_are_closed_and_reported(
         )
     )
     monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+    # This child checks the entire synthetic teardown sequence, independent of
+    # the shard that owns this parent test in CI.
+    monkeypatch.setenv("SR_SHARD_COUNT", "1")
+    monkeypatch.setenv("SR_SHARD_INDEX", "0")
     monkeypatch.setenv(
         "PYTHONPATH", os.pathsep.join(filter(None, [str(ROOT), os.getenv("PYTHONPATH")]))
     )
