@@ -130,6 +130,45 @@ def test_start_fails_before_spawn_when_process_identity_is_unsupported(
     assert spawned == []
 
 
+@pytest.mark.parametrize("client", ["claude", "codex", "cursor", "claude-code", "both"])
+def test_only_claude_desktop_install_reports_and_prints_quit_note(
+    tmp_path: Path, monkeypatch, capsys, client: str
+) -> None:
+    import semantic_rails.mcp_manager as manager
+    from semantic_rails.cli.commands.mcp import _print_mcp_setup_report
+
+    for name in ("CLAUDE", "CODEX", "CURSOR"):
+        monkeypatch.setenv(f"SEMANTIC_RAILS_{name}_CONFIG", str(tmp_path / name))
+    monkeypatch.setattr(manager.shutil, "which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(
+        manager.subprocess,
+        "run",
+        lambda args, **kwargs: subprocess.CompletedProcess(args, 0, "", ""),
+    )
+    report = mcp_client_config_report(
+        PackageReference(source_path="", package_id="jaffle_shop"),
+        client=client,
+        workspace_root=str(tmp_path),
+        install=True,
+    )
+    note = (
+        "Claude Desktop: quit it completely (Quit, not closing the window) before "
+        "`--install`, then start it. It writes its configuration back when it quits, "
+        "so an edit made while it runs is lost and the old server keeps answering."
+    )
+    for installed_client, result in report["installed"].items():
+        if installed_client == "claude":
+            assert result["note"] == note
+        else:
+            assert "note" not in result
+    _print_mcp_setup_report({"ok": True, "mode": "install", "client_config": report})
+    output = capsys.readouterr().out
+    if client in ("claude", "both"):
+        assert output.index(note) > output.index("Installed:")
+    else:
+        assert note not in output
+
+
 def test_cursor_and_claude_code_targets_install_and_both_stays_desktop_and_codex(
     tmp_path: Path, monkeypatch
 ) -> None:
