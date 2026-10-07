@@ -265,6 +265,7 @@ def test_tool_install_runs_the_command_where_uv_put_it(
     monkeypatch.setattr(quickstart.shutil, "which", lambda name: str(uv))
     env = quickstart.Local()
     try:
+        assert env.run('test "$CI" = true').returncode == 0
         assert quickstart.tool_install(env) == ""
         assert (tools / "semantic-rails").exists()
         assert not (Path(env.env["HOME"]) / ".local" / "bin").exists()
@@ -591,6 +592,7 @@ def test_a_container_installs_the_wheel_copied_into_it(
 
     monkeypatch.setattr(quickstart.subprocess, "run", run)
     env = quickstart.Container("ubuntu:24.04", str(wheel))
+    assert calls[0][calls[0].index("-e") + 1] == "CI=true"
     inside = f"/tmp/{wheel.name}"
     assert ["docker", "cp", str(wheel), f"{env.id}:{inside}"] in calls
     env.run(quickstart.TOOL_INSTALL)
