@@ -392,6 +392,16 @@ leaf filters retain the leaf rule. Expression filters never satisfy
 `required_where`. Temporal-role constraints check the query
 axis and each governed object's effective bucket and ordering roles before
 rendering.
+Caller-created synthetic aggregates inherit the applicable constraints of every
+measure reading any of their source columns, including condition columns. Source
+resolution is shared with measure SQL lowering, and the existing constraint evaluator
+checks each synthetic aggregate's own cuts. Relation and column identifiers match
+conservatively across case and quoting differences, using only the last relation-name
+part even across schemas. Every synthetic aggregate except `sum`, `min` or `max` of
+one bare column also shares a relation-row dependency with governed count measures,
+including normalized `entity_count` measures, because any other form can recover a
+row count. `aggregate_if` conditions have no authored field and cannot satisfy
+`allowed_where`; other unrelated source columns remain independent.
 Column binding and caveat temporal-shape inspection retain their specialized views.
 
 ### Query-Time

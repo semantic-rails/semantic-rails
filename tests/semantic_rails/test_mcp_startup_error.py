@@ -43,7 +43,6 @@ def _stdio(
     path: Path, *, inferred: bool = False
 ) -> tuple[subprocess.CompletedProcess[str], list[dict[str, Any]]]:
     env = os.environ.copy()
-    env.pop("SEMANTIC_RAILS_MCP_INTERFACE", None)
     # Keep inherited startup hooks while allowing an inferred package in another cwd.
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(REPO_ROOT), env.get("PYTHONPATH", "")]))
     proc = subprocess.run(

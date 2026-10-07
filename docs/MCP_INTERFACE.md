@@ -104,8 +104,7 @@ retain their existing responses; REST, SDK and CLI query responses are unchanged
 
 In-process MCP hosts can create `MCPQuerySession` from
 `semantic_rails.mcp_session` and pass it as `session=` to `adapter.call_tool` or
-`handle_jsonrpc_message`. Use a separate instance for each client session. The
-optional MCP SDK stdio facade also owns a session for its connection.
+`handle_jsonrpc_message`. Use a separate instance for each client session.
 
 Every `tools/list` definition publishes an `outputSchema` for this envelope and
 MCP-standard annotations (`readOnlyHint`, `destructiveHint`,
@@ -287,6 +286,21 @@ A draft that validates can still leave out part of the question. `plan` returns
   when the catalog declares no values for it (`dimension_filter_unrealized`);
 - carries no time window, or a different one, where the question names one
   (`time_window_unrealized`);
+- reads a balance (a [stock](PACKAGE_AUTHORING.md#measures) whose key holds a series column besides
+  its clock) without time grain `day`, or through a predicate at any grain
+  (`stock_as_of_unrealized`). A stock answers with each
+  series' last snapshot in each period, so with no time block, or by week or month, a series
+  that stopped reporting (a closed account) still adds its last value. The draft is held
+  whether it reads the stock through a selected measure, a metric at any depth, a
+  `metric_filters` entry or `where`. A `metric_predicate` expression or a
+  `scoped_aggregate.predicates` entry may read the stock in its own time scope, so an outer
+  day grain does not clear that hold. Choose a metric without a stock predicate, or select
+  the balance directly. `expected.stocks` lists the visible stocks that require a hold,
+  `actual.grain` the draft's grain (`null` with no time block). For a direct balance read,
+  ask for one day ("MRR yesterday", `MRR on <YYYY-MM-DD>`), or set `time.grain: day` with
+  that day's start and end. A stock keyed by its clock alone (a
+  daily rollup) is one series and isn't held. A question with an as-of cue ("MRR right now")
+  stays `TIME_WINDOW_UNRESOLVED`;
 - loses a ranking's stated limit, sort direction or selected measure, cannot identify the
   ranked measure unambiguously, or doesn't group by what is ranked (`ranking_unrealized`),
   including count-free requests such as "top stores by revenue";
@@ -702,41 +716,9 @@ Errors return `INVALID_MCP_ARGUMENTS` (with `closest_matches` for typo'd keys) w
 
 No tool silently accepts unknown keys. `segment` **rejects** them with `INVALID_MCP_ARGUMENTS`; `discover`, `inspect`, `valid-values`, `plan` and `execute` **warn** and ignore them with `DISCOVER_UNKNOWN_ARG`, `INSPECT_UNKNOWN_ARG`, `VALID_VALUES_UNKNOWN_ARG`, `PLAN_UNKNOWN_ARG` or `EXECUTE_UNKNOWN_ARG`. The warn-and-ignore tools cannot reject all unknown keys because callers legitimately add `policy_context` and may pass canonical Query-IR keys (`select`, `time`, `version`, etc.) at top level on `execute` — those passthroughs are part of the contract and never trigger an unknown-arg warning. Query-IR shape errors (e.g. an unknown key *inside* `query`) surface separately as `INVALID_QUERY` from the IR validator in `ast.py`.
 
-## Migrating from interface v1
-
-Interface v1 (thirteen tools) was removed; v2 serves the same handlers as six tools.
-Setting `SEMANTIC_RAILS_MCP_INTERFACE=v1` or passing `SemanticLayerMCPAdapter(runtime,
-interface="v1")` fails with `INVALID_CONFIG`: "The v1 MCP interface was removed; v2 is the only
-interface (see docs/MCP_INTERFACE.md)." (`mcp stdio` returns it as the error of the client's
-`initialize` request and logs it to stderr.) Remove the setting (`v2` is still accepted). Calling a v1-only tool
-returns `UNKNOWN_MCP_TOOL`, whose message and `details.replacement` name the call to use.
-`initialize` reports `v2` as `serverInfo.version`, responses carry it as `api_version`, and
-`mcp doctor` prints it.
-
-| v2 tool | Replaces in v1 | Difference from v1 |
-|---|---|---|
-| `discover` | `discover`, `catalog` | `verbosity` defaults to `minimal`, slim cards (v1: `compact`, full cards). Empty `terms` returns the catalog index (see [Catalog And Metadata](#catalog-and-metadata)). |
-| `inspect` | `inspect` | `verbosity` defaults to `minimal`, the card without duplicate fields (v1: `compact`). |
-| `valid-values` | `valid-values` | None. |
-| `plan` | `plan` | `detail` defaults to `query` (v1: `best`). `next.ready_for` lists only `execute`. |
-| `execute` | `validate`, `compile`, `execute` | `mode`: `run` (default) returns what v1 `execute` returns, `validate` what `validate` returns, `sql` what `compile` returns. In mode `run`, `max_rows` defaults to 200 (v1: no cap). |
-| `segment` | `segment-validate`, `segment-explain`, `segment-preview` | A required `action`: `validate`, `explain` or `preview`. `verbosity` defaults to `minimal` (v1: the whole response). |
-
-To move a v1 client:
-
-- `validate(query)` becomes `execute(query, mode="validate")`, and `compile(query)` becomes
-  `execute(query, mode="sql")`.
-- `execute(query)` returns at most 200 rows; pass `max_rows` (up to 100,000) for more.
-- `segment-validate`, `segment-explain` and `segment-preview` become
-  `segment(segment_id, action=...)`; pass `verbosity="full"` for v1's whole response.
-- `catalog()` becomes `discover(terms="")`, paged at 100 ids per kind (follow
-  `DISCOVER_IDS_TRUNCATED`'s `details.next_offset` with `offset`), or a
-  `semantic-rails://catalog/*` resource. For v1's
-  default responses, pass `verbosity="full"` to `discover`, `verbosity="compact"` to `inspect`, and `detail="best"`
-  to `plan`.
-- `capabilities` and `build-options` have no MCP tool: draft Query IR with `plan` (the `execute`
-  schema lists the expression shapes) and look up filter values with `valid-values`. The HTTP API
-  keeps `/api/v1/capabilities` and `/api/v1/build-options`, and the CLI keeps `build-options`.
+Unknown tool names return `UNKNOWN_MCP_TOOL` with `details.available_tools` listing the
+current package's tools. `initialize` reports `v2` as `serverInfo.version`, responses carry it
+as `api_version`, and `mcp doctor` prints it.
 
 ## Resources And Prompts
 
@@ -858,6 +840,13 @@ semantic-rails mcp client-config --path "$PACKAGE_PATH" --client codex --mcp bot
 for each server, replacing a user-scope server of the same name; a local or
 project server with that name still takes precedence in its project. Each
 install keeps the file's other servers.
+
+**Claude Desktop:** quit it completely (Quit, not closing the window) before
+`--install`, then start it. It writes its configuration back when it quits, so an
+edit made while it runs is lost and the old server keeps answering.
+**Claude Code:** use `--client claude-code`; it registers the server with
+`claude mcp add-json`, live in the next session.
+
 Use `--mcp query`, `--mcp architect`, or `--mcp both` depending on whether the
 client should answer governed analytics questions, author packages, or do both.
 
@@ -918,22 +907,9 @@ convenience. MCP host configs should still pass an explicit `--path` or
 `--package` so the host is deterministic, and deployed services should use their
 own config/vault rather than reading a user's home directory.
 
-## Optional MCP SDK stdio Runtime
-
-Importing `semantic_rails.mcp` never imports an external MCP package. A trusted local host that
-embeds the MCP Python SDK can wrap the adapter with `create_optional_fastmcp_server(adapter)` for
-stdio. The helper imports the SDK locally: `MCPServer` on SDK 2.x, `FastMCP` on 1.x. It raises a
-clear error when neither is installed. The returned facade rejects the SDK's SSE and Streamable
-HTTP runners because those generic runners cannot supply Semantic Rails' authenticated request
-context. Use the built-in ASGI `/mcp` endpoint or `semantic-rails mcp http` for network transport.
-
-The facade sends the server instructions, but the SDK advertises each tool as a single
-`arguments` object rather than its real input schema. Prefer `semantic-rails mcp stdio` when the
-host shows tool schemas to the model.
-
 ## Transports and Protocol Versions
 
-Four entry points serve the same tools. The first three share one JSON-RPC dispatcher
+Three entry points serve the same tools. They share one JSON-RPC dispatcher
 (`semantic_rails.mcp_server.handle_jsonrpc_message`), so they return identical results:
 
 | Entry point | Serves | Why it is kept |
@@ -941,7 +917,6 @@ Four entry points serve the same tools. The first three share one JSON-RPC dispa
 | `semantic-rails mcp stdio` | stdio | Local agents such as Claude Code and Claude Desktop. The default. |
 | ASGI `/mcp` (`semantic_rails.mcp_streamable_http`) | Stateless Streamable HTTP | Network clients. Authenticated with the same API keys as `/api/v1/*`. |
 | `semantic-rails mcp http` | Legacy HTTP + SSE | Clients that predate Streamable HTTP. The MCP specification deprecated this transport in `2025-03-26`, and revision `2026-07-28` schedules it for removal after a twelve-month window. New integrations should use `/mcp`. |
-| `create_optional_fastmcp_server` | stdio through the MCP Python SDK | Hosts that embed the SDK. See the previous section. |
 
 Each tool result carries its payload twice: as `structuredContent`, and as compact JSON in
 `content[0].text` for hosts that forward only text. Resource reads return compact JSON text.
@@ -978,10 +953,8 @@ each request declares, so older clients see no change:
 
 ### MCP Python SDK 2.x
 
-The engine pins `mcp<2`. The query MCP facade selects `MCPServer` when an SDK 2.x module is
-present and falls back to `FastMCP` on 1.x. The 2.x branch has a simulated module test; it has
-not been qualified against an installed SDK 2.x package. Before lifting the pin, qualify these
-known integration points on the chosen SDK version:
+The engine pins `mcp<2`. Before lifting the pin, qualify these known integration points on
+the chosen SDK version:
 
 - **The Architect MCP.** `semantic_rails.architect_mcp` imports `mcp.server.fastmcp` at import
   time. Its tests also read `call_tool` results as a `(content, structured)` pair and read
@@ -1074,7 +1047,7 @@ expression kind names the received kind and its request path (for example,
 | `CONVERSION_MATCHING_MODE_REQUIRED` | Conversion needs `matching_mode`: `first_converted_after_base` or `closest_converted_after_base`. `details.allowed_values` says what each matches and `details.expression` is the sent expression with the first one set. A conversion metric's `inspect` card shows its own expression under `conversion`, to run it over another window. |
 | `UNKNOWN_MCP_PROMPT` | Prompt name isn't in the catalog; see `details.available_prompts`. |
 | `UNKNOWN_MCP_RESOURCE` | Resource URI isn't in the catalog; see `details.available_resources`. |
-| `UNKNOWN_MCP_TOOL` | Tool name isn't in `tools/list`; see `details.available_tools`, and `details.replacement` for a removed v1 tool. |
+| `UNKNOWN_MCP_TOOL` | Tool name isn't in `tools/list`; see `details.available_tools`. |
 | `INVALID_MCP_ARGUMENTS` | Tool arguments don't match the input_schema; `recovery_hints` carries the corrected shape. |
 | `RESULT_TOO_LARGE` | Required tool response fields exceed the shared character budget after optional detail is trimmed. No partial answer is returned; request fewer rows, columns or objects. See `details.max_result_chars`. |
 | `WINDOW_TOTAL_UNSUPPORTED` | A `time` window with no `grain` would return one total, but part of the query still groups by the raw time column, so the result can't be one row per group. Nothing is returned. Set `time.grain`, or remove `time.start` and `time.end`. |

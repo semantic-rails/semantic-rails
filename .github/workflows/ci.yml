@@ -124,7 +124,7 @@ jobs:
         timeout-minutes: 5
         env:
           MERGE_BASE: ${{ github.event.merge_group.base_sha }}
-        run: uv run python scripts/flake_guard.py --base "$MERGE_BASE"
+        run: uv run python scripts/flake_guard.py --base "$MERGE_BASE" --durations-from backend-results.xml
       - name: ClickHouse driver guards (no skips)
         if: matrix.python-version == '3.12'
         run: |

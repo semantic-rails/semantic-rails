@@ -169,7 +169,7 @@ CUSTOMERS = "measure.jaffle.customer_count"
             None,
             ["items"],
         ),
-        # The draft groups by store, which the question doesn't ask for: not one number.
+        # These stock drafts need one as-of day per answer row.
         (
             "number of stores open",
             "measure.jaffle.open_store_count_eop",
@@ -206,11 +206,21 @@ def test_counting_words_name_the_count_measure(
     if question == "number of customers by store":
         assert_plan_held(plan, "PLAN_FALLBACK_SEMANTIC_DRIFT")
         return
-    assert plan["status"] == ("low_confidence" if unconsumed else "ok"), plan.get("why")
-    assert ("ready_for" in plan["next"]) is not bool(unconsumed)
-    if unconsumed:
-        assert plan["why"]["code"] == "PLAN_UNMATCHED_TERMS"
-    assert (plan.get("why") or {}).get("details", {}).get("terms", []) == unconsumed
+    if measure.endswith("_eop"):
+        assert_plan_held(plan, "PLAN_INTENT_COVERAGE_GAP")
+        assert "stock_as_of_unrealized" in {gap["kind"] for gap in plan["why"]["details"]["gaps"]}
+        unmatched = next(
+            (
+                warning
+                for warning in plan.get("warnings", [])
+                if warning["code"] == "PLAN_UNMATCHED_TERMS"
+            ),
+            {},
+        )
+        assert unmatched.get("details", {}).get("terms", []) == unconsumed
+    else:
+        assert plan["status"] == "ok", plan.get("why")
+        assert "execute" in plan["next"]["ready_for"]
     query = plan["best"]["query_ir"]
     if question.endswith(("month", "year")):
         assert query["time"]["grain"] == question.rsplit(" ", 1)[-1]

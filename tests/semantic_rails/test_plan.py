@@ -455,7 +455,8 @@ def test_plan_uses_planner_owned_catalog_fallback(runtime_factory, monkeypatch) 
         payload = plan_payload(runtime, intent="lifetime spend")
     finally:
         runtime.close()
-    assert payload["status"] == "ok"
+    assert_plan_held(payload, "PLAN_INTENT_COVERAGE_GAP")
+    assert "stock_as_of_unrealized" in {gap["kind"] for gap in payload["why"]["details"]["gaps"]}
     assert payload["best"] is not None
     assert payload["best"]["pattern"] == "catalog_fallback"
     assert "query_ir" in payload["best"]

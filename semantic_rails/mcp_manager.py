@@ -567,7 +567,14 @@ def _install_client_config(client: str, servers: dict[str, dict[str, Any]]) -> d
         atomic_write_bytes(
             path, (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"), mode=0o600
         )
-        return {"ok": True, "path": str(path), "servers": sorted(servers)}
+        report: dict[str, Any] = {"ok": True, "path": str(path), "servers": sorted(servers)}
+        if client == "claude":
+            report["note"] = (
+                "Claude Desktop: quit it completely (Quit, not closing the window) before "
+                "`--install`, then start it. It writes its configuration back when it quits, "
+                "so an edit made while it runs is lost and the old server keeps answering."
+            )
+        return report
     if client == "codex":
         path = codex_config_path()
         content = path.read_text(encoding="utf-8") if path.exists() else ""
