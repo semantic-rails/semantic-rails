@@ -153,7 +153,9 @@ def _is_authored_relative(relative_path: str) -> bool:
     return path.suffix.lower() not in _GENERATED_SUFFIXES
 
 
-def _authored_project_files(project_path: Path) -> dict[str, bytes]:
+def _authored_project_files(
+    project_path: Path, *, include: Callable[[str], bool] | None = None
+) -> dict[str, bytes]:
     if not project_path.exists():
         return {}
     if not project_path.is_dir():
@@ -171,6 +173,8 @@ def _authored_project_files(project_path: Path) -> dict[str, bytes]:
             relative_dir = path.relative_to(project_path)
             if relative_dir.parts and relative_dir.parts[0] in _INTERNAL_ROOTS:
                 continue
+            if include is not None and not include(relative_dir.as_posix()):
+                continue
             if path.is_symlink():
                 raise SemanticLayerError(
                     "INVALID_CONFIG",
@@ -183,6 +187,8 @@ def _authored_project_files(project_path: Path) -> dict[str, bytes]:
             path = root_path / name
             relative_file = path.relative_to(project_path).as_posix()
             if not _is_authored_relative(relative_file):
+                continue
+            if include is not None and not include(relative_file):
                 continue
             if path.is_symlink():
                 raise SemanticLayerError(
@@ -395,6 +401,7 @@ class ProjectTransaction:
         *,
         workspace_root: str | os.PathLike[str],
         lock_timeout_seconds: float = 30.0,
+        package_file: str | None = None,
     ) -> None:
         root = Path(workspace_root).expanduser().resolve()
         raw_project = Path(project_path).expanduser()
@@ -409,13 +416,29 @@ class ProjectTransaction:
             )
         self.workspace_root = root
         self.project_path = project
+        self.package_file = package_file
+        if package_file is not None:
+            self.package_file = self._target_path(package_file).relative_to(project).as_posix()
         self.lock_timeout_seconds = max(0.1, float(lock_timeout_seconds))
         identity = hashlib.sha256(str(project).encode("utf-8")).hexdigest()
         self._lock_path = root / ".semantic-rails" / "architect-locks" / f"{identity}.lock"
         self._receipt_root = root / ".semantic-rails" / "architect-transactions" / identity
 
+    def parse_source(self, project: Path | None = None) -> Path:
+        """The package source in the live or virtual project."""
+        root = self.project_path if project is None else project
+        return root / self.package_file if self.package_file is not None else root
+
     def current_revision(self) -> str:
-        return project_revision(self.project_path)
+        return _revision_from_files(self.proposed_files(()))
+
+    def _includes_source(self, relative_path: str) -> bool:
+        """Single-file packages bind only their file and loader companions."""
+        return (
+            self.package_file is None
+            or relative_path == self.package_file
+            or Path(relative_path).parts[0] in {"examples", "tests"}
+        )
 
     def _matches_receipt_file(self, name: str, digest: str | None) -> bool:
         relative = Path(name)
@@ -645,7 +668,7 @@ class ProjectTransaction:
                 self._apply_updates(effective, effective_snapshots)
                 if validate_after:
                     parse_report, _ = parse_config_report(
-                        PackageReference(source_path=str(self.project_path))
+                        PackageReference(source_path=str(self.parse_source()))
                     )
                     base_report["parse"] = parse_report
                     if not parse_report.get("ok"):
@@ -787,9 +810,11 @@ class ProjectTransaction:
 
     def proposed_files(self, updates: Iterable[ProjectFileUpdate]) -> dict[str, bytes]:
         """The authored files as they would be with ``updates`` applied."""
-        files = _authored_project_files(self.project_path)
+        files = _authored_project_files(self.project_path, include=self._includes_source)
         for update in updates:
-            if not _is_authored_relative(update.relative_path):
+            if not _is_authored_relative(update.relative_path) or not self._includes_source(
+                update.relative_path
+            ):
                 continue
             if update.content is None:
                 files.pop(update.relative_path, None)
@@ -832,7 +857,9 @@ class ProjectTransaction:
 
     def _validate_virtual(self, updates: tuple[ProjectFileUpdate, ...]) -> dict[str, Any]:
         with self.virtual_project(updates) as project:
-            parse, _ = parse_config_report(PackageReference(source_path=str(project)))
+            parse, _ = parse_config_report(
+                PackageReference(source_path=str(self.parse_source(project)))
+            )
         return parse
 
     def _guard_routes(
@@ -852,7 +879,7 @@ class ProjectTransaction:
         its own row. Only deliberate decisions use report mode. No route row is generated.
         """
         try:
-            base = load_package_snapshot(str(self.project_path)).config
+            base = load_package_snapshot(self.parse_source()).config
         except (
             SemanticLayerError,
             yaml.YAMLError,
@@ -865,7 +892,7 @@ class ProjectTransaction:
             return {}
         with self.virtual_project(updates) as staged:
             try:
-                head = load_package_snapshot(str(staged)).config
+                head = load_package_snapshot(self.parse_source(staged)).config
             except (
                 SemanticLayerError,
                 yaml.YAMLError,

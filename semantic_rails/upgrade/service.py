@@ -45,7 +45,7 @@ def _query_key(file: str, path: YamlPath) -> str:
 def _stage(transaction: ProjectTransaction, files: PackageFiles, changed: Mapping) -> _State:
     """Load the package with ``changed`` applied and compile its examples and tests (never run)."""
     contents = {k: v for k, v in {**files.contents, **changed}.items() if v is not None}
-    staged = PackageFiles(files.source, contents=contents, _directory=True)
+    staged = PackageFiles(files.source, contents=contents, _directory=files.directory)
     updates = [ProjectFileUpdate(name, data) for name, data in changed.items()]
     with transaction.virtual_project(updates) as root:
 
@@ -53,7 +53,7 @@ def _stage(transaction: ProjectTransaction, files: PackageFiles, changed: Mappin
             return text.replace(str(root.resolve()), "<package>").replace(str(root), "<package>")
 
         try:
-            snapshot = load_package_snapshot(root)
+            snapshot = load_package_snapshot(transaction.parse_source(root))
         except _LOAD_ERRORS as exc:
             return _State(None, (getattr(exc, "code", type(exc).__name__), relative(str(exc))), {})
         runtime = Runtime.from_snapshot(snapshot)
@@ -171,16 +171,22 @@ def upgrade_project(
     """Preview or write one upgrade. ``None`` uses the current revision and a fresh write
     key (a derived key for previews); a write through the Architect passes its own."""
     source = Path(project).expanduser().resolve()
-    if not _package_directory(source):
+    if not source.is_file() and not _package_directory(source):
         raise SemanticLayerError(
             "INVALID_CONFIG",
-            f"project upgrade rewrites a package directory with package.yml; '{source}' is not one",
+            f"project upgrade needs a package directory with package.yml or a package file; '{source}' is not one",
             details={"project_path": str(source)},
         )
-    transaction = ProjectTransaction(source, workspace_root=workspace_root)
+    transaction = ProjectTransaction(
+        source.parent if source.is_file() else source,
+        workspace_root=workspace_root,
+        package_file=source.name if source.is_file() else None,
+    )
     revision = transaction.current_revision()
     choices = dict(choices or {})
     intent = {"operation": "upgrade_project", "choices": choices}
+    if transaction.package_file is not None:
+        intent["package_file"] = transaction.package_file
     expected = (
         revision
         if expected_revision is None or (dry_run and not expected_revision)
@@ -208,6 +214,9 @@ def upgrade_project(
     files = PackageFiles(source)
     result = plan(files, rules, choices)
     if not result.findings:
+        unchanged = _stage(transaction, files, {})
+        if unchanged.error is not None:
+            raise SemanticLayerError(*unchanged.error)
         return {
             "ok": True,
             "status": "up_to_date",
