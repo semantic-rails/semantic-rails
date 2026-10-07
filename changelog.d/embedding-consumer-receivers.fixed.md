@@ -1,4 +1,4 @@
 - Attribute downstream embedding-contract instance uses only to receivers with known
   facade types, excluding unrelated objects and test doubles.
-- Retain recorded instance-member guards while unresolved receivers still read or write
-  the member; require proof of absence before removing them from the generated contract.
+- Retain recorded embedding uses while their last identifier appears in any tracked
+  consumer Python file; require identifier absence before removing a generated guard.

@@ -247,12 +247,13 @@ receivers constructed from facade classes or callables with facade return annota
 or explicitly annotated as facade classes. It follows assignments within lexical scopes;
 attribute bindings belong to the exact receiver, and local definitions and reassignments
 shadow earlier bindings. It does not infer types from matching variable or member names
-across functions or files. Adding a use requires a resolved receiver. A recorded instance
-member is retained while any tracked Python file still loads or stores that member on an
-unresolved receiver, including recorded call shapes; it is removed only when no such
-access remains. Retentions are reported as `retained (receiver not traced): <use>` and
-still checked against the engine. Facade imports, class uses, and protocols are resolved
-directly and removed as computed. The embedder's behavioral compatibility tests cover
+across functions or files. Adding a use requires a resolved receiver. A recorded use is
+removed only when its last identifier no longer appears anywhere in the consumer's
+tracked Python files: the member name for instance and class attributes, otherwise the
+facade name, including calls and protocols. Names, attribute names (loads, stores, and
+deletes), and imported names count regardless of scope or receiver. Retentions are
+reported as `retained (name still present): <use>` and still checked against the engine.
+The embedder's behavioral compatibility tests cover
 unknown receiver paths that have never been recorded. `uv run python
 scripts/embedding_consumer_contract.py --consumer <checkout>` regenerates the list from
 the embedder's code; `--check` reports drift without writing.

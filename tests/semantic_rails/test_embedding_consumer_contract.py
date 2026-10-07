@@ -220,7 +220,13 @@ def _scan_sources(tmp_path: Path, files: dict[str, str]) -> tuple[list[str], dic
         ),
         ("Runtime().package_id", "entry.runtime.adapter = None", [], False),
         ("", "runtime.blockers", [], False),
-        ("dialect_for_warehouse(_)", "entry.dialect_for_warehouse(value)", [], False),
+        ("dialect_for_warehouse(_)", "entry.other_helper(value)", [], False),
+        (
+            "dialect_for_warehouse(_)",
+            "entry.dialect_for_warehouse(value)",
+            ["dialect_for_warehouse(_)"],
+            True,
+        ),
         ("Runtime().adapter", "entry.adapter: object = None", ["Runtime().adapter"], True),
         ("Runtime().adapter", "for entry.adapter in values: pass", ["Runtime().adapter"], True),
         (
@@ -229,6 +235,68 @@ def _scan_sources(tmp_path: Path, files: dict[str, str]) -> tuple[list[str], dic
             ["Runtime().adapter"],
             True,
         ),
+        (
+            "Runtime().adapter",
+            "from semantic_rails.embedding import Runtime\n"
+            'runtime = Runtime.from_path("package")\nruntime.adapter = None',
+            ["Runtime().adapter", "Runtime.from_path(_)"],
+            True,
+        ),
+        (
+            "Runtime().adapter",
+            "from semantic_rails.embedding import Runtime\n"
+            "runtime: Runtime = external()\nruntime.adapter = None",
+            ["Runtime().adapter"],
+            True,
+        ),
+        (
+            "RequestContext(tenant=)",
+            "from semantic_rails.embedding import RequestContext\n"
+            "def build():\n    [None for RequestContext in ()]\n"
+            '    return RequestContext(tenant="t")',
+            ["RequestContext(tenant=)"],
+            True,
+        ),
+        *[
+            (
+                "RequestContext(tenant=)",
+                "from semantic_rails.embedding import RequestContext\n"
+                f'callback = lambda {prefix}context=RequestContext(tenant="t"): context',
+                ["RequestContext(tenant=)"],
+                True,
+            )
+            for prefix in ("", "*, ")
+        ],
+        (
+            "RequestContext(tenant=)",
+            'def build():\n    return RequestContext(tenant="t")\n\n'
+            "from semantic_rails.embedding import RequestContext\nbuild()",
+            ["RequestContext(tenant=)"],
+            True,
+        ),
+        ("RequestContext(tenant=)", "context = external()", [], False),
+        (
+            "RequestContext(tenant=)",
+            "RequestContext = external()",
+            ["RequestContext(tenant=)"],
+            True,
+        ),
+        ("RequestContext(tenant=)", "del RequestContext", ["RequestContext(tenant=)"], True),
+        (
+            "RequestContext(tenant=)",
+            "from other_library import RequestContext as Context",
+            ["RequestContext(tenant=)"],
+            True,
+        ),
+        ("Runtime.from_path(_)", "del entry.from_path", ["Runtime.from_path(_)"], True),
+        ("RequestContext", "entry.RequestContext", ["RequestContext"], True),
+        (
+            "AuditSink{emit(self, payload)}",
+            "from other_library import AuditSink as Sink",
+            ["AuditSink{emit(self, payload)}"],
+            True,
+        ),
+        ("RequestContext(tenant=)", 'label = "RequestContext"\n# RequestContext', [], False),
     ],
 )
 def test_scan_requires_proof_to_add_or_remove_instance_uses(
@@ -251,7 +319,7 @@ def test_scan_requires_proof_to_add_or_remove_instance_uses(
     assert kept == expected
     assert failing == {}
     assert capsys.readouterr().err == (
-        f"retained (receiver not traced): {recorded}\n" if retained else ""
+        f"retained (name still present): {recorded}\n" if retained else ""
     )
     recorded_uses.write_text(HEADER + "".join(f"{use}\n" for use in kept), encoding="utf-8")
     assert contract.main(["--consumer", str(tmp_path), "--check"]) == 0
