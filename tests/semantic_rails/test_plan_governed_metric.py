@@ -871,10 +871,10 @@ def test_the_hold_names_the_question_s_metrics_first_and_at_most_five(
     test_teams = {"where": [{"field": TEAM_CLASS, "op": "=", "value": "test"}]}
     for heeded in ({"group_by": [TEAM_CLASS]}, test_teams):
         assert hold(config, TEAMS, heeded, [], []) is None
-    # The team class, on the entity each event joins to, narrows the event count only where the
-    # metric counts events; so does the event type. A metric over the team count never does.
+    # Only the measure's own entity counts: the team class never narrows the event count, and
+    # the event type narrows it only where the metric counts events.
     events = hold(config, "measure.org.team_events", {}, [], []) or {}
-    event_type = [TEAM_CLASS, "dimension.org_team_event_event_type"] if shape == "event" else None
+    event_type = ["dimension.org_team_event_event_type"] if shape == "event" else None
     assert events.get("narrowed_by") == event_type
 
 
@@ -948,6 +948,7 @@ INSERT INTO team_days VALUES
   ('t5', DATE '2026-10-02', 40),
   ('t3', DATE '2026-09-22', 7),
   ('t4', DATE '2026-09-23', 9);
+ALTER TABLE team_days ADD COLUMN call_kind VARCHAR DEFAULT 'connected';
 CREATE TABLE team_events (event_id VARCHAR, team_id VARCHAR, event_time TIMESTAMP);
 INSERT INTO team_events VALUES
   ('e1', 't1', TIMESTAMP '2026-09-29 10:00'),
@@ -964,7 +965,9 @@ CALL_QUESTIONS = ["How many team calls last week?", "team calls last week"]
 ACTIVE_QUESTIONS = ["How many teams were active last week?", "active teams last week"]
 
 
-def _calls_package(root: Path, *, governors: tuple[str, ...]) -> Path:
+def _calls_package(
+    root: Path, *, governors: tuple[str, ...], relationship: dict[str, Any] | None = None
+) -> Path:
     """Teams hold the class; the measures live on a daily team fact joined to them."""
 
     def put(name: str, doc: dict[str, Any]) -> None:
@@ -983,7 +986,7 @@ def _calls_package(root: Path, *, governors: tuple[str, ...]) -> Path:
         "team": {"key": ["team_id"], "model": "teams", "allowed_as_root": True},
         "team_day": {"key": ["team_id", "day"], "model": "team_days", "allowed_as_root": True},
         "team_event": {"key": ["event_id"], "model": "team_events", "allowed_as_root": True},
-    }}})  # fmt: skip
+    }, **({"relationships": {"daily_team": relationship}} if relationship else {})}})  # fmt: skip
     put("models/teams.yml", {"model": {
         "id": "teams", "label": "Teams", "relation": "teams", "entities": {"team": {}},
         "dimensions": {"class": {"kind": "categorical", "label": "Team class",
@@ -991,9 +994,11 @@ def _calls_package(root: Path, *, governors: tuple[str, ...]) -> Path:
     }})  # fmt: skip
     put("models/team_days.yml", {"model": {
         "id": "team_days", "label": "Team days", "relation": "team_days",
-        "entities": {"team_day": {}, "team": {}},
+        "entities": {"team_day": {}, **({} if relationship else {"team": {}})},
         "times": {"day": {"label": "Day", "column": "day", "kind": "date",
                           "class": "event_time", "default": True}},
+        "dimensions": {"call_kind": {"kind": "categorical", "label": "Call kind",
+                                     "domain": ["connected", "missed"]}},
         "measures": {
             "team_calls": {"kind": "aggregate", "expr": "calls", "label": "Team calls (all classes)",
                            "accumulation": {"kind": "flow"}, "value_type": "count"},
@@ -1017,11 +1022,15 @@ def _calls_package(root: Path, *, governors: tuple[str, ...]) -> Path:
                    "measure.org.call_events", "count_distinct",
                    "temporal_role.org_team_event_event_time"),
     }  # fmt: skip
+    metrics["connected"] = metrics["calls"]
     put("metrics/teams.yml", {"metrics": {
         key: {"label": label, "kind": "aggregate", "value_type": "count", "temporal_role": role,
               "expression": {"kind": "aggregate", "measure": measure, "aggregation": aggregation,
-                             "filter": customer}}
-        for key, label, measure, aggregation, role in (metrics[name] for name in governors)
+                             "filter": {"all": [*customer["all"],
+                                 *([{"field": "dimension.org_team_day_call_kind", "op": "=",
+                                     "value": "connected"}] if name == "connected" else [])]}}}
+        for name in governors
+        for key, label, measure, aggregation, role in [metrics[name]]
     }})  # fmt: skip
     with duckdb.connect(str(root / "org.duckdb")) as connection:
         connection.execute(CALLS_SEED)
@@ -1205,3 +1214,85 @@ def test_a_failing_entity_walk_holds_the_draft(
         ({"metrics": []}, {"measure": CALLS})
     ]
     assert gaps[0]["message"] == "The package doesn't offer this measure."
+
+
+def test_a_joined_class_does_not_exempt_an_own_entity_event_hold(
+    teams: dict[tuple[str, bool], Runtime],
+) -> None:
+    engine = teams["event", False]
+    where = [{"field": TEAM_CLASS, "op": "=", "value": "test"}]
+    expected = {"metrics": [NEW_TEAMS], "narrowed_by": ["dimension.org_team_event_event_type"]}
+    assert (
+        faithfulness._population_hold(
+            engine._config, "measure.org.team_events", {"where": where}, [], []
+        )
+        == expected
+    )
+    plan = _plan(engine, "team events from test teams last week")
+    assert plan["status"] == "low_confidence", plan.get("why")
+    assert "execute" not in plan.get("next", {}).get("ready_for", [])
+    assert [gap["expected"] for gap in _gaps(plan)] == [expected]
+
+
+@pytest.mark.parametrize(
+    "intent", ["team calls by team class last week", "team calls from test teams last week"]
+)
+def test_a_joined_class_does_not_exempt_an_own_entity_call_hold(
+    tmp_path: Path, intent: str
+) -> None:
+    root = _calls_package(tmp_path / "org", governors=("connected",))
+    engine = Runtime.from_path(str(root))
+    try:
+        plan = _plan(engine, intent)
+        assert plan["status"] == "low_confidence", plan.get("why")
+        assert "execute" not in plan.get("next", {}).get("ready_for", [])
+        assert [gap["expected"] for gap in _gaps(plan)] == [
+            {"metrics": [PAYING_CALLS], "narrowed_by": ["dimension.org_team_day_call_kind"]}
+        ]
+
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize(
+    "relationship",
+    [
+        {
+            "entities": ["team_day", "team"],
+            "cardinality": "N:1",
+            "safety": "safe",
+            "via": "team_id",
+            "target": "team_id",
+        },
+        {
+            "entities": ["team", "team_day"],
+            "cardinality": "1:N",
+            "safety": "safe",
+            "via": "team_id",
+            "target": "team_id",
+        },
+    ],
+    ids=["forward", "reverse"],
+)
+def test_an_explicit_join_holds_all_calls_and_preserves_the_filtered_reference(
+    tmp_path: Path, relationship: dict[str, Any]
+) -> None:
+    root = _calls_package(tmp_path / "org", governors=("calls",), relationship=relationship)
+    engine = Runtime.from_path(str(root))
+    try:
+        plan = _plan(engine, "team calls last week")
+        assert plan["status"] == "low_confidence", plan.get("why")
+        assert "execute" not in plan.get("next", {}).get("ready_for", [])
+        assert [gap["expected"] for gap in _gaps(plan)] == [
+            {"metrics": [PAYING_CALLS], "narrowed_by": [TEAM_CLASS]}
+        ]
+        filtered = _plan(engine, "team calls from test teams last week")
+        assert filtered["status"] == "ok", filtered.get("why")
+        assert "execute" in filtered["next"]["ready_for"]
+        assert (
+            _value(engine, filtered["best"]["query_ir"])
+            == _calls_gold("SUM(calls)", "AND class = 'test'")
+            == 140
+        )
+    finally:
+        engine.close()
