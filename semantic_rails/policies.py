@@ -39,7 +39,7 @@ from .row_filters import RowFilter, is_row_filter, row_filter
 from .schema import PackageConfig, SemanticPolicyConfig
 from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral, SqlOrder
 from .sql_preparation import checked_slot_value
-from .visible_view import bound_object_ids, hidden_object_ids
+from .visible_view import hidden_object_ids
 
 WITHHOLD = "withhold_values"
 # A conditional aggregate's condition reads columns, not fields: no allowed_where lists it.
@@ -162,18 +162,12 @@ def enforce_query_policies(
 ) -> list[dict[str, Any]]:
     require_base(config)
     object_ids = list(object_ids)  # read twice: the effects, then the withheld objects
-    # Visibility is checked against everything the query reads, never policy by policy.
-    hidden = hidden_object_ids(config, environment=environment, audience=audience, roles=roles)
-    if hidden and binding is None and query is not None:
-        binding = bind_query(config, None, dict(query))
-    if hidden & {*object_ids, *(bound_object_ids(binding) if binding is not None else ())}:
-        # Unknown to this caller, as the binder of their view says.
-        raise SemanticLayerError("OBJECT_NOT_FOUND", "The requested object was not found.")
-    # Caller-created measures have no authored object id to govern their raw columns.
+    # Caller-created measures have no authored object id to govern their raw columns: refused
+    # while anything is hidden from this caller.
     if (
-        hidden
-        and binding is not None
+        binding is not None
         and any(collect_column_refs(row.expr) for row in binding.plan.synthetic_measures.values())
+        and hidden_object_ids(config, environment=environment, audience=audience, roles=roles)
     ):
         raise SemanticLayerError(
             "POLICY_DENIED",

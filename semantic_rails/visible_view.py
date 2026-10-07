@@ -411,11 +411,9 @@ class RequestView:
     generation: int
     # Environment, audience and lowered roles: what visibility is computed from.
     key: tuple[str, str, frozenset[str]]
-    hidden: frozenset[str]
     entry: ViewEntry
     base: PackageConfig
-    # The caller as the request named them (attributes and allowlists are enforcement inputs).
-    context: RequestContext
+    # The caller as the request named them: attributes and allowlists are enforcement inputs.
     policy_context: Mapping[str, Any]
 
 
@@ -436,6 +434,16 @@ def base_of(config: PackageConfig) -> PackageConfig:
     return config if view is None else view.base
 
 
+def _hidden_from(
+    base: PackageConfig, context: RequestContext | Mapping[str, Any] | None
+) -> frozenset[str]:
+    if not isinstance(context, RequestContext):
+        context = context_from_policy_context(context)
+    return hidden_object_ids(
+        base, environment=context.environment, audience=context.audience, roles=context.roles
+    )
+
+
 def _cut(base: PackageConfig, hidden: frozenset[str]) -> PackageConfig:
     """``build_view``, marked with what it was cut from (routes, the binding guard and public
     effects read the mark). Nothing hidden: the whole package itself."""
@@ -446,25 +454,14 @@ def _cut(base: PackageConfig, hidden: frozenset[str]) -> PackageConfig:
     return config
 
 
-def _hidden_for(base: PackageConfig, context: RequestContext) -> frozenset[str]:
-    return hidden_object_ids(
-        base, environment=context.environment, audience=context.audience, roles=context.roles
-    )
-
-
-def _caller(context: RequestContext | Mapping[str, Any] | None) -> RequestContext:
-    return context if isinstance(context, RequestContext) else context_from_policy_context(context)
-
-
-def view_of(
-    base: PackageConfig, context: RequestContext | Mapping[str, Any] | None
-) -> PackageConfig:
+def view_of(base: PackageConfig, context: RequestContext | Mapping[str, Any] | None) -> Any:
     """A caller's view of ``base``, uncached, for code that holds no runtime (the CLI)."""
-    return _cut(base, _hidden_for(base, _caller(context)))
+    return _cut(base, _hidden_from(base, context))
 
 
-def view_entry(runtime: Any, hidden: frozenset[str]) -> ViewEntry:
-    """The runtime's cached view for ``hidden``, built on first use."""
+def view_for(runtime: Any, context: RequestContext | Mapping[str, Any] | None) -> ViewEntry:
+    """The runtime's cached view for this caller's hidden set, built on first use."""
+    hidden = _hidden_from(runtime.package_config, context)
     with runtime._cache_lock:
         entry = runtime._views.get(hidden)
     if entry is None:
@@ -472,10 +469,6 @@ def view_entry(runtime: Any, hidden: frozenset[str]) -> ViewEntry:
         with runtime._cache_lock:
             entry = runtime._views.setdefault(hidden, ViewEntry(config, Registry(config), hidden))
     return entry
-
-
-def view_for(runtime: Any, context: RequestContext | Mapping[str, Any] | None) -> ViewEntry:
-    return view_entry(runtime, _hidden_for(runtime.package_config, _caller(context)))
 
 
 def pinned() -> RequestView | None:
@@ -487,9 +480,7 @@ def pinned() -> RequestView | None:
 def pinned_view(runtime: Any) -> RequestView | None:
     """The view pinned for this runtime in the current request, if any."""
     view = next((view for view in _pinned.get() if view.runtime is runtime), None)
-    if view is None:
-        return None
-    if view.generation != runtime._generation:
+    if view is not None and view.generation != runtime._generation:
         raise unresolved()
     return view
 
@@ -503,30 +494,25 @@ def request_view(
     refused, so a request never widens what it sees. An uncertain view refuses, naming
     nothing, and is never served from the base.
     """
+    context = context_from_policy_context(policy_context)
     current = pinned_view(runtime)
     if current is not None:
-        if policy_context and (
-            visibility_key(context_from_policy_context(policy_context)) != current.key
-        ):
+        if policy_context and visibility_key(context) != current.key:
             raise unresolved()
         return nullcontext(current)
-    context = context_from_policy_context(policy_context)
     try:
         entry = view_for(runtime, context)
     except Exception:  # noqa: BLE001 — uncertainty refuses
         raise unresolved() from None
-    return _pinned_scope(
-        RequestView(
-            runtime=runtime,
-            generation=runtime._generation,
-            key=visibility_key(context),
-            hidden=entry.hidden,
-            entry=entry,
-            base=runtime.package_config,
-            context=context,
-            policy_context=dict(policy_context or {}),
-        )
+    view = RequestView(
+        runtime=runtime,
+        generation=runtime._generation,
+        key=visibility_key(context),
+        entry=entry,
+        base=runtime.package_config,
+        policy_context=dict(policy_context or {}),
     )
+    return _pinned_scope(view)
 
 
 @contextmanager

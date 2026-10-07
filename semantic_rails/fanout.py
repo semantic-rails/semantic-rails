@@ -548,8 +548,8 @@ def _visible_route(view: PackageConfig, start: str, target: str) -> RouteResolut
 
     Routes through a hidden object are dropped from those considered. When the package's chosen
     route reads one, the pair has no route. An ambiguous pair stays ambiguous, asking among the
-    visible routes only. Any other refusal is the view's own (the package without the hidden
-    objects), and a pair the view alone could answer has no route.
+    visible routes only. Otherwise a refused pair gets the view's own PATH_NOT_FOUND, or no
+    route when the view alone could answer it.
     """
     base, hidden, _ = get_package_analysis(view).view  # type: ignore[misc]
 
@@ -608,16 +608,7 @@ def _resolve_uncached(config: PackageConfig, start: str, target: str) -> RouteRe
                     ),
                 },
             )
-        raise SemanticLayerError(
-            "PATH_NOT_FOUND",
-            f"No path from '{start}' to '{target}'",
-            details={
-                "start": start,
-                "target": target,
-                "hop_limit": hop_limit,
-                "reason": "no_relationship_chain",
-            },
-        )
+        raise _no_route(config, start, target)
     own_keys = [
         path
         for path in routes
