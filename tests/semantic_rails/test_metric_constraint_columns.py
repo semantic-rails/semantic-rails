@@ -231,6 +231,153 @@ def test_counts_inherit_count_measure_constraints_on_their_relation(
         engine.close()
 
 
+def _order_column(column):
+    return {"kind": "column", "entity": ORDER, "column": column}
+
+
+def _literal(value):
+    return {"kind": "literal", "value": value}
+
+
+def _one_per_row(column):
+    return {
+        "kind": "arithmetic",
+        "op": "+",
+        "left": {
+            "kind": "arithmetic",
+            "op": "*",
+            "left": _order_column(column),
+            "right": _literal(0),
+        },
+        "right": _literal(1),
+    }
+
+
+COST = _order_column("order_cost_cents")
+# (aggregation, value, value SQL over alias o)
+COLUMN_VALUES = {
+    "sum_column": ("sum", COST, "o.order_cost_cents"),
+    "min_column": ("min", COST, "o.order_cost_cents"),
+    "max_column": ("max", COST, "o.order_cost_cents"),
+}
+ROW_READS = {
+    "sum_literal": ("sum", _literal(1), "1"),
+    # The seed stores customer_id as text, so this one is only checked for refusal.
+    "sum_key_arithmetic": ("sum", _one_per_row("customer_id"), None),
+    "sum_arithmetic": ("sum", _one_per_row("order_cost_cents"), "o.order_cost_cents * 0 + 1"),
+    "avg_column": ("avg", COST, "o.order_cost_cents"),
+    "median_column": ("median", COST, "o.order_cost_cents"),
+    "sum_case": (
+        "sum",
+        {
+            "kind": "case",
+            "whens": [{"when": SUM_REVENUE["condition"], "then": _literal(1)}],
+            "else": _literal(0),
+        },
+        "CASE WHEN o.order_total_cents > 0 THEN 1 ELSE 0 END",
+    ),
+    "sum_call": (
+        "sum",
+        {"kind": "call", "name": "power", "args": [COST, _literal(0)]},
+        "POWER(o.order_cost_cents, 0)",
+    ),
+}
+
+
+def _order_aggregate(aggregation, value):
+    return {
+        "kind": "aggregate_if",
+        "aggregation": aggregation,
+        "condition": {"kind": "comparison", "op": ">", "left": COST, "right": _literal(0)},
+        "value": value,
+    }
+
+
+def _count_relation(config, source_relation):
+    return replace(
+        config,
+        measures=[
+            replace(row, source_relation=source_relation) if row.id == ORDER_COUNT else row
+            for row in config.measures
+        ],
+    )
+
+
+@pytest.mark.parametrize("constraint_key", ["allowed_where", "allow_metric_filters"])
+@pytest.mark.parametrize("form", sorted(ROW_READS))
+def test_only_one_column_values_escape_count_constraints(config, monkeypatch, constraint_key, form):
+    # sum(1), sum(x * 0 + 1) and sum(x) / avg(x) all recover the constrained row count.
+    aggregation, value, _ = ROW_READS[form]
+    query = _query(_order_aggregate(aggregation, value))
+    assert compiler.compile_query(config, None, query)["sql"]
+    constraint, kind, _ = CONSTRAINTS[constraint_key]
+    engine = Runtime.from_config(
+        replace(config, semantic_policies=[_policy(constraint, ORDER_COUNT)]), source_path=PACKAGE
+    )
+    try:
+        _denied(engine, monkeypatch, query, kind)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("shape", ["unwrapped", "else"])
+def test_an_unrecognized_synthetic_shape_reads_rows(config, monkeypatch, shape):
+    build = bind._synthetic_conditional_measure
+
+    def reshaped(expr, package):
+        measure_id, measure = build(expr, package)
+        case = measure.expr
+        body = (
+            case.whens[0].then
+            if shape == "unwrapped"
+            else replace(case, else_expr=case.whens[0].then)
+        )
+        return measure_id, replace(measure, expr=body)
+
+    monkeypatch.setattr(bind, "_synthetic_conditional_measure", reshaped)
+    engine = Runtime.from_config(
+        replace(config, semantic_policies=[_policy({"allowed_where": [STORE]}, ORDER_COUNT)]),
+        source_path=PACKAGE,
+    )
+    try:
+        _denied(engine, monkeypatch, _query(_order_aggregate("sum", COST)), "disallowed_where")
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("constraint_key", ["allowed_where", "allow_metric_filters"])
+@pytest.mark.parametrize(
+    ("source_relation", "form"),
+    [("", form) for form in sorted(COLUMN_VALUES)]
+    + [("other_orders", form) for form, (_, _, sql) in sorted(ROW_READS.items()) if sql],
+)
+def test_column_values_and_other_relations_match_reference_sql(
+    tmp_path, constraint_key, source_relation, form
+):
+    package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True)
+    config = _count_relation(
+        replace(load_package_config(str(package)), semantic_policies=[]), source_relation
+    )
+    aggregation, value, value_sql = {**COLUMN_VALUES, **ROW_READS}[form]
+    constraint, _, _ = CONSTRAINTS[constraint_key]
+    engine = Runtime.from_config(
+        replace(config, semantic_policies=[_policy(constraint, ORDER_COUNT)]),
+        source_path=str(package),
+    )
+    try:
+        actual = engine.query(_query(_order_aggregate(aggregation, value)))["rows"]
+        db_path = engine.db_path
+    finally:
+        engine.close()
+    with duckdb.connect(db_path, read_only=True) as connection:
+        expected = connection.execute(
+            f"SELECT {aggregation}(CASE WHEN o.order_cost_cents > 0 THEN {value_sql} END) "
+            "FROM jaffle_order o"
+        ).fetchall()
+    assert len(actual) == len(expected) == 1
+    assert actual[0]["value"] == pytest.approx(expected[0][0])
+
+
 @pytest.mark.parametrize("placement", ["select", "ratio", "metric_filter", "predicate"])
 def test_nested_conditional_aggregates_inherit_constraints(config, monkeypatch, placement):
     query = _query()
