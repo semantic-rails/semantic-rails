@@ -33,6 +33,7 @@ from tests.semantic_rails.hidden_absent import (
     ENGINE_READ,
     OBJECT_FIELDS,
     access_policy,
+    decoded_strings,
     http_call,
     mcp_call,
     object_rows,
@@ -43,7 +44,8 @@ from tests.semantic_rails.hidden_absent import (
 
 # A measure, and a relationship on the route from orders to stores.
 TARGETS = ("measure.jaffle.revenue_usd", "relationship.orders_store")
-LABEL = "Quokka Ledger"
+# Non-ASCII and quoted, so JSON text would escape it: the scan reads decoded strings.
+LABEL = 'Salaires "privés"'
 NAMES = ("name", "label", "aliases")
 REFUSED = ("INVALID_CONFIG", "visibility_unresolved")
 
@@ -244,9 +246,10 @@ def test_no_planted_slot_reaches_a_caller(package, action, target, mode):
         calls = _calls(planted, hidden)
         for label, call in calls.items():
             response = outcome(lambda call=call: call(runtime))
-            text = json.dumps(response)  # strict: no default=str
-            for match in found.finditer(text):
-                leaks.setdefault(match.group(1) or "<bare>", []).append(label)
+            json.dumps(response)  # plain JSON: strict, no default=str
+            for text in decoded_strings(response):
+                for match in found.finditer(text):
+                    leaks.setdefault(match.group(1) or "<bare>", []).append(label)
             if _codes(response) & set(REFUSED):
                 refused.append(label)
         # Enforcement is the same caller's without the visibility policy: rows, export hint.

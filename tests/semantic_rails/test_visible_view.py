@@ -44,10 +44,12 @@ from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.hidden_absent import (
     ACTIONS,
     CALLER,
+    ELIGIBLE,
     ENGINE_READ,
     absent,
     access_policy,
     declared_references,
+    decoded_strings,
     envelope,
     hidden_tokens,
     http_call,
@@ -750,6 +752,87 @@ def test_a_label_a_visible_object_shares_is_not_a_hidden_token(package):
     try:
         card = _card(runtime, "measure.jaffle.large_order_count")
         assert card["card"]["description"] == description
+    finally:
+        runtime.close()
+
+
+# Hidden labels JSON would escape: non-ASCII letters, quotes, and CJK text.
+LABELS = ["Salaires privés", 'Fiscal "core" ledger', "機密収益台帳"]
+# A container slot -> (its value naming the label, the value the caller sees).
+CONTAINER_SLOTS: dict[str, tuple[Callable[[str], Any], Any]] = {
+    "meta note": (lambda label: {"mnpi": True, "note": f"Associated with {label}"}, {"mnpi": True}),
+    "topics item": (lambda label: ["sales", f"Associated with {label}"], ["sales"]),
+    "operational key": (lambda label: {label: "pending", "team": "ops"}, {"team": "ops"}),
+    "example_entries dict": (
+        lambda label: [{"note": f"Associated with {label}"}, {"note": "plain"}],
+        [{"note": "plain"}],
+    ),
+}
+
+
+def _decoded_mentions(value: Any, text: str) -> bool:
+    return any(text.casefold() in item.casefold() for item in decoded_strings(value))
+
+
+@pytest.mark.parametrize("slot", list(CONTAINER_SLOTS))
+@pytest.mark.parametrize("label", LABELS)
+def test_a_hidden_label_in_a_container_slot_is_left_out(package, label, slot):
+    from semantic_rails.visible_view import _projected, token_pattern
+
+    _, config = package
+    measures = [replace(row, label=label) if row.id == REVENUE else row for row in config.measures]
+    tokens = token_pattern(replace(config, measures=measures), frozenset({REVENUE}))
+    planted, expected = CONTAINER_SLOTS[slot]
+    name = slot.split()[0]
+    row = replace(next(row for row in measures if row.id == ORDERS), **{name: planted(label)})
+    shown = _projected(row, tokens)
+    assert getattr(shown, name) == expected
+    assert not _decoded_mentions(shown, label)
+
+
+@pytest.mark.parametrize("action", ACTIONS)
+def test_a_non_ascii_hidden_label_in_a_visible_note_reaches_no_caller(package, action):
+    root, config = package
+    label = "Salaires privés"
+    note = f"Associated with {label}"
+    config = replace(
+        config,
+        measures=[
+            replace(row, label=label)
+            if row.id == REVENUE
+            else replace(row, meta={**row.meta, "note": note}, topics=[note])
+            if row.id == ORDERS
+            else row
+            for row in config.measures
+        ],
+    )
+    runtime = Runtime.from_config(
+        with_policies(config, visibility_policy(action, REVENUE)), source_path=str(root)
+    )
+
+    def responses(context: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "mcp inspect": mcp_call(
+                runtime,
+                "inspect",
+                {"object_id": ORDERS, "verbosity": "full", "policy_context": context},
+            ),
+            "http /inspect": http_call(
+                runtime, "/inspect", {"object_id": ORDERS, "policy_context": context}
+            ),
+            "http /catalog": http_call(
+                runtime, "/catalog", {"verbosity": "full", "policy_context": context}
+            ),
+        }
+
+    try:
+        # The control: a caller eligible for revenue reads the note on every surface.
+        for surface, response in responses(ELIGIBLE).items():
+            assert response["ok"] is True, (surface, response)
+            assert _decoded_mentions(response, note), surface
+        for surface, response in responses(CALLER).items():
+            assert response["ok"] is True, (surface, response)
+            assert not _decoded_mentions(response, label), surface
     finally:
         runtime.close()
 

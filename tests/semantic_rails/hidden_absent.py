@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import fields, is_dataclass, replace
 from typing import Any
 
@@ -151,6 +151,23 @@ def references(value: Any, ids: Iterable[str]) -> set[str]:
 
     walk(value)
     return found
+
+
+def decoded_strings(value: Any) -> Iterator[str]:
+    """Every string in ``value`` as it reads, never serialized (JSON escapes non-ASCII text
+    and quotes): dataclass fields, mapping keys and values, list items."""
+    if isinstance(value, str):
+        yield value
+    elif is_dataclass(value) and not isinstance(value, type):
+        for field in fields(value):
+            yield from decoded_strings(getattr(value, field.name))
+    elif isinstance(value, Mapping):
+        for key, child in value.items():
+            yield from decoded_strings(key)
+            yield from decoded_strings(child)
+    elif isinstance(value, list | tuple | set | frozenset):
+        for child in value:
+            yield from decoded_strings(child)
 
 
 def declared_references(config: PackageConfig) -> dict[str, set[str]]:

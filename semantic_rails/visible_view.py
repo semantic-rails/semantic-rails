@@ -11,7 +11,6 @@ view for the request; ``Runtime._config`` and ``Runtime.registry`` serve it.
 from __future__ import annotations
 
 import contextvars
-import json
 import re
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext
@@ -370,10 +369,21 @@ def token_pattern(base: PackageConfig, hidden: frozenset[str]) -> re.Pattern[str
 
 
 def _mentions(value: Any, tokens: re.Pattern[str] | None) -> bool:
+    """Whether ``value`` names a hidden object: each string where :func:`_strings` looks, as
+    authored (never serialized), and any other leaf but a number, flag or None as ``str``."""
     if tokens is None or not value:
         return False
-    text = value if isinstance(value, str) else json.dumps(value, default=str, sort_keys=True)
-    return bool(tokens.search(text))
+    if isinstance(value, str):
+        return bool(tokens.search(value))
+    if is_dataclass(value) and not isinstance(value, type):
+        return any(_mentions(getattr(value, item.name), tokens) for item in fields(value))
+    if isinstance(value, Mapping):
+        return any(
+            _mentions(key, tokens) or _mentions(child, tokens) for key, child in value.items()
+        )
+    if isinstance(value, list | tuple | set | frozenset):
+        return any(_mentions(child, tokens) for child in value)
+    return not isinstance(value, bool | int | float) and bool(tokens.search(str(value)))
 
 
 def _class_of(value: Any) -> str:
