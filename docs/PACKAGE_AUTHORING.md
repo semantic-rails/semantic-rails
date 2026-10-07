@@ -2558,9 +2558,9 @@ uv run semantic-rails project upgrade --path ./my_pkg --write   # write the chan
 - Run it again and it reports `up_to_date`.
 - Exit codes: 0 when the package is current, previewed or upgraded; 1 when the upgrade is refused or
   the result is invalid; 2 when choices are pending.
-- It upgrades a package directory with `package.yml`, and refuses a single-file package.
+- It upgrades a package directory with `package.yml` or a single-file package.
 - The transaction's receipt and lock live under `.semantic-rails/` in the current directory when it
-  contains the package, otherwise in the package's parent directory; never inside the package.
+  contains the package, otherwise in the package's parent directory; never in loader-read source folders.
 - The Architect tool [`upgrade_project`](ARCHITECT_MCP.md#upgrading-a-package) runs the same
   upgrade.
 

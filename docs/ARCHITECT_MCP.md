@@ -326,8 +326,9 @@ idempotency_key="")` rewrites a package's legacy forms in one transaction; it is
 same report: `rules` (each with its tier and hits), `proof`, `choices_pending`, `changes` and
 `next_actions`.
 
-- A dry run, the default, needs no revision or key. A write needs `expected_revision` and a new
-  `idempotency_key`, like every other write.
+- `project_path` accepts a package directory with `package.yml` or a single-file package.
+- A dry run, the default, needs no revision or key. A write needs `expected_revision` (the preview
+  returns it as `revision`) and a new `idempotency_key`, like every other write.
 - A rewrite that changes the semantic fingerprint or an example's or test's compiled SQL is refused
   with `CONFIG_CONFLICT` and `details.conflict_kind: "upgrade_not_equivalent"`; nothing is written.
 - Pending choices return `status: "choices_pending"` and `ok: false`, and write nothing; answer each

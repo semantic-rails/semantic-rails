@@ -395,6 +395,7 @@ class ProjectTransaction:
         *,
         workspace_root: str | os.PathLike[str],
         lock_timeout_seconds: float = 30.0,
+        package_file: str | None = None,
     ) -> None:
         root = Path(workspace_root).expanduser().resolve()
         raw_project = Path(project_path).expanduser()
@@ -409,10 +410,18 @@ class ProjectTransaction:
             )
         self.workspace_root = root
         self.project_path = project
+        self.package_file = package_file
+        if package_file is not None:
+            self.package_file = self._target_path(package_file).relative_to(project).as_posix()
         self.lock_timeout_seconds = max(0.1, float(lock_timeout_seconds))
         identity = hashlib.sha256(str(project).encode("utf-8")).hexdigest()
         self._lock_path = root / ".semantic-rails" / "architect-locks" / f"{identity}.lock"
         self._receipt_root = root / ".semantic-rails" / "architect-transactions" / identity
+
+    def parse_source(self, project: Path | None = None) -> Path:
+        """The package source in the live or virtual project."""
+        root = self.project_path if project is None else project
+        return root / self.package_file if self.package_file is not None else root
 
     def current_revision(self) -> str:
         return project_revision(self.project_path)
@@ -645,7 +654,7 @@ class ProjectTransaction:
                 self._apply_updates(effective, effective_snapshots)
                 if validate_after:
                     parse_report, _ = parse_config_report(
-                        PackageReference(source_path=str(self.project_path))
+                        PackageReference(source_path=str(self.parse_source()))
                     )
                     base_report["parse"] = parse_report
                     if not parse_report.get("ok"):
@@ -832,7 +841,9 @@ class ProjectTransaction:
 
     def _validate_virtual(self, updates: tuple[ProjectFileUpdate, ...]) -> dict[str, Any]:
         with self.virtual_project(updates) as project:
-            parse, _ = parse_config_report(PackageReference(source_path=str(project)))
+            parse, _ = parse_config_report(
+                PackageReference(source_path=str(self.parse_source(project)))
+            )
         return parse
 
     def _guard_routes(
@@ -852,7 +863,7 @@ class ProjectTransaction:
         its own row. Only deliberate decisions use report mode. No route row is generated.
         """
         try:
-            base = load_package_snapshot(str(self.project_path)).config
+            base = load_package_snapshot(self.parse_source()).config
         except (
             SemanticLayerError,
             yaml.YAMLError,
@@ -865,7 +876,7 @@ class ProjectTransaction:
             return {}
         with self.virtual_project(updates) as staged:
             try:
-                head = load_package_snapshot(str(staged)).config
+                head = load_package_snapshot(self.parse_source(staged)).config
             except (
                 SemanticLayerError,
                 yaml.YAMLError,

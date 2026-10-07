@@ -1068,7 +1068,9 @@ def create_architect_mcp_server(
     ) -> dict[str, Any]:
         try:
             return upgrade_project_service(
-                _resolve_project_path(project_path, workspace_root=root),
+                _resolve_project_path(
+                    project_path, workspace_root=root, require_package_root=False
+                ),
                 workspace_root=root,
                 dry_run=dry_run,
                 choices=choices,
