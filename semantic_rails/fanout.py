@@ -747,7 +747,18 @@ def eligible_path_targets(config: PackageConfig, *, start: str) -> list[str]:
                 eligible.append(target)
         elif not _has_multiple_routes(analysis.graph, start, target, hop_limit):
             eligible.append(target)
+    if analysis.view is not None:
+        # A view offers a target only when its route resolution answers the pair.
+        eligible = [target for target in eligible if _resolves(config, start, target)]
     return eligible
+
+
+def _resolves(config: PackageConfig, start: str, target: str) -> bool:
+    try:
+        package_route(config, start=start, target=target)
+    except SemanticLayerError:
+        return False
+    return True
 
 
 def build_hop_profile(

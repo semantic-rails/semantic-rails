@@ -10,9 +10,11 @@ the loaded config can be safely shared across threads.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from .errors import SemanticLayerError
 from .expressions import SemanticExpr
 
 
@@ -444,3 +446,15 @@ def require_base(config: PackageConfig) -> None:
 
 def base_of(config: PackageConfig) -> PackageConfig:
     return config.view.base if isinstance(config, VisiblePackageConfig) else config
+
+
+def require_boolean_mnpi(meta: Mapping[str, Any], where: str) -> None:
+    """``meta.mnpi`` is ``true`` or ``false``: any other value refuses the package."""
+    if "mnpi" in meta and not isinstance(meta["mnpi"], bool):
+        raise SemanticLayerError("INVALID_CONFIG", f"{where}: meta.mnpi must be true or false")
+
+
+def require_boolean_mnpi_package(config: PackageConfig) -> None:
+    """:func:`require_boolean_mnpi` for every record of a package built in code."""
+    for row in [*config.measures, *config.metric_recipes, *config.relations]:
+        require_boolean_mnpi(row.meta, row.id)

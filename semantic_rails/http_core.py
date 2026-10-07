@@ -30,7 +30,7 @@ from .diagnostics import (
     exception_issue,
 )
 from .dialects import dialect_for_warehouse
-from .errors import SemanticLayerError, query_execution_error
+from .errors import UNEXPECTED_ERROR_MESSAGE, SemanticLayerError, query_execution_error
 from .http_request import (
     HTTPInputError,
     _safe_request_context_payload,
@@ -247,7 +247,7 @@ class SemanticHTTPService:
         )
         error_issue = {
             "code": "INTERNAL_ERROR",
-            "message": f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__,
+            "message": UNEXPECTED_ERROR_MESSAGE,
             "severity": "error",
             "stage": stage,
             "details": {

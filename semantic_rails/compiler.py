@@ -5136,12 +5136,14 @@ def _bind_with_row_filters(
             )
     sql_ast, parameters = apply_row_filters(bound.sql_ast, row_filters)
     if row_filters:
+        # Enforcement reads the whole package; a refusal names only policies the caller sees.
+        shown = {row.id for row in bound.config.semantic_policies}
         _validate_restrictive_time_semantics(
             normalize_query(bound.plan.query, config=bound.config),
-            bound.config,
+            base_of(bound.config),
             # Original slots identify applied policies; missing slots keep the guard conservative.
             row_filters=[
-                row
+                row if row.policy_id in shown else replace(row, policy_id="row_filter")
                 for row in row_filters
                 if not parameters or any(slot is row.slot for slot in parameters)
             ],

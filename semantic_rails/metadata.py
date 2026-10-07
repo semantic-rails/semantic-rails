@@ -676,9 +676,10 @@ def _related_metric_ids_for_measure(config: PackageConfig, measure: Any) -> list
     out = [metric_id] if (metric_id := _measure_default_metric_id(config, measure)) else []
     for recipe in config.metric_recipes:
         summary = _expr_summary(config, recipe.expression).lower()
-        if (
-            measure.label.lower() in summary or measure.name.lower() in summary
-        ) and recipe.id not in out:
+        # An empty label or name is in every summary: it matches nothing.
+        if any(text and text.lower() in summary for text in (measure.label, measure.name)) and (
+            recipe.id not in out
+        ):
             out.append(recipe.id)
     return out
 
@@ -942,7 +943,8 @@ def _object_card(
                     measure.id
                     for measure in config.measures
                     if _measure_default_metric_id(config, measure) == recipe.id
-                    or measure.label.lower() in payload.get("expression_summary", "").lower()
+                    or bool(measure.label)
+                    and measure.label.lower() in payload.get("expression_summary", "").lower()
                 ],
                 "executable": payload.get("executable", True),
                 "unsupported_reason": payload.get("unsupported_reason", ""),

@@ -30,7 +30,7 @@ from .diagnostics import (
     exception_issue,
     semantic_issue,
 )
-from .errors import SemanticLayerError
+from .errors import UNEXPECTED_ERROR_MESSAGE, SemanticLayerError
 from .mcp_query import normalize_arguments, normalize_query_spellings, normalize_routes
 from .mcp_session import MCPQuerySession
 from .metadata import (
@@ -2335,7 +2335,7 @@ class SemanticLayerMCPAdapter:
                 exc,
             )
             issue = _internal_issue(
-                f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__,
+                UNEXPECTED_ERROR_MESSAGE,
                 exception_type=type(exc).__name__,
             )
             out = self._envelope(

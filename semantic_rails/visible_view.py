@@ -2,8 +2,9 @@
 
 Caller-facing work reads the view; enforcement reads the whole package. Hidden objects are
 closed over compiler reads and declared references, including unbindable dependents. The
-builder marks the view's provenance, filters rows and omits display text naming hidden objects
-without changing enforcement inputs. ``resource_access.run_authorized_operation`` pins the
+builder marks the view's provenance, filters rows and projects every field of every remaining
+record by its class (:data:`ROW_FIELDS`), so no authored text names a hidden object, without
+changing enforcement inputs. ``resource_access.run_authorized_operation`` pins the
 view for the request; ``Runtime._config`` and ``Runtime.registry`` serve it.
 """
 
@@ -12,9 +13,9 @@ from __future__ import annotations
 import contextvars
 import json
 import re
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager, nullcontext
-from dataclasses import MISSING, dataclass, field, fields, is_dataclass, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from typing import Any
 
 from .compiler import BoundQuery, bind_metadata_objects, bind_query
@@ -24,12 +25,30 @@ from .policy_rules import hidden_policy_ids, visible_only_listed
 from .registry import Registry
 from .request_context import RequestContext, context_from_policy_context
 from .schema import (
+    AccumulationConfig,
+    AggregateRelationConfig,
+    ConnectionSpec,
+    DimensionConfig,
+    EntityConfig,
+    MeasureConfig,
+    MeasureExternalDiscontinuity,
+    MeasureValidityWindow,
+    MetricConfig,
     PackageConfig,
+    PackageMeta,
+    PathPolicyConfig,
+    PathPreferenceConfig,
+    PlannerConfig,
+    RelationConfig,
+    RelationPipelineStep,
     RelationshipConfig,
+    SeedSpec,
     SegmentConfig,
     SemanticCaveatConfig,
     SemanticPolicyConfig,
+    TemporalRoleConfig,
     ValueDomainConfig,
+    ValueDomainValue,
 )
 from .schema import base_of as base_of
 from .schema import require_base as require_base
@@ -45,8 +64,8 @@ OBJECT_FIELDS = (
     "metric_recipes",
     "segments",
 )
-# Every PackageConfig field: rows the view filters (and omits prose of), text it omits when it
-# names a hidden object, or values it keeps.
+# Every PackageConfig field: rows the view filters (and projects), records it projects, or
+# values it keeps.
 FIELDS = {
     "version": "kept",
     "package": "prose",
@@ -60,8 +79,141 @@ FIELDS = {
     "operational_contract": "prose",
     "meta_contract": "prose",
 }
-# Authored text on a row: omitted whole when it names a hidden object.
-PROSE = frozenset({"description", "label", "topics", "example_entries", "authoring_warnings"})
+
+
+def _classes(
+    kept: str,
+    *,
+    text: str = "",
+    texts: str = "",
+    identity: str = "",
+    typed: str = "",
+    rows: str = "",
+) -> dict[str, str]:
+    groups = {"kept": kept, "text": text, "texts": texts, "identity": identity, "typed": typed}
+    return {
+        name: kind for kind, names in {**groups, "rows": rows}.items() for name in names.split()
+    }
+
+
+# How the view shows each field of each record, when it names a hidden object (a token):
+# kept: ids, numbers, flags, enums and physical names (table, column, expr), never changed;
+# text: "" instead; texts: without the items (list) or entries (mapping) that name one;
+# identity: a name rebuilt from the record's id, or a list without the items that name one;
+# typed: a mapping's engine keys (TYPED_KEYS) kept, its other entries as texts;
+# rows: nested records, each projected by its own row. A field missing here is classed by
+# its value (:func:`_class_of`), so authored text is never kept by omission.
+ROW_FIELDS: dict[type, dict[str, str]] = {
+    SeedSpec: _classes("kind source post_sql null_strings"),
+    ConnectionSpec: _classes("kind name options"),
+    PlannerConfig: _classes("disabled_patterns"),
+    PackageMeta: _classes(
+        "package_id warehouse default_db seed connection environments schema_strict planner "
+        "observation_scope",
+        text="description",
+        identity="name",
+    ),
+    EntityConfig: _classes(
+        "id table primary_key kind relation_id key identifiers foreign_keys calendar_id "
+        "allowed_as_root freshness_sla_seconds",
+        text="label description freshness_source freshness_as_of",
+        texts="key_roles foreign_key_roles topics disallowed_names",
+        identity="name aliases",
+    ),
+    DimensionConfig: _classes(
+        "id entity column data_type filterable groupable value_domain",
+        text="label description semantic_kind sample_values_strategy",
+        texts="topics preferred_filter_ops",
+        identity="name aliases",
+    ),
+    TemporalRoleConfig: _classes(
+        "id dimension temporal_class supported_grains default_query_time_axis timezone "
+        "column_timezone",
+        text="label",
+        identity="name aliases",
+    ),
+    RelationshipConfig: _classes(
+        "id source_entity target_entity source_column target_column cardinality safety "
+        "source_columns target_columns source_key_role target_key_role allowed_directions "
+        "target_key_type rollup_safe_aggregations_reverse",
+        text="label description join_semantics",
+        identity="name aliases",
+        typed="temporal_validity",
+    ),
+    ValueDomainValue: _classes("value", text="description", identity="label aliases"),
+    ValueDomainConfig: _classes(
+        "id dimensions", text="label description", identity="name", rows="values"
+    ),
+    AccumulationConfig: _classes("kind snapshot"),
+    MeasureValidityWindow: _classes("from_ to", text="semantics"),
+    MeasureExternalDiscontinuity: _classes("from_ to magnitude_estimate_pct", text="what"),
+    MeasureConfig: _classes(
+        "id entity row_grain expr default_aggregation allowed_aggregations source_relation "
+        "invalid_aggregations measure_class accumulation compatible_temporal_roles value_type "
+        "suggested_aggregations comparison_peers clock_variants preferred_companion_metrics "
+        "default_temporal_role cross_window_policy additive lookup_from lookup_via publish",
+        text="currency label description comparison_family comparison_mode",
+        texts="topics example_entries authoring_warnings",
+        identity="name aliases",
+        typed="operational meta",
+        rows="validity_windows external_discontinuities",
+    ),
+    MetricConfig: _classes(
+        "id kind expression temporal_role compatible_temporal_roles filter_spec window_spec "
+        "comparison_peers clock_variants preferred_companion_metrics value_type",
+        text="label description comparison_family comparison_mode",
+        texts="topics example_entries",
+        identity="name aliases",
+        typed="operational meta",
+    ),
+    SegmentConfig: _classes(
+        "id entity basis_metric preview_dimensions where metric_filters time "
+        "temporal_role_overrides",
+        text="label description",
+        texts="topics",
+        identity="name aliases",
+    ),
+    PathPreferenceConfig: _classes("source_entity target_entity relationship_path", text="label"),
+    PathPolicyConfig: _classes("max_hops"),
+    # Policies and caveats are shown whole or in a generic form (:func:`display_policy`,
+    # :func:`_display_caveat`); their classes say which fields decide that.
+    SemanticPolicyConfig: _classes(
+        "kind object_ids audiences environments roles action",
+        text="rationale",
+        identity="id",
+        typed="config",
+    ),
+    SemanticCaveatConfig: _classes(
+        "kind object_ids audiences environments severity",
+        text="message owner",
+        texts="entity_values references",
+        identity="id",
+        typed="time config",
+    ),
+    AggregateRelationConfig: _classes(
+        "id relation source_entity measures dimensions temporal_role grain entity_grain "
+        "freshness_sla_seconds model_id variant_id source time_column eligible_time_grains "
+        "measure_columns measure_rollups measure_aggregations measure_holds dimension_columns "
+        "dimension_paths excluded_entities excluded_dimensions selection_priority "
+        "equivalence_kind",
+        text="description freshness_source freshness_as_of",
+    ),
+    RelationPipelineStep: _classes("kind config"),
+    RelationConfig: _classes(
+        "id output_name columns",
+        text="label description",
+        identity="name",
+        typed="meta",
+        rows="steps",
+    ),
+}
+# A typed mapping's keys the engine reads: the export hint (as the boolean the engine tests)
+# and a historical join's physical columns.
+TYPED_KEYS: dict[str, dict[str, Callable[[Any], Any]]] = {
+    "meta": {"mnpi": bool},
+    "operational": {"mnpi": bool},
+    "temporal_validity": {"valid_from": str, "valid_to": str},
+}
 # A policy's own words, replaced by its action's engine text when they may name a hidden object.
 POLICY_TEXT = ("rule", "rationale", "description")
 ENGINE_TEXT = {
@@ -224,30 +376,77 @@ def _mentions(value: Any, tokens: re.Pattern[str] | None) -> bool:
     return bool(tokens.search(text))
 
 
-def _without_prose(row: Any, tokens: re.Pattern[str] | None) -> Any:
-    """``row`` with each authored text field that names a hidden object omitted, whole."""
+def _class_of(value: Any) -> str:
+    """The class of a field :data:`ROW_FIELDS` misses: nested records are projected, any
+    other text, list or mapping is authored; only numbers and flags are kept."""
+    items = value if isinstance(value, list) else [value]
+    if items and all(is_dataclass(item) and not isinstance(item, type) for item in items):
+        return "rows"
+    if isinstance(value, str):
+        return "text"
+    if isinstance(value, Mapping):
+        return "typed"
+    return "texts" if isinstance(value, list | tuple) else "kept"
+
+
+def _rebuilt_name(row: Any) -> str:
+    """A name that names no hidden object: a value's own value, else the id's last segment."""
+    if isinstance(row, ValueDomainValue):
+        return str(row.value)
+    return str(getattr(row, "id", "") or getattr(row, "package_id", "")).rsplit(".", 1)[-1]
+
+
+def _field_shown(row: Any, name: str, kind: str, value: Any, tokens: re.Pattern[str] | None) -> Any:
+    if kind == "kept" or not value:
+        return value
+    if kind == "rows":
+        if isinstance(value, list):
+            return [_projected(item, tokens) for item in value]
+        return _projected(value, tokens)
+    if kind == "typed" and isinstance(value, Mapping):
+        engine = TYPED_KEYS.get(name, {})
+        return {
+            key: engine[key](item) if key in engine else item
+            for key, item in value.items()
+            if key in engine or not _mentions([key, item], tokens)
+        }
+    if not _mentions(value, tokens):
+        return value
+    if kind == "identity" and isinstance(value, str):
+        return _rebuilt_name(row)
+    if isinstance(value, Mapping):
+        return {key: item for key, item in value.items() if not _mentions([key, item], tokens)}
+    if isinstance(value, list | tuple) and kind in {"texts", "identity"}:
+        return [item for item in value if not _mentions(item, tokens)]
+    return "" if isinstance(value, str) else type(value)()
+
+
+def _projected(row: Any, tokens: re.Pattern[str] | None) -> Any:
+    """``row`` as a caller sees it: each field shown by its class in :data:`ROW_FIELDS`."""
     if tokens is None:
         return row
-    changes = {
-        item.name: item.default_factory() if item.default_factory is not MISSING else item.default
-        for item in fields(row)
-        if item.name in PROSE and _mentions(getattr(row, item.name), tokens)
-    }
-    for name in ("meta", "operational"):
-        value = getattr(row, name, {})
-        if _mentions(value, tokens):
-            changes[name] = {"mnpi": value["mnpi"]} if "mnpi" in value else {}
-    for name, text in (
-        ("values", "description"),
-        ("validity_windows", "semantics"),
-        ("external_discontinuities", "what"),
-    ):
-        if hasattr(row, name):
-            changes[name] = [
-                replace(item, **{text: ""}) if _mentions(getattr(item, text), tokens) else item
-                for item in getattr(row, name)
-            ]
+    classes = ROW_FIELDS.get(type(row), {})
+    changes = {}
+    for item in fields(row):
+        value = getattr(row, item.name)
+        kind = classes.get(item.name) or _class_of(value)
+        shown = _field_shown(row, item.name, kind, value, tokens)
+        if shown is not value and shown != value:
+            changes[item.name] = shown
     return replace(row, **changes) if changes else row
+
+
+def _authored_mentions(row: Any, tokens: re.Pattern[str] | None) -> bool:
+    """Whether any field of ``row`` that the view may change names a hidden object."""
+    classes = ROW_FIELDS.get(type(row), {})
+    return _mentions(
+        [
+            getattr(row, item.name)
+            for item in fields(row)
+            if (classes.get(item.name) or _class_of(getattr(row, item.name))) != "kept"
+        ],
+        tokens,
+    )
 
 
 def _visible(value: Any, hidden: frozenset[str]) -> Any:
@@ -274,26 +473,29 @@ def display_policy(
     if policy.kind == "row_filter" and settings.get("dimension") in hidden:
         return None
     words = [policy.id, policy.rationale, *(settings.get(key) for key in POLICY_TEXT)]
+    # Its other settings as a typed mapping: without the entries that may name one.
+    shown = _field_shown(policy, "config", "typed", settings, tokens)
     if len(listed) == len(policy.object_ids) and not _mentions(words, tokens):
-        return replace(policy, object_ids=listed, config=settings)
+        return replace(policy, object_ids=listed, config=shown)
     action = str(policy.action or settings.get("action", "")).strip().lower()
     return replace(
         policy,
         id="",
         rationale=ENGINE_TEXT.get(action or "constrain", "Governed by policy."),
         object_ids=listed,
-        config={key: value for key, value in settings.items() if key not in POLICY_TEXT},
+        config={key: value for key, value in shown.items() if key not in POLICY_TEXT},
     )
 
 
 def _display_caveat(
     caveat: SemanticCaveatConfig, hidden: frozenset[str], tokens: re.Pattern[str] | None
 ) -> SemanticCaveatConfig | None:
+    """A caveat is shown whole, without the hidden objects it lists, or not at all."""
     listed = [object_id for object_id in caveat.object_ids if object_id not in hidden]
     if caveat.object_ids and not listed:
         return None
     named = [caveat.entity_values, caveat.time, caveat.references, caveat.config]
-    if _names(named, hidden) or _mentions([caveat.id, caveat.message, caveat.owner, named], tokens):
+    if _names(named, hidden) or _authored_mentions(caveat, tokens):
         return None
     return replace(caveat, object_ids=listed)
 
@@ -314,16 +516,16 @@ def build_view(base: PackageConfig, hidden: frozenset[str]) -> PackageConfig:
                 value = [_display_caveat(row, hidden, tokens) for row in value]
             else:
                 value = [
-                    _without_prose(row, tokens)
+                    _projected(row, tokens)
                     for row in value
                     if (row.id not in hidden if name in OBJECT_FIELDS else not _names(row, hidden))
                 ]
             value = [row for row in value if row is not None]
         elif kind == "prose":
             if isinstance(value, list):
-                value = [_without_prose(row, tokens) for row in value]
+                value = [_projected(row, tokens) for row in value]
             elif is_dataclass(value):
-                value = _without_prose(value, tokens)
+                value = _projected(value, tokens)
             elif _mentions(value, tokens):
                 value = type(value)()
         changes[name] = value
