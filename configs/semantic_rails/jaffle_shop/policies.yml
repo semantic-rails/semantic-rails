@@ -8,8 +8,7 @@
 semantic_policies:
   - id: policy.jaffle.release_label
     kind: package_release
-    config:
-      label: stable
+    label: stable
 
   - id: policy.jaffle.hide_pretax_lifetime_spend
     kind: object_visibility
@@ -26,7 +25,7 @@ semantic_policies:
     object_ids:
       - measure.jaffle.revenue_usd
     audiences: [external_partner]
-    action: redact
+    action: deny
     rationale: >-
       Raw revenue is sensitive. External partner queries get a
       redacted result; internal audiences pass through untouched.
