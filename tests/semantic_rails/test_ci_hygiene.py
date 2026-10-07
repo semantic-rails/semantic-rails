@@ -207,6 +207,65 @@ def test_guard_does_not_select_tests_for_unrelated_change(tmp_path):
     assert flake_guard.select_tests(tmp_path, ["README.md"]) == []
 
 
+@pytest.mark.parametrize("budget, count", [(1000, 3), (120, 2), (119, 1), (59, 0)])
+def test_guard_sizes_selection_by_workers_and_drops_only_the_tail(capsys, budget, count):
+    files = ["tests/test_changed.py", "tests/test_importer_a.py", "tests/test_importer_b.py"]
+    selected, estimate = flake_guard.size_selection(
+        files, dict.fromkeys(files, 200.0), workers=4, budget=budget
+    )
+    assert selected == files[:count]
+    assert estimate == count * 50
+    assert estimate * flake_guard.FIT_MARGIN <= budget
+    assert len(files) == 3  # Preserve the caller's selection.
+    output = capsys.readouterr().out
+    if count < 3:
+        assert "::notice::Flake guard dropped files" in output
+        assert str(files[count:]) in output
+        assert all(file not in output for file in selected)
+    else:
+        assert output == ""
+
+
+def test_guard_sums_module_and_class_durations_without_matching_other_files(tmp_path):
+    report = tmp_path / "results.xml"
+    report.write_text(
+        '<testsuites><testsuite><testcase classname="tests.test_sample" time="20"/>'
+        '<testcase classname="tests.test_sample.TestGroup" time="40"/>'
+        '<testcase classname="tests.test_sample_other" time="999"/>'
+        '<testcase classname="tests.mf2sr.test_import" time="10"/>'
+        "</testsuite></testsuites>"
+    )
+    assert flake_guard.measured_durations(
+        report, ["tests/test_sample.py", "tests/mf2sr/test_import.py", "tests/test_missing.py"]
+    ) == {"tests/test_sample.py": 60, "tests/mf2sr/test_import.py": 10}
+
+
+def test_guard_sizes_first_repetition_from_main_report(monkeypatch, tmp_path, capsys):
+    files = ["tests/test_changed.py", "tests/test_importer.py"]
+    report = tmp_path / "results.xml"
+    report.write_text(
+        '<testsuite><testcase classname="tests.test_changed" time="100"/>'
+        '<testcase classname="tests.test_importer" time="200"/></testsuite>'
+    )
+    calls = []
+
+    class Process:
+        def __init__(self, command, **kwargs):
+            calls.append(command)
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(flake_guard.os, "cpu_count", lambda: 2)
+    monkeypatch.setattr(flake_guard.time, "monotonic", lambda: 1000.0)
+    monkeypatch.setattr(flake_guard.subprocess, "Popen", Process)
+    assert flake_guard.run_repetitions(files, tmp_path, 1120, report) == 0
+    assert len(calls) == 3
+    assert all(command[-1] == files[0] and files[1] not in command for command in calls)
+    assert all(command[command.index("-n") + 1] == "2" for command in calls)
+    assert "::notice::Flake guard dropped files" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize("failed_repetition", [None, 1, 2, 3])
 def test_guard_repeats_three_times_but_never_retries_failure(
     monkeypatch, tmp_path, capsys, failed_repetition
@@ -229,26 +288,77 @@ def test_guard_repeats_three_times_but_never_retries_failure(
             return int(len(calls) == failed_repetition)
 
     monkeypatch.setattr(flake_guard.subprocess, "Popen", Process)
+    monkeypatch.setattr(flake_guard.os, "cpu_count", lambda: 2)
     result = flake_guard.run_repetitions(["tests/test_sample.py"], tmp_path, time.monotonic() + 30)
     assert result == int(failed_repetition is not None)
     assert len(calls) == (failed_repetition or 3)
     seeds = {next(part for part in call if part.startswith("--flake-seed=")) for call in calls}
     assert len(seeds) == len(calls)
-    assert all(call[call.index("-n") + 1] == "auto" for call in calls)
+    assert all(call[call.index("-n") + 1] == "2" for call in calls)
     output = capsys.readouterr().out
     if failed_repetition:
         assert f"intermittent: investigate; repetition {failed_repetition}" in output
         assert "tests.test_sample::test_failure" in output
 
 
-def test_guard_timeout_kills_workers_and_fails(monkeypatch, tmp_path, capsys):
+@pytest.mark.parametrize(
+    "content, files, expected",
+    [
+        (None, ["tests/test_sample.py"], 0),
+        ("<truncated", ["tests/test_sample.py"], 0),
+        ("<testsuite/>", ["tests/test_sample.py"], 0),
+        (
+            '<testsuite><testcase classname="tests.test_sample" time="10"/></testsuite>',
+            ["tests/test_sample.py"],
+            1,
+        ),
+        (
+            '<testsuite><testcase classname="tests.test_sample" time="10"/></testsuite>',
+            ["tests/test_sample.py", "tests/test_missing.py"],
+            0,
+        ),
+        (
+            '<testsuite><testcase classname="tests.test_sample"/></testsuite>',
+            ["tests/test_sample.py"],
+            0,
+        ),
+        (
+            '<testsuite><testcase classname="tests.test_sample" time="invalid"/></testsuite>',
+            ["tests/test_sample.py"],
+            0,
+        ),
+        (
+            '<testsuite><testcase classname="tests.test_sample" time="nan"/></testsuite>',
+            ["tests/test_sample.py"],
+            0,
+        ),
+        (
+            '<testsuite><testcase classname="tests.test_sample" time="inf"/></testsuite>',
+            ["tests/test_sample.py"],
+            0,
+        ),
+        (
+            '<testsuite><testcase classname="tests.test_sample" time="-10"/></testsuite>',
+            ["tests/test_sample.py"],
+            0,
+        ),
+    ],
+)
+def test_guard_first_timeout_kills_workers_and_fails_only_with_complete_estimate(
+    monkeypatch, tmp_path, capsys, content, files, expected
+):
     killed = []
+    calls = []
+    report = tmp_path / "results.xml"
+    if content is not None:
+        report.write_text(content)
 
     class Process:
         pid = 123
 
         def __init__(self, command, **kwargs):
             assert kwargs["start_new_session"]
+            calls.append(command)
 
         def wait(self, timeout=None):
             if timeout is not None:
@@ -257,12 +367,19 @@ def test_guard_timeout_kills_workers_and_fails(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(flake_guard.subprocess, "Popen", Process)
     monkeypatch.setattr(flake_guard.os, "killpg", lambda *args: killed.append(args))
-    assert (
-        flake_guard.run_repetitions(["tests/test_sample.py"], tmp_path, time.monotonic() + 30) == 1
-    )
+    monkeypatch.setattr(flake_guard.os, "cpu_count", lambda: 2)
+    monkeypatch.setattr(flake_guard.time, "monotonic", lambda: 1000.0)
+    assert flake_guard.run_repetitions(files, tmp_path, 1030, report) == expected
+    assert len(calls) == 1
     assert killed == [(123, flake_guard.signal.SIGKILL)]
     output = capsys.readouterr().out
-    assert "repetition 1; timed out" in output and "tests/test_sample.py" in output
+    if expected:
+        assert "repetition 1; timed out" in output and "tests/test_sample.py" in output
+        assert "intermittent: investigate" in output
+    else:
+        assert "::warning::Flake guard inconclusive: 0 of 3 repetitions passed" in output
+        assert "without a duration estimate" in output
+        assert "intermittent: investigate" not in output
 
 
 def test_guard_skips_a_repetition_that_cannot_fit_and_passes_inconclusive(
@@ -322,7 +439,7 @@ def test_guard_expired_budget_and_empty_selection(monkeypatch, tmp_path):
 
     monkeypatch.setattr(flake_guard.subprocess, "Popen", no_process)
     assert flake_guard.run_repetitions([], tmp_path, time.monotonic() - 1) == 0
-    assert flake_guard.run_repetitions(["test.py"], tmp_path, time.monotonic() - 1) == 1
+    assert flake_guard.run_repetitions(["test.py"], tmp_path, time.monotonic() - 1) == 0
 
 
 def test_seeded_collection_is_repeatable_and_changes_order(monkeypatch):
@@ -347,11 +464,14 @@ def test_guard_handles_missing_or_incomplete_failure_reports(tmp_path, content):
     assert "pytest" in flake_guard.failure_names(report)[0]
 
 
-def test_guard_diffs_merge_group_base_including_removed_and_renamed_modules(monkeypatch):
+def test_guard_diffs_merge_group_base_including_removed_and_renamed_modules(monkeypatch, tmp_path):
     base = "a" * 40
     commands = []
     selected = []
-    monkeypatch.setattr(sys, "argv", ["flake_guard.py", "--base", base])
+    report = tmp_path / "results.xml"
+    monkeypatch.setattr(
+        sys, "argv", ["flake_guard.py", "--base", base, "--durations-from", str(report)]
+    )
 
     def diff(command, **kwargs):
         commands.append(command)
@@ -364,6 +484,13 @@ def test_guard_diffs_merge_group_base_including_removed_and_renamed_modules(monk
 
     monkeypatch.setattr(flake_guard.subprocess, "run", diff)
     monkeypatch.setattr(flake_guard, "select_tests", select)
+
+    def run(files, root, deadline, durations_from):
+        assert files == [] and root == flake_guard.ROOT
+        assert durations_from == report
+        return 0
+
+    monkeypatch.setattr(flake_guard, "run_repetitions", run)
     assert flake_guard.main() == 0
     assert commands == [
         ["git", "diff", "--name-only", "--no-renames", "--diff-filter=ACDM", base, "HEAD", "--"]
@@ -382,6 +509,7 @@ def test_workflow_limits_guard_to_hosted_merge_groups_and_validates_quarantine()
     assert guard["timeout-minutes"] <= 5
     assert guard["env"]["MERGE_BASE"] == "${{ github.event.merge_group.base_sha }}"
     assert not guard.get("continue-on-error")
+    assert '--base "$MERGE_BASE" --durations-from backend-results.xml' in guard["run"]
     assert any("--validate-quarantine" in step.get("run", "") for step in backend["steps"])
 
 
