@@ -439,8 +439,9 @@ def test_where_payload_validation(runtime_factory):
             }
         )
         assert report["ok"] is False
-        assert report["errors"][0]["code"] == "INVALID_EXPRESSION_AST"
-        assert report["errors"][0]["details"]["path"] == "where[0].field"
+        assert report["errors"][0]["code"] == "INVALID_QUERY"
+        assert report["errors"][0]["details"]["path"] == "where[0]"
+        assert report["errors"][0]["details"]["unsupported_keys"] == ["expression"]
     finally:
         runtime.close()
 

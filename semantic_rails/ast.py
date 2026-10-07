@@ -40,6 +40,7 @@ from .expressions import (
     RollingExpr,
     ScopedAggregateExpr,
     SemanticExpr,
+    _closest_key_matches,
     expr_to_dict,
     expression_field,
     parse_semantic_expression,
@@ -646,6 +647,38 @@ def _time_spec_from_payload(
     )
 
 
+_SELECT_ITEM_KEYS = frozenset({"expression", "as"})
+_WHERE_FILTER_KEYS = frozenset({"field", "op", "value"})
+_CHILD_GROUP_KEYS = frozenset({"child", "match", "where"})
+_METRIC_FILTER_KEYS = frozenset({"expression", "op", "value"})
+
+
+def _check_query_item_keys(item: dict[str, Any], keys: frozenset[str], path: str) -> None:
+    """Query IR v1 item keys are closed; normalization must never drop one."""
+    unknown = sorted(set(item) - keys)
+    if not unknown:
+        return
+    details: dict[str, Any] = {
+        "path": path,
+        "unsupported_keys": unknown,
+        "supported_keys": sorted(keys),
+        "closest_matches": _closest_key_matches(unknown[0], keys),
+    }
+    if path.startswith("metric_filters[") and "entity" in unknown:
+        details["recovery_hints"] = [
+            {
+                "code": "USE_METRIC_PREDICATE",
+                "message": (
+                    "To filter per entity, use expression.kind 'metric_predicate' with "
+                    "entity inside the expression; metric_filters items have no entity key."
+                ),
+            }
+        ]
+    raise SemanticLayerError(
+        "INVALID_QUERY", f"{path} contains unsupported key(s): {unknown}", details=details
+    )
+
+
 def _filter_from_payload(item: Any, path: str) -> Filter:
     if not isinstance(item, dict):
         raise SemanticLayerError(
@@ -656,6 +689,7 @@ def _filter_from_payload(item: Any, path: str) -> Filter:
                 "why_invalid": "where filters require field/op/value keys",
             },
         )
+    _check_query_item_keys(item, _WHERE_FILTER_KEYS, path)
     field = str(item.get("field", "") or "").strip()
     if not field:
         raise SemanticLayerError(
@@ -740,9 +774,6 @@ def _filter_from_payload(item: Any, path: str) -> Filter:
     return Filter(field=field, op=str(item.get("op", "=")), value=value)
 
 
-_CHILD_GROUP_KEYS = ("child", "match", "where")
-
-
 def _where_item_from_payload(item: Any, index: int) -> WhereItem:
     if is_child_group(item):
         return _child_group_from_payload(item, f"where[{index}]")
@@ -759,15 +790,7 @@ def _child_group_from_payload(item: dict[str, Any], path: str) -> ChildGroup:
             details={"path": at, "why_invalid": why, **details},
         )
 
-    unknown = sorted(set(item) - set(_CHILD_GROUP_KEYS))
-    if unknown:
-        raise invalid(
-            f"{path} has keys a child group does not take: {unknown}",
-            path,
-            "A child group is {child, match, where}; a plain filter is {field, op, value}.",
-            unsupported_keys=unknown,
-            supported_keys=list(_CHILD_GROUP_KEYS),
-        )
+    _check_query_item_keys(item, _CHILD_GROUP_KEYS, path)
     child = item.get("child")
     if not isinstance(child, str) or not child.strip():
         raise invalid(
@@ -833,6 +856,7 @@ def _require_metric_filter_object(item: Any, index: int) -> dict[str, Any]:
                 ],
             },
         )
+    _check_query_item_keys(item, _METRIC_FILTER_KEYS, f"metric_filters[{index}]")
     return item
 
 
@@ -1092,6 +1116,7 @@ def _rewrite_select_item(
         named = sorted(_SELECT_TARGET_KEYS & set(row))
         if named:
             raise _reject_select_row(row, idx, f"has 'expression' and also {named}")
+        _check_query_item_keys(row, _SELECT_ITEM_KEYS, path)
         expression = row["expression"]
         if (
             not isinstance(expression, dict)
