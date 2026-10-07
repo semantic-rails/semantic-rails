@@ -2960,8 +2960,7 @@ class Runtime:
                 check_policies=check_policies,
             )
 
-        hidden = diagnostic_hidden_object_ids(self._config, policy_context)
-        refuse_as_unknown(payload, hidden, bind)
+        refuse_as_unknown(self._config, policy_context, payload, bind)
         binding = bind(payload)
         # A rank by a withheld value breaks its ties by the group keys, in the same direction.
         return withheld_rank_order(
@@ -2986,8 +2985,9 @@ class Runtime:
             )
 
         refuse_as_unknown(
+            self._config,
+            context,
             segment_id,
-            diagnostic_hidden_object_ids(self._config, context),
             lambda masked: (effects(masked), normalize_segment(self._config, masked)),
         )
         return effects(segment_id)

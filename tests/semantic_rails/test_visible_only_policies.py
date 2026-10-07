@@ -417,13 +417,21 @@ def test_every_query_reading_revenue_is_refused_outside_finance(engine, package,
             for row in rows
             if row.id in hidden and row.label
         }
+        # A restricted object the query names is unknown; raw columns name none and are denied.
+        named = hidden & set(re.findall(r"[\w.]+", json.dumps(query)))
         for code, details, message in _refusals(runtime, query):
-            assert code == "POLICY_DENIED"
-            serialized = json.dumps(details).casefold()
+            assert code == ("OBJECT_NOT_FOUND" if named else "POLICY_DENIED")
+            # Only the caller's own id and visible suggestions may be named.
+            suggested = set(details.get("closest_matches", []))
+            assert not suggested & hidden, details
+            serialized = json.dumps(details)
+            for object_id in sorted(named | suggested, key=len, reverse=True):
+                serialized = serialized.replace(object_id, "")
+                message = message.replace(object_id, "")
             for name in hidden_names:
-                assert name.casefold() not in serialized, details
+                assert name.casefold() not in serialized.casefold(), details
                 assert name.casefold() not in message.casefold(), message
-            if bypass in {"conditional_raw_value", "conditional_raw_condition"}:
+            if not named:
                 assert details["blocked_objects"] == []
     finally:
         if runtime is not engine:
@@ -492,11 +500,11 @@ def test_a_segment_over_revenue_is_refused_outside_finance(engine, operation, na
         return
     if operation == "segment_validate":
         report = call(SEGMENT, policy_context=context)
-        assert report["errors"][0]["code"] == "POLICY_DENIED"
+        assert report["errors"][0]["code"] == "OBJECT_NOT_FOUND"
         return
     with pytest.raises(SemanticLayerError) as exc:
         call(SEGMENT, policy_context=context)
-    assert exc.value.code == "POLICY_DENIED"
+    assert exc.value.code == "OBJECT_NOT_FOUND"
 
 
 def test_unrelated_objects_stay_queryable(engine):
@@ -573,7 +581,7 @@ def test_scoping_separates_applicability_from_eligibility(package, name):
         if visible:
             assert runtime.validate(query)["ok"] is True
         else:
-            assert {code for code, _, _ in _refusals(runtime, query)} == {"POLICY_DENIED"}
+            assert {code for code, _, _ in _refusals(runtime, query)} == {"OBJECT_NOT_FOUND"}
     finally:
         runtime.close()
 
@@ -618,7 +626,7 @@ def test_the_query_gate_reads_every_bound_object_not_policy_matches(engine, monk
     with pytest.raises(SemanticLayerError) as exc:
         enforce_query_policies(engine._config, [AOV], roles=["support"])
     assert exc.value.code == "POLICY_DENIED"
-    assert exc.value.details["blocked_objects"] == [AOV]
+    assert exc.value.details["blocked_objects"] == []  # hidden from this caller: never named
     assert enforce_query_policies(engine._config, [AOV], roles=["finance"]) == []
 
 

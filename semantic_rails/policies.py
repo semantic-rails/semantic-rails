@@ -111,19 +111,31 @@ def caller_request(request: Any) -> Iterator[None]:
 
 
 def refuse_as_unknown(
-    request: Any, hidden: Collection[str] | None, resolve: Callable[[Any], object]
+    config: PackageConfig,
+    policy_context: Mapping[str, Any] | None,
+    request: Any,
+    resolve: Callable[[Any], object],
 ) -> None:
     """Refuse an object hidden from the caller exactly as if it did not exist.
 
-    Counts each id the caller named that ``hidden`` holds (``None``, uncertain visibility:
-    every named id). ``resolve`` runs again with those ids swapped for ids no package declares,
-    and its own unknown-id refusal is raised with the caller's ids restored; a request that
-    resolves anyway goes on as sent. An object read only through a visible one is not named.
+    Counts each id the caller named that is hidden from the context: the query gate's own
+    :func:`hidden_object_ids` set (a visibility that cannot be determined refuses with its own
+    error). ``resolve`` runs again with those ids swapped for ids no package declares, and its
+    own unknown-id refusal is raised with the caller's ids restored; a request that resolves
+    anyway goes on as sent. An object read only through a visible one is not named.
     """
     named = _names(request)
     caller = _caller_names.get()
     named = named if caller is None else named & caller
-    named = named if hidden is None else named & set(hidden)
+    if not named:
+        return
+    context = context_from_policy_context(policy_context)
+    scope: dict[str, Any] = {
+        "environment": context.environment,
+        "audience": context.audience,
+        "roles": context.roles,
+    }
+    named &= hidden_policy_ids(config, **scope) | restricted_object_ids(config, **scope)
     if not named:
         return
     swap = {name: f"{name}{uuid.uuid4().hex}" for name in named}
@@ -373,11 +385,11 @@ def enforce_query_policies(
     restricted = restricted_object_ids(
         config, environment=environment, audience=audience, roles=roles
     )
-    hidden = restricted | hidden_policy_ids(
-        config, environment=environment, audience=audience, roles=roles
-    )
     if query is not None:
-        refuse_as_unknown(query, hidden, lambda masked: bind_query(config, None, dict(masked)))
+        context = {"environment": environment, "audience": audience, "roles": list(roles or [])}
+        refuse_as_unknown(
+            config, context, query, lambda masked: bind_query(config, None, dict(masked))
+        )
     if restricted and binding is None and query is not None:
         binding = bind_query(config, None, dict(query))
     blocked = restricted & {

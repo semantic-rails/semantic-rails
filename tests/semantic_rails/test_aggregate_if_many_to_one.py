@@ -926,6 +926,8 @@ def test_the_condition_is_a_cut_on_the_entity_it_reads(package, allowed):
 
 # The policy kind that declares each action refusing a query by the objects it reads.
 POLICY_KINDS = {"deny": "object_access", "redact": "object_access", "hidden": "object_visibility"}
+# A hidden dimension read through its column: refused, and neither it nor its policy is named.
+NOTHING_NAMED = {"blocked_objects": [], "policy_effects": [], "policy_violations": []}
 
 # Queries whose aggregate_if reads the customer's currency across a hop.
 READS_CURRENCY = {
@@ -1001,7 +1003,7 @@ def test_a_policy_on_a_dimension_the_condition_reads_refuses_it(
     for error in refusals:
         assert error.code == "POLICY_DENIED"
         if action == "hidden":
-            assert error.details == {}
+            assert error.details == NOTHING_NAMED
             continue
         assert error.details["blocked_objects"] == [CURRENCY]
         assert [row["action"] for row in error.details["policy_effects"]] == [action]
@@ -1092,7 +1094,7 @@ def test_a_policy_on_a_dimension_a_single_entity_condition_reads_refuses_it(
 
     for error in refusals:
         if action == "hidden":
-            assert error.details == {}
+            assert error.details == NOTHING_NAMED
             continue
         assert error.details["blocked_objects"] == [PERIOD]
         assert [row["action"] for row in error.details["policy_effects"]] == [action]
@@ -1146,7 +1148,7 @@ def test_every_dimension_on_an_own_column_is_bound(package, monkeypatch, action,
     finally:
         runtime.close()
     if action == "hidden":
-        assert all(error.details == {} for error in refusals)
+        assert all(error.details == NOTHING_NAMED for error in refusals)
     else:
         assert all(error.details["blocked_objects"] == [dimension.id] for error in refusals)
 

@@ -162,7 +162,9 @@ def test_every_policy_kind_checks_the_request_environment(
         report = engine.validate(query)
         assert report["ok"] is (not denied), report
         if denied:
-            assert report["errors"][0]["code"] == "POLICY_DENIED"
+            # The query names the measure: hidden from this context, it is unknown.
+            hidden = kind in {"hidden", "visible_only"}
+            assert report["errors"][0]["code"] == ("OBJECT_NOT_FOUND" if hidden else "POLICY_DENIED")
             return
         compiled = engine.compile(query)
         if kind == "caveat":
