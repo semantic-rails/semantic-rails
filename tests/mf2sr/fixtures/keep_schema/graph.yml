@@ -1,0 +1,7 @@
+graph:
+  entities:
+    order:
+      label: Order
+      key:
+      - order_id
+      model: orders

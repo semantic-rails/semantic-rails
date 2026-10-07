@@ -1,0 +1,32 @@
+schema_version: 1
+package:
+  id: shop
+  namespace: shop
+  warehouse: snowflake
+  schema_strict: true
+  environments:
+  - development
+  - staging
+  - production
+  connection:
+    kind: snowflake_native
+    name: shop_native
+    options:
+      account_env: SNOWFLAKE_ACCOUNT
+      user_env: SNOWFLAKE_USER
+      password_env: SNOWFLAKE_PASSWORD
+      warehouse: COMPUTE_WH
+      query_tag: mf2sr-shop
+      database: analytics
+defaults:
+  dimension:
+    groupable: true
+    filterable: true
+  time:
+    timezone: UTC
+    supported_grains:
+    - day
+    - week
+    - month
+    - quarter
+    - year

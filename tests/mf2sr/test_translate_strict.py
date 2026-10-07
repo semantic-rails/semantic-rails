@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import subprocess
 import sys
@@ -212,16 +211,8 @@ def test_default_output_exposes_only_explicit_metrics(tmp_path: Path, same_name:
     assert report.warnings == []
 
 
-@pytest.mark.parametrize(
-    ("warehouse", "package_hash"),
-    [
-        ("duckdb", "6445b85967658cf392872909fb60b1966d92880ae188a2e1f89085ea7de475b0"),
-        ("snowflake", "8961fe986a64dd6fc2c227e94f37add8467b7f0e41408465ea30dfae12b979c1"),
-    ],
-)
-def test_keep_schema_preserves_previous_output_bytes(
-    tmp_path: Path, warehouse: str, package_hash: str
-) -> None:
+@pytest.mark.parametrize("warehouse", ["duckdb", "snowflake"])
+def test_keep_schema_preserves_previous_output_bytes(tmp_path: Path, warehouse: str) -> None:
     """Frozen --schema-strict output bytes, with only publish: false lines removed."""
     source = _manifest(tmp_path, NODE)
     raw = json.loads(source.read_text())
@@ -250,15 +241,14 @@ def test_keep_schema_preserves_previous_output_bytes(
         == 0
     )
     package_dir = tmp_path / "out" / "shop"
+    fixtures = Path(__file__).parent / "fixtures" / "keep_schema"
     expected = {
-        "graph.yml": "d46b79dd7d6dc9277ae8009993a42db597f758a02c53c67fe5de018a22daf350",
-        "metrics/orders.yml": "29d0dcae021d2b78b80e36ac237a5b7d888830287e208b1ecc60dd7c4e7647c1",
-        "models/orders.yml": "af2683b371e51f813e7dae0718ad084b247ef09775c4b4b468d9cc337edafb9f",
-        "package.yml": package_hash,
+        path: (fixtures / path).read_text()
+        for path in ("graph.yml", "metrics/orders.yml", "models/orders.yml")
     }
+    expected["package.yml"] = (fixtures / f"package.{warehouse}.yml").read_text()
     assert {
-        str(path.relative_to(package_dir)): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in package_dir.rglob("*.yml")
+        str(path.relative_to(package_dir)): path.read_text() for path in package_dir.rglob("*.yml")
     } == expected
 
 
@@ -285,6 +275,93 @@ def test_old_schema_strict_flag_is_refused(tmp_path: Path, entrypoint: str) -> N
     assert result.returncode == 2
     assert "unrecognized arguments: --schema-strict" in result.stderr
     assert not (tmp_path / "out").exists()
+
+
+@pytest.mark.parametrize(
+    ("dimension_expr", "metric_type", "skipped_name", "problem"),
+    [
+        ("lower(status)", "simple", "delivered_revenue", "is not a dimension in this project"),
+        (42, "simple", "delivered_revenue", "is not a dimension in this project"),
+        (None, "conversion", "orders_conversion", "unsupported type `conversion`"),
+    ],
+)
+def test_skipped_dimensions_and_conversions_drop_dependent_metrics(
+    tmp_path: Path,
+    dimension_expr: str | int | None,
+    metric_type: str,
+    skipped_name: str,
+    problem: str,
+) -> None:
+    source = _manifest(tmp_path, NODE)
+    raw = json.loads(source.read_text())
+    skipped_metric: dict[str, Any] = {"name": skipped_name, "type": metric_type}
+    if dimension_expr is not None:
+        raw["semantic_models"][0]["dimensions"].append(
+            {"name": "order_status", "type": "categorical", "expr": dimension_expr}
+        )
+        skipped_metric.update(
+            type_params={"measure": {"name": "order_total"}},
+            filter="{{ Dimension('order__order_status') }} = 'delivered'",
+        )
+    else:
+        skipped_metric["type_params"] = {
+            "conversion_type_params": {
+                "base_measure": {"name": "order_total"},
+                "conversion_measure": {"name": "order_total"},
+                "entity": "order",
+                "window": "7 days",
+            }
+        }
+    dependent_name = f"{skipped_name}_twice"
+    raw["metrics"].extend(
+        [
+            skipped_metric,
+            {
+                "name": dependent_name,
+                "type": "derived",
+                "type_params": {
+                    "expr": "source * 2",
+                    "metrics": [{"name": skipped_name, "alias": "source"}],
+                },
+            },
+        ]
+    )
+    source.write_text(json.dumps(raw))
+    report = translate(source, tmp_path / "out", package_id="shop", keep_schema=True)
+
+    assert report.metrics_emitted == ["revenue"]
+    assert any(
+        warning.startswith(f"metric `{skipped_name}`:")
+        and problem in warning
+        and "skipped" in warning
+        for warning in report.warnings
+    )
+    assert any(
+        warning.startswith(f"metric `{dependent_name}`:") and "skipped too" in warning
+        for warning in report.warnings
+    )
+    if dimension_expr is not None:
+        assert "order_status" not in _model(report)["dimensions"]
+        assert any("dimension `order_status` has a non-column expr" in w for w in report.warnings)
+    assert not any(w.startswith("parse:") for w in report.warnings)
+    cfg = load_package_config(report.package_dir)
+    assert {metric.id for metric in cfg.metric_recipes} == {"metric.shop.revenue"}
+
+    database = build_dbt_warehouse(report.package_dir / "data" / "shop.duckdb")
+    query = {
+        "version": 1,
+        "select": [{"expression": {"metric": "metric.shop.revenue"}, "as": "revenue"}],
+    }
+    engine = Runtime.from_path(str(report.package_dir))
+    try:
+        assert engine.compile(query)["ok"] is True
+        rows = typed_rows(engine.query(query))
+    finally:
+        engine.close()
+    with duckdb.connect(str(database), read_only=True) as conn:
+        expected = conn.execute("SELECT SUM(order_total) FROM main_marts.fct_orders").fetchone()
+    assert expected is not None
+    assert rows == [{"revenue": expected[0]}]
 
 
 @pytest.mark.parametrize("dimension_expr", ["status", "lower(status)"])

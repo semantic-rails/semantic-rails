@@ -1,0 +1,13 @@
+metrics:
+  revenue:
+    label: Revenue
+    description: Revenue
+    kind: aggregate
+    measure: order_total
+    value_type: number
+  order_total:
+    label: Order total
+    description: Order total
+    kind: aggregate
+    measure: order_total
+    value_type: number

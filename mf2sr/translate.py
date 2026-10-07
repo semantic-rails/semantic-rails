@@ -501,17 +501,17 @@ def _build_model(
         dname = dim.get("name")
         if not dname:
             continue
+        if not _dimension_is_emittable(dim):
+            report.warnings.append(
+                f"model `{name}`: dimension `{dname}` has a non-column expr — skipping."
+            )
+            continue
         kind = _infer_dimension_kind(dname)
         dim_entry: dict[str, Any] = {
             "label": dim.get("label") or _humanize(dname),
             "kind": kind,
         }
         if dim.get("expr") and dim["expr"] != dname:
-            if not isinstance(dim["expr"], str) or not dim["expr"].isidentifier():
-                report.warnings.append(
-                    f"model `{name}`: dimension `{dname}` has a non-column expr — skipping."
-                )
-                continue
             dim_entry["column"] = dim["expr"]
         dimensions[dname] = dim_entry
     if dimensions:
@@ -1136,27 +1136,6 @@ def _build_metric(
         }
         return name, doc, owner
 
-    if mtype == "conversion":
-        # MetricFlow conversion semantics map to Semantic Rails
-        # `kind: conversion`. The Semantic Rails surface differs enough
-        # that we emit the metric with the MetricFlow type_params
-        # intact and surface a warning — the author should adapt.
-        report.warnings.append(
-            f"metric `{name}`: `type: conversion` translated as a "
-            "best-effort stub. Review the emitted metric and adapt to "
-            "the Semantic Rails conversion shape (event-pair matching)."
-        )
-        doc = {
-            "label": label,
-            "description": (
-                description + "\n\n[mf2sr] MetricFlow conversion metric — review and complete."
-            ),
-            "kind": "conversion",
-            "value_type": "number",
-            "type_params": type_params,
-        }
-        return name, doc, "conversions"
-
     report.warnings.append(f"metric `{name}`: unsupported type `{mtype}` — skipped.")
     return None
 
@@ -1400,6 +1379,17 @@ def _time_window(raw: Any) -> tuple[int, str] | None:
     return int(count_text), unit
 
 
+def _dimension_is_emittable(dim: dict[str, Any]) -> bool:
+    """Whether the model writer can preserve this dimension's expression."""
+    expr = dim.get("expr")
+    return (
+        str(dim.get("type") or "").lower() == "time"
+        or not expr
+        or expr == dim.get("name")
+        or (isinstance(expr, str) and expr.isidentifier())
+    )
+
+
 def _dimension_ids(
     semantic_models: list[dict[str, Any]], graph: dict[str, Any], namespace: str
 ) -> dict[str, str | None]:
@@ -1417,7 +1407,7 @@ def _dimension_ids(
         if entity is None:
             continue
         for dim in sm.get("dimensions") or []:
-            if dim.get("name"):
+            if dim.get("name") and _dimension_is_emittable(dim):
                 ids[f"{entity}__{dim['name']}"] = (
                     None
                     if str(dim.get("type") or "").lower() == "time"

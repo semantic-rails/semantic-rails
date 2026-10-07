@@ -59,7 +59,7 @@ files from authored files; choose a fresh output path for each translation.
 | `metric.type: ratio` | `kind: ratio`, or `kind: derived` when a side is filtered. The metric's filter applies to both sides; a ratio whose filters can't be kept is skipped. An unfiltered side retains its explicit source metric definition. |
 | `metric.type: cumulative` | `kind: cumulative` (a running total), `kind: rolling` with `window: {unit, value}` for a `window:`, or `kind: period_to_date` with `period:` for a `grain_to_date:`. A filter stays on the aggregate input. The engine adds up each period's value, so the measure must be a sum or a count of the model's own rows |
 | `metric.type: derived` | `kind: derived` with Python-AST-parsed arithmetic expression |
-| `metric.type: conversion` | Stub `kind: conversion`; author must adapt |
+| `metric.type: conversion` | Skipped with a warning |
 
 ## What gets dropped (with warnings)
 
@@ -68,7 +68,7 @@ files from authored files; choose a fresh output path for each translation.
 | Entities that appear only as `type: foreign` | Semantic Rails requires every entity to have an owning model. The entity is dropped from the graph; references are stripped from `model.entities` blocks. |
 | `semantic_models` whose primary entity is already owned by an earlier model | The model has nothing to claim. Move its measures into the canonical owning model or rename its primary. |
 | Measures whose SQL `expr:` contains `CASE`, `LIKE`, `COALESCE`, `NULLIF`, etc. | Semantic Rails' expression parser is a Python AST, not a SQL parser. Rewrite the expression as a `kind: case` AST or push the SQL down into the warehouse model. |
-| Dimensions with a non-column `expr:` | The loader reads `column:`, so SQL expressions must be materialized in the warehouse model first. |
+| Dimensions with a non-column `expr:` | The loader reads `column:`, so SQL expressions must be materialized in the warehouse model first. Metrics filtered on skipped dimensions and their dependent metrics are skipped too. |
 | Percentile measures with `agg_params` | The loader cannot represent percentile parameters. The measure and metrics depending on it are skipped. |
 | Filters mf2sr can't translate | A metric keeps its filter when every condition is on one dimension: a boolean dimension, `NOT Dimension(...)`, `IN (...)`, `NOT IN (...)`, `BETWEEN`, or a comparison with a single-quoted string or numeric literal (`=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`). Any other condition warns and skips the metric rather than changing its value. This includes double-quoted SQL identifiers, `NOT BETWEEN`, `Metric(...)` predicates, `Entity(...) IS NOT NULL`, `entity_path=`, references to dimensions the project doesn't define, and time dimensions, which MetricFlow compares truncated to their grain. |
 | Cumulative metrics the engine can't compute | Skipped with a warning when they set both `window` and `grain_to_date`, a window finer than a day, a `grain_to_date` other than week, month, quarter or year, or a measure that doesn't add up across periods: an average, minimum, maximum, median, percentile or distinct count (other than of the model's own key), or a semi-additive measure. |

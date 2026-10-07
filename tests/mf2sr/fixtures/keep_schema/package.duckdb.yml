@@ -1,0 +1,25 @@
+schema_version: 1
+package:
+  id: shop
+  namespace: shop
+  warehouse: duckdb
+  schema_strict: true
+  environments:
+  - development
+  - staging
+  - production
+  default_db: data/shop.duckdb
+  seed:
+    kind: external
+defaults:
+  dimension:
+    groupable: true
+    filterable: true
+  time:
+    timezone: UTC
+    supported_grains:
+    - day
+    - week
+    - month
+    - quarter
+    - year

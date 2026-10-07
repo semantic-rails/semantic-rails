@@ -1,0 +1,32 @@
+model:
+  id: orders
+  relation: main_marts.fct_orders
+  description: orders
+  entities:
+    order: {}
+  times:
+    ordered_at:
+      label: Ordered at
+      column: ordered_at
+      kind: date
+      class: event_time
+      supported_grains:
+      - day
+      - week
+      - month
+      - quarter
+      - year
+      default: true
+  dimensions:
+    status:
+      label: Status
+      kind: categorical
+  measures:
+    order_total:
+      label: Order total
+      kind: aggregate
+      expr: order_total
+      default_agg: sum
+      accumulation:
+        kind: flow
+      value_type: number
