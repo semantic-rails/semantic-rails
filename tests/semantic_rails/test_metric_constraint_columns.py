@@ -19,6 +19,7 @@ from tests.semantic_rails.conftest import copy_package_config
 PACKAGE = "configs/semantic_rails/jaffle_shop"
 REVENUE = "measure.jaffle.revenue_usd"
 ORDER = "entity.jaffle_order"
+ORDER_COUNT = "measure.jaffle.order_count"
 STORE = "dimension.jaffle_store_name"
 SUM_REVENUE = {
     "kind": "aggregate_if",
@@ -68,7 +69,7 @@ CONSTRAINTS = {
         "disallowed_metric_filter_metric",
         {
             "metric_filters": [
-                {"expression": {"metric": "metric.sales.aov_usd"}, "op": ">", "value": 0}
+                {"expression": {"metric": "metric.sales.customer_count"}, "op": ">", "value": 0}
             ]
         },
     ),
@@ -138,6 +139,79 @@ def test_every_read_uses_its_physical_source_column(config, monkeypatch, positio
     )
     try:
         _denied(engine, monkeypatch, query, "metric_filters_not_allowed")
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("qualified", ["measure", "aggregate"])
+@pytest.mark.parametrize(
+    "relation",
+    ["main.jaffle_order", '"main"."JAFFLE_ORDER"', "`main`.`jaffle_order`", "[main].[jaffle_order]"],
+)
+def test_relation_qualification_and_quoting_cannot_bypass_constraints(
+    config, monkeypatch, qualified, relation
+):
+    expression = deepcopy(SUM_REVENUE)
+    if qualified == "measure":
+        config = replace(
+            config,
+            measures=[
+                replace(row, source_relation=relation) if row.id == REVENUE else row
+                for row in config.measures
+            ],
+        )
+    else:
+        entity = next(row for row in config.entities if row.id == ORDER)
+        alias = replace(entity, id="entity.test.qualified_order", table=relation)
+        config = replace(config, entities=[*config.entities, alias])
+        for ref in (expression["condition"]["left"], expression["value"]):
+            ref["entity"] = alias.id
+    query = _query(expression)
+    assert compiler.compile_query(config, None, query)["sql"]
+    engine = Runtime.from_config(
+        replace(config, semantic_policies=[_policy({"allowed_where": [STORE]})]),
+        source_path=PACKAGE,
+    )
+    try:
+        _denied(engine, monkeypatch, query, "disallowed_where")
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("constraint_key", ["allowed_where", "allow_metric_filters"])
+@pytest.mark.parametrize("governed_aggregation", ["count", "count_distinct"])
+@pytest.mark.parametrize("source_relation", ["", '"main"."JAFFLE_ORDER"'])
+@pytest.mark.parametrize(
+    ("aggregation", "value"),
+    [("count", None), ("count", "customer_id"), ("count_distinct", "customer_id")],
+)
+def test_counts_inherit_count_measure_constraints_on_their_relation(
+    config, monkeypatch, constraint_key, governed_aggregation, source_relation, aggregation, value
+):
+    config = replace(
+        config,
+        measures=[
+            replace(row, default_aggregation=governed_aggregation, source_relation=source_relation)
+            if row.id == ORDER_COUNT
+            else row
+            for row in config.measures
+        ],
+    )
+    expression = deepcopy(SUM_REVENUE)
+    expression["aggregation"] = aggregation
+    expression["condition"]["left"]["column"] = "order_cost_cents"
+    if value is None:
+        expression.pop("value")
+    else:
+        expression["value"]["column"] = value
+    constraint, kind, _ = CONSTRAINTS[constraint_key]
+    query = _query(expression)
+    assert compiler.compile_query(config, None, query)["sql"]
+    engine = Runtime.from_config(
+        replace(config, semantic_policies=[_policy(constraint, ORDER_COUNT)]), source_path=PACKAGE
+    )
+    try:
+        _denied(engine, monkeypatch, query, kind)
     finally:
         engine.close()
 
