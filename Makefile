@@ -22,8 +22,8 @@ typecheck:
 # Report-only; never fails. Ruff's McCabe complexity, branch and statement
 # counts at their default thresholds, then every function over 150 lines.
 complexity:
-	uv run ruff check semantic_rails mf2sr --select C901,PLR0912,PLR0915 --statistics --exit-zero
-	uv run python scripts/dev/function_lengths.py semantic_rails mf2sr
+	uv run ruff check semantic_rails --select C901,PLR0912,PLR0915 --statistics --exit-zero
+	uv run python scripts/dev/function_lengths.py semantic_rails
 
 contracts-check:
 	uv run python scripts/generate_contract_artifacts.py --check
@@ -46,7 +46,7 @@ packages:
 
 # The same suites and parallelism as CI's backend job.
 test-backend:
-	uv run pytest -q tests/semantic_rails tests/mf2sr -n auto
+	uv run pytest -q tests/semantic_rails -n auto
 
 test: test-backend release-check
 

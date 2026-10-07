@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from calendar import monthrange
 from collections.abc import Iterable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -280,6 +280,11 @@ class NormalizedQuery:
             "explain": self.explain,
             "export": self.export,
         }
+
+
+# Query IR fields: query patches, query state and caller selections carry only
+# these, never request metadata, response options or the tool's own arguments.
+_QUERY_IR_KEYS = tuple(query_field.name for query_field in fields(NormalizedQuery))
 
 
 @dataclass(frozen=True)

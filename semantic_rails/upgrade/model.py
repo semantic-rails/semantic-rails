@@ -65,7 +65,12 @@ class Finding:
 
 @dataclass(frozen=True)
 class Rule:
-    """A detection rule with unchanged meaning, advisory drops, or retired semantics."""
+    """A detection rule with unchanged meaning, advisory drops, or retired semantics.
+
+    ``refused`` means this engine refuses the legacy form at load, and the rewrite
+    was proven when the rule landed. It permits a certified baseline without
+    changing the rule's semantic effect.
+    """
 
     id: str
     since: str
@@ -73,6 +78,7 @@ class Rule:
     summary: str
     find: Callable[[PackageFiles], Iterable[Finding]]
     masks: tuple[str, ...] = ()
+    refused: bool = False
 
 
 def _walk(
