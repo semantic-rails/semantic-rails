@@ -276,7 +276,7 @@ def test_adapter_connects_with_token_and_defaults_namespace(monkeypatch: pytest.
     # Lazy database creation + namespace defaulting so unqualified
     # table names (jaffle_order, …) resolve.
     assert captured["log"][:6] == [
-        "SELECT current_setting('disabled_optimizers')",
+        "SELECT system.main.current_setting('disabled_optimizers')",
         "SET disabled_optimizers = ?",
         'CREATE DATABASE IF NOT EXISTS "sr_jaffle"',
         'USE "sr_jaffle"',

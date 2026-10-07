@@ -457,7 +457,7 @@ def _build_csv_seed(
                 f"""
                 CREATE OR REPLACE TABLE {table_name} AS
                 SELECT *
-                FROM read_csv_auto('{src}', HEADER=TRUE{null_clause});
+                FROM system.main.read_csv_auto('{src}', HEADER=TRUE{null_clause});
                 """.strip()
             )
         except Exception as exc:

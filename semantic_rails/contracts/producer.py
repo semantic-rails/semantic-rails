@@ -333,9 +333,9 @@ def _apply_physical_column_types(
             schema, table = parts[-2:] if len(parts) > 1 else ["main", parts[0]]
             rows = warehouse.rows(
                 "SELECT database_name, schema_name, table_name, column_name, data_type "
-                "FROM duckdb_columns() "
-                "WHERE lower(database_name) = lower(coalesce(?, current_database())) "
-                "AND lower(schema_name) = lower(?) AND lower(table_name) = lower(?)",
+                "FROM system.main.duckdb_columns() "
+                "WHERE system.main.lower(database_name) = system.main.lower(coalesce(?, system.main.current_database())) "
+                "AND system.main.lower(schema_name) = system.main.lower(?) AND system.main.lower(table_name) = system.main.lower(?)",
                 [parts[0] if len(parts) == 3 else None, schema, table],
             )
             relations = {

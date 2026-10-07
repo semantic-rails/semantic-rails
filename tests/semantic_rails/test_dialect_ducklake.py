@@ -246,7 +246,7 @@ def test_adapter_bootstrap_attaches_and_uses_catalog(monkeypatch: pytest.MonkeyP
 
     assert rows == [{"ONE": 1, "TWO": "x"}]
     assert log["setup_sql"] == [
-        "SELECT current_setting('disabled_optimizers')",
+        "SELECT system.main.current_setting('disabled_optimizers')",
         "SET disabled_optimizers = ?",
         "INSTALL ducklake",
         "LOAD ducklake",

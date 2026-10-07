@@ -407,7 +407,7 @@ class _ReportingConnection:
         self.statements: list[str] = []
 
     def execute(self, sql: str, parameters: Any = ()) -> Any:
-        if sql == "SELECT current_setting(?)":
+        if sql == "SELECT system.main.current_setting(?)":
             value = self.settings[parameters[0]]
             return SimpleNamespace(fetchone=lambda: (value,))
         self.statements.append(sql)

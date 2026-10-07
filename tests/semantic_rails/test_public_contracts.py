@@ -63,8 +63,13 @@ def typed_contract_project(tmp_path: Path) -> Path:
 @pytest.mark.parametrize("legacy", [False, True], ids=["models", "typed-config"])
 @pytest.mark.parametrize("relation_kind", ["table", "view"])
 @pytest.mark.parametrize("qualified_catalog", [False, True])
+@pytest.mark.parametrize("shadow", ["", "duckdb_columns", "current_database", "lower"])
 def test_export_semantic_contract_reports_physical_column_types(
-    typed_contract_project: Path, legacy: bool, relation_kind: str, qualified_catalog: bool
+    typed_contract_project: Path,
+    legacy: bool,
+    relation_kind: str,
+    qualified_catalog: bool,
+    shadow: str,
 ) -> None:
     from semantic_rails.config import LoadedPackageSnapshot, load_package_snapshot
 
@@ -79,6 +84,14 @@ def test_export_semantic_contract_reports_physical_column_types(
             f"CREATE {relation_kind.upper()} analytics.fct_events AS "
             "SELECT * FROM analytics.source_events"
         )
+        if shadow:
+            arguments = "x" if shadow == "lower" else ""
+            body = (
+                "TABLE SELECT 'file_macro' AS sentinel"
+                if shadow == "duckdb_columns"
+                else "'file_macro'"
+            )
+            connection.execute(f"CREATE MACRO {shadow}({arguments}) AS {body}")
     if qualified_catalog:
         package_file = typed_contract_project / "package.yml"
         raw = yaml.safe_load(package_file.read_text())

@@ -71,6 +71,10 @@ outside the expression roots. The rule registry is empty; no command invokes it 
   operations and authoring introspection, disables `common_subplan` before running
   warehouse SQL, preserving existing optimizer exclusions. This avoids incorrect
   multi-measure totals over views filtered on derived columns in DuckDB 1.5.6.
+- DuckDB utility SQL for connection setup, confinement, CSV loading and authoring
+  metadata qualifies built-in functions through `system.main`. Database-file
+  macros cannot override those calls; a failure to resolve a required setup
+  function closes the connection rather than continuing without its settings.
 - DuckDB, DuckLake, MotherDuck and authoring introspection read materialized
   relations through one shared helper. Result limits use a relation limit and
   one extra row to detect truncation, avoiding DuckDB's streamed cursor fetches

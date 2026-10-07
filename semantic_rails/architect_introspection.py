@@ -165,10 +165,10 @@ def list_tables(warehouse: DuckDBWarehouse, *, schema: str = "") -> list[dict[st
     """Tables and views in the file (``schema`` narrows the list), with column counts."""
     rows = warehouse.rows(
         "SELECT schema_name, table_name AS name, 'table' AS kind, column_count, "
-        "estimated_size AS rows_estimate, comment FROM duckdb_tables() "
-        "WHERE database_name = current_database() AND NOT internal AND NOT temporary "
+        "estimated_size AS rows_estimate, comment FROM system.main.duckdb_tables() "
+        "WHERE database_name = system.main.current_database() AND NOT internal AND NOT temporary "
         "UNION ALL SELECT schema_name, view_name, 'view', column_count, NULL, comment "
-        "FROM duckdb_views() WHERE database_name = current_database() AND NOT internal "
+        "FROM system.main.duckdb_views() WHERE database_name = system.main.current_database() AND NOT internal "
         "AND NOT temporary ORDER BY 1, 2"
     )
     return [
@@ -190,9 +190,9 @@ def list_tables(warehouse: DuckDBWarehouse, *, schema: str = "") -> list[dict[st
 
 def _require_relation(warehouse: DuckDBWarehouse, schema: str, name: str) -> str:
     kinds = warehouse.rows(
-        "SELECT 'table' AS kind FROM duckdb_tables() WHERE database_name = current_database() "
-        "AND schema_name = ? AND table_name = ? UNION ALL SELECT 'view' FROM duckdb_views() "
-        "WHERE database_name = current_database() AND schema_name = ? AND view_name = ?",
+        "SELECT 'table' AS kind FROM system.main.duckdb_tables() WHERE database_name = system.main.current_database() "
+        "AND schema_name = ? AND table_name = ? UNION ALL SELECT 'view' FROM system.main.duckdb_views() "
+        "WHERE database_name = system.main.current_database() AND schema_name = ? AND view_name = ?",
         [schema, name, schema, name],
     )
     if not kinds:
@@ -209,14 +209,14 @@ def describe_table(warehouse: DuckDBWarehouse, relation: str) -> dict[str, Any]:
     schema, name = _split_relation(relation)
     kind = _require_relation(warehouse, schema, name)
     columns = warehouse.rows(
-        "SELECT column_name, data_type, is_nullable, column_default, comment FROM duckdb_columns() "
-        "WHERE database_name = current_database() AND schema_name = ? AND table_name = ? "
+        "SELECT column_name, data_type, is_nullable, column_default, comment FROM system.main.duckdb_columns() "
+        "WHERE database_name = system.main.current_database() AND schema_name = ? AND table_name = ? "
         "ORDER BY column_index",
         [schema, name],
     )
     constraints = warehouse.rows(
         "SELECT constraint_type, constraint_column_names, referenced_table, "
-        "referenced_column_names FROM duckdb_constraints() WHERE database_name = current_database() "
+        "referenced_column_names FROM system.main.duckdb_constraints() WHERE database_name = system.main.current_database() "
         "AND schema_name = ? AND table_name = ? ORDER BY constraint_index",
         [schema, name],
     )
@@ -304,16 +304,20 @@ def profile_columns(
         )
     limit = max(0, min(int(sample_limit), MAX_SAMPLE_VALUES))
     row_cap = max(1, min(int(max_rows), MAX_PROFILE_ROWS))
-    (row_count,) = warehouse.execute(f"SELECT count(*) FROM {source}")[1][0]
+    (row_count,) = warehouse.execute(f"SELECT system.main.count(*) FROM {source}")[1][0]
     sampled = int(row_count) > row_cap
     scan = f"(SELECT * FROM {source} USING SAMPLE {row_cap} ROWS)" if sampled else source
     profiles: list[dict[str, Any]] = []
     for column in wanted:
         quoted = quote_identifier(column)
         data_type = str(available[column]["type"])
-        extremes = f", min({quoted}), max({quoted})" if _orderable(data_type) else ", NULL, NULL"
+        extremes = (
+            f", system.main.min({quoted}), system.main.max({quoted})"
+            if _orderable(data_type)
+            else ", NULL, NULL"
+        )
         counted, distinct, nulls, low, high = warehouse.execute(
-            f"SELECT count(*), count(DISTINCT {quoted}), count(*) - count({quoted})"
+            f"SELECT system.main.count(*), system.main.count(DISTINCT {quoted}), system.main.count(*) - system.main.count({quoted})"
             f"{extremes} FROM {scan} AS t"
         )[1][0]
         samples = (
@@ -704,7 +708,7 @@ def _suggest_key(
         for second in id_like[index + 1 :]:
             a, b = quote_identifier(first), quote_identifier(second)
             checked, present_first, present_second, pairs = warehouse.execute(
-                f"SELECT count(*), count({a}), count({b}), count(DISTINCT ({a}, {b})) FROM {probe}"
+                f"SELECT system.main.count(*), system.main.count({a}), system.main.count({b}), system.main.count(DISTINCT ({a}, {b})) FROM {probe}"
             )[1][0]
             if checked and checked == present_first == present_second == pairs:
                 return {
@@ -742,11 +746,11 @@ def _declared_keys(warehouse: DuckDBWarehouse) -> dict[str, list[dict[str, str]]
     keys: dict[str, list[dict[str, str]]] = {}
     for row in warehouse.rows(
         "SELECT k.schema_name, k.table_name, c.column_name, c.data_type "
-        "FROM duckdb_constraints() AS k JOIN duckdb_columns() AS c "
+        "FROM system.main.duckdb_constraints() AS k JOIN system.main.duckdb_columns() AS c "
         "ON c.database_name = k.database_name AND c.schema_name = k.schema_name "
         "AND c.table_name = k.table_name AND c.column_name = k.constraint_column_names[1] "
-        "WHERE k.database_name = current_database() AND k.constraint_type = 'PRIMARY KEY' "
-        "AND len(k.constraint_column_names) = 1 ORDER BY 1, 2"
+        "WHERE k.database_name = system.main.current_database() AND k.constraint_type = 'PRIMARY KEY' "
+        "AND system.main.len(k.constraint_column_names) = 1 ORDER BY 1, 2"
     ):
         schema, table, column = str(row["schema_name"]), str(row["table_name"]), row["column_name"]
         if not _dotted(schema, table):
