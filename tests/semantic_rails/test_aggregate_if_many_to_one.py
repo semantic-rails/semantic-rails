@@ -925,7 +925,7 @@ def test_the_condition_is_a_cut_on_the_entity_it_reads(package, allowed):
 
 
 # The policy kind that declares each action refusing a query by the objects it reads.
-POLICY_KINDS = {"deny": "object_access", "redact": "object_access", "hidden": "object_visibility"}
+POLICY_KINDS = {"deny": "object_access", "hidden": "object_visibility"}
 
 # Queries whose aggregate_if reads the customer's currency across a hop.
 READS_CURRENCY = {

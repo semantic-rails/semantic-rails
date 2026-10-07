@@ -2,7 +2,7 @@
 # different runtime behavior in semantic_rails/policies.py:
 #   - package_release  — labels the package's release status
 #   - object_visibility — hides matching objects from discovery/inspect
-#   - object_access     — denies or redacts at query time
+#   - object_access     — denies access or withholds values at query time
 #   - protected_object  — pins an object as protected in the named env
 #   - metric_constraint — restricts allowed query cuts for scoped users
 semantic_policies:
@@ -27,8 +27,8 @@ semantic_policies:
     audiences: [external_partner]
     action: deny
     rationale: >-
-      Raw revenue is sensitive. External partner queries get a
-      redacted result; internal audiences pass through untouched.
+      Raw revenue is sensitive. External partner queries are
+      refused; internal audiences pass through untouched.
 
   - id: policy.jaffle.gtm_revenue_store_cuts
     kind: metric_constraint

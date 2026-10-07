@@ -343,9 +343,9 @@ def test_a_withheld_metric_ranks_and_keeps_its_measures_from_valid_values(packag
         runtime.close()
 
 
-@pytest.mark.parametrize("action", ["deny", "redact"])
+@pytest.mark.parametrize("action", ["deny"])
 @pytest.mark.parametrize("patch", [{}, REFUSALS["metric_filter"][0]], ids=["ordered", "filtered"])
-def test_deny_and_redact_still_refuse_ordering_and_filtering(package, action, patch):
+def test_deny_still_refuses_ordering_and_filtering(package, action, patch):
     runtime = _engine(package, _policy(action))
     try:
         for code, details in _codes(runtime, {**RANK, **patch}):

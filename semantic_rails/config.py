@@ -13,7 +13,6 @@ from __future__ import annotations
 import os
 import re
 import sysconfig
-from dataclasses import replace
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
@@ -59,7 +58,7 @@ from .operational import (
     validate_operational_payload,
 )
 from .package_snapshot import CapturedSource, LoadedPackageSnapshot, load_package_snapshot
-from .policy_rules import _policy_rationale, authored_policy_action, policy_action, policy_config
+from .policy_rules import policy_action
 from .row_filters import validate_row_filters
 from .schema import (
     DEFAULT_PATH_HOP_LIMIT,
@@ -1741,57 +1740,6 @@ def _validate_caveat_refs(config: PackageConfig, *, path: str) -> None:
                 )
 
 
-def _canonical_policy(row: dict[str, Any]) -> SemanticPolicyConfig:
-    policy = SemanticPolicyConfig(
-        id=str(row["id"]),
-        kind=str(row["kind"]),
-        config={
-            key: value
-            for key, value in row.items()
-            if key
-            not in {
-                "id",
-                "kind",
-                "object_ids",
-                "audiences",
-                "environments",
-                "roles",
-                "action",
-                "rationale",
-            }
-        },
-        object_ids=_ensure_list(row.get("object_ids")),
-        audiences=_ensure_list(row.get("audiences")),
-        environments=_ensure_list(row.get("environments")),
-        roles=_ensure_list(row.get("roles")),
-        action=str(row.get("action", "")),
-        rationale=str(row.get("rationale", row.get("rule", ""))),
-    )
-    return _canonical_policy_config(policy)
-
-
-def _canonical_policy_config(policy: SemanticPolicyConfig) -> SemanticPolicyConfig:
-    canonical = replace(
-        policy,
-        config={
-            key: value
-            for key, value in (
-                policy.config if policy.kind == "row_filter" else policy_config(policy)
-            ).items()
-            if key not in {"action", "visibility", "rule", "description", "rationale"}
-        },
-        action=authored_policy_action(policy),
-        rationale=_policy_rationale(policy),
-    )
-    # A release label also reads the raw action field; unsupported rewrites leave it alone.
-    if policy.kind == "package_release":
-        before = str(policy_config(policy).get("label", "") or policy.action or "").strip()
-        after = str(canonical.config.get("label", "") or canonical.action or "").strip()
-        if before != after:
-            return policy
-    return canonical
-
-
 def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     if "aggregate_relations" in raw:
         raise SemanticLayerError("INVALID_CONFIG", "declare rollups under the model's `variants:`")
@@ -2760,9 +2708,37 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             )
         )
 
-    policies = [
-        _canonical_policy(dict(row or {})) for row in raw.get("semantic_policies", []) or []
-    ]
+    policies = []
+    for row in list(raw.get("semantic_policies", []) or []):
+        row_dict = dict(row or {})
+        policies.append(
+            SemanticPolicyConfig(
+                id=str(row_dict["id"]),
+                kind=str(row_dict["kind"]),
+                config={
+                    key: value
+                    for key, value in row_dict.items()
+                    if key
+                    not in {
+                        "id",
+                        "kind",
+                        "object_ids",
+                        "audiences",
+                        "environments",
+                        "roles",
+                        "action",
+                        "rationale",
+                    }
+                    or (row_dict["kind"] == "row_filter" and key in {"object_ids", "action"})
+                },
+                object_ids=_ensure_list(row_dict.get("object_ids")),
+                audiences=_ensure_list(row_dict.get("audiences")),
+                environments=_ensure_list(row_dict.get("environments")),
+                roles=_ensure_list(row_dict.get("roles")),
+                action=str(row_dict.get("action", "")),
+                rationale=str(row_dict.get("rationale", "")),
+            )
+        )
 
     caveats = _parse_caveats(raw.get("semantic_caveats", []), path=path)
 

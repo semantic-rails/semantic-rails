@@ -338,7 +338,7 @@ def test_package_policy_follows_nested_internal_recipe_dependencies(
 
 @pytest.mark.parametrize("kind", ["dimension", "temporal_role"])
 @pytest.mark.parametrize("scope", ["roles", "audiences"])
-@pytest.mark.parametrize("action", ["deny", "redact"])
+@pytest.mark.parametrize("action", ["deny"])
 def test_restricted_metadata_ownership_policies(granted_runtime, request, kind, scope, action):
     config = granted_runtime.config
     dimension = next(row for row in config.dimensions if row.id == DIMENSION)
@@ -416,7 +416,7 @@ def test_supporting_metadata_without_denial_is_available(granted_runtime, reques
         assert object_id in json.dumps(output)
 
 
-@pytest.mark.parametrize("action", ["deny", "redact"])
+@pytest.mark.parametrize("action", ["deny"])
 def test_granted_temporal_metadata_honors_real_dependencies(granted_runtime, request, action):
     config = granted_runtime.config
     role_id = "temporal_role.jaffle_order_time"
