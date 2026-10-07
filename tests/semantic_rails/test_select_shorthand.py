@@ -133,6 +133,10 @@ def test_dimension_item_carrying_other_keys_is_refused(item):
     with pytest.raises(SemanticLayerError) as excinfo:
         normalize_query(_query([item, {"metric": METRIC}]))
     err = excinfo.value
+    if "expression" in item and "x" in item:
+        assert err.code == "INVALID_QUERY"
+        assert err.details["unsupported_keys"] == ["x"]
+        return
     assert err.code == "INVALID_EXPRESSION_AST"
     assert err.details["path"] == "select[0]"
     assert 'group_by: ["<dimension id>"]' in str(err)

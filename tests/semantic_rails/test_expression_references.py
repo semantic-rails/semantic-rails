@@ -675,7 +675,9 @@ def _unknown_kind_request(placement):
     return query
 
 
-def _assert_shape_refused_before_output(base_config, monkeypatch, query):
+def _assert_shape_refused_before_output(
+    base_config, monkeypatch, query, expected_code="INVALID_EXPRESSION_AST"
+):
     from semantic_rails import compiler
 
     engine = runtime.Runtime.from_config(
@@ -689,11 +691,11 @@ def _assert_shape_refused_before_output(base_config, monkeypatch, query):
     monkeypatch.setattr(engine, "_compile", no_output)
     monkeypatch.setattr(engine, "_get_adapter", no_output)
     try:
-        assert engine.validate(query)["errors"][0]["code"] == "INVALID_EXPRESSION_AST"
+        assert engine.validate(query)["errors"][0]["code"] == expected_code
         for operation in (engine.compile, engine.query):
             with pytest.raises(SemanticLayerError) as exc:
                 operation(query)
-            assert exc.value.code == "INVALID_EXPRESSION_AST"
+            assert exc.value.code == expected_code
     finally:
         engine.close()
 
@@ -706,10 +708,21 @@ def test_request_shapes_are_checked_before_rendering(base_config, monkeypatch, p
     _assert_shape_refused_before_output(base_config, monkeypatch, _unknown_kind_request(placement))
 
 
-@pytest.mark.parametrize("placement", ["select_item_policy_context", "expression_policy_context"])
-def test_policy_context_is_skipped_only_at_the_top_level(base_config, monkeypatch, placement):
+@pytest.mark.parametrize(
+    ("placement", "expected_code"),
+    [
+        ("select_item_policy_context", "INVALID_QUERY"),
+        ("expression_policy_context", "INVALID_EXPRESSION_AST"),
+    ],
+    ids=["select_item_policy_context", "expression_policy_context"],
+)
+def test_policy_context_is_skipped_only_at_the_top_level(
+    base_config, monkeypatch, placement, expected_code
+):
     """A ``policy_context`` key below the request's top level is still shape-checked."""
-    _assert_shape_refused_before_output(base_config, monkeypatch, _unknown_kind_request(placement))
+    _assert_shape_refused_before_output(
+        base_config, monkeypatch, _unknown_kind_request(placement), expected_code
+    )
 
 
 @pytest.mark.parametrize("action", ["deny", "redact"])

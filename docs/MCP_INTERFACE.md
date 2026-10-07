@@ -292,7 +292,7 @@ A draft that validates can still leave out part of the question. `plan` returns
   series' last snapshot in each period, so with no time block, or by week or month, a series
   that stopped reporting (a closed account) still adds its last value. The draft is held
   whether it reads the stock through a selected measure, a metric at any depth, a
-  `metric_filters` entry or `where`. A `metric_predicate` expression or a
+  `metric_filters` entry. A `metric_predicate` expression or a
   `scoped_aggregate.predicates` entry may read the stock in its own time scope, so an outer
   day grain does not clear that hold. Choose a metric without a stock predicate, or select
   the balance directly. `expected.stocks` lists the visible stocks that require a hold,
