@@ -17,10 +17,13 @@ from typing import Any
 
 from .ast import NormalizedQuery, every_filter, normalize_query, plain_filters
 from .compiler import BoundQuery, bind_metadata_objects, bind_query
+from .compiler_parts.bind import measure_column_ref
 from .compiler_parts.indexes import get_package_analysis
 from .errors import SemanticLayerError
 from .expressions import (
     AggregateExpr,
+    CaseExpr,
+    ColumnRefExpr,
     ConditionalAggregateExpr,
     ConversionExpr,
     MetricPredicateExpr,
@@ -36,7 +39,7 @@ from .policy_rules import policy_matches as _policy_matches
 from .policy_rules import role_scope_matches as role_scope_matches
 from .request_context import context_from_policy_context
 from .row_filters import RowFilter, is_row_filter, row_filter
-from .schema import PackageConfig, SemanticPolicyConfig
+from .schema import MeasureConfig, PackageConfig, SemanticPolicyConfig
 from .sql_ast import SqlCase, SqlCaseWhen, SqlIdentifier, SqlIsNull, SqlLiteral, SqlOrder
 from .sql_preparation import checked_slot_value
 from .visible_view import hidden_object_ids
@@ -119,6 +122,35 @@ def query_policy_effects(
                 )
             else:
                 effects.append(_base_policy_effect(policy, action=action))
+    # A caller's anonymous aggregate must obey every constraint on a measure that reads
+    # any of its source columns, even when that measure is absent from the query.
+    constraints = [
+        policy
+        for policy in config.semantic_policies
+        if query is not None
+        and policy.kind == "metric_constraint"
+        and policy.object_ids
+        and _policy_matches(
+            policy,
+            object_id=policy.object_ids[0],
+            environment=environment,
+            audience=audience,
+            roles=roles,
+        )
+        and _policy_action(policy)
+    ]
+    if query is not None and constraints:
+        governed = {object_id for policy in constraints for object_id in policy.object_ids}
+        for synthetic_id, sources in _synthetic_constraint_sources(
+            config, bound(), governed
+        ).items():
+            for policy in constraints:
+                if sources.intersection(policy.object_ids):
+                    effects.append(
+                        _metric_constraint_effect(
+                            policy, query, metric_filter_refs, bound, synthetic_id
+                        )
+                    )
     # Dedupe by (policy_id, kind, action). Package-wide policies — e.g.
     # release-label — attach to every referenced object and would
     # otherwise return N copies of the same effect for an N-object
@@ -530,6 +562,71 @@ def _config_str_list(policy_config: Mapping[str, Any], key: str) -> list[str]:
     return [text for item in _as_list(policy_config.get(key)) if (text := str(item).strip())]
 
 
+def _synthetic_constraint_sources(
+    config: PackageConfig, binding: BoundQuery, governed: set[str]
+) -> dict[str, set[str]]:
+    """Match source columns and count rows, conservatively ignoring relation qualification.
+
+    Only measures named by constraints need inspection. Resolution errors propagate:
+    uncertainty about a governed source can never authorize an anonymous aggregate.
+    """
+    if not binding.plan.synthetic_measures:
+        return {}
+
+    measures = {row.id: row for row in config.measures}
+    relations = {row.id: row.table for row in config.entities}
+
+    def identifier(part: str) -> str:
+        return part.strip('"`[]').casefold()
+
+    def rows(measure: MeasureConfig) -> tuple[str, ...]:
+        # A one-part row token cannot collide with a two-part column token.
+        relation = measure.source_relation or relations[measure.entity]
+        return (identifier(relation.split(".")[-1]),)
+
+    def columns(measure: MeasureConfig, seen: frozenset[str] = frozenset()) -> set[tuple[str, ...]]:
+        if measure.id in seen:
+            raise SemanticLayerError("INVALID_CONFIG", "A constrained lookup measure has a cycle")
+        read = {
+            tuple(identifier(part) for part in measure_column_ref(ref, measure, config).parts[-2:])
+            for ref in collect_column_refs(measure.expr)
+        }
+        # entity_count is normalized to count_distinct by the package loader.
+        if measure.default_aggregation in {"count", "count_distinct"}:
+            read.add(rows(measure))
+        if measure.lookup_from:
+            source = measures.get(measure.lookup_from)
+            if source is None:
+                raise SemanticLayerError(
+                    "INVALID_CONFIG", f"Unknown lookup source '{measure.lookup_from}'"
+                )
+            read.update(columns(source, seen | {measure.id}))
+        return read
+
+    def reads_values(synthetic: MeasureConfig) -> bool:
+        # Allowlist by structure: the binder's CASE WHEN condition THEN column END under
+        # sum, min or max. Any other form (a literal, arithmetic, a call, avg, ...) can
+        # recover a row count, so it reads its relation's rows.
+        body = synthetic.expr
+        return (
+            synthetic.default_aggregation in {"sum", "min", "max"}
+            and isinstance(body, CaseExpr)
+            and len(body.whens) == 1
+            and body.else_expr is None
+            and isinstance(body.whens[0].then, ColumnRefExpr)
+        )
+
+    reads = {row.id: columns(row) for row in config.measures if row.id in governed}
+    synthetic_reads = {
+        synthetic_id: columns(row) | (set() if reads_values(row) else {rows(row)})
+        for synthetic_id, row in binding.plan.synthetic_measures.items()
+    }
+    return {
+        synthetic_id: {measure_id for measure_id, read in reads.items() if read & synthetic_read}
+        for synthetic_id, synthetic_read in synthetic_reads.items()
+    }
+
+
 def _metric_constraint_summary(policy: SemanticPolicyConfig) -> dict[str, Any]:
     policy_config = _policy_config(policy)
     summary_keys = (
@@ -801,6 +898,10 @@ def _governed_inline_fields(
         or measure == object_id
         or bound().cut_counts(object_id, owners(measure))
     ]
+    # The normalized request has no id for a conditional aggregate's own condition.
+    # Every such synthetic measure has that cut, even if the compiler recorded none.
+    if ("", INLINE_CONDITION) in filters and object_id in bound().plan.synthetic_measures:
+        out.append(INLINE_CONDITION)
     return list(dict.fromkeys(out))
 
 

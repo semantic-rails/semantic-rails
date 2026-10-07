@@ -1,6 +1,6 @@
 """Regression coverage for ``inline_period_shift`` on snapshot measures.
 
-Before A20 the pattern aborted on any intent containing the word
+The pattern used to abort on any intent containing the word
 "active" / "activity" because ``_threshold_from_text`` returns an
 implicit ``(">", 0)`` for those tokens (the heuristic that treats
 "active customer" as an activity qualification). For snapshot measures
@@ -12,6 +12,7 @@ pattern should still fire.
 from __future__ import annotations
 
 from semantic_rails.planner import plan_payload
+from tests.semantic_rails.result_helpers import assert_plan_held
 
 
 def test_active_menu_yoy_fires_inline_period_shift(runtime_factory) -> None:
@@ -24,7 +25,8 @@ def test_active_menu_yoy_fires_inline_period_shift(runtime_factory) -> None:
         payload = plan_payload(runtime, intent="active menu YoY by month")
     finally:
         runtime.close()
-    assert payload["status"] == "ok"
+    assert_plan_held(payload, "PLAN_INTENT_COVERAGE_GAP")
+    assert "stock_as_of_unrealized" in {gap["kind"] for gap in payload["why"]["details"]["gaps"]}
     best = payload["best"]
     assert best["pattern"] == "inline_period_shift"
     interpreted = best["interpreted_intent"]

@@ -923,7 +923,7 @@ def test_empty_time_window_reports_diagnostics_warning_and_data_coverage(runtime
 def test_where_uses_field_key_and_rejects_legacy_dimension_key(runtime_factory):
     """Round five standardized on ``field`` for both ``where[]`` and
     ``order_by[]``. The legacy ``dimension`` key on ``where[]`` items
-    is no longer accepted; the error points at ``where[N].field``."""
+    is no longer accepted; the error names the unsupported item key."""
     runtime = runtime_factory("jaffle_shop")
     try:
         # Canonical shape: ``field`` works.
@@ -970,7 +970,9 @@ def test_where_uses_field_key_and_rejects_legacy_dimension_key(runtime_factory):
         )
         errors = bad_result.get("errors") or []
         assert errors, "legacy dimension key should fail validation"
-        assert errors[0]["details"]["path"] == "where[0].field"
+        assert errors[0]["code"] == "INVALID_QUERY"
+        assert errors[0]["details"]["path"] == "where[0]"
+        assert errors[0]["details"]["unsupported_keys"] == ["dimension"]
     finally:
         runtime.close()
 

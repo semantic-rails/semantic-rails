@@ -287,6 +287,54 @@ def _print_project_validation(report: dict[str, Any]) -> None:
             print(f"  ... {len(counts) - 10} more error(s)")
 
 
+def _print_project_upgrade(report: dict[str, Any], *, command: str) -> None:
+    status = report.get("status")
+    print(f"Upgrade: {report.get('project_path')}")
+    print(f"Status: {status}")
+    rules = list(report.get("rules", []) or [])
+    for rule in rules:
+        hits = list(rule.get("hits", []) or [])
+        print(f"  {rule['id']} ({rule['effect']}, {rule['tier']}): {len(hits)} hit(s)")
+        for hit in hits[:10]:
+            where = ".".join(map(str, hit["path"]))
+            print(f"    {hit['file']}:{hit['line']} {where}: {hit['message']}")
+        if len(hits) > 10:
+            print(f"    ... {len(hits) - 10} more")
+    proof = dict(report.get("proof", {}) or {})
+    tiers = [rule["tier"] for rule in rules]
+    if "proven" in tiers:
+        queries = int(proof.get("examples", 0)) + int(proof.get("tests", 0))
+        print(f"proven: fingerprint and {queries} example and test queries unchanged")
+    certified = [rule for rule in rules if rule["tier"] == "certified"]
+    if certified:
+        notes = ", ".join(sorted({rule["since"] for rule in certified}))
+        print(
+            f"certified: {len(certified)} rules for forms this engine refuses "
+            f"(see the {notes} upgrade notes)"
+        )
+    for choice in report.get("choices", []) or []:
+        if choice.get("changes_answers"):
+            print(f"  {choice['key']} = {choice['option']}: changes answers by your choice")
+    pending = list(report.get("choices_pending", []) or [])
+    if pending:
+        print("Choices pending; nothing is written until each is answered:")
+        for choice in pending:
+            print(f"  {choice['file']}:{choice['line']} {choice['question']}")
+            for option in choice.get("options", []):
+                effect = " (changes answers)" if option.get("changes_answers") else ""
+                flag = _quote(f"{choice['key']}={option['id']}")
+                print(f"    --choose {flag}: {option['summary']}{effect}")
+    if status != "upgraded":
+        for change in report.get("changes", []) or []:
+            print(change.get("diff", ""), end="")
+    for action in report.get("next_actions", []) or []:
+        print(f"Next: {action}")
+    for error in report.get("errors", []) or []:
+        print(f"Error: {error.get('message', error) if isinstance(error, dict) else error}")
+    if status == "preview" and report.get("changes"):
+        print(f"Write it with: {command} --write")
+
+
 def _print_profile_report(report: dict[str, Any]) -> None:
     print("Semantic Rails profile")
     print(f"Path: {report.get('path')}")

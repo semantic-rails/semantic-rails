@@ -60,6 +60,8 @@ from .package_tools import (
     run_examples_report,
     run_package_tests_report,
 )
+from .upgrade.service import legacy_form_hint
+from .upgrade.service import upgrade_project as upgrade_project_service
 
 DEFAULT_ARCHITECT_PORT = 8010
 DEFAULT_WORKSPACE_ROOT = repo_root()
@@ -268,7 +270,13 @@ def _report_error(exc: Exception) -> dict[str, Any]:
     }
 
 
+_UPGRADE_ACTION = "call upgrade_project (dry_run)"
+
+
 def _mutation_result(payload: dict[str, Any]) -> ArchitectMutationResult:
+    if payload.get("status") in {"rolled_back_after_parse_error", "preview_invalid"}:
+        hint = legacy_form_hint(payload["project_path"], _UPGRADE_ACTION)
+        payload = {**payload, "next_actions": [*payload.get("next_actions", []), *hint]}
     return ArchitectMutationResult.model_validate(payload)
 
 
@@ -765,7 +773,7 @@ def create_architect_mcp_server(
             "describe_table, profile_columns, suggest_model) or a dbt target "
             "(suggest_models_from_dbt); write (upsert_model, upsert_relationship, upsert_metric, "
             "upsert_segment, upsert_example, upsert_test, import_dbt_project, remove_object, "
-            "record_route_decision); "
+            "record_route_decision, upgrade_project); "
             "check (validate_project mode=parse after each change, mode=runtime before trusting "
             "answers; preview_query); review (diff_project, impact_project).\n"
             "Every write previews with dry_run: true and takes expected_revision (from "
@@ -950,7 +958,10 @@ def create_architect_mcp_server(
                 "files": _project_files(project),
                 "parse": parse,
                 "route_census": census,
-                "next_actions": ["Fix parse errors first."]
+                "next_actions": [
+                    "Fix parse errors first.",
+                    *legacy_form_hint(project, _UPGRADE_ACTION),
+                ]
                 if not parse.get("ok")
                 else [
                     *(
@@ -1039,6 +1050,33 @@ def create_architect_mcp_server(
                 idempotency_key=idempotency_key,
                 dry_run=dry_run,
             )
+
+    @mcp.tool(
+        annotations=_mutation_annotations("Upgrade project"),
+        description=(
+            "Rewrite a package's legacy forms to the current ones in one transaction, "
+            "refusing any rewrite that changes an answer; dry_run (the default) previews the "
+            "rules, proof and diff, and choices ({key: option}) answers pending choices."
+        ),
+    )
+    def upgrade_project(
+        project_path: str,
+        dry_run: bool = True,
+        choices: dict[str, str] | None = None,
+        expected_revision: str = "",
+        idempotency_key: str = "",
+    ) -> dict[str, Any]:
+        try:
+            return upgrade_project_service(
+                _resolve_project_path(project_path, workspace_root=root),
+                workspace_root=root,
+                dry_run=dry_run,
+                choices=choices,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
+            )
+        except Exception as exc:
+            return _report_error(exc)
 
     @mcp.tool(
         annotations=_mutation_annotations("Upsert semantic model"),

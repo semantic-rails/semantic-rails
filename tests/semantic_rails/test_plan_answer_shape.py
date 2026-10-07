@@ -644,7 +644,7 @@ def test_a_shape_word_inside_a_declared_name_asks_nothing(
     runtime = _upkeep(tmp_path / "incident", "incident", "comparison")
     try:
         payload = plan_payload(runtime, intent=question)
-        monkeypatch.setattr(plan_module, "_declared_name_spans", lambda *_args: {})
+        monkeypatch.setattr(plan_module, "_declared_name_spans", lambda *_args, **_kwargs: {})
         unnamed = plan_payload(runtime, intent=question)
     finally:
         runtime.close()

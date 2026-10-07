@@ -45,6 +45,17 @@ top-level extras accepted by the runtime and schema are
 underscore-prefixed annotations such as `_note`, which are ignored before
 planning and SQL generation.
 
+Canonical query items also reject unknown keys with `INVALID_QUERY`, returning
+the item `details.path`, `unsupported_keys`, `supported_keys`, and
+`closest_matches`. The closed shapes are `select[]: {expression, as}`,
+plain `where[]: {field, op, value}`, child groups: `{child, match, where}`,
+and `metric_filters[]: {expression, op, value}`. Child-group conditions use the
+same plain-filter shape. This applies to full queries and partial queries used
+by the planner and builder; annotations such as `_note` are allowed only at
+the top level. An `entity` key on a metric filter is refused with a hint to use
+`expression.kind: "metric_predicate"` and put `entity` inside that expression.
+The documented select shorthands below still normalize to canonical items.
+
 ### Per-entity value filters
 
 In a `distribution` expression, `entity_value.where` filters the computed

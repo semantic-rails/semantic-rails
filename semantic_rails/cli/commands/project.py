@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
+from ...config_validation import PackageReference
 from ...errors import SemanticLayerError
 from ...local_config import init_local_profile, local_profile_report
 from ...naming import slug
+from ...upgrade.service import legacy_form_hint, upgrade_project
 from ..common import (
     _add_optional_reference_args,
     _print_json,
     _prompt,
     _prompts_allowed,
+    _quote,
     _ref_from_args,
     _title,
 )
@@ -24,6 +28,7 @@ from ..output import (
     _print_project_created,
     _print_project_list,
     _print_project_status,
+    _print_project_upgrade,
     _print_project_validation,
     _print_setup_report,
 )
@@ -335,6 +340,25 @@ def add_developer_cli(sub: argparse._SubParsersAction, package_choices: list[str
     p_project_validate.add_argument("--json", action="store_true", help="Print a JSON report.")
     p_project_validate.set_defaults(func=cmd_project_validate, human_cli=True)
 
+    p_project_upgrade = project_sub.add_parser(
+        "upgrade",
+        description=(
+            "Rewrite a package's legacy forms to the current ones in one change, refusing any "
+            "rewrite that changes an answer. Previews the diff unless --write is given."
+        ),
+    )
+    _add_optional_reference_args(p_project_upgrade, package_choices)
+    p_project_upgrade.add_argument("--write", action="store_true", help="Write the upgrade.")
+    p_project_upgrade.add_argument(
+        "--choose",
+        action="append",
+        default=[],
+        metavar="KEY=OPTION",
+        help="Answer a pending choice with one of its options. May be repeated.",
+    )
+    p_project_upgrade.add_argument("--json", action="store_true", help="Print a JSON report.")
+    p_project_upgrade.set_defaults(func=cmd_project_upgrade, human_cli=True)
+
 
 def cmd_setup(args: argparse.Namespace) -> None:
     if getattr(args, "interactive", False):
@@ -532,6 +556,40 @@ def cmd_project_validate(args: argparse.Namespace) -> None:
         _print_json(report)
     else:
         _print_project_validation(report)
+        for hint in legacy_form_hint(ref.source_path, f"run `{_upgrade_command(ref)}`"):
+            print(f"Hint: {hint}")
+    if not report["ok"]:
+        raise SystemExit(1)
+
+
+def _upgrade_command(ref: PackageReference) -> str:
+    target = (
+        f"--package {ref.package_id}" if ref.package_id else f"--path {_quote(ref.source_path)}"
+    )
+    return f"semantic-rails project upgrade {target}"
+
+
+def cmd_project_upgrade(args: argparse.Namespace) -> None:
+    ref = _ref_from_args(args, interactive=_prompts_allowed(args))
+    project = Path(ref.source_path).resolve()
+    cwd = Path.cwd().resolve()
+    # Receipts live under the workspace root, never in the package directory the loader walks.
+    workspace = cwd if project != cwd and project.is_relative_to(cwd) else project.parent
+    choices = {}
+    for value in args.choose:
+        key, separator, option = value.rpartition("=")
+        if not separator or not key:
+            raise SemanticLayerError("INVALID_CONFIG", f"--choose takes KEY=OPTION, got {value!r}")
+        choices[key] = option
+    report = upgrade_project(
+        project, workspace_root=workspace, dry_run=not args.write, choices=choices
+    )
+    if args.json:
+        _print_json(report)
+    else:
+        _print_project_upgrade(report, command=_upgrade_command(ref))
+    if report["status"] == "choices_pending":
+        raise SystemExit(2)
     if not report["ok"]:
         raise SystemExit(1)
 

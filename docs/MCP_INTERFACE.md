@@ -286,6 +286,21 @@ A draft that validates can still leave out part of the question. `plan` returns
   when the catalog declares no values for it (`dimension_filter_unrealized`);
 - carries no time window, or a different one, where the question names one
   (`time_window_unrealized`);
+- reads a balance (a [stock](PACKAGE_AUTHORING.md#measures) whose key holds a series column besides
+  its clock) without time grain `day`, or through a predicate at any grain
+  (`stock_as_of_unrealized`). A stock answers with each
+  series' last snapshot in each period, so with no time block, or by week or month, a series
+  that stopped reporting (a closed account) still adds its last value. The draft is held
+  whether it reads the stock through a selected measure, a metric at any depth, a
+  `metric_filters` entry. A `metric_predicate` expression or a
+  `scoped_aggregate.predicates` entry may read the stock in its own time scope, so an outer
+  day grain does not clear that hold. Choose a metric without a stock predicate, or select
+  the balance directly. `expected.stocks` lists the visible stocks that require a hold,
+  `actual.grain` the draft's grain (`null` with no time block). For a direct balance read,
+  ask for one day ("MRR yesterday", `MRR on <YYYY-MM-DD>`), or set `time.grain: day` with
+  that day's start and end. A stock keyed by its clock alone (a
+  daily rollup) is one series and isn't held. A question with an as-of cue ("MRR right now")
+  stays `TIME_WINDOW_UNRESOLVED`;
 - loses a ranking's stated limit, sort direction or selected measure, cannot identify the
   ranked measure unambiguously, or doesn't group by what is ranked (`ranking_unrealized`),
   including count-free requests such as "top stores by revenue";
@@ -426,6 +441,26 @@ repeat", "customer types" is no declared name, so the entity Customer must be gr
 These readers add obligations only to the dropped-grouping check; planning and the checks that
 authorize a draft's groupings retain their existing readers. The check only holds a plan; it
 never changes a draft or makes one ready.
+In any question, with a level word or not, every caller-visible dimension name the question
+holds has the same obligation, whatever words surround it. An entity name has it in a level or
+grain question, where one of its stand-ins must be grouped; elsewhere an entity name often
+describes the measure ("repeat-customer orders"). Names are read as above and also with
+underscores, spaces and any case: `customer_type` and `customer type` name Customer type, and
+declared leading and trailing underscores are kept, so aliases such as `_customer_type` and
+`customer_type_` count too. The draft must group by the dimension, or pin it to one value with
+a query-level `where` filter. A selected metric's own filter restricts only its aggregate and
+does not discharge a named grouping. A value word inside the name
+never discharges it, and neither do words the selected measure's label shares: with an alias
+`_new_type` for Customer type and revenue labelled "Revenue (new and repeat types)", "revenue
+by _new_type and store name" grouped only by Store name is not ready. A name holding a value
+that a draft filter keeps (`=` that value, or `IN` with it) holds the plan even when the draft
+groups by it, since the filter may narrow the answer. `why.details.filter_inside_grouping` lists
+each such filter as `{"term", "field", "value"}`, `dropped_groupings` keeps the term, and the
+recovery hint asks the caller to confirm the value with the user or remove it from that field's
+filters in `best.query_ir.where`. This reading never reads a hidden dimension, entity, measure,
+metric, temporal role or calendar, so a hidden object answers exactly as an absent one: a hidden
+clock is no clock, and its words keep their obligation. It only holds a plan; the draft and its
+filters are unchanged.
 A listed grouping that names an entity is satisfied only by that entity's own key
 dimension, or by the single declared dimension of that entity whose own words name it, and an
 entity with a composite key is never satisfied. A term names an entity only with every word of
@@ -825,6 +860,13 @@ semantic-rails mcp client-config --path "$PACKAGE_PATH" --client codex --mcp bot
 for each server, replacing a user-scope server of the same name; a local or
 project server with that name still takes precedence in its project. Each
 install keeps the file's other servers.
+
+**Claude Desktop:** quit it completely (Quit, not closing the window) before
+`--install`, then start it. It writes its configuration back when it quits, so an
+edit made while it runs is lost and the old server keeps answering.
+**Claude Code:** use `--client claude-code`; it registers the server with
+`claude mcp add-json`, live in the next session.
+
 Use `--mcp query`, `--mcp architect`, or `--mcp both` depending on whether the
 client should answer governed analytics questions, author packages, or do both.
 
