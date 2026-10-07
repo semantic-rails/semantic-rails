@@ -8,11 +8,12 @@ call, and a view never keeps an object that reads or names a hidden one.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import threading
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import fields, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,7 @@ from tests.semantic_rails.conftest import copy_package_config
 from tests.semantic_rails.hidden_absent import (
     ACTIONS,
     CALLER,
+    ENGINE_READ,
     absent,
     access_policy,
     declared_references,
@@ -1315,13 +1317,151 @@ def test_a_default_metric_id_names_only_an_existing_metric(package, authored):
         runtime.close()
 
 
-def test_prose_stripping_is_a_closed_display_field_allowlist():
-    from semantic_rails import schema
-    from semantic_rails.visible_view import PROSE
+# Records reached only through a field the view keeps whole.
+KEPT_WHOLE = ("SeedSpec", "ConnectionSpec", "PlannerConfig", "AccumulationConfig")
+TEXT_TYPES = ("str", "list", "dict")
 
-    display = {"description", "label", "topics", "example_entries", "authoring_warnings"}
-    assert display == PROSE
-    for cls in vars(schema).values():
-        if isinstance(cls, type) and hasattr(cls, "__dataclass_fields__"):
-            for field in fields(cls):
-                assert field.name not in PROSE or field.name in display
+
+def test_every_record_field_has_a_display_class():
+    """Every field of every package record is classed, by introspection: a new field fails
+    here until it is. A kept text, list or mapping field is one the test's own list of
+    engine-read fields names, so the table never keeps authored text."""
+    from semantic_rails import schema
+    from semantic_rails.visible_view import ROW_FIELDS
+
+    records = {
+        cls
+        for cls in vars(schema).values()
+        if isinstance(cls, type) and is_dataclass(cls) and cls.__module__ == schema.__name__
+    } - {PackageConfig, schema.VisiblePackageConfig}
+    assert set(ROW_FIELDS) == records
+    kinds = {"kept", "text", "texts", "identity", "typed", "rows"}
+    for cls in records:
+        assert set(ROW_FIELDS[cls]) == {item.name for item in fields(cls)}, cls.__name__
+        assert set(ROW_FIELDS[cls].values()) <= kinds, cls.__name__
+        if cls.__name__ in KEPT_WHOLE or cls is schema.RelationPipelineStep:
+            continue
+        for item in fields(cls):
+            if ROW_FIELDS[cls][item.name] == "kept" and str(item.type).startswith(TEXT_TYPES):
+                assert item.name in ENGINE_READ, (cls.__name__, item.name)
+
+
+def test_a_field_missing_from_the_table_is_authored_text():
+    """Fail-safe: a record or field the table does not class is projected by its value."""
+    import re
+
+    from semantic_rails.visible_view import _projected
+
+    @dataclass(frozen=True)
+    class Novel:
+        id: str
+        blurb: str = ""
+        notes: list[str] = field(default_factory=list)
+        extra: dict[str, Any] = field(default_factory=dict)
+        count: int = 0
+
+    tokens = re.compile(r"measure\.secret(?![A-Za-z0-9_])")
+    row = Novel(
+        "dimension.kept",
+        blurb="like measure.secret",
+        notes=["see measure.secret", "fine"],
+        extra={"note": "measure.secret", "size": 2},
+        count=3,
+    )
+    assert _projected(row, tokens) == Novel("dimension.kept", "", ["fine"], {"size": 2}, 3)
+
+
+@pytest.mark.parametrize("action", ACTIONS)
+def test_names_and_labels_naming_a_hidden_object_are_rebuilt_never_blank(package, action):
+    root, config = package
+    config = replace(
+        config,
+        measures=[
+            replace(
+                row,
+                name=f"{REVENUE} twin",
+                aliases=["orders", f"like {REVENUE}"],
+                comparison_family=f"peer of {REVENUE}",
+                meta={"mnpi": True, "note": f"see {REVENUE}", "team": "ops"},
+            )
+            if row.id == ORDERS
+            else row
+            for row in config.measures
+        ],
+        value_domains=[
+            replace(
+                row,
+                values=[
+                    replace(value, label=f"{REVENUE} {value.value}", aliases=[f"aka {REVENUE}"])
+                    for value in row.values
+                ],
+            )
+            for row in config.value_domains
+        ],
+        package=replace(config.package, name=f"{config.package.name} {REVENUE}"),
+    )
+    config = with_policies(config, visibility_policy(action, REVENUE))
+    runtime = Runtime.from_config(config, source_path=str(root))
+    try:
+        view = runtime.view_for(CALLER)
+        expected = absent(config, [REVENUE])
+        measure = next(row for row in view.measures if row.id == ORDERS)
+        assert measure == next(row for row in expected.measures if row.id == ORDERS)
+        assert measure.name == ORDERS.rsplit(".", 1)[-1]
+        assert measure.aliases == ["orders"]
+        assert measure.comparison_family == ""
+        assert measure.meta == {"mnpi": True, "team": "ops"}
+        assert view.package.name == config.package.package_id.rsplit(".", 1)[-1]
+        assert view.value_domains == expected.value_domains
+        for domain in view.value_domains:
+            for value in domain.values:
+                assert (value.label, value.aliases) == (str(value.value), [])
+        shown = [view.package, *object_rows(view)]
+        assert REVENUE not in json.dumps([dataclasses.asdict(row) for row in shown], default=str)
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("value", ["true", "false", "yes", 1, None])
+@pytest.mark.parametrize("where", ["model", "measure"])
+def test_mnpi_is_boolean_at_load(tmp_path, where, value):
+    root = copy_package_config(tmp_path, "jaffle_shop")
+    path = root / "models" / "core" / "orders.yml"
+    raw = yaml.safe_load(path.read_text())
+    target = raw["model"] if where == "model" else raw["model"]["measures"]["order_count"]
+    target["meta"] = {"mnpi": value}
+    path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    with pytest.raises(SemanticLayerError) as raised:
+        load_package_config(str(root))
+    assert raised.value.code == "INVALID_CONFIG"
+    assert "meta.mnpi must be true or false" in str(raised.value)
+    target["meta"] = {"mnpi": True}
+    path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    loaded = load_package_config(str(root))
+    assert next(row for row in loaded.measures if row.id == ORDERS).meta["mnpi"] is True
+
+
+@pytest.mark.parametrize("kind", ["measures", "metric_recipes"])
+def test_mnpi_is_boolean_in_a_package_built_in_code(package, kind):
+    root, config = package
+    rows = getattr(config, kind)
+    changed = replace(config, **{kind: [replace(rows[0], meta={"mnpi": "false"}), *rows[1:]]})
+    with pytest.raises(SemanticLayerError) as raised:
+        Runtime.from_config(changed, source_path=str(root))
+    assert raised.value.code == "INVALID_CONFIG"
+
+
+def test_a_view_offers_only_targets_its_route_resolution_answers(tmp_path):
+    """The account-to-district pair is ambiguous in the package; hiding one of the two
+    routes leaves the view's own graph a single route, which the view must not offer."""
+    from semantic_rails.fanout import eligible_path_targets
+
+    pkg, config = _diamond(tmp_path)
+    runtime = Runtime.from_config(_hide(config, diamond.OWNER_ROUTE[0]), source_path=str(pkg))
+    try:
+        assert diamond.DISTRICT not in eligible_path_targets(config, start=diamond.ACCOUNT)
+        view = runtime.view_for(READER)
+        assert diamond.DISTRICT not in eligible_path_targets(view, start=diamond.ACCOUNT)
+        assert eligible_path_targets(view, start=diamond.ACCOUNT)
+    finally:
+        runtime.close()

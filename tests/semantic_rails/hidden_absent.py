@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import MISSING, fields, is_dataclass, replace
+from dataclasses import fields, is_dataclass, replace
 from typing import Any
 
 from semantic_rails.errors import SemanticLayerError
@@ -51,14 +51,40 @@ VOLATILE = frozenset(
         "source_fingerprint",
     }
 )
-# An object's authored text: left out whole when it names a hidden object.
-PROSE = (
-    "description",
-    "label",
-    "topics",
-    "example_entries",
-    "authoring_warnings",
+# Fields the engine reads: ids and references, physical names, enums and executable specs.
+# Every other text, list or mapping field of a package record is authored; this list is the
+# test's own, written independently of the engine's projection table.
+ENGINE_READ = frozenset(
+    {
+        *("id", "package_id", "kind", "value", "expr", "expression", "steps", "accumulation"),
+        *("table", "primary_key", "relation_id", "key", "identifiers", "foreign_keys"),
+        *("calendar_id", "entity", "column", "data_type", "value_domain", "dimension"),
+        *("temporal_class", "supported_grains", "timezone", "column_timezone"),
+        *("source_entity", "target_entity", "source_column", "target_column", "cardinality"),
+        *("safety", "source_columns", "target_columns", "source_key_role", "target_key_role"),
+        *("allowed_directions", "target_key_type", "rollup_safe_aggregations_reverse"),
+        *("dimensions", "from_", "to", "row_grain", "default_aggregation", "value_type"),
+        *("allowed_aggregations", "source_relation", "invalid_aggregations", "measure_class"),
+        *("compatible_temporal_roles", "suggested_aggregations", "comparison_peers"),
+        *("clock_variants", "preferred_companion_metrics", "default_temporal_role"),
+        *("cross_window_policy", "lookup_from", "lookup_via", "temporal_role", "filter_spec"),
+        *("window_spec", "basis_metric", "preview_dimensions", "where", "metric_filters"),
+        *("time", "temporal_role_overrides", "relationship_path", "relation", "measures"),
+        *("grain", "entity_grain", "model_id", "variant_id", "source", "time_column"),
+        *("eligible_time_grains", "measure_columns", "measure_rollups", "measure_aggregations"),
+        *("measure_holds", "dimension_columns", "dimension_paths", "excluded_entities"),
+        *("excluded_dimensions", "equivalence_kind", "output_name", "columns", "warehouse"),
+        *("default_db", "seed", "connection", "environments", "planner", "observation_scope"),
+        *("object_ids", "audiences", "roles", "action", "severity"),
+    }
 )
+# An authored mapping's keys the engine reads: the export hint (a boolean) and a historical
+# join's physical columns.
+ENGINE_KEYS = {
+    "meta": {"mnpi"},
+    "operational": {"mnpi"},
+    "temporal_validity": {"valid_from", "valid_to"},
+}
 # metric_constraint config keys that list object ids.
 CONSTRAINT_LISTS = (
     "required_group_by",
@@ -148,29 +174,37 @@ def _named(value: Any, tokens: Mapping[str, re.Pattern[str]]) -> bool:
 
 
 def _unnamed(row: Any, tokens: Mapping[str, re.Pattern[str]]) -> Any:
-    """``row`` without each text field that names a hidden object."""
-    changes = {
-        field.name: field.default_factory() if field.default is MISSING else field.default
-        for field in fields(row)
-        if field.name in PROSE and _named(getattr(row, field.name), tokens)
-    }
-    for key in ("meta", "operational"):
-        value = getattr(row, key, {})
-        if _named(value, tokens):
-            changes[key] = {"mnpi": value["mnpi"]} if "mnpi" in value else {}
-    for key, text in (("validity_windows", "semantics"), ("external_discontinuities", "what")):
-        if hasattr(row, key):
-            changes[key] = [
-                replace(value, **{text: ""}) if _named(getattr(value, text), tokens) else value
-                for value in getattr(row, key)
-            ]
-    if hasattr(row, "values") and isinstance(row.values, list):  # a value domain's values
-        values = [
-            replace(value, description="") if _named(value.description, tokens) else value
-            for value in row.values
-        ]
-        if values != row.values:
-            changes["values"] = values
+    """``row`` without authored text that names a hidden object: such a text reads "", a
+    list or mapping loses the items naming one (a mapping keeps its engine keys), and a name
+    is rebuilt from the id's last segment (a value's label from the value)."""
+    changes: dict[str, Any] = {}
+    for field in fields(row):
+        value = getattr(row, field.name)
+        if field.name in ENGINE_READ or not value:
+            continue
+        items = value if isinstance(value, list) else [value]
+        if all(is_dataclass(item) for item in items):
+            shown: Any = [_unnamed(item, tokens) for item in items]
+            shown = shown if isinstance(value, list) else shown[0]
+        elif isinstance(value, Mapping):
+            keep = ENGINE_KEYS.get(field.name, set())
+            shown = {
+                key: bool(item) if key == "mnpi" else item
+                for key, item in value.items()
+                if key in keep or not _named([key, item], tokens)
+            }
+        elif isinstance(value, list):
+            shown = [item for item in value if not _named(item, tokens)]
+        elif not _named(value, tokens):
+            continue
+        elif field.name == "label" and hasattr(row, "value"):
+            shown = str(row.value)
+        elif field.name == "name":
+            shown = str(getattr(row, "id", "") or getattr(row, "package_id", "")).split(".")[-1]
+        else:
+            shown = ""
+        if shown != value:
+            changes[field.name] = shown
     return replace(row, **changes) if changes else row
 
 
@@ -192,6 +226,9 @@ def absent(config: PackageConfig, hidden: Iterable[str]) -> PackageConfig:
         settings = {
             key: _trimmed(value, gone) if key in CONSTRAINT_LISTS else value
             for key, value in policy.config.items()
+        }
+        settings = {
+            key: value for key, value in settings.items() if not _named([key, value], tokens)
         }
         if policy.kind == "row_filter" and settings.get("dimension") in gone:
             continue
@@ -219,9 +256,7 @@ def absent(config: PackageConfig, hidden: Iterable[str]) -> PackageConfig:
             _unnamed(row, tokens) for row in config.aggregate_relations if not references(row, gone)
         ],
         relations=[_unnamed(row, tokens) for row in config.relations],
-        package=replace(config.package, description="")
-        if _named(config.package.description, tokens)
-        else config.package,
+        package=_unnamed(config.package, tokens),
         operational_contract={}
         if _named(config.operational_contract, tokens)
         else config.operational_contract,
