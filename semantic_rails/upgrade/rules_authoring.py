@@ -60,5 +60,12 @@ def _aliases(files: PackageFiles) -> Iterator[Finding]:
 
 
 RULES = (
-    Rule("authoring-aliases", "0.3.2", "same_meaning", "Use canonical authoring keys.", _aliases),
+    Rule(
+        "authoring-aliases",
+        "0.3.2",
+        "same_meaning",
+        "Use canonical authoring keys.",
+        _aliases,
+        refused=True,
+    ),
 )

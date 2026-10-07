@@ -77,5 +77,10 @@ def test_authoring_alias_upgrade_loads_and_is_idempotent(tmp_path, path, old, ne
     assert exc.value.code == "INVALID_CONFIG"
     report = upgrade_project(source, workspace_root=tmp_path, dry_run=False)
     assert report["ok"] and report["status"] == "upgraded", report
+    assert report["proof"]["tier"] == "certified"
+    assert report["proof"]["baseline"] == "after_certified_rules"
+    assert {rule["id"]: rule["tier"] for rule in report["rules"]} == {
+        "authoring-aliases": "certified"
+    }
     load_package_config(str(source))
     assert upgrade_project(source, workspace_root=tmp_path)["status"] == "up_to_date"
