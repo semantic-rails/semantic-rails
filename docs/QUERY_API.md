@@ -1083,14 +1083,12 @@ the complete cue. An explicit interval cannot consume an as-of request. A range
 ending in an as-of cue (`2026-01-01 to now`) stays unresolved in full, and an
 unrepresentable closing-day bound also returns this hold rather than an exception.
 
-Planning also applies the caller's `policy_context`
-before matching or ranking dimensions, measures and metrics, including catalog
-fallback and Intent IR groupings and subjects. Hidden objects are omitted from
-drafts, alternatives, diagnostics and composition hints in every detail mode. If
-visibility cannot be determined, they are withheld. Naming a hidden dimension has
-the same outcome as naming an absent dimension; a draft that reads a hidden object
-(a dimension, measure, metric, entity, relationship or temporal role) is refused with
-`OBJECT_NOT_FOUND` without naming it.
+Planning reads the package as the caller's `policy_context` sees it, before matching
+or ranking dimensions, measures and metrics, including catalog fallback and Intent IR
+groupings and subjects: an object hidden from the caller is absent from drafts,
+alternatives, diagnostics and composition hints in every detail mode, and naming one has
+the same outcome as naming an object the package doesn't have
+([What a caller sees of a hidden object](PACKAGE_AUTHORING.md#what-a-caller-sees-of-a-hidden-object)).
 
 When a grouping word names available dimensions on several entities and none
 belongs to the selected measure's root entity, planning holds the draft with
@@ -1121,11 +1119,10 @@ caller-supplied `group_by` settles a shared non-root grouping only when the
 draft adds no competing match. No heuristic match alone makes a held draft
 ready.
 
-Catalog candidate lists added during validation and error enrichment apply the
-same visibility check before producing recovery hints or near-match suggestions.
-Hidden candidates are omitted, and an unresolved policy context withholds alternatives.
-An ambiguous filter alias with fewer than two visible matches is refused as an
-unknown field; validation never selects its remaining match. Error messages refer
+Catalog candidate lists added during validation and error enrichment come from the
+same caller's view, so recovery hints and near-match suggestions never name a hidden
+object. A filter alias shared with a hidden object names the visible one, as it would in
+the package without the hidden object. Error messages refer
 to structured clock alternatives without embedding catalog IDs. Package authoring
 validation retains the full catalog for reference suggestions.
 
@@ -1266,6 +1263,11 @@ Canonical public error codes:
 - `MIXED_GRAIN_INVALID`
 - `NO_VALID_VALUES_SOURCE`
 - `POLICY_DENIED` — object access or metric-constraint policy blocked the query.
+  `details.policy_effects` lists each effect as the caller may see it: a policy that lists
+  an object hidden from the caller, or whose text names one, appears with its kind, action,
+  visible `object_ids` and the action's fixed text, without `policy_id`. When what the
+  caller may see can't be resolved, every operation refuses before binding or the
+  warehouse with `details: {"reason": "visibility_unresolved"}`, naming nothing.
 - `REWRITE_NOT_SUPPORTED`
 - `INVALID_EXPRESSION_AST` — ships a `USE_OBJECT_SHAPE` recovery hint in
   `details.recovery_hints` when the failure is a window/offset payload
@@ -1364,9 +1366,8 @@ The response `warnings` array can carry these non-error signals:
   `AMBIGUOUS_PATH` clarification gets `details.meaning` and
   `details.route_alternatives`: at most three ready decision rows from those
   same options, with each meaning in the row's `label`. Routes through entities
-  or relationships hidden under the query's policy context are omitted before
-  constructing messages or counts; unresolved visibility with an
-  `object_visibility` policy withholds alternatives. `details.more_alternatives`,
+  or relationships hidden under the query's policy context are not in the caller's
+  view, so they are never offered or counted. `details.more_alternatives`,
   when present, counts the remaining visible alternatives. Validate the query
   without `route_decisions` to receive every clarification option without a
   warehouse query. State the chosen meaning and offer the listed rows as
@@ -1375,15 +1376,12 @@ The response `warnings` array can carry these non-error signals:
   recovery hint. Pairs the package already resolves keep their existing message
   and details. Route clarifications, conflict rows, inherited-row notes, and
   plan candidates name only routes whose relationships and every waypoint
-  are visible to the caller. If visibility cannot be resolved under an
-  `object_visibility` policy, route identifiers and package-route notes are withheld.
-  If the query's chosen route is hidden or its visibility is unresolved,
-  `ROUTE_CHOSEN_BY_QUERY` remains at every verbosity with the message
-  "a route chosen by this query", without `details.row` or `details.meaning`.
-  Filtering every clarification option still returns `AMBIGUOUS_PATH`, with
-  a message asking the caller to contact their admin; it never selects the
-  remaining visible route automatically. These projections do not change
-  route selection, readiness, SQL, or results. See
+  are visible to the caller. Routes are never re-chosen per caller: when the
+  package's route for a pair reads a hidden entity or relationship, the pair has
+  no route for that caller (`PATH_NOT_FOUND`, `details.reason:
+  "no_relationship_chain"`), and a `route_decisions` row naming a hidden
+  relationship is an unknown id. An ambiguous pair offers only its visible
+  routes and is never answered by the remaining one. See
   [`route_decisions`](QUERY_IR_SCHEMA.md#route_decisions).
 
 HTTP failures return:

@@ -655,11 +655,13 @@ action checks. Action text is trimmed and lowercased; kind names must match exac
 - **`package_release`** — labels the package's release status. `config.label`
   (e.g. `stable`, `preview`) surfaces in the package manifest and discovery
   metadata; it gates nothing by itself.
-- **`object_visibility`** — `action: hidden` hides matching objects from `catalog`,
-  `discover`, and `inspect` for the scoped audiences/environments/roles, and refuses a
-  query that reads one with `POLICY_DENIED`. `action: visible_only` does the opposite:
-  it hides the objects, and everything computed from them, from every context it does
-  not name; see [Objects visible only to named roles](#objects-visible-only-to-named-roles).
+- **`object_visibility`** — `action: hidden` hides the listed objects, and everything
+  computed from them, from the scoped audiences/environments/roles. `action: visible_only`
+  does the opposite: it hides them from every context it does not name; see
+  [Objects visible only to named roles](#objects-visible-only-to-named-roles). Both actions
+  take a non-empty `object_ids` (an empty list fails to load with `INVALID_CONFIG`), and to
+  a caller they hide, a hidden object is exactly an object the package doesn't have; see
+  [What a caller sees of a hidden object](#what-a-caller-sees-of-a-hidden-object).
 - **`object_access`** — enforced at query time. `action: deny` refuses the
   query with a structured policy error; `action: redact` executes but replaces
   the governed object's values in the result. An `aggregate_if` reads every
@@ -801,23 +803,44 @@ that must not see it.
   are listed, and the listed audience if `audiences` are listed. No roles, or a role the
   policy doesn't list, is not eligible: a role the package never names grants nothing.
 - **Several policies** on one object must all be met; adding a policy never widens access.
-- **Everything computed from a restricted object is restricted too:** metrics that read
-  it (directly, through another metric, a filter or a metric filter), segments whose
-  basis metric, conditions or preview dimensions read it, value domains of a restricted
-  dimension, and relationships to a restricted entity. An object whose dependencies cannot
-  be resolved is restricted whenever anything is. The policy governs objects, not columns:
-  list every measure that computes the sensitive value, since another measure over the
-  same column (a filtered, windowed or rolled-up variant) is a separate object.
-  While any `visible_only` restriction applies to a caller, that caller cannot aggregate raw columns.
-- For an ineligible request, restricted objects are left out of `catalog`, `discover`,
-  `build-options`, `plan`, other objects' `inspect` cards (related measures and metrics,
-  companions, starter queries) and diagnostic suggestions; `inspect` of one, and `valid-values`
-  of a restricted dimension, answer `OBJECT_NOT_FOUND`; `validate`, `compile`, `execute`,
-  `valid-values` and the segment tools refuse any query that reads one, including through
-  an inline expression, a derived metric, a metric filter or an `order_by`, with
-  `POLICY_DENIED`.
+- **Everything computed from a restricted object is restricted too**, as with `hidden`:
+  see below. The policy governs objects, not columns: list every measure that computes the
+  sensitive value, since another measure over the same column (a filtered, windowed or
+  rolled-up variant) is a separate object.
 - `hidden`, `deny`, `redact` and `withhold_values` still apply to eligible requests:
   explicit restrictions win.
+
+### What a caller sees of a hidden object
+
+A caller's requests read the package without the objects hidden from them (by `hidden`, or
+by a `visible_only` policy they are not eligible for). Policy enforcement still reads the
+whole package, so hiding an object never removes or changes a `deny`, `redact`,
+`withhold_values`, `metric_constraint` or `row_filter`.
+
+- **Hidden with it:** every object that reads a hidden object (a metric over it, directly or
+  through another metric, a filter or a metric filter; a segment whose basis metric,
+  conditions or preview dimensions read it; a conversion metric whose dimension bindings
+  name it), every object that names it in any of its fields (a value domain listing a hidden
+  dimension, a relationship to a hidden entity, a time role over a hidden dimension, a
+  measure listing it among its `comparison_peers`), and, while anything is hidden, every
+  object whose dependencies cannot be resolved.
+- **Exactly like an unknown id:** a request that names a hidden object, in any position and
+  spelling, gets the response the package without it would give (usually
+  `OBJECT_NOT_FOUND`). Discovery, `catalog`, `inspect` cards, `plan`, `build-options`,
+  `valid-values` and diagnostic suggestions never list or name one. A label or alias that is
+  ambiguous only because a hidden object shares it names the visible object.
+- **Routes are never re-chosen per caller:** if the package's route between two visible
+  entities goes through a hidden entity or relationship, that pair has no route for the
+  caller (`PATH_NOT_FOUND`); an ambiguous pair offers only its visible routes.
+- **Raw columns:** while anything is hidden from a caller, that caller cannot aggregate raw
+  columns (`POLICY_DENIED`, naming nothing).
+- **Authored text is shown or left out whole, never edited.** A description, topic, example,
+  caveat or other text of a visible object that names a hidden object (its id, or a name,
+  label or alias no visible object shares) is left out. A policy that lists a hidden object,
+  or whose words name one, is shown in a generic form: no `policy_id`, and its action's
+  fixed text instead of the rationale. Text that describes a hidden object without naming
+  it can't be detected: don't paraphrase a sensitive object in another object's
+  description.
 
 ### Ranking by withheld values
 
