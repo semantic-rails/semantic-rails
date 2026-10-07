@@ -287,6 +287,16 @@ A draft that validates can still leave out part of the question. `plan` returns
   when the catalog declares no values for it (`dimension_filter_unrealized`);
 - carries no time window, or a different one, where the question names one
   (`time_window_unrealized`);
+- reads a balance (a [stock](PACKAGE_AUTHORING.md#measures) whose key holds a series column besides
+  its clock) without time grain `day` (`stock_as_of_unrealized`). A stock answers with each
+  series' last snapshot in each period, so with no time block, or by week or month, a series
+  that stopped reporting (a closed account) still adds its last value. The draft is held
+  whether it reads the stock through a selected measure, a metric at any depth or a
+  `metric_filters` entry; `expected.stocks` lists the visible ones, `actual.grain` the draft's
+  grain (`null` with no time block). Ask for one day ("MRR yesterday", "MRR on 2026-10-04"),
+  or set `time.grain: day` with that day's start and end. A stock keyed by its clock alone (a
+  daily rollup) is one series and isn't held. A question with an as-of cue ("MRR right now")
+  stays `TIME_WINDOW_UNRESOLVED`;
 - loses a ranking's stated limit, sort direction or selected measure, cannot identify the
   ranked measure unambiguously, or doesn't group by what is ranked (`ranking_unrealized`),
   including count-free requests such as "top stores by revenue";
