@@ -29,7 +29,14 @@ from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.mcp_server import handle_jsonrpc_message
 from semantic_rails.request_context import TrustedAttributes
 from semantic_rails.runtime import Runtime, runtime_request_scope
-from semantic_rails.schema import PackageConfig, RelationshipConfig, SemanticPolicyConfig
+from semantic_rails.schema import (
+    MeasureExternalDiscontinuity,
+    MeasureValidityWindow,
+    MetricConfig,
+    PackageConfig,
+    RelationshipConfig,
+    SemanticPolicyConfig,
+)
 from tests.semantic_rails import test_route_clarification as diamond
 from tests.semantic_rails import test_route_precedence as precedence
 from tests.semantic_rails.conftest import copy_package_config
@@ -154,12 +161,19 @@ def test_visibility_is_invisible_to_enforcement(runtimes, enforcement, visibilit
 
 
 def test_enforcement_never_takes_a_view(runtimes):
+    from semantic_rails.ast import normalize_query
+    from semantic_rails.compiler import _guard_route_row_filters, _validate_measure_validity_windows
     from semantic_rails.policies import (
         enforce_query_policies,
+        query_policy_effects,
         row_filters_for_context,
         withheld_measure_ids,
+        withheld_object_ids,
         withheld_rank_order,
+        withheld_shape,
     )
+    from semantic_rails.row_filters import row_filter
+    from semantic_rails.runtime import _measure_validity_warnings, _withhold_values
 
     runtime = runtimes(visibility_policy("hidden", REVENUE))
     view = runtime.view_for(CALLER)
@@ -174,11 +188,32 @@ def test_enforcement_never_takes_a_view(runtimes):
         "withheld_rank_order": lambda: withheld_rank_order(
             view, binding, rebind=lambda query: binding, roles=["support"]
         ),
+        "query_policy_effects": lambda: query_policy_effects(view, [CUSTOMERS]),
+        "withheld_object_ids": lambda: withheld_object_ids(view, [CUSTOMERS]),
+        "withheld_shape": lambda: withheld_shape(view, binding, {}),
+        "row_filter": lambda: row_filter(view, ROW_FILTER),
+        "route_guard": lambda: _guard_route_row_filters(view, ("", ""), (), "", view),
+        "validity_guard": lambda: _validate_measure_validity_windows(
+            [], view, normalize_query(BY_STORE)
+        ),
+        "validity_warnings": lambda: _measure_validity_warnings(view, None),
+        "withholding": lambda: _withhold_values({}, [], view),
     }
     for name, call in calls.items():
         with pytest.raises(TypeError, match="visible view"):
             call()
         assert name
+
+
+def test_a_replaced_view_keeps_its_marker(runtimes):
+    from semantic_rails.policies import enforce_query_policies
+    from semantic_rails.visible_view import base_of
+
+    runtime = runtimes(visibility_policy("hidden", REVENUE))
+    copied = replace(runtime.view_for(CALLER))
+    assert base_of(copied) is runtime.package_config
+    with pytest.raises(TypeError, match="visible view"):
+        enforce_query_policies(copied, [CUSTOMERS])
 
 
 # One runtime alternating callers must answer each exactly as a fresh runtime does.
@@ -1074,3 +1109,179 @@ def test_route_projection_preserves_literal_objects(tmp_path, tool, literal):
 def test_unknown_relationship_visibility_fails_closed(tmp_path, hidden_ids):
     config = load_package_config(str(diamond._write_package(tmp_path)))
     assert not visible_route(config, diamond.ACCOUNT, ["relationship.unknown"], hidden_ids)
+
+
+@pytest.mark.parametrize("action", ACTIONS)
+@pytest.mark.parametrize("target", [diamond.OWNER, diamond.OWNER_ROUTE[0]])
+def test_a_visible_route_cannot_step_around_a_hidden_row_filter(
+    tmp_path, monkeypatch, action, target
+):
+    root = diamond._write_package(tmp_path)
+    config = with_policies(
+        load_package_config(str(root)),
+        visibility_policy(action, target),
+        SemanticPolicyConfig(
+            id=f"policy.rows.{target}",
+            kind="row_filter",
+            rationale=f"Rows from {target}",
+            config={
+                "dimension": "dimension.bank_owner_name",
+                "attribute": "owner",
+                "type": "string",
+            },
+        ),
+    )
+    runtime = Runtime.from_config(config, source_path=str(root))
+    spy = _Spy()
+    monkeypatch.setattr(runtime, "_get_adapter", spy)
+    query = {
+        **diamond.BALANCE_BY_DISTRICT,
+        "route_decisions": [{**diamond.DIAMOND_ROW, "relationship_path": diamond.BRANCH_ROUTE}],
+        "policy_context": {**CALLER, "attributes": TrustedAttributes({"owner": "Ann"})},
+        "verbosity": "full",
+    }
+    try:
+        for method in (runtime.validate, runtime.compile, runtime.query):
+            response = outcome(lambda: method(query))
+            error = response["errors"][0]
+            assert error["code"] == "POLICY_DENIED", response
+            assert error["details"]["reason"] == "route_override_under_row_policy"
+            assert error["details"]["policy_ids"] == []
+            assert not leaks(response, hidden_tokens(config, runtime.view_for(CALLER)))
+        assert spy.calls == 0
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("action", ACTIONS)
+@pytest.mark.parametrize("policy", ["refuse", "caveat"])
+def test_hidden_prose_never_removes_validity_or_discontinuities(package, action, policy):
+    root, config = package
+    window = MeasureValidityWindow("2020-01-01", "2021-01-01", f"Before {REVENUE} changed")
+    discontinuity = MeasureExternalDiscontinuity(
+        "2020-06-01", "2020-07-01", f"Change to {REVENUE}", 12.5
+    )
+    config = replace(
+        config,
+        measures=[
+            replace(
+                row,
+                validity_windows=[window],
+                external_discontinuities=[discontinuity],
+                cross_window_policy=policy,
+            )
+            if row.id == ORDERS
+            else row
+            for row in config.measures
+        ],
+    )
+    config = with_policies(config, visibility_policy(action, REVENUE))
+    runtime = Runtime.from_config(config, source_path=str(root))
+    query = {
+        "select": [{"expression": {"measure": ORDERS}, "as": "value"}],
+        "time": {
+            "temporal_role": "time.jaffle_ordered_at",
+            "start": "2019-01-01",
+            "end": "2022-01-01",
+            "grain": "month",
+        },
+    }
+    try:
+        view = runtime.view_for(CALLER)
+        for shown in (view, absent(config, [REVENUE])):
+            measure = next(row for row in shown.measures if row.id == ORDERS)
+            assert measure.validity_windows == [replace(window, semantics="")]
+            assert measure.external_discontinuities == [replace(discontinuity, what="")]
+            assert measure.cross_window_policy == policy
+        for mode in ("validate", "sql"):
+            response = mcp_call(
+                runtime,
+                "execute",
+                {"query": query, "mode": mode, "policy_context": CALLER, "verbosity": "full"},
+            )
+            assert not leaks(response, hidden_tokens(config, [REVENUE])), response
+            if policy == "refuse":
+                assert response["errors"][0]["code"] == "MEASURE_VALIDITY_BOUNDARY", response
+                assert response["errors"][0]["details"]["window"]["semantics"] == ""
+            else:
+                warnings = {row["code"]: row for row in response["warnings"]}
+                assert warnings["MEASURE_BOUNDARY_CROSSED"]["details"]["window"]["semantics"] == ""
+                assert warnings["EXTERNAL_DISCONTINUITY_PRESENT"]["details"]["what"] == ""
+                assert (
+                    warnings["EXTERNAL_DISCONTINUITY_PRESENT"]["details"]["magnitude_estimate_pct"]
+                    == 12.5
+                )
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("action", ACTIONS)
+@pytest.mark.parametrize("field", ["meta", "operational"])
+def test_hidden_prose_keeps_the_mnpi_export_hint(package, action, field):
+    root, config = package
+    config = replace(
+        config,
+        measures=[
+            replace(row, **{field: {"mnpi": True, "note": f"Related to {REVENUE}"}})
+            if row.id == ORDERS
+            else row
+            for row in config.measures
+        ],
+    )
+    config = with_policies(config, visibility_policy(action, REVENUE))
+    runtime = Runtime.from_config(config, source_path=str(root))
+    try:
+        for shown in (runtime.view_for(CALLER), absent(config, [REVENUE])):
+            measure = next(row for row in shown.measures if row.id == ORDERS)
+            assert getattr(measure, field) == {"mnpi": True}
+        response = runtime.validate({**ORDERS_BY_STORE, "export": True, "policy_context": CALLER})
+        assert response["ok"] is True, response
+        assert "MNPI_BULK_EXPORT_DISCOURAGED" in {
+            row["code"] for row in response["methodology_hints"]
+        }
+        assert not leaks(response, hidden_tokens(config, [REVENUE]))
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("action", ACTIONS)
+def test_a_hidden_default_metric_is_never_generated(package, action):
+    from semantic_rails.expressions import AggregateExpr
+
+    root, config = package
+    target = "metric.jaffle.order_count"
+    metric = MetricConfig(id=target, kind="aggregate", expression=AggregateExpr(ORDERS, "sum"))
+    config = replace(config, metric_recipes=[*config.metric_recipes, metric])
+    config = with_policies(config, visibility_policy(action, target))
+    runtime = Runtime.from_config(config, source_path=str(root))
+    try:
+        responses = [
+            mcp_call(
+                runtime,
+                "inspect",
+                {"object_id": ORDERS, "verbosity": verbosity, "policy_context": CALLER},
+            )
+            for verbosity in ("minimal", "compact", "full")
+        ]
+        responses.extend(
+            http_call(runtime, route, {"object_id": ORDERS, "policy_context": CALLER})
+            for route in ("/inspect", "/catalog")
+        )
+        for response in responses:
+            assert response["ok"] is True, response
+            assert not leaks(response, hidden_tokens(config, [target])), response
+            assert target not in json.dumps(response)
+    finally:
+        runtime.close()
+
+
+def test_prose_stripping_is_a_closed_display_field_allowlist():
+    from semantic_rails import schema
+    from semantic_rails.visible_view import PROSE
+
+    display = {"description", "topics", "example_entries", "authoring_warnings"}
+    assert PROSE == display
+    for cls in vars(schema).values():
+        if isinstance(cls, type) and hasattr(cls, "__dataclass_fields__"):
+            for field in fields(cls):
+                assert field.name not in PROSE or field.name in display
