@@ -28,6 +28,9 @@ dist/
 # Audit reports (working artifacts from launch-readiness reviews; not source)
 audit/
 
+# Architect and `project upgrade` transaction receipts and locks
+.semantic-rails/
+
 # Local environment files — never commit. .env.example is the right place for
 # templates with placeholder values.
 .env*

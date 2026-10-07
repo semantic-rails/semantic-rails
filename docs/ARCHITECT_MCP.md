@@ -318,6 +318,24 @@ a removed route may leave an answered pair refused, but switching it to another 
 an explicit decision or the removal refuses with `ROUTE_DECISION_NOT_RECORDED`. The result's
 `route_changes` lists every pair whose resolution changes (see [Join Routes](#join-routes)).
 
+## Upgrading a package
+
+`upgrade_project(project_path, dry_run=true, choices={}, expected_revision="",
+idempotency_key="")` rewrites a package's legacy forms in one transaction; it is
+[`semantic-rails project upgrade`](PACKAGE_AUTHORING.md#upgrading-a-package) as a tool, with the
+same report: `rules` (each with its tier and hits), `proof`, `choices_pending`, `changes` and
+`next_actions`.
+
+- A dry run, the default, needs no revision or key. A write needs `expected_revision` and a new
+  `idempotency_key`, like every other write.
+- A rewrite that changes the semantic fingerprint or an example's or test's compiled SQL is refused
+  with `CONFIG_CONFLICT` and `details.conflict_kind: "upgrade_not_equivalent"`; nothing is written.
+- Pending choices return `status: "choices_pending"` and `ok: false`, and write nothing; answer each
+  with `choices: {key: option}`.
+- When a write comes back `rolled_back_after_parse_error` or `preview_invalid`, or `project_status`
+  can't parse the package, and upgrade rules match the package's files, `next_actions` says how many
+  legacy forms `upgrade_project` would rewrite.
+
 ## Join Routes
 
 Which route between two entities a question means is a business definition (see
@@ -441,6 +459,7 @@ tool list's size.
 - `upsert_example`
 - `upsert_test`
 - `record_route_decision`
+- `upgrade_project`
 - `preview_query`
 - `remove_object`
 - `validate_project`
