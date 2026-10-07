@@ -563,6 +563,19 @@ def is_constant_expression(expr: SemanticExpr | None) -> bool:
     )
 
 
+REFERENCE_KEYS = {
+    "measure",
+    "metric",
+    "metric_recipe",
+    "field",
+    "dimension",
+    "entity",
+    "basis_metric",
+    "temporal_role",
+}
+REFERENCE_LISTS = {"partition_by", "constant_properties", "group_by", "preview_dimensions"}
+
+
 def collect_object_references(
     value: Any, config: PackageConfig | None = None, *, owner: str = ""
 ) -> list[str]:
@@ -575,17 +588,6 @@ def collect_object_references(
     """
     validate_expression_shapes(value)
     references: dict[str, None] = {}
-    reference_keys = {
-        "measure",
-        "metric",
-        "metric_recipe",
-        "field",
-        "dimension",
-        "entity",
-        "basis_metric",
-        "temporal_role",
-    }
-    reference_lists = {"partition_by", "constant_properties", "group_by", "preview_dimensions"}
 
     def visit(node: Any) -> None:
         if isinstance(node, Mapping):
@@ -596,11 +598,11 @@ def collect_object_references(
             for key, child in node.items():
                 if _opaque_expression_data(node, key):
                     continue
-                if key in reference_keys and (reference := str(child).strip()):
+                if key in REFERENCE_KEYS and (reference := str(child).strip()):
                     if key in {"field", "dimension"} and config is not None:
                         reference = resolve_filter_dimension(reference, config)
                     references[reference] = None
-                if key in reference_lists and isinstance(child, (list, tuple)):
+                if key in REFERENCE_LISTS and isinstance(child, (list, tuple)):
                     for reference in child:
                         if isinstance(reference, str) and reference.strip():
                             references[reference.strip()] = None
