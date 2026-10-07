@@ -707,12 +707,18 @@ action checks. Action text is trimmed and lowercased; kind names must match exac
   inherits every applicable constraint on any measure reading one of its source
   columns, whether the column appears in its value or condition. Matching uses
   the relation and column SQL actually reads, including measure relation overrides,
-  joined columns, lookup sources and entities sharing a relation; identifier case differences
-  conservatively count as the same source. An `aggregate_if` condition reads
+  joined columns, lookup sources and entities sharing a relation name. Identifier
+  case and quoting differences count as the same source, and only the last part of
+  a qualified relation name is matched. This conservatively inherits constraints
+  across same-named tables in different schemas. A `count` or `count_distinct` over
+  a relation also inherits its constrained count measures (`kind: entity_count` or
+  default aggregation `count`/`count_distinct`), even when it counts a literal or
+  a different column. An `aggregate_if` condition reads
   columns, not fields, so `allowed_where` refuses it under either a package-wide
   or an inherited measure constraint. Its condition also counts as a metric filter,
   and only outer `where` filters satisfy `required_where`. Constraints on unrelated
-  columns do not govern it. A column aggregate has no declared clock and continues
+  columns do not govern it unless both aggregates are counts on the same relation
+  name. A column aggregate has no declared clock and continues
   to refuse a query time axis; declare a measure to aggregate by time.
   `allowed_temporal_roles` checks the query axis and the governed object's
   effective bucket and ordering roles, including expression roles and overrides.

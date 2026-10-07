@@ -146,7 +146,13 @@ def test_every_read_uses_its_physical_source_column(config, monkeypatch, positio
 @pytest.mark.parametrize("qualified", ["measure", "aggregate"])
 @pytest.mark.parametrize(
     "relation",
-    ["main.jaffle_order", '"main"."JAFFLE_ORDER"', "`main`.`jaffle_order`", "[main].[jaffle_order]"],
+    [
+        "main.jaffle_order",
+        '"main"."JAFFLE_ORDER"',
+        "`main`.`jaffle_order`",
+        "[main].[jaffle_order]",
+        "archive.sales.jaffle_order",
+    ],
 )
 def test_relation_qualification_and_quoting_cannot_bypass_constraints(
     config, monkeypatch, qualified, relation
@@ -180,7 +186,7 @@ def test_relation_qualification_and_quoting_cannot_bypass_constraints(
 
 @pytest.mark.parametrize("constraint_key", ["allowed_where", "allow_metric_filters"])
 @pytest.mark.parametrize("governed_aggregation", ["count", "count_distinct"])
-@pytest.mark.parametrize("source_relation", ["", '"main"."JAFFLE_ORDER"'])
+@pytest.mark.parametrize("source_relation", ["", '"main"."JAFFLE_ORDER"', "other_orders"])
 @pytest.mark.parametrize(
     ("aggregation", "value"),
     [("count", None), ("count", "customer_id"), ("count_distinct", "customer_id")],
@@ -191,7 +197,12 @@ def test_counts_inherit_count_measure_constraints_on_their_relation(
     config = replace(
         config,
         measures=[
-            replace(row, default_aggregation=governed_aggregation, source_relation=source_relation)
+            replace(
+                row,
+                default_aggregation=governed_aggregation,
+                allowed_aggregations=[governed_aggregation],
+                source_relation=source_relation,
+            )
             if row.id == ORDER_COUNT
             else row
             for row in config.measures
@@ -211,7 +222,11 @@ def test_counts_inherit_count_measure_constraints_on_their_relation(
         replace(config, semantic_policies=[_policy(constraint, ORDER_COUNT)]), source_path=PACKAGE
     )
     try:
-        _denied(engine, monkeypatch, query, kind)
+        if source_relation == "other_orders":
+            assert engine.validate(query)["ok"]
+            assert engine.compile(query)["rendered_sql"]
+        else:
+            _denied(engine, monkeypatch, query, kind)
     finally:
         engine.close()
 

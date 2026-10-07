@@ -396,8 +396,11 @@ Caller-created synthetic aggregates inherit the applicable constraints of every
 measure reading any of their source columns, including condition columns. Source
 resolution is shared with measure SQL lowering, and the existing constraint evaluator
 checks each synthetic aggregate's own cuts. Relation and column identifiers match
-conservatively across case differences. `aggregate_if` conditions have no authored
-field and cannot satisfy `allowed_where`; unrelated source columns remain independent.
+conservatively across case and quoting differences, using only the last relation-name
+part even across schemas. Counts also share a relation-row dependency with governed
+count measures, including normalized `entity_count` measures, regardless of their
+value column. `aggregate_if` conditions have no authored field and cannot satisfy
+`allowed_where`; other unrelated source columns remain independent.
 Column binding and caveat temporal-shape inspection retain their specialized views.
 
 ### Query-Time

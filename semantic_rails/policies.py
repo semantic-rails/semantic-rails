@@ -676,7 +676,7 @@ def _config_str_list(policy_config: Mapping[str, Any], key: str) -> list[str]:
 def _synthetic_constraint_sources(
     config: PackageConfig, binding: BoundQuery, governed: set[str]
 ) -> dict[str, set[str]]:
-    """Match physical columns, including measure relation overrides and joined columns.
+    """Match source columns and count rows, conservatively ignoring relation qualification.
 
     Only measures named by constraints need inspection. Resolution errors propagate:
     uncertainty about a governed source can never authorize an anonymous aggregate.
@@ -685,14 +685,24 @@ def _synthetic_constraint_sources(
         return {}
 
     measures = {row.id: row for row in config.measures}
+    relations = {row.id: row.table for row in config.entities}
+
+    def identifier(part: str) -> str:
+        return part.strip('"`[]').casefold()
 
     def columns(measure: MeasureConfig, seen: frozenset[str] = frozenset()) -> set[tuple[str, ...]]:
         if measure.id in seen:
             raise SemanticLayerError("INVALID_CONFIG", "A constrained lookup measure has a cycle")
         read = {
-            tuple(part.casefold() for part in measure_column_ref(ref, measure, config).parts)
+            tuple(identifier(part) for part in measure_column_ref(ref, measure, config).parts[-2:])
             for ref in collect_column_refs(measure.expr)
         }
+        # entity_count is normalized to count_distinct by the package loader. A
+        # one-part row token cannot collide with a two-part column token, and covers
+        # counts of literals or other keys that never read the governed count's key.
+        if measure.default_aggregation in {"count", "count_distinct"}:
+            relation = measure.source_relation or relations[measure.entity]
+            read.add((identifier(relation.split(".")[-1]),))
         if measure.lookup_from:
             source = measures.get(measure.lookup_from)
             if source is None:
