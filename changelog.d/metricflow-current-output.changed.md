@@ -15,4 +15,7 @@
   `count` is `COUNT(col)` of that column; a `count_distinct` is
   `COUNT(DISTINCT col)` when a graph entity is keyed on the column or the model
   declares it as a foreign key, and is skipped otherwise. A `count_distinct` of a
-  constant and an unknown `agg` (once read as `sum`) are skipped too.
+  constant and an unknown `agg` (once read as `sum`) are skipped too. A row count
+  (`expr: "1"` with `sum` or `count`) is translated only when the model's own
+  entity is declared `type: primary`; over a `unique` entity or a bare
+  `primary_entity:` it is skipped, as is any other aggregation of a constant.

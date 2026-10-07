@@ -691,6 +691,86 @@ def test_a_running_count_of_a_column_adds_up_its_periods(tmp_path: Path) -> None
     assert [row["running"] for row in rows] == [value for (value,) in expected] == [2, 4, 6]
 
 
+# 3 placed and 2 shipped rows. row_id is unique and non-null; order_id is NULL
+# twice and repeats, so COUNT(DISTINCT order_id) is 1 per status.
+ROW_KEYED_ORDERS_SQL = """
+CREATE SCHEMA main_marts;
+CREATE TABLE main_marts.fct_orders (
+  row_id INTEGER, order_id INTEGER, ordered_at DATE, status VARCHAR, order_total DOUBLE
+);
+INSERT INTO main_marts.fct_orders VALUES
+  (1, 1, DATE '2024-01-01', 'placed', 10),
+  (2, NULL, DATE '2024-01-02', 'placed', 20),
+  (3, NULL, DATE '2024-01-03', 'placed', 30),
+  (4, 2, DATE '2024-01-04', 'shipped', 40),
+  (5, 2, DATE '2024-01-05', 'shipped', 50);
+"""
+PRIMARY_ROW = {"entities": [{"name": "order", "type": "primary", "expr": "row_id"}]}
+UNIQUE_ORDER = {"entities": [{"name": "order", "type": "unique", "expr": "order_id"}]}
+BARE_ORDER = {"entities": [], "primary_entity": "order"}  # the key is guessed as order_id
+NO_PRIMARY = "no `type: primary` entity"
+NOT_A_COUNT = "of a constant is not a row count"
+
+
+@pytest.mark.parametrize(
+    ("entity", "agg", "reference", "reason"),
+    [
+        (PRIMARY_ROW, "sum", "COUNT(*)", None),
+        (PRIMARY_ROW, "count", "COUNT(*)", None),
+        # Once COUNT(DISTINCT order_id): 1 placed order, not 3 rows.
+        (UNIQUE_ORDER, "sum", None, NO_PRIMARY),
+        (UNIQUE_ORDER, "count", None, NO_PRIMARY),
+        (BARE_ORDER, "sum", None, NO_PRIMARY),
+        # MetricFlow's MAX(1) and AVG(1) are 1; once the row count.
+        (PRIMARY_ROW, "max", None, NOT_A_COUNT),
+        (PRIMARY_ROW, "average", None, NOT_A_COUNT),
+    ],
+)
+def test_row_counts_need_a_declared_primary_entity(
+    tmp_path: Path,
+    entity: dict[str, Any],
+    agg: str,
+    reference: str | None,
+    reason: str | None,
+) -> None:
+    source = _manifest(tmp_path, NODE)
+    raw = json.loads(source.read_text())
+    orders = raw["semantic_models"][0]
+    orders.update(entity)
+    orders["measures"].append({"name": "counted", "expr": "1", "agg": agg})
+    raw["metrics"] += [
+        {"name": "counted", "type": "simple", "type_params": {"measure": {"name": "counted"}}},
+        {
+            "name": "counted_twice",
+            "type": "derived",
+            "type_params": {"expr": "counted * 2", "metrics": [{"name": "counted"}]},
+        },
+    ]
+    source.write_text(json.dumps(raw))
+    report = translate(source, tmp_path / "out", package_id="shop", keep_schema=True)
+    (report.package_dir / "data").mkdir()
+    with duckdb.connect(str(report.package_dir / "data" / "shop.duckdb")) as conn:
+        conn.execute(ROW_KEYED_ORDERS_SQL)
+
+    columns = {"revenue": "SUM(order_total)"}
+    if reference is None:
+        assert reason is not None
+        assert report.metrics_emitted == ["revenue"]
+        skipped, *dependents = report.warnings
+        assert skipped.startswith("model `orders`: measure `counted` ")
+        assert reason in skipped
+        assert skipped.endswith("skipped rather than approximated")
+        assert dependents == [
+            "metric `counted`: measure `counted` was not emitted; skipped",
+            "metric `counted_twice`: it uses `counted`, which mf2sr skipped; skipped too",
+        ]
+    else:
+        assert report.metrics_emitted == ["revenue", "counted", "counted_twice"]
+        assert report.warnings == []
+        columns.update(counted=reference, counted_twice=f"{reference} * 2")
+    assert _by_status(report.package_dir, list(columns)) == _reference(report.package_dir, columns)
+
+
 @pytest.mark.parametrize("dimension_expr", ["status", "lower(status)"])
 def test_dimension_and_percentile_output_uses_loadable_keys(
     tmp_path: Path, dimension_expr: str

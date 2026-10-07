@@ -545,8 +545,10 @@ def _build_measure(
     ``(name, doc, value_type, default_agg)`` or ``None`` to skip.
 
     Mapping decisions (a count is written exactly or skipped):
-      - ``expr: 1`` -> ``kind: entity_count`` over the model's own
-        primary entity: one row per key.
+      - ``expr: 1`` with ``sum`` or ``count`` -> ``kind: entity_count``
+        over the model's own entity when it is declared ``type: primary``
+        (one non-null key per row); otherwise, or with any other ``agg``,
+        skipped with a warning.
       - ``agg: count_distinct`` over a column a graph entity keys (or this
         model's foreign key to one) -> ``kind: entity_count`` with that
         column as ``entity_key``: COUNT(DISTINCT col). Any other distinct
@@ -581,6 +583,21 @@ def _build_measure(
     # MetricFlow counts `expr`, or the column the measure is named after.
     counted = name if expr is None else expr
     constant = counted in ("1", 1)
+    if constant:
+        # A row count is COUNT(DISTINCT key) only when the key has one
+        # non-null value per row: MetricFlow promises that for a
+        # `type: primary` entity, not a `unique` one or a guessed key.
+        reason = None
+        if agg_raw not in ("sum", "count"):
+            reason = f"`{agg_raw}` of a constant is not a row count"
+        elif not _owns_declared_primary(model_name, sm, graph):
+            reason = "it counts rows, and the model owns no `type: primary` entity"
+        if reason is not None:
+            report.warnings.append(
+                f"model `{model_name}`: measure `{name}` (agg=`{agg_raw}`, expr=`1`): "
+                f"{reason}; skipped rather than approximated"
+            )
+            return None
 
     # entity_count path: the engine computes it as COUNT(DISTINCT entity_key).
     wants_entity_count = constant or (agg_raw in ("count_distinct", "count"))
@@ -625,7 +642,7 @@ def _build_measure(
             if measure_time:
                 doc["time"] = measure_time
             return name, doc, "count", "sum"
-        if target_entity is None or (agg_raw == "count_distinct" and constant):
+        if target_entity is None:
             report.warnings.append(
                 f"model `{model_name}`: measure `{name}` (agg=`{agg_raw}`, "
                 f"expr=`{counted}`) doesn't count a graph entity's column, "
@@ -723,6 +740,16 @@ def _is_simple_expr(text: str) -> bool:
         r"avg|min|max|is|null|not|and|or|in|between)\b"
     )
     return not _re.search(sql_keywords, text, _re.IGNORECASE)
+
+
+def _owns_declared_primary(model_name: str, sm: dict[str, Any], graph: dict[str, Any]) -> bool:
+    """True when the graph entity this model owns is declared ``type: primary``
+    in its ``entities:`` list, not ``unique`` or a bare ``primary_entity:``."""
+    owned = {ename for ename, meta in graph["entities"].items() if meta.get("model") == model_name}
+    return any(
+        ent.get("name") in owned and (ent.get("type") or "").lower() == "primary"
+        for ent in sm.get("entities") or []
+    )
 
 
 def _resolve_entity_for_count(
