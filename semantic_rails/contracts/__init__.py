@@ -18,6 +18,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
+from .drift import diff_semantic_contract
 from .metric_portability import (
     compare_metric_portability,
     export_metric_portability,
@@ -33,6 +34,7 @@ __all__ = [
     "CONTRACT_NAMES",
     "contract_path",
     "compare_metric_portability",
+    "diff_semantic_contract",
     "export_metric_portability",
     "load_contract_fixture",
     "export_semantic_contract",
