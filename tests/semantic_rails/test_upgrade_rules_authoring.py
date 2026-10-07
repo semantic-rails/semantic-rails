@@ -73,6 +73,6 @@ def test_authoring_alias_upgrade_loads_and_is_idempotent(tmp_path, path, old, ne
         row.update(entity="order", membership={})
     source.write_text(yaml.safe_dump(doc, sort_keys=False))
     report = upgrade_project(source, workspace_root=tmp_path, dry_run=False)
-    assert report["ok"] and report["status"] == "applied", report
+    assert report["ok"] and report["status"] == "upgraded", report
     load_package_config(str(source))
     assert upgrade_project(source, workspace_root=tmp_path)["status"] == "up_to_date"
