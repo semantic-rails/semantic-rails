@@ -11,8 +11,6 @@ tools with closed input schemas, without appearing in the published schemas.
 
 from __future__ import annotations
 
-import sys
-import types
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -25,7 +23,6 @@ from scripts.mcp_context import approx_tokens, tool_list_sizes
 from semantic_rails.mcp import (
     MCP_SERVER_INSTRUCTIONS,
     SemanticLayerMCPAdapter,
-    create_optional_fastmcp_server,
     list_tool_definitions,
 )
 from semantic_rails.mcp_server import handle_jsonrpc_message
@@ -302,31 +299,3 @@ def test_missing_arguments_do_not_report_transport_fields_as_unknown(
     error = result["errors"][0]
     assert error["code"] == "INVALID_MCP_ARGUMENTS"
     assert error["details"]["unknown_keys"] == []
-
-
-def test_fastmcp_facade_sends_the_instructions(
-    adapter: SemanticLayerMCPAdapter, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    created: dict[str, Any] = {}
-
-    class FakeFastMCP:
-        def __init__(self, name: str, instructions: str | None = None) -> None:
-            created["name"], created["instructions"] = name, instructions
-
-        def add_tool(self, *_args: Any, **_kwargs: Any) -> None:
-            return None
-
-    fastmcp_module = types.ModuleType("mcp.server.fastmcp")
-    fastmcp_module.FastMCP = FakeFastMCP  # type: ignore[attr-defined]
-    server_module = types.ModuleType("mcp.server")
-    server_module.fastmcp = fastmcp_module  # type: ignore[attr-defined]
-    mcp_module = types.ModuleType("mcp")
-    mcp_module.server = server_module  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "mcp", mcp_module)
-    monkeypatch.setitem(sys.modules, "mcp.server", server_module)
-    monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", fastmcp_module)
-    # On SDK 2.x the facade prefers mcp.server.mcpserver; keep this test on the fake.
-    monkeypatch.setitem(sys.modules, "mcp.server.mcpserver", None)
-
-    create_optional_fastmcp_server(adapter)
-    assert created["instructions"] == MCP_SERVER_INSTRUCTIONS

@@ -228,6 +228,8 @@ def _print_mcp_setup_report(payload: dict[str, Any]) -> None:
         print("Installed:")
         for client, report in installed.items():
             print(f"  {client}: {report.get('path')}")
+            if report.get("ok") and report.get("note"):
+                print(f"  {report['note']}")
     print()
     print("Next commands:")
     for command in list(payload.get("next_commands", []) or []):
