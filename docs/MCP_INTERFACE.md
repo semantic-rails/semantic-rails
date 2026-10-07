@@ -297,7 +297,7 @@ A draft that validates can still leave out part of the question. `plan` returns
   day grain does not clear that hold. Choose a metric without a stock predicate, or select
   the balance directly. `expected.stocks` lists the visible stocks that require a hold,
   `actual.grain` the draft's grain (`null` with no time block). For a direct balance read,
-  ask for one day ("MRR yesterday", "MRR on <YYYY-MM-DD>"), or set `time.grain: day` with
+  ask for one day ("MRR yesterday", `MRR on <YYYY-MM-DD>`), or set `time.grain: day` with
   that day's start and end. A stock keyed by its clock alone (a
   daily rollup) is one series and isn't held. A question with an as-of cue ("MRR right now")
   stays `TIME_WINDOW_UNRESOLVED`;
