@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from scripts import flake_guard, test_quarantine
+from scripts import flake_guard, test_quarantine, test_sharding
 
 TODAY = date(2026, 9, 30)
 ROOT = Path(__file__).resolve().parents[2]
@@ -92,7 +92,7 @@ def test_quarantine_rejects_duplicates_and_accepts_toml_date(tmp_path):
         test_quarantine.load_quarantine(path, TODAY)
 
 
-def plugin_run(tmp_path, source, *, parallel=False, **overrides):
+def plugin_run(tmp_path, source, *, parallel=False, sharded=False, **overrides):
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_sample.py").write_text(source)
     manifest(tmp_path / "quarantine.toml", **{"review_by": str(date.today()), **overrides})
@@ -100,7 +100,7 @@ def plugin_run(tmp_path, source, *, parallel=False, **overrides):
         "from pathlib import Path\n"
         "from scripts import test_quarantine\n"
         "test_quarantine.QUARANTINE = Path(__file__).parent / 'quarantine.toml'\n"
-        "pytest_plugins = ['scripts.test_quarantine']\n"
+        "pytest_plugins = ['scripts.test_quarantine', 'scripts.test_sharding']\n"
     )
     config = tmp_path / "pytest.ini"
     config.write_text("[pytest]\n")
@@ -114,6 +114,7 @@ def plugin_run(tmp_path, source, *, parallel=False, **overrides):
             **os.environ,
             "PYTHONPATH": os.pathsep.join(filter(None, [str(ROOT), os.getenv("PYTHONPATH")])),
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            **({} if sharded else {"SR_SHARD_COUNT": "1", "SR_SHARD_INDEX": "0"}),
         },
         capture_output=True,
         text=True,
@@ -542,7 +543,12 @@ def test_adbc_ci_guard_requires_both_modules_without_skips(tmp_path, cases, succ
             ET.SubElement(case, "skipped")
     ET.ElementTree(suite).write(tmp_path / "backend-results.xml")
     result = subprocess.run(
-        [sys.executable, "-c", script], cwd=tmp_path, capture_output=True, text=True, timeout=10
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": str(ROOT), "SR_SHARD_COUNT": "1", "SR_SHARD_INDEX": "0"},
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
     assert result.returncode == (0 if succeeds else 1), result.stdout + result.stderr
 
@@ -564,3 +570,143 @@ def test_release_hygiene_accepts_only_the_quarantine_manifest():
     assert any(
         pattern.search("tests/unrelated.toml") for pattern in HYGIENE_FORBIDDEN_PATH_PATTERNS
     )
+
+
+@pytest.mark.parametrize("count", [1, 3, 7])
+def test_file_shards_partition_complete_collection(monkeypatch, count):
+    monkeypatch.setenv("SR_SHARD_COUNT", str(count))
+    items = [
+        SimpleNamespace(nodeid=f"tests/test_{file}.py::test_value[{case}]")
+        for file in range(30)
+        for case in range(3)
+    ]
+    partitions = []
+    for index in range(count):
+        monkeypatch.setenv("SR_SHARD_INDEX", str(index))
+        selected = items.copy()
+        deselected = []
+        config = SimpleNamespace(
+            hook=SimpleNamespace(
+                pytest_deselected=lambda items, target=deselected: target.extend(items)
+            )
+        )
+        hook = test_sharding.pytest_collection_modifyitems(config, selected)
+        next(hook)
+        assert selected == items  # Other hooks still see the full collection.
+        with pytest.raises(StopIteration):
+            next(hook)
+        assert len(selected) + len(deselected) == len(items)
+        partition = {item.nodeid for item in selected}
+        assert all(not partition & previous for previous in partitions)
+        partitions.append(partition)
+        for file in range(30):
+            assert sum(node.startswith(f"tests/test_{file}.py::") for node in partition) in (0, 3)
+        assert all(test_sharding.in_shard(item.nodeid) for item in selected)
+    assert set.union(*partitions) == {item.nodeid for item in items}
+
+
+@pytest.mark.parametrize("count,index", [("0", "0"), ("3", "-1"), ("3", "3"), ("x", "0")])
+def test_shards_reject_invalid_configuration(monkeypatch, count, index):
+    monkeypatch.setenv("SR_SHARD_COUNT", count)
+    monkeypatch.setenv("SR_SHARD_INDEX", index)
+    with pytest.raises(pytest.UsageError):
+        test_sharding.in_shard("tests/test_sample.py::test_value")
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+def test_quarantine_validates_ids_outside_current_shard(monkeypatch, tmp_path, parallel):
+    monkeypatch.setenv("SR_SHARD_COUNT", "3")
+    owner = next(
+        index
+        for index in range(3)
+        if (
+            monkeypatch.setenv("SR_SHARD_INDEX", str(index))
+            or test_sharding.in_shard("tests/test_sample.py")
+        )
+    )
+    monkeypatch.setenv("SR_SHARD_INDEX", str((owner + 1) % 3))
+    result = plugin_run(tmp_path, "def test_failure(): pass\n", parallel=parallel, sharded=True)
+    assert result.returncode == 5, result.stdout + result.stderr  # No tests in this shard.
+    assert "quarantine tests no longer exist" not in result.stdout + result.stderr
+
+
+def test_backend_matrix_and_push_policy():
+    jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+    backend = jobs["backend"]
+    assert backend["strategy"]["matrix"]["shard"] == [0, 1, 2]
+    assert backend["env"] == {"SR_SHARD_COUNT": "3", "SR_SHARD_INDEX": "${{ matrix.shard }}"}
+    assert "github.event_name != 'push'" in backend["if"]
+    assert "github.event_name == 'merge_group'" in backend["if"]
+    assert "needs.changes.outputs.backend == 'true'" in backend["if"]
+    assert not backend["strategy"]["fail-fast"]
+    assert "backend" in jobs["all-checks"]["needs"]
+    clickhouse = next(
+        step for step in backend["steps"] if step.get("name", "").startswith("ClickHouse")
+    )
+    assert "matrix.shard == 0" in clickhouse["if"]
+    assert clickhouse["env"] == {"SR_SHARD_COUNT": "1", "SR_SHARD_INDEX": "0"}
+    upload = next(
+        step for step in backend["steps"] if step.get("name") == "Upload backend test results"
+    )
+    assert upload["with"]["name"] == "backend-results-${{ matrix.shard }}"
+
+
+def test_real_collections_have_complete_disjoint_shards(tmp_path):
+    config = tmp_path / "pytest.ini"
+    config.write_text("[pytest]\n")
+    for index in range(12):
+        (tmp_path / f"test_{index}.py").write_text(
+            "import pytest\n@pytest.mark.parametrize('value', [1, 2])\n"
+            "def test_value(value): pass\n"
+        )
+    partitions = []
+    for index in range(3):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "--collect-only",
+                "-q",
+                "-c",
+                str(config),
+                "-p",
+                "scripts.test_sharding",
+                str(tmp_path),
+            ],
+            env={
+                **os.environ,
+                "PYTHONPATH": str(ROOT),
+                "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+                "SR_SHARD_COUNT": "3",
+                "SR_SHARD_INDEX": str(index),
+            },
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        partition = {line for line in result.stdout.splitlines() if "::test_value[" in line}
+        assert all(not partition & previous for previous in partitions)
+        partitions.append(partition)
+    assert len(set.union(*partitions)) == 24
+
+
+def test_guard_repeats_only_files_in_its_shard(monkeypatch):
+    files = [f"tests/test_{index}.py" for index in range(12)]
+    monkeypatch.setenv("SR_SHARD_COUNT", "3")
+    monkeypatch.setenv("SR_SHARD_INDEX", "1")
+    monkeypatch.setattr(sys, "argv", ["flake_guard.py", "--base", "a" * 40])
+    monkeypatch.setattr(
+        flake_guard.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout="")
+    )
+    monkeypatch.setattr(flake_guard, "select_tests", lambda *args: files)
+    expected = [file for file in files if test_sharding.in_shard(file)]
+    assert expected and len(expected) < len(files)
+
+    def run(selected, *args):
+        assert selected == expected
+        return 0
+
+    monkeypatch.setattr(flake_guard, "run_repetitions", run)
+    assert flake_guard.main() == 0

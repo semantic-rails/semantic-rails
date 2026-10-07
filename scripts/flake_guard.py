@@ -16,6 +16,11 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+try:
+    from scripts.test_sharding import in_shard
+except ModuleNotFoundError:  # Direct script invocation.
+    from test_sharding import in_shard
+
 ROOT = Path(__file__).resolve().parents[1]
 TEST_ROOTS = ("tests/semantic_rails", "tests/mf2sr")
 MAX_FILES = 20
@@ -240,7 +245,8 @@ def main() -> int:
         text=True,
         timeout=20,
     ).stdout.splitlines()
-    return run_repetitions(select_tests(ROOT, changed), ROOT, deadline, args.durations_from)
+    files = [file for file in select_tests(ROOT, changed) if in_shard(file)]
+    return run_repetitions(files, ROOT, deadline, args.durations_from)
 
 
 if __name__ == "__main__":
