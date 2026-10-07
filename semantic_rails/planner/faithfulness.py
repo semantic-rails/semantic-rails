@@ -537,7 +537,9 @@ def intent_faithfulness_why(
         gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
     gaps.extend(_subject_window_gaps(runtime._config, query))
-    gaps.extend(_stock_as_of_gaps(runtime._config, query))
+    if not _time_window(question, policy_context=query.get("policy_context")).as_of:
+        # An as-of cue ("MRR right now") is always held as TIME_WINDOW_UNRESOLVED, with no query.
+        gaps.extend(_stock_as_of_gaps(runtime._config, query))
     gaps.extend(_ranking_gaps(runtime, text, query))
     gaps.extend(_ambiguous_grouping_gaps(text, query, partial_query or {}))
     gaps.extend(_where_clause_gaps(runtime, text, query))
