@@ -415,7 +415,8 @@ HYGIENE_FORBIDDEN_PATH_PATTERNS = [
     ),
     # The runtime tests and cross-warehouse conformance suite are public.
     re.compile(
-        r"^tests/(?!semantic_rails/|integration/|__init__\.py$|conftest\.py$|quarantine\.toml$).+"
+        r"^tests/(?!semantic_rails/|integration/|__init__\.py$|conftest\.py$"
+        r"|quarantine\.toml$|shard_durations\.json$).+"
     ),
     re.compile(r"^contracts/"),
     re.compile(r"^capabilities/"),
