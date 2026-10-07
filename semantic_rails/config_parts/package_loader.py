@@ -32,7 +32,7 @@ _JOIN_KEYS: frozenset[str] = frozenset(
 
 
 def _check_binding_keys(binding: dict[str, Any], allowed: frozenset[str], *, label: str) -> None:
-    """A misspelled key would silently change what a rollup column is trusted to hold."""
+    """Reject unknown authored keys before defaults or parsing can silently ignore them."""
     unknown = sorted(key for key in set(binding) - allowed if not str(key).startswith("_"))
     if unknown:
         raise SemanticLayerError(

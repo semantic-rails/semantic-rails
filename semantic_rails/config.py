@@ -2847,8 +2847,6 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     def _aggregate_rows_from_model_variants() -> list[AggregateRelationConfig]:
         rows: list[AggregateRelationConfig] = []
         for model_id, model in model_rows.items():
-            if "default_variant" in model:
-                raise SemanticLayerError("INVALID_CONFIG", f"{path}: delete model default_variant")
             variants_raw = dict(model.get("variants", {}) or {})
             if not variants_raw:
                 continue

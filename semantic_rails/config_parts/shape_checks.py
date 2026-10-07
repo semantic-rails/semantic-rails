@@ -594,7 +594,7 @@ def _check_typed_field_enums(path_label: str, models: dict[str, Any], errors: li
         for dim_key, dim_raw in (model.get("dimensions") or {}).items():
             if not isinstance(dim_raw, dict):
                 continue
-            kind_value = dim_raw.get("kind", dim_raw.get("type"))
+            kind_value = dim_raw.get("kind")
             if kind_value is None:
                 continue
             kind_str = str(kind_value).strip().lower()
@@ -702,10 +702,6 @@ def _check_segment_shape(
     for key in sorted(membership_spellings & set(spec)):
         add_error(errors, f"{label} has {key!r} outside membership: — {_membership_fix(key)}")
     top_level = {key: value for key, value in spec.items() if key not in membership_spellings}
-    if "meta" in top_level:
-        # The fuzzy match would suggest `metric`, the legacy alias of basis_metric.
-        del top_level["meta"]
-        add_error(errors, f"{label} has unknown key 'meta' — segments don't read meta:; remove it")
     _unknown_key_errors(top_level, _SEGMENT_KEYS, label=label, errors=errors)
     membership = spec.get("membership")
     if not isinstance(membership, dict):

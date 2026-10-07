@@ -328,28 +328,35 @@ def test_grain_matching_primary_expr_override_is_accepted(starter_package: Path)
 
 
 @pytest.mark.parametrize(
-    ("old", "new"),
+    ("old", "new", "code", "key_path"),
     [
         # A direct field on a ratio metric, and a key inside an `expression:` block.
         (
             "denominator: order_count\n",
             "denominator: order_count\n    null_behavior: null_if_zero\n",
+            "INVALID_CONFIG",
+            "metric 'aov_usd'",
         ),
         (
             "    kind: ratio\n    numerator: revenue_usd\n    denominator: order_count\n",
             "    kind: derived\n    expression:\n      kind: ratio\n      null_behavior: null_if_zero\n"
             "      numerator: {metric: revenue_usd}\n      denominator: {metric: order_count}\n",
+            "INVALID_EXPRESSION_KEY",
+            "metric 'aov_usd': config expression",
         ),
     ],
     ids=["direct_field", "expression_key"],
 )
-def test_removed_null_behavior_key_is_unknown(starter_package: Path, old: str, new: str) -> None:
+def test_removed_null_behavior_key_is_unknown(
+    starter_package: Path, old: str, new: str, code: str, key_path: str
+) -> None:
     """`null_behavior:` used to pick how a ratio or a sum read an empty group; the engine now
     settles that itself, so a package that still writes it fails to load and says why."""
     path = _mutated(starter_package, old, new)
     with pytest.raises(SemanticLayerError, match="null_behavior") as exc:
         load_package_config(str(path.parent))
-    assert exc.value.code in {"INVALID_CONFIG", "INVALID_EXPRESSION_KEY"}
+    assert exc.value.code == code
+    assert key_path in str(exc.value)
     assert any("null_behavior" in e for e in _errors(path))
 
 

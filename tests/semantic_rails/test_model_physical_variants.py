@@ -1056,6 +1056,9 @@ def test_noncanonical_rollups_are_refused(tmp_path: Path, single_file, location,
     with pytest.raises(SemanticLayerError, match=re.escape(error)) as exc:
         load_package_config(str(source))
     assert exc.value.code == "INVALID_CONFIG"
+    if "default_variant" in fields:
+        assert "model 'orders'" in str(exc.value)
+        assert "['default_variant']" in str(exc.value)
 
 
 def test_routing_report_caps_its_rows(tmp_path: Path, monkeypatch):
