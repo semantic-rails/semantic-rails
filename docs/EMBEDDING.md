@@ -242,8 +242,13 @@ directory it owns rather than take it from the caller.
 recorded from a known downstream embedder's code: the names it imports, the attributes it
 reads, the argument shapes of the calls whose receiver the scan can place, and the exact
 members and parameters of the protocols it implements (the engine calls those). A pull
-request that breaks a recorded use fails CI. A method the embedder reaches through an
-object the scan can't place is checked for existence only. `uv run python
+request that breaks a recorded use fails CI. The scan attributes instance uses only to
+receivers constructed from facade classes or callables with facade return annotations,
+or explicitly annotated as facade classes. It follows assignments within lexical scopes;
+attribute bindings belong to the exact receiver, and local definitions and reassignments
+shadow earlier bindings. It does not infer types from matching variable or member names
+across functions or files. Uses through unknown receivers are omitted, so the embedder's
+behavioral compatibility tests must cover those paths. `uv run python
 scripts/embedding_consumer_contract.py --consumer <checkout>` regenerates the list from
 the embedder's code; `--check` reports drift without writing.
 
