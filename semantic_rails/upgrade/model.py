@@ -238,6 +238,26 @@ class PackageFiles:
     def choice_key(self, finding: Finding) -> str:
         return json.dumps((finding.rule, finding.file, finding.path), separators=(",", ":"))
 
+    def line(self, file: str, path: YamlPath) -> int:
+        """The 1-based line of the key or item at ``path``, else of its nearest ancestor."""
+        from yaml.nodes import MappingNode
+
+        from .edits import _document, _entries, _node
+
+        _, root = _document(self.contents[file].decode("utf-8"))
+        for depth in range(len(path), 0, -1):
+            try:
+                parent = _node(root, path[: depth - 1])
+                node = (
+                    _entries(parent)[path[depth - 1]][0]
+                    if isinstance(parent, MappingNode)
+                    else _node(parent, path[depth - 1 : depth])
+                )
+                return node.start_mark.line + 1
+            except (KeyError, IndexError, TypeError, ValueError):
+                continue
+        return 1
+
 
 @dataclass
 class Plan:
