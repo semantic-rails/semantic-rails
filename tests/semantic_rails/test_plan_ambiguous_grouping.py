@@ -468,6 +468,45 @@ def test_sole_visible_fallback_plural_matches_reference_rows(shop, monkeypatch, 
     _rows_match_reference(shop, payload["best"]["query_ir"], visible, *REFERENCES[visible])
 
 
+@pytest.mark.parametrize("hidden", [CUSTOMER, STORE])
+def test_an_alias_ambiguous_only_through_a_hidden_dimension_answers_the_visible_one(
+    shop, monkeypatch, hidden
+):
+    """Both districts answer to "district". A caller who cannot see one of them is answered
+    by the other, as the package without it would; everyone else still gets the question."""
+    policy = SemanticPolicyConfig(
+        id="policy.hide_district",
+        kind="object_visibility",
+        object_ids=[hidden],
+        action="hidden",
+        audiences=["external"],
+    )
+    dimensions = [
+        replace(row, aliases=[*row.aliases, "district"]) if row.id in {CUSTOMER, STORE} else row
+        for row in shop._config.dimensions
+    ]
+    monkeypatch.setattr(
+        shop, "_config", replace(shop._config, dimensions=dimensions, semantic_policies=[policy])
+    )
+    north = {"all": [{"dimension": "district", "op": "=", "value": "north"}]}
+    revenue = {"kind": "aggregate", "measure": "measure.shop.item_revenue", "filter": north}
+    query = {"select": [{"as": "revenue", "expression": revenue}]}
+    assert shop.validate(query)["errors"][0]["code"] == "AMBIGUOUS_ALIAS"
+    external = {**query, "policy_context": {"audience": "external"}}
+    assert shop.validate(external)["ok"] is True
+    rows = shop.query(external)["rows"]
+    shop.close()
+    owner = "store" if hidden == CUSTOMER else "customer"
+    reference = (
+        f"SELECT SUM(i.revenue) FROM item i JOIN {owner} o ON i.{owner}_id = o.{owner}_id "
+        "WHERE o.district = 'north'"
+    )
+    with duckdb.connect(shop.db_path, read_only=True) as connection:
+        (expected,) = connection.execute(reference).fetchone()
+    assert expected == (1 if owner == "store" else 3)
+    assert [float(row["revenue"]) for row in rows] == [expected]
+
+
 @pytest.mark.parametrize("path", ["primary", "fallback"])
 @pytest.mark.parametrize("dimension", [ITEM_NAME, CUSTOMER_NAME])
 def test_root_owned_match_is_required_even_for_a_bypassing_draft(
