@@ -86,7 +86,9 @@ Request = tuple[str, Callable[[Runtime], Any], Any]
 
 def _requests(config: PackageConfig, visible: set[str], near: set[str]) -> list[Request]:
     """(label, call, what the request itself names) for every request the sweep makes. Objects
-    more than one hop from the hidden ones are inspected at minimal verbosity only."""
+    more than one hop from the hidden ones are inspected at minimal verbosity only and get no
+    build-options focus of their own (the heaviest request; every list it ranks is the
+    package-wide one the near objects' requests already return)."""
     out: list[Request] = []
 
     def mcp(tool: str, arguments: dict[str, Any]) -> Callable[[Runtime], Any]:
@@ -127,8 +129,9 @@ def _requests(config: PackageConfig, visible: set[str], near: set[str]) -> list[
             for mode in ("validate", "sql"):
                 arguments = {"query": query, "mode": mode}
                 out.append((f"mcp execute {mode} {row.id}", mcp("execute", arguments), query))
-            body = {"focus_object_id": row.id}
-            out.append((f"http /build-options {row.id}", http("/build-options", body), row.id))
+            if row.id in near:
+                body = {"focus_object_id": row.id}
+                out.append((f"http /build-options {row.id}", http("/build-options", body), row.id))
     for row in config.metric_recipes:
         if row.id not in visible:
             continue
