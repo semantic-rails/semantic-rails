@@ -1511,33 +1511,6 @@ def rewrite_warning_payload(step: Any) -> dict[str, Any]:
     )
 
 
-def history_warning_payload(
-    *, use: str, dimension: str, label: str, entity: str, version: str, relationships: list[str]
-) -> dict[str, Any]:
-    """NULL_PRESERVING_HISTORY for a dimension the query reads through a hop into a validity
-    window, by its ``use``: a ``grouping`` row with no ``version`` valid at its time reads an
-    empty ``label``, and a ``filter`` leaves it out."""
-    message = (
-        f"{label}: the {version} valid at each row's time; rows with none read an empty {label}."
-        if use == "grouping"
-        else f"{label} filter: rows with no {version} valid at their time are left out by "
-        "this filter."
-    )
-    return semantic_issue(
-        code="NULL_PRESERVING_HISTORY",
-        message=message,
-        severity="warning",
-        stage="planning",
-        details={
-            "use": use,
-            "dimension": dimension,
-            "entity": entity,
-            "relationships": list(relationships),
-        },
-        object_ids=[dimension],
-    )
-
-
 def provenance_summary(
     config: PackageConfig,
     logical_plan: Any,

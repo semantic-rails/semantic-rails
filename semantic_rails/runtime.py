@@ -66,7 +66,6 @@ from .config import (
     resolve_repo_path,
     semantic_rails_home,
 )
-from .config_parts.route_rows import walk_entities
 from .db import (
     Database,
     WarehouseAdapter,
@@ -84,7 +83,6 @@ from .diagnostics import (
     enrich_path_not_found,
     exception_issue,
     filter_value_miss,
-    history_warning_payload,
     provenance_summary,
     rewrite_warning_payload,
     semantic_issue,
@@ -95,11 +93,11 @@ from .expressions import collect_object_references, expr_to_dict
 from .fanout import (
     build_hop_profile,
     entity_label,
-    hop_reaches,
     offered_rows,
     package_route,
     pass_through_disclosure,
     query_route_decisions,
+    route_hops,
     route_note,
     route_reading,
 )
@@ -168,7 +166,6 @@ __all__ = [
     "expr_to_dict",
     "get_package_config",
     "get_package_path",
-    "history_warning_payload",
     "load_csv_dir_to_duckdb",
     "load_package_config",
     "normalize_query",
@@ -501,165 +498,114 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
 
 
 def _pass_through_notes(config, compiled, decided) -> list[dict[str, Any]]:
-    """ROUTE_PASS_THROUGH, at every verbosity: one warning per pair the SQL read by the
-    package's only route (or the one its rows leave) when that route passes through another
-    table's rows the package doesn't declare (``fanout.pass_through_disclosure``): what the
-    numbers count, and the fixes. Never for a pair a query or package row decides."""
+    """ROUTE_PASS_THROUGH, at every verbosity, for each pair the SQL read by the package's only
+    (or inherited) route when it passes through undeclared rows (``fanout.pass_through``)."""
     plan = compiled["logical_plan"]
-    dimensions = {row.id: row.entity for row in config.dimensions}
+    entity_of = {row.id: row.entity for row in config.dimensions}
     notes: list[dict[str, Any]] = []
     for start, target, path in read_routes(plan, compiled.get("route_choices") or []):
-        if (start, target) in decided or any(
-            note["object_ids"] == [start, target] for note in notes
-        ):
-            continue
         try:
             resolution = package_route(config, start=start, target=target)
         except SemanticLayerError:
             continue
-        if resolution.basis not in {"only_route", "inherited"} or resolution.routes[0] != path:
+        if (start, target) in decided or resolution.basis not in {"only_route", "inherited"}:
             continue
-        where = [
-            item
-            for item in plan.query.get("where") or []
-            if isinstance(item, dict) and dimensions.get(item.get("field")) == target
-        ]
-        disclosure = pass_through_disclosure(config, start, target, path, where)
-        if disclosure is None:
-            continue
-        message, details = disclosure
-        note = semantic_issue(
-            code="ROUTE_PASS_THROUGH",
-            message=message,
-            severity="warning",
-            stage="planning",
-            details=details,
-            object_ids=[start, target],
+        where = plain_filters(plan.query.get("where"))
+        where = [item for item in where if entity_of.get(item.get("field")) == target]
+        disclosure = resolution.routes[0] == path and pass_through_disclosure(
+            config, start, target, path, where
         )
-        if len(json.dumps(note)) >= 1500:  # long labels: the message still names every fix
-            note["details"] = {key: details[key] for key in ("route", "through")}
-        notes.append(note)
+        if disclosure:
+            note = semantic_issue(
+                code="ROUTE_PASS_THROUGH",
+                message=disclosure[0],
+                severity="warning",
+                stage="planning",
+                details=disclosure[1],
+                object_ids=[start, target],
+            )
+            if len(json.dumps(note)) >= 1500:  # long labels: the message still names each fix
+                note["details"] = {key: disclosure[1][key] for key in ("route", "through")}
+            notes.append(note)
     return notes
 
 
 def _history_warnings(config, logical_plan) -> list[dict[str, Any]]:
-    """NULL_PRESERVING_HISTORY per dimension the query groups or filters by through a hop
-    into a validity window (``fanout.hop_reach`` ``as_of``), naming the hop. A path that
-    only leaves a history, whose rows are the versions themselves, gets none."""
-    analysis = get_package_analysis(config)
-    root = logical_plan.root_entity
-    paths = dict(getattr(logical_plan, "selected_paths", {}) or {})
+    """NULL_PRESERVING_HISTORY per dimension grouped or filtered by through a hop into a
+    validity window (``fanout.hop_reach``), naming the hop; a hop out of a history gets none."""
     dimensions = {row.id: row for row in config.dimensions}
-    uses = [(dim_id, "grouping") for dim_id in logical_plan.group_by or []] + [
-        (item.get("field"), "filter")
-        for item in plain_filters(logical_plan.query.get("where"))
-        if isinstance(item, dict)
-    ]
+    uses = [(dim_id, "grouping") for dim_id in logical_plan.group_by or []]
+    uses += [(row.get("field"), "filter") for row in plain_filters(logical_plan.query.get("where"))]
     warnings: list[dict[str, Any]] = []
     for dim_id, use in dict.fromkeys(uses):
-        dimension = dimensions.get(dim_id)
-        if dimension is None or dimension.entity not in paths:
+        dim = dimensions.get(dim_id)
+        path = (logical_plan.selected_paths or {}).get(getattr(dim, "entity", ""), [])
+        hops = route_hops(config, logical_plan.root_entity, path)
+        hops = [hop for hop in hops if hop[2] == "as_of"]
+        if dim is None or not hops:
             continue
-        path = paths[dimension.entity]
-        entities = walk_entities(analysis.relationships, root, path)
-        hops = [
-            (rel_id, far)
-            for rel_id, far, reach in zip(
-                path, entities[1:], hop_reaches(config, root, path), strict=True
+        label, version = dim.label or dim.name, entity_label(config, hops[0][1])
+        grouped = f"{label}: the {version} valid at each row's time; rows with none read an empty"
+        filtered = f"{label} filter: rows with no {version} valid at their time are left out by"
+        details = {"use": use, "dimension": dim_id, "entity": hops[0][1]}
+        details["relationships"] = [hop[0] for hop in hops]
+        warnings.append(
+            semantic_issue(
+                code="NULL_PRESERVING_HISTORY",
+                message=f"{grouped} {label}." if use == "grouping" else f"{filtered} this filter.",
+                severity="warning",
+                stage="planning",
+                details=details,
+                object_ids=[dim_id],
             )
-            if reach == "as_of"
-        ]
-        if hops:
-            warnings.append(
-                history_warning_payload(
-                    use=use,
-                    dimension=dim_id,
-                    label=dimension.label or dimension.name or dim_id,
-                    entity=hops[0][1],
-                    version=entity_label(config, hops[0][1]),
-                    relationships=[rel_id for rel_id, _ in hops],
-                )
-            )
+        )
     return warnings
 
 
-def _history_result_warnings(config, compiled, rows, warnings, *, complete: bool) -> list[Any]:
-    """``warnings`` with each grouping NULL_PRESERVING_HISTORY read against the returned rows,
-    never a second query: led by how much of the answer sits in the empty group when any row
-    does, dropped when a complete result has none, else kept as compiled."""
+def _history_result_warnings(config, compiled, rows, warnings) -> list[Any]:
+    """``warnings`` with each grouping NULL_PRESERVING_HISTORY read from the returned rows: led
+    by the share in the empty group, or dropped from a complete answer without one."""
     plan = compiled["logical_plan"]
-    root = plan.root_entity
-    measures = {row.id: row for row in config.measures}
-    dimensions = {row.id: row for row in config.dimensions}
+    root, measures = plan.root_entity, {row.id: row for row in config.measures}
+    root_key = getattr(get_package_analysis(config).entities.get(root), "key", [])
+    complete = not getattr(rows, "truncated", False) and compiled["sql_ast"].limit is None
+    complete = complete and not plan.query.get("metric_filters")
     out: list[Any] = []
     for warning in warnings:
         details = warning.get("details") or {}
-        if warning.get("code") != "NULL_PRESERVING_HISTORY" or details.get("use") != "grouping":
+        grouping = warning["code"] == "NULL_PRESERVING_HISTORY" and details["use"] == "grouping"
+        empty = [row for row in rows if grouping and row.get(details["dimension"]) is None]
+        if not grouping or not (empty or complete):
             out.append(warning)
-            continue
-        column = details["dimension"]
-        empty = [row for row in rows if row.get(column) is None]
         if not empty:
-            if not complete:
-                out.append(warning)
             continue
-        dimension = dimensions[column]
-        path = plan.selected_paths.get(dimension.entity, [])
-        totals: list[dict[str, Any]] = []
-        if "many" not in hop_reaches(config, root, path):
-            # Each row of the root falls in one group, so a sum or count of them adds up.
-            for item in plan.query.get("select") or []:
-                expression = item.get("expression") or {}
-                measure = measures.get(expression.get("measure", ""))
-                if (
-                    measure is None
-                    or expression.get("kind") != "measure"
-                    or expression.get("aggregation")
-                ):
-                    continue
-                own_count = (
-                    measure.default_aggregation == "count_distinct"
-                    and getattr(measure.expr, "column", None)
-                    in get_package_analysis(config).entities[root].key
-                )
-                if measure.entity == root and (
-                    measure.default_aggregation in {"sum", "count"} or own_count
-                ):
-                    output = item.get("as") or measure.id
-                    totals.append(
-                        {
-                            "output": output,
-                            "label": measure.label or measure.name or output,
-                            "null_value": sum(row.get(output) or 0 for row in empty),
-                            "total": sum(row.get(output) or 0 for row in rows),
-                        }
-                    )
-        label = dimension.label or dimension.name or column
-        version = entity_label(config, details["entity"])
+        dim = next(row for row in config.dimensions if row.id == details["dimension"])
+        hops = route_hops(config, root, plan.selected_paths[dim.entity])
+        labels = {}  # a sum or count of the root's rows, which fall in one group each
+        for item in plan.query["select"] if all(hop[2] != "many" for hop in hops) else []:
+            expression = item["expression"]
+            measure = measures.get(expression.get("measure", ""))
+            if measure is None or measure.entity != root or expression.get("aggregation"):
+                continue
+            counted, how = getattr(measure.expr, "column", None), measure.default_aggregation
+            if how in {"sum", "count"} or (how == "count_distinct" and counted in root_key):
+                labels[item.get("as") or measure.id] = measure.label or measure.id
+        totals = [
+            {"output": output, "null_value": sum(row.get(output) or 0 for row in empty)}
+            | {"total": sum(row.get(output) or 0 for row in rows)}
+            for output in labels
+        ]
         lead = next((row for row in totals if row["total"]), None)
+        share = f"{len(empty)} of {len(rows)} rows are"
         if lead is not None:
-            name = lead["label"]
+            name = labels[lead["output"]]
             name = name if name[1:2].isupper() else name[:1].lower() + name[1:]
-            share = f"{lead['null_value']} of {lead['total']} {name}"
-            share += f" ({round(100 * lead['null_value'] / lead['total'])}%) are"
-        else:
-            share = f"{len(empty)} of {len(rows)} rows are"
-        out.append(
-            {
-                **warning,
-                "message": f"{share} in the empty {label} group: no {version} was valid at "
-                f"their time, or it has no {label}.",
-                "details": {
-                    **details,
-                    "null_rows": len(empty),
-                    "rows": len(rows),
-                    "measures": [
-                        {key: row[key] for key in ("output", "null_value", "total")}
-                        for row in totals
-                    ],
-                },
-            }
-        )
+            share = f"{lead['null_value']} of {lead['total']} {name} "
+            share += f"({round(100 * lead['null_value'] / lead['total'])}%) are"
+        label, version = dim.label or dim.name, entity_label(config, details["entity"])
+        message = f"{share} in the empty {label} group: no {version} was valid at their time, "
+        details = details | {"null_rows": len(empty), "rows": len(rows), "measures": totals}
+        out.append({**warning, "message": f"{message}or it has no {label}.", "details": details})
     return out
 
 
@@ -2910,16 +2856,7 @@ class Runtime:
             "query": without_trusted_attributes(payload),
             "normalized_query": compiled["explain"].normalized_query,
         }
-        out["warnings"] = _history_result_warnings(
-            self._config,
-            compiled,
-            rows,
-            out["warnings"],
-            complete=not out["truncated"]
-            and limit is None
-            and probe is None
-            and not compiled["logical_plan"].query.get("metric_filters"),
-        )
+        out["warnings"] = _history_result_warnings(self._config, compiled, rows, out["warnings"])
         metadata = compile_response_metadata(self, payload, compiled)
         execute_keep = {
             "semantic_fingerprint",

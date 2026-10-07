@@ -136,60 +136,43 @@ def _entity_keys(config: PackageConfig) -> dict[str, str]:
 
 
 def hop_reach(rel: RelationshipConfig, current_entity: str, near_table: str) -> str:
-    """How many rows one ``current_entity`` row (of ``near_table``) reaches over ``rel``:
-    ``"as_of"`` when the hop enters a validity window (one version of the far row, the one
-    valid at the row's time), ``"one"`` when it is functional, else ``"many"``."""
+    """How many rows a ``current_entity`` row reaches over ``rel``: ``"as_of"`` (the far row's
+    version valid at the row's time), ``"one"`` (functional) or ``"many"``."""
     if enters_validity_window(rel, near_table):
         return "as_of"
     return "one" if hop_is_functional(rel, current_entity) else "many"
 
 
-def hop_reaches(config: PackageConfig, start: str, path: Sequence[str]) -> list[str]:
-    """``hop_reach`` of each hop of ``path`` walked from ``start``."""
+def route_hops(config: PackageConfig, start: str, path: Sequence[str]) -> list[tuple[str, ...]]:
+    """Each hop of ``path``: its relationship, the entity it reaches and its ``hop_reach``."""
     analysis = get_package_analysis(config)
-    entities = walk_entities(analysis.relationships, start, path)
+    rels, entities = analysis.relationships, walk_entities(analysis.relationships, start, path)
+    tables = {entity: analysis.entities[entity].table for entity in entities}
     return [
-        hop_reach(analysis.relationships[rel_id], entity, analysis.entities[entity].table)
-        for rel_id, entity in zip(path, entities, strict=False)
+        (rel_id, far, hop_reach(rels[rel_id], near, tables[near]))
+        for rel_id, near, far in zip(path, entities, entities[1:], strict=False)
     ]
 
 
-def _holds_window(config: PackageConfig, entity_id: str) -> bool:
-    """Whether a relationship touching the entity keeps its validity window on its table."""
-    analysis = get_package_analysis(config)
-    table = analysis.entities[entity_id].table
-    return any(
-        entity_id in (rel.source_entity, rel.target_entity)
-        and rel.temporal_validity
-        and not enters_validity_window(rel, table)
-        for rel in analysis.relationships.values()
-    )
-
-
 def pass_through(config: PackageConfig, start: str, path: Sequence[str]) -> list[dict[str, str]]:
-    """The entities ``path`` passes through by their rows without the package declaring it:
-    a one-to-many hop enters the entity and the next hop leaves it for at most one row, so a
-    ``start`` row with no such row is left out and one with several reaches several targets.
-    A crossing is declared when the entity's model authors ``entities: {bridge: true}``, the
-    entity holds a validity window (a history), or a ``graph.path_preferences`` row walks the
-    same two relationships in a row, in either order."""
+    """Each entity ``path`` enters by a one-to-many hop and leaves for one row, unless declared:
+    its model authors ``entities: {bridge: true}``, it holds a validity window (a history), or a
+    ``graph.path_preferences`` row walks the same two relationships in a row, either way."""
     analysis = get_package_analysis(config)
-    entities = walk_entities(analysis.relationships, start, path)
-    reaches = hop_reaches(config, start, path)
-    recorded = {
-        step
-        for row in analysis.path_preferences.values()
-        for pair in zip(row, row[1:], strict=False)
-        for step in (pair, pair[::-1])
+    entities, rels = analysis.entities, analysis.relationships.values()
+    histories = {
+        end
+        for rel in rels
+        for end in (rel.source_entity, rel.target_entity)
+        if rel.temporal_validity and not enters_validity_window(rel, entities[end].table)
     }
+    recorded = [set(zip(row, row[1:], strict=False)) for row in analysis.path_preferences.values()]
+    hops = route_hops(config, start, path)
     return [
-        {"entity": entities[index], "enters_by": path[index - 1], "leaves_by": path[index]}
-        for index in range(1, len(path))
-        if reaches[index - 1] == "many"
-        and reaches[index] != "many"
-        and not analysis.entities[entities[index]].bridge
-        and not _holds_window(config, entities[index])
-        and (path[index - 1], path[index]) not in recorded
+        {"entity": entity, "enters_by": into, "leaves_by": out}
+        for (into, entity, reach), (out, _, leave) in zip(hops, hops[1:], strict=False)
+        if reach == "many" != leave and not entities[entity].bridge and entity not in histories
+        if not any({(into, out), (out, into)} & steps for steps in recorded)
     ]
 
 
@@ -204,11 +187,9 @@ def route_reading(config: PackageConfig, start: str, path: Sequence[str]) -> str
         frozenset((rel.source_entity, rel.target_entity)) for rel in analysis.relationships.values()
     )
     phrase = ""
-    current = start
-    for rel_id, reach in zip(path, hop_reaches(config, start, path), strict=True):
+    for rel_id, reached, reach in route_hops(config, start, path):
         rel = analysis.relationships[rel_id]
-        forward = current == rel.source_entity
-        reached = rel.target_entity if forward else rel.source_entity
+        forward = reached == rel.target_entity
         noun, qualifier = entity_label(config, reached), ""
         if pairs[frozenset((rel.source_entity, rel.target_entity))] > 1:
             default = (
@@ -230,39 +211,28 @@ def route_reading(config: PackageConfig, start: str, path: Sequence[str]) -> str
         )
         if many:
             phrase = f"any of {phrase}"
-        current = reached
     return phrase
 
 
 def pass_through_disclosure(
-    config: PackageConfig,
-    start: str,
-    target: str,
-    path: Sequence[str],
-    where: Sequence[dict[str, Any]] = (),
+    config: PackageConfig, start: str, target: str, path: Sequence[str], where: Sequence[Any] = ()
 ) -> tuple[str, dict[str, Any]] | None:
-    """What a route that passes through another table's rows (``pass_through``) means, and the
-    four fixes, as a message and its details; None when it passes through none. ``where``
-    holds the query's conditions on the target, which a child group would restate."""
+    """A route's ``pass_through`` disclosure, a message and its details with the four fixes
+    (a child group restating ``where``, the query's conditions on the target), or None."""
     crossings = pass_through(config, start, path)
     if not crossings:
         return None
-    analysis = get_package_analysis(config)
-    meaning = route_reading(config, start, path)
-    first = crossings[0]["entity"]
+    meaning, first = route_reading(config, start, path), crossings[0]["entity"]
     start_label, target_label = entity_label(config, start), entity_label(config, target)
     through = " and ".join(entity_label(config, row["entity"]) for row in crossings)
-    keys = list(analysis.entities[target].key)
-    own = analysis.entities[start]
-    read = {*own.key, *(column for columns in own.foreign_keys.values() for column in columns)}
-    read.update(row.column for row in config.dimensions if row.entity == start)
-    found = [column for column in keys if column in read]
-    has = f" (its table has `{'`, `'.join(found)}`)" if found else ""
+    keys = list(get_package_analysis(config).entities[target].key)
+    read = {row.column for row in config.dimensions if row.entity == start}
+    found = "`, `".join(column for column in keys if column in read)
+    has = f" (its table has `{found}`)" if found else ""
+    links = [{"entity": row["entity"], "entities": {"bridge": True}} for row in crossings]
     fixes = {
         "declare_key": {"entity": start, "target_entity": target, "columns": keys},
-        "declare_link_table": [
-            {"entity": row["entity"], "entities": {"bridge": True}} for row in crossings
-        ],
+        "declare_link_table": links,
         "record_route": route_pin(start, target, list(path)),
         "child_group": {"child": first, "match": "any", "where": list(where)},
     }

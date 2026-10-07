@@ -179,9 +179,7 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
         bridge = entities_block.pop("bridge", True)
         # Persist `bridge` as a top-level model flag for the inferred-relationship pass.
         model["_bridge_eligible"] = bool(bridge)
-        if entities_block_raw.get("bridge") is True:
-            # An authored `bridge: true` declares a link table routes may pass through.
-            model["_bridge_declared"] = True
+        model["_bridge_declared"] = entities_block_raw.get("bridge") is True  # a link table
         # Per-entity entries
         per_entity: dict[str, dict[str, Any]] = {}
         for ent_name, ent_raw in entities_block.items():
