@@ -17,19 +17,19 @@ from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from typing import Any
 
-from ..expressions import expr_to_dict
+from ..expressions import collect_object_references, expr_to_dict
 from ..schema import MetricConfig, PackageConfig
 
 _AGGREGATES = frozenset({"aggregate", "measure", "scoped_aggregate"})
 _NARROWING = ("filter", "where", "predicates")
 
 
-def _measure_reads(node: Any) -> Iterator[tuple[str, bool]]:
-    """Each measure an expression aggregates, and whether that aggregate narrows it."""
+def _measure_reads(node: Any) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Each measure an expression aggregates, and that aggregate's narrowing (empty if none)."""
 
     if isinstance(node, Mapping):
         if node.get("kind") in _AGGREGATES and node.get("measure"):
-            yield str(node["measure"]), any(node.get(key) for key in _NARROWING)
+            yield str(node["measure"]), {key: node[key] for key in _NARROWING if node.get(key)}
             return
         for child in node.values():
             yield from _measure_reads(child)
@@ -63,8 +63,26 @@ def governing_metrics(config: PackageConfig, measure_id: str) -> list[MetricConf
     return [
         metric
         for metric in config.metric_recipes
-        if (measure_id, True) in _measure_reads(expr_to_dict(metric.expression))
+        if any(
+            read == measure_id and narrowing
+            for read, narrowing in _measure_reads(expr_to_dict(metric.expression))
+        )
     ]
+
+
+def population_governors(
+    config: PackageConfig, measure_id: str
+) -> list[tuple[MetricConfig, frozenset[str]]]:
+    """Metrics whose aggregates narrow on dimensions of ``measure_id``'s entity, with those ids."""
+
+    entity = next((row.entity for row in config.measures if row.id == measure_id), None)
+    own = {row.id for row in config.dimensions if row.entity == entity}
+    governors = []
+    for metric in config.metric_recipes:
+        narrowings = [narrowing for _, narrowing in _measure_reads(expr_to_dict(metric.expression))]
+        if narrowed_by := own.intersection(collect_object_references(narrowings, config)):
+            governors.append((metric, frozenset(narrowed_by)))
+    return governors
 
 
 def with_published_flags(config: PackageConfig) -> PackageConfig:

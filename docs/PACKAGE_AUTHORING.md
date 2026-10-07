@@ -1600,7 +1600,9 @@ whole, is a building block. `discover` doesn't list it. `plan` drafts the metric
 only one that filters the measure or the question names it, and otherwise holds a draft that
 reads the measure. `inspect` and Query IR still take the measure by id. Without
 `schema_strict`, `publish: false` also keeps the loader from publishing the measure as a
-metric of its own name.
+metric of its own name. `plan` also holds a draft over a published measure while a metric
+filters its rows on a dimension of the measure's entity, such as a class; to count every row,
+select the measure by id, or filter or group by that class dimension.
 
 ### Long-tail kind — `derived` (expression AST)
 
