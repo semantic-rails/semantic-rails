@@ -597,7 +597,7 @@ def _fallback_row(*, target: str, group_by: str, metric_filters: list[dict] | No
 def test_plan_rejects_domain_agnostic_semantic_drift_fallback(
     subject: str, grouping: str, predicate: str, entity: str, bad_fallback: str
 ) -> None:
-    from semantic_rails.planner.plan import _select_best_plan
+    from semantic_rails.planner.plan_trace import _select_best_plan
 
     primary = _qualified_primary(
         target=subject, predicate=predicate, entity=entity, group_by=grouping
@@ -618,7 +618,7 @@ def test_plan_rejects_domain_agnostic_semantic_drift_fallback(
 
 
 def test_plan_allows_subject_preserving_valid_fallback() -> None:
-    from semantic_rails.planner.plan import _select_best_plan
+    from semantic_rails.planner.plan_trace import _select_best_plan
 
     subject = "measure.bank.loan_balance"
     grouping = "dimension.bank_branch"
@@ -912,7 +912,7 @@ def test_plan_keeps_target_and_single_reachable_value_filter(runtime_factory) ->
     ],
 )
 def test_plan_structural_precheck_short_circuits(payload, code) -> None:
-    from semantic_rails.planner.plan import _validate_query
+    from semantic_rails.planner.plan_query import _validate_query
 
     class _NoCallRuntime:
         def validate(self, payload):  # noqa: ARG002

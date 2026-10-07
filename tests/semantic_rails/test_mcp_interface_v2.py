@@ -24,7 +24,7 @@ from semantic_rails.mcp import (
 )
 from semantic_rails.mcp_server import handle_jsonrpc_message
 from semantic_rails.metadata_parts.relevance import _no_viable_candidates_block
-from semantic_rails.planner.plan import _trim_why_errors
+from semantic_rails.planner.plan_query import _trim_why_errors
 from semantic_rails.request_context import RequestContext
 
 ORDER_TIME = "temporal_role.jaffle_order_time"

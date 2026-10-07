@@ -20,32 +20,172 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ...config_parts.measure_governance import (
+    building_block_measures,
+    governing_metrics,
+    whole_aggregate,
+)
+from ...errors import SemanticLayerError
+from ...expressions import collect_object_references
 from .._base import (
+    _NAME_CONNECTORS,
     _TERM_SYNONYMS,
     RuntimeCompositionDraft,
-    _add_order,
     _aggregation_from_text,
-    _explicit_grain,
-    _governed_target,
-    _implied_window_grain,
-    _maybe_group_by,
-    _named_measure,
     _named_metric,
     _object_by_id,
     _preferred_measure,
     _preferred_metric,
     _resolved,
+    _said_name,
     _semantic_token,
-    _target_measure_terms,
-    _time_bounds_from_text,
-    _time_spec,
     _tokens,
-    _top_n_intent,
-    _unresolved_time_phrases,
 )
 from ..generators import _matched_value_rows, _normalize_value_filters, _target_focus_text
+from ..groupings import _explicit_grain, _maybe_group_by, _time_spec
 from ..intent_ir import _FALLBACK_STOPWORDS
+from ..qualifiers import _add_order, _target_measure_terms, _top_n_intent
+from ..time_windows import _time_bounds_from_text, _time_window
+from ..visibility import visible_object_ids
 from ._protocol import IntentPattern
+
+
+def _governed_target(config: Any, focus: str, query: dict[str, Any]) -> Any | None:
+    """The metric a one-select draft over a measure answers with instead.
+
+    The select reads a measure, or the metric that is its plain aggregate. A metric that
+    aggregates that measure the same way through a filter governs it ("Active stores" over
+    "Active stores (all kinds)"). It is the answer when the question's target phrase ``focus``
+    names it (``_said_name``), and names no other such metric as fully nor the measure more
+    fully; or when the measure is a building block and this metric alone governs it. Never
+    when the draft filters or groups by something its filter reads: "demo stores" asks for
+    rows the governed metric leaves out.
+    """
+
+    select = list(query.get("select") or [])
+    expression = select[0].get("expression") if len(select) == 1 else None
+    if not isinstance(expression, dict):
+        return None
+    plain = _object_by_id(config.metric_recipes, str(expression.get("metric", "")))
+    whole = whole_aggregate(plain) if plain is not None else None
+    if plain is not None and (whole is None or whole[2]):
+        return None
+    measure_id, aggregation = whole[:2] if whole else (expression.get("measure"), "")
+    measure = _object_by_id(config.measures, str(measure_id or ""))
+    if measure is None:
+        return None
+    aggregation = aggregation or expression.get("aggregation") or measure.default_aggregation
+    governing = governing_metrics(config, measure.id)
+    visible = set(visible_object_ids(config, (metric.id for metric in governing)))
+    governing = [metric for metric in governing if metric.id in visible]
+    candidates = {
+        metric.id: (metric, governed[2])
+        for metric in governing
+        if (governed := whole_aggregate(metric)) is not None
+        and governed[0] == measure.id
+        and (governed[1] or measure.default_aggregation) == aggregation
+    }
+    named = {metric.id: words for metric in governing if (words := _said_name(metric, focus))}
+    widest = [key for key in named if all(words <= named[key] for words in named.values())]
+    if named:
+        chosen = widest[0] if len(widest) == 1 else ""
+    elif measure.id in building_block_measures(config) and len(governing) == 1:
+        chosen = governing[0].id
+    else:
+        chosen = ""
+    asked = _said_name(measure, focus) | (_said_name(plain, focus) if plain else frozenset())
+    if chosen not in candidates or not asked <= named.get(chosen, frozenset()):
+        return None
+    metric, narrowing = candidates[chosen]
+    try:
+        cuts = {key: query.get(key) for key in ("where", "group_by", "metric_filters")}
+        if set(collect_object_references(narrowing, config)) & set(
+            collect_object_references(cuts, config)
+        ):
+            return None
+    except SemanticLayerError:
+        return None
+    return metric
+
+
+def _named_measure(config: Any, text: str, ordinary: Any | None = None) -> Any | None:
+    """The measure the question names by a label or alias of two words or more.
+
+    An exact multi-word name outranks a partial one: "item revenue" names Item revenue,
+    not Revenue, which only shares a word with it. The longest name wins; a tie between
+    different measures names none, so the ordinary ranking decides. The question's words
+    stay in order, so "revenue by item" names neither.
+
+    The name replaces the ordinary reading (``ordinary``, the target the ranking chose)
+    only when it contains every word of that target's label: "large order revenue" names
+    Large orders inside it, but asks for revenue, so the ordinary target stays. Another
+    measure noun right after the name ("item revenue orders") leaves the question alone too.
+    """
+
+    said = _tokens(text)
+    best_size = 0
+    best: list[tuple[Any, tuple[str, ...], int]] = []
+    for row in config.measures:
+        names = [row.label, re.sub(r"\s*\(.*?\)", "", str(row.label or "")), *(row.aliases or [])]
+        for name in names:
+            parts = _tokens(name)
+            size = len(parts)
+            if size < 2 or size < best_size:
+                continue
+            at = next(
+                (
+                    start
+                    for start in range(len(said) - size + 1)
+                    if said[start : start + size] == parts
+                ),
+                None,
+            )
+            if at is None:
+                continue
+            if size > best_size:
+                best_size, best = size, []
+            if all(item[0] is not row for item in best):
+                best.append((row, parts, at + size))
+    if len(best) != 1:
+        return None
+    row, parts, end = best[0]
+    if ordinary is not None:
+        label = re.sub(r"\s*\(.*?\)", "", str(getattr(ordinary, "label", "") or ""))
+        if not set(_tokens(label)) <= set(parts):
+            return None
+    following = said[end] if end < len(said) else ""
+    if following and following not in _NAME_CONNECTORS:
+        other_nouns = {
+            token
+            for other in config.measures
+            if other is not row
+            for token in _tokens(getattr(other, "label", ""))
+        }
+        if following in other_nouns:
+            return None
+    return row
+
+
+def _implied_window_grain(lowered: str) -> str:
+    """Grain implied by a resolved relative window, or ``""``.
+
+    "last 7 days" implies a daily series; "yesterday"/"today" imply a
+    single day bucket.
+    """
+
+    return _time_window(lowered).relative_unit
+
+
+def _unresolved_time_phrases(text: str) -> list[str]:
+    """Time phrases the planner detected but did not resolve into a window.
+
+    ``plan`` reports them (``TIME_WINDOW_UNRESOLVED``) instead of marking a
+    draft ready, because the draft doesn't carry the window the question
+    asked for.
+    """
+
+    return list(_time_window(text).unresolved)
+
 
 # Catch-all patterns return a sub-unity score so the orchestrator
 # prefers a specific pattern when both fire. Picked low enough that

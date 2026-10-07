@@ -14,10 +14,10 @@ from semantic_rails.ast import normalize_query
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.mcp import SemanticLayerMCPAdapter
 from semantic_rails.planner import plan_payload
-from semantic_rails.planner._base import _time_window
-from semantic_rails.planner.faithfulness import _window_agrees
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import compose
+from semantic_rails.planner.time_checks import _window_agrees
+from semantic_rails.planner.time_windows import _time_window
 from semantic_rails.runtime import Runtime
 
 NOW = {"now": "2026-10-05T06:00:00Z"}
@@ -122,14 +122,14 @@ def _set_wall_clock(monkeypatch: pytest.MonkeyPatch, moment: datetime) -> None:
         def today(cls) -> date:
             return cls(moment.year, moment.month, moment.day)
 
-    monkeypatch.setattr("semantic_rails.planner._base.date", MachineDate)
+    monkeypatch.setattr("semantic_rails.planner.time_windows.date", MachineDate)
 
     class MachineDatetime(datetime):
         @classmethod
         def now(cls, tz=None) -> datetime:
             return cls.combine(moment.date(), moment.timetz())
 
-    monkeypatch.setattr("semantic_rails.planner._base.datetime", MachineDatetime)
+    monkeypatch.setattr("semantic_rails.planner.time_windows.datetime", MachineDatetime)
     monkeypatch.setattr("semantic_rails.ast.datetime", MachineDatetime)
 
 
@@ -546,7 +546,7 @@ def test_roles_that_cannot_be_computed_are_held(
     def unbound(*_args: Any, **_kwargs: Any) -> Any:
         raise RuntimeError("binding failed")
 
-    monkeypatch.setattr("semantic_rails.planner.faithfulness.bind_query", unbound)
+    monkeypatch.setattr("semantic_rails.planner.time_checks.bind_query", unbound)
     plan = plan_payload(
         shop,
         intent="session count yesterday",
@@ -558,7 +558,7 @@ def test_roles_that_cannot_be_computed_are_held(
 def test_before_role_selection_uses_the_package_default_zone(
     local_subscriptions: Runtime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from semantic_rails.planner import _base
+    from semantic_rails.planner import time_windows
 
     snapshot = local_subscriptions._snapshot
     local_subscriptions._snapshot = replace(
@@ -566,13 +566,13 @@ def test_before_role_selection_uses_the_package_default_zone(
         _normalized={**snapshot.normalized, "defaults": {"time": {"timezone": "America/New_York"}}},
     )
     dates = []
-    resolve = _base._resolved_time_window
+    resolve = time_windows._resolved_time_window
 
     def record_date(text: str, today: date):
         dates.append(today)
         return resolve(text, today)
 
-    monkeypatch.setattr(_base, "_resolved_time_window", record_date)
+    monkeypatch.setattr(time_windows, "_resolved_time_window", record_date)
     parsed = parse_intent(
         local_subscriptions, "new accounts today", policy_context={"now": "2026-10-05T01:00:00Z"}
     )
@@ -708,7 +708,7 @@ def test_a_relative_window_the_clock_cannot_bound_is_held(
     def unbounded(*_args: Any, **_kwargs: Any) -> Any:
         raise SemanticLayerError("INVALID_QUERY", "unbounded")
 
-    monkeypatch.setattr("semantic_rails.planner.plan._time_spec_from_payload", unbounded)
+    monkeypatch.setattr("semantic_rails.planner.intent_holds._time_spec_from_payload", unbounded)
     plan = plan_payload(
         local_subscriptions,
         intent="new accounts yesterday",

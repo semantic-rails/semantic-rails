@@ -527,7 +527,8 @@ def _apply_time_from_text(
     runtime: Any, query: dict[str, Any], text: str, chosen_ids: list[str]
 ) -> dict[str, Any]:
     from ..metadata import _object_card  # noqa: WPS433 - shared metadata helper
-    from ._base import _time_bounds_from_text, _time_spec
+    from .groupings import _time_spec
+    from .time_windows import _time_bounds_from_text
 
     time_bounds = _time_bounds_from_text(text)
     wants_time = any(

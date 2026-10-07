@@ -18,13 +18,10 @@ import pytest
 import yaml
 
 from semantic_rails.planner import plan_payload
-from semantic_rails.planner._base import (
-    _time_bounds_from_text,
-    _unresolved_time_phrases,
-    _with_fiscal_calendar,
-)
 from semantic_rails.planner.faithfulness import intent_faithfulness_why
 from semantic_rails.planner.intent_ir import parse_intent
+from semantic_rails.planner.patterns.metric_by_dimension_rollup import _unresolved_time_phrases
+from semantic_rails.planner.time_windows import _time_bounds_from_text, _with_fiscal_calendar
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config, opened
 from tests.semantic_rails.result_helpers import assert_plan_held, typed_rows

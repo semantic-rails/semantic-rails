@@ -23,8 +23,9 @@ import duckdb
 import pytest
 
 from semantic_rails.planner import plan as plan_module
-from semantic_rails.planner import plan_payload
-from semantic_rails.planner._base import RuntimeCompositionDraft, _listed_grouping_terms
+from semantic_rails.planner import plan_payload, unasked_groupings
+from semantic_rails.planner._base import RuntimeCompositionDraft
+from semantic_rails.planner.groupings import _listed_grouping_terms
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.orchestrator import CompositionResult
 from semantic_rails.runtime import Runtime
@@ -112,7 +113,7 @@ def test_a_comparison_never_splits_by_a_month_the_question_never_asks_for(
         "group_by": [STORE, CUSTOMER_TYPE],
         "order_by": [{"field": "time", "direction": "ASC"}],
     }
-    why = plan_module._unasked_grouping_why(jaffle, payload["intent"], query)
+    why = unasked_groupings._unasked_grouping_why(jaffle, payload["intent"], query)
     assert why["code"] == UNASKED
     assert why["details"] == {"unasked_groupings": ["month"], "grain": "month"}
     assert query["time"] == {"temporal_role": ORDER_TIME, "grain": "month"}
@@ -161,7 +162,7 @@ def test_a_ranking_split_by_a_period_asks_which_ranking_it_means(
 
     _held(payload, UNMATCHED)
     query = {**payload["best"]["query_ir"], "group_by": [STORE]}
-    why = plan_module._unasked_grouping_why(jaffle, intent, query)
+    why = unasked_groupings._unasked_grouping_why(jaffle, intent, query)
     assert why["code"] == RANKING
     details = why["details"]
     assert details == {"limit": limit, "ranked": [STORE], "grain": "month"}
@@ -204,7 +205,7 @@ def test_a_ranking_of_more_than_its_entity_offers_no_runnable_option(
         "order_by": [{"field": "revenue_usd", "direction": "DESC"}],
         "limit": 3,
     }
-    why = plan_module._unasked_grouping_why(jaffle, intent, query)
+    why = unasked_groupings._unasked_grouping_why(jaffle, intent, query)
     assert why["code"] == RANKING
     assert why["details"] == {"limit": 3, "ranked": [STORE, CUSTOMER_TYPE], **grain}
     assert "query_ir" not in json.dumps(why)
@@ -232,7 +233,7 @@ def test_a_ranking_of_a_time_axis_value_offers_no_runnable_option(jaffle: Runtim
 
     _held(payload, UNMATCHED)
     query = {**payload["best"]["query_ir"], "group_by": [STORE]}
-    why = plan_module._unasked_grouping_why(jaffle, payload["intent"], query)
+    why = unasked_groupings._unasked_grouping_why(jaffle, payload["intent"], query)
     assert why["code"] == RANKING
     assert why["details"] == {"limit": 3, "ranked": [STORE], "grain": "month"}
     assert "query_ir" not in json.dumps(why)
@@ -276,7 +277,7 @@ def test_a_ranking_of_a_period_or_on_another_calendar_offers_no_runnable_option(
     query = {**_TOP_3_STORES, "time": {"temporal_role": ORDER_TIME, **time}}
     assert jaffle.validate(query)["ok"] is True
 
-    why = plan_module._unasked_grouping_why(jaffle, question, query)
+    why = unasked_groupings._unasked_grouping_why(jaffle, question, query)
 
     assert why is not None
     assert why["code"] == RANKING
@@ -293,7 +294,7 @@ def test_a_ranking_the_question_never_states_is_the_callers(jaffle: Runtime) -> 
     question = "revenue by store and customer type"
     query = {**_TOP_3_STORES, "group_by": [STORE, CUSTOMER_TYPE]}
 
-    why = plan_module._unasked_grouping_why(jaffle, question, query)
+    why = unasked_groupings._unasked_grouping_why(jaffle, question, query)
 
     # The top 3 pairs trace to nothing the question says.
     assert why is not None
@@ -302,10 +303,10 @@ def test_a_ranking_the_question_never_states_is_the_callers(jaffle: Runtime) -> 
     assert "query_ir" not in json.dumps(why)
     # The caller's partial_query states them: its limit, over its own group_by.
     caller = {"group_by": [STORE, CUSTOMER_TYPE], "limit": 3}
-    assert plan_module._unasked_grouping_why(jaffle, question, query, caller) is None
+    assert unasked_groupings._unasked_grouping_why(jaffle, question, query, caller) is None
     # Its limit over a grouping it lacks states another ranking.
     caller = {"group_by": [STORE], "limit": 3}
-    why = plan_module._unasked_grouping_why(jaffle, question, query, caller)
+    why = unasked_groupings._unasked_grouping_why(jaffle, question, query, caller)
     assert why is not None
     assert why["code"] == RANKING
 
@@ -340,7 +341,7 @@ def test_a_window_of_whole_years_never_splits_by_a_year_the_question_never_asks_
     query = {**payload["best"]["query_ir"], "group_by": [STORE]}
     if "customer type" in intent:
         query["group_by"].append(CUSTOMER_TYPE)
-    why = plan_module._unasked_grouping_why(jaffle, intent, query)
+    why = unasked_groupings._unasked_grouping_why(jaffle, intent, query)
     if held:
         assert why["code"] == UNASKED
         assert why["details"] == {"unasked_groupings": ["year"], "grain": "year"}
@@ -495,7 +496,7 @@ def test_every_draft_with_an_unasked_grouping_goes_through_the_one_gate(
 def test_a_grain_splits_the_rows_unless_its_window_fits_one_bucket(
     time: dict[str, Any], splits: bool
 ) -> None:
-    assert plan_module._grain_splits(time) is splits
+    assert unasked_groupings._grain_splits(time) is splits
 
 
 @dataclass(frozen=True)
@@ -702,8 +703,10 @@ def test_a_grain_the_caller_sets_is_asked_for(jaffle: Runtime) -> None:
     caller = {"time": {"temporal_role": ORDER_TIME, "grain": "week"}}
     query = {"group_by": [STORE], "time": {"temporal_role": ORDER_TIME, "grain": "week"}}
 
-    assert plan_module._unasked_grouping_why(jaffle, "revenue by store", query, caller) is None
-    why = plan_module._unasked_grouping_why(jaffle, "revenue by store", query)
+    assert (
+        unasked_groupings._unasked_grouping_why(jaffle, "revenue by store", query, caller) is None
+    )
+    why = unasked_groupings._unasked_grouping_why(jaffle, "revenue by store", query)
     assert why is not None
     assert why["details"] == {"unasked_groupings": ["week"], "grain": "week"}
     # The check never changes the draft.

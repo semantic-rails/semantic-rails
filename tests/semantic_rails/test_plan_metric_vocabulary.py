@@ -14,7 +14,7 @@ import pytest
 import yaml
 
 from semantic_rails.config_validation import PackageReference, parse_config_report
-from semantic_rails.planner import _base, plan_payload
+from semantic_rails.planner import _base, faithfulness, plan_payload, time_windows
 from semantic_rails.runtime import Runtime
 
 NOW = {"now": "2026-10-05T06:00:00Z"}
@@ -147,7 +147,7 @@ def monday(monkeypatch: pytest.MonkeyPatch) -> None:
         def today(cls) -> date:
             return cls(2026, 10, 5)
 
-    monkeypatch.setattr(_base, "date", Monday)
+    monkeypatch.setattr(time_windows, "date", Monday)
 
 
 @pytest.mark.parametrize(
@@ -464,7 +464,8 @@ def test_partial_or_noncontiguous_synonym_is_not_consumed(tmp_path: Path, questi
 def test_phrase_consumption_records_exact_span_and_preserves_numbers(tmp_path: Path):
     from dataclasses import replace
 
-    from semantic_rails.planner.faithfulness import _unconsumed_words, unconsumed_terms
+    from semantic_rails.planner.consumed_spans import unconsumed_terms
+    from semantic_rails.planner.unmatched_words import _unconsumed_words
 
     with closing(Runtime.from_path(str(_package(tmp_path / "shop", synonyms=True)))) as runtime:
         metric = next(
@@ -506,7 +507,8 @@ def test_unique_words_separate_a_shared_synonym(tmp_path: Path):
         Runtime.from_path(str(_package(tmp_path / "shop", synonyms=True, collision=True)))
     ) as runtime:
         assert [
-            row.id for row in _base._shared_subjects(runtime._config, "new accounts signed up")
+            row.id
+            for row in faithfulness._shared_subjects(runtime._config, "new accounts signed up")
         ] == []
         assert (
             _base._named_metric(runtime._config, "new accounts signed up")[0].id

@@ -270,7 +270,7 @@ def test_rolling_metrics_are_not_checked(runtime_factory) -> None:
 def test_the_period_is_the_bucket_else_the_whole_window(
     trailing_window_runtime, time: dict, flagged: bool
 ) -> None:
-    from semantic_rails.planner.faithfulness import _subject_window_gaps
+    from semantic_rails.planner.time_checks import _subject_window_gaps
 
     role = "temporal_role.f4win_repo_snapshot_snapshot_date"
     query = {

@@ -16,7 +16,7 @@ from semantic_rails.planner.generators import (
     _matched_value_rows,
     _normalize_value_filters,
 )
-from semantic_rails.planner.plan import _merge_partial_query
+from semantic_rails.planner.plan_query import _merge_partial_query
 from semantic_rails.runtime import runtime_request_scope
 from semantic_rails.schema import SemanticPolicyConfig
 from tests.semantic_rails.result_helpers import assert_plan_held
