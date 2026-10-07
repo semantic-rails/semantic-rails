@@ -840,28 +840,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_import = sub.add_parser(
         "import",
         description=(
-            "Import a package from an external semantic-layer format. "
-            "Today supports `--from metricflow` (a MetricFlow YAML "
-            "directory or a dbt-emitted semantic_manifest.json). No "
-            "MetricFlow runtime is required — the translator reads "
-            "YAML/JSON files standalone. `--from ossie` reads an Apache "
-            "Ossie document written by `export --format ossie` (other 0.1.x "
-            "and 0.2 documents: experimental), plus the sidecar beside it; "
-            "--warehouse, --description and --schema-strict apply to metricflow "
-            "only. See docs/OSSIE.md."
+            "Import an Apache Ossie document written by `export --format ossie` "
+            "(other 0.1.x and 0.2 documents: experimental), plus the sidecar "
+            "beside it. See docs/OSSIE.md."
         ),
     )
     p_import.add_argument(
         "--from",
         dest="source_format",
         required=True,
-        choices=["metricflow", "ossie"],
-        help="Source format: 'metricflow' (YAML dir or semantic_manifest.json) or 'ossie'.",
+        choices=["ossie"],
+        help="Source format: 'ossie'.",
     )
     p_import.add_argument(
         "--source",
         required=True,
-        help="Path to the source artifact (directory, JSON file or Ossie YAML document).",
+        help="Path to the Ossie YAML document.",
     )
     p_import.add_argument(
         "--output",
@@ -879,25 +873,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Namespace prefix for auto-derived ids. Defaults to --package-id.",
     )
     p_import.add_argument(
-        "--warehouse",
-        default="duckdb",
-        choices=("duckdb", "snowflake"),
-        help="Warehouse kind to declare in the emitted package.yml.",
-    )
-    p_import.add_argument(
         "--default-db",
         default=None,
-        help="DuckDB file path; recommended for --warehouse duckdb.",
-    )
-    p_import.add_argument(
-        "--description",
-        default=None,
-        help="Optional package description.",
-    )
-    p_import.add_argument(
-        "--schema-strict",
-        action="store_true",
-        help="Write a schema_strict package whose relations keep their schema, parse-checked.",
+        help="DuckDB file path for the imported package.",
     )
     p_import.set_defaults(func=cmd_import)
 

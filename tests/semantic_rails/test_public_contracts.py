@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from contextlib import nullcontext
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +13,7 @@ import yaml
 from semantic_rails.contracts import (
     CONTRACT_NAMES,
     contract_path,
+    diff_semantic_contract,
     export_semantic_contract,
     load_contract,
     semantic_contract_fingerprint,
@@ -568,3 +570,270 @@ def test_export_contract_wraps_unexpected_loader_shape_errors(monkeypatch) -> No
     assert exc.value.code == "INVALID_CONFIG"
     assert exc.value.details == {"exception_type": "KeyError"}
     assert "raw-internal-reference" not in str(exc.value)
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("snapshot_input", [False, True])
+def test_diff_semantic_contract_round_trip_without_database_access(
+    typed_contract_project, monkeypatch, wrapped, snapshot_input
+) -> None:
+    from semantic_rails.embedding import diff_semantic_contract as facade_diff
+    from semantic_rails.embedding import load_package_snapshot
+
+    (typed_contract_project / "warehouse.duckdb").write_bytes(b"not a database")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("static contract comparison must never open a warehouse")
+
+    monkeypatch.setattr(duckdb, "connect", forbidden)
+    monkeypatch.setattr("semantic_rails.contracts.producer._apply_physical_column_types", forbidden)
+    package = (
+        load_package_snapshot(typed_contract_project) if snapshot_input else typed_contract_project
+    )
+    committed = export_semantic_contract(package, physical_types=False)
+    before = deepcopy(committed)
+    if wrapped:
+        committed = {"semantic_rails_contracts": committed}
+    result = facade_diff(package, committed)
+    assert facade_diff is diff_semantic_contract
+    assert result["ok"] is True
+    assert result["package_id"] == "typed_contract"
+    assert result["covered_models"] == ["events"]
+    assert result["drift"] == []
+    assert (committed["semantic_rails_contracts"] if wrapped else committed) == before
+
+
+@pytest.mark.parametrize(
+    ("change", "code", "fails"),
+    [
+        ("missing-column", "CONTRACT_COLUMN_MISSING", True),
+        ("renamed-column", "CONTRACT_COLUMN_MISSING", True),
+        ("relation", "RELATION_CHANGED", True),
+        ("type-family", "COLUMN_TYPE_CHANGED", True),
+        ("uncovered-model", "CONTRACT_MODEL_NOT_COVERED", False),
+        ("unused-column", "COLUMN_UNUSED", False),
+        ("unused-model", "COLUMN_UNUSED", False),
+        ("unknown-type", "TYPE_NOT_COMPARED", False),
+        ("missing-type", "TYPE_NOT_COMPARED", False),
+        ("missing-hint", "TYPE_NOT_COMPARED", False),
+    ],
+)
+def test_diff_semantic_contract_classifies_changes(typed_contract_project, change, code, fails):
+    committed = export_semantic_contract(typed_contract_project, physical_types=False)
+    resources = committed["semantic"]["packages"][0]["resources"]
+    model = resources[0]
+    column = next(row for row in model["columns"] if row["name"] == "tenant_id")
+    if change == "missing-column":
+        model["columns"].remove(column)
+    elif change == "renamed-column":
+        column["name"] = "previous_tenant"
+    elif change == "relation":
+        model["relation"] = "analytics.old_events"
+    elif change == "type-family":
+        column["data_type"] = "decimal(18, 2)"
+    elif change == "uncovered-model":
+        resources.clear()
+    elif change == "unused-column":
+        model["columns"].append({"name": "obsolete", "required_by": []})
+    elif change == "unused-model":
+        resources.append({"semantic_model_id": "obsolete", "columns": []})
+    elif change == "unknown-type":
+        column["data_type"] = "json"
+    elif change == "missing-type":
+        column.pop("data_type")
+    else:
+        next(row for row in model["columns"] if row["name"] == "event_id")["data_type"] = "int"
+    result = diff_semantic_contract(typed_contract_project, committed)
+    assert result["ok"] is not fails
+    rows = result["drift"] if fails else result["notes"]
+    row = next(row for row in rows if row["code"] == code)
+    assert set(row) == {
+        "code",
+        "semantic_model_id",
+        "relation",
+        "column",
+        "required_by",
+        "contract_column",
+        "message",
+    }
+    if change in {"missing-column", "renamed-column"}:
+        assert row["column"] == "tenant_id"
+        assert row["required_by"] == column["required_by"]
+    if change == "renamed-column":
+        assert row["contract_column"] == "previous_tenant"
+        assert "previous_tenant" in row["message"]
+    if change == "uncovered-model":
+        assert result["covered_models"] == []
+
+
+@pytest.mark.parametrize(
+    ("hint", "physical"),
+    [
+        ("string", kind)
+        for kind in ["string", "varchar(100)", "text", "character varying(9)", "char", "uuid"]
+    ]
+    + [
+        ("number", kind)
+        for kind in [
+            "integer",
+            "int",
+            "bigint",
+            "smallint",
+            "hugeint",
+            "number",
+            "numeric(9,2)",
+            "decimal",
+            "double",
+            "float",
+            "real",
+        ]
+    ]
+    + [("boolean", kind) for kind in ["boolean", "bool"]]
+    + [
+        ("timestamp", kind)
+        for kind in [
+            "date",
+            "datetime",
+            "timestamp",
+            "timestamp_tz",
+            "timestamp_ns",
+            "timestamptz",
+            "timestamp(6) with time zone",
+            "timestamp without time zone",
+        ]
+    ],
+)
+def test_diff_semantic_contract_type_families(typed_contract_project, hint, physical):
+    package_file = typed_contract_project / "package.yml"
+    raw = yaml.safe_load(package_file.read_text())
+    raw["models"]["events"]["dimensions"]["tenant_id"]["kind"] = hint
+    package_file.write_text(yaml.safe_dump(raw))
+    committed = export_semantic_contract(typed_contract_project, physical_types=False)
+    column = next(
+        row
+        for row in committed["semantic"]["packages"][0]["resources"][0]["columns"]
+        if row["name"] == "tenant_id"
+    )
+    column["data_type"] = physical.upper()
+    assert diff_semantic_contract(typed_contract_project, committed)["drift"] == []
+
+
+def test_diff_semantic_contract_ignores_metadata_and_identifier_case(typed_contract_project):
+    committed = export_semantic_contract(typed_contract_project, physical_types=False)
+    committed["binding"] = "never inspected"
+    committed["semantic"]["producer"] = None
+    package = committed["semantic"]["packages"][0]
+    package.update(semantic_hash="changed", namespace="other", package_schema_version=99)
+    package["resources"][0]["relation"] = "ANALYTICS.FCT_EVENTS"
+    for column in package["resources"][0]["columns"]:
+        column["name"] = column["name"].upper()
+        column["required_by"] = ["old.object"]
+    assert diff_semantic_contract(typed_contract_project, committed)["drift"] == []
+    package["resources"][0].pop("relation")
+    assert diff_semantic_contract(typed_contract_project, committed)["drift"] == []
+
+
+@pytest.mark.parametrize("duplicate", ["model", "column"])
+def test_diff_semantic_contract_validates_exported_rows_too(
+    typed_contract_project, monkeypatch, duplicate
+):
+    committed = export_semantic_contract(typed_contract_project, physical_types=False)
+    exported = deepcopy(committed)
+    models = exported["semantic"]["packages"][0]["resources"]
+    if duplicate == "model":
+        models.append(deepcopy(models[0]))
+    else:
+        models[0]["columns"].append(deepcopy(models[0]["columns"][0]))
+    monkeypatch.setattr(
+        "semantic_rails.contracts.drift.export_semantic_contract", lambda *a, **k: exported
+    )
+    with pytest.raises(SemanticLayerError) as exc:
+        diff_semantic_contract(typed_contract_project, committed)
+    assert exc.value.code == "INVALID_CONTRACT"
+    assert exc.value.details["reason"] == f"duplicate_{duplicate}"
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ("root", "not_mapping"),
+        ("version", "unsupported_version"),
+        ("boolean-version", "unsupported_version"),
+        ("legacy", "invalid_semantic"),
+        ("nested-wrapper", "unsupported_version"),
+        ("semantic", "invalid_semantic"),
+        ("packages", "invalid_packages"),
+        ("no-package", "package_not_found"),
+        ("package-row", "invalid_package"),
+        ("package-id", "invalid_package"),
+        ("duplicate-package", "duplicate_package"),
+        ("resources", "invalid_resources"),
+        ("model-row", "invalid_model"),
+        ("model-id", "invalid_model"),
+        ("relation", "invalid_model"),
+        ("duplicate-model", "duplicate_model"),
+        ("columns", "invalid_columns"),
+        ("column-row", "invalid_column"),
+        ("column-name", "invalid_column"),
+        ("column-type", "invalid_column"),
+        ("required-by", "invalid_column"),
+        ("duplicate-column", "duplicate_column"),
+        ("other-package", "invalid_resources"),
+    ],
+)
+def test_diff_semantic_contract_refuses_malformed_input(typed_contract_project, change, reason):
+    committed = export_semantic_contract(typed_contract_project, physical_types=False)
+    semantic = committed["semantic"]
+    package = semantic["packages"][0]
+    model = package["resources"][0]
+    column = model["columns"][0]
+    if change == "root":
+        committed = []
+    elif change == "version":
+        committed["contract_format_version"] = 2
+    elif change == "boolean-version":
+        committed["contract_format_version"] = True
+    elif change == "legacy":
+        committed = {"contract_format_version": 1, "packages": []}
+    elif change == "nested-wrapper":
+        committed = {"semantic_rails_contracts": {"semantic_rails_contracts": committed}}
+    elif change == "semantic":
+        committed["semantic"] = []
+    elif change == "packages":
+        semantic["packages"] = {}
+    elif change == "no-package":
+        package["package_id"] = "other"
+    elif change == "package-row":
+        semantic["packages"] = [None]
+    elif change == "package-id":
+        package["package_id"] = ""
+    elif change == "duplicate-package":
+        semantic["packages"].append(deepcopy(package))
+    elif change == "resources":
+        package["resources"] = {}
+    elif change == "model-row":
+        package["resources"] = [None]
+    elif change == "model-id":
+        model["semantic_model_id"] = ""
+    elif change == "relation":
+        model["relation"] = []
+    elif change == "duplicate-model":
+        package["resources"].append(deepcopy(model))
+    elif change == "columns":
+        model["columns"] = {}
+    elif change == "column-row":
+        model["columns"] = [None]
+    elif change == "column-name":
+        column["name"] = ""
+    elif change == "column-type":
+        column["data_type"] = []
+    elif change == "required-by":
+        column["required_by"] = "object"
+    elif change == "duplicate-column":
+        model["columns"].append({**column, "name": column["name"].upper()})
+    else:
+        semantic["packages"].append({"package_id": "other", "resources": None})
+    with pytest.raises(SemanticLayerError) as exc:
+        diff_semantic_contract(typed_contract_project, committed)
+    assert exc.value.code == "INVALID_CONTRACT"
+    assert exc.value.details["reason"] == reason

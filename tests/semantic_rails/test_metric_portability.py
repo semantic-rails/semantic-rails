@@ -12,7 +12,6 @@ import yaml
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 
-from mf2sr.translate import translate
 from semantic_rails.config import LoadedPackageSnapshot, load_package_snapshot
 from semantic_rails.contracts import (
     compare_metric_portability,
@@ -29,16 +28,54 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.fixture
 def portable(tmp_path):
     corpus = load_contract_fixture("metric_portability.v1.json")
-    source = tmp_path / "semantic_manifest.json"
-    source.write_text(json.dumps(corpus["framework_input"]))
-    report = translate(
-        source,
-        tmp_path,
-        package_id=corpus["package_id"],
-        namespace=corpus["namespace"],
-        default_db="data.duckdb",
-    )
-    return corpus, report
+    package = tmp_path / corpus["package_id"]
+    package.mkdir()
+    files = {
+        "package.yml": {
+            "schema_version": 1,
+            "package": {
+                "id": corpus["package_id"],
+                "namespace": corpus["namespace"],
+                "warehouse": "duckdb",
+                "default_db": "data.duckdb",
+                "seed": {"kind": "external"},
+            },
+        },
+        "graph.yml": {
+            "graph": {"entities": {"customer": {"key": ["customer_id"], "model": "customers"}}}
+        },
+        "models/customers.yml": {
+            "model": {
+                "id": "customers",
+                "relation": "customers",
+                "entities": {"customer": {}},
+                "dimensions": {"customer_name": {"kind": "categorical"}},
+                "measures": {
+                    "customer_count": {
+                        "kind": "entity_count",
+                        "publish": False,
+                        "expr": "customer_id",
+                        "accumulation": {"kind": "population"},
+                        "value_type": "count",
+                    }
+                },
+            }
+        },
+        "metrics/customers.yml": {
+            "metrics": {
+                "customer_count": {
+                    "kind": "aggregate",
+                    "measure": "customer_count",
+                    "label": "Distinct customers",
+                }
+            }
+        },
+    }
+    for name, content in files.items():
+        path = package / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.safe_dump(content))
+    return corpus, package
 
 
 def _validate(payload):
@@ -49,20 +86,18 @@ def _validate(payload):
     )
 
 
-def test_framework_import_to_governed_bi_card(portable, tmp_path):
-    corpus, report = portable
-    snapshot = load_package_snapshot(report.package_dir)
-    artifact = export_metric_portability(snapshot, import_provenance=report.provenance)
+def test_authored_package_to_governed_bi_card(portable, tmp_path):
+    corpus, package = portable
+    snapshot = load_package_snapshot(package)
+    artifact = export_metric_portability(snapshot)
     _validate(artifact)
     assert [row["id"] for row in artifact["metrics"]] == corpus["expected_metric_ids"]
-    assert artifact["provenance"]["import"]["framework"] == "metricflow"
-    assert artifact["provenance"]["import"]["warnings"] == report.warnings
     assert (
         artifact["package"]["semantic_hash"]
         == export_semantic_contract(snapshot)["semantic"]["packages"][0]["semantic_hash"]
     )
     assert compare_metric_portability(artifact, artifact)["classification"] == "none"
-    with duckdb.connect(str(report.package_dir / "data.duckdb")) as connection:
+    with duckdb.connect(str(package / "data.duckdb")) as connection:
         connection.execute(corpus["seed_sql"])
     spec = importlib.util.spec_from_file_location(
         "metric_card", ROOT / "examples/bi_consumer/metric_card.py"
@@ -79,7 +114,7 @@ def test_framework_import_to_governed_bi_card(portable, tmp_path):
         lambda query: calls.append(query) or {},
     )
     assert calls[0]["select"][0]["expression"]["metric"] == corpus["expected_metric_ids"][0]
-    runtime = Runtime.from_path(str(report.package_dir))
+    runtime = Runtime.from_path(str(package))
     try:
         card = module.render_metric_card(
             artifact, (corpus["namespace"], corpus["expected_metric_ids"][0]), runtime.query
@@ -101,9 +136,9 @@ def test_complex_builtin_definitions_validate():
     "case", load_contract_fixture("metric_portability.v1.json")["compatibility_cases"]
 )
 def test_shared_compatibility_corpus(portable, case):
-    _, report = portable
-    before = export_metric_portability(report.package_dir)
-    path = report.package_dir / "metrics/customers.yml"
+    _, package = portable
+    before = export_metric_portability(package)
+    path = package / "metrics/customers.yml"
     content = yaml.safe_load(path.read_text())
     if case["change"] == "source_comment":
         path.write_text(path.read_text() + "\n# formatting-only edit\n")
@@ -117,33 +152,33 @@ def test_shared_compatibility_corpus(portable, case):
         content["metrics"]["renamed_count"] = content["metrics"].pop("customer_count")
         path.write_text(yaml.safe_dump(content))
     else:
-        path = report.package_dir / "models/customers.yml"
+        path = package / "models/customers.yml"
         content = yaml.safe_load(path.read_text())
         content["model"]["measures"]["customer_count"]["expr"] = "customer_id + 1"
         path.write_text(yaml.safe_dump(content))
-    after = export_metric_portability(report.package_dir)
+    after = export_metric_portability(package)
     result = compare_metric_portability(before, after)
     assert result["classification"] == case["classification"]
     assert case["code"] in [row["code"] for row in result["changes"]]
 
 
 def test_snapshot_export_survives_disk_mutation_and_relocation(portable, tmp_path):
-    _, report = portable
-    snapshot = load_package_snapshot(report.package_dir)
+    _, package = portable
+    snapshot = load_package_snapshot(package)
     before = export_metric_portability(snapshot)
     validation = export_semantic_contract(snapshot)
     relocated = tmp_path / "moved"
-    shutil.copytree(report.package_dir, relocated)
+    shutil.copytree(package, relocated)
     assert export_metric_portability(relocated) == before
-    (report.package_dir / "metrics/customers.yml").write_text("malformed: [")
+    (package / "metrics/customers.yml").write_text("malformed: [")
     assert export_metric_portability(snapshot) == before
     assert export_semantic_contract(snapshot) == validation
 
 
 @pytest.mark.parametrize("change", ["major", "duplicate", "hash", "definition", "template"])
 def test_invalid_exports_fail_closed(portable, change):
-    _, report = portable
-    before = export_metric_portability(report.package_dir)
+    _, package = portable
+    before = export_metric_portability(package)
     after = deepcopy(before)
     if change == "major":
         after["contract_format_version"] = 2
@@ -160,8 +195,8 @@ def test_invalid_exports_fail_closed(portable, change):
 
 
 def test_optional_fields_are_ignored_but_engine_changes_requalify(portable):
-    _, report = portable
-    before = export_metric_portability(report.package_dir)
+    _, package = portable
+    before = export_metric_portability(package)
     after = deepcopy(before)
     after["future_optional_field"] = "new"
     assert compare_metric_portability(before, after)["compatible"]
@@ -170,27 +205,25 @@ def test_optional_fields_are_ignored_but_engine_changes_requalify(portable):
 
 
 def test_namespace_rename_and_deployment_locator_rules(portable):
-    _, report = portable
-    before = export_metric_portability(report.package_dir)
-    path = report.package_dir / "package.yml"
+    _, package = portable
+    before = export_metric_portability(package)
+    path = package / "package.yml"
     content = yaml.safe_load(path.read_text())
     content["package"]["default_db"] = "new-data.duckdb"
     path.write_text(yaml.safe_dump(content))
-    moved = export_metric_portability(report.package_dir)
+    moved = export_metric_portability(package)
     assert moved["metrics"] == before["metrics"]
     assert compare_metric_portability(before, moved)["classification"] == "metadata"
     content["package"]["namespace"] = "renamed"
     path.write_text(yaml.safe_dump(content))
-    assert not compare_metric_portability(before, export_metric_portability(report.package_dir))[
-        "compatible"
-    ]
+    assert not compare_metric_portability(before, export_metric_portability(package))["compatible"]
 
 
 def test_cli_selects_portability_without_changing_default(portable, tmp_path):
     import subprocess
     import sys
 
-    _, report = portable
+    _, package = portable
     output = tmp_path / "metrics.json"
     base = [
         sys.executable,
@@ -198,21 +231,21 @@ def test_cli_selects_portability_without_changing_default(portable, tmp_path):
         "semantic_rails",
         "export-contract",
         "--path",
-        str(report.package_dir),
+        str(package),
         "--output",
         str(output),
     ]
     subprocess.run(
         [*base, "--format", "metrics"], check=True, capture_output=True, text=True, timeout=120
     )
-    assert json.loads(output.read_text()) == export_metric_portability(report.package_dir)
+    assert json.loads(output.read_text()) == export_metric_portability(package)
     subprocess.run(base, check=True, capture_output=True, text=True, timeout=120)
-    assert json.loads(output.read_text()) == export_semantic_contract(report.package_dir)
+    assert json.loads(output.read_text()) == export_semantic_contract(package)
 
 
 def test_in_memory_snapshot_has_explicit_identity_and_valid_provenance(portable):
-    corpus, report = portable
-    captured = load_package_snapshot(report.package_dir)
+    corpus, package = portable
+    captured = load_package_snapshot(package)
     snapshot = LoadedPackageSnapshot.from_config(captured.config)
     with pytest.raises(ValueError, match="explicit namespace"):
         export_metric_portability(snapshot)
@@ -227,33 +260,24 @@ def test_in_memory_snapshot_has_explicit_identity_and_valid_provenance(portable)
 def test_import_provenance_version_is_strict(portable, version):
     from semantic_rails.errors import SemanticLayerError
 
-    _, report = portable
-    provenance = {**report.provenance, "format_version": version}
+    _, package = portable
+    provenance = {
+        "framework": "metricflow",
+        "parsed_input_hash": "sha256:" + "0" * 64,
+        "warnings": [],
+        "format_version": version,
+    }
     with pytest.raises(SemanticLayerError, match="provenance"):
-        export_metric_portability(report.package_dir, import_provenance=provenance)
-
-
-def test_import_loss_warning_survives_export(tmp_path):
-    corpus = load_contract_fixture("metric_portability.v1.json")
-    corpus["framework_input"]["metrics"].append({"name": "unrecognized", "type": "future_type"})
-    source = tmp_path / "semantic_manifest.json"
-    source.write_text(json.dumps(corpus["framework_input"]))
-    report = translate(
-        source, tmp_path, package_id=corpus["package_id"], namespace=corpus["namespace"]
-    )
-    artifact = export_metric_portability(report.package_dir, import_provenance=report.provenance)
-    assert artifact["provenance"]["import"]["warnings"] == report.warnings
-    assert any("unrecognized" in warning and "skipped" in warning for warning in report.warnings)
-    assert [row["id"] for row in artifact["metrics"]] == corpus["expected_metric_ids"]
+        export_metric_portability(package, import_provenance=provenance)
 
 
 def test_distribution_sidecar_does_not_become_semantic_authority(portable):
-    _, report = portable
-    before = export_metric_portability(report.package_dir)
-    sidecar = report.package_dir / "artifacts/metric_portability.v1.json"
+    _, package = portable
+    before = export_metric_portability(package)
+    sidecar = package / "artifacts/metric_portability.v1.json"
     sidecar.parent.mkdir()
     sidecar.write_text(json.dumps(before))
-    after = export_metric_portability(report.package_dir)
+    after = export_metric_portability(package)
     assert after["metrics"] == before["metrics"]
     assert after["package"]["semantic_hash"] == before["package"]["semantic_hash"]
     # Source identity covers the newly added file; the artifact attests the
@@ -264,8 +288,8 @@ def test_distribution_sidecar_does_not_become_semantic_authority(portable):
 def test_definitions_share_snapshot_canonicalization_for_metadata(portable):
     from datetime import date
 
-    corpus, report = portable
-    config = load_package_snapshot(report.package_dir).config
+    corpus, package = portable
+    config = load_package_snapshot(package).config
     config.metric_recipes[0].meta["reviewed_at"] = date(2026, 1, 1)
     snapshot = LoadedPackageSnapshot.from_config(config)
     artifact = export_metric_portability(snapshot, namespace=corpus["namespace"])

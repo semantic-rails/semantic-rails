@@ -118,6 +118,5 @@ import leaves no files behind.
 The imported package reads data another tool built: `--default-db` names the DuckDB file
 (default `data/<package-id>.duckdb`, with `seed: {kind: external}`). A document written for
 Snowflake gets a `snowflake_cli` connection named after the package; other warehouses are
-refused. `--warehouse`,
-`--description` and `--schema-strict` apply to `--from metricflow` only. With a sidecar,
+refused. With a sidecar,
 `--package-id` and `--namespace`, when given, must be the sidecar's.

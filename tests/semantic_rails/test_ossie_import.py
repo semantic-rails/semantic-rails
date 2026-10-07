@@ -416,3 +416,49 @@ def test_cli_import_writes_a_package_and_refuses_to_overwrite(
     with pytest.raises(SystemExit):
         main()
     assert "CONFIG_CONFLICT" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "option", [["--warehouse", "duckdb"], ["--description", "Example"], ["--schema-strict"]]
+)
+def test_import_refuses_removed_translation_options(option):
+    from semantic_rails.cli.app import build_parser
+
+    with pytest.raises(SystemExit) as exc:
+        build_parser().parse_args(
+            [
+                "import",
+                "--from",
+                "ossie",
+                "--source",
+                "input.yml",
+                "--output",
+                "out",
+                "--package-id",
+                "example",
+                *option,
+            ]
+        )
+    assert exc.value.code == 2
+
+
+def test_import_refuses_unsupported_source_format(tmp_path):
+    from semantic_rails.cli.app import build_parser
+
+    output = tmp_path / "out"
+    with pytest.raises(SystemExit) as exc:
+        build_parser().parse_args(
+            [
+                "import",
+                "--from",
+                "metricflow",
+                "--source",
+                "input.yml",
+                "--output",
+                str(output),
+                "--package-id",
+                "example",
+            ]
+        )
+    assert exc.value.code == 2
+    assert not output.exists()

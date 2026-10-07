@@ -15,7 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-pytest_plugins = ["scripts.test_quarantine"]
+pytest_plugins = ["scripts.test_quarantine", "scripts.test_sharding"]
 
 _call_connections = pytest.StashKey["weakref.WeakSet[duckdb.DuckDBPyConnection]"]()
 _fixture_connections: weakref.WeakSet[duckdb.DuckDBPyConnection] = weakref.WeakSet()

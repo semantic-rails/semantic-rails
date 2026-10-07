@@ -59,12 +59,67 @@ Without local metadata,
 the existing semantic-kind hints remain; an existing database that cannot be
 opened read-only raises `INVALID_CONFIG`. Physical type metadata can change
 without changing `semantic_hash`, which fingerprints package semantics only.
+Pass `physical_types=False` to `export_semantic_contract` to skip local database
+inspection entirely and export only semantic-kind hints.
 
 dbt, SQLMesh, and future integrations own an optional `binding` object. A
 binding schema composes with
 `https://semantic-rails.com/schemas/semantic_contract.v1.json` and narrows the
 extension for its framework. An integration must not independently parse
 Semantic Rails YAML or redefine `semantic_hash`.
+
+## Static semantic contract comparison
+
+```python
+from semantic_rails.embedding import diff_semantic_contract
+
+# committed is the already parsed semantic_rails_contract.yml mapping.
+report = diff_semantic_contract("./my_semantic_project", committed)
+```
+
+The package can also be a `LoadedPackageSnapshot`. Comparison uses the same
+exporter with `physical_types=False`: it never opens a warehouse or the package's
+`default_db`, even when a local DuckDB file exists. The caller owns reading and
+parsing the committed file, including file size and regular-file checks; the API
+accepts parsed data rather than a filename or YAML string.
+
+Only composed v1 (`contract_format_version: 1`, `semantic.packages`) is accepted,
+optionally wrapped once under `semantic_rails_contracts`. The package matches by
+`package_id`, models by `semantic_model_id`, and column names case-insensitively.
+Comparison requires exactly one matching package and validates all package,
+model, and column rows before indexing. Malformed comparison rows, unsupported
+versions, missing packages, or duplicate package/model identities or
+case-insensitive column names raise `SemanticLayerError` with code
+`INVALID_CONTRACT` and `details.reason`; they never return an empty success.
+The legacy top-level `packages/models` format must be regenerated.
+
+The report contains `ok`, `package_id`, `covered_models` (sorted matched model
+IDs), `drift`, and `notes`. Each row contains `code`, `semantic_model_id`,
+`relation`, `column`, `required_by`, `contract_column`, and `message`. Model-level
+rows have null column names and an empty `required_by`. For a missing column,
+shared semantic-object references identify the columns previously read in the
+message; `contract_column` names the previous column when the match is unique.
+
+`ok` is false only for drift in covered models:
+
+- `CONTRACT_COLUMN_MISSING`: the package reads a column the contract lacks.
+- `RELATION_CHANGED`: relation identifier parts differ case-insensitively;
+  omitted or empty committed relations are skipped.
+- `COLUMN_TYPE_CHANGED`: authored hints and committed types have different
+  known families, after stripping parameters. The families are text (`string`,
+  `varchar`, `text`, `character varying`, `char`, `uuid`), number (`integer`,
+  `int`, `bigint`, `smallint`, `hugeint`, `number`, `numeric`, `decimal`, `double`,
+  `float`, `real`), boolean (`boolean`, `bool`), and temporal (`date`, `datetime`,
+  `timestamp*`, `timestamptz`).
+
+Notes never fail comparison: `CONTRACT_MODEL_NOT_COVERED` lists current models
+outside the selective contract, `COLUMN_UNUSED` lists columns or models no
+longer read, and `TYPE_NOT_COMPARED` lists missing or unknown type hints.
+Fingerprint, producer, namespace, package schema version, and `required_by`
+changes are not drift. `required_by` must still have its list-of-strings shape
+and is used for missing-column messages. Adapter-owned `binding` is never read.
+This static check verifies declared column compatibility; it does not prove
+query results or actual warehouse schema compatibility.
 
 ## Metric portability for BI consumers
 
@@ -107,14 +162,10 @@ authored namespace; callers must supply `namespace=` explicitly on export.
 File-backed snapshots derive it from the captured authored package and reject
 an override that would retarget metric identity.
 
-The MetricFlow translator's `TranslationReport.provenance` supplies a versioned
-parsed-input digest and loss/unsupported-feature warnings. Pass it explicitly
-as `import_provenance` when exporting to preserve that evidence. It records the
-input to translation, not a signed claim about subsequent author edits. The
-installed `load_contract_fixture("metric_portability.v1.json")` corpus drives
+The installed `load_contract_fixture("metric_portability.v1.json")` corpus drives
 engine and native-adapter conformance without independent fixture copies.
 Native dbt macros and SQLMesh graph checks still run without the engine;
-translation/export is an optional authoring step outside their runtime.
+contract export is an optional authoring step outside their runtime.
 
 This full-package author/export artifact contains physical expressions and
 supporting definitions. Cloud distribution must use full-package author rights

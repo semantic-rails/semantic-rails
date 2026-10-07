@@ -78,7 +78,7 @@ def test_guard_flags_exactly_the_unbounded_waits(source: str, flagged: bool) -> 
 def test_every_wait_in_the_backend_tests_is_bounded() -> None:
     found = [
         f"{path.relative_to(ROOT)}:{line} {call}"
-        for directory in ("tests/semantic_rails", "tests/mf2sr")
+        for directory in ("tests/semantic_rails",)
         for path in sorted((ROOT / directory).rglob("*.py"))
         for line, call in unbounded_waits(path.read_text(encoding="utf-8"))
     ]
