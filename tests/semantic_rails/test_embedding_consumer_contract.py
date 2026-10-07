@@ -161,7 +161,7 @@ from semantic_rails.embedding import Runtime, create_warehouse_adapter
 def build():
     runtime = Runtime.from_path("package")
     result = create_warehouse_adapter("package")
-    client = result
+    client = create_warehouse_adapter("package")
     entry.runtime = runtime
     entry.result = result
     entry.client = client
