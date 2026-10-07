@@ -180,14 +180,18 @@ def test_guard_selects_changed_tests_and_all_direct_import_forms(tmp_path):
     ]
     for i, source in enumerate(imports):
         write_file(tmp_path, f"tests/semantic_rails/test_{i}.py", source)
-    write_file(tmp_path, "tests/mf2sr/test_changed.py", "")
+    write_file(tmp_path, "tests/semantic_rails/test_changed.py", "")
     write_file(tmp_path, "tests/semantic_rails/test_unrelated.py", "import semantic_rails.config")
     write_file(tmp_path, "tests/integration/test_warehouse.py", "import semantic_rails.db")
     selected = flake_guard.select_tests(
         tmp_path,
-        ["semantic_rails/db.py", "tests/mf2sr/test_changed.py", "tests/mf2sr/test_deleted.py"],
+        [
+            "semantic_rails/db.py",
+            "tests/semantic_rails/test_changed.py",
+            "tests/semantic_rails/test_deleted.py",
+        ],
     )
-    assert selected == ["tests/mf2sr/test_changed.py"] + [
+    assert selected == ["tests/semantic_rails/test_changed.py"] + [
         f"tests/semantic_rails/test_{i}.py" for i in range(4)
     ]
 
@@ -232,12 +236,13 @@ def test_guard_sums_module_and_class_durations_without_matching_other_files(tmp_
         '<testsuites><testsuite><testcase classname="tests.test_sample" time="20"/>'
         '<testcase classname="tests.test_sample.TestGroup" time="40"/>'
         '<testcase classname="tests.test_sample_other" time="999"/>'
-        '<testcase classname="tests.mf2sr.test_import" time="10"/>'
+        '<testcase classname="tests.semantic_rails.test_import" time="10"/>'
         "</testsuite></testsuites>"
     )
     assert flake_guard.measured_durations(
-        report, ["tests/test_sample.py", "tests/mf2sr/test_import.py", "tests/test_missing.py"]
-    ) == {"tests/test_sample.py": 60, "tests/mf2sr/test_import.py": 10}
+        report,
+        ["tests/test_sample.py", "tests/semantic_rails/test_import.py", "tests/test_missing.py"],
+    ) == {"tests/test_sample.py": 60, "tests/semantic_rails/test_import.py": 10}
 
 
 def test_guard_sizes_first_repetition_from_main_report(monkeypatch, tmp_path, capsys):

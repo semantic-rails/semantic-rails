@@ -107,14 +107,10 @@ authored namespace; callers must supply `namespace=` explicitly on export.
 File-backed snapshots derive it from the captured authored package and reject
 an override that would retarget metric identity.
 
-The MetricFlow translator's `TranslationReport.provenance` supplies a versioned
-parsed-input digest and loss/unsupported-feature warnings. Pass it explicitly
-as `import_provenance` when exporting to preserve that evidence. It records the
-input to translation, not a signed claim about subsequent author edits. The
-installed `load_contract_fixture("metric_portability.v1.json")` corpus drives
+The installed `load_contract_fixture("metric_portability.v1.json")` corpus drives
 engine and native-adapter conformance without independent fixture copies.
 Native dbt macros and SQLMesh graph checks still run without the engine;
-translation/export is an optional authoring step outside their runtime.
+contract export is an optional authoring step outside their runtime.
 
 This full-package author/export artifact contains physical expressions and
 supporting definitions. Cloud distribution must use full-package author rights

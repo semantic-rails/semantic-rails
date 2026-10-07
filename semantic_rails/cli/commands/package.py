@@ -115,12 +115,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
 
 def cmd_import(args: argparse.Namespace) -> None:
-    """Translate an external semantic-layer config into a Semantic Rails
-    package directory. Today supports `--from metricflow` (a MetricFlow
-    YAML directory or a dbt-emitted `semantic_manifest.json`). No
-    MetricFlow runtime is required — the translator reads YAML/JSON
-    files standalone. `--from ossie` reads an Apache Ossie document and
-    the Semantic Rails sidecar beside it."""
+    """Import an Apache Ossie document and its Semantic Rails sidecar."""
     if args.source_format == "ossie":
         try:
             _print(
@@ -134,32 +129,6 @@ def cmd_import(args: argparse.Namespace) -> None:
             )
         except FileExistsError as exc:
             raise SemanticLayerError("CONFIG_CONFLICT", str(exc)) from exc
-        return
-    if args.source_format == "metricflow":
-        from mf2sr import translate
-
-        try:
-            report = translate(
-                Path(args.source),
-                Path(args.output),
-                package_id=args.package_id,
-                namespace=args.namespace,
-                warehouse=args.warehouse,
-                default_db=args.default_db,
-                description=args.description,
-                schema_strict=args.schema_strict,
-            )
-        except FileExistsError as exc:
-            raise SemanticLayerError("CONFIG_CONFLICT", str(exc)) from exc
-        _print(
-            {
-                "ok": True,
-                "package_dir": str(report.package_dir),
-                "models_emitted": report.models_emitted,
-                "metrics_emitted": report.metrics_emitted,
-                "warnings": report.warnings,
-            }
-        )
         return
     raise SemanticLayerError(
         "INVALID_CONFIG",

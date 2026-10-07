@@ -156,6 +156,10 @@ def validate_local_links(errors: list[str]) -> None:
     for rel in public_reference_files():
         path = REPO_ROOT / rel
         text = path.read_text(encoding="utf-8")
+        if rel == "CHANGELOG.md":
+            # Released entries can reference files removed in a later release.
+            # Check current content; pending fragments are checked separately.
+            text = re.split(r"(?m)^## (?!Unreleased\b)", text, maxsplit=1)[0]
         links = markdown_links(text)
         # Fragments are written as they will read once folded into the root CHANGELOG.md.
         fragment = rel.startswith("changelog.d/") and path.name != "README.md"
@@ -409,14 +413,9 @@ HYGIENE_FORBIDDEN_PATH_PATTERNS = [
         r"^configs/(?!semantic_rails/|examples/semantic_rails_capabilities_reference\.yml$"
         r"|examples/semantic_rails_package_starter\.yml$).+"
     ),
-    # ``tests/mf2sr/`` is the test root for the MetricFlow → Semantic
-    # Rails translator surfaced as ``semantic-rails import --from
-    # metricflow`` (mf2sr package). ``tests/integration/`` is the
-    # cross-warehouse conformance suite (targets, fixture loaders, and
-    # the parity battery documented in docs/ADDING_A_DIALECT.md). Both
-    # are part of the public release surface.
+    # The runtime tests and cross-warehouse conformance suite are public.
     re.compile(
-        r"^tests/(?!semantic_rails/|mf2sr/|integration/|__init__\.py$|conftest\.py$|quarantine\.toml$).+"
+        r"^tests/(?!semantic_rails/|integration/|__init__\.py$|conftest\.py$|quarantine\.toml$).+"
     ),
     re.compile(r"^contracts/"),
     re.compile(r"^capabilities/"),
@@ -758,13 +757,10 @@ def main(argv: list[str] | None = None) -> int:
     pyproject = read("pyproject.toml")
     if 'name = "semantic-rails"' not in pyproject:
         errors.append("pyproject.toml must publish the semantic-rails project name")
-    # The published wheel ships the core package plus mf2sr (the MetricFlow
-    # translator behind `semantic-rails import`, gated by tests/mf2sr in
-    # every workflow). Any other include list is rejected so internal-only
-    # code (dev tooling, rename shims) cannot sneak into the published wheel.
+    # Only runtime packages belong in the published wheel.
     packages_find = (
         "[tool.setuptools.packages.find]" in pyproject
-        and 'include = ["semantic_rails", "semantic_rails.*", "mf2sr", "mf2sr.*"]' in pyproject
+        and 'include = ["semantic_rails", "semantic_rails.*"]' in pyproject
     )
     if 'packages = ["semantic_rails"]' not in pyproject and not packages_find:
         errors.append("pyproject.toml must package semantic_rails and its subpackages only")
@@ -840,7 +836,7 @@ def main(argv: list[str] | None = None) -> int:
     ci = read(".github/workflows/ci.yml")
     for required_ci_command in (
         "uv run python scripts/changelog_fragments.py check",
-        "uv run pytest -q tests/semantic_rails tests/mf2sr -n auto",
+        "uv run pytest -q tests/semantic_rails -n auto",
         "uv run semantic-rails parse-config --package jaffle_shop",
         "uv run semantic-rails validate-config --package jaffle_shop --quiet",
         "uv run semantic-rails test-package --package jaffle_shop",
