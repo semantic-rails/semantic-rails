@@ -1606,9 +1606,11 @@ measures:
 
 A measure authored `publish: false` is not offered to agents: `discover` doesn't list it,
 and `plan` doesn't answer with it unless the query names it by id. When a metric reads it
-through a filter, it is a building block, and `plan` answers with that metric. `inspect` and
-Query IR still take the measure by id. Without `schema_strict`, `publish: false` only keeps
-the loader from publishing the measure as a metric of its own name. A metric that aggregates
+through a filter, it is a building block. `plan` answers with the metric when it is the only
+one that filters the measure or the question names it, and otherwise holds the draft. `inspect`
+and Query IR still take the measure by id; request metadata never names it. Without
+`schema_strict`, `publish: false` also keeps the loader from publishing the measure as a metric
+of its own name. A metric that aggregates
 the measure whole publishes it. `plan` also holds a draft over a published measure while a metric
 filters its rows on a dimension of the measure's entity, such as a class; to count every row,
 select the measure by id, or filter or group by that class dimension.

@@ -16,10 +16,10 @@ from __future__ import annotations
 import contextlib
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, fields
+from dataclasses import asdict
 from typing import Any
 
-from .ast import NormalizedQuery, normalize_partial_query, normalize_query
+from .ast import _QUERY_IR_KEYS, normalize_partial_query, normalize_query
 from .catalog_search import (
     CatalogSearchDocument,
     SearchTerms,
@@ -108,11 +108,6 @@ from .schema import MetricConfig, PackageConfig
 from .scope import classify_question
 from .segments import build_segment_query, normalize_segment
 from .temporal_support import require_temporal_support, validate_temporal_support
-
-# Query IR fields: the fields of a normalized query. Query patches and
-# query_state carry only these: never the request's policy context, response
-# options or the tool's own arguments.
-_QUERY_IR_KEYS = tuple(field.name for field in fields(NormalizedQuery))
 
 
 def _query_ir(query: dict[str, Any] | None) -> dict[str, Any]:
