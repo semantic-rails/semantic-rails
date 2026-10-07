@@ -926,31 +926,46 @@ def _subject_window_gaps(config: Any, query: dict[str, Any]) -> list[CoverageGap
 
 
 def _stock_as_of_gaps(config: Any, query: dict[str, Any]) -> list[CoverageGap]:
-    """Hold multi-series stocks unless each answer row reads one as-of day."""
+    """Hold predicate stocks at any grain, and direct stocks without one as-of day."""
     grain = _time_block(query).get("grain") or None
-    if grain == "day":
-        return []
     try:
         stocks = _multi_series_stocks(config, query)
     except Exception:  # noqa: BLE001 — an unreadable stock cannot make a draft ready
         stocks = None
-    if stocks == []:
+    if stocks is not None and grain == "day":
+        stocks = {stock: True for stock, predicate in stocks.items() if predicate}
+    if stocks == {}:
         return []
     shown = visible_object_ids(config, stocks or [])
     period = f"each {grain}" if grain else "the whole history (no time block)"
-    label = str(getattr(_object_by_id(config.measures, shown[0]), "label", "")) if shown else ""
+    selected = (
+        visible_object_ids(config, _projected_subject_ids(query)) if stocks is not None else []
+    )
+    recipes = {row.id: row for row in config.metric_recipes} if selected else {}
+    metric = next((recipes[subject] for subject in selected if subject in recipes), None)
+    label = str(getattr(metric, "label", "") or "")
+    if not label and shown:
+        label = str(getattr(_object_by_id(config.measures, shown[0]), "label", "") or "")
     label = label or "the balance"
+    predicate_stock = any((stocks or {}).values())
     return [
         CoverageGap(
             kind="stock_as_of_unrealized",
             clause=", ".join(shown) or "stock",
-            message=f"Read a balance on one day; this draft adds each series' last value over {period}.",
+            message=(
+                "A balance read through a predicate may have its own time scope; "
+                "the outer grain does not prove a one-day read."
+                if predicate_stock
+                else f"Read a balance on one day; this draft adds each series' last value over {period}."
+            ),
             expected={"grain": "day", "stocks": shown},
             actual={"grain": grain},
             recovery_hint={
                 "kind": "ask_for_one_day",
                 "message": (
-                    f"Ask for '{label} yesterday' or '{label} on 2026-10-04', "
+                    "Choose a metric without a stock predicate, or select the balance directly."
+                    if predicate_stock
+                    else f"Ask for '{label} yesterday' or '{label} on <YYYY-MM-DD>', "
                     "or set time.grain: day with that day's start and end."
                 ),
             },
@@ -958,29 +973,42 @@ def _stock_as_of_gaps(config: Any, query: dict[str, Any]) -> list[CoverageGap]:
     ]
 
 
-def _multi_series_stocks(config: Any, query: dict[str, Any]) -> list[str]:
-    """Find multi-series stocks in selects or metric filters, through metrics at any depth."""
+def _multi_series_stocks(config: Any, query: dict[str, Any]) -> dict[str, bool]:
+    """Map each stock to whether any path to it crosses a predicate, including recipes."""
     measures = {row.id: row for row in config.measures}
     recipes = {row.id: row for row in config.metric_recipes}
-    pending: list[Any] = [query.get("select") or [], query.get("metric_filters") or []]
-    seen: set[str] = set()
-    stocks: list[str] = []
+    pending: list[tuple[Any, bool]] = [
+        (query.get(key) or [], False) for key in ("select", "metric_filters", "where")
+    ]
+    seen: set[tuple[str, bool]] = set()
+    stocks: dict[str, bool] = {}
     while pending:
-        for node in _dict_nodes(pending.pop()):
-            for object_id in (node.get(key) for key in ("measure", "metric", "metric_recipe")):
-                if not isinstance(object_id, str) or object_id in seen:
-                    continue
-                seen.add(object_id)
-                if (recipe := recipes.get(object_id)) is not None:
-                    pending.append(expr_to_dict(recipe.expression))
-                elif (row := measures.get(object_id)) is not None and (
-                    row.measure_class == "semi_additive"
-                ):
-                    clock = row.default_temporal_role or next(
-                        iter(row.compatible_temporal_roles or []), ""
-                    )
-                    if _snapshot_series_columns(row, clock, config):
-                        stocks.append(object_id)
+        node, predicate = pending.pop()
+        if isinstance(node, list):
+            pending.extend((child, predicate) for child in node)
+            continue
+        if not isinstance(node, dict):
+            continue
+        predicate = predicate or node.get("kind") == "metric_predicate"
+        pending.extend(
+            (child, predicate or (node.get("kind") == "scoped_aggregate" and key == "predicates"))
+            for key, child in node.items()
+            if isinstance(child, (dict, list))
+        )
+        for object_id in (node.get(key) for key in ("measure", "metric", "metric_recipe")):
+            if not isinstance(object_id, str) or (object_id, predicate) in seen:
+                continue
+            seen.add((object_id, predicate))
+            if (recipe := recipes.get(object_id)) is not None:
+                pending.append((expr_to_dict(recipe.expression), predicate))
+            elif (
+                row := measures.get(object_id)
+            ) is not None and row.measure_class == "semi_additive":
+                clock = row.default_temporal_role or next(
+                    iter(row.compatible_temporal_roles or []), ""
+                )
+                if _snapshot_series_columns(row, clock, config):
+                    stocks[object_id] = stocks.get(object_id, False) or predicate
     return stocks
 
 
