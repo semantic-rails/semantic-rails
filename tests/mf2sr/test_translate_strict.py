@@ -364,6 +364,158 @@ def test_skipped_dimensions_and_conversions_drop_dependent_metrics(
     assert rows == [{"revenue": expected[0]}]
 
 
+# Per status, `amount` sums to -30, 0 and 12, and `b` sums to 0, 2 and -4.
+SIGNED_ORDERS_SQL = """
+CREATE SCHEMA main_marts;
+CREATE TABLE main_marts.fct_orders (
+  order_id INTEGER, ordered_at DATE, status VARCHAR,
+  order_total DOUBLE, amount DOUBLE, a DOUBLE, b DOUBLE
+);
+INSERT INTO main_marts.fct_orders VALUES
+  (1, DATE '2024-01-01', 'returned', 10, -10, 6, 4),
+  (2, DATE '2024-01-02', 'returned', 20, -20, -9, -4),
+  (3, DATE '2024-01-03', 'placed', 30, 5, 0, 3),
+  (4, DATE '2024-01-04', 'placed', 40, -5, 0, -1),
+  (5, DATE '2024-01-05', 'delivered', 50, 12, 9, -6),
+  (6, DATE '2024-01-06', 'delivered', 60, 0, 0, 2);
+"""
+
+
+def _signed_package(tmp_path: Path, derived: list[dict[str, Any]]) -> Any:
+    """Translate measures and same-named metrics `source`, `a` and `b`, plus ``derived``.
+
+    The same names mean a derived metric written as an aggregate over its
+    first input would still load and run.
+    """
+    source = _manifest(tmp_path, NODE)
+    raw = json.loads(source.read_text())
+    raw["semantic_models"][0]["measures"] += [
+        {"name": "source", "expr": "amount", "agg": "sum"},
+        {"name": "a", "expr": "a", "agg": "sum"},
+        {"name": "b", "expr": "b", "agg": "sum"},
+    ]
+    raw["metrics"] += [
+        {"name": name, "type": "simple", "type_params": {"measure": {"name": name}}}
+        for name in ("source", "a", "b")
+    ]
+    raw["metrics"] += derived
+    source.write_text(json.dumps(raw))
+    report = translate(source, tmp_path / "out", package_id="shop", keep_schema=True)
+    (report.package_dir / "data").mkdir()
+    with duckdb.connect(str(report.package_dir / "data" / "shop.duckdb")) as conn:
+        conn.execute(SIGNED_ORDERS_SQL)
+    return report
+
+
+def _by_status(package_dir: Path, metrics: list[str]) -> dict[str, dict[str, Any]]:
+    query = {
+        "version": 1,
+        "select": [
+            {"expression": {"metric": f"metric.shop.{name}"}, "as": name} for name in metrics
+        ],
+        "group_by": ["dimension.shop_order_status"],
+    }
+    engine = Runtime.from_path(str(package_dir))
+    try:
+        assert engine.compile(query)["ok"] is True
+        rows = typed_rows(engine.query(query))
+    finally:
+        engine.close()
+    return {row.pop("dimension.shop_order_status"): row for row in rows}
+
+
+def _reference(package_dir: Path, columns: dict[str, str]) -> dict[str, dict[str, Any]]:
+    select = ", ".join(f"{sql} AS {name}" for name, sql in columns.items())
+    with duckdb.connect(str(package_dir / "data" / "shop.duckdb"), read_only=True) as conn:
+        rows = conn.execute(
+            f"SELECT status, {select} FROM main_marts.fct_orders GROUP BY status"
+        ).fetchall()
+    return {status: dict(zip(columns, values, strict=True)) for status, *values in rows}
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "ABS(source)",  # -30 for returned orders if written as SUM(amount), not 30
+        "NULLIF(source, 0) + 1",  # 1 for placed orders if NULLIF is dropped, not NULL
+        "NULLIF(a, 0) / b",  # 0 for placed orders if NULLIF is dropped, not NULL
+        "a / (NULLIF(b, 0) + 1)",  # -3 for returned orders if NULLIF is dropped, not NULL
+    ],
+)
+def test_derived_expressions_without_an_exact_translation_are_skipped(
+    tmp_path: Path, expr: str
+) -> None:
+    report = _signed_package(
+        tmp_path,
+        [
+            {
+                "name": "inexact",
+                "type": "derived",
+                "type_params": {
+                    "expr": expr,
+                    "metrics": [{"name": "source"}, {"name": "a"}, {"name": "b"}],
+                },
+            },
+            {
+                "name": "inexact_twice",
+                "type": "derived",
+                "type_params": {
+                    "expr": "base * 2",
+                    "metrics": [{"name": "inexact", "alias": "base"}],
+                },
+            },
+        ],
+    )
+
+    assert report.metrics_emitted == ["revenue", "source", "a", "b"]
+    assert report.warnings == [
+        f"metric `inexact`: could not parse derived expression `{expr}`; "
+        "skipped rather than approximated",
+        "metric `inexact_twice`: it uses `inexact`, which mf2sr skipped; skipped too",
+    ]
+    cfg = load_package_config(report.package_dir)
+    assert {metric.id for metric in cfg.metric_recipes} == {
+        f"metric.shop.{name}" for name in ("revenue", "source", "a", "b")
+    }
+    assert _by_status(report.package_dir, ["revenue", "source", "a", "b"]) == _reference(
+        report.package_dir,
+        {"revenue": "SUM(order_total)", "source": "SUM(amount)", "a": "SUM(a)", "b": "SUM(b)"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("expr", "reference"),
+    [
+        ("a / NULLIF(b, 0)", "SUM(a) / NULLIF(SUM(b), 0)"),
+        ("a * 1.0 / nullif( b , 0 )", "SUM(a) * 1.0 / NULLIF(SUM(b), 0)"),
+    ],
+)
+def test_a_denominator_nullif_matches_the_source_formula(
+    tmp_path: Path, expr: str, reference: str
+) -> None:
+    report = _signed_package(
+        tmp_path,
+        [
+            {
+                "name": "a_per_b",
+                "type": "derived",
+                "type_params": {"expr": expr, "metrics": [{"name": "a"}, {"name": "b"}]},
+            }
+        ],
+    )
+
+    assert report.metrics_emitted == ["revenue", "source", "a", "b", "a_per_b"]
+    assert report.warnings == []
+    rows = _by_status(report.package_dir, ["a_per_b"])
+    assert rows == _reference(report.package_dir, {"a_per_b": reference})
+    # Returned orders' b sums to 0, so the source formula is NULL there.
+    assert rows == {
+        "returned": {"a_per_b": None},
+        "placed": {"a_per_b": 0.0},
+        "delivered": {"a_per_b": -2.25},
+    }
+
+
 @pytest.mark.parametrize("dimension_expr", ["status", "lower(status)"])
 def test_dimension_and_percentile_output_uses_loadable_keys(
     tmp_path: Path, dimension_expr: str

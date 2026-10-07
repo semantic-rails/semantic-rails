@@ -1098,31 +1098,11 @@ def _build_metric(
                 alias_map[alias] = base
         ast_expr = _parse_derived_expression(expr_str, alias_map, report, name)
         if ast_expr is None:
-            # As a last resort, emit a placeholder kind:aggregate over
-            # the first input metric's measure with the formula in the
-            # description. Caller will see the warning and edit it.
-            fallback = input_metrics[0].get("name") if input_metrics else None
-            if not fallback:
-                report.warnings.append(
-                    f"metric `{name}`: could not parse derived expression "
-                    f"`{expr_str}` and no input metrics — skipping."
-                )
-                return None
             report.warnings.append(
-                f"metric `{name}`: could not parse derived expression "
-                f"`{expr_str}` — emitted as aggregate over `{fallback}` "
-                "with the formula stored in `description`. Author should "
-                "rewrite by hand."
+                f"metric `{name}`: could not parse derived expression `{expr_str}`; "
+                "skipped rather than approximated"
             )
-            vt = measure_value_type.get(fallback, "number")
-            doc = _aggregate_metric_doc(
-                label,
-                f"{description}\n\nOriginal MetricFlow derived expr: {expr_str}",
-                fallback,
-                vt,
-            )
-            owner = measure_owner.get(fallback, "core")
-            return name, doc, owner
+            return None
         # Pick value_type from the first input metric's owning measure.
         first_input = input_metrics[0].get("name") if input_metrics else None
         vt = measure_value_type.get(first_input, "number") if first_input else "number"
@@ -1445,31 +1425,32 @@ def _parse_derived_expression(
 
     We handle the cases that appear in real MetricFlow projects: nested
     binary arithmetic over metric names (with optional aliases) and
-    numeric literals, plus `NULLIF(x, 0)`, which reads as `x` (the engine
-    divides by NULLIF(denominator, 0) for every division).
-    Anything else returns None and the caller picks a fallback.
+    numeric literals, plus `NULLIF(x, 0)` as a division's denominator,
+    which reads as `x` (the engine divides by NULLIF(denominator, 0) for
+    every division). Anything else returns None and the caller skips the
+    metric.
     """
-    # Normalize `NULLIF(x, 0)` so Python's parser doesn't trip on it.
-    # We replace `NULLIF(x, 0)` with `__nullif_zero__(x)` and read it as `x`.
-    normalized = expr.strip()
-    normalized = _rewrite_nullif_zero(normalized)
     try:
-        tree = pyast.parse(normalized, mode="eval")
+        tree = pyast.parse(expr.strip(), mode="eval")
     except SyntaxError:
         return None
     return _to_semantic_ast(tree.body, alias_map, report, metric_name)
 
 
-def _rewrite_nullif_zero(expr: str) -> str:
-    """`NULLIF(x, 0)` -> `__nullif_zero__(x)` for any `x`. Case-insensitive."""
-    import re as _re
-
-    return _re.sub(
-        r"NULLIF\s*\(\s*([^,]+?)\s*,\s*0\s*\)",
-        r"__nullif_zero__(\1)",
-        expr,
-        flags=_re.IGNORECASE,
-    )
+def _nullif_zero_operand(node: pyast.AST) -> pyast.AST | None:
+    """`x` when ``node`` is `NULLIF(x, 0)` (any case), else None."""
+    if (
+        isinstance(node, pyast.Call)
+        and isinstance(node.func, pyast.Name)
+        and node.func.id.upper() == "NULLIF"
+        and len(node.args) == 2
+        and not node.keywords
+        and isinstance(node.args[1], pyast.Constant)
+        and type(node.args[1].value) is int
+        and node.args[1].value == 0
+    ):
+        return node.args[0]
+    return None
 
 
 def _to_semantic_ast(
@@ -1483,7 +1464,10 @@ def _to_semantic_ast(
         if op_type not in _BINOP_MAP:
             return None
         left = _to_semantic_ast(node.left, alias_map, report, metric_name)
-        right = _to_semantic_ast(node.right, alias_map, report, metric_name)
+        # Only a denominator's NULLIF(x, 0) reads as x: the engine divides by
+        # NULLIF(denominator, 0) already. Anywhere else the metric is skipped.
+        denominator = _nullif_zero_operand(node.right) if op_type is pyast.Div else None
+        right = _to_semantic_ast(denominator or node.right, alias_map, report, metric_name)
         if left is None or right is None:
             return None
         return {"kind": "arithmetic", "op": _BINOP_MAP[op_type], "left": left, "right": right}
@@ -1502,13 +1486,6 @@ def _to_semantic_ast(
     if isinstance(node, pyast.Name):
         canonical = alias_map.get(node.id, node.id)
         return {"kind": "metric", "metric": canonical}
-    if (
-        isinstance(node, pyast.Call)
-        and isinstance(node.func, pyast.Name)
-        and node.func.id == "__nullif_zero__"
-        and len(node.args) == 1
-    ):
-        return _to_semantic_ast(node.args[0], alias_map, report, metric_name)
     return None
 
 

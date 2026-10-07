@@ -58,7 +58,7 @@ files from authored files; choose a fresh output path for each translation.
 | `metric.type: simple` + `filter:` | `kind: aggregate` with `expression: {kind: aggregate, measure, aggregation, filter: {all: [{field, op, value}]}}`. The metric's filter and its measure input's filter are ANDed, and each `entity__dimension` reference becomes that dimension's id |
 | `metric.type: ratio` | `kind: ratio`, or `kind: derived` when a side is filtered. The metric's filter applies to both sides; a ratio whose filters can't be kept is skipped. An unfiltered side retains its explicit source metric definition. |
 | `metric.type: cumulative` | `kind: cumulative` (a running total), `kind: rolling` with `window: {unit, value}` for a `window:`, or `kind: period_to_date` with `period:` for a `grain_to_date:`. A filter stays on the aggregate input. The engine adds up each period's value, so the measure must be a sum or a count of the model's own rows |
-| `metric.type: derived` | `kind: derived` with Python-AST-parsed arithmetic expression |
+| `metric.type: derived` | `kind: derived` with Python-AST-parsed arithmetic expression; formulas it can't translate exactly are skipped (below) |
 | `metric.type: conversion` | Skipped with a warning |
 
 ## What gets dropped (with warnings)
@@ -78,7 +78,7 @@ files from authored files; choose a fresh output path for each translation.
 | Filters on a `derived` metric or its inputs | The derived metric is skipped with a warning, since its filter or its input's filter would otherwise be dropped. |
 | Ratios that filter an explicit source metric they can't reproduce | Skipped with a warning. A source metric that is filtered, non-simple, or named differently from its underlying measure cannot safely be flattened to a filtered measure aggregate. |
 | Metrics that use a skipped metric | Skipped too, with a warning. Explicit source metrics take precedence over same-named measures, including in ratios and transitive dependents. |
-| `derived` expressions that aren't parseable as Python arithmetic | The metric is emitted as a fallback aggregate over the first input metric with the original formula in the description. |
+| `derived` expressions mf2sr can't translate exactly | Skipped with a warning rather than approximated, and metrics that use them are skipped too. mf2sr translates `+`, `-`, `*`, `/`, unary minus, numeric literals and metric names. It accepts `NULLIF(x, 0)` only as a division's denominator, where it reads as `x` because the engine already divides by `NULLIF(denominator, 0)`. Any other function, including `ABS(...)` or `NULLIF` elsewhere in the formula, is skipped. |
 
 ## Where the output goes
 
