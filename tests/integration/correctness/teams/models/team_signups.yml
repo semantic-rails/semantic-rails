@@ -1,0 +1,11 @@
+model:
+  id: team_signups
+  label: Team signups
+  relation: team_signups
+  entities: {team_signup: {}, team: {}}
+  times:
+    signed_up_at: {label: Signup time, column: signed_up_at, kind: timestamp, class: event_time,
+      supported_grains: [day, month], default: true}
+  measures:
+    new_teams: {label: New teams, kind: entity_count, entity_key: signup_id,
+      accumulation: {kind: flow}}

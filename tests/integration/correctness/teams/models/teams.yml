@@ -1,0 +1,13 @@
+model:
+  id: teams
+  label: Teams
+  relation: teams
+  entities: {team: {}}
+  times:
+    created_at: {label: Team created, column: created_at, kind: timestamp, class: event_time,
+      supported_grains: [day, month], default: true}
+  dimensions:
+    plan_tier: {label: Plan tier, kind: categorical}
+  measures:
+    team_count: {label: Teams, kind: entity_count, entity_key: team_id,
+      accumulation: {kind: flow}}

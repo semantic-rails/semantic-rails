@@ -1,0 +1,9 @@
+model:
+  id: members
+  label: Members
+  relation: members
+  entities: {member: {}}
+  dimensions:
+    member_name: {label: Member name, kind: categorical}
+  measures:
+    member_count: {label: Members, kind: entity_count, entity_key: member_id}

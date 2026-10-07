@@ -1871,6 +1871,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
                     for item in _ensure_list(entity_spec.get("disallowed_names"))
                     if str(item).strip()
                 ],
+                bridge=model.get("_bridge_declared") is True,
             )
         )
         entity_lookup[str(entity_key)] = entity_id
