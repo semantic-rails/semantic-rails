@@ -1093,9 +1093,12 @@ warning naming the hop (`details`: `use`, `dimension`, `entity` (the versioned e
   suitable output remains visible, it uses row counts and omits `measures`. A complete
   answer (not truncated, no `limit`, no metric
   filter) with no empty value carries no warning; any other answer keeps the compiled one.
-- **Filtered by it** (`use: filter`): every stage says "Plan filter: rows with no Billing
-  version valid at their time are left out by this filter." `IS NULL` and equality to NULL
-  select the empty values and carry no such warning.
+- **Filtered by it** (`use: filter`): for known NULL-excluding forms, every stage says
+  "Plan filter: rows with no Billing version valid at their time are left out by this filter."
+  These are `IS NOT NULL`, `IN` / `NOT IN`, inequality to NULL, and ordinary comparisons or
+  `LIKE` / `NOT LIKE` with a non-NULL value. Operator case and spacing follow SQL lowering.
+  `IS NULL`, `=` / `IS` with NULL, null-safe comparisons and boolean `IS` / `IS NOT` carry no
+  such warning. Multiple excluding filters on the same dimension produce one filter warning.
 
 A path that only leaves the versioned table (`customer_history → customer` here) reads one
 version per row and gets no warning. A version written moments after its event (a billing

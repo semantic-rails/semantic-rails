@@ -542,7 +542,7 @@ def test_history_totals_are_not_summed_across_a_fanout_grouping(teams):
     assert "measures" not in warning["details"]
 
 
-@pytest.mark.parametrize("op", ["IS NULL", "="])
+@pytest.mark.parametrize("op", ["IS NULL", "=", "is null", " IS   NULL ", "IS", "is"])
 def test_a_null_accepting_history_filter_never_says_it_leaves_rows_out(teams, op):
     runtime = teams.runtimes["base"]
     query = _select(
@@ -560,6 +560,30 @@ def test_a_null_accepting_history_filter_never_says_it_leaves_rows_out(teams, op
     for response in (out, runtime.validate(query), runtime.compile(query)):
         assert not _history(response)
         assert "left out" not in json.dumps(response["warnings"])
+
+
+def test_null_rejecting_history_filters_warn_once_per_dimension(teams):
+    runtime = teams.runtimes["base"]
+    query = _select(
+        "new_teams",
+        "new_teams",
+        where=[
+            {"field": PLAN_NAME, "op": "!=", "value": "Enterprise"},
+            {"field": PLAN_NAME, "op": "NOT IN", "value": ["Legacy"]},
+        ],
+        time={"temporal_role": SIGNED_UP, **MARCH},
+    )
+    out = runtime.query(query)
+    reference = "SELECT COUNT(*) FROM team_signups s"
+    reference += VALID_PLAN.format(team="s.team_id", at="s.signed_up_at")
+    reference += " WHERE s.signed_up_at >= TIMESTAMP '2024-03-01'"
+    reference += " AND s.signed_up_at < TIMESTAMP '2024-04-01'"
+    reference += " AND p.plan_name != 'Enterprise' AND p.plan_name NOT IN ('Legacy')"
+    assert _values(out) == _rows(runtime, reference) == [(2,)]
+    for response in (out, runtime.validate(query), runtime.compile(query)):
+        (warning,) = _history(response)
+        assert warning["details"]["use"] == "filter"
+        assert "left out" in warning["message"]
 
 
 def test_an_empty_history_group_is_counted_from_the_returned_rows(teams):

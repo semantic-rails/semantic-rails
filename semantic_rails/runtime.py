@@ -136,7 +136,7 @@ from .seed_provenance import (
     recorded_seed_digest,
 )
 from .segments import build_segment_query, normalize_segment, strip_segment_preview_metric
-from .sql_ast import SqlCall, SqlField, SqlIdentifier, SqlSelect, SqlTableRef
+from .sql_ast import SqlCall, SqlField, SqlIdentifier, SqlSelect, SqlTableRef, filter_rejects_null
 from .sql_identifiers import plain_relation_parts
 from .sql_preparation import PreparedQuery, checked_parameter_values
 from .temporal_support import _date_key, _range_intersects
@@ -536,15 +536,14 @@ def _history_warnings(config, logical_plan) -> list[dict[str, Any]]:
     """NULL_PRESERVING_HISTORY per dimension grouped or filtered by through a hop into a
     validity window (``fanout.hop_reach``), naming the hop; a hop out of a history gets none."""
     dimensions = {row.id: row for row in config.dimensions}
-    uses = [(dim_id, "grouping", "", False) for dim_id in logical_plan.group_by or []]
+    uses = [(dim_id, "grouping") for dim_id in logical_plan.group_by or []]
     uses += [
-        (row.get("field"), "filter", row.get("op"), row.get("value") is None)
+        (row.get("field"), "filter")
         for row in plain_filters(logical_plan.query.get("where"))
+        if filter_rejects_null(row.get("op"), row.get("value"))
     ]
     warnings: list[dict[str, Any]] = []
-    for dim_id, use, op, null_value in dict.fromkeys(uses):
-        if op == "IS NULL" or (op == "=" and null_value):
-            continue
+    for dim_id, use in dict.fromkeys(uses):
         dim = dimensions.get(dim_id)
         path = (logical_plan.selected_paths or {}).get(getattr(dim, "entity", ""), [])
         hops = route_hops(config, logical_plan.root_entity, path)

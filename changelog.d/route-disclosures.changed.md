@@ -16,6 +16,8 @@
   complete answer without one no longer carries it. Totals use visible outputs only and
   fall back to row counts when any grouping fans out. Limited, truncated or metric-filtered
   results retain the static warning. A NULL-rejecting filter through the hop says it leaves
-  rows out; `IS NULL` and equality to NULL carry no such warning.
+  rows out, once per dimension. Classification follows SQL lowering's operator case and
+  spacing; `IS NULL`, `=` / `IS` with NULL, null-safe comparisons and boolean `IS` / `IS NOT`
+  carry no such warning.
 - Route meanings read a hop into a validity window as "the … valid at the time" instead of
   "any of the …".

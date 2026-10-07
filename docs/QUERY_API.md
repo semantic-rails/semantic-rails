@@ -1193,7 +1193,8 @@ Response keys:
 - `timing_ms`
 
 `validate` returns structured diagnostics. It does not need to throw on semantic failure.
-A query that groups or filters by a dimension read through a hop into a validity window gets
+A query that groups by, or applies a known NULL-excluding filter to, a dimension read through
+a hop into a validity window gets
 `NULL_PRESERVING_HISTORY`, naming the hop; on `execute`, a grouped one counts its empty group
 from the returned rows (see
 [`graph.yml`](PACKAGE_AUTHORING.md#graphyml)).

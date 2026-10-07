@@ -51,6 +51,36 @@ from semantic_rails.sql_ast import (
 _COL = SqlIdentifier(parts=["t", "c"])
 
 
+@pytest.mark.parametrize(
+    "op,value,expected",
+    [(op, "x", True) for op in ("=", "!=", "<>", "<", "<=", ">", ">=", "LIKE", "NOT LIKE")]
+    + [(op, None, True) for op in ("!=", "<>", "IS NOT")]
+    + [(op, ["x"], True) for op in ("IN", "NOT IN")]
+    + [("IS NOT NULL", value, True) for value in (None, "ignored")]
+    + [(" is   not null ", None, True), (" not   like ", "x", True), (" is   not ", None, True)]
+    + [(op, None, False) for op in ("IS NULL", "is null", " IS   NULL ", "=", "IS", "is", None)]
+    + [("IS NULL", "ignored", False)]
+    + [(op, None, False) for op in ("<", "<=", ">", ">=", "LIKE", "NOT LIKE")]
+    + [
+        (op, value, False)
+        for op in ("IS DISTINCT FROM", "IS NOT DISTINCT FROM", "<=>")
+        for value in (None, "x")
+    ]
+    + [(op, value, False) for op in ("IS", "IS NOT") for value in (True, False)]
+    + [
+        (" is   not distinct from ", "x", False),
+        ("unknown", "x", False),
+        ("unknown", None, False),
+        ("AND", True, False),
+    ]
+    + [(None, "x", True), ("", "x", True)],
+)
+def test_filter_rejects_null_classifies_only_known_excluding_forms(op, value, expected):
+    from semantic_rails.sql_ast import filter_rejects_null
+
+    assert filter_rejects_null(op, value) is expected
+
+
 @pytest.mark.parametrize("op", ["IS", "IS NOT", "is", " is   not "])
 @pytest.mark.parametrize("value", ["x", "true", "false", 0, 1, 1.0, [], [True], {}])
 @pytest.mark.parametrize("builder", ["filter", "comparison", "binary"])
