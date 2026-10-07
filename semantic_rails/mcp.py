@@ -1826,6 +1826,14 @@ class SemanticLayerMCPAdapter:
     def list_tools(self) -> list[dict[str, Any]]:
         return list_tool_definitions(config=self.runtime.config)
 
+    def _caller_tools(self, arguments: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """The tools a caller's view offers: no segment tool when they see no segment."""
+        try:
+            view = self.runtime.view_for(_resolved_tool_request_context(arguments))
+        except Exception:  # noqa: BLE001 — the call itself refuses an unresolved view
+            return self.list_tools()
+        return list_tool_definitions(config=view)
+
     def list_resources(self) -> list[dict[str, Any]]:
         return list_resource_definitions()
 
@@ -1970,7 +1978,7 @@ class SemanticLayerMCPAdapter:
             decoded, request_context, inject_policy_context=policy_aware
         )
         handler = self._tool_handlers.get(name)
-        available_tools = {tool["name"] for tool in self.list_tools()}
+        available_tools = {tool["name"] for tool in self._caller_tools(args_dict)}
         if handler is None or name not in available_tools:
             details: dict[str, Any] = {"tool": name, "available_tools": sorted(available_tools)}
             message = f"Unknown MCP tool '{name}'"

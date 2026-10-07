@@ -1,11 +1,12 @@
 """The test-side oracle for objects hidden from a caller: the same package with them absent.
 
 ``absent(config, hidden)`` deletes the hidden rows, trims and drops what names them (policies,
-``path_preferences``, aggregate relations, caveats) and drops the visibility policies. It is built
-from the package's own dataclasses, independently of the engine's visible view. A response to a
-caller with ``hidden`` objects is compared, whole, with the response from the absent package, and
-searched for every token of the hidden objects: each id, and each name, label or alias that no
-visible object shares.
+``path_preferences``, aggregate relations, caveats) and drops the visibility policies. Authored
+prose that names a hidden object is left out whole, as the authoring guide states: an object's
+text field, a caveat. It is built from the package's own dataclasses, independently of the
+engine's visible view. A response to a caller with ``hidden`` objects is compared, whole, with
+the response from the absent package, and searched for every token of the hidden objects: each
+id, and each name, label or alias that no visible object shares.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import fields, is_dataclass, replace
+from dataclasses import MISSING, fields, is_dataclass, replace
 from typing import Any
 
 from semantic_rails.errors import SemanticLayerError
@@ -49,6 +50,17 @@ VOLATILE = frozenset(
         "semantic_fingerprint",
         "source_fingerprint",
     }
+)
+# An object's authored text: left out whole when it names a hidden object.
+PROSE = (
+    "description",
+    "topics",
+    "example_entries",
+    "meta",
+    "operational",
+    "authoring_warnings",
+    "validity_windows",
+    "external_discontinuities",
 )
 # metric_constraint config keys that list object ids.
 CONSTRAINT_LISTS = (
@@ -133,10 +145,38 @@ def _trimmed(values: Any, hidden: set[str]) -> Any:
     return values
 
 
+def _named(value: Any, tokens: Mapping[str, re.Pattern[str]]) -> bool:
+    text = value if isinstance(value, str) else json.dumps(value, sort_keys=True, default=str)
+    return bool(value) and any(pattern.search(text) for pattern in tokens.values())
+
+
+def _unnamed(row: Any, tokens: Mapping[str, re.Pattern[str]]) -> Any:
+    """``row`` without each text field that names a hidden object."""
+    changes = {
+        field.name: field.default_factory() if field.default is MISSING else field.default
+        for field in fields(row)
+        if field.name in PROSE and _named(getattr(row, field.name), tokens)
+    }
+    if hasattr(row, "values") and isinstance(row.values, list):  # a value domain's values
+        values = [
+            replace(value, description="") if _named(value.description, tokens) else value
+            for value in row.values
+        ]
+        if values != row.values:
+            changes["values"] = values
+    if hasattr(row, "relationship_path") and _named(row.label, tokens):
+        changes["label"] = ""
+    return replace(row, **changes) if changes else row
+
+
 def absent(config: PackageConfig, hidden: Iterable[str]) -> PackageConfig:
     """``config`` with every hidden object absent, and nothing left naming one."""
     gone = set(hidden)
-    rows = {name: [r for r in getattr(config, name) if r.id not in gone] for name in OBJECT_FIELDS}
+    tokens = hidden_tokens(config, gone)
+    rows = {
+        name: [_unnamed(r, tokens) for r in getattr(config, name) if r.id not in gone]
+        for name in OBJECT_FIELDS
+    }
     policies = []
     for policy in config.semantic_policies:
         if policy.kind == "object_visibility":
@@ -157,7 +197,9 @@ def absent(config: PackageConfig, hidden: Iterable[str]) -> PackageConfig:
         if caveat.object_ids and not listed:
             continue
         rest = [caveat.entity_values, caveat.time, caveat.references, caveat.config]
-        if references(rest, gone):
+        if references(rest, gone) or _named(
+            [caveat.id, caveat.message, caveat.owner, rest], tokens
+        ):
             continue
         caveats.append(replace(caveat, object_ids=listed))
     return replace(
@@ -166,11 +208,19 @@ def absent(config: PackageConfig, hidden: Iterable[str]) -> PackageConfig:
         semantic_policies=policies,
         semantic_caveats=caveats,
         path_preferences=[
-            row for row in config.path_preferences if not references(row, gone)
+            _unnamed(row, tokens) for row in config.path_preferences if not references(row, gone)
         ],
         aggregate_relations=[
-            row for row in config.aggregate_relations if not references(row, gone)
+            _unnamed(row, tokens) for row in config.aggregate_relations if not references(row, gone)
         ],
+        relations=[_unnamed(row, tokens) for row in config.relations],
+        package=replace(config.package, description="")
+        if _named(config.package.description, tokens)
+        else config.package,
+        operational_contract={}
+        if _named(config.operational_contract, tokens)
+        else config.operational_contract,
+        meta_contract={} if _named(config.meta_contract, tokens) else config.meta_contract,
     )
 
 
@@ -185,9 +235,7 @@ def envelope(response: Any) -> Any:
 
 def _identities(row: Any) -> list[str]:
     return [
-        value
-        for value in (row.id, getattr(row, "name", ""), getattr(row, "label", ""))
-        if value
+        value for value in (row.id, getattr(row, "name", ""), getattr(row, "label", "")) if value
     ] + list(getattr(row, "aliases", []) or [])
 
 

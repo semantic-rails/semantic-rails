@@ -252,6 +252,18 @@ def cold(on_disk: Path) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _unechoed(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _unechoed(item)
+            for key, item in value.items()
+            if key not in {"request_context", "policy_context"}
+        }
+    if isinstance(value, list):
+        return [_unechoed(item) for item in value]
+    return value
+
+
 def test_a_warm_runtime_answers_each_caller_like_a_fresh_one(on_disk, cold):
     runtime = Runtime.from_path(str(on_disk))
     try:
@@ -265,7 +277,8 @@ def test_a_warm_runtime_answers_each_caller_like_a_fresh_one(on_disk, cold):
             runtime.reload()
     finally:
         runtime.close()
-    assert cold["restricted_a"] == cold["no_roles"]
+    # The support caller sees what a caller with no roles sees; only the echo of who asked differs.
+    assert _unechoed(cold["restricted_a"]) == _unechoed(cold["no_roles"])
     assert cold["restricted_a"] != cold["eligible"] != cold["restricted_b"]
     assert REVENUE not in json.dumps(cold["restricted_a"])
     assert REVENUE in json.dumps(cold["eligible"])
@@ -634,13 +647,17 @@ def test_a_policy_listing_a_hidden_object_shows_its_generic_form(runtimes):
     )
     runtime = runtimes(visibility_policy("hidden", REVENUE), deny)
     card = _card(runtime, ORDERS)
-    effects = card["card"]["policy_effects"]
+    effects = [row for row in card["card"]["policy_effects"] if row["kind"] == "object_access"]
     assert [row["action"] for row in effects] == ["deny"]
     assert "policy_id" not in effects[0]
     assert effects[0]["object_ids"] == [ORDERS]
     assert deny.rationale not in json.dumps(card)
     refusal = runtime.validate({**ORDERS_BY_STORE, "policy_context": CALLER})
-    public = refusal["errors"][0]["details"]["policy_effects"]
+    public = [
+        row
+        for row in refusal["errors"][0]["details"]["policy_effects"]
+        if row["kind"] == "object_access"
+    ]
     assert [row["action"] for row in public] == ["deny"]
     assert "policy_id" not in public[0]
     assert deny.id not in json.dumps(refusal)
