@@ -7,7 +7,8 @@ included), and each other reachable entity as the target (child groups need no d
 on the child itself).
 
 * :func:`route_census` lists the pairs the resolver refuses until a decision is recorded
-  (``undecided``) and multi-route pairs answered by the start's own key (``assumed``).
+  (``undecided``), multi-route pairs answered by the start's own key (``assumed``), and
+  resolved routes crossing undeclared child rows (``pass_through``).
 * :func:`route_changes` lists the pairs whose resolution differs between two versions of a
   package.
 * :func:`unkept_route_changes` lists answered pairs a change moves without an explicit
@@ -24,10 +25,10 @@ from typing import Any
 from .compiler_parts.indexes import get_package_analysis
 from .errors import SemanticLayerError
 from .fanout import (
-    _has_multiple_routes,
     entity_label,
     package_hop_limit,
     package_route,
+    pass_through_disclosure,
     route_reading,
 )
 from .schema import PackageConfig
@@ -84,27 +85,30 @@ def resolve_pairs(config: PackageConfig, pairs: Iterable[Pair]) -> dict[Pair, Ro
 
 
 def route_census(config: PackageConfig) -> dict[str, list[dict[str, Any]]]:
-    """The census pairs that need a business decision.
+    """The census pairs that need a business decision or a crossing disclosure.
 
     ``undecided``: pairs refused with ``AMBIGUOUS_PATH``, each with the refusal's ``details``
     as raised (its routes, their meanings and the row that records each). ``assumed``: pairs
     answered by the start's own key, with two or more routes, for the author to confirm.
+    ``pass_through``: resolved only or inherited routes crossing undeclared child rows,
+    with the same disclosure as an answer; these are not pairs awaiting a decision.
     """
     undecided: list[dict[str, Any]] = []
     assumed: list[dict[str, Any]] = []
-    graph = get_package_analysis(config).graph
-    pairs = (
-        pair
-        for pair in census_pairs(config)
-        if _has_multiple_routes(graph, *pair, package_hop_limit(config))
-    )
-    for (start, target), outcome in resolve_pairs(config, pairs).items():
+    pass_through: list[dict[str, Any]] = []
+    for (start, target), outcome in resolve_pairs(config, census_pairs(config)).items():
         ends = {"source_entity": start, "target_entity": target}
         if outcome.refused == "AMBIGUOUS_PATH":
             undecided.append({**ends, "details": outcome.details})
         elif outcome.basis == "colocated_key" and len(outcome.routes) >= 2:
             assumed.append({**ends, "relationship_path": [*outcome.path], "basis": outcome.basis})
-    return {"undecided": undecided, "assumed": assumed}
+        elif outcome.basis in {"only_route", "inherited"}:
+            disclosure = pass_through_disclosure(
+                config, start, target, outcome.path, route_basis=outcome.basis
+            )
+            if disclosure:
+                pass_through.append({**ends, "message": disclosure[0], "details": disclosure[1]})
+    return {"undecided": undecided, "assumed": assumed, "pass_through": pass_through}
 
 
 @dataclass(frozen=True)

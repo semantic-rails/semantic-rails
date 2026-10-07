@@ -215,7 +215,13 @@ def route_reading(config: PackageConfig, start: str, path: Sequence[str]) -> str
 
 
 def pass_through_disclosure(
-    config: PackageConfig, start: str, target: str, path: Sequence[str], where: Sequence[Any] = ()
+    config: PackageConfig,
+    start: str,
+    target: str,
+    path: Sequence[str],
+    where: Sequence[Any] = (),
+    *,
+    route_basis: str,
 ) -> tuple[str, dict[str, Any]] | None:
     """A route's ``pass_through`` disclosure, a message and its details with the four fixes
     (a child group restating ``where``, the query's conditions on the target), or None."""
@@ -245,7 +251,13 @@ def pass_through_disclosure(
         "(`bridge: true`), record this route (graph.path_preferences), or ask about the "
         f"{_plural(entity_label(config, first))} with a child group."
     )
-    return message, {"route": list(path), "meaning": meaning, "through": crossings, "fixes": fixes}
+    return message, {
+        "route": list(path),
+        "route_basis": route_basis,
+        "meaning": meaning,
+        "through": crossings,
+        "fixes": fixes,
+    }
 
 
 def _slug(text: str) -> str:

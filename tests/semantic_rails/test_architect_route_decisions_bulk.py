@@ -137,7 +137,11 @@ def test_one_relationship_call_keeps_thirteen_routes_and_reference_answers(tmp_p
     assert {
         pair: outcome.shape() for pair, outcome in resolve_pairs(changed, pairs).items()
     } == outcomes
-    assert route_census(changed) == route_census(config) == {"undecided": [], "assumed": []}
+    assert (
+        route_census(changed)
+        == route_census(config)
+        == {"undecided": [], "assumed": [], "pass_through": []}
+    )
     assert _impact(base, pkg)["route_changes"] == []
     assert _answers(pkg) == {name: _gold(sql) for name, sql in BASE_GOLD.items()}
     assert (

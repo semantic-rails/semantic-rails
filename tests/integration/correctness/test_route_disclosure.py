@@ -129,11 +129,16 @@ def _home_team(spec: dict[str, Any]) -> None:
     spec["model"]["dimensions"]["team_id"] = {"label": "Home team", "kind": "categorical"}
 
 
+def _long_labels(spec: dict[str, Any]) -> None:
+    spec["graph"]["entities"]["member"]["label"] = "Member with a long display label " * 20
+
+
 VARIANTS: dict[str, tuple[str, Callable[[dict[str, Any]], None]] | None] = {
     "base": None,
     "bridge": ("models/member_events.yml", _bridge),
     "recorded": ("graph.yml", _recorded),
     "home_team": ("models/members.yml", _home_team),
+    "long_labels": ("graph.yml", _long_labels),
 }
 
 
@@ -245,6 +250,7 @@ def test_a_route_through_another_tables_rows_says_what_it_counts(
     where = query.get("where", [])
     assert note["details"] == {
         "route": THROUGH_EVENTS,
+        "route_basis": "only_route",
         "meaning": meaning,
         "through": [
             {
@@ -277,8 +283,9 @@ def test_the_pass_through_warning_shows_on_every_surface(teams):
 
 
 @pytest.mark.parametrize("surface", ["runtime", "mcp"])
-def test_minimal_answers_disclose_the_route_basis(teams, surface):
-    runtime = teams.runtimes["base"]
+@pytest.mark.parametrize("variant", ["base", "long_labels"])
+def test_minimal_answers_disclose_the_route_basis(teams, surface, variant):
+    runtime = teams.runtimes[variant]
     out = (
         runtime.query({**MEMBERS_BY_TIER, "verbosity": "minimal"})
         if surface == "runtime"
@@ -289,6 +296,8 @@ def test_minimal_answers_disclose_the_route_basis(teams, surface):
     details = _pass_through(out)["details"]
     assert details["route_basis"] == "only_route"
     assert [row["entity"] for row in details["through"]] == [MEMBER_EVENT]
+    if variant == "long_labels":
+        assert set(details) == {"route", "through", "route_basis"}
 
 
 @pytest.mark.parametrize("detail", ["query", "best", "full"])
@@ -303,15 +312,25 @@ def test_plan_drafts_disclose_the_routes_they_validate(teams, detail, surface):
     out = (
         plan_payload(runtime, **arguments)
         if surface == "runtime"
-        else SemanticLayerMCPAdapter(runtime).call_tool("plan", arguments)
+        else SemanticLayerMCPAdapter(runtime).call_tool(
+            "plan", {"intent": arguments["intent"], "query": MEMBERS_BY_TIER, "detail": detail}
+        )
     )
     assert out["status"] == "ok"
     drafts = [out["best"], *out.get("alternatives", [])]
     assert _pass_through(out)
+    assert _pass_through(out["best"])
     for draft in drafts:
         expected = _codes(runtime.validate(draft["query_ir"]), "ROUTE_PASS_THROUGH")
-        assert expected
-        assert _codes(draft, "ROUTE_PASS_THROUGH") == expected
+        actual = [row for row in draft.get("warnings", []) if row["code"] == "ROUTE_PASS_THROUGH"]
+        assert actual == expected
+        assert all(
+            any(
+                all(actual[key] == warning[key] for key in ("code", "message", "details"))
+                for actual in out["warnings"]
+            )
+            for warning in expected
+        )
     assert _values(runtime.query(out["best"]["query_ir"])) == teams.reference("members_by_tier")
 
 

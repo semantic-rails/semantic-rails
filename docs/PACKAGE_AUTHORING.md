@@ -1084,14 +1084,18 @@ warning naming the hop (`details`: `use`, `dimension`, `entity` (the versioned e
 
 - **Grouped by it** (`use: grouping`): `validate` and `compile` say "Plan: the Billing version
   valid at each row's time; rows with none read an empty Plan." `execute` reads its own
-  returned rows (never a second query): when a row has an empty value, the warning leads with
+  returned rows after policy withholding (never a second query): on a complete result,
+  when a row has an empty value, the warning leads with
   how much of the answer is in that group ("2 of 2 new teams (100%) are in the empty Plan
   group: no Billing version was valid at their time, or it has no Plan"), adding
-  `null_rows`, `rows` and, for each sum or count of the query's own rows, `measures:
-  [{output, null_value, total}]`. A complete answer (not truncated, no `limit`, no metric
+  `null_rows`, `rows` and, for each visible sum or count of the query's own rows, `measures:
+  [{output, null_value, total}]`. If any grouping dimension's route has a many hop, or no
+  suitable output remains visible, it uses row counts and omits `measures`. A complete
+  answer (not truncated, no `limit`, no metric
   filter) with no empty value carries no warning; any other answer keeps the compiled one.
 - **Filtered by it** (`use: filter`): every stage says "Plan filter: rows with no Billing
-  version valid at their time are left out by this filter."
+  version valid at their time are left out by this filter." `IS NULL` and equality to NULL
+  select the empty values and carry no such warning.
 
 A path that only leaves the versioned table (`customer_history → customer` here) reads one
 version per row and gets no warning. A version written moments after its event (a billing
@@ -1992,9 +1996,11 @@ and 4) can go down into a child table and back up to another parent: "the
 Team of any of the Member's Member events", when members hold no team key.
 A member with no event is then left out, and one with events in two teams
 counts under both. Every response that reads such a route (`validate`,
-`compile` and `execute`, at every verbosity, MCP included) carries a
+`compile` and `execute`, at every verbosity, MCP included), and every validated
+`plan` draft using it, carries a
 `ROUTE_PASS_THROUGH` warning: the meaning, what it does to the count, and the
-fixes. `details.route` and `details.meaning` give the route,
+fixes. `details.route` and `details.meaning` give the route, `details.route_basis`
+its resolution basis (`only_route` or `inherited`),
 `details.through` each crossed entity (`entity`, `enters_by`, `leaves_by`
 relationship), and `details.fixes`:
 
@@ -2014,6 +2020,9 @@ walks the same two relationships in a row, in either order. A pair decided by
 a row (the package's or the query's own) or by the start's own key never
 warns, and neither does a descent alone or a lookup followed by a descent.
 The warning changes no route and no number.
+The next release refuses a to-one lookup ("the T of an S") reachable only through child
+rows, while existence and group questions through a `bridge: true` link table keep
+answering; for each warning, declare the key in `entities:` or mark the link table now.
 
 The refusal is a clarification: `details.reason` is `route_decision_required`,
 and `details.clarification` asks which route the question means, in business
@@ -2162,7 +2171,7 @@ Four guard rails back this up:
 A route is a business definition, so a package needs one for every entity pair
 a question can need: every entity is a start, including distinct-values and
 synthetic-count queries, to each other reachable entity. The
-census resolves only pairs with two or more routes, once per pair; impact and
+census resolves every pair once, including only-route crossings; impact and
 guard comparisons resolve every pair using package decisions, independently
 of any active query route overrides.
 
@@ -2181,6 +2190,11 @@ Architect's `project_status`) carries `route_census`:
   pairs with two or more routes answered by the
   start's own key (`basis: colocated_key`). Confirm the route, or record
   another.
+- `pass_through`: `[{source_entity, target_entity, message, details}]`, resolved
+  only or inherited routes crossing undeclared child rows. The parse report and
+  `project_status` carry each as a `ROUTE_PASS_THROUGH` warning on the two entities,
+  with the same meaning, basis and fixes as an answer. These pairs are already
+  resolved and do not need a route decision.
 
 **Route changes.** A new relationship can give a pair a second route, so a
 question that answered before is refused, or now takes the start's own key.

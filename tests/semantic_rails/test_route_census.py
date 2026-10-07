@@ -199,9 +199,7 @@ def test_census_pairs_start_and_end_at_every_reachable_entity(tmp_path):
     assert _pairs(route_census(no_owner_fields)["undecided"]) == DIAMOND_UNDECIDED
 
 
-def test_the_census_asks_the_resolver_once_per_multi_route_pair_and_reuses_its_cache(
-    tmp_path, monkeypatch
-):
+def test_the_census_asks_the_resolver_once_per_pair_and_reuses_its_cache(tmp_path, monkeypatch):
     config = load_package_config(str(_write_package(tmp_path)))
     asked: list[tuple[str, str]] = []
     enumerated: list[tuple[str, str]] = []
@@ -218,12 +216,7 @@ def test_the_census_asks_the_resolver_once_per_multi_route_pair_and_reuses_its_c
     monkeypatch.setattr(census_module, "package_route", counted_resolve)
     monkeypatch.setattr(fanout_module, "_resolve_uncached", counted_uncached)
     census = route_census(config)
-    graph = census_module.get_package_analysis(config).graph
-    pairs = [
-        pair
-        for pair in census_pairs(config)
-        if fanout_module._has_multiple_routes(graph, *pair, fanout_module.package_hop_limit(config))
-    ]
+    pairs = census_pairs(config)
     assert asked == pairs
     assert enumerated == pairs
     # A second census, and a query's own resolution (an answer or a refusal), read the cache.
@@ -929,7 +922,7 @@ def test_queries_without_authored_measures_require_explicit_decisions(tmp_path):
 
 def test_a_single_many_to_one_key_never_needs_confirmation(tmp_path):
     config = load_package_config(str(_write_package(tmp_path, relationships=("invoices_account",))))
-    assert route_census(config) == {"undecided": [], "assumed": []}
+    assert route_census(config) == {"undecided": [], "assumed": [], "pass_through": []}
 
 
 def test_lowering_the_hop_ceiling_commits_without_undoing_the_cut(tmp_path):

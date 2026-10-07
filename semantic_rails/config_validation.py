@@ -45,7 +45,12 @@ from .config_parts.shape_checks import (
     _check_typed_field_enums,
     add_error,
 )
-from .diagnostics import filter_value_miss, object_id_suggestions, recovery_hints_for_error
+from .diagnostics import (
+    filter_value_miss,
+    object_id_suggestions,
+    recovery_hints_for_error,
+    semantic_issue,
+)
 from .dialects import (
     connection_option_errors,
     snowflake_adbc_connect_errors,
@@ -1354,6 +1359,17 @@ def _compiled_package_warnings(
     warnings.extend(semantic_collision_warnings(config, source_path))
     if undecided := _undecided_routes_warning(census, source_path):
         warnings.append(undecided)
+    warnings.extend(
+        semantic_issue(
+            code="ROUTE_PASS_THROUGH",
+            message=row["message"],
+            severity="warning",
+            stage="planning",
+            details=row["details"],
+            object_ids=[row["source_entity"], row["target_entity"]],
+        )
+        for row in census["pass_through"]
+    )
     return warnings
 
 
