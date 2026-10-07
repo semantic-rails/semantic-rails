@@ -107,7 +107,7 @@ If `test_embedding_consumer_contract.py` fails, the change breaks a known embedd
 
 ### ADBC tests
 
-The Python 3.12 backend CI job installs the `snowflake-adbc` and `postgres`
+The Python 3.12 backend CI shards installs the `snowflake-adbc` and `postgres`
 extras and requires both ADBC unit test modules to run without skips. These
 tests use local Arrow batches and stub connections; warehouse credentials are
 not needed. To run them locally with the same extras:
@@ -129,13 +129,24 @@ the controller reports the crashed worker and test node ID; that stack dump
 is not relayed, so `faulthandler_timeout` (240 s) first writes every thread's
 stack to the worker's stderr, which reaches the CI log. Tests that legitimately
 need longer must declare an explicit `@pytest.mark.timeout(...)` override. The
-backend CI job's 20-minute timeout remains the backstop.
+backend CI job's 30-minute timeout remains the backstop.
 
 Tests bound every wait: subprocess calls, `urlopen`, `communicate`, and
 `join`/`wait` take a timeout; `tests/semantic_rails/test_bounded_waits.py`
 enforces it.
 
-Merge-group CI on Python 3.12 repeats affected unit test files three times with
+Backend CI partitions whole test files into three deterministic shards for each
+Python version, using SHA-256 of the node ID's file path. Set `SR_SHARD_COUNT`
+and zero-based `SR_SHARD_INDEX` to reproduce a shard locally; unset both to run
+without partitioning. Quarantine IDs are validated against the full collection
+before partitioning. Each Python 3.12 shard uploads its JUnit report, and the
+required "All checks pass" gate waits for the entire backend matrix. Backend
+full-suite jobs skip pushes to main/master: pull requests and merge groups test
+the suite before merging, while pushes retain lint, security, documentation and
+Postgres checks. Direct pushes therefore rely on branch protection to require
+pull requests and the merge queue.
+
+Merge-group CI on each Python 3.12 shard repeats affected unit test files three times with
 random test ordering and an automatically chosen worker count.
 `scripts/flake_guard.py` selects changed tests from the default test roots and tests
 that directly import changed `semantic_rails`
