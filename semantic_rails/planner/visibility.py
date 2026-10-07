@@ -125,7 +125,10 @@ def require_visible_objects(
         )
         for row in rows
     ]
-    forbidden = set(ids) - set(visible_object_ids(config, ids))
+    # Caller references take their ordinary unknown-id path, including nested validation.
+    forbidden = (
+        set(ids) - set(visible_object_ids(config, ids)) - policies.caller_named_object_ids(config)
+    )
     if not forbidden:
         return
 

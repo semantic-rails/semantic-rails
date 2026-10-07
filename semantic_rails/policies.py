@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import contextvars
 import uuid
-from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager, suppress
 from dataclasses import fields, is_dataclass, replace
 from functools import cache
 from typing import Any
@@ -30,7 +30,9 @@ from .expressions import (
     ScopedAggregateExpr,
     _opaque_expression_data,
     collect_column_refs,
+    collect_object_references,
     parse_semantic_expression,
+    resolve_filter_dimension,
 )
 from .policy_rules import (
     MAX_RANK,
@@ -94,6 +96,23 @@ def _names(value: Any) -> set[str]:
     return set(found)
 
 
+def _canonical_names(config: PackageConfig, request: Any) -> dict[str, str]:
+    names = {}
+    for name in _names(request):
+        references = collect_object_references({"measure": name})
+        if references:
+            canonical = references[0]
+            with suppress(SemanticLayerError):
+                canonical = resolve_filter_dimension(name, config)
+            names[name] = canonical
+    return names
+
+
+def caller_named_object_ids(config: PackageConfig) -> set[str]:
+    """Canonical caller references; derived drafts do not add to this set."""
+    return set(_canonical_names(config, list(_caller_names.get() or ())).values())
+
+
 @contextmanager
 def caller_request(request: Any) -> Iterator[None]:
     """Record what an operation's caller named, unless an outer operation already did."""
@@ -126,14 +145,31 @@ def refuse_as_unknown(
     context = context_from_policy_context(policy_context)
     scope = {"environment": context.environment, "audience": context.audience}
     hidden = hidden_policy_ids(config, roles=context.roles, **scope)
-    named &= hidden | restricted_object_ids(config, roles=context.roles, **scope)
+    hidden |= restricted_object_ids(config, roles=context.roles, **scope)
+    named = {
+        name
+        for name, canonical in _canonical_names(config, list(named)).items()
+        if canonical in hidden
+    }
     if not named:
         return
-    swap = {name: f"{name}{uuid.uuid4().hex}" for name in named}
+    swap = {
+        name: name.replace(collect_object_references({"measure": name})[0], uuid.uuid4().hex)
+        for name in named
+    }
+    restore = {
+        **swap,
+        **{
+            collect_object_references({"measure": name})[0]: collect_object_references(
+                {"measure": masked}
+            )[0]
+            for name, masked in swap.items()
+        },
+    }
     try:
         resolve(_renamed(request, lambda name: swap.get(name, name)))
     except SemanticLayerError as exc:
-        raise _restored(exc, swap) from None
+        raise _restored(exc, restore) from None
 
 
 def _restored(exc: SemanticLayerError, swap: Mapping[str, str]) -> SemanticLayerError:
@@ -146,19 +182,6 @@ def _restored(exc: SemanticLayerError, swap: Mapping[str, str]) -> SemanticLayer
     restored.args = tuple(_renamed(list(exc.args), restore))
     vars(restored).update(_renamed(vars(exc), restore))
     return restored
-
-
-def _without(value: Any, hidden: Collection[str]) -> Any:
-    """``value`` with no string that names a hidden object."""
-
-    def shown(child: Any) -> bool:
-        return not (isinstance(child, str) and child in hidden)
-
-    if isinstance(value, Mapping):
-        return {key: _without(child, hidden) for key, child in value.items() if shown(child)}
-    if isinstance(value, list):
-        return [_without(child, hidden) for child in value if shown(child)]
-    return value
 
 
 def policy_effects_for_object(
@@ -184,7 +207,9 @@ def policy_effects_for_object(
         action = _policy_action(policy)
         if not action:
             continue
-        effects.append(_without(_base_policy_effect(policy, action=action), hidden))
+        effect = _base_policy_effect(policy, action=action)
+        if not _names(effect) & hidden:
+            effects.append(effect)
     return effects
 
 
@@ -351,8 +376,7 @@ def query_policy_effects(
                 existing_violations.append(violation)
         if existing_violations:
             deduped[key]["violations"] = existing_violations
-    hidden = hidden_object_ids(config, environment=environment, audience=audience, roles=roles)
-    return [_without(effect, hidden) for effect in deduped.values()]
+    return list(deduped.values())
 
 
 def enforce_query_policies(
@@ -402,7 +426,14 @@ def enforce_query_policies(
         binding=binding,
     )
     blocking = [row for row in effects if row["action"] in {"deny", "redact", "hidden"}]
+    hidden = hidden_object_ids(config, environment=environment, audience=audience, roles=roles)
     if blocking:
+        if any(_names(row) & hidden for row in blocking):
+            raise SemanticLayerError(
+                "POLICY_DENIED",
+                "Query references a semantic object blocked by policy.",
+                details={"blocked_objects": [], "policy_effects": [], "policy_violations": []},
+            )
         # A hidden object read through a visible one: no policy hiding it is named.
         shown = [row for row in blocking if row["action"] != "hidden"]
         raise SemanticLayerError(
@@ -439,7 +470,7 @@ def enforce_query_policies(
             if row["action"] == WITHHOLD:
                 row["withheld_objects"] = sorted(withheld)
                 row["withheld_column"] = column
-    return effects
+    return [effect for effect in effects if not _names(effect) & hidden]
 
 
 def withheld_object_ids(

@@ -658,11 +658,12 @@ action checks. Action text is trimmed and lowercased; kind names must match exac
 - **`object_visibility`** — `action: hidden` hides matching objects from `catalog`,
   `discover`, and `inspect` for the scoped audiences/environments/roles. A request that
   names a hidden object's id (in a query, a seed query, or as the id `inspect`,
-  `valid-values`, `build-options` or a segment tool takes) is refused exactly as if the
-  object did not exist: the same code, message, details and suggestions as an unknown id
+  `valid-values`, `build-options` or a segment tool takes) has exactly the outcome it would if the
+  object did not exist: the same envelope, code, message, details and suggestions as an unknown id
   in that place (`OBJECT_NOT_FOUND`, `INVALID_TEMPORAL_ROLE` or `PATH_NOT_FOUND`). A query
   that reads one only through a visible object it names is refused with `POLICY_DENIED`.
-  No refusal or `policy_effects` entry names an object hidden from the caller.
+  No refusal or `policy_effects` entry names an object hidden from the caller. An effect
+  referencing any hidden object is omitted in full, including its free text and policy id.
   `action: visible_only` does the opposite:
   it hides the objects, and everything computed from them, from every context it does
   not name; see [Objects visible only to named roles](#objects-visible-only-to-named-roles).

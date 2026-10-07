@@ -45,7 +45,7 @@ OBJECTS = {
     "segment": SEGMENT,
 }
 QUERIED = ("metric", "measure", "dimension", "temporal_role", "entity")
-SELECTED = ("metric", "measure")  # the part of a seed query discover and plan resolve
+SELECTED = ("metric", "measure")
 ANY = tuple(OBJECTS)
 Call = Callable[[Runtime, str, str], dict[str, Any]]
 
@@ -99,8 +99,8 @@ SURFACES: dict[str, tuple[tuple[str, ...], Call]] = {
         f"mcp execute {mode}": (QUERIED, _mcp("execute", mode=mode, query=""))
         for mode in ("run", "validate", "sql")
     },
-    "mcp plan": (SELECTED, _mcp("plan", intent="how many", query="")),
-    "mcp discover": (SELECTED, _mcp("discover", terms="customers", query="")),
+    "mcp plan": (QUERIED, _mcp("plan", intent="how many customers", query="")),
+    "mcp discover": (QUERIED, _mcp("discover", terms="customers", query="")),
     "mcp inspect": (ANY, _mcp("inspect", object_id="{id}")),
     "mcp valid-values": (ANY, _mcp("valid-values", dimension_id="{id}")),
     **{
@@ -111,8 +111,9 @@ SURFACES: dict[str, tuple[tuple[str, ...], Call]] = {
         f"http {route}": (QUERIED, _http(route, query=""))
         for route in ("/validate", "/compile", "/query")
     },
-    "http /plan": (SELECTED, _http("/plan", intent="how many", query="")),
-    "http /discover": (SELECTED, _http("/discover", terms="customers", query="")),
+    "http /plan": (QUERIED, _http("/plan", intent="how many customers", query="")),
+    "http /discover": (QUERIED, _http("/discover", terms="customers", query="")),
+    "http /build-options seed": (QUERIED, _http("/build-options", query="")),
     "http /inspect": (ANY, _http("/inspect", object_id="{id}")),
     "http /valid-values": (ANY, _http("/valid-values", dimension_id="{id}")),
     "http /build-options": (ANY, _http("/build-options", focus_object_id="{id}")),
@@ -198,10 +199,24 @@ def governed(
     def runtime(*policies: SemanticPolicyConfig, fresh: str = "") -> Runtime:
         key = repr((policies, fresh))
         if key not in made:
-            base, extra = config, list(policies)
+            base = replace(
+                config,
+                dimensions=[
+                    replace(row, aliases=[*row.aliases, "store_alias"]) if row.id == STORE else row
+                    for row in config.dimensions
+                ],
+            )
+            extra = list(policies)
             if fresh:
                 new = f"{fresh.split('.')[0]}.{uuid.uuid4().hex}"
                 base, extra = _renamed(config, fresh, new), _renamed(extra, fresh, new)
+                base = replace(
+                    base,
+                    dimensions=[
+                        replace(row, name=new, label=new, aliases=[]) if row.id == new else row
+                        for row in base.dimensions
+                    ],
+                )
             with_policies = replace(base, semantic_policies=[*base.semantic_policies, *extra])
             made[key] = Runtime.from_config(with_policies, source_path=str(root))
         return made[key]
@@ -218,8 +233,12 @@ def test_a_hidden_id_gets_the_response_of_an_id_that_names_nothing(governed, act
     _, call = SURFACES[surface]
     policy = _policy(action, object_id)
     hidden = call(governed(policy), kind, object_id)
-    absent = call(governed(policy, fresh=object_id), kind, object_id)
-    assert hidden["ok"] is False, hidden
+    absent_runtime = governed(policy, fresh=object_id)
+    absent = call(absent_runtime, kind, object_id)
+    renamed_id = absent_runtime._config.semantic_policies[-1].object_ids[0]
+    absent = json.loads(json.dumps(absent).replace(renamed_id, object_id))
+    if "seed" not in surface and not any(word in surface for word in ("plan", "discover")):
+        assert hidden["ok"] is False, hidden
     assert "POLICY_DENIED" not in _codes(hidden), hidden
     assert _envelope(hidden) == _envelope(absent)
 
@@ -308,16 +327,88 @@ def test_an_object_read_through_a_named_one_is_never_named(governed, action, cod
 
 
 def test_policy_effects_never_name_a_hidden_object(governed):
-    """Policies listing a visible and a hidden object report only the visible one."""
+    """Effects referencing a hidden object are omitted in full, including their metadata."""
     runtime = governed(_policy("hidden", REVENUE, FOOD), _deny(ORDERS, REVENUE), CONSTRAIN)
     refusal = runtime.validate({**_query("measure", ORDERS), "policy_context": CALLER})
     compiled = runtime.compile(
         {**_query("metric", CUSTOMERS), "group_by": [STORE], "policy_context": CALLER}
     )
     card = inspect_payload(runtime, object_id=CUSTOMERS, partial_query={"policy_context": CALLER})
-    assert refusal["errors"][0]["details"]["blocked_objects"] == [ORDERS]
+    assert refusal["errors"][0]["details"] == {
+        "blocked_objects": [],
+        "policy_effects": [],
+        "policy_violations": [],
+    }
     effects = {row["policy_id"]: row for row in compiled["policy_effects"]}
-    assert effects["policy.test.constrain"]["constraints"] == {"allowed_group_by": [STORE]}
+    assert "policy.test.constrain" not in effects
     for payload in (refusal, compiled["policy_effects"], card):
         assert REVENUE not in json.dumps(payload), payload
         assert FOOD not in json.dumps(payload), payload
+
+
+@pytest.mark.parametrize(
+    "surface", ["mcp execute run", "mcp execute validate", "http /query", "http /validate"]
+)
+@pytest.mark.parametrize("mixed", [True, False])
+def test_a_denial_referencing_a_hidden_object_discloses_no_policy_metadata(
+    governed, surface, mixed
+):
+    deny = replace(
+        _deny(*([ORDERS, REVENUE] if mixed else [REVENUE])),
+        rationale=f"Block orders and {REVENUE} for support",
+    )
+    runtime = governed(_policy("hidden", REVENUE), deny)
+    _, call = SURFACES[surface]
+    response = call(runtime, "measure" if mixed else "metric", ORDERS if mixed else AOV)
+    assert "POLICY_DENIED" in _codes(response)
+    serialized = json.dumps(response)
+    assert REVENUE not in serialized
+    assert deny.id not in serialized
+    assert deny.rationale not in serialized
+    card = inspect_payload(runtime, object_id=ORDERS, partial_query={"policy_context": CALLER})
+    assert deny.id not in json.dumps(card)
+
+
+REFERENCE_FORMS = (
+    "padded_metric",
+    "padded_measure",
+    "where_id",
+    "where_label",
+    "where_name",
+    "where_alias",
+    "order_by",
+)
+
+
+@pytest.mark.parametrize("surface", ["mcp execute run", "mcp execute validate", "mcp execute sql"])
+@pytest.mark.parametrize("action", ["hidden", "visible_only"])
+@pytest.mark.parametrize("form", REFERENCE_FORMS)
+def test_noncanonical_hidden_references_get_the_complete_unknown_envelope(
+    governed, action, surface, form
+):
+    object_id = (
+        CUSTOMERS if form == "padded_metric" else ORDERS if form == "padded_measure" else STORE
+    )
+    runtime = governed(_policy(action, object_id))
+    absent = governed(_policy(action, object_id), fresh=object_id)
+    query = _query("metric", CUSTOMERS)
+    if form.startswith("padded_"):
+        query = _query(form.removeprefix("padded_"), f" {object_id} ")
+    else:
+        dimension = next(row for row in runtime._config.dimensions if row.id == STORE)
+        reference = {
+            "where_label": dimension.label,
+            "where_name": dimension.name,
+            "where_alias": dimension.aliases[0],
+        }.get(form, object_id)
+        if form == "order_by":
+            query["order_by"] = [{"field": f" {reference} ", "direction": "asc"}]
+        else:
+            query["where"] = [{"field": reference, "op": "=", "value": "Jaffle Shop"}]
+    mode = surface.rsplit(" ", 1)[1]
+    arguments = {"query": query, "mode": mode, "policy_context": CALLER}
+    hidden = SemanticLayerMCPAdapter(runtime).call_tool("execute", arguments)
+    missing = SemanticLayerMCPAdapter(absent).call_tool("execute", arguments)
+    assert hidden["ok"] is False
+    assert "POLICY_DENIED" not in _codes(hidden)
+    assert _envelope(hidden) == _envelope(missing)
