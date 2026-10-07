@@ -416,7 +416,7 @@ def test_compile_binds_the_warehouse_dialect_for_literal_quoting(package_config_
                 "select": [
                     {
                         "expression": {"kind": "metric", "metric": "metric.sales.aov_usd"},
-                        "alias": "aov",
+                        "as": "aov",
                     }
                 ]
             },

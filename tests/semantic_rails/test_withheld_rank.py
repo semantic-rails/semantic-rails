@@ -211,8 +211,11 @@ REFUSALS = {
 
 # These shapes are rejected as invalid IR before any policy runs.
 INEXPRESSIBLE = {
-    "aggregate_if": _select(_value(CONDITIONAL)),
-    "segment_where": {"where": [{"segment": "segment.jaffle.high_value_customers"}]},
+    "aggregate_if": (_select(_value(CONDITIONAL)), "INVALID_EXPRESSION_AST"),
+    "segment_where": (
+        {"where": [{"segment": "segment.jaffle.high_value_customers"}]},
+        "INVALID_QUERY",
+    ),
 }
 
 
@@ -248,9 +251,10 @@ def test_invalid_ir_is_refused_independently_of_policy(package, name, with_polic
         load_package_config(str(package)), semantic_policies=[_policy()] if with_policy else []
     )
     runtime = Runtime.from_config(config, source_path=str(package))
+    patch, expected_code = INEXPRESSIBLE[name]
     try:
-        for code, _ in _codes(runtime, {**RANK, **INEXPRESSIBLE[name]}):
-            assert code == "INVALID_EXPRESSION_AST"
+        for code, _ in _codes(runtime, {**RANK, **patch}):
+            assert code == expected_code
     finally:
         runtime.close()
 
