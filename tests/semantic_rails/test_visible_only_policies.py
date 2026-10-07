@@ -32,10 +32,9 @@ from semantic_rails.metadata import (
 from semantic_rails.metadata_parts.valid_values import valid_values_payload
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.plan import plan_payload
-from semantic_rails.planner.visibility import with_dimension_visibility
 from semantic_rails.policies import enforce_query_policies, hidden_object_ids
 from semantic_rails.request_context import RequestContext
-from semantic_rails.runtime import Runtime
+from semantic_rails.runtime import Runtime, runtime_request_scope
 from semantic_rails.schema import SemanticPolicyConfig
 from tests.semantic_rails import test_route_clarification as route
 from tests.semantic_rails.conftest import copy_package_config, opened
@@ -364,8 +363,13 @@ def test_full_catalog_payload_filters_restricted_companions(tmp_path, roles, eli
         )
         assert (REVENUE_METRIC in _mentions(catalog)) is eligible
         measure = next(
-            row for row in catalog["measures"] if row["id"] == "measure.jaffle.order_cost_usd"
+            (row for row in catalog["measures"] if row["id"] == "measure.jaffle.order_cost_usd"),
+            None,
         )
+        # A measure naming the restricted metric (as a peer) is restricted with it.
+        assert (measure is not None) is eligible
+        if measure is None:
+            return
         for key in keys:
             assert measure["payload"][key] == (
                 [REVENUE_METRIC, CUSTOMERS] if eligible else [CUSTOMERS]
@@ -378,7 +382,7 @@ def test_full_catalog_payload_filters_restricted_companions(tmp_path, roles, eli
 def test_intent_subjects_name_revenue_only_for_finance(engine, name):
     context, eligible = CONTEXTS[name]
 
-    @with_dimension_visibility
+    @runtime_request_scope
     def subjects(runtime: Runtime, *, partial_query: dict[str, Any]) -> set[str]:
         intent = parse_intent(runtime, "total revenue by store name").to_dict()
         return {row["id"] for row in intent["subjects"]}
@@ -417,13 +421,21 @@ def test_every_query_reading_revenue_is_refused_outside_finance(engine, package,
             for row in rows
             if row.id in hidden and row.label
         }
+        # A restricted object the query names is unknown; raw columns name none and are denied.
+        named = hidden & set(re.findall(r"[\w.]+", json.dumps(query)))
         for code, details, message in _refusals(runtime, query):
-            assert code == "POLICY_DENIED"
-            serialized = json.dumps(details).casefold()
+            assert code == ("OBJECT_NOT_FOUND" if named else "POLICY_DENIED")
+            # Only the caller's own ids and visible suggestions may be named.
+            suggested = set(details.get("closest_matches", []))
+            assert not suggested & hidden, details
+            serialized = json.dumps(details)
+            for object_id in sorted(named | suggested, key=len, reverse=True):
+                serialized = serialized.replace(object_id, "")
+                message = message.replace(object_id, "")
             for name in hidden_names:
-                assert name.casefold() not in serialized, details
+                assert name.casefold() not in serialized.casefold(), details
                 assert name.casefold() not in message.casefold(), message
-            if bypass in {"conditional_raw_value", "conditional_raw_condition"}:
+            if not named:
                 assert details["blocked_objects"] == []
     finally:
         if runtime is not engine:
@@ -492,11 +504,11 @@ def test_a_segment_over_revenue_is_refused_outside_finance(engine, operation, na
         return
     if operation == "segment_validate":
         report = call(SEGMENT, policy_context=context)
-        assert report["errors"][0]["code"] == "POLICY_DENIED"
+        assert report["errors"][0]["code"] == "OBJECT_NOT_FOUND"
         return
     with pytest.raises(SemanticLayerError) as exc:
         call(SEGMENT, policy_context=context)
-    assert exc.value.code == "POLICY_DENIED"
+    assert exc.value.code == "OBJECT_NOT_FOUND"
 
 
 def test_unrelated_objects_stay_queryable(engine):
@@ -573,7 +585,7 @@ def test_scoping_separates_applicability_from_eligibility(package, name):
         if visible:
             assert runtime.validate(query)["ok"] is True
         else:
-            assert {code for code, _, _ in _refusals(runtime, query)} == {"POLICY_DENIED"}
+            assert {code for code, _, _ in _refusals(runtime, query)} == {"OBJECT_NOT_FOUND"}
     finally:
         runtime.close()
 
@@ -604,7 +616,8 @@ def test_explicit_restrictions_still_apply_to_eligible_contexts(package, action)
     try:
         query = _with(BY_STORE, {"roles": ["finance"]})
         for code, details, _ in _refusals(runtime, query):
-            assert code == "POLICY_DENIED"
+            # Hidden from finance, the metric reading revenue is unknown; denied, it is refused.
+            assert code == ("OBJECT_NOT_FOUND" if action == "hidden" else "POLICY_DENIED")
             if action == "deny":
                 assert REVENUE in details["blocked_objects"]
                 assert set(details["blocked_objects"]) <= set(RESTRICTED)
@@ -613,13 +626,13 @@ def test_explicit_restrictions_still_apply_to_eligible_contexts(package, action)
 
 
 def test_the_query_gate_reads_every_bound_object_not_policy_matches(engine, monkeypatch):
-    """Forcing the per-policy effects to report nothing still refuses a restricted read."""
+    """Forcing the per-policy effects to report nothing still refuses a restricted read: the
+    caller's view has no such object to bind."""
     monkeypatch.setattr("semantic_rails.policies.query_policy_effects", lambda *a, **k: [])
-    with pytest.raises(SemanticLayerError) as exc:
-        enforce_query_policies(engine._config, [AOV], roles=["support"])
-    assert exc.value.code == "POLICY_DENIED"
-    assert exc.value.details["blocked_objects"] == [AOV]
-    assert enforce_query_policies(engine._config, [AOV], roles=["finance"]) == []
+    query = {"select": [{"expression": {"metric": AOV}, "as": "aov"}]}
+    codes = {code for code, _, _ in _refusals(engine, _with(query, {"roles": ["support"]}))}
+    assert codes == {"OBJECT_NOT_FOUND"}
+    assert enforce_query_policies(engine.package_config, [AOV], roles=["finance"]) == []
 
 
 @pytest.mark.parametrize(
@@ -700,15 +713,13 @@ def test_a_metric_grant_does_not_widen_visible_only(engine, roles, eligible):
     assert exc.value.code == "RESOURCE_ACCESS_DENIED"
 
 
-def test_diagnostics_without_a_context_withhold_every_candidate(engine):
-    """Without a context the dependents can't be resolved, so no candidate is offered."""
+def test_diagnostics_without_a_context_suggest_no_restricted_object(engine):
+    """A caller with no context is not eligible: their view offers no restricted candidate."""
     missing = SemanticLayerError(
         "OBJECT_NOT_FOUND", "Unknown object", details={"object_id": "metric.sales.revenu"}
     )
-    assert enrich_object_not_found(missing, engine._config).details.get("closest_matches") in (
-        None,
-        [],
-    )
+    enriched = enrich_object_not_found(missing, engine.view_for({}))
+    assert not set(enriched.details.get("closest_matches", [])) & set(RESTRICTED)
 
 
 @pytest.mark.parametrize(("roles", "eligible"), [(["support"], False), (["finance"], True)])
@@ -735,6 +746,6 @@ def test_unbindable_objects_are_restricted_when_anything_is(engine, monkeypatch)
     def unbindable(config, object_ids):
         raise SemanticLayerError("INVALID_QUERY", "cannot bind")
 
-    monkeypatch.setattr("semantic_rails.policies.bind_metadata_objects", unbindable)
+    monkeypatch.setattr("semantic_rails.visible_view.bind_metadata_objects", unbindable)
     assert CUSTOMERS in hidden_object_ids(config, roles=["support"])
     assert CUSTOMERS not in hidden_object_ids(config, roles=["finance"])

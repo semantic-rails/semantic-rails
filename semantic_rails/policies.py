@@ -162,12 +162,15 @@ def enforce_query_policies(
 ) -> list[dict[str, Any]]:
     require_base(config)
     object_ids = list(object_ids)  # read twice: the effects, then the withheld objects
-    # Caller-created measures have no authored object id to govern their raw columns: refused
-    # while anything is hidden from this caller.
-    if (
-        binding is not None
-        and any(collect_column_refs(row.expr) for row in binding.plan.synthetic_measures.values())
-        and hidden_object_ids(config, environment=environment, audience=audience, roles=roles)
+    # Caller-created measures have no authored object id to govern their raw columns, and a query
+    # handed over without its binding cannot be checked: both refused while anything is hidden.
+    unchecked = (
+        query is not None
+        if binding is None
+        else any(collect_column_refs(row.expr) for row in binding.plan.synthetic_measures.values())
+    )
+    if unchecked and hidden_object_ids(
+        config, environment=environment, audience=audience, roles=roles
     ):
         raise SemanticLayerError(
             "POLICY_DENIED",
