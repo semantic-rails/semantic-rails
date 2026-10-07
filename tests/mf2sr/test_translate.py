@@ -41,7 +41,7 @@ def test_entity_count_uses_column_not_entity_name(tmp_path):
     ``entity_key:`` as a column name, so the compiler emitted
     ``COUNT(DISTINCT orders."order")`` and the warehouse binder
     failed. The fix resolves ``entity_key`` to the canonical key
-    column from the graph (with per-model FK ``expr:`` override).
+    column from the graph.
     """
     src = tmp_path / "src"
     src.mkdir()

@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast as pyast
 import hashlib
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -543,13 +544,18 @@ def _build_measure(
     """Translate a single MetricFlow measure. Returns
     ``(name, doc, value_type, default_agg)`` or ``None`` to skip.
 
-    Mapping decisions:
-      - ``agg: count_distinct`` or ``expr: 1`` -> ``kind: entity_count``
-        targeting whichever graph entity owns the matching key column.
-        If we cannot resolve an entity, the measure is dropped with a
-        warning (Semantic Rails has no other shape that allows
-        count_distinct over an aggregate measure).
+    Mapping decisions (a count is written exactly or skipped):
+      - ``expr: 1`` -> ``kind: entity_count`` over the model's own
+        primary entity: one row per key.
+      - ``agg: count_distinct`` over a column a graph entity keys (or this
+        model's foreign key to one) -> ``kind: entity_count`` with that
+        column as ``entity_key``: COUNT(DISTINCT col). Any other distinct
+        count is skipped with a warning.
+      - ``agg: count`` over a column -> MetricFlow's COUNT(col), the sum of
+        CASE WHEN col IS NOT NULL THEN 1 ELSE 0 END; over the model's own
+        primary key (unique, so COUNT is COUNT DISTINCT) -> ``entity_count``.
       - ``agg: sum_boolean`` -> sum over a CASE expression (AST form).
+      - An ``agg`` outside ``_AGG_MAP`` -> skipped with a warning.
       - Everything else -> ``kind: aggregate`` with the inferred
         accumulation class and value type.
     """
@@ -565,89 +571,71 @@ def _build_measure(
         return None
     if agg_raw not in _AGG_MAP:
         report.warnings.append(
-            f"model `{model_name}`: measure `{name}` uses unsupported "
-            f"agg `{agg_raw}`. Falling back to `sum`."
+            f"model `{model_name}`: measure `{name}` uses unsupported agg `{agg_raw}`; "
+            "skipped rather than approximated"
         )
-        agg_raw = "sum"
+        return None
     default_agg, expr_wrap = _AGG_MAP[agg_raw]
 
     expr = measure.get("expr")
+    # MetricFlow counts `expr`, or the column the measure is named after.
+    counted = name if expr is None else expr
+    constant = counted in ("1", 1)
 
-    # entity_count path: count of rows (`expr: 1`) or count_distinct
-    # over an entity key column. We try to resolve to a graph entity
-    # so the measure binds to a real join key.
-    wants_entity_count = (expr in ("1", 1)) or (agg_raw in ("count_distinct", "count"))
+    # entity_count path: the engine computes it as COUNT(DISTINCT entity_key).
+    wants_entity_count = constant or (agg_raw in ("count_distinct", "count"))
     if wants_entity_count:
         target_entity = _resolve_entity_for_count(
             sm_name=model_name,
             sm=sm,
-            expr=expr,
+            expr=counted,
             graph=graph,
         )
-        if target_entity is None:
+        own_entity = (
+            target_entity is not None and graph["entities"][target_entity]["model"] == model_name
+        )
+        if agg_raw == "count" and isinstance(counted, str) and not own_entity:
             # MetricFlow `count(col)` semantic: count rows where col is
             # not null. Express as SUM(CASE WHEN col IS NOT NULL THEN 1
             # ELSE 0 END) so we stay inside the flow accumulation class.
-            if agg_raw in ("count", "count_distinct") and isinstance(expr, str):
-                count_col = expr
-                report.warnings.append(
-                    f"model `{model_name}`: measure `{name}` "
-                    f"(agg=`{agg_raw}`, expr=`{count_col}`) has no "
-                    "matching graph entity — emitting as "
-                    "SUM(CASE WHEN col IS NOT NULL THEN 1 ELSE 0 END). "
-                    f"{'count_distinct semantics are lost' if agg_raw == 'count_distinct' else 'Result matches MetricFlow count(col).'}"
-                )
-                fallback_expr = {
-                    "kind": "case",
-                    "whens": [
-                        {
-                            "when": {
-                                "kind": "comparison",
-                                "op": "!=",
-                                "left": {"kind": "column", "column": count_col},
-                                "right": {"kind": "literal", "value": None},
-                            },
-                            "then": {"kind": "literal", "value": 1},
-                        }
-                    ],
-                    "else": {"kind": "literal", "value": 0},
-                }
-                doc = {
-                    "label": measure.get("label") or _humanize(name),
-                    "kind": "aggregate",
-                    "expr": fallback_expr,
-                    "default_agg": "sum",
-                    "accumulation": {"kind": "flow"},
-                    "value_type": "count",
-                }
-                measure_time = measure.get("agg_time_dimension")
-                if measure_time:
-                    doc["time"] = measure_time
-                return name, doc, "count", "sum"
+            not_null = {
+                "kind": "case",
+                "whens": [
+                    {
+                        "when": {
+                            "kind": "comparison",
+                            "op": "!=",
+                            "left": {"kind": "column", "column": counted},
+                            "right": {"kind": "literal", "value": None},
+                        },
+                        "then": {"kind": "literal", "value": 1},
+                    }
+                ],
+                "else": {"kind": "literal", "value": 0},
+            }
+            doc = {
+                "label": measure.get("label") or _humanize(name),
+                "kind": "aggregate",
+                "expr": not_null,
+                "default_agg": "sum",
+                "accumulation": {"kind": "flow"},
+                "value_type": "count",
+            }
+            measure_time = measure.get("agg_time_dimension")
+            if measure_time:
+                doc["time"] = measure_time
+            return name, doc, "count", "sum"
+        if target_entity is None or (agg_raw == "count_distinct" and constant):
             report.warnings.append(
                 f"model `{model_name}`: measure `{name}` (agg=`{agg_raw}`, "
-                f"expr=`{expr}`) cannot be mapped to a Semantic Rails "
-                "entity_count — no matching primary entity in the graph. "
-                "The measure is dropped. Add a model that declares the "
-                "missing entity as primary to recover it."
+                f"expr=`{counted}`) doesn't count a graph entity's column, "
+                "so no Semantic Rails entity_count computes it; "
+                "skipped rather than approximated"
             )
             return None
-        # `entity_key:` in Semantic Rails is the COLUMN name on this
-        # model (not the entity name). Resolve via the graph entity's
-        # canonical key list. If this model declares the entity via an
-        # FK with a different `expr:` column, that column wins over the
-        # graph's canonical key — it's the local column reference the
-        # compiler emits in COUNT(DISTINCT ...).
-        entity_meta = graph["entities"][target_entity]
-        canonical_key = entity_meta.get("key", [])
-        if isinstance(canonical_key, list):
-            key_col = canonical_key[0] if canonical_key else target_entity
-        else:
-            key_col = canonical_key
-        for ent_ref in sm.get("entities") or []:
-            if ent_ref.get("name") == target_entity and ent_ref.get("expr"):
-                key_col = ent_ref["expr"]
-                break
+        # `entity_key:` is the counted COLUMN on this model; a row count
+        # counts the model's own primary key.
+        key_col = graph["entities"][target_entity]["key"][0] if constant else counted
         doc = {
             "label": measure.get("label") or _humanize(name),
             "kind": "entity_count",
@@ -744,7 +732,8 @@ def _resolve_entity_for_count(
     expr: Any,
     graph: dict[str, Any],
 ) -> str | None:
-    """Pick the graph entity that an entity_count measure should bind to.
+    """Pick the graph entity that a counted ``expr`` (the measure's
+    ``expr``, or its name) belongs to.
 
     Order of preference:
       1. ``expr: 1`` (or 1) -> the model's own primary entity, since the
@@ -754,12 +743,12 @@ def _resolve_entity_for_count(
       3. ``expr: <column>`` matching a known entity expression on the
          current model (e.g. an FK column) and that entity exists in
          the graph -> that entity.
-      4. None — caller drops the measure with a warning.
+      4. None — no entity_count computes the measure.
     """
     entities = graph["entities"]
 
     # 1) row-count style: bind to the model's primary entity.
-    if expr in ("1", 1, None):
+    if expr in ("1", 1):
         for ename, meta in entities.items():
             if meta.get("model") == sm_name:
                 return ename
@@ -1235,8 +1224,6 @@ def _running_total_problems(
         elif doc.get("kind") == "entity_count":
             if doc.get("entity_key") not in own_keys:
                 problems[name] = f"counts distinct {doc.get('entity_key')} values"
-        elif str(measure.get("agg") or "").lower() == "count_distinct":
-            problems[name] = "counts distinct values"
         elif doc.get("default_agg") != "sum":
             problems[name] = f"aggregates with {doc.get('default_agg')}"
     return problems
@@ -1412,6 +1399,7 @@ _BINOP_MAP = {
     pyast.Mult: "multiply",
     pyast.Div: "divide",
 }
+_PLAIN_DECIMAL = re.compile(r"\d+(\.\d+)?|\.\d+")
 
 
 def _parse_derived_expression(
@@ -1425,14 +1413,25 @@ def _parse_derived_expression(
 
     We handle the cases that appear in real MetricFlow projects: nested
     binary arithmetic over metric names (with optional aliases) and
-    numeric literals, plus `NULLIF(x, 0)` as a division's denominator,
+    plain decimal literals, plus `NULLIF(x, 0)` as a division's denominator,
     which reads as `x` (the engine divides by NULLIF(denominator, 0) for
     every division). Anything else returns None and the caller skips the
-    metric.
+    metric, including text SQL and Python read differently: comments and
+    statement breaks (`a--b` is `a` in SQL) and literals such as `1_000`,
+    `0x10` or `1e3`.
     """
+    text = expr.strip()
+    if any(token in text for token in ("--", "/*", "#", ";")):
+        return None
     try:
-        tree = pyast.parse(expr.strip(), mode="eval")
+        tree = pyast.parse(text, mode="eval")
     except SyntaxError:
+        return None
+    if any(
+        isinstance(node, pyast.Constant)
+        and not _PLAIN_DECIMAL.fullmatch(pyast.get_source_segment(text, node) or "")
+        for node in pyast.walk(tree)
+    ):
         return None
     return _to_semantic_ast(tree.body, alias_map, report, metric_name)
 

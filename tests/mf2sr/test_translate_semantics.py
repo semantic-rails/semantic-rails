@@ -815,7 +815,7 @@ def test_cumulative_metrics_keep_their_filters(tmp_path: Path) -> None:
     ("measure", "reason"),
     [
         ("average_amount", "aggregates with avg"),
-        ("statuses", "counts distinct values"),
+        ("statuses", "measure `statuses` was not emitted"),
         ("buyers", "counts distinct customer_id values"),
     ],
 )

@@ -440,6 +440,16 @@ def _reference(package_dir: Path, columns: dict[str, str]) -> dict[str, dict[str
         "NULLIF(source, 0) + 1",  # 1 for placed orders if NULLIF is dropped, not NULL
         "NULLIF(a, 0) / b",  # 0 for placed orders if NULLIF is dropped, not NULL
         "a / (NULLIF(b, 0) + 1)",  # -3 for returned orders if NULLIF is dropped, not NULL
+        # SQL reads what follows `--` or `#` as a comment (or `#` as XOR); Python
+        # reads a - (-b) and a.
+        "a--b",
+        "a # b",
+        # Python reads these as 1000, 16, 1000.0 and a complex number; SQL dialects
+        # differ (`0x10` can be `0 AS x10`).
+        "1_000 * a",
+        "0x10 * a",
+        "1e3 * a",
+        "1j * a",
     ],
 )
 def test_derived_expressions_without_an_exact_translation_are_skipped(
@@ -514,6 +524,171 @@ def test_a_denominator_nullif_matches_the_source_formula(
         "placed": {"a_per_b": 0.0},
         "delivered": {"a_per_b": -2.25},
     }
+
+
+# 8 orders in 4 statuses. customer_id repeats and is NULL twice; payer_id is
+# another customer column. Per status, the row count, COUNT(customer_id),
+# COUNT(DISTINCT customer_id) and COUNT(DISTINCT payer_id) differ somewhere.
+COUNTED_ORDERS_SQL = """
+CREATE SCHEMA main_marts;
+CREATE TABLE main_marts.fct_orders (
+  order_id INTEGER, ordered_at DATE, status VARCHAR, order_total DOUBLE,
+  customer_id INTEGER, payer_id INTEGER
+);
+INSERT INTO main_marts.fct_orders VALUES
+  (1, DATE '2024-01-01', 'placed', 10, 1, 1),
+  (2, DATE '2024-01-02', 'placed', 20, 1, 2),
+  (3, DATE '2024-02-03', 'shipped', 30, 2, 2),
+  (4, DATE '2024-02-04', 'shipped', 40, NULL, 2),
+  (5, DATE '2024-02-05', 'delivered', 50, 2, 3),
+  (6, DATE '2024-03-06', 'delivered', 60, NULL, 3),
+  (7, DATE '2024-03-07', 'returned', 70, 3, 3),
+  (8, DATE '2024-03-08', 'returned', 80, 3, 3);
+CREATE TABLE main_marts.dim_customers (customer_id INTEGER);
+INSERT INTO main_marts.dim_customers VALUES (1), (2), (3);
+"""
+
+
+def _counted_package(
+    tmp_path: Path, measure: dict[str, Any], customer_column: str, metrics: list[dict[str, Any]]
+) -> Any:
+    """Orders with ``measure``, a customer entity declared on ``customer_column``, and ``metrics``."""
+    source = _manifest(tmp_path, NODE)
+    raw = json.loads(source.read_text())
+    orders = raw["semantic_models"][0]
+    orders["entities"].append({"name": "customer", "type": "foreign", "expr": customer_column})
+    orders["measures"].append(measure)
+    raw["semantic_models"].append(
+        {
+            "name": "customers",
+            "node_relation": {**NODE, "alias": "dim_customers"},
+            "entities": [{"name": "customer", "type": "primary", "expr": "customer_id"}],
+        }
+    )
+    raw["metrics"] += metrics
+    source.write_text(json.dumps(raw))
+    report = translate(source, tmp_path / "out", package_id="shop", keep_schema=True)
+    (report.package_dir / "data").mkdir()
+    with duckdb.connect(str(report.package_dir / "data" / "shop.duckdb")) as conn:
+        conn.execute(COUNTED_ORDERS_SQL)
+    return report
+
+
+@pytest.mark.parametrize(
+    ("measure", "customer_column", "reference"),
+    [
+        # No graph entity keys `status`: once a count of non-null rows, 8 not 4.
+        ({"name": "statuses", "expr": "status", "agg": "count_distinct"}, "customer_id", None),
+        # Without `expr`, the column named after the measure is counted, never the rows.
+        ({"name": "payer_id", "agg": "count_distinct"}, "customer_id", None),
+        ({"expr": "1", "agg": "count_distinct"}, "customer_id", None),  # MetricFlow's is 1
+        ({"expr": "order_total", "agg": "bogus"}, "customer_id", None),  # once a sum
+        # A repeated foreign key: once its distinct count.
+        ({"expr": "customer_id", "agg": "count"}, "customer_id", "COUNT(customer_id)"),
+        ({"name": "customer_id", "agg": "count"}, "customer_id", "COUNT(customer_id)"),
+        (
+            {"expr": "customer_id", "agg": "count_distinct"},
+            "customer_id",
+            "COUNT(DISTINCT customer_id)",
+        ),
+        # The customer entity is declared on payer_id: once COUNT(DISTINCT payer_id).
+        (
+            {"expr": "customer_id", "agg": "count_distinct"},
+            "payer_id",
+            "COUNT(DISTINCT customer_id)",
+        ),
+        (
+            {"name": "customer_id", "agg": "count_distinct"},
+            "customer_id",
+            "COUNT(DISTINCT customer_id)",
+        ),
+    ],
+)
+def test_counts_translate_exactly_or_are_skipped(
+    tmp_path: Path, measure: dict[str, Any], customer_column: str, reference: str | None
+) -> None:
+    measure = {"name": "counted", **measure}
+    report = _counted_package(
+        tmp_path,
+        measure,
+        customer_column,
+        [
+            {
+                "name": "counted",
+                "type": "simple",
+                "type_params": {"measure": {"name": measure["name"]}},
+            },
+            {
+                "name": "counted_twice",
+                "type": "derived",
+                "type_params": {"expr": "counted * 2", "metrics": [{"name": "counted"}]},
+            },
+        ],
+    )
+
+    columns = {"revenue": "SUM(order_total)"}
+    if reference is None:
+        assert report.metrics_emitted == ["revenue"]
+        skipped, *dependents = report.warnings
+        assert skipped.startswith(f"model `orders`: measure `{measure['name']}` ")
+        assert skipped.endswith("skipped rather than approximated")
+        assert dependents == [
+            f"metric `counted`: measure `{measure['name']}` was not emitted; skipped",
+            "metric `counted_twice`: it uses `counted`, which mf2sr skipped; skipped too",
+        ]
+    else:
+        assert report.metrics_emitted == ["revenue", "counted", "counted_twice"]
+        assert report.warnings == []
+        columns.update(counted=reference, counted_twice=f"{reference} * 2")
+    assert _by_status(report.package_dir, list(columns)) == _reference(report.package_dir, columns)
+
+
+def test_a_running_count_of_a_column_adds_up_its_periods(tmp_path: Path) -> None:
+    """COUNT(customer_id) adds up across months, so its running total is kept."""
+    report = _counted_package(
+        tmp_path,
+        {"name": "customer_orders", "expr": "customer_id", "agg": "count"},
+        "customer_id",
+        [
+            {
+                "name": "running_customer_orders",
+                "type": "cumulative",
+                "type_params": {"measure": "customer_orders"},
+            }
+        ],
+    )
+
+    assert report.metrics_emitted == ["revenue", "running_customer_orders"]
+    month = "temporal_role.shop_order_ordered_at__month"
+    engine = Runtime.from_path(str(report.package_dir))
+    try:
+        rows = typed_rows(
+            engine.query(
+                {
+                    "version": 1,
+                    "select": [
+                        {
+                            "expression": {"metric": "metric.shop.running_customer_orders"},
+                            "as": "running",
+                        }
+                    ],
+                    "time": {
+                        "temporal_role": "temporal_role.shop_order_ordered_at",
+                        "grain": "month",
+                    },
+                    "order_by": [{"field": month}],
+                }
+            )
+        )
+    finally:
+        engine.close()
+    with duckdb.connect(str(report.package_dir / "data" / "shop.duckdb"), read_only=True) as conn:
+        expected = conn.execute(
+            "SELECT SUM(COUNT(customer_id)) OVER (ORDER BY date_trunc('month', ordered_at)) "
+            "FROM main_marts.fct_orders GROUP BY date_trunc('month', ordered_at) "
+            "ORDER BY date_trunc('month', ordered_at)"
+        ).fetchall()
+    assert [row["running"] for row in rows] == [value for (value,) in expected] == [2, 4, 6]
 
 
 @pytest.mark.parametrize("dimension_expr", ["status", "lower(status)"])
