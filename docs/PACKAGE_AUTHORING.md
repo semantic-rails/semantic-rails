@@ -1695,7 +1695,10 @@ rejects `as:` whose namespace doesn't match `package.namespace` and warns when
 Model `relation`, dimension `kind`, time `class`, metric `temporal_role`, segment
 `basis_metric`, and nested `accumulation.snapshot` are the canonical spellings.
 `project upgrade` rewrites their aliases with the `authoring-aliases` rule;
-conflicting spellings require an author decision.
+conflicting spellings require an author decision. Alternate spellings are unknown
+keys in both layouts, with `INVALID_CONFIG`. Retired `primitive`, parent-rollup,
+relationship-weight, and `null_behavior` keys use the generic unknown-key errors
+(`INVALID_EXPRESSION_KEY` for keys inside expressions).
 
 ## Validation profile
 

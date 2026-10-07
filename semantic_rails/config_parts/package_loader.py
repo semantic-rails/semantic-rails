@@ -31,12 +31,14 @@ _JOIN_KEYS: frozenset[str] = frozenset(
 )
 
 
-def _reject_unconsumed_rollup_safe(spec: dict[str, Any], *, location: str) -> None:
-    if "rollup_safe" in spec:
+def _check_binding_keys(binding: dict[str, Any], allowed: frozenset[str], *, label: str) -> None:
+    """A misspelled key would silently change what a rollup column is trusted to hold."""
+    unknown = sorted(key for key in set(binding) - allowed if not str(key).startswith("_"))
+    if unknown:
         raise SemanticLayerError(
             "INVALID_CONFIG",
-            f"{location}.rollup_safe is not supported; use graph.relationships "
-            "with rollup_safe.reverse for reverse population-count rewrite permissions",
+            f"{label} has unknown keys {unknown}; use {sorted(allowed)}",
+            details={"unknown_keys": unknown},
         )
 
 
@@ -101,13 +103,7 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
 
     defaults = dict(out.get("defaults", {}) or {})
     relationship_defaults = dict(defaults.get("relationship", {}) or {})
-    if "rollup_safe_aggregations" in relationship_defaults:
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            "defaults.relationship.rollup_safe_aggregations is not supported; "
-            "delete this line; forward rollup declarations were removed",
-        )
-    _reject_unconsumed_rollup_safe(relationship_defaults, location="defaults.relationship")
+    _check_binding_keys(relationship_defaults, _JOIN_KEYS, label="defaults.relationship")
     graph = dict(out.get("graph", {}) or {})
     graph_entities = dict(graph.get("entities", {}) or {})
     models = _model_mapping(out)
@@ -115,20 +111,12 @@ def normalize_package(raw: dict[str, Any]) -> dict[str, Any]:
     for model_id, model in models.items():
         for join_key, join_raw in dict(model.get("joins", {}) or {}).items():
             join = dict(join_raw or {})
-            _reject_unconsumed_rollup_safe(join, location=f"models.{model_id}.joins.{join_key}")
-            unknown = sorted(key for key in set(join) - _JOIN_KEYS if not str(key).startswith("_"))
-            if unknown:
-                rel_id = str(join.get("id", f"relationship.{_slug(model_id)}_{_slug(join_key)}"))
-                migration = (
-                    "; delete path_preference and record the route in graph.path_preferences"
-                    if "path_preference" in unknown
-                    else ""
-                )
-                raise SemanticLayerError(
-                    "INVALID_CONFIG",
-                    f"models.{model_id}.joins.{join_key} (relationship '{rel_id}') "
-                    f"has unknown keys {unknown}; use {sorted(_JOIN_KEYS)}{migration}",
-                )
+            rel_id = str(join.get("id", f"relationship.{_slug(model_id)}_{_slug(join_key)}"))
+            _check_binding_keys(
+                join,
+                _JOIN_KEYS,
+                label=f"models.{model_id}.joins.{join_key} (relationship '{rel_id}')",
+            )
     bound_entities: dict[str, str] = {}
     for entity_key, entity_raw in graph_entities.items():
         entity = dict(entity_raw or {})

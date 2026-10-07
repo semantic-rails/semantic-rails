@@ -1,10 +1,10 @@
 """Canonical authoring rewrites preserve payloads and stop at conflicts."""
 
-
 import pytest
 import yaml
 
 from semantic_rails.config import load_package_config
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.upgrade.model import PackageFiles, plan
 from semantic_rails.upgrade.rules_authoring import RULES
 from semantic_rails.upgrade.service import upgrade_project
@@ -72,6 +72,9 @@ def test_authoring_alias_upgrade_loads_and_is_idempotent(tmp_path, path, old, ne
     if path[0] == "segments":
         row.update(entity="order", membership={})
     source.write_text(yaml.safe_dump(doc, sort_keys=False))
+    with pytest.raises(SemanticLayerError, match=old) as exc:
+        load_package_config(str(source))
+    assert exc.value.code == "INVALID_CONFIG"
     report = upgrade_project(source, workspace_root=tmp_path, dry_run=False)
     assert report["ok"] and report["status"] == "upgraded", report
     load_package_config(str(source))

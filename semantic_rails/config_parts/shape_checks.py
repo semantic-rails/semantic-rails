@@ -136,7 +136,6 @@ _MODEL_KEYS: frozenset[str] = frozenset(
         "description",
         "kind",
         "relation",
-        "relation_ref",
         "grain",
         "keys",
         "entity",
@@ -191,7 +190,6 @@ _DIMENSION_KEYS: frozenset[str] = frozenset(
         "name",
         "label",
         "kind",
-        "type",
         "column",
         "domain",
         "valid_values",
@@ -215,7 +213,6 @@ _TIME_KEYS: frozenset[str] = frozenset(
         "column",
         "kind",
         "class",
-        "temporal_class",
         "description",
         "topics",
         "preferred_filter_ops",
@@ -264,14 +261,9 @@ _MEASURE_KEYS: frozenset[str] = frozenset(
         "external_discontinuities",
         "cross_window_policy",
         "accumulation",
-        "snapshot_policy",
         "publish",
         "from",
         "via",
-        # `primitive:` is rejected by the loader with a dedicated migration
-        # message — listed here so that message fires instead of a generic
-        # unknown-key error.
-        "primitive",
     }
 )
 _METRIC_KEYS: frozenset[str] = frozenset(
@@ -295,7 +287,6 @@ _METRIC_KEYS: frozenset[str] = frozenset(
         "order_by",
         "expression",
         "temporal_role",
-        "time",
         "compatible_temporal_roles",
         "topics",
         "comparison_family",
@@ -308,7 +299,6 @@ _METRIC_KEYS: frozenset[str] = frozenset(
         "examples",
         "value_type",
         "currency",
-        "primitive",
     }
 )
 _SEGMENT_KEYS: frozenset[str] = frozenset(
@@ -320,7 +310,6 @@ _SEGMENT_KEYS: frozenset[str] = frozenset(
         "description",
         "entity",
         "basis_metric",
-        "metric",
         "membership",
         "preview_dimensions",
         "synonyms",
@@ -377,11 +366,6 @@ def _unknown_key_errors(
         str(key) for key in spec if str(key) not in allowed and not str(key).startswith("_")
     )
     for key in unknown:
-        if key == "null_behavior":
-            from ..expressions import NULL_BEHAVIOR_REMOVED
-
-            add_error(errors, f"{label}: {NULL_BEHAVIOR_REMOVED}")
-            continue
         hints = get_close_matches(key, sorted(allowed), n=2, cutoff=0.6)
         if fuzzy_only and not hints:
             continue
@@ -646,7 +630,7 @@ def _check_typed_field_enums(path_label: str, models: dict[str, Any], errors: li
                     f"{kind_value!r}. Valid kinds: "
                     f"{', '.join(sorted(_VALID_TIME_KINDS))}.",
                 )
-            class_value = time_raw.get("class", time_raw.get("temporal_class"))
+            class_value = time_raw.get("class")
             if class_value is not None:
                 class_str = str(class_value).strip().lower()
                 if class_str and class_str not in _VALID_TIME_CLASSES:

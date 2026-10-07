@@ -77,12 +77,7 @@ def test_parent_rollup_measure_keys_are_unknown(
         load_package_config(str(path))
     assert exc.value.code == "INVALID_CONFIG"
     message = str(exc.value)
-    if location == "defaults":
-        assert message.count(f"defaults.measure.{key}") == 1
-        assert "delete this line; parent-rollup declarations were removed" in message
-        assert "measure '" not in message
-    else:
-        assert "unknown keys" in message and key in message
+    assert "unknown keys" in message and key in message
 
 
 @pytest.mark.parametrize(
@@ -147,7 +142,7 @@ def test_unconsumed_relationship_default_rollup_is_rejected(
     with pytest.raises(SemanticLayerError) as exc:
         load_package_config(str(path))
     assert exc.value.code == "INVALID_CONFIG"
-    assert f"defaults.relationship.{key}" in str(exc.value)
+    assert "defaults.relationship" in str(exc.value) and key in str(exc.value)
 
 
 @pytest.mark.parametrize(
@@ -194,7 +189,7 @@ def test_removed_relationship_rollup_forms_fail_loading(
     assert exc.value.code == "INVALID_CONFIG"
     relationship = {
         "graph": "orders_customer",
-        "defaults": "defaults.relationship.rollup_safe_aggregations",
+        "defaults": "defaults.relationship",
         "join": "models.orders.joins.customer",
     }[location]
     assert relationship in str(exc.value)
@@ -348,15 +343,14 @@ def test_grain_matching_primary_expr_override_is_accepted(starter_package: Path)
     ],
     ids=["direct_field", "expression_key"],
 )
-def test_removed_null_behavior_key_fails_to_load_with_one_message(
-    starter_package: Path, old: str, new: str
-) -> None:
+def test_removed_null_behavior_key_is_unknown(starter_package: Path, old: str, new: str) -> None:
     """`null_behavior:` used to pick how a ratio or a sum read an empty group; the engine now
     settles that itself, so a package that still writes it fails to load and says why."""
     path = _mutated(starter_package, old, new)
-    with pytest.raises(SemanticLayerError, match="`null_behavior` was removed; delete the key"):
+    with pytest.raises(SemanticLayerError, match="null_behavior") as exc:
         load_package_config(str(path.parent))
-    assert any("`null_behavior` was removed; delete the key" in e for e in _errors(path))
+    assert exc.value.code in {"INVALID_CONFIG", "INVALID_EXPRESSION_KEY"}
+    assert any("null_behavior" in e for e in _errors(path))
 
 
 def test_ratio_operand_typo_names_metric_and_field(starter_package: Path) -> None:
