@@ -26,9 +26,10 @@ calls, is recorded whole, and any change to it fails.
 Receivers are tracked within lexical scopes, using facade constructors,
 annotated return types, explicit instance annotations, and assignments from
 known instances. Attribute bindings belong to the exact receiver expression;
-member names are never shared between unrelated objects or files. Unknown
-receivers are omitted; the embedder's own tests against engine ``main`` cover
-uses that need interprocedural analysis. Local definitions and reassignments
+member names are never shared between unrelated objects or files. Adding a use
+requires a resolved receiver. A recorded instance-member use is retained while
+any unresolved receiver still loads or stores that member; removal requires
+its absence. Local definitions and reassignments
 replace imported bindings, including test doubles that reuse a facade name.
 """
 
@@ -212,6 +213,7 @@ class _FileScan(ast.NodeVisitor):
         # explicitly shadows an outer binding without claiming an engine type.
         self.scopes: list[dict[str, tuple[str, str] | None]] = [{}]
         self.found: set[str] = set()
+        self.opaque_members: set[str] = set()
         self.visit(tree)
 
     def _lookup(self, key: str) -> tuple[str, str] | None:
@@ -320,6 +322,7 @@ class _FileScan(ast.NodeVisitor):
             owner = self._instance(node.value) or self._annotation(node.annotation)
         else:
             owner = self._annotation(node.annotation)
+        self.visit(node.target)
         self._bind(node.target, ("instance", owner) if owner else None)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
@@ -401,6 +404,7 @@ class _FileScan(ast.NodeVisitor):
 
     def visit_For(self, node: ast.For | ast.AsyncFor) -> None:
         self.visit(node.iter)
+        self.visit(node.target)
         self._bind(node.target, None)
         self._loop(node.body, node.orelse)
 
@@ -435,6 +439,7 @@ class _FileScan(ast.NodeVisitor):
         for item in node.items:
             self.visit(item.context_expr)
             if item.optional_vars is not None:
+                self.visit(item.optional_vars)
                 self._bind(item.optional_vars, None)
         for statement in node.body:
             self.visit(statement)
@@ -467,6 +472,12 @@ class _FileScan(ast.NodeVisitor):
             self.found.add(use)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
+        if (
+            isinstance(node.ctx, (ast.Load, ast.Store))
+            and not node.attr.startswith("__")
+            and self._instance(node.value) is None
+        ):
+            self.opaque_members.add(node.attr)
         if isinstance(node.ctx, ast.Load) and (use := self._use(node)):
             self.found.add(use)
         self.generic_visit(node)
@@ -513,6 +524,12 @@ def scan(consumer: Path) -> tuple[list[str], dict[str, str]]:
     named = set().union(*map(_mentions, found)) & set(embedding.__all__)
     shapes = {name: _protocol_shape(getattr(embedding, name)) for name in named}
     found |= {f"{name}{{{shape}}}" for name, shape in shapes.items() if shape is not None}
+    opaque_members = set().union(*(scanned.opaque_members for scanned in files))
+    for use in USES_FILE.read_text(encoding="utf-8").splitlines():
+        match = _USE.fullmatch(use)
+        if match and match["instance"] and match["attr"] in opaque_members and use not in found:
+            found.add(use)
+            print(f"retained (receiver not traced): {use}", file=sys.stderr)
     failing = {use: reason for use in sorted(found) if (reason := problem(use))}
     working = found - set(failing)
     # ``Runtime`` is implied by ``Runtime.from_path(_)``; keep only the most specific uses.

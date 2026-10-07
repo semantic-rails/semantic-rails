@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 import semantic_rails.embedding as embedding
+from scripts import embedding_consumer_contract as contract
 from scripts.embedding_consumer_contract import (
     HEADER,
     REPO_ROOT,
@@ -31,6 +32,14 @@ from scripts.embedding_consumer_contract import (
 
 USES = USES_FILE.read_text(encoding="utf-8").removeprefix(HEADER).splitlines()
 EMBEDDING_DOC = REPO_ROOT / "docs" / "EMBEDDING.md"
+
+
+@pytest.fixture(autouse=True)
+def recorded_uses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    path = tmp_path / "recorded.txt"
+    path.write_text(HEADER, encoding="utf-8")
+    monkeypatch.setattr(contract, "USES_FILE", path)
+    return path
 
 
 @pytest.mark.parametrize("use", USES)
@@ -191,6 +200,83 @@ def _scan_sources(tmp_path: Path, files: dict[str, str]) -> tuple[list[str], dic
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True, timeout=120)
     subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True, timeout=120)
     return scan(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("recorded", "source", "expected", "retained"),
+    [
+        ("Runtime().adapter", "entry.runtime.adapter = None", ["Runtime().adapter"], True),
+        (
+            "SemanticHTTPService().exception_payload(_)",
+            "svc.exception_payload(exc)",
+            ["SemanticHTTPService().exception_payload(_)"],
+            True,
+        ),
+        (
+            "SemanticHTTPService().exception_payload(_, stage=)",
+            "svc.exception_payload(exc, stage='query')",
+            ["SemanticHTTPService().exception_payload(_, stage=)"],
+            True,
+        ),
+        ("Runtime().package_id", "entry.runtime.adapter = None", [], False),
+        ("", "runtime.blockers", [], False),
+        ("dialect_for_warehouse(_)", "entry.dialect_for_warehouse(value)", [], False),
+        ("Runtime().adapter", "entry.adapter: object = None", ["Runtime().adapter"], True),
+        ("Runtime().adapter", "for entry.adapter in values: pass", ["Runtime().adapter"], True),
+        (
+            "Runtime().adapter",
+            "with external() as entry.adapter: pass",
+            ["Runtime().adapter"],
+            True,
+        ),
+    ],
+)
+def test_scan_requires_proof_to_add_or_remove_instance_uses(
+    tmp_path: Path,
+    recorded_uses: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    recorded: str,
+    source: str,
+    expected: list[str],
+    retained: bool,
+) -> None:
+    if recorded == "SemanticHTTPService().exception_payload(_)":
+        # Isolate retention from the current method's required stage keyword.
+        monkeypatch.setattr(
+            embedding.SemanticHTTPService, "exception_payload", lambda self, exc: None
+        )
+    recorded_uses.write_text(HEADER + recorded + "\n", encoding="utf-8")
+    kept, failing = _scan_sources(tmp_path, {"host.py": source})
+    assert kept == expected
+    assert failing == {}
+    assert capsys.readouterr().err == (
+        f"retained (receiver not traced): {recorded}\n" if retained else ""
+    )
+    recorded_uses.write_text(HEADER + "".join(f"{use}\n" for use in kept), encoding="utf-8")
+    assert contract.main(["--consumer", str(tmp_path), "--check"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_retained_use_still_checks_engine_compatibility(
+    tmp_path: Path, recorded_uses: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    recorded_uses.write_text(HEADER + "Runtime().missing_member(_)\n", encoding="utf-8")
+    _scan_sources(tmp_path, {"host.py": "entry.missing_member(value)"})
+    assert contract.main(["--consumer", str(tmp_path)]) == 0
+    assert "not recorded: Runtime().missing_member(_):" in capsys.readouterr().err
+    assert recorded_uses.read_text(encoding="utf-8") == HEADER
+
+
+def test_scan_retains_members_from_other_tracked_files_only(
+    tmp_path: Path, recorded_uses: Path
+) -> None:
+    recorded_uses.write_text(HEADER + "Runtime().adapter\nRuntime().package_id\n", encoding="utf-8")
+    _scan_sources(tmp_path, {"host.py": "pass", "tests/test_host.py": "entry.adapter"})
+    (tmp_path / "untracked.py").write_text("entry.package_id", encoding="utf-8")
+    kept, failing = scan(tmp_path)
+    assert kept == ["Runtime().adapter"]
+    assert failing == {}
 
 
 @pytest.mark.parametrize(
