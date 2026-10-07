@@ -36,7 +36,6 @@ POLICIES = {
     "hidden": ("object_visibility", "hidden", {}),
     "visible_only": ("object_visibility", "visible_only", {"roles": ["finance"]}),
     "deny": ("object_access", "deny", {}),
-    "redact": ("object_access", "redact", {}),
     "withhold_values": ("object_access", "withhold_values", {}),
     "release_label": ("package_release", "label", {"config": {"label": "stable"}}),
     "protected": ("protected_object", "protected", {}),
@@ -157,7 +156,7 @@ def test_every_policy_kind_checks_the_request_environment(
             return
 
         denied = (kind == "visible_only" and in_force) or (
-            applies and kind in {"hidden", "deny", "redact", "withhold_values", "metric_constraint"}
+            applies and kind in {"hidden", "deny", "withhold_values", "metric_constraint"}
         )
         report = engine.validate(query)
         assert report["ok"] is (not denied), report

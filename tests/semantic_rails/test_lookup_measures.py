@@ -519,7 +519,7 @@ def test_access_to_the_source_measure_is_required(package_dir: Path) -> None:
     assert engine.query({**_query("reserve"), "policy_context": {"audience": "external"}})["ok"]
 
 
-@pytest.mark.parametrize("action", ["deny", "redact"])
+@pytest.mark.parametrize("action", ["deny"])
 @pytest.mark.parametrize("group_by", [[CLAIM_KEY], [COVERAGE_KEY]], ids=["child", "via"])
 def test_access_to_the_lookup_relationship_is_required(
     package_dir: Path, monkeypatch, action: str, group_by: list[str]

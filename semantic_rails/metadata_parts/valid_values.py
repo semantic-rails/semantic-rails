@@ -133,7 +133,7 @@ def _anchor_measure_id(
         for row in measures
         if row.id not in unavailable
         and any(
-            effect["kind"] == "object_access" and effect["action"] in {"deny", "redact"}
+            effect["kind"] == "object_access" and effect["action"] == "deny"
             for effect in policy_effects_for_object(runtime._config, row.id, **scope)
         )
     }

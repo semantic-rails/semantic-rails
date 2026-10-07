@@ -28,7 +28,7 @@ from typing import Any
 from .compiler import BoundQuery, bind_metadata_objects, bind_query
 from .compiler_parts.indexes import ViewOf, get_package_analysis
 from .errors import SemanticLayerError
-from .policy_rules import hidden_policy_ids, policy_config, visible_only_listed
+from .policy_rules import hidden_policy_ids, visible_only_listed
 from .registry import Registry
 from .request_context import RequestContext, context_from_policy_context
 from .schema import (
@@ -83,7 +83,6 @@ PROSE = frozenset(
 POLICY_TEXT = ("rule", "rationale", "description")
 ENGINE_TEXT = {
     "deny": "Access to this object is denied by policy.",
-    "redact": "Access to this object is denied by policy.",
     "withhold_values": "Values of this object are withheld by policy.",
     "constrain": "Queries on this object are constrained by policy.",
     "protected": "This object is protected by policy.",
@@ -287,7 +286,7 @@ def display_policy(
     listed = [object_id for object_id in policy.object_ids if object_id not in hidden]
     if policy.object_ids and not listed:
         return None
-    settings = _visible(policy_config(policy), hidden)
+    settings = _visible(dict(policy.config), hidden)
     if policy.kind == "row_filter" and settings.get("dimension") in hidden:
         return None
     words = [policy.id, policy.rationale, *(settings.get(key) for key in POLICY_TEXT)]

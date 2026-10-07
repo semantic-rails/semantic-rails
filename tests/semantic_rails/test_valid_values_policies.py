@@ -101,7 +101,7 @@ def _reference(path, tenant=None):
     return [{"value": category, "label": category, "count": count} for category, count in rows]
 
 
-@pytest.mark.parametrize("action", ["deny", "redact", "hidden", "visible_only"])
+@pytest.mark.parametrize("action", ["deny", "hidden", "visible_only"])
 @pytest.mark.parametrize("prefer_revenue", [False, True])
 def test_live_values_skip_blocked_first_measure(package, action, prefer_revenue):
     config, path = package

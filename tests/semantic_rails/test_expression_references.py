@@ -244,18 +244,21 @@ def test_schema_reference_positions(walker, case):
     assert expected in walker(nested) if expected else not walker(nested)
 
 
-POLICY_COMBOS = list(itertools.product(["deny", "redact"], ["roles", "audiences"]))
+POLICY_COMBOS = list(itertools.product(["deny"], ["roles", "audiences"]))
 
 
 def _rotate_policy(rows):
-    """Pair each row with one (action, scope), so every combination runs on a quarter of them.
+    """Pair each row with one (action, scope), so every combination runs on half of them.
 
     The action and the scope only change how a policy matches, never how an
     expression is walked, so crossing them with every row repeats the same
     walk. The shift after each full turn keeps a short trailing axis from
     always meeting the same two combinations.
     """
-    return [(*row, *POLICY_COMBOS[(i + i // 4) % 4]) for i, row in enumerate(rows)]
+    return [
+        (*row, *POLICY_COMBOS[(i + i // len(POLICY_COMBOS)) % len(POLICY_COMBOS)])
+        for i, row in enumerate(rows)
+    ]
 
 
 @pytest.fixture(scope="module")
@@ -725,7 +728,7 @@ def test_policy_context_is_skipped_only_at_the_top_level(
     )
 
 
-@pytest.mark.parametrize("action", ["deny", "redact"])
+@pytest.mark.parametrize("action", ["deny"])
 def test_sibling_paths_and_recipe_closure(base_config, monkeypatch, action):
     from semantic_rails.metadata_parts.valid_values import valid_values_payload
 
@@ -986,7 +989,7 @@ def test_unknown_kind_with_measure_fails_before_normalization(base_config, monke
 
 
 @pytest.mark.parametrize("spelling", SPELLINGS)
-@pytest.mark.parametrize("action", ["deny", "redact"])
+@pytest.mark.parametrize("action", ["deny"])
 def test_recipe_filter_spec_spellings(base_config, spelling, action):
     from semantic_rails.request_context import RequestContext
 
@@ -1572,7 +1575,7 @@ def test_unimplemented_schema_anchor_has_fixed_refusal(base_config, monkeypatch)
 
 @pytest.mark.parametrize("branch", ["distribution", "mixed"])
 @pytest.mark.parametrize("scope", ["roles", "audiences"])
-@pytest.mark.parametrize("action", ["deny", "redact"])
+@pytest.mark.parametrize("action", ["deny"])
 def test_distribution_branch_dependencies_precede_rendering(
     base_config, monkeypatch, branch, scope, action
 ):

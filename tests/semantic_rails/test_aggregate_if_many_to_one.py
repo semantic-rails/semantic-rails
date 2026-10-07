@@ -926,7 +926,7 @@ def test_the_condition_is_a_cut_on_the_entity_it_reads(package, allowed):
 
 
 # The policy kind that declares each action refusing a query by the objects it reads.
-POLICY_KINDS = {"deny": "object_access", "redact": "object_access", "hidden": "object_visibility"}
+POLICY_KINDS = {"deny": "object_access", "hidden": "object_visibility"}
 # A raw column read while anything is hidden: refused, naming nothing.
 NOTHING_NAMED = {"blocked_objects": [], "policy_effects": [], "policy_violations": []}
 

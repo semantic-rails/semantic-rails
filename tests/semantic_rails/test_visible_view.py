@@ -75,7 +75,6 @@ ROW_FILTER = SemanticPolicyConfig(
 # enforcement -> (its policy on what the query reads, the query)
 ENFORCEMENT = {
     "deny": (access_policy("deny", CUSTOMERS), BY_STORE),
-    "redact": (access_policy("redact", CUSTOMERS), BY_STORE),
     "withhold_values": (
         replace(access_policy("withhold_values", CUSTOMERS), config={"max_rank": 3}),
         RANKED,
@@ -148,7 +147,7 @@ def test_visibility_is_invisible_to_enforcement(runtimes, enforcement, visibilit
     )
     assert envelope(with_visibility) == envelope(alone)
     text = json.dumps(alone, default=str)
-    if enforcement in {"deny", "redact", "metric_constraint"}:
+    if enforcement in {"deny", "metric_constraint"}:
         assert "POLICY_DENIED" in text
     if enforcement == "withhold_values":
         assert '"withheld"' in text

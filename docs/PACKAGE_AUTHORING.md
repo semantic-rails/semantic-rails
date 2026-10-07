@@ -638,21 +638,39 @@ behavior:
 Policy kinds and actions are a closed list in both default and strict validation.
 Unknown kinds or unsupported actions fail to load with `INVALID_CONFIG`; a policy
 constructed directly in Python is checked again before query binding and cache
-lookup, and during policy evaluation. Release labels belong in `config.label`.
+lookup, and during policy evaluation. Release labels belong in `label`.
 
 | Kind | Allowed action |
 | --- | --- |
 | `package_release` | omitted or `label` |
 | `object_visibility` | `hidden`, `visible_only` (required) |
-| `object_access` | `deny`, `redact`, `withhold_values` (required) |
+| `object_access` | `deny`, `withhold_values` (required) |
 | `protected_object` | omitted or `protected` |
 | `metric_constraint` | omitted or `constrain` |
 | `row_filter` | omitted |
 
-The existing nested `config.action` and `config.visibility` aliases use the same
-action checks. Action text is trimmed and lowercased; kind names must match exactly.
+Every row is flat. Common keys are `id`, `kind`, `object_ids`, `audiences`,
+`environments`, `roles`, `action`, and `rationale`. Row filters omit `object_ids`
+and `action`, even when empty. Each kind also accepts only:
 
-- **`package_release`** — labels the package's release status. `config.label`
+| Kind | Additional keys |
+| --- | --- |
+| `package_release` | `label` |
+| `object_visibility`, `protected_object` | none |
+| `object_access` | `max_rank` |
+| `metric_constraint` | `required_group_by`, `allowed_group_by`, `required_where`, `allowed_where`, `allow_metric_filters`, `allowed_metric_filter_entities`, `allowed_metric_filter_metrics`, `allowed_temporal_roles` |
+| `row_filter` | `dimension`, `attribute`, `type` |
+
+Unknown keys, nested `config:`, and `visibility`, `rule`, or `description` aliases
+are refused with `INVALID_CONFIG`, including policies built in Python. Use
+`semantic-rails project upgrade` to preview the `policy-flat` alias rewrite and
+`policy-redact-deny` action rewrite. These refused legacy forms currently report
+`unverified`, so `--write` refuses them. Nested scope or identity fields, disagreeing
+alias values, and action rewrites that would change release labels are stops with
+no choices. Nested row filters remain refused and need a flat row authored by hand. Action text is trimmed and lowercased;
+kind names must match exactly.
+
+- **`package_release`** — labels the package's release status. `label`
   (e.g. `stable`, `preview`) surfaces in the package manifest and discovery
   metadata; it gates nothing by itself.
 - **`object_visibility`** — `action: hidden` hides the listed objects, and everything
@@ -663,11 +681,11 @@ action checks. Action text is trimmed and lowercased; kind names must match exac
   a caller they hide, a hidden object is exactly an object the package doesn't have; see
   [What a caller sees of a hidden object](#what-a-caller-sees-of-a-hidden-object).
 - **`object_access`** — enforced at query time. `action: deny` refuses the
-  query with a structured policy error; `action: redact` executes but replaces
-  the governed object's values in the result. An `aggregate_if` reads every
+  query with a structured policy error. `redact` never masked values; it refused
+  like `deny`. Refusals and inspect now name `deny`. An `aggregate_if` reads every
   dimension declared over the columns in its condition or value, including on
   the measure's own entity, as a `where` filter or `group_by` on them does. A
-  matching `deny`, `redact` or `hidden` object policy on any such dimension
+  matching `deny` or `hidden` object policy on any such dimension
   refuses the query with `POLICY_DENIED` before SQL is rendered. Own-entity
   columns with no declared dimension remain allowed. While any `object_access`
   or `object_visibility` policy is declared, it may not read another entity's column
@@ -766,12 +784,12 @@ policy-effect reports so the person whose query was denied learns why.
 
 ```yaml
 semantic_policies:
-  - id: policy.shop.redact_revenue_for_external
+  - id: policy.shop.deny_revenue_for_external
     kind: object_access
     object_ids: [measure.shop.revenue_usd]
     audiences: [external_partner]
-    action: redact
-    rationale: Raw revenue is sensitive; partners get redacted values.
+    action: deny
+    rationale: Raw revenue is sensitive; partner queries are refused.
 
   - id: policy.shop.sales_revenue_store_cuts
     kind: metric_constraint
@@ -824,14 +842,14 @@ that must not see it.
   see below. The policy governs objects, not columns: list every measure that computes the
   sensitive value, since another measure over the same column (a filtered, windowed or
   rolled-up variant) is a separate object.
-- `hidden`, `deny`, `redact` and `withhold_values` still apply to eligible requests:
+- `hidden`, `deny` and `withhold_values` still apply to eligible requests:
   explicit restrictions win.
 
 ### What a caller sees of a hidden object
 
 A caller's requests read the package without the objects hidden from them (by `hidden`, or
 by a `visible_only` policy they are not eligible for). Policy enforcement still reads the
-whole package, so hiding an object never removes or changes a `deny`, `redact`,
+whole package, so hiding an object never removes or changes a `deny`,
 `withhold_values`, `metric_constraint` or `row_filter`.
 
 - **Hidden with it:** every object that reads a hidden object (a metric over it, directly or
@@ -872,13 +890,13 @@ semantic_policies:
     action: withhold_values
     object_ids: [metric.revenue]
     roles: [sales]
-    config: {max_rank: 10}
+    max_rank: 10
 ```
 
 A `withhold_values` policy answers one shape: a grouped query that selects the governed
 metric or measure directly (no wrapper, aggregation or time-role override) and names it
 first in `order_by`, then every group key (and the time bucket) in the same direction, with
-a `limit` of at most `config.max_rank` (an integer from 1 to 100; default 10). When
+a `limit` of at most `max_rank` (an integer from 1 to 100; default 10). When
 `order_by` names only the metric, the engine adds the group keys. Dimension filters and
 time windows work as usual. The response's `rows` hold the group keys only: the metric's
 column is removed from `rows`, `column_types` and `output_columns`. A top-level `withheld`
@@ -1480,7 +1498,7 @@ never added across two parents, or repeated over the child's own child rows.
   holds a value elsewhere in scope, and NULL (with `NO_DATA_IN_SCOPE`) when it holds
   none; an `avg`, `min` or `max` source reads NULL for it.
 - The source is compiled as its own query, so its access policies apply. The lookup's
-  direct relationship is also a bound dependency: denying or redacting it refuses
+  direct relationship is also a bound dependency: denying it refuses
   validate, compile and query with `POLICY_DENIED` before rendering or execution. A row filter
   allows one relation per query, so a lookup under any row filter is refused with
   `POLICY_DENIED`.
@@ -2627,6 +2645,8 @@ one chose; an option that changes answers is reported as "changes answers by you
 | `forward-rollup-hints` | 0.3.2rc3 | `rollup_safe_aggregations` and `rollup_safe` in `defaults.relationship` and on model joins; `rollup_safe.forward`, or a `rollup_safe` list, in `graph.relationships` | Deleted; `rollup_safe.reverse` in `graph.relationships` stays |
 | `relationship-path-preference` | 0.3.2rc3 | `path_preference` on relationships and model joins | Deleted; record a route as a `graph.path_preferences` row |
 | `query-path-policy` | 0.3.2rc3 | The query key `path_policy` in example, test and segment membership queries | Deleted; `graph.path_policy` is unchanged |
+| `policy-flat` | 0.3.2 | Nested policy `config:`, `visibility`, `rule`, and `description` (except nested row filters) | Flat kind-specific fields, `action` and `rationale`; nested scope or identity fields, disagreements, and release-label changes stop without choices |
+| `policy-redact-deny` | 0.3.2 | `object_access` action `redact` | `deny`; refusal decisions stay the same and effect labels now name `deny` |
 | `query-ir-version` | 0.3.2 | `version: 2` (including quoted `"2"`) in example and test queries | `version: 1`, which has the same query shape |
 
 ## Reference
