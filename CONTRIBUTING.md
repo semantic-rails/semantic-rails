@@ -135,16 +135,31 @@ Tests bound every wait: subprocess calls, `urlopen`, `communicate`, and
 `join`/`wait` take a timeout; `tests/semantic_rails/test_bounded_waits.py`
 enforces it.
 
-Backend CI partitions whole test files into three deterministic shards for each
-Python version, using SHA-256 of the node ID's file path. Set `SR_SHARD_COUNT`
+Backend CI partitions whole test files into four deterministic shards for each
+Python version. Files are assigned longest first to the lightest shard, with paths
+and shard indices breaking ties. `tests/shard_durations.json` records summed
+per-test seconds for each file; unknown files use the median cost. Ownership uses
+the full on-disk test-file inventory so targeted runs and the flake guard retain
+the full suite's assignment. Set `SR_SHARD_COUNT`
 and zero-based `SR_SHARD_INDEX` to reproduce a shard locally; unset both to run
 without partitioning. Quarantine IDs are validated against the full collection
-before partitioning. Each Python 3.12 shard uploads its JUnit report, and the
+before partitioning. Every Python/version shard uploads its JUnit report, and the
 required "All checks pass" gate waits for the entire backend matrix. Backend
 full-suite jobs skip pushes to main/master: pull requests and merge groups test
 the suite before merging, while pushes retain lint, security, documentation and
 Postgres checks. Direct pushes therefore rely on branch protection to require
 pull requests and the merge queue.
+
+Refresh the table when a backend shard exceeds about 15 minutes or test costs
+change substantially. Download the `backend-results-py*` artifacts from a complete
+CI run with `gh run download <run-id> --pattern 'backend-results-py*' --dir /tmp/backend-reports`,
+then run `uv run python scripts/update_shard_durations.py /tmp/backend-reports/*/backend-results.xml`.
+Supply reports from all Python versions (or multiple representative runs): the
+script retains the slowest observed total for each file and prints shard estimates
+at four workers, targeting about 12 minutes. These estimates omit startup, fixture
+contention and auxiliary checks; use actual CI job times to confirm the count.
+If one file alone exceeds the target, the script warns to split that file by hand.
+Commit the refreshed table and adjust the workflow shard count if needed.
 
 Merge-group CI on each Python 3.12 shard repeats affected unit test files three times with
 random test ordering and an automatically chosen worker count.

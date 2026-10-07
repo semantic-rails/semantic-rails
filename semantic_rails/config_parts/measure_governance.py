@@ -19,6 +19,7 @@ from typing import Any
 
 from ..expressions import collect_object_references, expr_to_dict
 from ..schema import MetricConfig, PackageConfig
+from .route_rows import hop_is_functional
 
 _AGGREGATES = frozenset({"aggregate", "measure", "scoped_aggregate"})
 _NARROWING = ("filter", "where", "predicates")
@@ -70,17 +71,41 @@ def governing_metrics(config: PackageConfig, measure_id: str) -> list[MetricConf
     ]
 
 
+def _reachable_entities(config: PackageConfig, entity: str) -> set[str]:
+    """``entity`` and every entity it reaches over many-to-one or one-to-one relationships."""
+    reached, pending = {entity}, [entity]
+    while pending:
+        current = pending.pop()
+        for rel in config.relationships:
+            ends = (rel.source_entity, rel.target_entity)
+            if current not in ends or not hop_is_functional(rel, current):
+                continue
+            following = ends[1] if current == ends[0] else ends[0]
+            if following not in reached:
+                reached.add(following)
+                pending.append(following)
+    return reached
+
+
 def population_governors(
     config: PackageConfig, measure_id: str
 ) -> list[tuple[MetricConfig, frozenset[str]]]:
-    """Metrics whose aggregates narrow on dimensions of ``measure_id``'s entity, with those ids."""
-
-    entity = next((row.entity for row in config.measures if row.id == measure_id), None)
+    """Metrics with narrowing dimensions: any aggregate's filters on the measure's entity, or
+    if none, this measure's aggregates' filters on entities reached through functional hops."""
+    entity = next((row.entity for row in config.measures if row.id == measure_id), "")
+    reached = _reachable_entities(config, entity)
     own = {row.id for row in config.dimensions if row.entity == entity}
+    joined = {row.id for row in config.dimensions if row.entity in reached}
     governors = []
     for metric in config.metric_recipes:
-        narrowings = [narrowing for _, narrowing in _measure_reads(expr_to_dict(metric.expression))]
-        if narrowed_by := own.intersection(collect_object_references(narrowings, config)):
+        reads = list(_measure_reads(expr_to_dict(metric.expression)))
+        mine = [narrowing for read, narrowing in reads if read == measure_id]
+        own_hits = own.intersection(
+            collect_object_references([narrowing for _, narrowing in reads], config)
+        )
+        joined_hits = joined.intersection(collect_object_references(mine, config))
+        narrowed_by = own_hits or joined_hits
+        if narrowed_by:
             governors.append((metric, frozenset(narrowed_by)))
     return governors
 

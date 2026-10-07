@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -12,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from scripts import flake_guard, test_quarantine, test_sharding
+from scripts import flake_guard, test_quarantine, test_sharding, update_shard_durations
 
 TODAY = date(2026, 9, 30)
 ROOT = Path(__file__).resolve().parents[2]
@@ -566,19 +567,29 @@ def test_dependabot_updates_uv_lock_weekly_and_keeps_actions():
     assert set(python["groups"]) == {"python-deps", "python-deps-major"}
 
 
-def test_release_hygiene_accepts_only_the_quarantine_manifest():
+def test_release_hygiene_accepts_only_the_ci_manifests():
     from scripts.verify_release_readiness import HYGIENE_FORBIDDEN_PATH_PATTERNS
 
     assert not any(
         pattern.search("tests/quarantine.toml") for pattern in HYGIENE_FORBIDDEN_PATH_PATTERNS
+    )
+    assert not any(
+        pattern.search("tests/shard_durations.json") for pattern in HYGIENE_FORBIDDEN_PATH_PATTERNS
+    )
+    assert any(
+        pattern.search("tests/shard_durations.json.bak")
+        for pattern in HYGIENE_FORBIDDEN_PATH_PATTERNS
     )
     assert any(
         pattern.search("tests/unrelated.toml") for pattern in HYGIENE_FORBIDDEN_PATH_PATTERNS
     )
 
 
-@pytest.mark.parametrize("count", [1, 3, 7])
-def test_file_shards_partition_complete_collection(monkeypatch, count):
+@pytest.mark.parametrize("count", [1, 3, 4, 7])
+def test_file_shards_partition_complete_collection(monkeypatch, tmp_path, count):
+    (tmp_path / "tests").mkdir()
+    for file in range(30):
+        (tmp_path / f"tests/test_{file}.py").touch()
     monkeypatch.setenv("SR_SHARD_COUNT", str(count))
     items = [
         SimpleNamespace(nodeid=f"tests/test_{file}.py::test_value[{case}]")
@@ -591,9 +602,10 @@ def test_file_shards_partition_complete_collection(monkeypatch, count):
         selected = items.copy()
         deselected = []
         config = SimpleNamespace(
+            rootpath=tmp_path,
             hook=SimpleNamespace(
                 pytest_deselected=lambda items, target=deselected: target.extend(items)
-            )
+            ),
         )
         hook = test_sharding.pytest_collection_modifyitems(config, selected)
         next(hook)
@@ -606,7 +618,7 @@ def test_file_shards_partition_complete_collection(monkeypatch, count):
         partitions.append(partition)
         for file in range(30):
             assert sum(node.startswith(f"tests/test_{file}.py::") for node in partition) in (0, 3)
-        assert all(test_sharding.in_shard(item.nodeid) for item in selected)
+        assert all(test_sharding.in_shard(item.nodeid, tmp_path) for item in selected)
     assert set.union(*partitions) == {item.nodeid for item in items}
 
 
@@ -620,16 +632,9 @@ def test_shards_reject_invalid_configuration(monkeypatch, count, index):
 
 @pytest.mark.parametrize("parallel", [False, True])
 def test_quarantine_validates_ids_outside_current_shard(monkeypatch, tmp_path, parallel):
+    # The temporary project has one file, owned by shard zero.
     monkeypatch.setenv("SR_SHARD_COUNT", "3")
-    owner = next(
-        index
-        for index in range(3)
-        if (
-            monkeypatch.setenv("SR_SHARD_INDEX", str(index))
-            or test_sharding.in_shard("tests/test_sample.py")
-        )
-    )
-    monkeypatch.setenv("SR_SHARD_INDEX", str((owner + 1) % 3))
+    monkeypatch.setenv("SR_SHARD_INDEX", "1")
     result = plugin_run(tmp_path, "def test_failure(): pass\n", parallel=parallel, sharded=True)
     assert result.returncode == 5, result.stdout + result.stderr  # No tests in this shard.
     assert "quarantine tests no longer exist" not in result.stdout + result.stderr
@@ -638,8 +643,8 @@ def test_quarantine_validates_ids_outside_current_shard(monkeypatch, tmp_path, p
 def test_backend_matrix_and_push_policy():
     jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
     backend = jobs["backend"]
-    assert backend["strategy"]["matrix"]["shard"] == [0, 1, 2]
-    assert backend["env"] == {"SR_SHARD_COUNT": "3", "SR_SHARD_INDEX": "${{ matrix.shard }}"}
+    assert backend["strategy"]["matrix"]["shard"] == [0, 1, 2, 3]
+    assert backend["env"] == {"SR_SHARD_COUNT": "4", "SR_SHARD_INDEX": "${{ matrix.shard }}"}
     assert "github.event_name != 'push'" in backend["if"]
     assert "github.event_name == 'merge_group'" in backend["if"]
     assert "needs.changes.outputs.backend == 'true'" in backend["if"]
@@ -653,7 +658,10 @@ def test_backend_matrix_and_push_policy():
     upload = next(
         step for step in backend["steps"] if step.get("name") == "Upload backend test results"
     )
-    assert upload["with"]["name"] == "backend-results-${{ matrix.shard }}"
+    assert (
+        upload["with"]["name"]
+        == "backend-results-py${{ matrix.python-version }}-${{ matrix.shard }}"
+    )
 
 
 def test_real_collections_have_complete_disjoint_shards(tmp_path):
@@ -698,7 +706,7 @@ def test_real_collections_have_complete_disjoint_shards(tmp_path):
 
 
 def test_guard_repeats_only_files_in_its_shard(monkeypatch):
-    files = [f"tests/test_{index}.py" for index in range(12)]
+    files = test_sharding.test_files(ROOT)[:30]
     monkeypatch.setenv("SR_SHARD_COUNT", "3")
     monkeypatch.setenv("SR_SHARD_INDEX", "1")
     monkeypatch.setattr(sys, "argv", ["flake_guard.py", "--base", "a" * 40])
@@ -715,3 +723,101 @@ def test_guard_repeats_only_files_in_its_shard(monkeypatch):
 
     monkeypatch.setattr(flake_guard, "run_repetitions", run)
     assert flake_guard.main() == 0
+
+
+@pytest.mark.parametrize("count", [1, 2, 4])
+def test_cost_assignment_is_deterministic_and_balanced(count):
+    costs = {f"test_{index}.py": float(cost) for index, cost in enumerate([9, 8, 7, 6, 5, 4, 3, 2])}
+    files = list(costs)
+    owners = test_sharding.assign_files(files, costs, count)
+    assert owners == test_sharding.assign_files(list(reversed(files)), costs, count)
+    assert set(owners) == set(files)
+    loads = [sum(costs[file] for file in files if owners[file] == index) for index in range(count)]
+    assert max(loads) - min(loads) <= max(costs.values())
+    if count == 2:
+        assert loads == [22, 22]
+        assert owners == {
+            "test_0.py": 0,
+            "test_1.py": 1,
+            "test_2.py": 1,
+            "test_3.py": 0,
+            "test_4.py": 0,
+            "test_5.py": 1,
+            "test_6.py": 1,
+            "test_7.py": 0,
+        }
+
+
+def test_unknown_files_use_median_cost():
+    assert test_sharding.assign_files(["a", "b", "new"], {"a": 10, "b": 2}, 2) == {
+        "a": 0,
+        "new": 1,
+        "b": 1,
+    }
+    assert test_sharding.assign_files(["b", "a"], {}, 2) == {"a": 0, "b": 1}
+
+
+@pytest.mark.parametrize("cost", [0, -1, float("nan"), float("inf")])
+def test_cost_assignment_rejects_invalid_costs(cost):
+    with pytest.raises(ValueError, match="finite and positive"):
+        test_sharding.assign_files(["a"], {"a": cost}, 2)
+
+
+def test_duration_table_takes_slowest_file_total_including_classes(tmp_path):
+    reports = []
+    for index, times in enumerate([(2, 3), (4, 5)]):
+        report = tmp_path / f"{index}.xml"
+        report.write_text(
+            "<testsuites><testsuite>"
+            f'<testcase classname="tests.test_sample" time="{times[0]}"/>'
+            f'<testcase classname="tests.test_sample.TestClass" time="{times[1]}"/>'
+            '<testcase classname="tests.test_other" time="1"/>'
+            "</testsuite></testsuites>"
+        )
+        reports.append(report)
+    assert update_shard_durations.duration_table(reports, ["tests/test_sample.py"]) == {
+        "tests/test_sample.py": 9
+    }
+    assert update_shard_durations.duration_table(
+        list(reversed(reports)), ["tests/test_sample.py"]
+    ) == {"tests/test_sample.py": 9}
+
+
+def test_subset_collection_preserves_full_suite_ownership(monkeypatch, tmp_path):
+    (tmp_path / "tests").mkdir()
+    files = [f"tests/test_{index}.py" for index in range(8)]
+    for file in files:
+        (tmp_path / file).touch()
+    monkeypatch.setenv("SR_SHARD_COUNT", "4")
+    full = test_sharding.shard_owners(tmp_path, 4)
+    assert set(full.values()) == {0, 1, 2, 3}
+    for index in range(4):
+        monkeypatch.setenv("SR_SHARD_INDEX", str(index))
+        selected = [SimpleNamespace(nodeid=files[3] + "::test_value")]
+        config = SimpleNamespace(
+            rootpath=tmp_path, hook=SimpleNamespace(pytest_deselected=lambda **kw: None)
+        )
+        hook = test_sharding.pytest_collection_modifyitems(config, selected)
+        next(hook)
+        with pytest.raises(StopIteration):
+            next(hook)
+        assert bool(selected) == (full[files[3]] == index)
+        assert test_sharding.in_shard(files[3], tmp_path) == bool(selected)
+
+
+def test_duration_generator_warns_for_oversize_file(monkeypatch, tmp_path, capsys):
+    report = tmp_path / "report.xml"
+    report.write_text('<testsuite><testcase classname="tests.test_slow" time="3000"/></testsuite>')
+    monkeypatch.setattr(update_shard_durations, "ROOT", tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests/test_slow.py").touch()
+    output = tmp_path / "durations.json"
+    monkeypatch.setattr(
+        sys, "argv", ["update_shard_durations.py", str(report), "--output", str(output)]
+    )
+    update_shard_durations.main()
+    assert (
+        "tests/test_slow.py alone exceeds target; split this file by hand"
+        in capsys.readouterr().out
+    )
+    assert json.loads(output.read_text()) == {"tests/test_slow.py": 3000}

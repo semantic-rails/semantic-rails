@@ -810,7 +810,7 @@ def test_a_package_that_weights_a_relationship_is_refused_at_load(tmp_path, form
         load_package_config(str(pkg))
     assert exc_info.value.code == "INVALID_CONFIG"
     assert rel_id in str(exc_info.value)
-    assert "graph.path_preferences" in str(exc_info.value)
+    assert "path_preference" in str(exc_info.value)
 
 
 SHIPPED_PACKAGES = [

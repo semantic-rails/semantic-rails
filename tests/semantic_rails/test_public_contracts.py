@@ -365,8 +365,7 @@ def test_export_semantic_contract_uses_expression_columns_without_invented_names
                             "customer": {"expr": {"kind": "column", "column": "customer_id"}},
                         },
                         "dimensions": {
-                            "order_month": {"expr": {"kind": "column", "column": "ordered_at"}},
-                            "constant_label": {"expr": {"kind": "literal", "value": "orders"}},
+                            "order_month": {"column": "ordered_at"},
                         },
                         "measures": {
                             "revenue": {
@@ -399,10 +398,26 @@ def test_export_semantic_contract_uses_expression_columns_without_invented_names
 
     assert {"customer_id", "order_id", "ordered_at", "order_amount"}.issubset(names)
     assert "order_month" not in names
-    assert "constant_label" not in names
     assert "coalesce" not in names
     assert "orders" not in names
     assert all(not name.startswith(("{", "[")) for name in names)
+
+
+@pytest.mark.parametrize(("section", "label"), [("dimensions", "dimension"), ("times", "time")])
+def test_contract_export_refuses_ignored_expression_keys(
+    typed_contract_project: Path, section: str, label: str
+) -> None:
+    source = typed_contract_project / "package.yml"
+    raw = yaml.safe_load(source.read_text())
+    raw["models"]["events"][section]["authored_time"] = {
+        "expr": {"kind": "column", "column": "occurred_at"}
+    }
+    source.write_text(yaml.safe_dump(raw))
+    with pytest.raises(SemanticLayerError) as raised:
+        export_semantic_contract(typed_contract_project)
+    assert raised.value.code == "INVALID_CONFIG"
+    assert f"{label} 'authored_time'" in str(raised.value)
+    assert "['expr']" in str(raised.value)
 
 
 def test_semantic_contract_schema_allows_adapter_owned_binding() -> None:

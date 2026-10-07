@@ -70,9 +70,9 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
-        shard: [0, 1, 2]
+        shard: [0, 1, 2, 3]
     env:
-      SR_SHARD_COUNT: "3"
+      SR_SHARD_COUNT: "4"
       SR_SHARD_INDEX: ${{ matrix.shard }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -153,10 +153,10 @@ jobs:
           print(f"All {len(cases)} ClickHouse tests ran without skips.")
           PY
       - name: Upload backend test results
-        if: always() && matrix.python-version == '3.12'
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: backend-results-${{ matrix.shard }}
+          name: backend-results-py${{ matrix.python-version }}-${{ matrix.shard }}
           path: backend-results.xml
       - if: matrix.shard == 0
         run: uv run semantic-rails parse-config --package jaffle_shop

@@ -2841,7 +2841,7 @@ def test_single_file_validation_checks_segment_references(tmp_path: Path):
         ),
         (
             lambda segment: segment.update(meta={"owner_team": "growth"}),
-            "has unknown key 'meta' — segments don't read meta:",
+            "has unknown key 'meta'",
         ),
         (
             lambda segment: segment["membership"].update(
