@@ -23,6 +23,8 @@ from .compiler_parts.indexes import get_package_analysis
 from .errors import SemanticLayerError
 from .expressions import (
     AggregateExpr,
+    CaseExpr,
+    ColumnRefExpr,
     ConditionalAggregateExpr,
     ConversionExpr,
     MetricPredicateExpr,
@@ -690,6 +692,11 @@ def _synthetic_constraint_sources(
     def identifier(part: str) -> str:
         return part.strip('"`[]').casefold()
 
+    def rows(measure: MeasureConfig) -> tuple[str, ...]:
+        # A one-part row token cannot collide with a two-part column token.
+        relation = measure.source_relation or relations[measure.entity]
+        return (identifier(relation.split(".")[-1]),)
+
     def columns(measure: MeasureConfig, seen: frozenset[str] = frozenset()) -> set[tuple[str, ...]]:
         if measure.id in seen:
             raise SemanticLayerError("INVALID_CONFIG", "A constrained lookup measure has a cycle")
@@ -697,12 +704,9 @@ def _synthetic_constraint_sources(
             tuple(identifier(part) for part in measure_column_ref(ref, measure, config).parts[-2:])
             for ref in collect_column_refs(measure.expr)
         }
-        # entity_count is normalized to count_distinct by the package loader. A
-        # one-part row token cannot collide with a two-part column token, and covers
-        # counts of literals or other keys that never read the governed count's key.
+        # entity_count is normalized to count_distinct by the package loader.
         if measure.default_aggregation in {"count", "count_distinct"}:
-            relation = measure.source_relation or relations[measure.entity]
-            read.add((identifier(relation.split(".")[-1]),))
+            read.add(rows(measure))
         if measure.lookup_from:
             source = measures.get(measure.lookup_from)
             if source is None:
@@ -712,9 +716,23 @@ def _synthetic_constraint_sources(
             read.update(columns(source, seen | {measure.id}))
         return read
 
+    def reads_values(synthetic: MeasureConfig) -> bool:
+        # Allowlist by structure: the binder's CASE WHEN condition THEN column END under
+        # sum, min or max. Any other form (a literal, arithmetic, a call, avg, ...) can
+        # recover a row count, so it reads its relation's rows.
+        body = synthetic.expr
+        return (
+            synthetic.default_aggregation in {"sum", "min", "max"}
+            and isinstance(body, CaseExpr)
+            and len(body.whens) == 1
+            and body.else_expr is None
+            and isinstance(body.whens[0].then, ColumnRefExpr)
+        )
+
     reads = {row.id: columns(row) for row in config.measures if row.id in governed}
     synthetic_reads = {
-        synthetic_id: columns(row) for synthetic_id, row in binding.plan.synthetic_measures.items()
+        synthetic_id: columns(row) | (set() if reads_values(row) else {rows(row)})
+        for synthetic_id, row in binding.plan.synthetic_measures.items()
     }
     return {
         synthetic_id: {measure_id for measure_id, read in reads.items() if read & synthetic_read}
