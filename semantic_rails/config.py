@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import re
 import sysconfig
+from collections.abc import Mapping
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
@@ -1740,6 +1741,53 @@ def _validate_caveat_refs(config: PackageConfig, *, path: str) -> None:
                 )
 
 
+def _canonical_policy(row: dict[str, Any]) -> SemanticPolicyConfig:
+    nested = row.get("config")
+    flat = {**(dict(nested) if isinstance(nested, Mapping) else {}), **row}
+    action = str(
+        row.get("action")
+        or (nested.get("action") if isinstance(nested, Mapping) else "")
+        or flat.get("visibility")
+        or ""
+    )
+    action = action.strip().lower()
+    if row["kind"] == "object_access" and action == "redact":
+        action = "deny"
+    rationale = str(
+        row.get("rationale")
+        or row.get("rule")
+        or flat.get("rule")
+        or flat.get("rationale")
+        or flat.get("description")
+        or ""
+    )
+    common = {
+        "id",
+        "kind",
+        "object_ids",
+        "audiences",
+        "environments",
+        "roles",
+        "action",
+        "rationale",
+    }
+    return SemanticPolicyConfig(
+        id=str(row["id"]),
+        kind=str(row["kind"]),
+        action=action,
+        rationale=rationale,
+        config={
+            key: value
+            for key, value in flat.items()
+            if key not in common | {"config", "visibility", "rule", "description"}
+        },
+        object_ids=_ensure_list(row.get("object_ids")),
+        audiences=_ensure_list(row.get("audiences")),
+        environments=_ensure_list(row.get("environments")),
+        roles=_ensure_list(row.get("roles")),
+    )
+
+
 def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     if "aggregate_relations" in raw:
         raise SemanticLayerError("INVALID_CONFIG", "declare rollups under the model's `variants:`")
@@ -2708,36 +2756,9 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
             )
         )
 
-    policies = []
-    for row in list(raw.get("semantic_policies", []) or []):
-        row_dict = dict(row or {})
-        policies.append(
-            SemanticPolicyConfig(
-                id=str(row_dict["id"]),
-                kind=str(row_dict["kind"]),
-                config={
-                    key: value
-                    for key, value in row_dict.items()
-                    if key
-                    not in {
-                        "id",
-                        "kind",
-                        "object_ids",
-                        "audiences",
-                        "environments",
-                        "roles",
-                        "action",
-                        "rationale",
-                    }
-                },
-                object_ids=_ensure_list(row_dict.get("object_ids")),
-                audiences=_ensure_list(row_dict.get("audiences")),
-                environments=_ensure_list(row_dict.get("environments")),
-                roles=_ensure_list(row_dict.get("roles")),
-                action=str(row_dict.get("action", "")),
-                rationale=str(row_dict.get("rationale", row_dict.get("rule", ""))),
-            )
-        )
+    policies = [
+        _canonical_policy(dict(row or {})) for row in raw.get("semantic_policies", []) or []
+    ]
 
     caveats = _parse_caveats(raw.get("semantic_caveats", []), path=path)
 
