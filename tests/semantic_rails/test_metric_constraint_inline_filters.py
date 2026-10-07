@@ -228,8 +228,7 @@ CONDITIONAL = {
 def test_a_conditional_aggregate_condition_is_never_an_allowed_field(config, monkeypatch, governed):
     """Its condition reads columns, not fields: refused when it filters a governed leaf.
 
-    Only a package-wide constraint governs its synthetic measure; a constraint on another
-    measure leaves it a sibling."""
+    Revenue does not read this customer key; its measure constraint leaves it a sibling."""
     query = {
         "select": [
             {"expression": {"measure": REVENUE}, "as": "revenue"},

@@ -703,9 +703,26 @@ action checks. Action text is trimmed and lowercased; kind names must match exac
   `predicates[].input`, a metric predicate, `metric_filters`, or a conversion
   operand count for every governed object in the query. This conservative rule
   can refuse a nested filter even when it affects only a sibling expression.
-  Direct leaf filters retain the leaf rule above. An
-  `aggregate_if` condition reads columns, not fields, so a package-wide
-  constraint with `allowed_where` refuses it.
+  Direct leaf filters retain the leaf rule above. A caller-created aggregate
+  inherits every applicable constraint on any measure reading one of its source
+  columns, whether the column appears in its value or condition. Matching uses
+  the relation and column SQL actually reads, including measure relation overrides,
+  joined columns, lookup sources and entities sharing a relation name. Identifier
+  case and quoting differences count as the same source, and only the last part of
+  a qualified relation name is matched. This conservatively inherits constraints
+  across same-named tables in different schemas. On a relation with a constrained
+  count measure (`kind: entity_count` or default aggregation `count`/`count_distinct`),
+  a caller-created aggregate runs only as `sum`, `min` or `max` of one column; every
+  other form (a count, `avg`, another aggregation, or a literal, arithmetic, call or
+  `case` value) follows the count measure's constraints. A column whose values happen
+  to be constant cannot be told apart from a count, so constrain a measure reading it
+  to govern it too. An `aggregate_if` condition reads
+  columns, not fields, so `allowed_where` refuses it under either a package-wide
+  or an inherited measure constraint. Its condition also counts as a metric filter,
+  and only outer `where` filters satisfy `required_where`. Constraints on unrelated
+  columns do not govern it, except through that count rule. A column aggregate has
+  no declared clock and continues to refuse a query time axis; declare a measure to
+  aggregate by time.
   `allowed_temporal_roles` checks the query axis and the governed object's
   effective bucket and ordering roles, including expression roles and overrides.
   Grouping by a role's dimension remains subject to `allowed_group_by`.

@@ -51,6 +51,7 @@ from ..sql_ast import (
     SqlCall,
     SqlCase,
     SqlCaseWhen,
+    SqlIdentifier,
     SqlIn,
     SqlLiteral,
     build_comparison_condition,
@@ -256,6 +257,17 @@ def _measure_required_entities(measure: MeasureConfig, config: PackageConfig) ->
     return required
 
 
+def measure_column_ref(
+    ref: ColumnRefExpr, measure: MeasureConfig, config: PackageConfig
+) -> SqlIdentifier:
+    """The source column shared by SQL lowering and column-aggregate constraints."""
+    entity_id = _resolve_expr_entity(ref, measure, config)
+    entity = _entity_index(config)[entity_id]
+    # A measure's own fact relation can differ from its entity's relation.
+    source = measure.source_relation if entity_id == measure.entity and not ref.table else ""
+    return _column_ref(source or entity.table, ref.column)
+
+
 def _config_expr_to_sql(expr: SemanticExpr, measure: MeasureConfig, config: PackageConfig) -> Any:
     if measure.lookup_from:
         # Its expr is the key to its parent; only the parent_lookup leaf reads its value.
@@ -271,19 +283,11 @@ def _config_expr_to_sql(expr: SemanticExpr, measure: MeasureConfig, config: Pack
 def _config_expr_to_sql_inner(
     expr: SemanticExpr, measure: MeasureConfig, config: PackageConfig
 ) -> Any:
-    entities = _entity_index(config)
     if isinstance(expr, ColumnRefExpr):
         entity_id = _resolve_expr_entity(expr, measure, config)
-        entity = entities[entity_id]
         if is_conditional_aggregate(measure):
             bind_conditional_aggregate_column(measure, entity_id, expr.column, config)
-        # For a measure's own entity, prefer source_relation (fact table)
-        # over entity.table (which is typically the calendar relation for
-        # fact measures that bind to a time entity).
-        source = getattr(measure, "source_relation", "") or ""
-        if source and entity_id == measure.entity and not expr.table:
-            return _column_ref(source, expr.column)
-        return _column_ref(entity.table, expr.column)
+        return measure_column_ref(expr, measure, config)
     if isinstance(expr, LiteralExpr):
         return SqlLiteral(expr.value)
     if isinstance(expr, ArithmeticExpr):
