@@ -3991,7 +3991,8 @@ def _conversion_leaf_cte(
         base_source, converted_source = _conversion_sources(expr, config, query)
         match_entity = str(expr.entity or base_source["root_entity"])
         entities.get(match_entity)
-        for dimension_id in expr.constant_properties or []:
+        # A binding dimension decides how the metric answers grouped by it: the metric reads it.
+        for dimension_id in [*(expr.constant_properties or []), *(expr.dimension_bindings or {})]:
             dimensions.get(dimension_id)
     if match_entity not in entities:
         raise SemanticLayerError(
@@ -4527,7 +4528,10 @@ def _extend_config_with_synthetic_measures(
         return config
     from dataclasses import replace as _replace
 
-    return _replace(config, measures=[*config.measures, *synthetic.values()])
+    extended = _replace(config, measures=[*config.measures, *synthetic.values()])
+    # A caller's view stays one: its routes still come from the whole package.
+    get_package_analysis(extended).view = get_package_analysis(config).view
+    return extended
 
 
 def resolve_compile_config(plan: LogicalPlan, config: PackageConfig) -> PackageConfig:
@@ -5102,6 +5106,10 @@ def _bind_with_row_filters(
         raise SemanticLayerError(
             "INVALID_CONFIG", "Expression dependencies are cyclic or too deep."
         ) from exc
+    view = get_package_analysis(config).view
+    if view is not None and view.hidden & bound.object_ids.union(*bound.leaf_objects.values()):
+        # A caller's view holds nothing hidden from them; if it ever did, no SQL reads it.
+        raise SemanticLayerError("OBJECT_NOT_FOUND", "The requested object was not found.")
     read = {(start, target) for start, target, _ in read_routes(bound.plan, bound.route_choices)}
     for (start, target), (index, _) in decided.items():
         if (start, target) not in read:

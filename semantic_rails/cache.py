@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from threading import RLock
@@ -111,10 +111,12 @@ def compilation_cache_key(
     render_profile: str = "audit",
     policy_context: Mapping[str, Any],
     aggregate_routing: bool,
+    visibility: Iterable[str] = (),
 ) -> str:
     # Trusted attribute values partition the key explicitly (the object's repr
     # names keys only), so no compiled plan is reused across attribute values.
-    # JSON keeps 1, true, "1" and ["1"] distinct.
+    # JSON keeps 1, true, "1" and ["1"] distinct. ``visibility`` is the caller's hidden set:
+    # a plan compiled on one caller's view is never reused for another's.
     attributes = context_from_policy_context(policy_context).attributes
     return stable_json_hash(
         {
@@ -127,5 +129,6 @@ def compilation_cache_key(
             "policy_context": {k: v for k, v in policy_context.items() if k != "attributes"},
             "attributes": {name: attributes.get(name) for name in attributes.names},
             "aggregate_routing": aggregate_routing,
+            "visibility": stable_json_hash(sorted(visibility)),
         }
     )

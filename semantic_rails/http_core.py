@@ -24,7 +24,6 @@ from typing import Any
 from .api_keys import api_key_auth_result
 from .catalog_service import resolve_catalog
 from .diagnostics import (
-    enrich_diagnostic_candidates,
     enrich_expression_ast_error,
     enrich_object_not_found,
     enrich_path_not_found,
@@ -57,7 +56,6 @@ from .metadata import (
 )
 from .metadata_parts.capabilities import _EXPRESSION_SHAPES, capabilities_payload
 from .planner import plan_payload
-from .policies import diagnostic_hidden_object_ids
 from .request_context import (
     RequestContext,
     get_policy_context_resolver,
@@ -217,18 +215,16 @@ class SemanticHTTPService:
         if isinstance(exc, HTTPInputError):
             return self.invalid_request_payload(str(exc)), 400
         if isinstance(exc, SemanticLayerError):
-            config = self.runtime._config
-            hidden_ids = diagnostic_hidden_object_ids(
-                config, context.to_policy_context() if context is not None else None
-            )
-            exc = enrich_diagnostic_candidates(exc, config, hidden_ids=hidden_ids)
-            enriched = enrich_object_not_found(
-                exc,
-                config,
-                hidden_ids=hidden_ids,
-            )
-            enriched = enrich_expression_ast_error(enriched, config, hidden_ids=hidden_ids)
-            enriched = enrich_path_not_found(enriched, config, hidden_ids=hidden_ids)
+            enriched = exc
+            try:
+                # Suggestions come from the caller's view; without one, none are offered.
+                config = self.runtime.view_for(context) if context is not None else None
+            except Exception:  # noqa: BLE001 — uncertain visibility suggests nothing
+                config = None
+            if config is not None:
+                enriched = enrich_object_not_found(enriched, config)
+                enriched = enrich_expression_ast_error(enriched, config)
+                enriched = enrich_path_not_found(enriched, config)
             error_issue = exception_issue(enriched, stage=stage)
             return {
                 "ok": False,

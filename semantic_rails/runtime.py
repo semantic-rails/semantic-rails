@@ -27,7 +27,7 @@ from threading import Condition, RLock, get_ident
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import __version__
+from . import __version__, visible_view
 from .acceleration.routing import (
     AGGREGATE_ROUTING_ENV,
     aggregate_routing,
@@ -77,7 +77,6 @@ from .db import (
 from .db_parts.base import query_with_limits, reject_parameters
 from .db_parts.duckdb_confinement import confinement_directory, require_inside
 from .diagnostics import (
-    enrich_diagnostic_candidates,
     enrich_expression_ast_error,
     enrich_object_not_found,
     enrich_path_not_found,
@@ -99,13 +98,10 @@ from .fanout import (
     query_route_decisions,
     route_note,
     route_reading,
-    visible_route,
-    visible_route_rows,
 )
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import (
-    diagnostic_hidden_object_ids,
     enforce_query_policies,
     query_policy_effects,
     row_filters_for_context,
@@ -131,7 +127,6 @@ from .runtime_parts.responses import (
     resolve_sql_profile,
     resolve_verbosity,
 )
-from .runtime_parts.route_visibility import project_route_response
 from .scope import classify_question
 from .seed_provenance import (
     missing_duckdb_relations,
@@ -191,15 +186,9 @@ __all__ = [
 ]
 
 
-def _non_additive_refusal_for_visibility(
-    refusal: NonAdditiveRefusal, config: Any, hidden_ids: frozenset[str] | None
-) -> NonAdditiveRefusal:
-    """Name a key only when every key dimension is discoverable by this caller.
-
-    Internal planning without request context keeps the generic refusal. A
-    failed visibility check must also keep that refusal byte for byte.
-    """
-    if hidden_ids is None or not refusal.dimensions:
+def _named_key_refusal(refusal: NonAdditiveRefusal, config: Any) -> NonAdditiveRefusal:
+    """Name the key when every key column is a dimension of the caller's view."""
+    if not refusal.dimensions:
         return refusal
     try:
         measure = next(row for row in config.measures if row.id == refusal.details["measure_id"])
@@ -212,9 +201,7 @@ def _non_additive_refusal_for_visibility(
         ]
         if not set(refusal.columns) <= {dimension.column for dimension in key_dimensions}:
             return refusal
-        if any(dimension.id in hidden_ids for dimension in key_dimensions):
-            return refusal
-    except Exception:  # noqa: BLE001 — diagnostics must fail closed on uncertain visibility
+    except Exception:  # noqa: BLE001 — a key that cannot be checked is not named
         return refusal
     names = ", ".join(refusal.dimensions)
     details = dict(refusal.details)
@@ -231,22 +218,19 @@ def _non_additive_refusal_for_visibility(
     )
 
 
-def _enrich_runtime_error(
-    exc: SemanticLayerError, config: Any, policy_context: Mapping[str, Any] | None = None
-) -> SemanticLayerError:
-    """Run every applicable diagnostics enricher over a runtime error.
+def _enrich_runtime_error(exc: SemanticLayerError, config: Any) -> SemanticLayerError:
+    """Run every applicable diagnostics enricher over a runtime error, on the caller's view.
 
     Each enricher is a no-op when its code doesn't match, so we can
     chain them safely. Keeping this in one place means new enrichers
     only need to be added here, not at every catch site.
     """
-    hidden_ids = diagnostic_hidden_object_ids(config, policy_context)
+    exc = visible_view.public_error(exc, config)
     if isinstance(exc, NonAdditiveRefusal):
-        exc = _non_additive_refusal_for_visibility(exc, config, hidden_ids)
-    exc = enrich_diagnostic_candidates(exc, config, hidden_ids=hidden_ids)
-    exc = enrich_object_not_found(exc, config, hidden_ids=hidden_ids)
-    exc = enrich_expression_ast_error(exc, config, hidden_ids=hidden_ids)
-    exc = enrich_path_not_found(exc, config, hidden_ids=hidden_ids)
+        exc = _named_key_refusal(exc, config)
+    exc = enrich_object_not_found(exc, config)
+    exc = enrich_expression_ast_error(exc, config)
+    exc = enrich_path_not_found(exc, config)
     return exc
 
 
@@ -383,13 +367,7 @@ def _hop_profile(config, compiled) -> dict[str, Any]:
         )
 
 
-def _route_notes(
-    config,
-    compiled,
-    payload: dict[str, Any] | None,
-    *,
-    policy_context: Mapping[str, Any] | None = None,
-) -> list[dict[str, Any]]:
+def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[str, Any]]:
     """One short note per entity pair the compiled query reads where the engine chose one of
     two or more routes (``fanout.route_note``): by the start's own key (ROUTE_COLOCATED_KEY,
     with the row that would make each other route the default in ``details.alternatives`` when
@@ -412,24 +390,9 @@ def _route_notes(
     """
     notes: list[dict[str, Any]] = []
     decided: set[tuple[str, str]] = set()
-    hidden_ids = diagnostic_hidden_object_ids(config, policy_context)
-
-    def visible(start, path):
-        return visible_route(config, start, path, hidden_ids)
-
     for row in compiled.get("route_decisions") or []:
         start, target, path = row["source_entity"], row["target_entity"], row["relationship_path"]
         decided.add((start, target))
-        if not visible(start, path):
-            notes.append(
-                semantic_issue(
-                    code="ROUTE_CHOSEN_BY_QUERY",
-                    message="a route chosen by this query",
-                    severity="info",
-                    stage="planning",
-                )
-            )
-            continue
         details: dict[str, Any] = {
             "row": {key: row[key] for key in _ROUTE_ROW_KEYS},
             "replaced": row["replaced"],
@@ -441,11 +404,7 @@ def _route_notes(
                 package_route(config, start=start, target=target)
             except SemanticLayerError as exc:
                 if exc.code == "AMBIGUOUS_PATH":
-                    options = [
-                        option
-                        for option in exc.details.get("clarification", {}).get("options", [])
-                        if visible(start, option["relationship_path"])
-                    ]
+                    options = list(exc.details.get("clarification", {}).get("options", []))
         chosen = next((option for option in options if option["relationship_path"] == path), None)
         alternatives = [option["decision"] for option in options if option != chosen]
         shown = min(3, len(alternatives))
@@ -498,33 +457,17 @@ def _route_notes(
         if resolution is None:
             continue
         route = list(resolution.routes[0])
-        if not visible(start, route):
-            continue
         details = {"route": route}
         if resolution.basis == "colocated_key":
             code, how = "ROUTE_COLOCATED_KEY", "own key"
             details["alternatives"], conflicts = offered_rows(
-                config,
-                start,
-                target,
-                [route for route in resolution.routes[1:] if visible(start, route)],
+                config, start, target, resolution.routes[1:]
             )
             if conflicts:
-                details["conflicts_with"] = [
-                    {**conflict, "rows": visible_route_rows(config, conflict["rows"], hidden_ids)}
-                    for conflict in conflicts
-                ]
+                details["conflicts_with"] = conflicts
         elif resolution.basis == "inherited":
             code = "ROUTE_RECORDED"
-            recorded = {
-                (row.source_entity, row.target_entity): row.relationship_path
-                for row in config.path_preferences
-            }
-            rows = [
-                (source, end)
-                for source, end in resolution.rows
-                if visible(source, recorded[(source, end)])
-            ]
+            rows = list(resolution.rows)
             how = (
                 "recorded for "
                 + ", ".join(
@@ -957,18 +900,14 @@ def _scope_refusal(payload: dict[str, Any]) -> SemanticLayerError | None:
 
 
 def _compiled_warnings(
-    config,
-    compiled,
-    payload: dict[str, Any] | None = None,
-    *,
-    policy_context: Mapping[str, Any] | None = None,
+    config, compiled, payload: dict[str, Any] | None = None
 ) -> list[dict[str, Any]]:
     warnings: list[dict[str, Any]] = [
         *(rewrite_warning_payload(step) for step in compiled["logical_plan"].rewrite_steps),
         *_history_warnings(config, compiled["logical_plan"]),
         *_measure_validity_warnings(config, compiled["logical_plan"]),
         *_stock_key_gap_warnings(compiled),
-        *_route_notes(config, compiled, payload, policy_context=policy_context),
+        *_route_notes(config, compiled, payload),
         *_time_zone_warnings(config, compiled),
         *mixed_time_role_warnings(config, compiled["logical_plan"]),
     ]
@@ -1928,8 +1867,9 @@ class Runtime:
         self.source_path = source_path
         self.package_root = package_root_for_source(source_path)
         self.prefer_package_root_assets = prefer_package_root_assets
-        self._config: Any = config
-        self.registry = Registry(snapshot.config)
+        self._cache_lock = RLock()
+        self._generation = 0
+        self._replace_base(config)
         self.warehouse = str(self._config.package.warehouse or "duckdb").strip().lower() or "duckdb"
         self.db_path = (
             self._resolve_asset_path(self._config.package.default_db, kind="default_db")
@@ -1938,11 +1878,6 @@ class Runtime:
         )
         self.adapter: WarehouseAdapter | None = None
         self._seed_warnings: list[dict[str, Any]] = []
-        self._catalog_cache: dict[str, Any] | None = None
-        self._catalog_search_index: CatalogSearchIndex | None = None
-        self._resolve_cache: dict[tuple[str, str], dict[str, Any]] = {}
-        self._explain_cache: dict[str, dict[str, Any]] = {}
-        self._cache_lock = RLock()
         # Coordinates config/registry generations without serializing normal
         # traffic. Complete application operations take a shared read; reload,
         # adapter/cache replacement, and close take the exclusive write side.
@@ -1971,6 +1906,39 @@ class Runtime:
     def config(self):
         """An isolated configuration view; use from_config or reload to replace semantics."""
         return self.snapshot.config
+
+    @property
+    def _config(self) -> Any:
+        """The caller's visible view inside a request scope, else the whole package
+        (``package_config``)."""
+        return self._view().config
+
+    @_config.setter
+    def _config(self, config: Any) -> None:
+        self._replace_base(config)
+
+    @property
+    def registry(self) -> Registry:
+        return self._view().registry
+
+    def _view(self) -> visible_view.ViewEntry:
+        pinned = visible_view.pinned_view(self)
+        return pinned.entry if pinned is not None else self._views[frozenset()]
+
+    def _replace_base(self, config: Any) -> None:
+        """Serve ``config`` as the whole package (``package_config``); every view of the
+        previous one is dropped with the caches computed from it."""
+        with self._cache_lock:
+            self.package_config = config
+            self._generation += 1
+            self._views: dict[frozenset[str], visible_view.ViewEntry] = {
+                frozenset(): visible_view.ViewEntry(config, Registry(config))
+            }
+
+    def view_for(self, context: Any) -> Any:
+        """The caller's visible view, for code outside a request scope (transport errors)."""
+        with self.request_scope():
+            return visible_view.view_for(self, context).config
 
     @contextlib.contextmanager
     def request_scope(self):
@@ -2260,8 +2228,7 @@ class Runtime:
                     self.adapter.close()
                 self.adapter = None
             self._snapshot = new_snapshot
-            self._config = new_config
-            self.registry = Registry(new_snapshot.config)
+            self._replace_base(new_config)
             self.warehouse = (
                 str(self._config.package.warehouse or "duckdb").strip().lower() or "duckdb"
             )
@@ -2270,10 +2237,6 @@ class Runtime:
                 if self.warehouse == "duckdb"
                 else ""
             )
-            self._catalog_cache = None
-            self._catalog_search_index = None
-            self._resolve_cache = {}
-            self._explain_cache = {}
             self._manifest = None
             self._package_fingerprint = new_fingerprint
             # Preserve an operator-injected cache backend. Cache keys include
@@ -2360,10 +2323,11 @@ class Runtime:
 
     @runtime_request_scope
     def catalog(self) -> dict[str, Any]:
+        view = self._view()
         with self._cache_lock:
-            if self._catalog_cache is None:
+            if view.catalog is None:
                 dialect = dialect_for_warehouse(self.warehouse)
-                self._catalog_cache = {
+                view.catalog = {
                     "package": asdict(self._config.package),
                     "objects": [asdict(obj) for obj in self.registry.list_objects()],
                     "compiler": {
@@ -2396,37 +2360,37 @@ class Runtime:
                         ],
                     },
                 }
-            return deepcopy(self._catalog_cache)
+            return deepcopy(view.catalog)
 
     @runtime_request_scope
     def _get_catalog_search_index(self) -> CatalogSearchIndex:
-        """Return the immutable text index for the current config generation.
+        """Return the immutable text index of the caller's view of this generation.
 
-        The enclosing plan/discover operation pins the runtime generation with
-        ``request_scope``.  The cache lock only coordinates the first builder;
-        policy-sensitive visibility and availability are evaluated later for
-        every request and are never stored in this index.
+        The enclosing plan/discover operation pins the view with ``request_scope``. The
+        cache lock only coordinates the first builder; policy-sensitive availability is
+        evaluated later for every request and is never stored in this index.
         """
-
+        view = self._view()
         with self._cache_lock:
-            if self._catalog_search_index is None:
-                self._catalog_search_index = CatalogSearchIndex.from_config(self._config)
-            return self._catalog_search_index
+            if view.search_index is None:
+                view.search_index = CatalogSearchIndex.from_config(view.config)
+            return view.search_index
 
     def resolve(self, term: str, *, kind: str = "") -> dict[str, Any]:
         key = (term, kind)
+        view = self._view()
         with self._cache_lock:
-            if key not in self._resolve_cache:
-                resolved = self.registry.resolve(term, kind=kind)
+            if key not in view.resolved:
+                resolved = view.registry.resolve(term, kind=kind)
                 obj = dict(resolved.get("object", {}) or {})
                 obj_kind = str(obj.get("kind", ""))
                 if obj_kind in {"metric", "measure"}:
                     payload = dict(obj.get("payload", {}) or {})
-                    payload.update(_metric_payload(self._config, str(obj.get("id", "")), obj_kind))
+                    payload.update(_metric_payload(view.config, str(obj.get("id", "")), obj_kind))
                     obj["payload"] = payload
                     resolved = {**resolved, "object": obj}
-                self._resolve_cache[key] = deepcopy(resolved)
-            return deepcopy(self._resolve_cache[key])
+                view.resolved[key] = deepcopy(resolved)
+            return deepcopy(view.resolved[key])
 
     def _compile(
         self,
@@ -2451,6 +2415,7 @@ class Runtime:
             render_profile=str(payload.get("sql_profile", "audit") or "audit"),
             policy_context=dict(policy_context),
             aggregate_routing=aggregate_routing_enabled(),
+            visibility=self._view().hidden,
         )
         # Lock policy: hold the cache lock only across the in-memory get/put
         # operations. The compile itself (compile_query) runs unlocked so that
@@ -2500,7 +2465,7 @@ class Runtime:
             binding = self._bind(payload, policy_context)
             object_ids = binding.object_ids
             policy_effects = enforce_query_policies(
-                self._config,
+                self.package_config,
                 object_ids,
                 environment=str(policy_context.get("environment", "")),
                 audience=str(policy_context.get("audience", "")),
@@ -2520,9 +2485,7 @@ class Runtime:
             out = asdict(report)
             freshness_rows = _freshness_by_leaf(self._config, compiled)
             out["status"] = "ok"
-            out["warnings"] = _compiled_warnings(
-                self._config, compiled, payload, policy_context=policy_context
-            )
+            out["warnings"] = _compiled_warnings(self._config, compiled, payload)
             out["errors"] = []
             out["query"] = without_trusted_attributes(payload)
             out["normalized_query"] = compiled["explain"].normalized_query
@@ -2531,10 +2494,11 @@ class Runtime:
             out["methodology_hints"] = _methodology_hints(self._config, payload, compiled)
             out["freshness_by_leaf"] = freshness_rows
             out["freshness_as_of"] = _freshness_as_of(freshness_rows)
-            out["policy_effects"] = policy_effects
+            public_effects = visible_view.public_effects(policy_effects, self._config)
+            out["policy_effects"] = public_effects
             out["request_context"] = request_context_payload(policy_context)
             out["provenance_summary"] = provenance_summary(
-                self._config, compiled["logical_plan"], policy_effects=policy_effects
+                self._config, compiled["logical_plan"], policy_effects=public_effects
             )
             metadata = compile_response_metadata(self, payload, compiled)
             # validate has historically returned a curated subset of the
@@ -2555,14 +2519,11 @@ class Runtime:
                 out["compile_stats"] = dict(compiled.get("compile_stats", {}) or {})
                 out["performance_plan"] = asdict(compiled["performance_plan"])
             out["timing_ms"] = round((time.perf_counter() - started) * 1000, 3)
-            project_route_response(
-                out, self._config, diagnostic_hidden_object_ids(self._config, policy_context)
-            )
             return apply_response_verbosity(
                 out, verbosity=verbosity, sql_profile=sql_profile, kind="validate"
             )
         except SemanticLayerError as exc:
-            exc = _enrich_runtime_error(exc, self._config, policy_context)
+            exc = _enrich_runtime_error(exc, self._config)
             issue = exception_issue(exc, stage="validate")
             report = ValidationReport(
                 version=2,
@@ -2609,7 +2570,7 @@ class Runtime:
             binding = self._bind(payload, policy_context)
             object_ids = binding.object_ids
             policy_effects = enforce_query_policies(
-                self._config,
+                self.package_config,
                 object_ids,
                 environment=str(policy_context.get("environment", "")),
                 audience=str(policy_context.get("audience", "")),
@@ -2619,15 +2580,14 @@ class Runtime:
             )
             compiled = self._compile(payload, policy_context=policy_context, binding=binding)
         except SemanticLayerError as exc:
-            raise _enrich_runtime_error(exc, self._config, policy_context) from exc
+            raise _enrich_runtime_error(exc, self._config) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)
+        public_effects = visible_view.public_effects(policy_effects, self._config)
         out = {
             "ok": True,
             "status": "ok",
             "errors": [],
-            "warnings": _compiled_warnings(
-                self._config, compiled, payload, policy_context=policy_context
-            ),
+            "warnings": _compiled_warnings(self._config, compiled, payload),
             "recovery_hints": [],
             "authoring_hints": [],
             "query_ir_hints": [],
@@ -2635,10 +2595,10 @@ class Runtime:
             "methodology_hints": _methodology_hints(self._config, payload, compiled),
             "freshness_by_leaf": freshness_rows,
             "freshness_as_of": _freshness_as_of(freshness_rows),
-            "policy_effects": policy_effects,
+            "policy_effects": public_effects,
             "request_context": request_context_payload(policy_context),
             "provenance_summary": provenance_summary(
-                self._config, compiled["logical_plan"], policy_effects=policy_effects
+                self._config, compiled["logical_plan"], policy_effects=public_effects
             ),
             "hop_profile": _hop_profile(self._config, compiled),
             "query": without_trusted_attributes(payload),
@@ -2649,9 +2609,6 @@ class Runtime:
             **compile_response_metadata(self, payload, compiled),
         }
         _withhold_values(out, policy_effects)
-        project_route_response(
-            out, self._config, diagnostic_hidden_object_ids(self._config, policy_context)
-        )
         return apply_response_verbosity(
             out, verbosity=verbosity, sql_profile=sql_profile, kind="compile"
         )
@@ -2668,7 +2625,7 @@ class Runtime:
             binding = self._bind(payload, policy_context)
             object_ids = binding.object_ids
             policy_effects = enforce_query_policies(
-                self._config,
+                self.package_config,
                 object_ids,
                 environment=str(policy_context.get("environment", "")),
                 audience=str(policy_context.get("audience", "")),
@@ -2678,8 +2635,9 @@ class Runtime:
             )
             compiled = self._compile(payload, policy_context=policy_context, binding=binding)
         except SemanticLayerError as exc:
-            raise _enrich_runtime_error(exc, self._config, policy_context) from exc
+            raise _enrich_runtime_error(exc, self._config) from exc
         freshness_rows = _freshness_by_leaf(self._config, compiled)
+        public_effects = visible_view.public_effects(policy_effects, self._config)
         # Per-request resource limits (statement_timeout_ms, max_rows) flow
         # from the request envelope through to the warehouse adapter. Hosted
         # operators use this to enforce per-tenant policies without forking;
@@ -2767,7 +2725,7 @@ class Runtime:
             "status": "ok",
             "errors": [],
             "warnings": [
-                *_compiled_warnings(self._config, compiled, payload, policy_context=policy_context),
+                *_compiled_warnings(self._config, compiled, payload),
                 *_no_data_in_scope_warnings(
                     compiled,
                     rows,
@@ -2786,10 +2744,10 @@ class Runtime:
             "methodology_hints": _methodology_hints(self._config, payload, compiled),
             "freshness_by_leaf": freshness_rows,
             "freshness_as_of": _freshness_as_of(freshness_rows),
-            "policy_effects": policy_effects,
+            "policy_effects": public_effects,
             "request_context": request_context_payload(policy_context),
             "provenance_summary": provenance_summary(
-                self._config, compiled["logical_plan"], policy_effects=policy_effects
+                self._config, compiled["logical_plan"], policy_effects=public_effects
             ),
             "hop_profile": _hop_profile(self._config, compiled),
             "query": without_trusted_attributes(payload),
@@ -2927,20 +2885,18 @@ class Runtime:
             out["physical_plan"] = asdict(compiled["physical_plan"])
             out["performance_plan"] = asdict(compiled["performance_plan"])
             out["compile_stats"] = dict(compiled.get("compile_stats", {}) or {})
-        project_route_response(
-            out, self._config, diagnostic_hidden_object_ids(self._config, policy_context)
-        )
         return apply_response_verbosity(
             out, verbosity=verbosity, sql_profile=sql_profile, kind="execute"
         )
 
     def _bind(self, payload: dict[str, Any], policy_context: dict[str, Any]) -> BoundQuery:
-        filters = row_filters_for_context(self._config, policy_context)
+        """Bind the caller's query on their view; row filters and policies read the base."""
+        filters = row_filters_for_context(self.package_config, policy_context)
 
         def check_policies(option: dict[str, Any], binding: BoundQuery) -> None:
             # A child-scope reading is offered only if this request's policy gate passes it.
             enforce_query_policies(
-                self._config,
+                self.package_config,
                 binding.object_ids,
                 environment=str(policy_context.get("environment", "")),
                 audience=str(policy_context.get("audience", "")),
@@ -2961,7 +2917,7 @@ class Runtime:
         binding = bind(payload)
         # A rank by a withheld value breaks its ties by the group keys, in the same direction.
         return withheld_rank_order(
-            self._config,
+            self.package_config,
             binding,
             rebind=bind,
             environment=str(policy_context.get("environment", "")),
@@ -2972,13 +2928,15 @@ class Runtime:
     def _segment_policy_effects(
         self, segment_id: str, context: dict[str, Any]
     ) -> list[dict[str, Any]]:
-        return enforce_query_policies(
-            self._config,
+        """The segment's own effects, enforced on the base and stated for the caller."""
+        effects = enforce_query_policies(
+            self.package_config,
             [segment_id],
             environment=str(context.get("environment", "")),
             audience=str(context.get("audience", "")),
             roles=context.get("roles", []),
         )
+        return visible_view.public_effects(effects, self._config)
 
     @runtime_request_scope
     def segment_validate(
@@ -2987,8 +2945,8 @@ class Runtime:
         started = time.perf_counter()
         context = context_from_policy_context(policy_context).to_policy_context()
         try:
-            segment_policy_effects = self._segment_policy_effects(segment_id, context)
             normalized = normalize_segment(self._config, segment_id)
+            segment_policy_effects = self._segment_policy_effects(normalized.id, context)
             derived_query = build_segment_query(normalized, include_preview_dimensions=True)
             if context:
                 derived_query["policy_context"] = context
@@ -3029,7 +2987,7 @@ class Runtime:
             validation["timing_ms"] = round((time.perf_counter() - started) * 1000, 3)
             return validation
         except SemanticLayerError as exc:
-            exc = _enrich_runtime_error(exc, self._config, context)
+            exc = _enrich_runtime_error(exc, self._config)
             # Route through `exception_issue` so the soft-fail envelope
             # carries the same `recovery_hints` + `closest_matches` +
             # `severity/stage/object_ids/...` fields that the MCP error
@@ -3055,8 +3013,8 @@ class Runtime:
         self, segment_id: str, *, policy_context: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         context = context_from_policy_context(policy_context).to_policy_context()
-        segment_policy_effects = self._segment_policy_effects(segment_id, context)
         normalized = normalize_segment(self._config, segment_id)
+        segment_policy_effects = self._segment_policy_effects(normalized.id, context)
         derived_query = build_segment_query(normalized, include_preview_dimensions=True)
         if context:
             derived_query["policy_context"] = context
@@ -3090,8 +3048,8 @@ class Runtime:
         max_rows = int(os.environ.get("SEMANTIC_RAILS_MAX_SEGMENT_PREVIEW_ROWS", "0") or 0)
         limit = max(1, min(int(limit), max_rows if max_rows > 0 else 1_000))
         context = context_from_policy_context(policy_context).to_policy_context()
-        segment_policy_effects = self._segment_policy_effects(segment_id, context)
         normalized = normalize_segment(self._config, segment_id)
+        segment_policy_effects = self._segment_policy_effects(normalized.id, context)
         preview_query = build_segment_query(
             normalized, include_preview_dimensions=True, limit=limit
         )
@@ -3101,17 +3059,19 @@ class Runtime:
             membership_query["policy_context"] = context
         query_policy_effects: list[dict[str, Any]] = []
         for derived in (preview_query, membership_query):
+            binding = bind_query(self._config, None, derived)
             for effect in enforce_query_policies(
-                self._config,
-                _query_object_ids(derived, self._config),
+                self.package_config,
+                sorted(binding.object_ids),
                 environment=str(context.get("environment", "")),
                 audience=str(context.get("audience", "")),
                 roles=context.get("roles", []),
                 query=derived,
+                binding=binding,
             ):
                 if effect not in query_policy_effects:
                     query_policy_effects.append(effect)
-        filters = row_filters_for_context(self._config, context)
+        filters = row_filters_for_context(self.package_config, context)
         preview_compiled = compile_query(
             self._config, self.registry, preview_query, row_filters=filters
         )
@@ -3175,7 +3135,10 @@ class Runtime:
             ),
             "preview_row_count": len(visible_rows),
             "member_count": member_count,
-            "policy_effects": [*segment_policy_effects, *query_policy_effects],
+            "policy_effects": [
+                *segment_policy_effects,
+                *visible_view.public_effects(query_policy_effects, self._config),
+            ],
             "request_context": request_context_payload(context),
             "derived_query": without_trusted_attributes(preview_query),
             "rendered_sql": preview_compiled["sql"],

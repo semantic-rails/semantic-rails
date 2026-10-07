@@ -24,14 +24,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Collection, Mapping
-from dataclasses import replace
 from typing import Any
 
 from ..catalog_search import (
     CatalogSearchIndex,
     tokenize_search_value,
 )
-from ..policy_rules import visible_object_ids
 from ..schema import PackageConfig
 
 _CATALOG_FIELDS = (
@@ -144,27 +142,8 @@ def _catalog_token_index(
 
 
 def _visible_catalog(config: Any, hidden_ids: frozenset[str] | None) -> Any:
-    """The catalog one caller may see; ``config`` itself when nothing is hidden.
-
-    The cached search index stays policy-independent, so a hidden object's words are
-    dropped here. Unknown visibility (``None``) withholds every object.
-    """
-    rows = [row for field in _CATALOG_FIELDS for row in getattr(config, field)]
-    visible = set(visible_object_ids(config, (row.id for row in rows), hidden_ids=hidden_ids))
-    if all(row.id in visible for row in rows):
-        return config
-    return replace(
-        config,
-        **{
-            field: [row for row in getattr(config, field) if row.id in visible]
-            for field in _CATALOG_FIELDS
-        },
-        value_domains=[
-            replace(domain, dimensions=dimensions)
-            for domain in config.value_domains
-            if (dimensions := [dim for dim in domain.dimensions if dim in visible])
-        ],
-    )
+    """The catalog a caller may see: ``config`` is already their visible view."""
+    return config
 
 
 def _apostrophe_names(config: Any) -> list[str]:

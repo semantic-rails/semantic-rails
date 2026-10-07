@@ -26,7 +26,6 @@ from .ast import QUERY_INPUT_KEYS, rewrite_select_shorthand
 from .audit import emit_audit_event
 from .catalog_service import resolve_catalog
 from .diagnostics import (
-    enrich_diagnostic_candidates,
     enrich_object_not_found,
     exception_issue,
     semantic_issue,
@@ -43,7 +42,6 @@ from .metadata import (
     valid_values_payload,
 )
 from .planner import plan_payload
-from .policies import diagnostic_hidden_object_ids
 from .request_context import (
     RequestContext,
     context_from_policy_context,
@@ -2259,17 +2257,19 @@ class SemanticLayerMCPAdapter:
     ) -> dict[str, Any]:
         # Surface closest_matches on OBJECT_NOT_FOUND just like the HTTP
         # path — agents shouldn't have to retry blind on a typo'd id.
-        config = self.runtime._config
         request_id = _clean_request_id(arguments.get("request_id")) or uuid.uuid4().hex
         context: RequestContext | None
         try:
             context = _resolved_tool_request_context(arguments, request_id=request_id)
-            hidden_ids = diagnostic_hidden_object_ids(config, context.to_policy_context())
-        except Exception:  # noqa: BLE001 — uncertain visibility withholds alternatives
+        except Exception:  # noqa: BLE001 — an unresolved caller gets no suggestions
             context = None
-            hidden_ids = None
-        exc = enrich_diagnostic_candidates(exc, config, hidden_ids=hidden_ids)
-        exc = enrich_object_not_found(exc, config, hidden_ids=hidden_ids)
+        try:
+            # Suggestions come from the caller's view; without one, none are offered.
+            config = self.runtime.view_for(context) if context is not None else None
+        except Exception:  # noqa: BLE001 — uncertain visibility suggests nothing
+            config = None
+        if config is not None:
+            exc = enrich_object_not_found(exc, config)
         issue = exception_issue(exc, stage="mcp")
         out = self._envelope(
             {"ok": False, "status": "error", "error": issue, "errors": [issue]},
@@ -2497,7 +2497,11 @@ class SemanticLayerMCPAdapter:
                 payload["recovery_hints"] = existing_hints
             if verbosity in {"minimal", "compact"} and "verbosity" in payload:
                 payload["verbosity"] = "minimal"
-                payload = _slim_discover_minimal(payload, self.runtime._config)
+                try:
+                    view = self.runtime.view_for(_resolved_tool_request_context(args))
+                except Exception:  # noqa: BLE001 — uncertain visibility: the plain projection
+                    view = None
+                payload = _slim_discover_minimal(payload, view)
                 if verbosity == "compact":
                     payload.pop("blocked", None)
                     for bucket in _DISCOVER_BUCKETS:

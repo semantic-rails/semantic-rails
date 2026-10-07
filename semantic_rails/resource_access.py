@@ -13,6 +13,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from . import visible_view
 from .ast import child_groups, every_filter, normalize_query
 from .compiler import bind_metadata_objects, bind_query
 from .errors import ERROR_CODES, SemanticLayerError, query_execution_error
@@ -119,13 +120,15 @@ class ResourceAccess:
         return self.context.metric_allowlist is not None
 
     def _check_policies(self, object_ids: set[str], query: dict[str, Any] | None = None) -> None:
+        # Bound on the caller's view, enforced on the whole package.
+        base = visible_view.base_of(self.config)
         try:
             references = set(object_ids)
             binding = None
             if query is not None:
                 binding = bind_query(self.config, None, query)
                 binding = withheld_rank_order(
-                    self.config,
+                    base,
                     binding,
                     rebind=lambda query: bind_query(self.config, None, query),
                     environment=self.context.environment,
@@ -136,7 +139,7 @@ class ResourceAccess:
             else:
                 references.update(bind_metadata_objects(self.config, object_ids))
             enforce_query_policies(
-                self.config,
+                base,
                 references,
                 environment=self.context.environment,
                 audience=self.context.audience,
@@ -482,14 +485,20 @@ def _granted_warnings(warnings: list[dict[str, Any]], permitted: set[str]) -> li
 def run_authorized_operation(
     operation: Callable[..., Any], runtime: Any, args: tuple[Any, ...], kwargs: dict[str, Any]
 ) -> Any:
-    """The existing runtime request boundary calls this for shared operations."""
+    """The existing runtime request boundary calls this for shared operations.
+
+    It pins the caller's visible view for the whole operation (``visible_view.request_view``):
+    everything the operation reads through ``runtime._config`` is that view, and a refusal it
+    raises states policy effects as the caller may see them.
+    """
     name = operation.__name__
     payload = _context_payload(name, args, kwargs)
     try:
         check_request_environment(
-            runtime._config,
+            runtime.package_config,
             str((payload.get("policy_context") or {}).get("environment") or "").strip(),
         )
+        pinned = visible_view.request_view(runtime, payload.get("policy_context"))
     except SemanticLayerError as exc:
         if name in {"validate", "segment_validate"}:
             return {
@@ -498,6 +507,25 @@ def run_authorized_operation(
                 "errors": [{"code": exc.code, "message": str(exc), "details": exc.details}],
             }
         raise
+    with pinned as view:
+        try:
+            return _run_in_view(operation, runtime, args, kwargs, name=name, payload=payload)
+        except SemanticLayerError as exc:
+            public = visible_view.public_error(exc, view.entry.config)
+            if public is exc:
+                raise
+            raise public from None
+
+
+def _run_in_view(
+    operation: Callable[..., Any],
+    runtime: Any,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    *,
+    name: str,
+    payload: dict[str, Any],
+) -> Any:
     if (payload.get("policy_context") or {}).get("metric_allowlist") is None:
         return operation(runtime, *args, **kwargs)
     access = ResourceAccess.from_context(runtime._config, payload.get("policy_context"))

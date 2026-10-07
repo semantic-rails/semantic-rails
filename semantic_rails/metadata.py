@@ -97,17 +97,17 @@ from .metadata_parts.relevance import (
     _intent_passes_relevance_floor,
     _low_relevance_block,
     _token_idf_weight,
-    _visible_catalog,
 )
 from .metadata_parts.scope_gate import scope_block_payload as _scope_block_payload
 from .metadata_parts.valid_values import _policy_context, valid_values_payload
-from .policies import hidden_object_ids, policy_effects_for_object, row_filters_for_context
+from .policies import policy_effects_for_object, row_filters_for_context
 from .request_payload import DISCOVER_RANKED_KINDS, checked_discover_kinds
 from .runtime import Runtime, runtime_request_scope
 from .schema import MetricConfig, PackageConfig
 from .scope import classify_question
 from .segments import build_segment_query, normalize_segment
 from .temporal_support import require_temporal_support, validate_temporal_support
+from .visible_view import base_of
 
 # Query IR fields: the fields of a normalized query. Query patches and
 # query_state carry only these: never the request's policy context, response
@@ -873,22 +873,6 @@ def _predicate_metadata(
     }
 
 
-_CARD_ID_LISTS = {
-    "related_curated_metrics",
-    "related_measures",
-    "comparison_peers",
-    "clock_variants",
-    "preferred_companion_metrics",
-}
-
-
-def _filter_card_ids(payload: dict[str, Any], hidden_ids: set[str]) -> None:
-    for key in _CARD_ID_LISTS & set(payload):
-        payload[key] = [item for item in payload[key] if item not in hidden_ids]
-    if payload.get("default_metric_id") in hidden_ids:
-        payload["default_metric_id"] = ""
-
-
 def _object_card(
     runtime: Runtime, object_id: str, partial_query: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -896,16 +880,6 @@ def _object_card(
     maps = _config_maps(config)
     partial_query = dict(partial_query or {})
     policy_context = _policy_context(partial_query)
-    hidden_ids = hidden_object_ids(
-        config,
-        environment=str(policy_context.get("environment", "")),
-        audience=str(policy_context.get("audience", "")),
-        roles=policy_context.get("roles", []),
-    )
-    if object_id in hidden_ids:
-        raise SemanticLayerError(
-            "OBJECT_NOT_FOUND", f"Unknown object '{object_id}'", details={"object_id": object_id}
-        )
     selection = _selection_context(config, partial_query)
     obj = runtime.registry.get(object_id)
     payload = dict(obj.payload or {})
@@ -1064,8 +1038,6 @@ def _object_card(
                 },
             }
         )
-    # A card names, and starts queries from, only objects this caller can see.
-    _filter_card_ids(base, hidden_ids)
     base["starter_query_patches"] = _starter_query_patches(
         runtime, object_id, partial_query, card=base
     )
@@ -1084,16 +1056,6 @@ def _summary_row(
     config = runtime._config
     payload = dict(obj.get("payload", {}) or {})
     payload.update(_metric_object_payload(config, str(obj["id"]), str(obj["kind"])))
-    context = _policy_context(partial_query)
-    _filter_card_ids(
-        payload,
-        hidden_object_ids(
-            config,
-            environment=str(context.get("environment", "")),
-            audience=str(context.get("audience", "")),
-            roles=context.get("roles", []),
-        ),
-    )
     if verbosity != "full":
         payload.pop("operational", None)
     availability = _availability_for_object(config, root_entity, str(obj["id"]), str(obj["kind"]))
@@ -1203,13 +1165,6 @@ def catalog_payload(
 ) -> dict[str, Any]:
     catalog = runtime.catalog()
     supported_capabilities, unsupported_capabilities = _capability_payload(runtime._config)
-    context = _policy_context({"policy_context": dict(policy_context or {})})
-    hidden_ids = hidden_object_ids(
-        runtime._config,
-        environment=str(context.get("environment", "")),
-        audience=str(context.get("audience", "")),
-        roles=context.get("roles", []),
-    )
     grouped: dict[str, Any] = {
         "entities": [],
         "dimensions": [],
@@ -1234,8 +1189,6 @@ def catalog_payload(
     alias_index: dict[str, list[str]] = {}
     search_norm = normalize_search_value(search)
     for raw_obj in catalog["objects"]:
-        if str(raw_obj.get("id", "")) in hidden_ids:
-            continue
         if kind and str(raw_obj["kind"]) != kind:
             continue
         row = _summary_row(
@@ -2045,13 +1998,6 @@ def discover_payload(
     search_terms = SearchTerms.from_text(terms)
     partial_query = dict(partial_query or {})
     validate_temporal_support(runtime._config, partial_query)
-    policy_context = _policy_context(partial_query)
-    hidden_ids = hidden_object_ids(
-        config,
-        environment=str(policy_context.get("environment", "")),
-        audience=str(policy_context.get("audience", "")),
-        roles=policy_context.get("roles", []),
-    )
     # When invoked from the HTTP boundary (``enforce_scope=True``), gate
     # the response on the same classifier ``validate``/``compile`` use
     # and a content-token relevance floor against the package catalog.
@@ -2079,10 +2025,7 @@ def discover_payload(
                 "blocked": [],
                 "out_of_scope": _scope_block_payload(str(terms), classification),
             }
-        catalog = _visible_catalog(config, frozenset(hidden_ids))
-        catalog_tokens = _catalog_token_index(
-            catalog, search_index=search_index if catalog is config else None
-        )
+        catalog_tokens = _catalog_token_index(config, search_index=search_index)
         passes, overlap = _intent_passes_relevance_floor(str(terms), catalog_tokens)
         if not passes:
             sample = sorted(catalog_tokens)[:30]
@@ -2128,7 +2071,7 @@ def discover_payload(
     # A building block is offered through the metrics that filter it, never on its own.
     building_blocks = building_block_measures(config)
     for measure in config.measures:
-        if measure.id in hidden_ids or measure.id in building_blocks:
+        if measure.id in building_blocks:
             continue
         availability = _availability_for_object(config, root_entity, measure.id, "measure")
         row = {
@@ -2161,8 +2104,6 @@ def discover_payload(
         records.append(row)
 
     for recipe in config.metric_recipes:
-        if recipe.id in hidden_ids:
-            continue
         availability = _availability_for_object(config, root_entity, recipe.id, "metric")
         executable, unsupported_reason = _metric_executable(recipe, config, partial_query)
         predicate_backed = bool(_predicate_exprs_from_expr(config, recipe.expression))
@@ -2221,8 +2162,6 @@ def discover_payload(
         records.append(row)
 
     for segment in config.segments:
-        if segment.id in hidden_ids:
-            continue
         availability = _availability_for_object(config, root_entity, segment.id, "segment")
         row = {
             "id": segment.id,
@@ -2277,8 +2216,6 @@ def discover_payload(
             inferred_root_entity = leader
 
     for dim in config.dimensions:
-        if dim.id in hidden_ids:
-            continue
         availability = _availability_for_object(config, root_entity, dim.id, "dimension")
         row = {
             "id": dim.id,
@@ -2306,8 +2243,6 @@ def discover_payload(
         records.append(row)
 
     for entity in config.entities:
-        if entity.id in hidden_ids:
-            continue
         availability = _availability_for_object(config, root_entity, entity.id, "entity")
         row = {
             "id": entity.id,
@@ -2337,8 +2272,6 @@ def discover_payload(
     for domain in config.value_domains:
         dim = maps["dimensions"].get(domain.dimensions[0]) if domain.dimensions else None
         if dim is None:
-            continue
-        if dim.id in hidden_ids:
             continue
         availability = _availability_for_object(config, root_entity, dim.id, "dimension")
         for value in domain.values:
@@ -2875,7 +2808,7 @@ def _partial_query_routes(
     (a row filter in its context refuses them)."""
     if not partial_query.get("route_decisions"):
         return {}
-    filters = row_filters_for_context(config, _policy_context(partial_query))
+    filters = row_filters_for_context(base_of(config), _policy_context(partial_query))
     decided = query_route_rows(config, partial_query, row_filters=filters)
     return {pair: row.relationship_path for pair, (_, row) in decided.items()}
 
@@ -2883,21 +2816,12 @@ def _partial_query_routes(
 def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[str, Any]:
     config = runtime._config
     validate_temporal_support(config, partial_query)
-    policy_context = _policy_context(partial_query)
-    hidden_ids = hidden_object_ids(
-        config,
-        environment=str(policy_context.get("environment", "")),
-        audience=str(policy_context.get("audience", "")),
-        roles=policy_context.get("roles", []),
-    )
     selection = _selection_context(config, partial_query)
     root_entity = selection["root_entity"]
 
     valid_dimensions: list[dict[str, Any]] = []
     disabled_dimensions: list[dict[str, Any]] = []
     for dim in config.dimensions:
-        if dim.id in hidden_ids:
-            continue
         availability = _path_availability(config, root_entity, dim.entity)
         row = {**asdict(dim), **availability}
         (valid_dimensions if availability["available"] else disabled_dimensions).append(row)
@@ -2905,8 +2829,6 @@ def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[st
     valid_temporal_roles: list[dict[str, Any]] = []
     disabled_temporal_roles: list[dict[str, Any]] = []
     for role in config.temporal_roles:
-        if role.id in hidden_ids:
-            continue
         dim = next((d for d in config.dimensions if d.id == role.dimension), None)
         if dim is None:
             row = {
@@ -2925,8 +2847,6 @@ def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[st
     valid_measures: list[dict[str, Any]] = []
     disabled_measures: list[dict[str, Any]] = []
     for measure in config.measures:
-        if measure.id in hidden_ids:
-            continue
         availability = _path_availability(config, root_entity, measure.entity)
         row = {**asdict(measure), **availability}
         (valid_measures if availability["available"] else disabled_measures).append(row)
@@ -2934,8 +2854,6 @@ def _valid_next_base(runtime: Runtime, partial_query: dict[str, Any]) -> dict[st
     valid_entities: list[dict[str, Any]] = []
     disabled_entities: list[dict[str, Any]] = []
     for entity in config.entities:
-        if entity.id in hidden_ids:
-            continue
         availability = _path_availability(config, root_entity, entity.id)
         row = {**asdict(entity), **availability}
         (valid_entities if availability["available"] else disabled_entities).append(row)
