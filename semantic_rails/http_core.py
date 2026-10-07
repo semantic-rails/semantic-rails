@@ -386,7 +386,12 @@ class SemanticHTTPService:
                         self.runtime, policy_context=context.to_policy_context()
                     ),
                 }
-            catalog = resolve_catalog(self.runtime, view="summary", verbosity="compact")
+            catalog = resolve_catalog(
+                self.runtime,
+                view="summary",
+                verbosity="compact",
+                policy_context=context.to_policy_context() if context is not None else None,
+            )
             dialect = dialect_for_warehouse(self.runtime.warehouse)
             package = dict(catalog["meta"]["package"])
             package.setdefault("id", str(package.get("package_id", "")))
