@@ -17,6 +17,7 @@ from semantic_rails.planner.generators import (
     _normalize_value_filters,
 )
 from semantic_rails.planner.plan import _merge_partial_query
+from semantic_rails.runtime import runtime_request_scope
 from semantic_rails.schema import SemanticPolicyConfig
 from tests.semantic_rails.result_helpers import assert_plan_held
 
@@ -37,7 +38,8 @@ def _force_fallback(runtime, monkeypatch, intent: str, path: str) -> None:
     if path == "fallback":
         import semantic_rails.planner.plan as module
 
-        result = replace(compose(runtime, intent), draft=None, pattern="")
+        # Composed as plan composes it: inside the caller's request scope.
+        result = replace(runtime_request_scope(compose)(runtime, intent), draft=None, pattern="")
         monkeypatch.setattr(module, "compose", lambda *args, **kwargs: result)
 
 

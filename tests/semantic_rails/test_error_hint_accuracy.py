@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -18,6 +19,7 @@ from semantic_rails.diagnostics import (
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import MeasureRefExpr
 from semantic_rails.fanout import eligible_path_targets, resolve_path
+from semantic_rails.runtime import Runtime
 from semantic_rails.schema import (
     DimensionConfig,
     EntityConfig,
@@ -27,6 +29,7 @@ from semantic_rails.schema import (
     SemanticPolicyConfig,
 )
 from semantic_rails.sql_ast import SqlLiteral, build_filter_condition
+from semantic_rails.visible_view import view_of
 
 
 @pytest.mark.parametrize("aggregation", ["count", "percentile", "unknown", None])
@@ -119,10 +122,7 @@ def test_missing_id_prefers_an_exact_counterpart_across_kinds(package_config_fac
 
 
 @pytest.mark.parametrize("missing_kind", ["metric", "measure"])
-@pytest.mark.parametrize("visibility_known", [False, True])
-def test_object_suggestions_respect_known_or_uncertain_visibility(
-    package_config_factory, missing_kind, visibility_known
-):
+def test_object_suggestions_come_from_the_callers_view(package_config_factory, missing_kind):
     config, _ = package_config_factory("jaffle_shop")
     other_kind = "measure" if missing_kind == "metric" else "metric"
     counterpart = f"{other_kind}.synthetic.private_fee"
@@ -147,27 +147,38 @@ def test_object_suggestions_respect_known_or_uncertain_visibility(
             )
         ],
     )
-    hidden_ids = frozenset({counterpart, fuzzy_match}) if visibility_known else None
-    suggestions = object_id_suggestions(
-        config, f"{missing_kind}.synthetic.private_fee", hidden_ids=hidden_ids
-    )
-    # Unresolved visibility cannot authorize even same-kind fuzzy disclosure.
-    assert suggestions == []
+    missing = f"{missing_kind}.synthetic.private_fee"
+    # The whole package suggests both; the external caller's view holds neither.
+    assert set(object_id_suggestions(config, missing)) == {counterpart, fuzzy_match}
+    assert object_id_suggestions(view_of(config, {"audience": "external"}), missing) == []
 
 
-def test_existing_closest_matches_cannot_bypass_visibility_filter(package_config_factory):
-    config, _ = package_config_factory("jaffle_shop")
-    hidden = config.measures[0].id
-    error = enrich_object_not_found(
-        SemanticLayerError(
-            "OBJECT_NOT_FOUND",
-            "Unknown object",
-            details={"object_id": "measure.synthetic.unrelated", "closest_matches": [hidden]},
-        ),
-        config,
-        hidden_ids=frozenset({hidden}),
+def test_a_typo_near_a_hidden_object_is_not_answered_with_it(package_config_factory):
+    config, root = package_config_factory("jaffle_shop")
+    hidden = "measure.jaffle.order_count"
+    policy = SemanticPolicyConfig(
+        id="policy.synthetic.visibility",
+        kind="object_visibility",
+        object_ids=[hidden],
+        audiences=["external"],
+        action="hidden",
     )
-    assert hidden not in error.details.get("closest_matches", [])
+    runtime = Runtime.from_config(
+        replace(config, semantic_policies=[policy]), source_path=str(root)
+    )
+    query = {"select": [{"expression": {"measure": "measure.jaffle.order_cont"}, "as": "v"}]}
+    try:
+        error = enrich_object_not_found(
+            SemanticLayerError("OBJECT_NOT_FOUND", "Unknown measure 'measure.jaffle.order_cont'"),
+            runtime.view_for({"audience": "external"}),
+        )
+        report = runtime.validate({**query, "policy_context": {"audience": "external"}})
+        visible = runtime.validate(query)
+    finally:
+        runtime.close()
+    assert hidden not in json.dumps(error.details)
+    assert hidden not in json.dumps(report)
+    assert hidden in json.dumps(visible)
 
 
 @pytest.mark.parametrize(
