@@ -243,6 +243,17 @@ def test_scan_forgets_shadowed_or_unrelated_bindings(tmp_path: Path, source: str
     assert "Runtime()" not in failing
 
 
+def test_scan_records_annotation_only_protocol_uses(tmp_path: Path) -> None:
+    kept, failing = _scan_sources(
+        tmp_path,
+        {
+            "host.py": "from semantic_rails.embedding import AuditSink\ndef route(sink: AuditSink): pass"
+        },
+    )
+    assert kept == ["AuditSink{emit(self, payload)}"]
+    assert failing == {}
+
+
 def _reference(name: str) -> str:
     value = getattr(embedding, name)
     if (shape := _protocol_shape(value)) is not None:

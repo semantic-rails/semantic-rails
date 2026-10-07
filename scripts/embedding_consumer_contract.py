@@ -335,8 +335,12 @@ class _FileScan(ast.NodeVisitor):
         arguments += [arg for arg in (node.args.vararg, node.args.kwarg) if arg]
         bindings: dict[str, tuple[str, str] | None] = {}
         for arg in arguments:
+            if arg.annotation is not None:
+                self.visit(arg.annotation)
             owner = self._annotation(arg.annotation)
             bindings[arg.arg] = ("instance", owner) if owner else None
+        if node.returns is not None:
+            self.visit(node.returns)
         returned = self._annotation(node.returns)
         self.scopes[-1][node.name] = ("factory", returned) if returned else None
 
