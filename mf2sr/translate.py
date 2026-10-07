@@ -554,8 +554,10 @@ def _build_measure(
         column as ``entity_key``: COUNT(DISTINCT col). Any other distinct
         count is skipped with a warning.
       - ``agg: count`` over a column -> MetricFlow's COUNT(col), the sum of
-        CASE WHEN col IS NOT NULL THEN 1 ELSE 0 END; over the model's own
-        primary key (unique, so COUNT is COUNT DISTINCT) -> ``entity_count``.
+        CASE WHEN col IS NOT NULL THEN 1 ELSE 0 END; over the key of the
+        model's own declared ``type: primary`` entity (one non-null value
+        per row, so COUNT is COUNT DISTINCT) -> ``entity_count``.
+      - ``_entity_count_measure`` is the only builder of ``entity_count``.
       - ``agg: sum_boolean`` -> sum over a CASE expression (AST form).
       - An ``agg`` outside ``_AGG_MAP`` -> skipped with a warning.
       - Everything else -> ``kind: aggregate`` with the inferred
@@ -583,35 +585,37 @@ def _build_measure(
     # MetricFlow counts `expr`, or the column the measure is named after.
     counted = name if expr is None else expr
     constant = counted in ("1", 1)
-    if constant:
-        # A row count is COUNT(DISTINCT key) only when the key has one
-        # non-null value per row: MetricFlow promises that for a
-        # `type: primary` entity, not a `unique` one or a guessed key.
-        reason = None
-        if agg_raw not in ("sum", "count"):
-            reason = f"`{agg_raw}` of a constant is not a row count"
-        elif not _owns_declared_primary(model_name, sm, graph):
-            reason = "it counts rows, and the model owns no `type: primary` entity"
-        if reason is not None:
+    if constant and agg_raw not in ("sum", "count"):
+        report.warnings.append(
+            f"model `{model_name}`: measure `{name}` (agg=`{agg_raw}`, expr=`1`): "
+            f"`{agg_raw}` of a constant is not a row count; skipped rather than approximated"
+        )
+        return None
+
+    if constant or agg_raw in ("count_distinct", "count"):
+        distinct = agg_raw == "count_distinct"
+        key_col: Any = counted
+        if constant:
+            key_col = _declared_primary_key(model_name, sm, graph)
+        elif distinct and _resolve_entity_for_count(sm=sm, expr=counted, graph=graph) is None:
+            key_col = None
+        entity_count = (
+            None
+            if key_col is None
+            else _entity_count_measure(
+                measure, name, key_col, distinct=distinct, model_name=model_name, sm=sm, graph=graph
+            )
+        )
+        if entity_count is not None:
+            return name, entity_count, "count", "count_distinct"
+        if constant:
             report.warnings.append(
                 f"model `{model_name}`: measure `{name}` (agg=`{agg_raw}`, expr=`1`): "
-                f"{reason}; skipped rather than approximated"
+                "it counts rows, and the model owns no `type: primary` entity; "
+                "skipped rather than approximated"
             )
             return None
-
-    # entity_count path: the engine computes it as COUNT(DISTINCT entity_key).
-    wants_entity_count = constant or (agg_raw in ("count_distinct", "count"))
-    if wants_entity_count:
-        target_entity = _resolve_entity_for_count(
-            sm_name=model_name,
-            sm=sm,
-            expr=counted,
-            graph=graph,
-        )
-        own_entity = (
-            target_entity is not None and graph["entities"][target_entity]["model"] == model_name
-        )
-        if agg_raw == "count" and isinstance(counted, str) and not own_entity:
+        if not distinct and isinstance(counted, str):
             # MetricFlow `count(col)` semantic: count rows where col is
             # not null. Express as SUM(CASE WHEN col IS NOT NULL THEN 1
             # ELSE 0 END) so we stay inside the flow accumulation class.
@@ -642,29 +646,13 @@ def _build_measure(
             if measure_time:
                 doc["time"] = measure_time
             return name, doc, "count", "sum"
-        if target_entity is None:
-            report.warnings.append(
-                f"model `{model_name}`: measure `{name}` (agg=`{agg_raw}`, "
-                f"expr=`{counted}`) doesn't count a graph entity's column, "
-                "so no Semantic Rails entity_count computes it; "
-                "skipped rather than approximated"
-            )
-            return None
-        # `entity_key:` is the counted COLUMN on this model; a row count
-        # counts the model's own primary key.
-        key_col = graph["entities"][target_entity]["key"][0] if constant else counted
-        doc = {
-            "label": measure.get("label") or _humanize(name),
-            "kind": "entity_count",
-            "entity_key": key_col,
-            "accumulation": {"kind": "event"},
-            "value_type": "count",
-        }
-        # Override time when MetricFlow sets it at the measure level.
-        measure_time = measure.get("agg_time_dimension")
-        if measure_time:
-            doc["time"] = measure_time
-        return name, doc, "count", "count_distinct"
+        report.warnings.append(
+            f"model `{model_name}`: measure `{name}` (agg=`{agg_raw}`, "
+            f"expr=`{counted}`) doesn't count a graph entity's column, "
+            "so no Semantic Rails entity_count computes it; "
+            "skipped rather than approximated"
+        )
+        return None
 
     if expr_wrap == "case_boolean":
         # MetricFlow `sum_boolean` -> SUM(CASE WHEN <col> = true THEN 1 ELSE 0 END).
@@ -742,45 +730,72 @@ def _is_simple_expr(text: str) -> bool:
     return not _re.search(sql_keywords, text, _re.IGNORECASE)
 
 
-def _owns_declared_primary(model_name: str, sm: dict[str, Any], graph: dict[str, Any]) -> bool:
-    """True when the graph entity this model owns is declared ``type: primary``
-    in its ``entities:`` list, not ``unique`` or a bare ``primary_entity:``."""
-    owned = {ename for ename, meta in graph["entities"].items() if meta.get("model") == model_name}
-    return any(
-        ent.get("name") in owned and (ent.get("type") or "").lower() == "primary"
+def _declared_primary_key(model_name: str, sm: dict[str, Any], graph: dict[str, Any]) -> str | None:
+    """The key column of the graph entity this model owns, when that entity
+    is declared ``type: primary`` in its ``entities:`` list (one non-null
+    key per row). None for a ``unique`` entity or a bare ``primary_entity:``,
+    whose key is only guessed."""
+    declared = {
+        ent.get("name")
         for ent in sm.get("entities") or []
-    )
+        if (ent.get("type") or "").lower() == "primary"
+    }
+    for ename, meta in graph["entities"].items():
+        if meta.get("model") == model_name and ename in declared:
+            return str(meta["key"][0])
+    return None
+
+
+def _entity_count_measure(
+    measure: dict[str, Any],
+    name: str,
+    key_col: str,
+    *,
+    distinct: bool,
+    model_name: str,
+    sm: dict[str, Any],
+    graph: dict[str, Any],
+) -> dict[str, Any] | None:
+    """The only builder of ``kind: entity_count``, which the engine computes
+    as COUNT(DISTINCT key_col). That equals MetricFlow's measure only for a
+    distinct count of ``key_col``, or for a count (or row count) of this
+    model's declared ``type: primary`` key. Anything else returns None."""
+    if not distinct and key_col != _declared_primary_key(model_name, sm, graph):
+        return None
+    doc: dict[str, Any] = {
+        "label": measure.get("label") or _humanize(name),
+        "kind": "entity_count",
+        "entity_key": key_col,
+        "accumulation": {"kind": "event"},
+        "value_type": "count",
+    }
+    # Override time when MetricFlow sets it at the measure level.
+    measure_time = measure.get("agg_time_dimension")
+    if measure_time:
+        doc["time"] = measure_time
+    return doc
 
 
 def _resolve_entity_for_count(
     *,
-    sm_name: str,
     sm: dict[str, Any],
     expr: Any,
     graph: dict[str, Any],
 ) -> str | None:
-    """Pick the graph entity that a counted ``expr`` (the measure's
+    """Pick the graph entity that a distinct-counted ``expr`` (the measure's
     ``expr``, or its name) belongs to.
 
     Order of preference:
-      1. ``expr: 1`` (or 1) -> the model's own primary entity, since the
-         measure is counting rows at the model's grain.
-      2. ``expr: <column>`` matching a graph entity's primary key column
+      1. ``expr: <column>`` matching a graph entity's primary key column
          -> that entity. This covers `expr: order_id, agg: count_distinct`.
-      3. ``expr: <column>`` matching a known entity expression on the
+      2. ``expr: <column>`` matching a known entity expression on the
          current model (e.g. an FK column) and that entity exists in
          the graph -> that entity.
-      4. None — no entity_count computes the measure.
+      3. None — no entity_count computes the measure.
     """
     entities = graph["entities"]
 
-    # 1) row-count style: bind to the model's primary entity.
-    if expr in ("1", 1):
-        for ename, meta in entities.items():
-            if meta.get("model") == sm_name:
-                return ename
-
-    # 2) column matches a graph entity's primary key column.
+    # 1) column matches a graph entity's primary key column.
     if isinstance(expr, str):
         for ename, meta in entities.items():
             key_list = meta.get("key", [])

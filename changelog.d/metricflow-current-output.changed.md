@@ -12,7 +12,10 @@
   `--`, `/*`, `#`, `;` or a literal other than a plain decimal is skipped.
 - MetricFlow counts translate exactly or are skipped with a warning. The counted
   column is `expr`, or the measure's name without one, never the row count. A
-  `count` is `COUNT(col)` of that column; a `count_distinct` is
+  `count` is `COUNT(col)` of that column, including the key of a `unique` entity
+  or the guessed key of a bare `primary_entity:` (once a distinct count); only
+  the key of the model's own `type: primary` entity is counted as distinct
+  keys. A `count_distinct` is
   `COUNT(DISTINCT col)` when a graph entity is keyed on the column or the model
   declares it as a foreign key, and is skipped otherwise. A `count_distinct` of a
   constant and an unknown `agg` (once read as `sum`) are skipped too. A row count

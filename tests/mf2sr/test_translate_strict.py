@@ -713,22 +713,28 @@ NOT_A_COUNT = "of a constant is not a row count"
 
 
 @pytest.mark.parametrize(
-    ("entity", "agg", "reference", "reason"),
+    ("entity", "expr", "agg", "reference", "reason"),
     [
-        (PRIMARY_ROW, "sum", "COUNT(*)", None),
-        (PRIMARY_ROW, "count", "COUNT(*)", None),
+        (PRIMARY_ROW, "1", "sum", "COUNT(*)", None),
+        (PRIMARY_ROW, "1", "count", "COUNT(*)", None),
         # Once COUNT(DISTINCT order_id): 1 placed order, not 3 rows.
-        (UNIQUE_ORDER, "sum", None, NO_PRIMARY),
-        (UNIQUE_ORDER, "count", None, NO_PRIMARY),
-        (BARE_ORDER, "sum", None, NO_PRIMARY),
+        (UNIQUE_ORDER, "1", "sum", None, NO_PRIMARY),
+        (UNIQUE_ORDER, "1", "count", None, NO_PRIMARY),
+        (BARE_ORDER, "1", "sum", None, NO_PRIMARY),
         # MetricFlow's MAX(1) and AVG(1) are 1; once the row count.
-        (PRIMARY_ROW, "max", None, NOT_A_COUNT),
-        (PRIMARY_ROW, "average", None, NOT_A_COUNT),
+        (PRIMARY_ROW, "1", "max", None, NOT_A_COUNT),
+        (PRIMARY_ROW, "1", "average", None, NOT_A_COUNT),
+        # A count of the model's own key is a distinct count only for a
+        # declared primary key; once 1 shipped order, not COUNT(order_id) 2.
+        (PRIMARY_ROW, "row_id", "count", "COUNT(row_id)", None),
+        (UNIQUE_ORDER, "order_id", "count", "COUNT(order_id)", None),
+        (BARE_ORDER, "order_id", "count", "COUNT(order_id)", None),
     ],
 )
-def test_row_counts_need_a_declared_primary_entity(
+def test_entity_counts_need_a_declared_primary_entity(
     tmp_path: Path,
     entity: dict[str, Any],
+    expr: str,
     agg: str,
     reference: str | None,
     reason: str | None,
@@ -737,7 +743,7 @@ def test_row_counts_need_a_declared_primary_entity(
     raw = json.loads(source.read_text())
     orders = raw["semantic_models"][0]
     orders.update(entity)
-    orders["measures"].append({"name": "counted", "expr": "1", "agg": agg})
+    orders["measures"].append({"name": "counted", "expr": expr, "agg": agg})
     raw["metrics"] += [
         {"name": "counted", "type": "simple", "type_params": {"measure": {"name": "counted"}}},
         {
@@ -767,6 +773,8 @@ def test_row_counts_need_a_declared_primary_entity(
     else:
         assert report.metrics_emitted == ["revenue", "counted", "counted_twice"]
         assert report.warnings == []
+        kind = "entity_count" if entity is PRIMARY_ROW else "aggregate"
+        assert _model(report)["measures"]["counted"]["kind"] == kind
         columns.update(counted=reference, counted_twice=f"{reference} * 2")
     assert _by_status(report.package_dir, list(columns)) == _reference(report.package_dir, columns)
 

@@ -51,7 +51,7 @@ files from authored files; choose a fresh output path for each translation.
 | `defaults.agg_time_dimension` | Marks the matching `times:` entry as `default: true` |
 | `measures[*].agg: sum/avg/min/max/median/percentile` | `kind: aggregate` with `default_agg:` |
 | `measures[*].agg: count_distinct` | `kind: entity_count` with the counted column (`expr:`, or the measure's name without one) as `entity_key`, when a graph entity is keyed on that column or the model declares it as a foreign key: `COUNT(DISTINCT col)` |
-| `measures[*].agg: count` | `COUNT(col)` of the counted column, written as `default_agg: sum` over a `kind: case` AST that returns 1 when the column isn't null; `kind: entity_count` when the column is the model's own primary key |
+| `measures[*].agg: count` | `COUNT(col)` of the counted column, written as `default_agg: sum` over a `kind: case` AST that returns 1 when the column isn't null; `kind: entity_count` only when the column is the key of the model's own entity declared `type: primary` (one non-null value per row). A `type: unique` key or the guessed key of a bare `primary_entity:` gets `COUNT(col)` |
 | `measures[*].agg: sum_boolean` | `default_agg: sum` over a `kind: case` AST that returns 1/0 |
 | `measures[*].expr: "1"` with `agg: sum/count` | The row count: `kind: entity_count` over the model's own entity, when that entity is declared `type: primary` (one non-null key per row) |
 | `metric.type: simple` | `kind: aggregate` over the named measure |
