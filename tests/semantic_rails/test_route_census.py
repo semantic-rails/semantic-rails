@@ -27,7 +27,7 @@ from semantic_rails.architect_mcp import create_architect_mcp_server
 from semantic_rails.architect_service import ArchitectProject
 from semantic_rails.architect_transactions import ProjectFileUpdate, ProjectTransaction
 from semantic_rails.config import load_package_config
-from semantic_rails.config_validation import PackageReference
+from semantic_rails.config_validation import PackageReference, parse_config_report
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.fanout import query_route_decisions, resolve_path
 from semantic_rails.package_tools import impact_report, promote_package_report
@@ -199,9 +199,7 @@ def test_census_pairs_start_and_end_at_every_reachable_entity(tmp_path):
     assert _pairs(route_census(no_owner_fields)["undecided"]) == DIAMOND_UNDECIDED
 
 
-def test_the_census_asks_the_resolver_once_per_multi_route_pair_and_reuses_its_cache(
-    tmp_path, monkeypatch
-):
+def test_the_census_asks_the_resolver_once_per_pair_and_reuses_its_cache(tmp_path, monkeypatch):
     config = load_package_config(str(_write_package(tmp_path)))
     asked: list[tuple[str, str]] = []
     enumerated: list[tuple[str, str]] = []
@@ -218,12 +216,7 @@ def test_the_census_asks_the_resolver_once_per_multi_route_pair_and_reuses_its_c
     monkeypatch.setattr(census_module, "package_route", counted_resolve)
     monkeypatch.setattr(fanout_module, "_resolve_uncached", counted_uncached)
     census = route_census(config)
-    graph = census_module.get_package_analysis(config).graph
-    pairs = [
-        pair
-        for pair in census_pairs(config)
-        if fanout_module._has_multiple_routes(graph, *pair, fanout_module.package_hop_limit(config))
-    ]
+    pairs = census_pairs(config)
     assert asked == pairs
     assert enumerated == pairs
     # A second census, and a query's own resolution (an answer or a refusal), read the cache.
@@ -254,6 +247,42 @@ def test_shipped_packages_list_only_their_reviewed_undecided_pairs(package):
 
 def _mcp(server, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     return asyncio.run(server.call_tool(name, arguments))[1]
+
+
+@pytest.mark.parametrize("surface", ["census", "parse", "project_status"])
+def test_resolved_crossings_are_object_warnings_without_a_route_decision(tmp_path, surface):
+    pkg = ROOT / "tests/integration/correctness/shop"
+    config = load_package_config(str(pkg))
+    census = route_census(config)
+    assert census["undecided"] == census["assumed"] == []
+    (crossing,) = census["pass_through"]
+    assert (crossing["source_entity"], crossing["target_entity"]) == (
+        "entity.shop_customer",
+        "entity.shop_customer_history",
+    )
+    assert crossing["details"]["route_basis"] == "only_route"
+    assert [row["entity"] for row in crossing["details"]["through"]] == ["entity.shop_order"]
+    if surface == "census":
+        return
+    if surface == "parse":
+        report, _ = parse_config_report(PackageReference(source_path=str(pkg)))
+        assert report["route_census"] == census
+    else:
+        import shutil
+
+        copy = tmp_path / "shop"
+        shutil.copytree(pkg, copy)
+        server = create_architect_mcp_server(workspace_root=tmp_path)
+        status = _mcp(server, "project_status", {"project_path": str(copy)})
+        assert status["route_census"] == census
+        assert not any(action.startswith("Decide") for action in status["next_actions"])
+        report = status["parse"]
+    assert report["ok"]
+    (warning,) = [row for row in report["warnings"] if row["code"] == "ROUTE_PASS_THROUGH"]
+    assert warning["severity"] == "warning"
+    assert warning["object_ids"] == [crossing["source_entity"], crossing["target_entity"]]
+    assert warning["details"] == crossing["details"]
+    assert warning["message"] == crossing["message"]
 
 
 def test_status_setup_and_promotion_point_at_the_undecided_pairs(tmp_path):
@@ -893,7 +922,7 @@ def test_queries_without_authored_measures_require_explicit_decisions(tmp_path):
 
 def test_a_single_many_to_one_key_never_needs_confirmation(tmp_path):
     config = load_package_config(str(_write_package(tmp_path, relationships=("invoices_account",))))
-    assert route_census(config) == {"undecided": [], "assumed": []}
+    assert route_census(config) == {"undecided": [], "assumed": [], "pass_through": []}
 
 
 def test_lowering_the_hop_ceiling_commits_without_undoing_the_cut(tmp_path):

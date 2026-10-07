@@ -1,0 +1,13 @@
+model:
+  id: member_events
+  label: Member events
+  relation: member_events
+  entities: {member_event: {}, member: {}, team: {}}
+  times:
+    occurred_at: {label: Event time, column: occurred_at, kind: timestamp, class: event_time,
+      supported_grains: [day, month], default: true}
+  dimensions:
+    event_kind: {label: Event kind, kind: categorical}
+  measures:
+    event_count: {label: Member events, kind: entity_count, entity_key: event_id,
+      accumulation: {kind: flow}}

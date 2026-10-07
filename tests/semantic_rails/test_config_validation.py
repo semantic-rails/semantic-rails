@@ -743,7 +743,7 @@ def test_jaffle_reference_package_has_release_authoring_profile():
         w
         for w in report["warnings"]
         if not (isinstance(w, dict) and str(w.get("code", "")).startswith("SEMANTIC_TERM_"))
-        and w["code"] != "ROUTES_UNDECIDED"
+        and w["code"] not in {"ROUTES_UNDECIDED", "ROUTE_PASS_THROUGH"}
     ]
     # Lifetime spend is a stock on the one-row-per-customer table, a current-state
     # shape the snapshot-key warning can't tell from a mis-keyed snapshot table.
@@ -753,6 +753,13 @@ def test_jaffle_reference_package_has_release_authoring_profile():
     # Its undecided join routes are reviewed in test_route_census.py.
     (routes,) = [w for w in report["warnings"] if w["code"] == "ROUTES_UNDECIDED"]
     assert routes["details"]["count"] == len(report["route_census"]["undecided"])
+    crossings = [w for w in report["warnings"] if w["code"] == "ROUTE_PASS_THROUGH"]
+    assert len(crossings) == len(report["route_census"]["pass_through"]) == 5
+    assert [w["object_ids"] for w in crossings] == [
+        [row["source_entity"], row["target_entity"]]
+        for row in report["route_census"]["pass_through"]
+    ]
+    assert all(w["severity"] == "warning" for w in crossings)
     collision_warnings = [
         w
         for w in report["warnings"]

@@ -1,0 +1,21 @@
+graph:
+  entities:
+    member: {label: Member, key: [member_id], model: members}
+    member_event: {label: Member event, key: [event_id], model: member_events}
+    team: {label: Team, key: [team_id], model: teams}
+    billing_version: {label: Billing version, key: [team_id, valid_from],
+      model: team_billing_history}
+    plan: {label: Plan, key: [plan_id], model: plans}
+    team_signup: {label: Team signup, key: [signup_id], model: team_signups}
+    signup_event: {label: Signup event, key: [event_id], model: signup_events}
+  relationships:
+    billing_version_team:
+      id: relationship.billing_version_team
+      entities: [billing_version, team]
+      cardinality: many_to_one
+      via: [team_id]
+      target: [team_id]
+      safety: requires_rewrite
+      temporal_validity:
+        valid_from: team_billing_history.valid_from
+        valid_to: team_billing_history.valid_to

@@ -601,6 +601,20 @@ _NULL_LITERAL_GUARDED_OPS = (
 ) - {"IS", "IS NOT"}
 
 
+def filter_rejects_null(op: Any, value: Any) -> bool:
+    """Classify NULL-excluding filter forms using the lowering's operator classes."""
+    op_normalized = _compact_token(str(op or "=")).upper()
+    if op_normalized in {"IS NOT NULL", "IN", "NOT IN"}:
+        return True
+    try:
+        op_normalized = normalize_sql_binary_operator(op_normalized)
+    except SemanticLayerError:
+        return False
+    if value is None:
+        return op_normalized in _NULL_TEST_INEQUALITY_OPS
+    return op_normalized in _NULL_LITERAL_GUARDED_OPS
+
+
 def build_filter_condition(expr: SqlExpr, op: Any, value: Any, *, path: str = "where") -> SqlExpr:
     """Build the SQL condition for a ``{field, op, value}``-style filter.
 

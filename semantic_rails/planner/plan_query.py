@@ -212,7 +212,7 @@ def _validate_query(
 ) -> dict[str, Any]:
     """Call ``runtime.validate`` against a pattern draft.
 
-    Returns ``{"ok": bool, "errors": [...], "recovery_hints": [...]}``
+    Returns ``{"ok": bool, "errors": [...], "warnings": [...], "recovery_hints": [...]}``
     — a small projection of the full validate response that plan needs.
     Runs inline so plan's status field is trustworthy. If
     validate raises (an unexpected runtime error rather than a
@@ -246,6 +246,7 @@ def _validate_query(
     return {
         "ok": bool(report.get("ok", False)),
         "errors": list(report.get("errors") or []),
+        "warnings": list(report.get("warnings") or []),
         "recovery_hints": list(report.get("recovery_hints") or []),
     }
 

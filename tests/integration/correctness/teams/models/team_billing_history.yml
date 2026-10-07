@@ -1,0 +1,10 @@
+model:
+  id: team_billing_history
+  label: Team billing history
+  relation: team_billing_history
+  entities: {billing_version: {}, plan: {}}
+  times:
+    valid_from: {label: Valid from, column: valid_from, kind: timestamp, class: state_time}
+    valid_to: {label: Valid to, column: valid_to, kind: timestamp, class: state_time}
+  measures:
+    billed_seats: {label: Billed seats, kind: aggregate, expr: seats, value_type: count}

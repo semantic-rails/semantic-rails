@@ -46,6 +46,7 @@ def _slim_best(
     validation_ok: bool | None,
     intent_ir: IntentIR | None = None,
     fallback: dict[str, Any] | None = None,
+    warnings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Project one draft with canonical Query IR and unique resolved rows."""
 
@@ -64,6 +65,9 @@ def _slim_best(
     }
     if validation_ok is not None:
         out["validation_ok"] = bool(validation_ok)
+    disclosures = [row for row in warnings or [] if row.get("code") == "ROUTE_PASS_THROUGH"]
+    if disclosures:
+        out["warnings"] = disclosures
     out["trace"] = _plan_trace(
         intent_ir=intent_ir,
         draft=draft,
@@ -103,7 +107,14 @@ def _query_detail_best(best: Any) -> dict[str, Any] | None:
         return None
     return {
         key: best[key]
-        for key in ("pattern", "query_ir", "resolved", "validation_ok", "subject_ids_used")
+        for key in (
+            "pattern",
+            "query_ir",
+            "resolved",
+            "validation_ok",
+            "subject_ids_used",
+            "warnings",
+        )
         if key in best
     }
 

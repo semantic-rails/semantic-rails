@@ -436,6 +436,7 @@ def plan_payload(
             best_draft,
             pattern=best["pattern"],
             validation_ok=best_ok,
+            warnings=best_validation.get("warnings", []),
             intent_ir=intent_ir,
             fallback=_fallback_trace(best, planned),
         ),
@@ -500,6 +501,7 @@ def plan_payload(
                 row["draft"],
                 pattern=row["pattern"],
                 validation_ok=bool(row["validation"]["ok"]),
+                warnings=row["validation"].get("warnings", []),
                 intent_ir=intent_ir,
                 fallback=_fallback_trace(row, planned),
             )
@@ -507,6 +509,10 @@ def plan_payload(
             if row is not best
         ][: max(0, int(limit or 1) - 1)]
         payload["blocked"] = blocked
+    for draft in [payload["best"], *payload.get("alternatives", [])]:
+        for warning in draft.get("warnings", []):
+            if warning not in payload.setdefault("warnings", []):
+                payload["warnings"].append(warning)
     # Every returned query runs the window plan checked, without the caller's clock.
     for row in [payload["best"], *payload.get("alternatives", []), *blocked]:
         if "query_ir" in row:

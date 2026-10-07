@@ -1,0 +1,9 @@
+model:
+  id: plans
+  label: Plans
+  relation: plans
+  entities: {plan: {}}
+  dimensions:
+    plan_name: {label: Plan, kind: categorical}
+  measures:
+    plan_count: {label: Plans, kind: entity_count, entity_key: plan_id}

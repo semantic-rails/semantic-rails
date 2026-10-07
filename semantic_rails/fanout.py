@@ -135,21 +135,61 @@ def _entity_keys(config: PackageConfig) -> dict[str, str]:
     return {entity_id: _slug(tail[len(prefix) :]) for entity_id, tail in tails.items()}
 
 
+def hop_reach(rel: RelationshipConfig, current_entity: str, near_table: str) -> str:
+    """How many rows a ``current_entity`` row reaches over ``rel``: ``"as_of"`` (the far row's
+    version valid at the row's time), ``"one"`` (functional) or ``"many"``."""
+    if enters_validity_window(rel, near_table):
+        return "as_of"
+    return "one" if hop_is_functional(rel, current_entity) else "many"
+
+
+def route_hops(config: PackageConfig, start: str, path: Sequence[str]) -> list[tuple[str, ...]]:
+    """Each hop of ``path``: its relationship, the entity it reaches and its ``hop_reach``."""
+    analysis = get_package_analysis(config)
+    rels, entities = analysis.relationships, walk_entities(analysis.relationships, start, path)
+    tables = {entity: analysis.entities[entity].table for entity in entities}
+    return [
+        (rel_id, far, hop_reach(rels[rel_id], near, tables[near]))
+        for rel_id, near, far in zip(path, entities, entities[1:], strict=False)
+    ]
+
+
+def pass_through(config: PackageConfig, start: str, path: Sequence[str]) -> list[dict[str, str]]:
+    """Each entity ``path`` enters by a one-to-many hop and leaves for one row, unless declared:
+    its model authors ``entities: {bridge: true}``, it holds a validity window (a history), or a
+    ``graph.path_preferences`` row walks the same two relationships in a row, either way."""
+    analysis = get_package_analysis(config)
+    entities, rels = analysis.entities, analysis.relationships.values()
+    histories = {
+        end
+        for rel in rels
+        for end in (rel.source_entity, rel.target_entity)
+        if rel.temporal_validity and not enters_validity_window(rel, entities[end].table)
+    }
+    recorded = [set(zip(row, row[1:], strict=False)) for row in analysis.path_preferences.values()]
+    hops = route_hops(config, start, path)
+    return [
+        {"entity": entity, "enters_by": into, "leaves_by": out}
+        for (into, entity, reach), (out, _, leave) in zip(hops, hops[1:], strict=False)
+        if reach == "many" != leave and not entities[entity].bridge and entity not in histories
+        if not any({(into, out), (out, into)} & steps for steps in recorded)
+    ]
+
+
 def route_reading(config: PackageConfig, start: str, path: Sequence[str]) -> str:
     """``path`` in business words from package labels, e.g. "the District of the Account's
     Branch": every entity on the route, each hop to an entity named by its label. A hop whose
     entity pair has more than one relationship is named by its authored relationship label,
-    else by its foreign-key columns, and a one-to-many hop reads "any of the …"."""
+    else by its foreign-key columns; a one-to-many hop reads "any of the …", and a hop into a
+    validity window "the … valid at the time" (``hop_reach``)."""
     analysis = get_package_analysis(config)
     pairs = Counter(
         frozenset((rel.source_entity, rel.target_entity)) for rel in analysis.relationships.values()
     )
     phrase = ""
-    current = start
-    for rel_id in path:
+    for rel_id, reached, reach in route_hops(config, start, path):
         rel = analysis.relationships[rel_id]
-        forward = current == rel.source_entity
-        reached = rel.target_entity if forward else rel.source_entity
+        forward = reached == rel.target_entity
         noun, qualifier = entity_label(config, reached), ""
         if pairs[frozenset((rel.source_entity, rel.target_entity))] > 1:
             default = (
@@ -162,15 +202,62 @@ def route_reading(config: PackageConfig, start: str, path: Sequence[str]) -> str
                 noun = rel.label
             else:
                 qualifier = rel.label
-        many = not hop_is_functional(rel, current)
+        many = reach == "many"
         word = (_plural(noun) if many else noun) + (f" ({qualifier})" if qualifier else "")
+        if reach == "as_of":
+            word += " valid at the time"
         phrase = (
             f"the {word} of {phrase}" if phrase else f"the {entity_label(config, start)}'s {word}"
         )
         if many:
             phrase = f"any of {phrase}"
-        current = reached
     return phrase
+
+
+def pass_through_disclosure(
+    config: PackageConfig,
+    start: str,
+    target: str,
+    path: Sequence[str],
+    where: Sequence[Any] = (),
+    *,
+    route_basis: str,
+) -> tuple[str, dict[str, Any]] | None:
+    """A route's ``pass_through`` disclosure, a message and its details with the four fixes
+    (a child group restating ``where``, the query's conditions on the target), or None."""
+    crossings = pass_through(config, start, path)
+    if not crossings:
+        return None
+    meaning, first = route_reading(config, start, path), crossings[0]["entity"]
+    start_label, target_label = entity_label(config, start), entity_label(config, target)
+    through = " and ".join(entity_label(config, row["entity"]) for row in crossings)
+    keys = list(get_package_analysis(config).entities[target].key)
+    read = {row.column for row in config.dimensions if row.entity == start}
+    found = "`, `".join(column for column in keys if column in read)
+    has = f" (its table has `{found}`)" if found else ""
+    links = [{"entity": row["entity"], "entities": {"bridge": True}} for row in crossings]
+    fixes = {
+        "declare_key": {"entity": start, "target_entity": target, "columns": keys},
+        "declare_link_table": links,
+        "record_route": route_pin(start, target, list(path)),
+        "child_group": {"child": first, "match": "any", "where": list(where)},
+    }
+    message = (
+        f"{meaning[:1].upper()}{meaning[1:]}, through {through} rows the package doesn't "
+        f"declare as a link table: {'an' if start_label[:1].lower() in 'aeiou' else 'a'} "
+        f"{start_label} with no {entity_label(config, first)} is left out, and one with "
+        f"several can count under several {_plural(target_label)}. Fix: declare the "
+        f"{start_label}'s own {target_label} key{has}, declare {through} a link table "
+        "(`bridge: true`), record this route (graph.path_preferences), or ask about the "
+        f"{_plural(entity_label(config, first))} with a child group."
+    )
+    return message, {
+        "route": list(path),
+        "route_basis": route_basis,
+        "meaning": meaning,
+        "through": crossings,
+        "fixes": fixes,
+    }
 
 
 def _slug(text: str) -> str:

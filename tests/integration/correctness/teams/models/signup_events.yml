@@ -1,0 +1,7 @@
+model:
+  id: signup_events
+  label: Signup events
+  relation: signup_events
+  entities: {signup_event: {}, team_signup: {}}
+  dimensions:
+    event_kind: {label: Signup event kind, kind: categorical}

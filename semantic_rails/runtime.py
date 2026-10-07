@@ -34,7 +34,7 @@ from .acceleration.routing import (
     aggregate_routing_enabled,
     parse_aggregate_routing,
 )
-from .ast import every_filter, normalize_query, rewrite_select_shorthand
+from .ast import every_filter, normalize_query, plain_filters, rewrite_select_shorthand
 from .cache import (
     CachedCompilation,
     CompiledSqlCache,
@@ -52,6 +52,7 @@ from .compiler_parts.empty_groups import (
     observed_outside_filters,
     sql_nodes,
 )
+from .compiler_parts.indexes import get_package_analysis
 from .compiler_parts.paths import _leaf_time_role
 from .config import (
     SEED_KIND_EXTERNAL,
@@ -82,7 +83,6 @@ from .diagnostics import (
     enrich_path_not_found,
     exception_issue,
     filter_value_miss,
-    history_warning_payload,
     provenance_summary,
     rewrite_warning_payload,
     semantic_issue,
@@ -95,7 +95,9 @@ from .fanout import (
     entity_label,
     offered_rows,
     package_route,
+    pass_through_disclosure,
     query_route_decisions,
+    route_hops,
     route_note,
     route_reading,
 )
@@ -134,7 +136,7 @@ from .seed_provenance import (
     recorded_seed_digest,
 )
 from .segments import build_segment_query, normalize_segment, strip_segment_preview_metric
-from .sql_ast import SqlCall, SqlField, SqlIdentifier, SqlSelect, SqlTableRef
+from .sql_ast import SqlCall, SqlField, SqlIdentifier, SqlSelect, SqlTableRef, filter_rejects_null
 from .sql_identifiers import plain_relation_parts
 from .sql_preparation import PreparedQuery, checked_parameter_values
 from .temporal_support import _date_key, _range_intersects
@@ -164,7 +166,6 @@ __all__ = [
     "expr_to_dict",
     "get_package_config",
     "get_package_path",
-    "history_warning_payload",
     "load_csv_dir_to_duckdb",
     "load_package_config",
     "normalize_query",
@@ -448,6 +449,7 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
                 if len(json.dumps(note)) >= 1500:
                     del note["details"]["more_alternatives"]
         notes.append(note)
+    notes.extend(_pass_through_notes(config, compiled, decided))
     if resolve_verbosity(payload) == "minimal":
         return notes
     for start, target, path in read_routes(
@@ -495,20 +497,135 @@ def _route_notes(config, compiled, payload: dict[str, Any] | None) -> list[dict[
     return notes
 
 
+def _pass_through_notes(config, compiled, decided) -> list[dict[str, Any]]:
+    """ROUTE_PASS_THROUGH, at every verbosity, for each pair the SQL read by the package's only
+    (or inherited) route when it passes through undeclared rows (``fanout.pass_through``)."""
+    plan = compiled["logical_plan"]
+    entity_of = {row.id: row.entity for row in config.dimensions}
+    notes: list[dict[str, Any]] = []
+    for start, target, path in read_routes(plan, compiled.get("route_choices") or []):
+        try:
+            resolution = package_route(config, start=start, target=target)
+        except SemanticLayerError:
+            continue
+        if (start, target) in decided or resolution.basis not in {"only_route", "inherited"}:
+            continue
+        where = plain_filters(plan.query.get("where"))
+        where = [item for item in where if entity_of.get(item.get("field")) == target]
+        disclosure = resolution.routes[0] == path and pass_through_disclosure(
+            config, start, target, path, where, route_basis=resolution.basis
+        )
+        if disclosure:
+            note = semantic_issue(
+                code="ROUTE_PASS_THROUGH",
+                message=disclosure[0],
+                severity="warning",
+                stage="planning",
+                details=disclosure[1],
+                object_ids=[start, target],
+            )
+            if len(json.dumps(note)) >= 1500:  # long labels: the message still names each fix
+                note["details"] = {
+                    key: disclosure[1][key] for key in ("route", "through", "route_basis")
+                }
+            notes.append(note)
+    return notes
+
+
 def _history_warnings(config, logical_plan) -> list[dict[str, Any]]:
-    relationships = {row.id: row for row in config.relationships}
-    history_paths = []
-    for entity_id, path in dict(getattr(logical_plan, "selected_paths", {}) or {}).items():
-        temporal_rels = [
-            rel_id
-            for rel_id in list(path or [])
-            if relationships.get(rel_id) and relationships[rel_id].temporal_validity
+    """NULL_PRESERVING_HISTORY per dimension grouped or filtered by through a hop into a
+    validity window (``fanout.hop_reach``), naming the hop; a hop out of a history gets none."""
+    dimensions = {row.id: row for row in config.dimensions}
+    uses = [(dim_id, "grouping") for dim_id in logical_plan.group_by or []]
+    uses += [
+        (row.get("field"), "filter")
+        for row in plain_filters(logical_plan.query.get("where"))
+        if filter_rejects_null(row.get("op"), row.get("value"))
+    ]
+    warnings: list[dict[str, Any]] = []
+    for dim_id, use in dict.fromkeys(uses):
+        dim = dimensions.get(dim_id)
+        path = (logical_plan.selected_paths or {}).get(getattr(dim, "entity", ""), [])
+        hops = route_hops(config, logical_plan.root_entity, path)
+        hops = [hop for hop in hops if hop[2] == "as_of"]
+        if dim is None or not hops:
+            continue
+        label, version = dim.label or dim.name, entity_label(config, hops[0][1])
+        grouped = f"{label}: the {version} valid at each row's time; rows with none read an empty"
+        filtered = f"{label} filter: rows with no {version} valid at their time are left out by"
+        details = {"use": use, "dimension": dim_id, "entity": hops[0][1]}
+        details["relationships"] = [hop[0] for hop in hops]
+        warnings.append(
+            semantic_issue(
+                code="NULL_PRESERVING_HISTORY",
+                message=f"{grouped} {label}." if use == "grouping" else f"{filtered} this filter.",
+                severity="warning",
+                stage="planning",
+                details=details,
+                object_ids=[dim_id],
+            )
+        )
+    return warnings
+
+
+def _history_result_warnings(config, compiled, rows, warnings, *, truncated=False) -> list[Any]:
+    """``warnings`` with each grouping NULL_PRESERVING_HISTORY read from the returned rows: led
+    by the share in the empty group, or dropped from a complete answer without one."""
+    plan = compiled["logical_plan"]
+    root, measures = plan.root_entity, {row.id: row for row in config.measures}
+    root_key = getattr(get_package_analysis(config).entities.get(root), "key", [])
+    complete = not (truncated or getattr(rows, "truncated", False))
+    complete = complete and compiled["sql_ast"].limit is None
+    complete = complete and not plan.query.get("metric_filters")
+    visible_outputs = {output for row in rows for output in row}
+    single_group = not any(
+        hop[2] == "many"
+        for dim in config.dimensions
+        if dim.id in (plan.group_by or [])
+        for hop in route_hops(config, root, (plan.selected_paths or {}).get(dim.entity, []))
+    )
+    out: list[Any] = []
+    for warning in warnings:
+        details = warning.get("details") or {}
+        grouping = warning["code"] == "NULL_PRESERVING_HISTORY" and details["use"] == "grouping"
+        empty = [row for row in rows if grouping and row.get(details["dimension"]) is None]
+        if not grouping or not complete:
+            out.append(warning)
+            continue
+        if not empty:
+            continue
+        dim = next(row for row in config.dimensions if row.id == details["dimension"])
+        labels = {}  # a sum or count of the root's rows, which fall in one group each
+        for item in plan.query["select"] if single_group else []:
+            expression = item["expression"]
+            measure = measures.get(expression.get("measure", ""))
+            if measure is None or measure.entity != root or expression.get("aggregation"):
+                continue
+            counted, how = getattr(measure.expr, "column", None), measure.default_aggregation
+            output = item.get("as") or measure.id
+            if output in visible_outputs and (
+                how in {"sum", "count"} or (how == "count_distinct" and counted in root_key)
+            ):
+                labels[output] = measure.label or measure.id
+        totals = [
+            {"output": output, "null_value": sum(row.get(output) or 0 for row in empty)}
+            | {"total": sum(row.get(output) or 0 for row in rows)}
+            for output in labels
         ]
-        if temporal_rels:
-            history_paths.append({"entity": entity_id, "relationship_ids": temporal_rels})
-    if not history_paths:
-        return []
-    return [history_warning_payload(paths=history_paths)]
+        lead = next((row for row in totals if row["total"]), None)
+        share = f"{len(empty)} of {len(rows)} rows are"
+        if lead is not None:
+            name = labels[lead["output"]]
+            name = name if name[1:2].isupper() else name[:1].lower() + name[1:]
+            share = f"{lead['null_value']} of {lead['total']} {name} "
+            share += f"({round(100 * lead['null_value'] / lead['total'])}%) are"
+        label, version = dim.label or dim.name, entity_label(config, details["entity"])
+        message = f"{share} in the empty {label} group: no {version} was valid at their time, "
+        details = details | {"null_rows": len(empty), "rows": len(rows)}
+        if totals:
+            details["measures"] = totals
+        out.append({**warning, "message": f"{message}or it has no {label}.", "details": details})
+    return out
 
 
 def _query_object_ids(payload: dict[str, Any], config: Any = None) -> list[str]:
@@ -2886,6 +3003,13 @@ class Runtime:
                     }
                 )
         _withhold_values(out, policy_effects, self.package_config)
+        visible_rows = [
+            {key: row[key] for key in visible}
+            for row, visible in zip(rows, out["rows"], strict=True)
+        ]
+        out["warnings"] = _history_result_warnings(
+            self._config, compiled, visible_rows, out["warnings"], truncated=out["truncated"]
+        )
         if verbosity == "full":
             out["physical_plan"] = asdict(compiled["physical_plan"])
             out["performance_plan"] = asdict(compiled["performance_plan"])

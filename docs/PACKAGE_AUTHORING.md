@@ -1077,6 +1077,33 @@ catalog when present (for example, `analytics.shop_customer_history.effective_fr
 relationship's declared window determines which side holds versions; schema qualification
 does not make an outgoing lookup require a query time.
 
+A row with no version valid at its time joins none, so a dimension read through the hop
+into the window is empty for it. Each such dimension gets a `NULL_PRESERVING_HISTORY`
+warning naming the hop (`details`: `use`, `dimension`, `entity` (the versioned entity),
+`relationships`):
+
+- **Grouped by it** (`use: grouping`): `validate` and `compile` say "Plan: the Billing version
+  valid at each row's time; rows with none read an empty Plan." `execute` reads its own
+  returned rows after policy withholding (never a second query): on a complete result,
+  when a row has an empty value, the warning leads with
+  how much of the answer is in that group ("2 of 2 new teams (100%) are in the empty Plan
+  group: no Billing version was valid at their time, or it has no Plan"), adding
+  `null_rows`, `rows` and, for each visible sum or count of the query's own rows, `measures:
+  [{output, null_value, total}]`. If any grouping dimension's route has a many hop, or no
+  suitable output remains visible, it uses row counts and omits `measures`. A complete
+  answer (not truncated, no `limit`, no metric
+  filter) with no empty value carries no warning; any other answer keeps the compiled one.
+- **Filtered by it** (`use: filter`): for known NULL-excluding forms, every stage says
+  "Plan filter: rows with no Billing version valid at their time are left out by this filter."
+  These are `IS NOT NULL`, `IN` / `NOT IN`, inequality to NULL, and ordinary comparisons or
+  `LIKE` / `NOT LIKE` with a non-NULL value. Operator case and spacing follow SQL lowering.
+  `IS NULL`, `=` / `IS` with NULL, null-safe comparisons and boolean `IS` / `IS NOT` carry no
+  such warning. Multiple excluding filters on the same dimension produce one filter warning.
+
+A path that only leaves the versioned table (`customer_history → customer` here) reads one
+version per row and gets no warning. A version written moments after its event (a billing
+row, a dbt snapshot) is the usual cause of an empty group.
+
 ### `disallowed_names:` — explicit anti-pattern guard
 
 Author the names that should NEVER appear as a column, dimension, or measure on
@@ -1215,11 +1242,17 @@ declares columns, the check uses the model's own `keys.primary:`. If no key is d
 its own model's grain can supply it. Empty `entities:` blocks retain the graph's
 model-name default and still validate the grain.
 
-### `bridge: false` — junction tables
+### `bridge:` — link tables and junction tables
+
+`bridge: true` on the entities block declares the model a link table: a route
+may pass through its rows from one parent to another (a member's teams through
+`member_events`) without a [`ROUTE_PASS_THROUGH`](#the-route-rule) warning. It
+changes no route and no answer, and the package's semantic fingerprint records it.
 
 Set `bridge: false` on the entities block when the model is a junction or partial
-bridge that should not be auto-used as a multi-hop join path. Queries within the
-model still work; the planner just won't route through it.
+bridge that should not be auto-used as a multi-hop join path. The model then
+synthesizes none of its `entities:` joins, so its own lookups to the entities it
+lists are gone too: author a `joins:` entry for each one a question needs.
 
 ```yaml
 model:
@@ -1961,6 +1994,39 @@ catalog and error hints. A calendar dimension reached only through other
 facts' rows is refused the same way, and its recovery hint points at
 `time.grain` instead.
 
+**Routes through another table's rows.** The one route a pair has (rules 3
+and 4) can go down into a child table and back up to another parent: "the
+Team of any of the Member's Member events", when members hold no team key.
+A member with no event is then left out, and one with events in two teams
+counts under both. Every response that reads such a route (`validate`,
+`compile` and `execute`, at every verbosity, MCP included), and every validated
+`plan` draft using it, carries a
+`ROUTE_PASS_THROUGH` warning: the meaning, what it does to the count, and the
+fixes. `details.route` and `details.meaning` give the route, `details.route_basis`
+its resolution basis (`only_route` or `inherited`),
+`details.through` each crossed entity (`entity`, `enters_by`, `leaves_by`
+relationship), and `details.fixes`:
+
+- `declare_key`: declare the start's own key to the target (`columns`, the
+  target's key); the message names the column when the start's model already
+  reads one of that name;
+- `declare_link_table`: `entities: {bridge: true}` on the crossed model;
+- `record_route`: the `graph.path_preferences` row for the pair;
+- `child_group`: ask about the crossed rows themselves, a
+  [child group](QUERY_IR_SCHEMA.md#child-groups) carrying the query's
+  conditions on the target.
+
+Three declarations allow the crossing, and then no warning is given: the
+crossed model's `bridge: true`; a validity window on the crossed entity (a
+history may be passed through); or a `graph.path_preferences` row whose path
+walks the same two relationships in a row, in either order. A pair decided by
+a row (the package's or the query's own) or by the start's own key never
+warns, and neither does a descent alone or a lookup followed by a descent.
+The warning changes no route and no number.
+The next release refuses a to-one lookup ("the T of an S") reachable only through child
+rows, while existence and group questions through a `bridge: true` link table keep
+answering; for each warning, declare the key in `entities:` or mark the link table now.
+
 The refusal is a clarification: `details.reason` is `route_decision_required`,
 and `details.clarification` asks which route the question means, in business
 words built only from package labels:
@@ -1980,7 +2046,9 @@ words built only from package labels:
 - `meaning` names every entity on the route by its label. A hop between two
   entities related more than once is named by the relationship's own label, or
   else by its foreign-key columns (`the Flight's Airport (origin_airport_id)`),
-  and a one-to-many hop reads "any of the …" (`any of the Account's Memberships`).
+  a one-to-many hop reads "any of the …" (`any of the Account's Memberships`),
+  and a hop into a validity window reads "… valid at the time" (`the Plan of
+  the Billing version valid at the time of the Team signup's Team`).
 - `id` is unique within the refusal and never an entity key: the waypoint and
   target entity keys (`branch_district`), or a direct hop's foreign-key column
   without its `_id`/`_key`/`_code` suffix (`origin_airport`); `_2` on a clash.
@@ -2106,7 +2174,7 @@ Four guard rails back this up:
 A route is a business definition, so a package needs one for every entity pair
 a question can need: every entity is a start, including distinct-values and
 synthetic-count queries, to each other reachable entity. The
-census resolves only pairs with two or more routes, once per pair; impact and
+census resolves every pair once, including only-route crossings; impact and
 guard comparisons resolve every pair using package decisions, independently
 of any active query route overrides.
 
@@ -2125,6 +2193,11 @@ Architect's `project_status`) carries `route_census`:
   pairs with two or more routes answered by the
   start's own key (`basis: colocated_key`). Confirm the route, or record
   another.
+- `pass_through`: `[{source_entity, target_entity, message, details}]`, resolved
+  only or inherited routes crossing undeclared child rows. The parse report and
+  `project_status` carry each as a `ROUTE_PASS_THROUGH` warning on the two entities,
+  with the same meaning, basis and fixes as an answer. These pairs are already
+  resolved and do not need a route decision.
 
 **Route changes.** A new relationship can give a pair a second route, so a
 question that answered before is refused, or now takes the start's own key.

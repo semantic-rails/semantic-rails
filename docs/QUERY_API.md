@@ -1193,7 +1193,11 @@ Response keys:
 - `timing_ms`
 
 `validate` returns structured diagnostics. It does not need to throw on semantic failure.
-History-backed queries emit compact warnings when null-preserving temporal-validity joins are in play.
+A query that groups by, or applies a known NULL-excluding filter to, a dimension read through
+a hop into a validity window gets
+`NULL_PRESERVING_HISTORY`, naming the hop; on `execute`, a grouped one counts its empty group
+from the returned rows (see
+[`graph.yml`](PACKAGE_AUTHORING.md#graphyml)).
 
 ### `POST /api/v1/query`
 
@@ -1357,6 +1361,15 @@ The response `warnings` array can carry these non-error signals:
   `details.conflicts_with` lists any other route with the rows its row would
   disagree with; on `ROUTE_RECORDED` for a route inherited from rows for the pairs
   it walks through, `details.rows` names them. See
+  [the route rule](PACKAGE_AUTHORING.md#the-route-rule).
+- `ROUTE_PASS_THROUGH` — severity `warning`, at every verbosity: the package's
+  one route for a pair the query reads goes down into another table's rows and
+  back up to another parent ("the Team of any of the Member's Member events"),
+  and the package doesn't declare that crossing, so a start row with no such
+  row is left out and one with several can count under several targets. The
+  message gives the meaning and the fixes; `details.route`, `details.meaning`,
+  `details.through` and `details.fixes` (`declare_key`, `declare_link_table`,
+  `record_route`, `child_group`). See
   [the route rule](PACKAGE_AUTHORING.md#the-route-rule).
 - `ROUTE_CHOSEN_BY_QUERY` — severity `info`, at every verbosity: one per
   `route_decisions` row the query applied. `details.row` is the row and

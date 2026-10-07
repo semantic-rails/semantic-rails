@@ -100,6 +100,8 @@ class EntityConfig:
     freshness_sla_seconds: int | None = None
     freshness_as_of: str = ""
     disallowed_names: list[str] = field(default_factory=list)
+    # The model authors `entities: {bridge: true}`: a declared link table routes may pass through.
+    bridge: bool = False
 
 
 @dataclass(frozen=True)

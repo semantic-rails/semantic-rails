@@ -1511,16 +1511,6 @@ def rewrite_warning_payload(step: Any) -> dict[str, Any]:
     )
 
 
-def history_warning_payload(*, paths: list[dict[str, Any]]) -> dict[str, Any]:
-    return semantic_issue(
-        code="NULL_PRESERVING_HISTORY",
-        message="History-backed breakdowns preserve NULL when no valid history row exists at the query time anchor.",
-        severity="warning",
-        stage="planning",
-        details={"paths": list(paths)},
-    )
-
-
 def provenance_summary(
     config: PackageConfig,
     logical_plan: Any,

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import gc
 import json
+import os
 import textwrap
 import weakref
 from dataclasses import replace
@@ -44,9 +45,10 @@ from semantic_rails.config import load_package_config
 from semantic_rails.diagnostics import exception_issue
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import ColumnRefExpr
-from semantic_rails.fanout import resolve_path
+from semantic_rails.fanout import pass_through, resolve_path
 from semantic_rails.metadata_parts.path_coverage import _path_availability
 from semantic_rails.registry import Registry
+from semantic_rails.route_census import census_pairs, resolve_pairs
 from semantic_rails.runtime import Runtime
 from semantic_rails.runtime import _route_notes as compiled_route_notes
 from semantic_rails.schema import (
@@ -863,3 +865,70 @@ def test_shipped_route_decisions_match_the_reviewed_snapshot(package):
     snapshot = json.loads(ROUTE_DECISIONS.read_text(encoding="utf-8"))
     current = _route_decisions(package)
     assert current == snapshot[package], json.dumps({package: current}, indent=2)
+
+
+ROUTE_RESOLUTIONS = Path(__file__).parent / "fixtures" / "route_resolutions.json"
+
+
+def _route_resolutions(package: str) -> dict[str, str]:
+    """Every census pair's package resolution: the rung that chose its route and the route,
+    or the code it is refused with."""
+    config = load_package_config(str(ROOT / package))
+    return {
+        f"{start} -> {target}": (
+            f"refused {outcome.refused}"
+            if outcome.refused
+            else f"{outcome.basis}: {', '.join(outcome.path)}"
+        )
+        for (start, target), outcome in resolve_pairs(config, census_pairs(config)).items()
+    }
+
+
+@pytest.mark.parametrize("package", SHIPPED_PACKAGES[:4])
+def test_shipped_route_resolutions_match_the_reviewed_snapshot(package):
+    """Which route answers each pair a bundled package can be asked about, or how it is
+    refused. A change that moves any pair fails here: review the moves, then update the
+    snapshot (``SR_UPDATE_SNAPSHOTS=1``)."""
+    snapshot = json.loads(ROUTE_RESOLUTIONS.read_text(encoding="utf-8"))
+    current = _route_resolutions(package)
+    if os.environ.get("SR_UPDATE_SNAPSHOTS") == "1":
+        snapshot[package] = current
+        ROUTE_RESOLUTIONS.write_text(
+            json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    assert current == snapshot[package], json.dumps({package: current}, indent=2)
+
+
+SNAPSHOT = "entity.jaffle_store_inventory_snapshot"
+CALENDAR = "entity.jaffle_time"
+
+
+def test_bundled_routes_through_undeclared_rows_are_exactly_these():
+    """The answered pairs whose route enters another table by one key and leaves to another
+    parent, without a link-table declaration, a history or a recorded row walking it: each
+    gets ROUTE_PASS_THROUGH when a query reads it."""
+    found = {}
+    for package in SHIPPED_PACKAGES[:4]:
+        config = load_package_config(str(ROOT / package))
+        for (start, target), outcome in resolve_pairs(config, census_pairs(config)).items():
+            crossings = [] if outcome.refused else pass_through(config, start, outcome.path)
+            if crossings:
+                found[(start, target)] = [row["entity"] for row in crossings]
+    assert found == {
+        **{
+            pair: [SNAPSHOT]
+            for pair in [
+                ("entity.jaffle_customer", CALENDAR),
+                ("entity.jaffle_customer_history", CALENDAR),
+                ("entity.jaffle_item", CALENDAR),
+                ("entity.jaffle_store", CALENDAR),
+                (CALENDAR, "entity.jaffle_store"),
+            ]
+        },
+        ("entity.shop_customer", "entity.shop_customer_history"): ["entity.shop_order"],
+    }
+    shop = load_package_config(str(ROOT / "tests/integration/correctness/shop"))
+    path = resolve_path(shop, start="entity.shop_customer", target="entity.shop_customer_history")
+    assert fanout_module.route_reading(shop, "entity.shop_customer", path[0]) == (
+        "the Customer history valid at the time of any of the Customer's Orders"
+    )
