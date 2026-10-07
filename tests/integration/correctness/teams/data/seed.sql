@@ -1,8 +1,10 @@
 -- Portable seed: DuckDB and Postgres run this same script, and comments here hold no semicolons.
--- Members hold no team key: their events name a team. Member 1 has events in teams 10
--- and 20, member 2 two events in team 10, and member 4 none.
-CREATE TABLE members (member_id INTEGER, member_name VARCHAR(16));
-INSERT INTO members VALUES (1, 'Ann'), (2, 'Bo'), (3, 'Cy'), (4, 'Di'), (5, 'Ed');
+-- The package declares no team key on members: their events name a team. Member 1 has
+-- events in teams 10 and 20, member 2 two events in team 10, and member 4 none. The table's
+-- own team_id (each member's home team) is read only by a test variant.
+CREATE TABLE members (member_id INTEGER, member_name VARCHAR(16), team_id INTEGER);
+INSERT INTO members VALUES (1, 'Ann', 20), (2, 'Bo', 10), (3, 'Cy', 30), (4, 'Di', 40),
+  (5, 'Ed', 20);
 
 CREATE TABLE teams (team_id INTEGER, plan_tier VARCHAR(8), created_at TIMESTAMP);
 INSERT INTO teams VALUES

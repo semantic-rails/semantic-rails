@@ -263,18 +263,17 @@ def pass_through_disclosure(
         "declare_link_table": [
             {"entity": row["entity"], "entities": {"bridge": True}} for row in crossings
         ],
-        "record_route": {**route_pin(start, target, list(path)), "label": meaning},
+        "record_route": route_pin(start, target, list(path)),
         "child_group": {"child": first, "match": "any", "where": list(where)},
     }
     message = (
-        f"{meaning[:1].upper()}{meaning[1:]}, through {through} rows, which the package doesn't "
-        "declare as a link "
-        f"table: {'an' if start_label[:1].lower() in 'aeiou' else 'a'} {start_label} with no "
-        f"{entity_label(config, first)} is left out, and one with several can count under "
-        f"several {_plural(target_label)}. To fix, declare the {start_label}'s own "
-        f"{target_label} key{has}, declare {through} a link table (`bridge: true`), record "
-        "this route in graph.path_preferences, or ask about the "
-        f"{_plural(entity_label(config, first))} themselves with a child group."
+        f"{meaning[:1].upper()}{meaning[1:]}, through {through} rows the package doesn't "
+        f"declare as a link table: {'an' if start_label[:1].lower() in 'aeiou' else 'a'} "
+        f"{start_label} with no {entity_label(config, first)} is left out, and one with "
+        f"several can count under several {_plural(target_label)}. Fix: declare the "
+        f"{start_label}'s own {target_label} key{has}, declare {through} a link table "
+        "(`bridge: true`), record this route (graph.path_preferences), or ask about the "
+        f"{_plural(entity_label(config, first))} with a child group."
     )
     return message, {"route": list(path), "meaning": meaning, "through": crossings, "fixes": fixes}
 

@@ -525,17 +525,20 @@ def _pass_through_notes(config, compiled, decided) -> list[dict[str, Any]]:
             if isinstance(item, dict) and dimensions.get(item.get("field")) == target
         ]
         disclosure = pass_through_disclosure(config, start, target, path, where)
-        if disclosure is not None:
-            notes.append(
-                semantic_issue(
-                    code="ROUTE_PASS_THROUGH",
-                    message=disclosure[0],
-                    severity="warning",
-                    stage="planning",
-                    details=disclosure[1],
-                    object_ids=[start, target],
-                )
-            )
+        if disclosure is None:
+            continue
+        message, details = disclosure
+        note = semantic_issue(
+            code="ROUTE_PASS_THROUGH",
+            message=message,
+            severity="warning",
+            stage="planning",
+            details=details,
+            object_ids=[start, target],
+        )
+        if len(json.dumps(note)) >= 1500:  # long labels: the message still names every fix
+            note["details"] = {key: details[key] for key in ("route", "through")}
+        notes.append(note)
     return notes
 
 
