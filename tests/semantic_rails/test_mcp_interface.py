@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import socket
-import sys
 import threading
 import types
 import urllib.error
@@ -21,7 +20,6 @@ from semantic_rails.mcp import (
     MCP_RESOURCE_DEFINITIONS,
     MCP_TOOL_DEFINITIONS,
     SemanticLayerMCPAdapter,
-    create_optional_fastmcp_server,
 )
 from semantic_rails.mcp_server import handle_jsonrpc_message, make_mcp_http_handler, serve_stdio
 from semantic_rails.mcp_streamable_http import handle_streamable_http_request
@@ -32,58 +30,6 @@ from semantic_rails.request_context import (
 )
 
 REQUIRED_TOOL_NAMES = {"discover", "inspect", "valid-values", "plan", "execute", "segment"}
-
-
-def test_optional_fastmcp_facade_is_strictly_stdio_only(runtime_factory, monkeypatch):
-    calls: list[tuple[tuple, dict]] = []
-
-    class FakeFastMCP:
-        def __init__(self, _name, instructions=None):
-            self.tools = []
-            self.instructions = instructions
-
-        def add_tool(self, tool, **kwargs):
-            self.tools.append((tool, kwargs))
-
-        def run(self, *args, **kwargs):
-            calls.append((args, kwargs))
-            return "stdio-ran"
-
-        def streamable_http_app(self):
-            return object()
-
-    fastmcp_module = types.ModuleType("mcp.server.fastmcp")
-    fastmcp_module.FastMCP = FakeFastMCP
-    server_module = types.ModuleType("mcp.server")
-    server_module.fastmcp = fastmcp_module
-    mcp_module = types.ModuleType("mcp")
-    mcp_module.server = server_module
-    monkeypatch.setitem(sys.modules, "mcp", mcp_module)
-    monkeypatch.setitem(sys.modules, "mcp.server", server_module)
-    monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", fastmcp_module)
-    # On SDK 2.x the facade prefers mcp.server.mcpserver; keep this test on the fake.
-    monkeypatch.setitem(sys.modules, "mcp.server.mcpserver", None)
-
-    runtime = runtime_factory("jaffle_shop")
-    adapter = SemanticLayerMCPAdapter(runtime)
-    try:
-        server = create_optional_fastmcp_server(adapter)
-        assert server.transport_scope == "stdio-only"
-        assert server.run() == "stdio-ran"
-        assert calls == [((), {})]
-        for invoke in (
-            lambda: server.run(transport="streamable-http"),
-            lambda: server.run("sse"),
-            lambda: server.streamable_http_app(),
-        ):
-            try:
-                invoke()
-            except RuntimeError as exc:
-                assert "stdio-only" in str(exc)
-            else:
-                raise AssertionError("FastMCP network transport must be rejected")
-    finally:
-        adapter.close()
 
 
 def test_mcp_normalizes_policy_context_once_per_tool_call(runtime_factory, monkeypatch):

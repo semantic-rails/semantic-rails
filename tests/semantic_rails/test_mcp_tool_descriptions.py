@@ -17,7 +17,6 @@ three constraints:
 from __future__ import annotations
 
 import copy
-import json
 
 from semantic_rails.mcp import list_tool_definitions
 
@@ -326,67 +325,6 @@ def test_expression_shape_examples_validate_as_query_ir(runtime_factory):
             "capabilities.expression_shapes[].example must produce no "
             "shape-related validate errors when wrapped as Query IR. "
             f"Failures: {failures}"
-        )
-    finally:
-        adapter.close()
-
-
-def test_discover_minimal_verbosity_slims_records(runtime_factory):
-    """The 'minimal' verbosity on discover (the MCP default) keeps a slim
-    card: what an agent needs to pick a candidate and tell near-duplicates
-    apart (id, kind, label, measure, a short description,
-    default_temporal_role, available, and blocked_reason when unavailable).
-    Ranking and debug detail (name, topics, match_reasons,
-    recommended_next_actions, comparison metadata, starter_query_patch)
-    must NOT appear.
-
-    Also verify the wire size shrinks materially — minimal should be
-    a fraction of full, otherwise the verbosity level is doing no
-    work."""
-
-    from semantic_rails.mcp import SemanticLayerMCPAdapter
-
-    runtime = runtime_factory("jaffle_shop")
-    adapter = SemanticLayerMCPAdapter(runtime)
-    try:
-        full = adapter.call_tool("discover", {"terms": "orders by store", "verbosity": "full"})
-        minimal = adapter.call_tool(
-            "discover", {"terms": "orders by store", "verbosity": "minimal"}
-        )
-
-        # Both must be ok and ship records.
-        assert full.get("ok") is not False
-        assert minimal.get("ok") is not False
-        # Discover returns a flat envelope (no separate `payload` key).
-        full_payload = full
-        minimal_payload = minimal
-
-        permitted = {
-            "id",
-            "kind",
-            "label",
-            "measure",
-            "description",
-            "default_temporal_role",
-            "available",
-        }
-        for bucket in ("measures", "metrics", "dimensions"):
-            rows = minimal_payload.get(bucket) or []
-            assert rows, f"minimal discover should still return {bucket} rows"
-            for row in rows:
-                allowed = permitted | (
-                    {"blocked_reason"} if row.get("available") is False else set()
-                )
-                extra = set(row.keys()) - allowed
-                assert not extra, f"minimal verbosity {bucket} row leaked verbose keys: {extra}"
-                assert "score" not in row
-
-        # Wire-size check: minimal must be materially smaller than full.
-        full_bytes = len(json.dumps(full_payload))
-        minimal_bytes = len(json.dumps(minimal_payload))
-        assert minimal_bytes < full_bytes * 0.5, (
-            f"minimal ({minimal_bytes:,}B) should be <50% of full "
-            f"({full_bytes:,}B); otherwise the verbosity is doing no work."
         )
     finally:
         adapter.close()

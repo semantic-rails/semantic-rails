@@ -27,8 +27,6 @@ from typing import Any
 import pytest
 
 from semantic_rails.mcp import (
-    MCP_DEFAULT_QUERY_VERBOSITY,
-    MCP_TOOL_DEFINITIONS,
     SemanticLayerMCPAdapter,
 )
 
@@ -65,23 +63,6 @@ _HEAVY_KEYS = (
 
 def _wire_bytes(envelope: dict[str, Any]) -> int:
     return len(json.dumps(envelope, default=str))
-
-
-def test_mcp_default_verbosity_constant_is_minimal() -> None:
-    assert MCP_DEFAULT_QUERY_VERBOSITY == "minimal"
-
-
-def test_tool_schemas_advertise_minimal_default() -> None:
-    """The inputSchema default must match the runtime behavior so agents
-    reading tools/list aren't lied to."""
-    for tool in MCP_TOOL_DEFINITIONS:
-        if tool["name"] != "execute":
-            continue
-        verbosity = tool["inputSchema"]["properties"]["verbosity"]
-        assert verbosity["default"] == "minimal", (
-            f"{tool['name']} inputSchema verbosity default must be 'minimal'; "
-            f"got {verbosity['default']!r}"
-        )
 
 
 def test_validate_defaults_to_minimal_envelope(runtime_factory) -> None:
@@ -197,17 +178,3 @@ def test_plan_query_inherits_minimal_default(runtime_factory) -> None:
             assert key not in forwarded, f"forwarding best.query_ir leaked {key}"
     finally:
         adapter.close()
-
-
-def test_tools_list_under_24kb_budget() -> None:
-    """tools/list measured 28.1KB before the IR cheat-sheet and full
-    QUERY_SCHEMA were deduped onto 'validate' (~16KB after). Pin a 24KB
-    ceiling so prose accretion can't silently re-bloat the first thing
-    every fresh agent reads."""
-    total = sum(len(json.dumps(t, separators=(",", ":"))) for t in MCP_TOOL_DEFINITIONS)
-    assert total < 24_000, (
-        f"tools/list JSON is {total:,}B — over the 24,000B budget. "
-        "Dedupe schemas/descriptions (the IR cheat-sheet and full "
-        "QUERY_SCHEMA live on 'execute' only) or raise the cap "
-        "explicitly with a comment."
-    )

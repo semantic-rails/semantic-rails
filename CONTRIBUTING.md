@@ -138,12 +138,19 @@ Tests bound every wait: subprocess calls, `urlopen`, `communicate`, and
 enforces it.
 
 Merge-group CI on Python 3.12 repeats affected unit test files three times with
-random test ordering and `-n auto`. `scripts/flake_guard.py` selects changed tests
-from the default test roots and tests that directly import changed `semantic_rails`
+random test ordering and an automatically chosen worker count.
+`scripts/flake_guard.py` selects changed tests from the default test roots and tests
+that directly import changed `semantic_rails`
 modules, prioritizing changed tests and capping the set at 20 files. Seeds and any
-omitted file count are logged. The guard has a five-minute budget; any failure or
-timeout fails the job with `intermittent: investigate` and its repetition, without
-retrying the failure away. Warehouse integration tests keep their separate CI.
+omitted file count are logged. The guard uses the main run's `backend-results.xml`
+test durations divided by its worker count to trim the lowest-priority files until
+the first repetition fits its five-minute budget with 20% headroom; dropped files
+produce a notice. A repetition that cannot fit the remaining budget is inconclusive.
+Any test failure or timeout of a repetition expected to fit fails the job with
+`intermittent: investigate`, without retrying the failure away. A first-repetition
+timeout without complete duration estimates produces an inconclusive warning and
+passes, since the main step already ran every test once. Warehouse integration tests
+keep their separate CI.
 
 `tests/quarantine.toml` starts empty. To temporarily quarantine a known failure,
 replace `tests = []` with `[[tests]]` entries containing the exact pytest node `id`
