@@ -10,7 +10,7 @@ the pro plan through 2026-09-15 and f 50 through 2026-09-30. A stock keyed by it
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -18,8 +18,9 @@ import duckdb
 import pytest
 import yaml
 
+from semantic_rails.expressions import ArithmeticExpr, LiteralExpr, MetricRecipeRefExpr
 from semantic_rails.mcp import SemanticLayerMCPAdapter
-from semantic_rails.planner import plan_payload
+from semantic_rails.planner import faithfulness, plan_payload
 from semantic_rails.runtime import Runtime
 
 NOW = {"now": "2026-10-05T06:00:00Z"}
@@ -35,6 +36,7 @@ SELECT CAST(day AS DATE) AS day, 10 * date_diff('day', DATE '2026-09-01', day) +
 FROM generate_series(DATE '2026-09-01', DATE '2026-10-04', INTERVAL 1 DAY) AS s(day);
 """
 MEASURE = "measure.billing.mrr_all"
+ROLE = "temporal_role.billing_account_day_day"
 STOCK = "stock_as_of_unrealized"
 
 
@@ -74,7 +76,7 @@ def _package(root: Path, *, metric: bool) -> Path:
     if metric:
         put("metrics/billing.yml", {"metrics": {"mrr": {
             "label": "MRR", "kind": "semi_additive",
-            "temporal_role": "temporal_role.billing_account_day_day",
+            "temporal_role": ROLE,
             "expression": {"kind": "semi_additive", "measure": MEASURE},
         }}})  # fmt: skip
     with duckdb.connect(str(root / "billing.duckdb")) as connection:
@@ -96,3 +98,138 @@ def runtime(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFac
 def _plan(runtime: Runtime, intent: str, **kwargs: Any) -> dict[str, Any]:
     partial = {"policy_context": NOW, **kwargs.pop("partial", {})}
     return plan_payload(runtime, intent=intent, partial_query=partial, **kwargs)
+
+
+def _reference(sql: str) -> int:
+    with duckdb.connect(":memory:") as connection:
+        connection.execute(SEED)
+        return int(connection.execute(sql).fetchone()[0])
+
+
+def _closing_day(day: str) -> int:
+    return _reference(f"SELECT SUM(mrr) FROM account_day WHERE day = DATE '{day}'")
+
+
+def _stock_gaps(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    gaps = (plan.get("why") or {}).get("details", {}).get("gaps", [])
+    return [gap for gap in gaps if gap["kind"] == STOCK]
+
+
+def _value(runtime: Runtime, plan: dict[str, Any]) -> int:
+    assert plan["status"] == "ok", plan.get("why")
+    query = plan["best"]["query_ir"]
+    [row] = runtime.query(query)["rows"]
+    return int(row[query["select"][0]["as"]])
+
+
+def _assert_held(plan: dict[str, Any], grain: str | None) -> None:
+    assert plan["status"] == "low_confidence", plan.get("why")
+    assert "execute" not in plan.get("next", {}).get("ready_for", [])
+    [gap] = _stock_gaps(plan)
+    assert gap["expected"] == {"grain": "day", "stocks": [MEASURE]}
+    assert gap["actual"] == {"grain": grain}
+
+
+@pytest.mark.parametrize("detail", ["best", "full"])
+@pytest.mark.parametrize(
+    ("intent", "grain"),
+    [
+        ("What's our MRR?", None),
+        ("What is our MRR?", None),
+        ("MRR", None),
+        ("total MRR", None),
+        ("How much MRR do we have?", None),
+        ("MRR by plan", None),
+        ("MRR last week", "week"),
+        ("MRR last month", "month"),
+        ("MRR by week", "week"),
+    ],
+)
+def test_a_balance_over_more_than_one_day_per_row_is_held(
+    runtime: Runtime, intent: str, grain: str | None, detail: str
+) -> None:
+    _assert_held(_plan(runtime, intent, detail=detail), grain)
+
+
+def test_the_held_drafts_keep_closed_accounts(runtime: Runtime) -> None:
+    # Each series' last value: the closed accounts e (500) and f (50) are still counted.
+    assert _closing_day("2026-10-04") == 297
+    assert _reference("SELECT SUM(mrr) FROM account_day WHERE (account_id, day) IN "
+                      "(SELECT (account_id, MAX(day)) FROM account_day GROUP BY account_id)") == 847  # fmt: skip
+    query = _plan(runtime, "MRR")["best"]["query_ir"]
+    [row] = runtime.query(query)["rows"]
+    assert row[query["select"][0]["as"]] == 847
+
+
+def test_mcp_plan_holds_a_balance_with_no_time_block(runtime: Runtime) -> None:
+    plan = SemanticLayerMCPAdapter(runtime).call_tool(
+        "plan", {"intent": "What's our MRR?", "query": {"policy_context": NOW}}
+    )
+    _assert_held(plan, None)
+
+
+@pytest.mark.parametrize(
+    ("intent", "day", "value"),
+    [("MRR yesterday", "2026-10-04", 297), ("MRR on 2026-09-30", "2026-09-30", 347)],
+)
+def test_a_balance_on_one_day_is_unchanged(
+    runtime: Runtime, intent: str, day: str, value: int
+) -> None:
+    plan = _plan(runtime, intent)
+    assert plan["best"]["query_ir"]["time"]["grain"] == "day"
+    assert _value(runtime, plan) == _closing_day(day) == value
+
+
+def test_a_stock_keyed_by_its_clock_alone_is_unchanged(runtime: Runtime) -> None:
+    plan = _plan(runtime, "registered users")
+    assert "time" not in plan["best"]["query_ir"]
+    reference = _reference("SELECT registered FROM user_totals ORDER BY day DESC LIMIT 1")
+    assert reference == 340
+    assert _value(runtime, plan) == reference
+
+
+def test_a_caller_day_grain_is_the_callers_choice(runtime: Runtime) -> None:
+    time = {"temporal_role": ROLE, "grain": "day", "start": "2026-10-04", "end": "2026-10-05"}
+    plan = _plan(runtime, "MRR", partial={"time": time})
+    assert _stock_gaps(plan) == []
+    assert _value(runtime, plan) == _closing_day("2026-10-04")
+
+
+def test_a_stock_read_through_a_metric_filter_or_a_nested_metric_is_held(
+    runtime: Runtime,
+) -> None:
+    config = runtime._config
+    users = {"expression": {"measure": "measure.billing.registered_users"}, "as": "users"}
+    assert faithfulness._stock_as_of_gaps(config, {"select": [users]}) == []
+    mrr = {"measure": MEASURE, "aggregation": "last_value"}
+    filtered = {"select": [users], "metric_filters": [{"expression": mrr, "op": ">", "value": 0}]}
+    [gap] = faithfulness._stock_as_of_gaps(config, filtered)
+    assert gap.expected == {"grain": "day", "stocks": [MEASURE]}
+    metric = next((row for row in config.metric_recipes if row.id == "metric.billing.mrr"), None)
+    if metric is None:
+        return
+    doubled = replace(
+        metric,
+        id="metric.billing.mrr_doubled",
+        expression=ArithmeticExpr("*", MetricRecipeRefExpr(metric.id), LiteralExpr(2)),
+    )
+    nested = replace(config, metric_recipes=[*config.metric_recipes, doubled])
+    query = {"select": [{"expression": {"metric": doubled.id}, "as": "v"}]}
+    [gap] = faithfulness._stock_as_of_gaps(nested, query)
+    assert gap.expected == {"grain": "day", "stocks": [MEASURE]}
+    selected = {"select": [{"expression": {"metric": metric.id}, "as": "mrr"}]}
+    _assert_held(_plan(runtime, "MRR", partial=selected), None)
+
+
+def test_a_series_key_that_cannot_be_read_is_held(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unreadable(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("series key unreadable")
+
+    monkeypatch.setattr(faithfulness, "_snapshot_series_columns", unreadable)
+    plan = _plan(runtime, "registered users")
+    assert plan["status"] == "low_confidence", plan.get("why")
+    assert "execute" not in plan.get("next", {}).get("ready_for", [])
+    [gap] = _stock_gaps(plan)
+    assert gap["expected"] == {"grain": "day", "stocks": []}
