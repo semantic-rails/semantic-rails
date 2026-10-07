@@ -69,6 +69,19 @@ def v2(runtime: Any) -> SemanticLayerMCPAdapter:
     return SemanticLayerMCPAdapter(runtime)
 
 
+@pytest.mark.parametrize("interface", ["v2", "v1"])
+def test_adapter_constructor_keeps_the_interface_keyword(runtime: Any, interface: str) -> None:
+    if interface == "v2":
+        adapter = SemanticLayerMCPAdapter(runtime, interface=interface)
+        assert adapter.runtime is runtime
+        assert adapter.interface == "v2"
+    else:
+        with pytest.raises(SemanticLayerError) as caught:
+            SemanticLayerMCPAdapter(runtime, interface=interface)
+        assert caught.value.code == "INVALID_CONFIG"
+        assert caught.value.details == {"interface": interface, "valid_values": ["v2"]}
+
+
 def _stable(response: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in response.items() if key not in VOLATILE}
 

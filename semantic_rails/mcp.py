@@ -65,11 +65,7 @@ from .request_payload import (
 from .resource_access import GRANT_DISCOVER_KINDS
 from .runtime import Runtime
 from .runtime_parts.limits import max_valid_values_limit, max_valid_values_offset
-from .runtime_parts.responses import (
-    TIME_SHAPE_WINDOW_TOTAL,
-    apply_response_verbosity,
-    resolve_verbosity,
-)
+from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL, resolve_verbosity
 from .schema import PackageConfig
 
 __all__ = [
@@ -1181,6 +1177,70 @@ def _query_payload_with_mcp_default_verbosity(payload: Mapping[str, Any]) -> dic
     return query
 
 
+# Explicit minimal verbosity returns the answer without compiler plans
+# (logical, SQL, physical, performance) and their copies. An omitted level,
+# "compact", and "full" return the whole response.
+_SEGMENT_MINIMAL_KEYS: dict[str, frozenset[str]] = {
+    "validate": frozenset({"segment", "normalized_segment", "derived_query"}),
+    "explain": frozenset(
+        {
+            "segment",
+            "normalized_segment",
+            "derived_query",
+            "rendered_sql",
+        }
+    ),
+    "preview": frozenset(
+        {
+            "segment",
+            "member_key_dimensions",
+            "preview_dimensions",
+            "rows",
+            "column_types",
+            "preview_row_count",
+            "member_count",
+            "derived_query",
+        }
+    ),
+}
+# The outcome, all policy effects on the segment and its derived query, and
+# actionable recovery guidance stay on every response. These fields come from
+# different Runtime paths (validate, compile, preview, and soft failure), so
+# keep them together rather than relying on a tool-specific success allowlist.
+_SEGMENT_OUTCOME_KEYS = frozenset(
+    {
+        "ok",
+        "status",
+        "errors",
+        "warnings",
+        "recovery_hints",
+        "authoring_hints",
+        "query_ir_hints",
+        "assumptions",
+        "methodology_hints",
+        "disabled_options",
+        "policy_effects",
+        "segment_policy_effects",
+    }
+)
+
+
+def _segment_response(action: str, payload: Mapping[str, Any], verbosity: Any) -> dict[str, Any]:
+    out = dict(payload or {})
+    if str(verbosity or "full").strip().lower() != "minimal":
+        return out
+    keep = _SEGMENT_MINIMAL_KEYS[action] | _SEGMENT_OUTCOME_KEYS
+    return {
+        key: value
+        for key, value in out.items()
+        if key in keep
+        and (
+            key in {"ok", "status", "errors", "warnings", "column_types"}
+            or value not in ("", [], {})
+        )
+    }
+
+
 def _row_format_arg(arguments: Mapping[str, Any]) -> str:
     raw_value = arguments.get("row_format", "records")
     row_format = str(raw_value or "records").strip().lower()
@@ -1704,7 +1764,15 @@ class SemanticLayerMCPAdapter:
     applications can call handlers directly without installing an MCP runtime.
     """
 
-    def __init__(self, runtime: Runtime):
+    def __init__(self, runtime: Runtime, *, interface: str | None = None):
+        raw = interface or ""
+        if str(raw).strip().lower() not in {"", _INTERFACE}:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "The v1 MCP interface was removed; v2 is the only interface. "
+                "Set interface='v2' or omit interface.",
+                details={"interface": str(raw), "valid_values": [_INTERFACE]},
+            )
         self.interface = _INTERFACE
         self.runtime = runtime
         self.package_id = runtime.package_id
@@ -2613,12 +2681,7 @@ class SemanticLayerMCPAdapter:
                 payload = self.runtime.segment_explain(segment_id, policy_context=policy_context)
             else:
                 payload = self.runtime.segment_validate(segment_id, policy_context=policy_context)
-            return apply_response_verbosity(
-                payload,
-                verbosity=str(args["verbosity"]).strip().lower(),
-                sql_profile="audit",
-                kind=f"segment_{action}",
-            )
+            return _segment_response(action, payload, args.get("verbosity"))
 
         return self._guarded(args, run)
 

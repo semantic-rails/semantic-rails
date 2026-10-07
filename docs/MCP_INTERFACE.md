@@ -925,10 +925,8 @@ each request declares, so older clients see no change:
 
 ### MCP Python SDK 2.x
 
-The engine pins `mcp<2`. The query MCP facade selects `MCPServer` when an SDK 2.x module is
-present and falls back to `FastMCP` on 1.x. The 2.x branch has a simulated module test; it has
-not been qualified against an installed SDK 2.x package. Before lifting the pin, qualify these
-known integration points on the chosen SDK version:
+The engine pins `mcp<2`. Before lifting the pin, qualify these known integration points on
+the chosen SDK version:
 
 - **The Architect MCP.** `semantic_rails.architect_mcp` imports `mcp.server.fastmcp` at import
   time. Its tests also read `call_tool` results as a `(content, structured)` pair and read
@@ -1021,7 +1019,7 @@ expression kind names the received kind and its request path (for example,
 | `CONVERSION_MATCHING_MODE_REQUIRED` | Conversion needs `matching_mode`: `first_converted_after_base` or `closest_converted_after_base`. `details.allowed_values` says what each matches and `details.expression` is the sent expression with the first one set. A conversion metric's `inspect` card shows its own expression under `conversion`, to run it over another window. |
 | `UNKNOWN_MCP_PROMPT` | Prompt name isn't in the catalog; see `details.available_prompts`. |
 | `UNKNOWN_MCP_RESOURCE` | Resource URI isn't in the catalog; see `details.available_resources`. |
-| `UNKNOWN_MCP_TOOL` | Tool name isn't in `tools/list`; see `details.available_tools`, and `details.replacement` for a removed v1 tool. |
+| `UNKNOWN_MCP_TOOL` | Tool name isn't in `tools/list`; see `details.available_tools`. |
 | `INVALID_MCP_ARGUMENTS` | Tool arguments don't match the input_schema; `recovery_hints` carries the corrected shape. |
 | `RESULT_TOO_LARGE` | Required tool response fields exceed the shared character budget after optional detail is trimmed. No partial answer is returned; request fewer rows, columns or objects. See `details.max_result_chars`. |
 | `WINDOW_TOTAL_UNSUPPORTED` | A `time` window with no `grain` would return one total, but part of the query still groups by the raw time column, so the result can't be one row per group. Nothing is returned. Set `time.grain`, or remove `time.start` and `time.end`. |
