@@ -295,6 +295,8 @@ def _print_project_upgrade(report: dict[str, Any], *, command: str) -> None:
     for rule in rules:
         hits = list(rule.get("hits", []) or [])
         print(f"  {rule['id']} ({rule['effect']}, {rule['tier']}): {len(hits)} hit(s)")
+        if rule.get("reason"):
+            print(f"    {rule['reason']}")
         for hit in hits[:10]:
             where = ".".join(map(str, hit["path"]))
             print(f"    {hit['file']}:{hit['line']} {where}: {hit['message']}")
