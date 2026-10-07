@@ -229,15 +229,16 @@ def upgrade_project(
     hits = {rule.id: [f for f in result.findings if f.rule == rule.id] for rule in rules}
     mechanical = [rule for rule in rules if any(f.edits and not f.options for f in hits[rule.id])]
 
-    # Only retired forms may be deleted to obtain a loadable baseline. All other
+    # Retired or explicitly refused forms may obtain a loadable baseline. All other
     # mechanical rules must pass the proof, regardless of their registry position.
     retired = [rule for rule in mechanical if rule.effect == "retired"]
+    candidates = [rule for rule in mechanical if rule.effect == "retired" or rule.refused]
     prefix: list[Rule] | None = None
-    for count in range(len(retired) + 1):
-        changed = plan(files, retired[:count], {}).files if count else {}
+    for count in range(len(candidates) + 1):
+        changed = plan(files, candidates[:count], {}).files if count else {}
         baseline = _stage(transaction, files, changed)
         if baseline.error is None:
-            prefix = retired[:count]
+            prefix = candidates[:count]
             break
     after = [rule for rule in mechanical if rule not in (prefix or [])]
     final = baseline
@@ -257,8 +258,19 @@ def upgrade_project(
         _refuse_rule(rule.id, difference)
 
     refused = {key for key, outcome in baseline.queries.items() if outcome[0] == "error"}
+    stops = {
+        rule.id: "; ".join(
+            f"stop: {f.file}:{f.line} {f.message}"
+            for f in hits[rule.id]
+            if not f.edits and not f.options
+        )
+        for rule in rules
+        if any(not f.edits and not f.options for f in hits[rule.id])
+    }
 
     def tier(rule: Rule) -> str:
+        if rule.id in stops:
+            return "unverified"
         if rule not in mechanical:
             return "choice"
         if prefix is None:
@@ -268,7 +280,8 @@ def upgrade_project(
         edits = [f for f in hits[rule.id] if f.edits and not f.options]
         affected = {key for key in refused if any(_in_refused_query(f, {key}) for f in edits)}
         if affected and rule.effect != "retired":
-            isolated = _stage(transaction, files, plan(files, [*retired, rule], {}).files)
+            isolated_rules = [*retired, *(r for r in prefix if r not in retired), rule]
+            isolated = _stage(transaction, files, plan(files, isolated_rules, {}).files)
             if isolated.error is not None or any(
                 isolated.queries.get(key, ("error",))[0] != "sql" for key in affected
             ):
@@ -284,6 +297,7 @@ def upgrade_project(
             "effect": rule.effect,
             "summary": rule.summary,
             "tier": tier(rule),
+            **({"reason": stops[rule.id]} if rule.id in stops else {}),
             "hits": [
                 {"file": f.file, "line": f.line, "path": list(f.path), "message": f.message}
                 for f in hits[rule.id]
@@ -296,7 +310,9 @@ def upgrade_project(
     if not dry_run:
         for row in rule_rows:
             if row["tier"] == "unverified":
-                _refuse_rule(row["id"], {"tier": "unverified"}, "cannot be verified")
+                _refuse_rule(
+                    row["id"], {"tier": "unverified"}, row.get("reason", "cannot be verified")
+                )
     compared = [key for key in baseline.queries if key not in refused]
     loaded = prefix is not None
     proof = {
@@ -369,13 +385,16 @@ def upgrade_project(
                     ],
                 }
                 for f in result.pending
+                if f.options
             ],
             "next_actions": next_actions,
             "reformatted": list(result.reformatted),
         },
     )
     report = outcome.report
-    if result.pending:
+    if stops:
+        report.update({"ok": False, "status": "unverified"})
+    elif result.pending:
         report.update({"ok": False, "status": "choices_pending"})
     return report
 

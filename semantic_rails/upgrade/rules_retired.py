@@ -108,6 +108,7 @@ RULES: tuple[Rule, ...] = (
         "Delete null_behavior from metrics, expressions and queries; aggregation and "
         f"observation_scope decide empty groups ({_NOTE}).",
         _null_behavior,
+        refused=True,
     ),
     Rule(
         "measure-parent-rollup",
@@ -116,6 +117,7 @@ RULES: tuple[Rule, ...] = (
         "Delete subject_entity and aggregation_entity from measures and defaults.measure; "
         f"measures aggregate at their own model's grain ({_NOTE}).",
         _measure_parent_rollup,
+        refused=True,
     ),
     Rule(
         "forward-rollup-hints",
@@ -125,6 +127,7 @@ RULES: tuple[Rule, ...] = (
         "defaults and model joins, and rollup_safe.forward in graph.relationships, where "
         f"rollup_safe.reverse stays ({_NOTE}).",
         _forward_rollup_hints,
+        refused=True,
     ),
     Rule(
         "relationship-path-preference",
@@ -133,6 +136,7 @@ RULES: tuple[Rule, ...] = (
         "Delete path_preference from relationships and joins; an ambiguous pair needs a "
         f"recorded graph.path_preferences route, which the upgrade never picks ({_NOTE}).",
         _path_preference,
+        refused=True,
     ),
     Rule(
         "query-path-policy",

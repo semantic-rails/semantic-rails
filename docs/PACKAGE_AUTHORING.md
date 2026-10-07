@@ -2573,15 +2573,20 @@ Every rewrite is proven or certified, and the report gives each rule's tier:
 - `proven`: the package loads on this engine before the rewrite, and the rewrite leaves its semantic
   fingerprint and the SQL of every example and test query the baseline compiles unchanged. A
   non-retired rule touching a baseline-refused query must make it compile on its own above all
-  retired rewrites, or be `unverified`. Queries are compiled, never run.
+  retired rewrites and the certified baseline, or be `unverified`. Queries are compiled, never run.
 - `certified`: this engine refuses the legacy form, so there is nothing to compare it with. The rule
   was checked when it was added, and the release notes say what changed: a rule with effect
   `retired` follows a release that removed the meaning, and claims no equivalence.
+  When the package does not load as authored, the baseline is the shortest prefix, in registry
+  order, of applicable retired rules and rules explicitly marked `refused` at load that makes
+  it load. Those prefix rules are `certified`; rules after that baseline still pass the proof.
+  A `same_meaning` rule can be marked `refused` without changing its effect.
 - A rule that changes the fingerprint or an example's or test's SQL is refused with
   `CONFIG_CONFLICT`, `details.conflict_kind: "upgrade_not_equivalent"`, `details.rule` and the
   first difference. Nothing is written.
 - A preview reports `unverified` when no baseline loads, or a non-retired rule cannot make its
-  affected baseline-refused queries compile on its own above all retired rewrites. A write refuses
+  affected baseline-refused queries compile on its own above all retired rewrites and the certified
+  baseline. A write refuses
   any `unverified` rule with
   `CONFIG_CONFLICT`, `details.conflict_kind: "upgrade_not_equivalent"` and `details.rule`; nothing
   is written.
@@ -2592,6 +2597,11 @@ Some rules ask instead of rewriting. The preview lists each pending choice with 
 line, question and options, and `--write` stops with exit code 2 until each is answered with
 `--choose KEY=OPTION` (the preview prints the exact flag). The proof covers only the rewrites no
 one chose; an option that changes answers is reported as "changes answers by your choice".
+An unresolved finding with no edits or options is a stop: its rule is `unverified`, with a
+`reason` naming the finding, and the preview returns `status: "unverified"` and `ok: false`.
+Stops are excluded from `choices_pending`; real choices in the same run remain there with
+tier `choice`. A stop refuses `--write` with `CONFIG_CONFLICT` and exit code 1; fix the
+named definition by hand before upgrading.
 
 | Rule | Since | Legacy form | Current form |
 |---|---|---|---|
