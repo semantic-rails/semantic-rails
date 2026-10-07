@@ -665,3 +665,20 @@ def test_a_hidden_governor_is_neither_counted_nor_named(
         serialized = json.dumps(plan)
         assert NEW_TEAMS not in serialized and "New teams" not in serialized
     assert _value(engine, plan["best"]["query_ir"]) == _teams_gold(WEEK) == 4
+
+
+def test_a_hidden_narrowing_dimension_still_holds_and_is_not_named(
+    teams: dict[tuple[str, bool], Runtime], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = teams["same", False]
+    policy = SemanticPolicyConfig(
+        id="policy.hide_team_class",
+        kind="object_visibility",
+        object_ids=[TEAM_CLASS],
+        action="hidden",
+        audiences=["external"],
+    )
+    monkeypatch.setattr(engine, "_config", replace(engine._config, semantic_policies=[policy]))
+    plan = _plan(engine, "teams last week", policy_context={**NOW, "audience": "external"})
+    assert plan["status"] == "low_confidence", plan.get("why")
+    assert [gap["expected"] for gap in _gaps(plan)] == [{"metrics": [NEW_TEAMS], "narrowed_by": []}]

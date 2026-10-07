@@ -274,11 +274,10 @@ A draft that validates can still leave out part of the question. `plan` returns
   held). `expected.metrics` lists up to five such metrics, those the question's subjects rank
   first, and `expected.narrowed_by` the dimensions they filter on. A draft that selects the
   metric, or filters or groups by one of those dimensions ("customer teams"), isn't held for
-  it. Hidden governing metrics are excluded
-  before candidate selection and diagnostics, and their IDs and labels are never named.
-  A building block with no visible governing metric, or a draft whose governing metrics can't
-  be read, is still held, with a generic message
-  and an empty `expected.metrics`. A one-measure draft answers with the metric itself when
+  it. Hidden governing metrics are excluded before candidate selection and diagnostics, and
+  their IDs and labels are never named. A building block with no visible governing metric, or
+  a draft whose governing metrics can't be read, is still held, with a generic message and an
+  empty `expected.metrics`. A one-measure draft answers with the metric itself when
   it aggregates the measure the same way, the draft's time role equals the metric's own
   `temporal_role`, the subject phrase names no other such
   metric as fully nor the measure more fully, and the draft neither filters nor groups by what
