@@ -18,8 +18,8 @@ from dataclasses import replace
 from typing import Any
 
 from ..expressions import collect_object_references, expr_to_dict
-from ..fanout import hop_is_functional
 from ..schema import MetricConfig, PackageConfig
+from .route_rows import hop_is_functional
 
 _AGGREGATES = frozenset({"aggregate", "measure", "scoped_aggregate"})
 _NARROWING = ("filter", "where", "predicates")
@@ -73,7 +73,6 @@ def governing_metrics(config: PackageConfig, measure_id: str) -> list[MetricConf
 
 def _reachable_entities(config: PackageConfig, entity: str) -> set[str]:
     """``entity`` and every entity it reaches over many-to-one or one-to-one relationships."""
-
     reached, pending = {entity}, [entity]
     while pending:
         current = pending.pop()
@@ -91,12 +90,8 @@ def _reachable_entities(config: PackageConfig, entity: str) -> set[str]:
 def population_governors(
     config: PackageConfig, measure_id: str
 ) -> list[tuple[MetricConfig, frozenset[str]]]:
-    """Metrics that narrow ``measure_id``'s rows, with the narrowing dimension ids.
-
-    Any aggregate's own-entity narrowings retain their exemptions. Only without those do
-    the measure's own aggregates narrow on dimensions reached through functional relationships.
-    """
-
+    """Metrics with narrowing dimensions: any aggregate's filters on the measure's entity, or
+    if none, this measure's aggregates' filters on entities reached through functional hops."""
     entity = next((row.entity for row in config.measures if row.id == measure_id), "")
     reached = _reachable_entities(config, entity)
     own = {row.id for row in config.dimensions if row.entity == entity}

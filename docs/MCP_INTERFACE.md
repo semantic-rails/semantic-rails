@@ -276,15 +276,15 @@ A draft that validates can still leave out part of the question. `plan` returns
   still held while a visible metric narrows its rows: an aggregate in that metric, over this
   measure or another one, filters on a dimension of the measure's entity ("New teams" counts
   the creation events of customer teams, so "teams last week" over a count of every team is
-  held). For each metric, those own-entity dimensions retain their existing exemptions.
-  Only when the metric has none does an aggregate over this measure itself narrow it by a
-  dimension reached through many-to-one or one-to-one relationships: a class on a parent
-  entity ("Calls by paying teams" sums a daily team fact's calls for customer teams, so
-  "team calls last week" over every team's calls is held). `expected.metrics` lists up to five
-  such metrics, those the question's subjects rank first, and `expected.narrowed_by` the
-  dimensions they filter on. A draft that selects the
-  metric, or filters or groups by one of those dimensions ("customer teams"), isn't held for
-  it. Hidden governing metrics are excluded before candidate selection and diagnostics, and
+  held). A metric's narrowing dimensions are those of the measure's entity it filters on.
+  Only when it has none are they the dimensions on entities reached through many-to-one or
+  one-to-one relationships that its aggregates of this measure filter on: a class on a
+  parent entity ("Calls by paying teams" sums a daily team fact's calls for customer teams,
+  so "team calls last week" over every team's calls is held). `expected.metrics` lists up to
+  five such metrics, those the question's subjects rank first, and `expected.narrowed_by`
+  the dimensions they filter on. A draft that selects the metric, or filters or groups by
+  one of those dimensions ("customer teams"), isn't held for it. Hidden governing metrics
+  are excluded before candidate selection and diagnostics, and
   their IDs and labels are never named. An unoffered measure with no visible governing metric, or
   a draft whose governing metrics can't be read, is still held, with a generic message and an
   empty `expected.metrics`. A one-measure draft answers with the metric itself when

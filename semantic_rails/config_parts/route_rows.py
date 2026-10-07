@@ -116,6 +116,16 @@ def check_route_row(
     )
 
 
+def hop_is_functional(rel: RelationshipConfig, current_entity: str) -> bool:
+    """True when walking ``rel`` from ``current_entity`` reaches at most one row: an N:1 or
+    1:1 relationship walked forward, or a 1:N or 1:1 relationship walked in reverse."""
+    cardinality = rel.cardinality.upper().replace(" ", "")
+    if ":" not in cardinality:
+        return False
+    source_side, target_side = cardinality.split(":", 1)
+    return (target_side if current_entity == rel.source_entity else source_side) == "1"
+
+
 def walk_entities(
     relationships: Mapping[str, RelationshipConfig], start: str, path: Sequence[str]
 ) -> list[str]:
