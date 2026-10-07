@@ -8,6 +8,6 @@
   withheld values, metric constraints and row filters apply exactly as before, and
   `plan` keeps its holds over measures that metrics govern, naming nothing hidden.
   Caller route decisions check row filters across the full package graph. Validity windows,
-  discontinuities and MNPI flags keep their semantic structure when their text is omitted,
-  and inspect and catalog never generate a hidden default metric id.
+  discontinuities and MNPI flags keep their semantic structure when their text is omitted.
+  `default_metric_id` names a metric only when that metric exists in the caller's view; otherwise it is empty.
   See [What a caller sees of a hidden object](docs/PACKAGE_AUTHORING.md#what-a-caller-sees-of-a-hidden-object).

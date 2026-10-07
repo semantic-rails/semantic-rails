@@ -35,7 +35,6 @@ from .compiler import (
     bind_query,
     query_route_rows,
 )
-from .compiler_parts.indexes import get_package_analysis
 from .config_parts.measure_governance import building_block_measures
 from .diagnostics import relationship_contract_payload
 from .errors import SemanticLayerError
@@ -319,8 +318,7 @@ def _selection_context(config: PackageConfig, partial_query: dict[str, Any]) -> 
 def _measure_default_metric_id(config: PackageConfig, measure: Any) -> str:
     default_metric_name = measure.name or measure.id.split("measure.", 1)[-1]
     metric_id = f"metric.{default_metric_name}"
-    view = get_package_analysis(config).view
-    return "" if view is not None and metric_id in view.hidden else metric_id
+    return metric_id if any(recipe.id == metric_id for recipe in config.metric_recipes) else ""
 
 
 def _is_auto_metric(config: PackageConfig, metric_id: str) -> bool:

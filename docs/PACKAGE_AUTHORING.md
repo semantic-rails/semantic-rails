@@ -885,8 +885,8 @@ whole package, so hiding an object never removes or changes a `deny`,
   or `what` text is blanked when it names a hidden object. Omitted `meta` and `operational`
   text retains `mnpi`, so export warnings still apply. A caller's route decision is refused
   under a row filter on any package route for that pair, including routes hidden from them;
-  the refusal discloses only policy ids visible in the caller's view. Inspect and catalog
-  leave `default_metric_id` empty when that generated metric id is hidden from the caller.
+  the refusal discloses only policy ids visible in the caller's view. `default_metric_id`
+  names a metric only when that metric exists in the caller's view; otherwise it is empty.
 
 ### Ranking by withheld values
 

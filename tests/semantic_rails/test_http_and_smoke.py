@@ -652,11 +652,7 @@ def test_metadata_endpoints_and_ui_smoke_path(runtime_factory, package_config_fa
         assert discovered["measures"]
         assert discovered["dimension_values"]
         assert inspected["card"]["usage_summary"]["default_aggregation"] == "count_distinct"
-        # `default_metric_id` reports the auto-publish derivation pattern
-        # (`metric.<ns>.<key>`) for clients that still expect the legacy
-        # measure→metric convention. Auto-publish itself is gone in v1,
-        # but the field name is preserved for backwards compatibility.
-        assert inspected["card"]["default_metric_id"] == "metric.jaffle.order_count"
+        assert inspected["card"]["default_metric_id"] == ""
         assert delivered_inspected["card"]["usage_summary"]["default_aggregation"] == "sum"
         assert build_options["stage"] == "post_measure"
         assert build_options["builder_step"] == "group_by"

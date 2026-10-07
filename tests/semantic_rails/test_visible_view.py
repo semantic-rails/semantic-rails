@@ -1284,6 +1284,37 @@ def test_a_hidden_default_metric_is_never_generated(package, action):
         runtime.close()
 
 
+@pytest.mark.parametrize("authored", [False, True])
+def test_a_default_metric_id_names_only_an_existing_metric(package, authored):
+    from semantic_rails.expressions import AggregateExpr
+
+    root, config = package
+    target = "metric.jaffle.order_count"
+    if authored:
+        metric = MetricConfig(id=target, kind="aggregate", expression=AggregateExpr(ORDERS, "sum"))
+        config = replace(config, metric_recipes=[*config.metric_recipes, metric])
+    runtime = Runtime.from_config(config, source_path=str(root))
+    try:
+        minimal = mcp_call(
+            runtime,
+            "inspect",
+            {"object_id": ORDERS, "verbosity": "minimal", "policy_context": CALLER},
+        )
+        inspected = http_call(runtime, "/inspect", {"object_id": ORDERS, "policy_context": CALLER})
+        catalog = http_call(runtime, "/catalog", {"verbosity": "full", "policy_context": CALLER})
+        row = next(row for row in catalog["catalog"]["measures"] if row["id"] == ORDERS)
+        expected = target if authored else ""
+        # Minimal drops empty fields, so an absent default reads as "".
+        assert minimal["card"].get("default_metric_id", "") == expected, minimal
+        assert inspected["card"]["default_metric_id"] == expected, inspected
+        assert row["payload"]["default_metric_id"] == expected, row
+        if not authored:
+            for response in (minimal, inspected, catalog):
+                assert target not in json.dumps(response)
+    finally:
+        runtime.close()
+
+
 def test_prose_stripping_is_a_closed_display_field_allowlist():
     from semantic_rails import schema
     from semantic_rails.visible_view import PROSE
