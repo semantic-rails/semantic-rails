@@ -3,7 +3,7 @@
 Exposes :class:`SemanticLayerMCPAdapter`, which presents six governed
 tools backed by a single ``Runtime`` (interface v2): ``discover``,
 ``inspect``, ``valid-values``, ``plan``, ``execute(mode)`` and
-``segment(action)``. Interface v1 was removed. The transport — stdio vs HTTP — lives in
+``segment(action)``. The transport — stdio vs HTTP — lives in
 :mod:`semantic_rails.mcp_server`; this module is the protocol-agnostic
 adapter.
 """
@@ -65,7 +65,11 @@ from .request_payload import (
 from .resource_access import GRANT_DISCOVER_KINDS
 from .runtime import Runtime
 from .runtime_parts.limits import max_valid_values_limit, max_valid_values_offset
-from .runtime_parts.responses import TIME_SHAPE_WINDOW_TOTAL, resolve_verbosity
+from .runtime_parts.responses import (
+    TIME_SHAPE_WINDOW_TOTAL,
+    apply_response_verbosity,
+    resolve_verbosity,
+)
 from .schema import PackageConfig
 
 __all__ = [
@@ -84,7 +88,6 @@ __all__ = [
     "build_options_payload",
     "catalog_payload",
     "context_from_policy_context",
-    "create_optional_fastmcp_server",
     "discover_payload",
     "emit_audit_event",
     "enrich_object_not_found",
@@ -100,11 +103,8 @@ __all__ = [
 ]
 
 
-# The only query-MCP interface, frozen in query_mcp.v2.json. Interface v1 was
-# removed: asking for it (the adapter's interface argument or this environment
-# variable) fails.
+# The query-MCP contract version, frozen in query_mcp.v2.json.
 _INTERFACE = "v2"
-_INTERFACE_ENV = "SEMANTIC_RAILS_MCP_INTERFACE"
 
 # Default response verbosity for MCP execute, in every mode.
 # Context-constrained agents drown in the ~90-100KB envelopes the runtime
@@ -799,21 +799,6 @@ _PROMPT_TEXT = {
         "member preview."
     ),
 }
-# What to call instead of a tool that the removed interface v1 had.
-_REMOVED_TOOLS = {
-    "validate": "execute with mode 'validate'",
-    "compile": "execute with mode 'sql'",
-    "segment-validate": "segment with action 'validate'",
-    "segment-explain": "segment with action 'explain'",
-    "segment-preview": "segment with action 'preview'",
-    "catalog": "discover with empty terms",
-    "capabilities": (
-        "plan to draft Query IR (execute's schema lists the expression shapes; "
-        "the HTTP API keeps capabilities)"
-    ),
-    "build-options": "plan, then valid-values for filter values (HTTP and the CLI keep it)",
-}
-
 MCP_TOOL_DEFINITIONS = tuple(definition.to_dict() for definition in TOOL_DEFINITIONS)
 MCP_RESOURCE_DEFINITIONS = tuple(definition.to_dict() for definition in RESOURCE_DEFINITIONS)
 MCP_PROMPT_DEFINITIONS = tuple(definition.to_dict() for definition in PROMPT_DEFINITIONS)
@@ -891,19 +876,6 @@ def _tool_required_properties(tool_name: str) -> tuple[list[str], list[str]]:
 
 
 _ROW_FORMATS: frozenset[str] = frozenset({"records", "columns"})
-
-
-def _reject_removed_interface(interface: str | None) -> None:
-    """Fail when a caller asks for an interface other than v2, such as the removed v1."""
-
-    raw = interface or os.environ.get(_INTERFACE_ENV, "")
-    if str(raw).strip().lower() not in {"", _INTERFACE}:
-        raise SemanticLayerError(
-            "INVALID_CONFIG",
-            "The v1 MCP interface was removed; v2 is the only interface. "
-            "Set interface='v2' or omit interface.",
-            details={"interface": str(raw), "valid_values": [_INTERFACE]},
-        )
 
 
 def _unknown_arg_keys(*, tool_name: str, arguments: Mapping[str, Any]) -> list[str]:
@@ -1207,70 +1179,6 @@ def _query_payload_with_mcp_default_verbosity(payload: Mapping[str, Any]) -> dic
     if str(query.get("verbosity", "") or "").strip() == "":
         query["verbosity"] = MCP_DEFAULT_QUERY_VERBOSITY
     return query
-
-
-# Explicit minimal verbosity returns the answer without compiler plans
-# (logical, SQL, physical, performance) and their copies. An omitted level,
-# "compact", and "full" return the whole response.
-_SEGMENT_MINIMAL_KEYS: dict[str, frozenset[str]] = {
-    "validate": frozenset({"segment", "normalized_segment", "derived_query"}),
-    "explain": frozenset(
-        {
-            "segment",
-            "normalized_segment",
-            "derived_query",
-            "rendered_sql",
-        }
-    ),
-    "preview": frozenset(
-        {
-            "segment",
-            "member_key_dimensions",
-            "preview_dimensions",
-            "rows",
-            "column_types",
-            "preview_row_count",
-            "member_count",
-            "derived_query",
-        }
-    ),
-}
-# The outcome, all policy effects on the segment and its derived query, and
-# actionable recovery guidance stay on every response. These fields come from
-# different Runtime paths (validate, compile, preview, and soft failure), so
-# keep them together rather than relying on a tool-specific success allowlist.
-_SEGMENT_OUTCOME_KEYS = frozenset(
-    {
-        "ok",
-        "status",
-        "errors",
-        "warnings",
-        "recovery_hints",
-        "authoring_hints",
-        "query_ir_hints",
-        "assumptions",
-        "methodology_hints",
-        "disabled_options",
-        "policy_effects",
-        "segment_policy_effects",
-    }
-)
-
-
-def _segment_response(action: str, payload: Mapping[str, Any], verbosity: Any) -> dict[str, Any]:
-    out = dict(payload or {})
-    if str(verbosity or "full").strip().lower() != "minimal":
-        return out
-    keep = _SEGMENT_MINIMAL_KEYS[action] | _SEGMENT_OUTCOME_KEYS
-    return {
-        key: value
-        for key, value in out.items()
-        if key in keep
-        and (
-            key in {"ok", "status", "errors", "warnings", "column_types"}
-            or value not in ("", [], {})
-        )
-    }
 
 
 def _row_format_arg(arguments: Mapping[str, Any]) -> str:
@@ -1796,10 +1704,7 @@ class SemanticLayerMCPAdapter:
     applications can call handlers directly without installing an MCP runtime.
     """
 
-    def __init__(self, runtime: Runtime, *, interface: str | None = None):
-        """``interface`` may only be ``"v2"`` (or omitted): v1 was removed."""
-
-        _reject_removed_interface(interface)
+    def __init__(self, runtime: Runtime):
         self.interface = _INTERFACE
         self.runtime = runtime
         self.package_id = runtime.package_id
@@ -1825,14 +1730,12 @@ class SemanticLayerMCPAdapter:
         return instructions
 
     @classmethod
-    def from_package(
-        cls, package_id: str, *, interface: str | None = None
-    ) -> SemanticLayerMCPAdapter:
-        return cls(Runtime(package_id), interface=interface)
+    def from_package(cls, package_id: str) -> SemanticLayerMCPAdapter:
+        return cls(Runtime(package_id))
 
     @classmethod
-    def from_path(cls, path: str, *, interface: str | None = None) -> SemanticLayerMCPAdapter:
-        return cls(Runtime.from_path(path), interface=interface)
+    def from_path(cls, path: str) -> SemanticLayerMCPAdapter:
+        return cls(Runtime.from_path(path))
 
     @property
     def tool_handlers(self) -> dict[str, Callable[[dict[str, Any]], dict[str, Any]]]:
@@ -2005,10 +1908,6 @@ class SemanticLayerMCPAdapter:
         if handler is None or name not in available_tools:
             details: dict[str, Any] = {"tool": name, "available_tools": sorted(available_tools)}
             message = f"Unknown MCP tool '{name}'"
-            replacement = _REMOVED_TOOLS.get(name)
-            if replacement:
-                details["replacement"] = replacement
-                message = f"The '{name}' tool was removed with MCP interface v1; use {replacement}."
             return finish(
                 self._error_response(
                     SemanticLayerError("UNKNOWN_MCP_TOOL", message, details=details), args_dict
@@ -2714,7 +2613,12 @@ class SemanticLayerMCPAdapter:
                 payload = self.runtime.segment_explain(segment_id, policy_context=policy_context)
             else:
                 payload = self.runtime.segment_validate(segment_id, policy_context=policy_context)
-            return _segment_response(action, payload, args.get("verbosity"))
+            return apply_response_verbosity(
+                payload,
+                verbosity=str(args["verbosity"]).strip().lower(),
+                sql_profile="audit",
+                kind=f"segment_{action}",
+            )
 
         return self._guarded(args, run)
 
@@ -2727,97 +2631,3 @@ def json_text(payload: Any) -> str:
     """
 
     return json.dumps(payload, separators=(",", ":"), sort_keys=True, default=str)
-
-
-def _mcp_server_class() -> Any:
-    """The MCP SDK's high-level server: ``MCPServer`` on SDK 2.x, ``FastMCP`` on 1.x."""
-
-    try:
-        from mcp.server.mcpserver import MCPServer
-    except ImportError:
-        pass
-    else:
-        return MCPServer
-    try:
-        from mcp.server.fastmcp import FastMCP
-    except ImportError as exc:  # pragma: no cover - depends on optional package
-        raise RuntimeError(
-            "Install the MCP Python SDK (mcp>=1.27) to create the optional local stdio server."
-        ) from exc
-    return FastMCP
-
-
-def create_optional_fastmcp_server(
-    adapter: SemanticLayerMCPAdapter,
-    *,
-    server_name: str = "semantic-rails",
-) -> Any:
-    """Create a stdio-only MCP SDK facade if the SDK is installed.
-
-    Selects ``FastMCP`` on SDK 1.x or ``MCPServer`` when the SDK 2.x module
-    is present. The import is intentionally local so importing semantic_rails.mcp never requires an
-    external MCP runtime. This helper deliberately cannot start
-    or expose FastMCP's SSE/Streamable-HTTP apps: those generic network
-    runners do not pass Semantic Rails' transport-authenticated
-    :class:`RequestContext` into tool calls. Remote callers must use the
-    authenticated ASGI ``/mcp`` boundary or the legacy guarded HTTP server.
-    """
-
-    server = _mcp_server_class()(server_name, instructions=adapter.instructions)
-    session = MCPQuerySession()
-    for definition in adapter.list_tools():
-        name = str(definition["name"])
-        description = str(definition["description"])
-
-        def _make_tool(
-            tool_name: str, tool_description: str
-        ) -> Callable[[dict[str, Any] | None], str]:
-            def _tool(arguments: dict[str, Any] | None = None) -> str:
-                return json_text(adapter.call_tool(tool_name, arguments or {}, session=session))
-
-            _tool.__name__ = f"semantic_rails_{tool_name.replace('-', '_')}"
-            _tool.__doc__ = tool_description
-            return _tool
-
-        tool_fn = _make_tool(name, description)
-        if hasattr(server, "add_tool"):
-            server.add_tool(tool_fn, name=name, description=description)
-        else:
-            server.tool(name=name, description=description)(tool_fn)
-
-    class _StdioOnlyFastMCP:
-        _blocked_network_members = frozenset(
-            {
-                "run_sse_async",
-                "run_streamable_http_async",
-                "sse_app",
-                "streamable_http_app",
-            }
-        )
-
-        def __init__(self, wrapped: Any) -> None:
-            self._wrapped = wrapped
-            self.transport_scope = "stdio-only"
-
-        @staticmethod
-        def _reject_network(*_args: Any, **_kwargs: Any) -> None:
-            raise RuntimeError(
-                "create_optional_fastmcp_server is stdio-only. Use SemanticLayerASGIApp "
-                "or semantic-rails mcp http for an authenticated network transport."
-            )
-
-        def run(self, *args: Any, **kwargs: Any) -> Any:
-            transport = kwargs.get("transport", args[0] if args else "stdio")
-            if str(transport or "stdio").strip().lower() != "stdio":
-                return self._reject_network()
-            return self._wrapped.run(*args, **kwargs)
-
-        def __getattr__(self, name: str) -> Any:
-            lowered = name.lower()
-            if name in self._blocked_network_members or any(
-                marker in lowered for marker in ("http", "sse", "streamable")
-            ):
-                return self._reject_network
-            return getattr(self._wrapped, name)
-
-    return _StdioOnlyFastMCP(server)

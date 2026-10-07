@@ -35,6 +35,51 @@ _MINIMAL_KEYS_EXECUTE: frozenset[str] = frozenset(
     {"ok", "rows", "column_types", "row_count", "truncated", "errors", "warnings"}
 )
 
+_MINIMAL_KEYS_SEGMENT: dict[str, frozenset[str]] = {
+    "segment_validate": frozenset({"segment", "normalized_segment", "derived_query"}),
+    "segment_explain": frozenset(
+        {
+            "segment",
+            "normalized_segment",
+            "derived_query",
+            "rendered_sql",
+        }
+    ),
+    "segment_preview": frozenset(
+        {
+            "segment",
+            "member_key_dimensions",
+            "preview_dimensions",
+            "rows",
+            "column_types",
+            "preview_row_count",
+            "member_count",
+            "derived_query",
+        }
+    ),
+}
+# The outcome, all policy effects on the segment and its derived query, and
+# actionable recovery guidance stay on every response. These fields come from
+# different Runtime paths (validate, compile, preview, and soft failure), so
+# keep them together rather than relying on a tool-specific success allowlist.
+_SEGMENT_OUTCOME_KEYS = frozenset(
+    {
+        "ok",
+        "status",
+        "errors",
+        "warnings",
+        "recovery_hints",
+        "authoring_hints",
+        "query_ir_hints",
+        "assumptions",
+        "methodology_hints",
+        "disabled_options",
+        "policy_effects",
+        "segment_policy_effects",
+    }
+)
+
+
 # Heavy keys dropped at the top-level response when verbosity="compact".
 _COMPACT_DROP_KEYS: frozenset[str] = frozenset(
     {
@@ -93,11 +138,12 @@ def apply_response_verbosity(
     sql_profile: str,
     kind: str,
 ) -> dict[str, Any]:
-    """Filter a validate/compile/execute response by verbosity + sql_profile.
+    """Filter a query or segment response by verbosity + sql_profile.
 
-    ``kind`` is one of ``validate``, ``compile``, ``execute``.
-    The execute path preserves ``rows`` / ``row_count`` in minimal mode;
-    the other two preserve only ``{ok, errors, warnings}``.
+    ``kind`` is ``validate``, ``compile``, ``execute`` or ``segment_<action>``.
+    Minimal query responses retain their answer fields; segment responses also
+    retain the definition, derived query, policy effects and recovery guidance.
+    Segment compact responses are left to the MCP boundary budget filter.
 
     ``sql_profile="off"`` drops ``rendered_sql`` and ``sql_plan`` regardless
     of verbosity — this lets a caller suppress SQL even when they still
@@ -105,18 +151,30 @@ def apply_response_verbosity(
     """
     out = dict(response or {})
     if verbosity == "minimal":
-        if kind == "execute":
+        if kind in _MINIMAL_KEYS_SEGMENT:
+            allowed = _MINIMAL_KEYS_SEGMENT[kind] | _SEGMENT_OUTCOME_KEYS
+        elif kind == "execute":
             allowed = _MINIMAL_KEYS_EXECUTE
         elif kind == "compile":
             allowed = _MINIMAL_KEYS_COMPILE
         else:
             allowed = _MINIMAL_KEYS_NONEXECUTE
-        out = {key: value for key, value in out.items() if key in allowed}
+        out = {
+            key: value
+            for key, value in out.items()
+            if key in allowed
+            and (
+                kind not in _MINIMAL_KEYS_SEGMENT
+                or key in {"ok", "status", "errors", "warnings", "column_types"}
+                or value not in ("", [], {})
+            )
+        }
         # An assumption changes what the numbers mean, so it survives the cheapest response.
-        for key in ("assumptions", "time_shape", "withheld"):
-            if response.get(key):
-                out[key] = response[key]
-    elif verbosity == "compact":
+        if kind not in _MINIMAL_KEYS_SEGMENT:
+            for key in ("assumptions", "time_shape", "withheld"):
+                if response.get(key):
+                    out[key] = response[key]
+    elif verbosity == "compact" and kind not in _MINIMAL_KEYS_SEGMENT:
         for key in _COMPACT_DROP_KEYS:
             out.pop(key, None)
         if "output_columns" in out:
