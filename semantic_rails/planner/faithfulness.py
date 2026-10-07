@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 from ..ast import _relative_range_bounds, is_child_group
 from ..compiler import bind_query
+from ..compiler_parts.sql_lowering import _snapshot_series_columns
 from ..config_parts.measure_governance import (
     building_block_measures,
     governing_metrics,
@@ -29,6 +30,7 @@ from ..config_parts.measure_governance import (
     published_measure,
 )
 from ..errors import SemanticLayerError
+from ..expressions import expr_to_dict
 from ._base import (
     _BOUNDARY_BEFORE_RE,
     _FISCAL_BUCKET_RE,
@@ -535,6 +537,7 @@ def intent_faithfulness_why(
         gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
     gaps.extend(_subject_window_gaps(runtime._config, query))
+    gaps.extend(_stock_as_of_gaps(runtime._config, query))
     gaps.extend(_ranking_gaps(runtime, text, query))
     gaps.extend(_ambiguous_grouping_gaps(text, query, partial_query or {}))
     gaps.extend(_where_clause_gaps(runtime, text, query))
@@ -918,6 +921,75 @@ def _subject_window_gaps(config: Any, query: dict[str, Any]) -> list[CoverageGap
             )
         )
     return gaps
+
+
+def _stock_as_of_gaps(config: Any, query: dict[str, Any]) -> list[CoverageGap]:
+    """The draft reads a stock of several series over more than one day per row.
+
+    A stock answers with each series' last snapshot in each period, then adds them up, so a
+    series that stopped reporting keeps its last value in a longer period or a read with no
+    time block. The draft is ``ok`` only with grain ``day``. A stock keyed by its clock alone
+    is one series. If the stocks can't be read, the draft is held.
+    """
+    grain = _time_block(query).get("grain") or None
+    if grain == "day":
+        return []
+    try:
+        stocks = _multi_series_stocks(config, query)
+    except Exception:  # noqa: BLE001 — an unreadable stock cannot make a draft ready
+        stocks = None
+    if stocks == []:
+        return []
+    shown = visible_object_ids(config, stocks or [])
+    period = f"each {grain}" if grain else "the whole history (no time block)"
+    label = str(getattr(_object_by_id(config.measures, shown[0]), "label", "")) if shown else ""
+    label = label or "the balance"
+    return [
+        CoverageGap(
+            kind="stock_as_of_unrealized",
+            clause=", ".join(shown) or "stock",
+            message=(
+                "A balance is read on one day, and this draft adds each series' last value "
+                f"over {period}."
+            ),
+            expected={"grain": "day", "stocks": shown},
+            actual={"grain": grain},
+            recovery_hint={
+                "kind": "ask_for_one_day",
+                "message": (
+                    f"Ask for one day ('{label} yesterday', or '{label} on' a date), or set "
+                    "time.grain: day with that day's start and end."
+                ),
+            },
+        )
+    ]
+
+
+def _multi_series_stocks(config: Any, query: dict[str, Any]) -> list[str]:
+    """Each stock with a series key besides its clock that the draft's selects or metric
+    filters read, through metrics at any depth."""
+    measures = {row.id: row for row in config.measures}
+    recipes = {row.id: row for row in config.metric_recipes}
+    pending: list[Any] = [query.get("select") or [], query.get("metric_filters") or []]
+    seen: set[str] = set()
+    stocks: list[str] = []
+    while pending:
+        for node in _dict_nodes(pending.pop()):
+            for object_id in (node.get(key) for key in ("measure", "metric", "metric_recipe")):
+                if not isinstance(object_id, str) or object_id in seen:
+                    continue
+                seen.add(object_id)
+                if (recipe := recipes.get(object_id)) is not None:
+                    pending.append(expr_to_dict(recipe.expression))
+                elif (row := measures.get(object_id)) is not None and (
+                    row.measure_class == "semi_additive"
+                ):
+                    clock = row.default_temporal_role or next(
+                        iter(row.compatible_temporal_roles or []), ""
+                    )
+                    if _snapshot_series_columns(row, clock, config):
+                        stocks.append(object_id)
+    return stocks
 
 
 def _fiscal_calendar_gaps(config: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
