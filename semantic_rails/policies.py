@@ -425,8 +425,14 @@ def enforce_query_policies(
         query=query,
         binding=binding,
     )
-    blocking = [row for row in effects if row["action"] in {"deny", "redact", "hidden"}]
     hidden = hidden_object_ids(config, environment=environment, audience=audience, roles=roles)
+    blocking = [
+        row
+        for row in effects
+        if row["action"] in {"deny", "redact", "hidden"}
+        # Execution needs withholding metadata: omitting it must never expose a value.
+        or (row["action"] == WITHHOLD and _names(row) & hidden)
+    ]
     if blocking:
         if any(_names(row) & hidden for row in blocking):
             raise SemanticLayerError(

@@ -380,6 +380,25 @@ REFERENCE_FORMS = (
 )
 
 
+@pytest.mark.parametrize("action", ["hidden", "visible_only"])
+@pytest.mark.parametrize("mode", ["run", "validate", "sql"])
+def test_omitting_policy_metadata_never_disables_value_withholding(governed, action, mode):
+    policy = replace(_policy("withhold_values", CUSTOMERS, REVENUE), config={"max_rank": 3})
+    runtime = governed(_policy(action, REVENUE), policy)
+    query = {
+        **_query("metric", CUSTOMERS),
+        "order_by": [{"field": "value", "direction": "DESC"}],
+        "limit": 1,
+    }
+    response = SemanticLayerMCPAdapter(runtime).call_tool(
+        "execute", {"query": query, "mode": mode, "policy_context": CALLER}
+    )
+    assert response["ok"] is False
+    assert _codes(response) == ["POLICY_DENIED"]
+    assert REVENUE not in json.dumps(response)
+    assert policy.id not in json.dumps(response)
+
+
 @pytest.mark.parametrize("surface", ["mcp execute run", "mcp execute validate", "mcp execute sql"])
 @pytest.mark.parametrize("action", ["hidden", "visible_only"])
 @pytest.mark.parametrize("form", REFERENCE_FORMS)
