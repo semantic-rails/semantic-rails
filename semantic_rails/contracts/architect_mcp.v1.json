@@ -760,6 +760,58 @@
         "idempotentHint": true,
         "openWorldHint": false,
         "readOnlyHint": false,
+        "title": "Upgrade project"
+      },
+      "description": "Rewrite a package's legacy forms to the current ones in one transaction, refusing any rewrite that changes an answer; dry_run (the default) previews the rules, proof and diff, and choices ({key: option}) answers pending choices.",
+      "inputSchema": {
+        "properties": {
+          "choices": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "dry_run": {
+            "default": true,
+            "type": "boolean"
+          },
+          "expected_revision": {
+            "default": "",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "default": "",
+            "type": "string"
+          },
+          "project_path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_path"
+        ],
+        "type": "object"
+      },
+      "name": "upgrade_project",
+      "outputSchema": {
+        "additionalProperties": true,
+        "type": "object"
+      }
+    },
+    {
+      "annotations": {
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": false,
         "title": "Upsert semantic model"
       },
       "description": "Upsert a model and its graph entity. calendar: true makes it the package calendar for calendar_id (default \"default\", which a package with calendars needs): time.fill reads its date_day time and week_start, month_start, quarter_start and year_start kind: date dimensions. calendar: false reverts that. On a regular model, calendar_id binds its times to a calendar. Fields merge into an existing model. An existing dimension, time, measure or join given only label, description, synonyms or meta keeps its other fields; given anything else it is rewritten, and dropped_fields lists what that drops. replace: true rewrites the model from the arguments, keeping only its id, entities and calendar_id, and lists what it drops in dropped_fields.",
