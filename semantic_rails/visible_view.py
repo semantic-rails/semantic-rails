@@ -434,6 +434,19 @@ def base_of(config: PackageConfig) -> PackageConfig:
     return config if view is None else view.base
 
 
+def hidden_on_its_own(config: PackageConfig, object_id: str) -> bool:
+    """Whether ``config`` is a view hiding ``object_id`` while it hides nothing ``object_id``
+    reads or names: hidden in its own right, not as a dependent of a hidden object."""
+    view = get_package_analysis(config).view
+    if view is None or object_id not in view.hidden:
+        return False
+    read = _object_reads(view.base).get(object_id)
+    if read is None:
+        return False
+    named = read | _declared_references(view.base)[object_id]
+    return not (named - {object_id}) & view.hidden
+
+
 def _hidden_from(
     base: PackageConfig, context: RequestContext | Mapping[str, Any] | None
 ) -> frozenset[str]:

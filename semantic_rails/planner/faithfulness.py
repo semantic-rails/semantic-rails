@@ -31,6 +31,7 @@ from ..config_parts.measure_governance import (
 )
 from ..errors import SemanticLayerError
 from ..expressions import expr_to_dict
+from ..visible_view import base_of, hidden_on_its_own
 from ._base import (
     _BOUNDARY_BEFORE_RE,
     _FISCAL_BUCKET_RE,
@@ -138,6 +139,10 @@ _SUPERLATIVES = frozenset(
         "smallest",
         "worst",
     }
+)
+# A population hold whose every governor is hidden from the caller names none of them.
+HIDDEN_GOVERNOR = (
+    "A definition you can't see governs this measure, so it can't be answered as a raw number."
 )
 _ASCENDING = frozenset({"bottom", "fewest", "least", "lowest", "smallest", "worst"})
 _RECENCY = frozenset({"earliest", "latest", "least-recent", "most-recent", "newest", "oldest"})
@@ -611,7 +616,8 @@ def _governed_metric_gaps(
             if isinstance(node.get(key), str)
         )
     )
-    building_blocks = building_block_measures(config)
+    # Governance is enforcement: it reads the whole package, not the caller's view.
+    building_blocks = building_block_measures(base_of(config))
     gaps: list[CoverageGap] = []
     for object_id in selected:
         plain = _object_by_id(config.metric_recipes, object_id)
@@ -644,6 +650,8 @@ def _governed_metric_gaps(
                     if metrics
                     else "The package's governed metrics leave out some of this measure's rows, "
                     "and the draft counts all of them."
+                    if expected.get("metrics")
+                    else HIDDEN_GOVERNOR
                     if "narrowed_by" in expected
                     else "The draft reads a building-block measure without a visible governed metric."
                 ),
@@ -664,22 +672,33 @@ def _governed_metric_gaps(
 def _population_hold(
     config: Any, measure_id: str, query: dict[str, Any], skipped: list[str], subjects: list[str]
 ) -> dict[str, Any] | None:
-    """The gap's ``expected`` for visible metrics narrowing the measure's rows that the draft
-    neither selects (``skipped``) nor filters or groups by, else ``None``. Fails closed."""
+    """The gap's ``expected`` for metrics narrowing the measure's rows that the draft neither
+    selects (``skipped``) nor filters or groups by, else ``None``. Fails closed.
+
+    Governors come from the whole package; a metric hidden in its own right governs nothing for
+    this caller, while one hidden through what it reads still holds, naming only what they see.
+    """
 
     filters = {key: query.get(key) for key in ("where", "group_by", "metric_filters")}
     drafted = set(_referenced_ids(filters))
     try:
-        governors = population_governors(config, measure_id)
+        governors = population_governors(base_of(config), measure_id)
     except Exception:  # noqa: BLE001 — an unreadable metric cannot make a draft ready
         return {"metrics": []}
-    visible = set(visible_object_ids(config, (row.id for row, _ in governors))) - set(skipped)
-    found = {row.id: dims for row, dims in governors if row.id in visible and not dims & drafted}
+    found = {
+        row.id: dims
+        for row, dims in governors
+        if row.id not in skipped and not hidden_on_its_own(config, row.id) and not dims & drafted
+    }
     if not found:
         return None
+    shown = {row.id for row in config.metric_recipes}
     metrics = [*dict.fromkeys([*(key for key in subjects if key in found), *sorted(found)])]
-    narrowed_by = sorted(visible_object_ids(config, set().union(*found.values())))
-    return {"metrics": metrics[:5], "narrowed_by": narrowed_by}
+    narrowed_by = {row.id for row in config.dimensions} & set().union(*found.values())
+    return {
+        "metrics": [key for key in metrics if key in shown][:5],
+        "narrowed_by": sorted(narrowed_by),
+    }
 
 
 def _coverage_why(gaps: list[CoverageGap]) -> dict[str, Any] | None:

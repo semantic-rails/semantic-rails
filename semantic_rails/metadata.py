@@ -2069,7 +2069,8 @@ def discover_payload(
     )
 
     # A building block is offered through the metrics that filter it, never on its own.
-    building_blocks = building_block_measures(config)
+    # Governance reads the whole package: a hidden governor still makes one.
+    building_blocks = building_block_measures(base_of(config))
     for measure in config.measures:
         if measure.id in building_blocks:
             continue
