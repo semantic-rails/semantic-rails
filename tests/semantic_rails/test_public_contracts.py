@@ -103,6 +103,13 @@ def test_export_semantic_contract_reports_physical_column_types(
             snapshot.config, source_path=snapshot.source_path
         )
     before = database.read_bytes()
+    if shadow:
+        with pytest.raises(SemanticLayerError) as exc:
+            export_semantic_contract(snapshot)
+        assert exc.value.code == "INVALID_CONFIG"
+        assert exc.value.details == {"reason": "duckdb_builtin_macro_collision", "macros": [shadow]}
+        assert database.read_bytes() == before
+        return
     payload = export_semantic_contract(snapshot)
     resource = payload["semantic"]["packages"][0]["resources"][0]
     columns = {column["name"]: column for column in resource["columns"]}

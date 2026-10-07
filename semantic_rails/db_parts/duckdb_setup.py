@@ -5,10 +5,33 @@ from __future__ import annotations
 import contextlib
 from typing import Any
 
+from ..errors import SemanticLayerError
+
 
 def configure_duckdb_connection(connection: Any) -> Any:
-    """Merge required optimizer exclusions before any warehouse SQL runs."""
+    """Refuse built-in macro collisions, then merge required optimizer exclusions."""
     try:
+        # Read definitions, never invoke file macros. Derive the reserved names
+        # from the system catalog, including operators and built-in macros.
+        functions = connection.execute(
+            "SELECT database_name, function_name, function_type FROM system.main.duckdb_functions()"
+        ).fetchall()
+        builtins = {name.lower() for database, name, _ in functions if database == "system"}
+        collisions = sorted(
+            {
+                name
+                for database, name, kind in functions
+                if database != "system"
+                and kind in {"macro", "table_macro"}
+                and name.lower() in builtins
+            }
+        )
+        if collisions:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                "DuckDB macros override built-in functions: " + ", ".join(collisions),
+                details={"reason": "duckdb_builtin_macro_collision", "macros": collisions},
+            )
         disabled = connection.execute(
             "SELECT system.main.current_setting('disabled_optimizers')"
         ).fetchone()[0]

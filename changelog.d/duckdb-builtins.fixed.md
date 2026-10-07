@@ -1,2 +1,3 @@
 - DuckDB connection setup, confinement checks, CSV loading and authoring metadata
-  use built-in functions even when a database file defines macros with the same names.
+  use built-in functions; connections refuse database files whose macros override
+  built-in names, including operators.

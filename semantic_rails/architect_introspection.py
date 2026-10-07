@@ -112,6 +112,8 @@ def open_duckdb(path: str | os.PathLike[str]) -> Iterator[DuckDBWarehouse]:
         connection = configure_duckdb_connection(
             duckdb.connect(db_path, read_only=True, config={"enable_external_access": "false"})
         )
+    except SemanticLayerError:
+        raise
     except Exception as exc:  # noqa: BLE001 — never surface driver text (paths, PIDs)
         raise SemanticLayerError(
             "INVALID_CONFIG",
@@ -316,8 +318,8 @@ def profile_columns(
             if _orderable(data_type)
             else ", NULL, NULL"
         )
-        counted, distinct, nulls, low, high = warehouse.execute(
-            f"SELECT system.main.count(*), system.main.count(DISTINCT {quoted}), system.main.count(*) - system.main.count({quoted})"
+        counted, distinct, non_null, low, high = warehouse.execute(
+            f"SELECT system.main.count(*), system.main.count(DISTINCT {quoted}), system.main.count({quoted})"
             f"{extremes} FROM {scan} AS t"
         )[1][0]
         samples = (
@@ -337,7 +339,7 @@ def profile_columns(
                 "type": data_type,
                 "rows_profiled": int(counted),
                 "distinct_count": int(distinct),
-                "null_count": int(nulls),
+                "null_count": int(counted) - int(non_null),
                 "min": _sample_text(low),
                 "max": _sample_text(high),
                 "samples": samples,
@@ -708,7 +710,8 @@ def _suggest_key(
         for second in id_like[index + 1 :]:
             a, b = quote_identifier(first), quote_identifier(second)
             checked, present_first, present_second, pairs = warehouse.execute(
-                f"SELECT system.main.count(*), system.main.count({a}), system.main.count({b}), system.main.count(DISTINCT ({a}, {b})) FROM {probe}"
+                f"SELECT system.main.count(*), system.main.count({a}), system.main.count({b}), "
+                f"system.main.count(DISTINCT system.main.row({a}, {b})) FROM {probe}"
             )[1][0]
             if checked and checked == present_first == present_second == pairs:
                 return {
@@ -748,7 +751,8 @@ def _declared_keys(warehouse: DuckDBWarehouse) -> dict[str, list[dict[str, str]]
         "SELECT k.schema_name, k.table_name, c.column_name, c.data_type "
         "FROM system.main.duckdb_constraints() AS k JOIN system.main.duckdb_columns() AS c "
         "ON c.database_name = k.database_name AND c.schema_name = k.schema_name "
-        "AND c.table_name = k.table_name AND c.column_name = k.constraint_column_names[1] "
+        "AND c.table_name = k.table_name "
+        "AND c.column_name = system.main.array_extract(k.constraint_column_names, 1) "
         "WHERE k.database_name = system.main.current_database() AND k.constraint_type = 'PRIMARY KEY' "
         "AND system.main.len(k.constraint_column_names) = 1 ORDER BY 1, 2"
     ):

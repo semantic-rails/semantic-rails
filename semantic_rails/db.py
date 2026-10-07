@@ -418,7 +418,7 @@ def _atomic_seed_target(db_path: str) -> str:
 
 def _duckdb_string_list(values: Iterable[str]) -> str:
     escaped = [str(value).replace("'", "''") for value in values]
-    return "[" + ", ".join(f"'{value}'" for value in escaped) + "]"
+    return "system.main.list_value(" + ", ".join(f"'{value}'" for value in escaped) + ")"
 
 
 def _build_sql_seed(db: Database, seed_sql_path: str) -> None:

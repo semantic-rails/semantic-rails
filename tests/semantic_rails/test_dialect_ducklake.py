@@ -159,6 +159,9 @@ class FakeConnection:
     def fetchone(self):
         return ("",)
 
+    def fetchall(self):
+        return []
+
     def cursor(self) -> FakeCursor:
         return FakeCursor(self._log)
 
@@ -246,11 +249,15 @@ def test_adapter_bootstrap_attaches_and_uses_catalog(monkeypatch: pytest.MonkeyP
 
     assert rows == [{"ONE": 1, "TWO": "x"}]
     assert log["setup_sql"] == [
+        "SELECT database_name, function_name, function_type FROM system.main.duckdb_functions()",
         "SELECT system.main.current_setting('disabled_optimizers')",
         "SET disabled_optimizers = ?",
         "INSTALL ducklake",
         "LOAD ducklake",
         f"ATTACH IF NOT EXISTS 'ducklake:{catalog}' AS jaffle (DATA_PATH '{data_dir}')",
+        "SELECT database_name, function_name, function_type FROM system.main.duckdb_functions()",
+        "SELECT system.main.current_setting('disabled_optimizers')",
+        "SET disabled_optimizers = ?",
         "USE jaffle",
     ]
     # duckdb cursors are connection duplicates that reset the current

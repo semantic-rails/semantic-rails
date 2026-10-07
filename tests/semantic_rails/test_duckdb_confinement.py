@@ -264,7 +264,9 @@ def test_catalog_probe_refuses_before_binding_when_confinement_fails(
     closed = []
     conn = SimpleNamespace(
         close=lambda: closed.append(True),
-        execute=lambda sql: SimpleNamespace(fetchone=lambda: ("common_subplan",)),
+        execute=lambda sql: SimpleNamespace(
+            fetchone=lambda: ("common_subplan",), fetchall=lambda: []
+        ),
     )
 
     def connect(path: str, *, read_only: bool) -> Any:

@@ -52,14 +52,14 @@ def test_setup_preserves_existing_exclusions_and_cursors(existing):
             assert _disabled(cursor) == expected
 
 
-@pytest.mark.parametrize("failure", ["read", "set"])
+@pytest.mark.parametrize("failure", ["catalog", "read", "set"])
 def test_setup_failure_closes_connection_and_never_returns_it(failure):
     connection = Mock()
-    if failure == "read":
-        connection.execute.side_effect = RuntimeError("setting unavailable")
-    else:
-        connection.fetchone.return_value = ("",)
-        connection.execute.side_effect = [connection, RuntimeError("setting unavailable")]
+    connection.fetchall.return_value = []
+    connection.fetchone.return_value = ("",)
+    connection.execute.side_effect = [connection] * ["catalog", "read", "set"].index(failure) + [
+        RuntimeError("setting unavailable")
+    ]
     with pytest.raises(RuntimeError, match="setting unavailable"):
         configure_duckdb_connection(connection)
     connection.close.assert_called_once()

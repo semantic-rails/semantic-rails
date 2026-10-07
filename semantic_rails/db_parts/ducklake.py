@@ -160,6 +160,8 @@ class DuckLakeAdapter(DuckDbApiAdapter):
             if data_path:
                 attach += f" (DATA_PATH '{_escape_sql_string(data_path)}')"
             conn.execute(attach)
+            # The newly attached catalog must pass the same macro guard.
+            configure_duckdb_connection(conn)
             use_target = _CATALOG_ALIAS
             schema = self.options.get("schema", "")
             if schema:
