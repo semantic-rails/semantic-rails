@@ -42,12 +42,12 @@ files from authored files; choose a fresh output path for each translation.
 | MetricFlow concept | Semantic Rails analogue |
 |---|---|
 | `semantic_model` | `model:` block in `models/<name>.yml` |
-| `node_relation` | `model.relation`: the alias, or with `--schema-strict` the schema-qualified name |
+| `node_relation` | `model.relation`: the alias, or with `--keep-schema` the schema-qualified name |
 | `entities[*].type: primary/unique` | Graph entity in `graph.yml` with `key:` and `model:` |
 | `entities[*].type: foreign` | FK entry in `model.entities` (if the entity has an owner) |
 | `primary_entity:` (no explicit primary) | Synthetic primary with key `<name>_id` |
 | `dimensions[*].type: time` | `model.times.<role>` with `class: event_time` |
-| `dimensions[*].type: categorical/boolean/integer` | `model.dimensions` |
+| `dimensions[*].type: categorical/boolean/integer` | `model.dimensions`; a column-valued `expr:` becomes `column:` |
 | `defaults.agg_time_dimension` | Marks the matching `times:` entry as `default: true` |
 | `measures[*].agg: sum/avg/min/max/median/percentile` | `kind: aggregate` with `default_agg:` |
 | `measures[*].agg: count_distinct` | `kind: entity_count` when the column resolves to a graph entity; else `SUM(CASE WHEN col IS NOT NULL THEN 1 ELSE 0 END)` with a warning |
@@ -68,6 +68,8 @@ files from authored files; choose a fresh output path for each translation.
 | Entities that appear only as `type: foreign` | Semantic Rails requires every entity to have an owning model. The entity is dropped from the graph; references are stripped from `model.entities` blocks. |
 | `semantic_models` whose primary entity is already owned by an earlier model | The model has nothing to claim. Move its measures into the canonical owning model or rename its primary. |
 | Measures whose SQL `expr:` contains `CASE`, `LIKE`, `COALESCE`, `NULLIF`, etc. | Semantic Rails' expression parser is a Python AST, not a SQL parser. Rewrite the expression as a `kind: case` AST or push the SQL down into the warehouse model. |
+| Dimensions with a non-column `expr:` | The loader reads `column:`, so SQL expressions must be materialized in the warehouse model first. |
+| Percentile measures with `agg_params` | The loader cannot represent percentile parameters. The measure and metrics depending on it are skipped. |
 | Filters mf2sr can't translate | A metric keeps its filter when every condition is on one dimension: a boolean dimension, `NOT Dimension(...)`, `IN (...)`, `NOT IN (...)`, `BETWEEN`, or a comparison with a single-quoted string or numeric literal (`=`, `!=`, `<>`, `<`, `<=`, `>`, `>=`). Any other condition warns and skips the metric rather than changing its value. This includes double-quoted SQL identifiers, `NOT BETWEEN`, `Metric(...)` predicates, `Entity(...) IS NOT NULL`, `entity_path=`, references to dimensions the project doesn't define, and time dimensions, which MetricFlow compares truncated to their grain. |
 | Cumulative metrics the engine can't compute | Skipped with a warning when they set both `window` and `grain_to_date`, a window finer than a day, a `grain_to_date` other than week, month, quarter or year, or a measure that doesn't add up across periods: an average, minimum, maximum, median, percentile or distinct count (other than of the model's own key), or a semi-additive measure. |
 | Where cumulative values can differ | A warning per metric. Matching MetricFlow at the metric's time grain depends on a supported window/grain combination and the period-aggregation and calendar-boundary semantics below; translation alone does not guarantee parity. At coarser grains Semantic Rails reports each period's value at its end, which MetricFlow does only with `period_agg: last` (its default is `first`). Period-to-date counts a week toward the month, quarter or year it starts in. Rolling month, quarter and year windows cover whole calendar periods, while MetricFlow's reach back from each day. The engine queries a rolling window only at grains that divide it: day windows at day grain, week windows at day or week grain, month windows at month grain, quarter windows at month or quarter grain, and year windows at month, quarter or year grain. |
@@ -88,12 +90,13 @@ files from authored files; choose a fresh output path for each translation.
   metrics/<group>.yml  # metrics grouped by the source semantic_model
 ```
 
-By default the package is `schema_strict: false` and each model's `relation`
-is the bare dbt alias (`fct_orders`), so a project that needs review still loads.
+Every translated package uses `schema_strict: true`: only explicit MetricFlow
+metrics are exposed; measures remain building blocks. Each model's `relation`
+is the bare dbt alias (`fct_orders`) by default. The output is always parse-checked;
+each error is a `parse:` warning, and `mf2sr --strict` fails on any warning.
 
-`--schema-strict` (`translate(schema_strict=True)`, also on
-`semantic-rails import --from metricflow`) writes a `schema_strict: true`
-package over the tables dbt built:
+`--keep-schema` (`translate(keep_schema=True)`, also on
+`semantic-rails import --from metricflow`) preserves the tables dbt built:
 
 - Each relation keeps the schema from its `node_relation` (`main_marts.fct_orders`),
   named the way `import_dbt_project` names dbt relations: the database leads only
@@ -105,16 +108,14 @@ package over the tables dbt built:
   warning.
 - A DuckDB package gets `seed: {kind: external}`: it reads the database dbt builds,
   which it never rebuilds. Point `--default-db` at that file, inside the package.
-- The output is parse-checked, and each error is a `parse:` warning, so `--strict`
-  fails the run. mf2sr writes a `connection` block for DuckDB and Snowflake only;
-  add one for another warehouse before the package parses. Snowflake's pins the
-  usual database (`options.database`), since relations leave it out; a connection
-  you add must point at the same database.
+- Snowflake's connection pins the usual database (`options.database`), since
+  relations leave it out; a connection you add must point at the same database.
 
-Without `--schema-strict`, DuckDB packages emit a placeholder `seed.source` pointing at
+Without `--keep-schema`, DuckDB packages emit a placeholder `seed.source` pointing at
 `data/seed_<package_id>.sql` that the author must create. Snowflake
 packages emit a `connection.kind: snowflake_native` block reading
-credentials from environment variables.
+credentials from environment variables. Other warehouses need an authored
+connection block before the package parses.
 
 ## Programmatic use
 

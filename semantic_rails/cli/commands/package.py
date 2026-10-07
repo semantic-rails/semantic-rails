@@ -147,7 +147,7 @@ def cmd_import(args: argparse.Namespace) -> None:
                 warehouse=args.warehouse,
                 default_db=args.default_db,
                 description=args.description,
-                schema_strict=args.schema_strict,
+                keep_schema=args.keep_schema,
             )
         except FileExistsError as exc:
             raise SemanticLayerError("CONFIG_CONFLICT", str(exc)) from exc

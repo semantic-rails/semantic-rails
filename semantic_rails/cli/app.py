@@ -847,7 +847,7 @@ def build_parser() -> argparse.ArgumentParser:
             "YAML/JSON files standalone. `--from ossie` reads an Apache "
             "Ossie document written by `export --format ossie` (other 0.1.x "
             "and 0.2 documents: experimental), plus the sidecar beside it; "
-            "--warehouse, --description and --schema-strict apply to metricflow "
+            "--warehouse, --description and --keep-schema apply to metricflow "
             "only. See docs/OSSIE.md."
         ),
     )
@@ -895,9 +895,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional package description.",
     )
     p_import.add_argument(
-        "--schema-strict",
+        "--keep-schema",
         action="store_true",
-        help="Write a schema_strict package whose relations keep their schema, parse-checked.",
+        help="Keep dbt relation schemas and read its existing database (MetricFlow only).",
     )
     p_import.set_defaults(func=cmd_import)
 

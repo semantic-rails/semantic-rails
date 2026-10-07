@@ -142,9 +142,19 @@ def _add_calendar(report: Any) -> None:
         )
 
 
-def _assert_valid(report: Any) -> None:
+def _assert_parse_matches_metrics(report: Any) -> None:
     parse, _ = parse_config_report(PackageReference(source_path=str(report.package_dir)))
-    assert parse["ok"] is True, parse["errors"]
+    if report.metrics_emitted:
+        assert parse["ok"] is True, parse["errors"]
+    else:
+        # With no explicit metrics, measures cannot supply implicit ones.
+        assert parse["ok"] is False
+        assert len(parse["errors"]) == 1
+        assert parse["errors"][0]["code"] == "INVALID_CONFIG"
+        assert parse["errors"][0]["message"].endswith(
+            "compiled package must declare metric recipes"
+        )
+        assert any(w.startswith("parse:") for w in report.warnings)
 
 
 def test_manifest_filters_translate(tmp_path: Path) -> None:
@@ -220,7 +230,7 @@ def test_metric_filters_filter_the_rows(tmp_path: Path) -> None:
     assert spec == {
         "all": [{"field": "dimension.shop_order_status", "op": "in", "value": ["delivered"]}]
     }
-    _assert_valid(report)
+    _assert_parse_matches_metrics(report)
     values = _by_month(
         report,
         "orders",
@@ -303,7 +313,7 @@ def test_a_ratio_whose_filter_cannot_be_kept_is_skipped(tmp_path: Path) -> None:
     assert any(
         w.startswith("metric `share_doubled`:") and "`odd_share`" in w for w in report.warnings
     )
-    _assert_valid(report)
+    _assert_parse_matches_metrics(report)
 
 
 @pytest.mark.parametrize(
@@ -377,7 +387,7 @@ def test_omitted_source_metric_wins_over_same_named_measure_in_dependents(
         "implicit_derived",
     ):
         assert any(w.startswith(f"metric `{name}`:") and "skipped" in w for w in report.warnings)
-    _assert_valid(report)
+    _assert_parse_matches_metrics(report)
     assert _by_month(report, "all_orders")["all_orders"] == [2, 3, 3]
 
 
@@ -393,7 +403,7 @@ def test_ratio_can_use_a_measure_without_an_explicit_source_metric(tmp_path: Pat
         ],
     )
     assert report.metrics_emitted == ["revenue_per_order"]
-    _assert_valid(report)
+    _assert_parse_matches_metrics(report)
     assert _by_month(report, "revenue_per_order")["revenue_per_order"] == pytest.approx(
         [35.0, 50.0, 235.0 / 3]
     )
@@ -441,7 +451,7 @@ def test_ratio_keeps_emitted_source_metric_filters(tmp_path: Path) -> None:
     assert any(
         w.startswith("metric `filtered_source_share`:") and "skipped" in w for w in report.warnings
     )
-    _assert_valid(report)
+    _assert_parse_matches_metrics(report)
     values = _by_month(report, "delivered_share", "filtered_measure_over_source")
     assert values["delivered_share"] == pytest.approx([1.0, 2 / 3, 1 / 3])
     assert values["filtered_measure_over_source"] == pytest.approx([1.0, 1.0, 1.0])
@@ -481,7 +491,7 @@ def test_filters_the_engine_cannot_apply_are_reported(
     assert any(w.startswith("metric `odd`:") and reason in w for w in report.warnings), (
         report.warnings
     )
-    _assert_valid(report)
+    _assert_parse_matches_metrics(report)
 
 
 def test_strict_cli_rejects_an_unsupported_filter(tmp_path: Path, capsys: Any) -> None:
@@ -602,7 +612,7 @@ def test_retranslation_refuses_nonempty_destination_without_changing_files(
     if replacement == "unsupported_with_dependent":
         assert any("filtered_orders" in w and "skipped" in w for w in fresh.warnings)
         assert any("filtered_orders_twice" in w and "skipped too" in w for w in fresh.warnings)
-    _assert_valid(fresh)
+    _assert_parse_matches_metrics(fresh)
 
 
 def test_metrics_depending_on_skipped_filtered_metrics_are_skipped(tmp_path: Path) -> None:
@@ -644,7 +654,7 @@ def test_metrics_depending_on_skipped_filtered_metrics_are_skipped(tmp_path: Pat
         assert any(
             w.startswith(f"metric `{name}`:") and "skipped too" in w for w in report.warnings
         )
-    _assert_valid(report)
+    _assert_parse_matches_metrics(report)
 
 
 def test_between_becomes_two_bounds(tmp_path: Path) -> None:
@@ -706,7 +716,7 @@ def test_cumulative_metrics_become_the_kind_that_computes_them(tmp_path: Path) -
         report.warnings
     )
     _add_calendar(report)
-    _assert_valid(report)
+    _assert_parse_matches_metrics(report)
     values = _by_month(
         report, "running_orders", "orders_mtd", "orders_mtd_legacy", "orders_2m", "orders_2m_legacy"
     )
@@ -957,4 +967,4 @@ def test_derived_inputs_mf2sr_cannot_express_are_reported(tmp_path: Path) -> Non
     assert any(
         w.startswith("metric `growth_doubled`:") and "`orders_growth`" in w for w in report.warnings
     )
-    _assert_valid(report)
+    _assert_parse_matches_metrics(report)

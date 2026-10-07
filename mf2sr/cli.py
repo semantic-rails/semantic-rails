@@ -25,13 +25,7 @@ from .translate import translate
 
 
 def _warehouse_choices() -> tuple[str, ...]:
-    """Every warehouse registered in Semantic Rails' dialect registry.
-
-    Imported lazily so `mf2sr` stays importable without
-    `semantic_rails` on the path (the translator itself has no
-    dependency on it); the CLI only needs the registry to validate
-    `--warehouse`.
-    """
+    """Registered warehouses accepted by ``--warehouse``."""
     from semantic_rails.dialects import supported_warehouses
 
     return supported_warehouses()
@@ -89,9 +83,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Exit non-zero if any warnings are emitted.",
     )
     parser.add_argument(
-        "--schema-strict",
+        "--keep-schema",
         action="store_true",
-        help="Write a schema_strict package whose relations keep their schema, parse-checked.",
+        help="Keep dbt relation schemas and read its existing database (MetricFlow only).",
     )
     return parser
 
@@ -107,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
             warehouse=args.warehouse,
             default_db=args.default_db,
             description=args.description,
-            schema_strict=args.schema_strict,
+            keep_schema=args.keep_schema,
         )
     except FileExistsError as exc:
         print(f"mf2sr: {exc}", file=sys.stderr)

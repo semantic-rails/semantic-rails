@@ -89,7 +89,7 @@ def translate(
     warehouse: str = "duckdb",
     default_db: str | None = None,
     description: str | None = None,
-    schema_strict: bool = False,
+    keep_schema: bool = False,
 ) -> TranslationReport:
     """Translate a MetricFlow input into a Semantic Rails package
     directory and return a :class:`TranslationReport`.
@@ -108,12 +108,10 @@ def translate(
                       shape; DuckDB packages additionally need `default_db`.
         default_db:   File path for DuckDB. Ignored for Snowflake.
         description:  Optional package description.
-        schema_strict: Write a ``schema_strict: true`` package over the tables
-                      dbt built: relations keep their ``node_relation`` schema,
+        keep_schema:  Relations keep their ``node_relation`` schema,
                       and their database when it isn't the one most models use
                       (Snowflake's connection pins that one). A DuckDB package
-                      reads dbt's database (``seed.kind: external``). The
-                      package is parse-checked; each error is a ``parse:`` warning.
+                      reads dbt's database (``seed.kind: external``).
     """
     namespace = namespace or package_id
     src = Path(source)
@@ -146,8 +144,8 @@ def translate(
         warehouse=warehouse,
         default_db=default_db,
         description=description,
-        schema_strict=schema_strict,
-        database=usual_database if schema_strict else "",
+        keep_schema=keep_schema,
+        database=usual_database if keep_schema else "",
     )
     _write_graph_yml(out_root, graph)
 
@@ -155,11 +153,6 @@ def translate(
     measure_to_value_type: dict[str, str] = {}
     measure_to_agg: dict[str, str] = {}
     running_total_problems: dict[str, str] = {}
-    # Collect explicit metric names so we can suppress measure
-    # auto-publish for any measure whose name will collide with a
-    # metric we author explicitly. Without `publish: false` Semantic
-    # Rails auto-creates a measure-derived metric and the explicit
-    # metric becomes a duplicate ID.
     metric_names: set[str] = {m["name"] for m in raw["metrics"] if m.get("name")}
     # Preserve explicit source references before lowering a ratio side to a
     # measure aggregate. A source metric wins over a same-named measure, even
@@ -186,11 +179,10 @@ def translate(
             sm,
             graph,
             report,
-            suppress_publish=metric_names,
             relation=_relation(
                 sm,
                 warehouse=warehouse,
-                keep_schema=schema_strict,
+                keep_schema=keep_schema,
                 usual_database=usual_database,
                 report=report,
             ),
@@ -242,11 +234,10 @@ def translate(
             grouped = {name: doc for name, doc in entries}
             (metrics_dir / f"{owner}.yml").write_text(_dump_yaml({"metrics": grouped}))
 
-    if schema_strict:  # semantic_rails loads only here, so mf2sr imports without it
-        from semantic_rails.config_validation import PackageReference, parse_config_report
+    from semantic_rails.config_validation import PackageReference, parse_config_report
 
-        parse, _ = parse_config_report(PackageReference(source_path=str(out_root)))
-        report.warnings.extend(f"parse: {e.get('message', '')}" for e in parse["errors"])
+    parse, _ = parse_config_report(PackageReference(source_path=str(out_root)))
+    report.warnings.extend(f"parse: {e.get('message', '')}" for e in parse["errors"])
     report.provenance = {
         "format_version": 1,
         "framework": "metricflow",
@@ -267,8 +258,8 @@ def _relation(
     usual_database: str,
     report: TranslationReport,
 ) -> str:
-    """The relation a semantic model reads: its ``node_relation`` alias, and in
-    strict mode also its schema and database, named as ``import_dbt_project``
+    """The relation a semantic model reads: its ``node_relation`` alias, and
+    with ``keep_schema`` its schema and database, named as ``import_dbt_project``
     names a dbt relation."""
     node = dict(sm.get("node_relation") or {})
     alias = str(node.get("alias") or sm["name"])
@@ -418,7 +409,6 @@ def _build_model(
     graph: dict[str, Any],
     report: TranslationReport,
     *,
-    suppress_publish: set[str] | None = None,
     relation: str,
 ) -> tuple[dict[str, Any], list[tuple[str, str, str]]]:
     """Build the Semantic Rails `model:` body for one MetricFlow
@@ -517,7 +507,12 @@ def _build_model(
             "kind": kind,
         }
         if dim.get("expr") and dim["expr"] != dname:
-            dim_entry["expr"] = dim["expr"]
+            if not isinstance(dim["expr"], str) or not dim["expr"].isidentifier():
+                report.warnings.append(
+                    f"model `{name}`: dimension `{dname}` has a non-column expr — skipping."
+                )
+                continue
+            dim_entry["column"] = dim["expr"]
         dimensions[dname] = dim_entry
     if dimensions:
         doc["dimensions"] = dimensions
@@ -525,16 +520,11 @@ def _build_model(
     # Measures
     measures: dict[str, Any] = {}
     measures_summary: list[tuple[str, str, str]] = []
-    suppress = suppress_publish or set()
     for measure in sm.get("measures") or []:
         result = _build_measure(measure, name, graph, sm, report)
         if result is None:
             continue
         mname, mdoc, value_type, default_agg = result
-        # Suppress auto-publish when an explicit metric of the same
-        # name exists — otherwise the loader raises duplicate metric id.
-        if mname in suppress:
-            mdoc["publish"] = False
         measures[mname] = mdoc
         measures_summary.append((mname, value_type, default_agg))
     if measures:
@@ -568,6 +558,11 @@ def _build_measure(
         report.warnings.append(f"model `{model_name}`: skipping measure without `name`.")
         return None
     agg_raw = (measure.get("agg") or "sum").lower()
+    if agg_raw == "percentile" and measure.get("agg_params") is not None:
+        report.warnings.append(
+            f"model `{model_name}`: measure `{name}` has unsupported percentile parameters — skipping."
+        )
+        return None
     if agg_raw not in _AGG_MAP:
         report.warnings.append(
             f"model `{model_name}`: measure `{name}` uses unsupported "
@@ -720,11 +715,6 @@ def _build_measure(
     measure_time = measure.get("agg_time_dimension")
     if measure_time:
         doc["time"] = measure_time
-
-    # Percentile parameters carry over verbatim.
-    agg_params = measure.get("agg_params")
-    if agg_params and agg_raw == "percentile":
-        doc["agg_params"] = agg_params
 
     return name, doc, value_type, default_agg
 
@@ -902,6 +892,18 @@ def _build_metric(
         return None
     mtype = (metric.get("type") or "simple").lower()
     type_params = metric.get("type_params") or {}
+    inputs = [type_params.get("measure")] if mtype in {"simple", "cumulative"} else []
+    if mtype == "ratio":
+        inputs = [type_params.get("numerator"), type_params.get("denominator")]
+    for item in inputs:
+        measure = _normalize_metric_ref(item).get("name")
+        if (
+            measure
+            and measure not in measure_owner
+            and not (mtype == "ratio" and measure in source_metrics)
+        ):
+            report.warnings.append(f"metric `{name}`: measure `{measure}` was not emitted; skipped")
+            return None
     metric_filters = _filter_strings(metric.get("filter"))
     # Semantic Rails marks every published metric as "curated" and
     # requires a non-empty description. MetricFlow allows blank
@@ -1533,28 +1535,25 @@ def _write_package_yml(
     warehouse: str,
     default_db: str | None,
     description: str | None,
-    schema_strict: bool,
+    keep_schema: bool,
     database: str = "",
 ) -> None:
-    # Without --schema-strict the package is `schema_strict: false`, so a
-    # project whose relations or types need review still loads; strict mode
-    # parse-checks the output instead.
     pkg: dict[str, Any] = {
         "id": package_id,
         "namespace": namespace,
         "warehouse": warehouse,
-        "schema_strict": schema_strict,
+        "schema_strict": True,
         "environments": ["development", "staging", "production"],
     }
     if description:
         pkg["description"] = description
     if warehouse == "duckdb":
         pkg["default_db"] = default_db or f"data/{package_id}.duckdb"
-        # DuckDB packages require a seed block. Without --schema-strict it is a
+        # DuckDB packages require a seed block. Without --keep-schema it is a
         # placeholder `sql_script` seed pointing to a file the author will create.
         pkg["seed"] = (
-            {"kind": "external"}  # a strict package reads the database dbt built
-            if schema_strict
+            {"kind": "external"}  # read the database dbt built
+            if keep_schema
             else {"kind": "sql_script", "source": f"data/seed_{package_id}.sql"}
         )
     elif warehouse == "snowflake":
