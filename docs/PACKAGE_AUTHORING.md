@@ -1631,7 +1631,9 @@ holds the draft. `inspect` and Query IR still take the measure by id. Without
 of its own name. A metric that aggregates
 the measure whole publishes it. `plan` also holds a draft over a published measure while a metric
 filters its rows on a dimension of the measure's entity, such as a class; to count every row,
-select the measure by id, or filter or group by that class dimension.
+select the measure by id, or filter or group by that class dimension. A class column on a parent
+entity (for example a team's class read from a daily team fact) governs the measures that a
+metric filters by it.
 
 ### Long-tail kind — `derived` (expression AST)
 

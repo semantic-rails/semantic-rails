@@ -1034,8 +1034,13 @@ def calls(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, Runtim
 
     engines: dict[str, Runtime] = {}
     try:
-        for name, governors in {"all": ("calls", "active", "events"), "events": ("events",)}.items():
-            root = _calls_package(tmp_path_factory.mktemp(f"calls_{name}") / "org", governors=governors)
+        for name, governors in {
+            "all": ("calls", "active", "events"),
+            "events": ("events",),
+        }.items():
+            root = _calls_package(
+                tmp_path_factory.mktemp(f"calls_{name}") / "org", governors=governors
+            )
             engine = engines[name] = Runtime.from_path(str(root))
             engine._get_adapter()
         yield engines
@@ -1061,7 +1066,10 @@ def test_the_team_measures_count_the_test_teams_their_metrics_leave_out() -> Non
     ("intent", "measure", "governor", "select"),
     [
         *((intent, CALLS, PAYING_CALLS, "SUM(calls)") for intent in CALL_QUESTIONS),
-        *((intent, ACTIVE, ACTIVE_PAYING, "COUNT(DISTINCT team_id)") for intent in ACTIVE_QUESTIONS),
+        *(
+            (intent, ACTIVE, ACTIVE_PAYING, "COUNT(DISTINCT team_id)")
+            for intent in ACTIVE_QUESTIONS
+        ),
     ],
 )
 def test_a_class_on_a_joined_entity_holds_a_draft_over_the_measure_its_metric_narrows(
@@ -1069,7 +1077,9 @@ def test_a_class_on_a_joined_entity_holds_a_draft_over_the_measure_its_metric_na
 ) -> None:
     engine = calls["all"]
     for detail in ("best", "full", "query", "debug"):
-        plan = plan_payload(engine, intent=intent, partial_query={"policy_context": NOW}, detail=detail)
+        plan = plan_payload(
+            engine, intent=intent, partial_query={"policy_context": NOW}, detail=detail
+        )
         assert plan["status"] == "low_confidence", (detail, plan.get("why"))
         assert "execute" not in plan.get("next", {}).get("ready_for", [])
         assert [(gap["expected"], gap["actual"]) for gap in _gaps(plan)] == [
@@ -1191,5 +1201,7 @@ def test_a_failing_entity_walk_holds_the_draft(
     assert plan["status"] == "low_confidence", plan.get("why")
     assert "execute" not in plan["next"].get("ready_for", [])
     gaps = _gaps(plan)
-    assert [(gap["expected"], gap["actual"]) for gap in gaps] == [({"metrics": []}, {"measure": CALLS})]
+    assert [(gap["expected"], gap["actual"]) for gap in gaps] == [
+        ({"metrics": []}, {"measure": CALLS})
+    ]
     assert gaps[0]["message"] == "The package doesn't offer this measure."
