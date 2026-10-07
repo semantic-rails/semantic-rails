@@ -16,10 +16,10 @@ from __future__ import annotations
 import contextlib
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, fields
+from dataclasses import asdict
 from typing import Any
 
-from .ast import NormalizedQuery, normalize_partial_query, normalize_query
+from .ast import _QUERY_IR_KEYS, normalize_partial_query, normalize_query
 from .catalog_search import (
     CatalogSearchDocument,
     SearchTerms,
@@ -35,7 +35,7 @@ from .compiler import (
     bind_query,
     query_route_rows,
 )
-from .config_parts.measure_governance import building_block_measures
+from .config_parts.measure_governance import unoffered_measures
 from .diagnostics import relationship_contract_payload
 from .errors import SemanticLayerError
 from .expressions import (
@@ -108,11 +108,6 @@ from .scope import classify_question
 from .segments import build_segment_query, normalize_segment
 from .temporal_support import require_temporal_support, validate_temporal_support
 from .visible_view import base_of
-
-# Query IR fields: the fields of a normalized query. Query patches and
-# query_state carry only these: never the request's policy context, response
-# options or the tool's own arguments.
-_QUERY_IR_KEYS = tuple(field.name for field in fields(NormalizedQuery))
 
 
 def _query_ir(query: dict[str, Any] | None) -> dict[str, Any]:
@@ -2071,10 +2066,11 @@ def discover_payload(
         _catalog_token_doc_freq(config, search_index=search_index) if enforce_scope else None
     )
 
-    # A building block (of the whole package) is offered only through the metrics filtering it.
-    building_blocks = building_block_measures(base_of(config))
+    # Building blocks (of the whole package) and strict unpublished measures are never
+    # offered on their own.
+    unoffered = unoffered_measures(base_of(config))
     for measure in config.measures:
-        if measure.id in building_blocks:
+        if measure.id in unoffered:
             continue
         availability = _availability_for_object(config, root_entity, measure.id, "measure")
         row = {

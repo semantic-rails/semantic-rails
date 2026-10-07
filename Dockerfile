@@ -20,7 +20,6 @@ RUN useradd --create-home --uid 10001 semantic
 
 COPY pyproject.toml README.md LICENSE NOTICE ./
 COPY semantic_rails ./semantic_rails
-COPY mf2sr ./mf2sr
 COPY configs ./configs
 COPY data ./data
 

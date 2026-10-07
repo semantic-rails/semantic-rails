@@ -333,6 +333,10 @@ same report: `rules` (each with its tier and hits), `proof`, `choices_pending`, 
   with `CONFIG_CONFLICT` and `details.conflict_kind: "upgrade_not_equivalent"`; nothing is written.
 - Pending choices return `status: "choices_pending"` and `ok: false`, and write nothing; answer each
   with `choices: {key: option}`.
+- Findings with no edits or options are stops. Their rules have tier `unverified` and a `reason`
+  naming the finding; the preview returns `status: "unverified"` and `ok: false`. They are excluded
+  from `choices_pending`, which still lists real choices. A write refuses with `CONFIG_CONFLICT`
+  and writes nothing; resolve the named definition by hand.
 - When a write comes back `rolled_back_after_parse_error` or `preview_invalid`, or `project_status`
   can't parse the package, and upgrade rules match the package's files, `next_actions` says how many
   legacy forms `upgrade_project` would rewrite.

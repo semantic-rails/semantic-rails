@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -327,7 +328,7 @@ def test_legacy_package_cannot_certify_a_meaning_changing_rule(tmp_path, monkeyp
     assert _contents(project) == LEGACY
 
 
-def test_only_retired_rules_form_the_baseline(tmp_path):
+def test_unflagged_same_meaning_rule_is_proven_after_the_baseline(tmp_path):
     files = {**LEGACY, "metrics/core.yml": LEGACY["metrics/core.yml"].replace(*AS_FORM, 1)}
     project = _package(tmp_path, files)
 
@@ -493,6 +494,148 @@ def _relabel(files):
 
 
 RELABEL = Rule("relabel", "9.9", "same_meaning", "Choose a label", _relabel)
+
+
+def _primitive_kind(files):
+    for file, path, row in files.measures():
+        if "primitive" in row:
+            edit = Edit(file, "rename", (*path, "primitive"), key="kind")
+            yield Finding(
+                "primitive-kind", file, files.line(file, edit.path), path, "Use kind", (edit,)
+            )
+
+
+PRIMITIVE_KIND = Rule(
+    "primitive-kind",
+    "9.9",
+    "same_meaning",
+    "Use kind instead of primitive",
+    _primitive_kind,
+    refused=True,
+)
+
+
+@pytest.mark.parametrize("retired", [False, True])
+@pytest.mark.parametrize("choice", [False, True])
+@pytest.mark.parametrize("query_version", [1, 2])
+def test_refused_same_meaning_rule_forms_a_certified_baseline(
+    tmp_path, monkeypatch, capsys, retired, choice, query_version
+):
+    current = LEGACY if retired else UPGRADED
+    files = {
+        **current,
+        "models/events.yml": current["models/events.yml"].replace(
+            "kind: aggregate", "primitive: aggregate"
+        ),
+        "metrics/core.yml": current["metrics/core.yml"].replace(*AS_FORM, 1),
+        "examples/core.yml": current["examples/core.yml"].replace(
+            "version: 1", f"version: {query_version}"
+        ),
+    }
+    project = _package(tmp_path, files)
+    rules = (METRIC_AS, *RULES, PRIMITIVE_KIND, *((RELABEL,) if choice else ()))
+    _with_rules(monkeypatch, rules)
+    preview = service.upgrade_project(project, workspace_root=tmp_path, rules=rules)
+    tiers = {row["id"]: row["tier"] for row in preview["rules"]}
+    assert preview["proof"]["baseline"] == "after_certified_rules"
+    assert preview["proof"]["tier"] == "certified"
+    assert tiers == {
+        "metric-as": "proven",
+        "primitive-kind": "certified",
+        **({"query-ir-version": "certified"} if query_version == 2 else {}),
+        **({"null-behavior": "certified", "measure-parent-rollup": "certified"} if retired else {}),
+        **({"relabel": "choice"} if choice else {}),
+    }
+    assert preview["proof"]["fingerprint_before"] == preview["proof"]["fingerprint_after"]
+    assert (preview["proof"]["examples"], preview["proof"]["tests"]) == (int(query_version == 1), 1)
+    assert _contents(project) == files
+    code, text = _cli(
+        monkeypatch, capsys, tmp_path, "upgrade", "--path", str(project), "--write", "--json"
+    )
+    report = json.loads(text)
+    assert code == (2 if choice else 0), text
+    assert report["status"] == ("choices_pending" if choice else "upgraded")
+    assert _contents(project) == (files if choice else UPGRADED)
+    if not choice:
+        load_package_snapshot(project)
+
+
+def test_refused_flag_does_not_certify_a_rule_when_the_package_already_loads(tmp_path):
+    files = {**UPGRADED, "metrics/core.yml": UPGRADED["metrics/core.yml"].replace(*AS_FORM, 1)}
+    project = _package(tmp_path, files)
+    report = service.upgrade_project(
+        project, workspace_root=tmp_path, rules=(replace(METRIC_AS, refused=True),)
+    )
+    assert report["proof"]["baseline"] == "as_is"
+    assert report["rules"][0]["tier"] == "proven"
+    assert _contents(project) == files
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_refused_rule_that_does_not_repair_loading_stays_unverified(tmp_path, dry_run):
+    files = {
+        **UPGRADED,
+        "models/events.yml": UPGRADED["models/events.yml"].replace(
+            "kind: aggregate", "primitive: aggregate"
+        ),
+        "package.yml": UPGRADED["package.yml"].replace(
+            "warehouse: duckdb", "warehouse: unsupported"
+        ),
+    }
+    project = _package(tmp_path, files)
+    rules = (PRIMITIVE_KIND,)
+    if dry_run:
+        report = service.upgrade_project(project, workspace_root=tmp_path, rules=rules)
+        assert report["proof"]["baseline"] == "none"
+        assert report["proof"]["tier"] == report["rules"][0]["tier"] == "unverified"
+    else:
+        from semantic_rails.errors import SemanticLayerError
+
+        with pytest.raises(SemanticLayerError, match="cannot be verified") as raised:
+            service.upgrade_project(project, workspace_root=tmp_path, rules=rules, dry_run=False)
+        assert raised.value.code == "CONFIG_CONFLICT"
+    assert _contents(project) == files
+
+
+def _stop(files):
+    for file, path, row in files.metrics():
+        if row.get("label") == "Amount per event":
+            yield Finding(
+                "ambiguous-definition",
+                file,
+                files.line(file, path),
+                path,
+                "Conflicting definitions",
+            )
+
+
+STOP = Rule("ambiguous-definition", "9.9", "same_meaning", "Resolve definitions by hand", _stop)
+
+
+@pytest.mark.parametrize("choice", [False, True])
+def test_stop_is_unverified_and_not_a_pending_choice(tmp_path, monkeypatch, capsys, choice):
+    project = _package(tmp_path, UPGRADED)
+    rules = (STOP, *((RELABEL,) if choice else ()))
+    _with_rules(monkeypatch, rules)
+    preview = service.upgrade_project(project, workspace_root=tmp_path, rules=rules)
+    assert preview["rules"][0]["tier"] == preview["proof"]["tier"] == "unverified"
+    assert preview["status"] == "unverified" and preview["ok"] is False
+    reason = preview["rules"][0]["reason"]
+    assert reason.startswith("stop:") and "Conflicting definitions" in reason
+    assert "metrics/core.yml:" in reason
+    assert len(preview["choices_pending"]) == int(choice)
+    if choice:
+        assert preview["rules"][1]["tier"] == "choice"
+        assert preview["choices_pending"][0]["options"]
+    code, text = _cli(monkeypatch, capsys, tmp_path, "upgrade", "--path", str(project))
+    assert code == 1 and reason in text
+    code, text = _cli(
+        monkeypatch, capsys, tmp_path, "upgrade", "--path", str(project), "--write", "--json"
+    )
+    assert code == 1, text
+    assert json.loads(text)["error"]["code"] == "CONFIG_CONFLICT"
+    assert "Conflicting definitions" in text
+    assert _contents(project) == UPGRADED
 
 
 def test_pending_choice_stops_the_write_and_names_its_flag(tmp_path, monkeypatch, capsys):

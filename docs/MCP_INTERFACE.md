@@ -265,8 +265,14 @@ A draft that validates can still leave out part of the question. `plan` returns
   relative clauses such as "stores that were active last week". It fits when the question
   holds every word of its label (with or without a parenthetical), an alias or its id, in any order and
   with plurals as singulars, or when the measure is a [building
-  block](PACKAGE_AUTHORING.md#building-block-measures). Under `schema_strict`, `publish: false`
-  marks a building block. When the question names no governing metric, a published measure is
+  block](PACKAGE_AUTHORING.md#building-block-measures). Under `schema_strict`, a measure
+  authored `publish: false` that no metric aggregates whole is not offered to agents:
+  `discover` doesn't list it, and `plan` doesn't answer with it unless `partial_query.select`
+  names it by id; no other part of the request names it. When a metric reads the measure
+  through a filter, it is a building block: `plan` answers with the metric when it is the only
+  one that filters the measure or the question names it, and otherwise holds the draft. Without
+  `schema_strict`, the flag also suppresses auto-publishing a metric of the measure's own name.
+  When the question names no governing metric, a published measure is
   still held while a visible metric narrows its rows: an aggregate in that metric, over this
   measure or another one, filters on a dimension of the measure's entity ("New teams" counts
   the creation events of customer teams, so "teams last week" over a count of every team is
@@ -274,7 +280,7 @@ A draft that validates can still leave out part of the question. `plan` returns
   first, and `expected.narrowed_by` the dimensions they filter on. A draft that selects the
   metric, or filters or groups by one of those dimensions ("customer teams"), isn't held for
   it. Hidden governing metrics are excluded before candidate selection and diagnostics, and
-  their IDs and labels are never named. A building block with no visible governing metric, or
+  their IDs and labels are never named. An unoffered measure with no visible governing metric, or
   a draft whose governing metrics can't be read, is still held, with a generic message and an
   empty `expected.metrics`. A metric hidden only because something it reads, such as the
   dimension it filters on, is hidden still holds the measure it narrows: the message is generic, and `expected` lists only the
@@ -283,7 +289,7 @@ A draft that validates can still leave out part of the question. `plan` returns
   `temporal_role`, the subject phrase names no other such
   metric as fully nor the measure more fully, and the draft neither filters nor groups by what
   the metric's filter reads ("demo stores" keeps the measure, held). A measure or metric the
-  caller's `partial_query` names is never held for this;
+  caller's `partial_query.select` names is never held for this;
 - has no filter on a dimension that a "where <dimension> is <value>" clause names, even
   when the catalog declares no values for it (`dimension_filter_unrealized`);
 - carries no time window, or a different one, where the question names one

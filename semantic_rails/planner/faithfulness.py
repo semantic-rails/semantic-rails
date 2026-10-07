@@ -24,10 +24,10 @@ from ..ast import _relative_range_bounds, is_child_group
 from ..compiler import bind_query
 from ..compiler_parts.sql_lowering import _snapshot_series_columns
 from ..config_parts.measure_governance import (
-    building_block_measures,
     governing_metrics,
     population_governors,
     published_measure,
+    unoffered_measures,
 )
 from ..errors import SemanticLayerError
 from ..expressions import expr_to_dict
@@ -593,17 +593,26 @@ def _governed_metric_gaps(
     reported: str,
     subjects: list[str],
 ) -> list[CoverageGap]:
-    """Hold a draft that answers with a measure a metric filters, where that metric fits.
+    """Hold drafts over unoffered measures or measures governed by a fitting metric.
 
     The draft selects the measure itself, or the metric that is its plain aggregate, and does
     not select a metric that aggregates the measure through a filter while the question's
-    whole question names that metric, or the measure is a building block. Otherwise a visible
-    metric that narrows its rows holds it (``_population_hold``). A measure or metric
-    the caller's ``partial_query`` names is the caller's choice; ``reported`` already has its
-    own gap.
+    whole question names that metric, or the package doesn't offer the measure. Otherwise a visible
+    metric that narrows its rows holds it (``_population_hold``). A measure or metric the
+    caller's ``partial_query.select`` names by id is the caller's choice; nothing else in the
+    request names one. ``reported`` already has its own gap.
     """
 
-    caller = set(_referenced_ids(partial_query))
+    choices = partial_query.get("select")
+    caller = {
+        node[key]
+        for item in (choices if isinstance(choices, list) else [])
+        if isinstance(item, dict)
+        for node in (item, item.get("expression"))
+        if isinstance(node, dict)
+        for key in ("measure", "metric")
+        if isinstance(node.get(key), str)
+    }
     selected = list(
         dict.fromkeys(
             node[key]
@@ -613,14 +622,18 @@ def _governed_metric_gaps(
         )
     )
     # Governance is enforcement: it reads the whole package, not the caller's view.
-    building_blocks = building_block_measures(base_of(config))
+    try:
+        unoffered: frozenset[str] | None = unoffered_measures(base_of(config))
+    except Exception:  # noqa: BLE001 — an unreadable offer cannot make a draft ready
+        unoffered = None
     gaps: list[CoverageGap] = []
     for object_id in selected:
         plain = _object_by_id(config.metric_recipes, object_id)
         measure_id = published_measure(plain) if plain is not None else object_id
         if not measure_id or {object_id, measure_id} & caller:
             continue
-        governing = governing_metrics(config, measure_id)
+        offered = unoffered is not None and measure_id not in unoffered
+        governing = governing_metrics(config, measure_id) if unoffered is not None else []
         visible = set(visible_object_ids(config, (metric.id for metric in governing)))
         governing = [metric for metric in governing if metric.id in visible]
         metrics = [
@@ -628,10 +641,10 @@ def _governed_metric_gaps(
             for metric in governing
             if metric.id not in selected
             and metric.id != reported
-            and (measure_id in building_blocks or _said_name(metric, question))
+            and (not offered or _said_name(metric, question))
         ]
         expected: dict[str, Any] | None = {"metrics": metrics}
-        if not metrics and (measure_id not in building_blocks or governing):
+        if not metrics and (offered or governing):
             expected = _population_hold(config, measure_id, query, [*selected, reported], subjects)
         if expected is None:
             continue
@@ -650,15 +663,18 @@ def _governed_metric_gaps(
                     else "A definition you can't see governs this measure, so it can't be "
                     "answered as a raw number."
                     if "narrowed_by" in expected
-                    else "The draft reads a building-block measure without a visible governed metric."
+                    else "The package doesn't offer this measure."
                 ),
                 expected=expected,
                 actual={"measure": measure_id},
                 recovery_hint={
                     "kind": "use_governed_metric",
                     "message": (
-                        "Select the governed metric in Query IR. Pass the measure in "
-                        "partial_query only when the question asks for every row it counts."
+                        "Select the governed metric in Query IR. Name the measure by id in "
+                        "partial_query.select only when the question asks for every row it counts."
+                        if expected["metrics"] or "narrowed_by" in expected
+                        else "Name the measure by id in partial_query.select when the question asks "
+                        "for every row it counts, or pick an offered metric."
                     ),
                 },
             )
