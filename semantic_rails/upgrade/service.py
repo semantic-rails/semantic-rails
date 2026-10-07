@@ -262,11 +262,13 @@ def upgrade_project(
     else:
         if undecided := route_census(final.snapshot.config)["undecided"]:
             pairs = ", ".join(
-                f"{row['source_entity']} -> {row['target_entity']}" for row in undecided
+                f"{row['source_entity']} -> {row['target_entity']}" for row in undecided[:3]
             )
+            more = f" and {len(undecided) - 3} more" if len(undecided) > 3 else ""
             next_actions.append(
-                f"Decide the join route for {pairs}: record each pair's route as a "
-                "graph.path_preferences row (record_route_decision in the Architect)."
+                f"Decide the join route of {len(undecided)} entity pairs ({pairs}{more}; "
+                "project_status lists them in route_census.undecided): record each as a "
+                "graph.path_preferences row, which record_route_decision writes."
             )
         next_actions.extend(
             f"Example {key} does not compile: {outcome[1]}."

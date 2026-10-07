@@ -6,6 +6,7 @@ import asyncio
 import functools
 import json
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -463,6 +464,37 @@ def test_single_file_package_is_refused_without_writing(tmp_path, monkeypatch, c
 
     assert code == 1 and "package directory with package.yml" in text
     assert [path.name for path in tmp_path.iterdir()] == ["starter.yml"]
+
+
+def _default_version(files):
+    for file, path, query in files.queries():
+        if query.get("version") == 1:
+            edit = Edit(file, "delete", (*path, "version"))
+            yield Finding("default-version", file, 1, path, "1 is the default", (edit,))
+
+
+def test_next_actions_name_undecided_routes_and_examples_that_fail(tmp_path):
+    project = tmp_path / "jaffle_shop"
+    shutil.copytree(
+        ROOT / "configs/semantic_rails/jaffle_shop",
+        project,
+        ignore=shutil.ignore_patterns("*.duckdb"),
+    )
+    (project / "examples/broken.yml").write_text(
+        "examples:\n  broken:\n    query:\n      version: 1\n"
+        "      select: [{expression: {metric: metric.jaffle.missing}, as: missing}]\n"
+    )
+    rule = Rule("default-version", "9.9", "same_meaning", "Delete version: 1", _default_version)
+
+    report = service.upgrade_project(project, workspace_root=tmp_path, rules=(rule,))
+
+    assert (report["status"], report["proof"]["tier"]) == ("preview", "proven")
+    assert report["proof"]["examples"] > 10 and report["proof"]["tests"] > 10
+    routes, broken = report["next_actions"]
+    assert re.match(r"Decide the join route of \d+ entity pairs \(entity\.jaffle_", routes)
+    assert broken == (
+        "Example examples/broken.yml:examples.broken.query does not compile: OBJECT_NOT_FOUND."
+    )
 
 
 def test_every_rule_is_documented():
