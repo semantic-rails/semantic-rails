@@ -145,6 +145,9 @@ class Container(Environment):
                 "run",
                 "-d",
                 "--rm",
+                # Mark automated downloads as CI in package download statistics.
+                "-e",
+                "CI=true",
                 "--name",
                 self.id,
                 "-w",
@@ -219,6 +222,8 @@ class Local(Environment):
         (self.root / "bin" / "uv").symlink_to(uv)
         (self.root / "bin" / "uvx").symlink_to(uvx)
         self.env = {
+            # Mark automated downloads as CI in package download statistics.
+            "CI": "true",
             "HOME": str(self.root / "home"),
             "PATH": f"{self.root / 'bin'}:/usr/bin:/bin",
             "UV_CACHE_DIR": str(self.root / "cache"),
@@ -602,6 +607,7 @@ def run_checks(env: Environment, readme: str) -> list[dict[str, object]]:
             }
         )
 
+    step("environment: CI=true", lambda: expect(env.run('test "$CI" = true')))
     step("try: bundled package", partial(try_bundled, env))
     step("own package: init, validate, ask --path", partial(own_package, env))
     step("mcp stdio: initialize, tools/list", lambda: mcp_handshake(env))
