@@ -16,7 +16,7 @@ from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.plan import _qualifying_entity_why
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
-from tests.semantic_rails.result_helpers import typed_rows
+from tests.semantic_rails.result_helpers import assert_plan_held, typed_rows
 from tests.semantic_rails.test_plan_value_lists import _force_fallback
 
 STORE_ID = "dimension.retail_store_id"
@@ -264,7 +264,9 @@ def test_store_list_is_grouped_by_store_or_withholds_execution(
         assert payload["status"] == "low_confidence", payload
         assert "execute" not in payload["next"].get("ready_for", []), payload
         assert payload["why"]["code"] == (
-            "PLAN_INTENT_COVERAGE_GAP" if path == "primary" else "PLAN_UNMATCHED_TERMS"
+            "PLAN_INTENT_COVERAGE_GAP"
+            if path == "primary" or intent.startswith("stores")
+            else "PLAN_UNMATCHED_TERMS"
         ), payload
     finally:
         runtime.close()
@@ -390,7 +392,7 @@ def test_qualification_requires_entity_keys_or_a_selected_key_count(
 
 @pytest.mark.parametrize("path", ["primary", "fallback"])
 @pytest.mark.parametrize("grain", [None, "month", "year"])
-def test_number_of_open_stores_matches_end_of_period_reference(
+def test_number_of_open_stores_without_one_day_is_held(
     runtime_factory, monkeypatch, path, grain
 ) -> None:
     question = "number of stores open" + (f" by {grain}" if grain else "")
@@ -398,32 +400,21 @@ def test_number_of_open_stores_matches_end_of_period_reference(
     try:
         _force_fallback(runtime, monkeypatch, question, path)
         payload = plan_payload(runtime, intent=question)
-        if path == "primary":
-            assert payload["status"] == "ok", payload
-        if payload["status"] != "ok":
-            assert "execute" not in payload["next"].get("ready_for", [])
+        if path == "fallback":
+            assert payload["status"] == "low_confidence", payload
+            assert "execute" not in payload["next"].get("ready_for", []), payload
             return
-        assert "execute" in payload["next"].get("ready_for", [])
-        query = payload["best"]["query_ir"]
-        alias = query["select"][0]["as"]
-        assert not query.get("group_by")
-        assert query["select"][0]["expression"]["measure"] == "measure.jaffle.open_store_count_eop"
-        actual = typed_rows(runtime.query(query))
-        runtime.close()
-        bucket = f"date_trunc('{grain}', date_day)" if grain else "1"
-        with duckdb.connect(runtime.db_path, read_only=True) as connection:
-            rows = connection.execute(
-                f"WITH latest AS (SELECT {bucket} AS period, store_id, open_store_count, "
-                f"row_number() OVER (PARTITION BY {bucket}, store_id ORDER BY date_day DESC) AS n "
-                "FROM jaffle_store_inventory_snapshot) "
-                "SELECT period, SUM(open_store_count) FROM latest WHERE n = 1 GROUP BY period"
-            ).fetchall()
-        if grain:
-            time_column = f"temporal_role.jaffle_inventory_day__{grain}"
-            expected = [{time_column: period, alias: value} for period, value in rows]
-        else:
-            expected = [{alias: value} for _, value in rows]
-        assert sorted(actual, key=str) == sorted(expected, key=str)
+        assert_plan_held(payload, "PLAN_INTENT_COVERAGE_GAP")
+        [gap] = [
+            gap
+            for gap in payload["why"]["details"]["gaps"]
+            if gap["kind"] == "stock_as_of_unrealized"
+        ]
+        assert gap["expected"] == {
+            "grain": "day",
+            "stocks": ["measure.jaffle.open_store_count_eop"],
+        }
+        assert gap["actual"] == {"grain": grain}
     finally:
         runtime.close()
 

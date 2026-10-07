@@ -538,7 +538,7 @@ def intent_faithfulness_why(
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
     gaps.extend(_subject_window_gaps(runtime._config, query))
     if not _time_window(question, policy_context=query.get("policy_context")).as_of:
-        # An as-of cue ("MRR right now") is always held as TIME_WINDOW_UNRESOLVED, with no query.
+        # As-of cues already hold as TIME_WINDOW_UNRESOLVED, without a query.
         gaps.extend(_stock_as_of_gaps(runtime._config, query))
     gaps.extend(_ranking_gaps(runtime, text, query))
     gaps.extend(_ambiguous_grouping_gaps(text, query, partial_query or {}))
@@ -926,13 +926,7 @@ def _subject_window_gaps(config: Any, query: dict[str, Any]) -> list[CoverageGap
 
 
 def _stock_as_of_gaps(config: Any, query: dict[str, Any]) -> list[CoverageGap]:
-    """The draft reads a stock of several series over more than one day per row.
-
-    A stock answers with each series' last snapshot in each period, then adds them up, so a
-    series that stopped reporting keeps its last value in a longer period or a read with no
-    time block. The draft is ``ok`` only with grain ``day``. A stock keyed by its clock alone
-    is one series. If the stocks can't be read, the draft is held.
-    """
+    """Hold multi-series stocks unless each answer row reads one as-of day."""
     grain = _time_block(query).get("grain") or None
     if grain == "day":
         return []
@@ -950,17 +944,14 @@ def _stock_as_of_gaps(config: Any, query: dict[str, Any]) -> list[CoverageGap]:
         CoverageGap(
             kind="stock_as_of_unrealized",
             clause=", ".join(shown) or "stock",
-            message=(
-                "A balance is read on one day, and this draft adds each series' last value "
-                f"over {period}."
-            ),
+            message=f"Read a balance on one day; this draft adds each series' last value over {period}.",
             expected={"grain": "day", "stocks": shown},
             actual={"grain": grain},
             recovery_hint={
                 "kind": "ask_for_one_day",
                 "message": (
-                    f"Ask for one day ('{label} yesterday', or '{label} on' a date), or set "
-                    "time.grain: day with that day's start and end."
+                    f"Ask for '{label} yesterday' or '{label} on 2026-10-04', "
+                    "or set time.grain: day with that day's start and end."
                 ),
             },
         )
@@ -968,8 +959,7 @@ def _stock_as_of_gaps(config: Any, query: dict[str, Any]) -> list[CoverageGap]:
 
 
 def _multi_series_stocks(config: Any, query: dict[str, Any]) -> list[str]:
-    """Each stock with a series key besides its clock that the draft's selects or metric
-    filters read, through metrics at any depth."""
+    """Find multi-series stocks in selects or metric filters, through metrics at any depth."""
     measures = {row.id: row for row in config.measures}
     recipes = {row.id: row for row in config.metric_recipes}
     pending: list[Any] = [query.get("select") or [], query.get("metric_filters") or []]
