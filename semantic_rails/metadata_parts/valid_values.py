@@ -225,14 +225,9 @@ def valid_values_payload(
         audience=str(policy_context.get("audience", "")),
         roles=policy_context.get("roles", []),
     )
-    if dimension_id in hidden_ids:
-        raise SemanticLayerError(
-            "OBJECT_NOT_FOUND",
-            f"Unknown dimension '{dimension_id}'",
-            details={"dimension": dimension_id},
-        )
+    # A hidden dimension is refused exactly like one that does not exist.
     dim = next((row for row in config.dimensions if row.id == dimension_id), None)
-    if dim is None:
+    if dim is None or dimension_id in hidden_ids:
         raise SemanticLayerError("OBJECT_NOT_FOUND", f"Unknown dimension '{dimension_id}'")
     domain = _value_domain_for_dimension(config, dimension_id)
     if domain is not None and (not allow_live_query or not query):

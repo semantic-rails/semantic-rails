@@ -101,7 +101,13 @@ from .metadata_parts.relevance import (
 )
 from .metadata_parts.scope_gate import scope_block_payload as _scope_block_payload
 from .metadata_parts.valid_values import _policy_context, valid_values_payload
-from .policies import hidden_object_ids, policy_effects_for_object, row_filters_for_context
+from .policies import (
+    diagnostic_hidden_object_ids,
+    hidden_object_ids,
+    policy_effects_for_object,
+    refuse_as_unknown,
+    row_filters_for_context,
+)
 from .request_payload import DISCOVER_RANKED_KINDS, checked_discover_kinds
 from .runtime import Runtime, runtime_request_scope
 from .schema import MetricConfig, PackageConfig
@@ -288,6 +294,11 @@ def _first_root_entity(config: PackageConfig, expr: SemanticExpr) -> str:
 
 
 def _selection_context(config: PackageConfig, partial_query: dict[str, Any]) -> dict[str, Any]:
+    refuse_as_unknown(
+        partial_query,
+        diagnostic_hidden_object_ids(config, partial_query.get("policy_context") or {}),
+        lambda query: _selection_context(config, query),
+    )
     root_entity = ""
     selected_exprs: list[SemanticExpr] = []
     for item in list(partial_query.get("select", []) or []):

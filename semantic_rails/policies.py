@@ -11,7 +11,9 @@ on ``validate`` / ``compile`` / ``execute``.
 from __future__ import annotations
 
 import contextvars
-from collections.abc import Callable, Iterable, Mapping
+import uuid
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import fields, is_dataclass, replace
 from functools import cache
 from typing import Any
@@ -26,6 +28,7 @@ from .expressions import (
     ConversionExpr,
     MetricPredicateExpr,
     ScopedAggregateExpr,
+    _opaque_expression_data,
     collect_column_refs,
     parse_semantic_expression,
 )
@@ -62,6 +65,103 @@ WITHHELD_SHAPE = (
     "the same direction (added for you when order_by names only the metric), with a limit of "
     "at most max_rank. Do not select, filter, threshold, compare or export it anywhere else."
 )
+# What the outermost operation's caller named; the operations it runs keep it.
+_caller_names: contextvars.ContextVar[frozenset[str] | None] = contextvars.ContextVar(
+    "caller_names", default=None
+)
+
+
+def _renamed(value: Any, rename: Callable[[str], str]) -> Any:
+    """``value`` with every string that could name an object passed through ``rename``:
+    never literal data or the caller's policy context."""
+    if isinstance(value, str):
+        return rename(value)
+    if isinstance(value, Mapping):
+        return {
+            _renamed(key, rename): child
+            if key == "policy_context" or _opaque_expression_data(value, key)
+            else _renamed(child, rename)
+            for key, child in value.items()
+        }
+    if isinstance(value, list | tuple):
+        return [_renamed(child, rename) for child in value]
+    return value
+
+
+def _names(value: Any) -> set[str]:
+    found: set[str] = set()
+
+    def record(name: str) -> str:
+        found.add(name)
+        return name
+
+    _renamed(value, record)
+    return found
+
+
+@contextmanager
+def caller_request(request: Any) -> Iterator[None]:
+    """Record what an operation's caller named, unless an outer operation already did."""
+    token = _caller_names.set(frozenset(_names(request))) if _caller_names.get() is None else None
+    try:
+        yield
+    finally:
+        if token is not None:
+            _caller_names.reset(token)
+
+
+def refuse_as_unknown(
+    request: Any, hidden: Collection[str] | None, resolve: Callable[[Any], object]
+) -> None:
+    """Refuse an object hidden from the caller exactly as if it did not exist.
+
+    Counts each id the caller named that ``hidden`` holds (``None``, uncertain visibility:
+    every named id). ``resolve`` runs again with those ids swapped for ids no package declares,
+    and its own unknown-id refusal is raised with the caller's ids restored; a request that
+    resolves anyway goes on as sent. An object read only through a visible one is not named.
+    """
+    named = _names(request)
+    caller = _caller_names.get()
+    named = named if caller is None else named & caller
+    named = named if hidden is None else named & set(hidden)
+    if not named:
+        return
+    swap = {name: f"{name}{uuid.uuid4().hex}" for name in named}
+    try:
+        resolve(_renamed(request, lambda name: swap.get(name, name)))
+    except SemanticLayerError as exc:
+        raise _restored(exc, swap) from None
+
+
+def _restored(exc: SemanticLayerError, swap: Mapping[str, str]) -> SemanticLayerError:
+    def restore(value: Any) -> Any:
+        if isinstance(value, str):
+            for name, swapped in swap.items():
+                value = value.replace(swapped, name)
+            return value
+        if isinstance(value, Mapping):
+            return {restore(key): restore(child) for key, child in value.items()}
+        if isinstance(value, list | tuple):
+            return type(value)(restore(child) for child in value)
+        return value
+
+    restored = type(exc).__new__(type(exc))  # the same refusal, subclass fields included
+    restored.args = restore(exc.args)
+    vars(restored).update(restore(vars(exc)))
+    return restored
+
+
+def _without(value: Any, hidden: Collection[str]) -> Any:
+    """``value`` with no string that names a hidden object."""
+
+    def shown(child: Any) -> bool:
+        return not (isinstance(child, str) and child in hidden)
+
+    if isinstance(value, Mapping):
+        return {key: _without(child, hidden) for key, child in value.items() if shown(child)}
+    if isinstance(value, list):
+        return [_without(child, hidden) for child in value if shown(child)]
+    return value
 
 
 def policy_effects_for_object(
@@ -73,6 +173,7 @@ def policy_effects_for_object(
     roles: Iterable[str] | None = None,
 ) -> list[dict[str, Any]]:
     check_request_environment(config, environment)
+    hidden = hidden_object_ids(config, environment=environment, audience=audience, roles=roles)
     effects: list[dict[str, Any]] = []
     for policy in config.semantic_policies:
         if not _policy_matches(
@@ -86,7 +187,7 @@ def policy_effects_for_object(
         action = _policy_action(policy)
         if not action:
             continue
-        effects.append(_base_policy_effect(policy, action=action))
+        effects.append(_without(_base_policy_effect(policy, action=action), hidden))
     return effects
 
 
@@ -253,7 +354,8 @@ def query_policy_effects(
                 existing_violations.append(violation)
         if existing_violations:
             deduped[key]["violations"] = existing_violations
-    return list(deduped.values())
+    hidden = hidden_object_ids(config, environment=environment, audience=audience, roles=roles)
+    return [_without(effect, hidden) for effect in deduped.values()]
 
 
 def enforce_query_policies(
@@ -271,6 +373,11 @@ def enforce_query_policies(
     restricted = restricted_object_ids(
         config, environment=environment, audience=audience, roles=roles
     )
+    hidden = restricted | hidden_policy_ids(
+        config, environment=environment, audience=audience, roles=roles
+    )
+    if query is not None:
+        refuse_as_unknown(query, hidden, lambda masked: bind_query(config, None, dict(masked)))
     if restricted and binding is None and query is not None:
         binding = bind_query(config, None, dict(query))
     blocked = restricted & {
@@ -287,11 +394,8 @@ def enforce_query_policies(
         raise SemanticLayerError(
             "POLICY_DENIED",
             "Query references a semantic object blocked by policy.",
-            details={
-                "blocked_objects": sorted(blocked),
-                "policy_effects": [],
-                "policy_violations": [],
-            },
+            # Every restricted object is hidden from this caller, so none is named.
+            details={"blocked_objects": [], "policy_effects": [], "policy_violations": []},
         )
     effects = query_policy_effects(
         config,
@@ -304,17 +408,19 @@ def enforce_query_policies(
     )
     blocking = [row for row in effects if row["action"] in {"deny", "redact", "hidden"}]
     if blocking:
+        # A hidden object read through a visible one: no policy hiding it is named.
+        shown = [row for row in blocking if row["action"] != "hidden"]
         raise SemanticLayerError(
             "POLICY_DENIED",
             "Query references a semantic object blocked by policy.",
             details={
                 "blocked_objects": sorted(
-                    {object_id for row in blocking for object_id in row.get("object_ids", [])}
+                    {object_id for row in shown for object_id in row.get("object_ids", [])}
                 ),
-                "policy_effects": blocking,
+                "policy_effects": shown,
                 "policy_violations": [
                     violation
-                    for row in blocking
+                    for row in shown
                     for violation in list(row.get("violations", []) or [])
                 ],
             },

@@ -105,9 +105,11 @@ from .fanout import (
 from .ir import ValidationReport
 from .package_snapshot import LoadedPackageSnapshot, load_package_snapshot
 from .policies import (
+    caller_request,
     diagnostic_hidden_object_ids,
     enforce_query_policies,
     query_policy_effects,
+    refuse_as_unknown,
     row_filters_for_context,
     withheld_rank_order,
 )
@@ -263,7 +265,7 @@ def runtime_request_scope(operation: Callable[..., Any]) -> Callable[..., Any]:
     def wrapped(runtime: Runtime, *args: Any, **kwargs: Any) -> Any:
         from .resource_access import run_authorized_operation
 
-        with runtime.request_scope():
+        with runtime.request_scope(), caller_request((args, kwargs)):
             return run_authorized_operation(operation, runtime, args, kwargs)
 
     return wrapped
@@ -2958,6 +2960,8 @@ class Runtime:
                 check_policies=check_policies,
             )
 
+        hidden = diagnostic_hidden_object_ids(self._config, policy_context)
+        refuse_as_unknown(payload, hidden, bind)
         binding = bind(payload)
         # A rank by a withheld value breaks its ties by the group keys, in the same direction.
         return withheld_rank_order(
@@ -2972,13 +2976,21 @@ class Runtime:
     def _segment_policy_effects(
         self, segment_id: str, context: dict[str, Any]
     ) -> list[dict[str, Any]]:
-        return enforce_query_policies(
-            self._config,
-            [segment_id],
-            environment=str(context.get("environment", "")),
-            audience=str(context.get("audience", "")),
-            roles=context.get("roles", []),
+        def effects(segment_id: str) -> list[dict[str, Any]]:
+            return enforce_query_policies(
+                self._config,
+                [segment_id],
+                environment=str(context.get("environment", "")),
+                audience=str(context.get("audience", "")),
+                roles=context.get("roles", []),
+            )
+
+        refuse_as_unknown(
+            segment_id,
+            diagnostic_hidden_object_ids(self._config, context),
+            lambda masked: (effects(masked), normalize_segment(self._config, masked)),
         )
+        return effects(segment_id)
 
     @runtime_request_scope
     def segment_validate(
