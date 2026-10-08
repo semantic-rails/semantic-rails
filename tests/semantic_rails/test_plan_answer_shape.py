@@ -616,6 +616,7 @@ def test_dropping_those_words_anyway_is_still_held(jaffle: Runtime, question: st
     assert "ready_for" not in held["next"]
     if question == "Orders by store name last week compared with the week before?":
         assert held["why"]["errors"][0]["code"] == GAP
+        return
     terms = held["why"].get("details", {}).get("terms", [])
     retry = plan_payload(jaffle, intent=_without(question, terms))
 

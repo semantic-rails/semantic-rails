@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import duckdb
@@ -18,9 +19,12 @@ from semantic_rails.planner._base import RuntimeCompositionDraft
 from semantic_rails.planner.answer_shape import _answer_shape_why
 from semantic_rails.planner.faithfulness import intent_faithfulness_why
 from semantic_rails.planner.intent_ir import parse_intent
+from semantic_rails.planner.patterns.period_pair import completed_period_pair
 from semantic_rails.planner.time_windows import _time_window
 from semantic_rails.planner.unasked_groupings import _unasked_grouping_why
 from semantic_rails.runtime import Runtime
+from tests.semantic_rails.conftest import copy_package_config
+from tests.semantic_rails.result_helpers import typed_rows
 from tests.semantic_rails.test_plan_metric_vocabulary import SEED, _package
 from tests.semantic_rails.test_plan_time_reference import subscriptions  # noqa: F401, F811
 
@@ -116,7 +120,7 @@ def _draft() -> dict[str, Any]:
             [1, 1],
         ),
         (
-            "new accounts last week change from the week before",
+            "New accounts by week last week vs the week before",
             "new_accounts",
             "week",
             "2026-09-21",
@@ -234,9 +238,12 @@ def test_completed_pairs_match_independent_sql(
         "new accounts this week compared with last week",
         "new accounts this month vs the month before",
         "new accounts last week vs the week before last",
+        "new accounts last week change from the week before",
+        "New accounts by day last week vs the week before",
     ],
 )
 def test_other_comparisons_stay_held(accounts: Runtime, question: str) -> None:
+    assert completed_period_pair(question) is None
     result = plan_payload(accounts, intent=question, partial_query={"policy_context": NOW})
     assert result["status"] == "low_confidence", result
     assert not result["next"].get("ready_for")
@@ -244,6 +251,7 @@ def test_other_comparisons_stay_held(accounts: Runtime, question: str) -> None:
         "new accounts last week vs the same week last year": "TIME_WINDOW_UNRESOLVED",
         "new accounts September vs August 2026": "TIME_WINDOW_UNRESOLVED",
         "new accounts last week vs the week before last": "PLAN_UNMATCHED_TERMS",
+        "new accounts last week change from the week before": "PLAN_UNMATCHED_TERMS",
     }
     if question in unchanged:
         assert result["why"]["code"] == unchanged[question]
@@ -264,6 +272,97 @@ def test_stock_pair_stays_held(subscriptions: Runtime) -> None:  # noqa: F811
     assert not result["next"].get("ready_for")
     assert result["why"]["code"] == "VALIDATION_FAILED"
     assert result["why"]["errors"][0]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+
+
+@pytest.mark.parametrize("fill", [False, None], ids=["disabled", "missing"])
+def test_order_pair_requires_fill(
+    runtime_factory: Any, monkeypatch: pytest.MonkeyPatch, fill: bool | None
+) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    question = "How many orders did we get last week compared with the week before?"
+    context = {"now": "2017-08-21"}
+    planned = plan_payload(runtime, intent=question, partial_query={"policy_context": context})
+    assert planned["status"] == "ok", planned.get("why")
+    query = deepcopy(planned["best"]["query_ir"])
+    query["policy_context"] = context
+    if fill is None:
+        del query["time"]["fill"]
+    else:
+        query["time"]["fill"] = fill
+        patched = plan_payload(
+            runtime,
+            intent=question,
+            partial_query={"policy_context": context, "time": {"fill": fill}},
+        )
+        assert patched["status"] != "ok", patched
+        assert "execute" not in patched["next"].get("ready_for", [])
+    assert completed_period_pair(question, runtime=runtime, query=query) is None
+    draft = RuntimeCompositionDraft(query=query, resolved=[], rationale=[], interpreted_intent={})
+    monkeypatch.setattr(
+        plan_module,
+        "compose",
+        lambda *_args: SimpleNamespace(
+            draft=draft, pattern="period_pair", intent_ir=parse_intent(runtime, question)
+        ),
+    )
+    held = plan_payload(runtime, intent=question, partial_query={"policy_context": context})
+    assert held["status"] != "ok", held
+    assert "execute" not in held["next"].get("ready_for", [])
+    assert held["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+
+
+def test_completed_order_pair_fills_an_empty_week(tmp_path: Path) -> None:
+    package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
+    database = package / "jaffle_shop.duckdb"
+    with duckdb.connect(str(database)) as connection:
+        connection.execute("""
+            DELETE FROM jaffle_order
+            WHERE ordered_at >= DATE '2017-08-07' AND ordered_at < DATE '2017-08-21';
+            UPDATE jaffle_order SET ordered_at = DATE '2017-08-14'
+            WHERE order_id = (SELECT MIN(order_id) FROM jaffle_order);
+        """)
+        reference = connection.execute("""
+            WITH periods(bucket) AS (VALUES (DATE '2017-08-07'), (DATE '2017-08-14'))
+            SELECT p.bucket, COUNT(DISTINCT o.order_id) FROM periods p
+            LEFT JOIN jaffle_order o ON o.ordered_at >= p.bucket
+              AND o.ordered_at < p.bucket + INTERVAL '1 week'
+            GROUP BY p.bucket ORDER BY p.bucket
+        """).fetchall()
+    runtime = Runtime.from_path(str(package))
+    try:
+        planned = plan_payload(
+            runtime,
+            intent="How many orders did we get last week compared with the week before?",
+            partial_query={"policy_context": {"now": "2017-08-21"}},
+        )
+        assert planned["status"] == "ok", planned.get("why")
+        assert planned["next"]["ready_for"] == ["execute"]
+        query = planned["best"]["query_ir"]
+        rows = typed_rows(runtime.query(query))
+        clock = f"{query['time']['temporal_role']}__week"
+        alias = query["select"][0]["as"]
+        actual = [(str(row[clock])[:10], row[alias]) for row in rows]
+        assert actual == [(str(bucket), count) for bucket, count in reference] == [
+            ("2017-08-07", 0),
+            ("2017-08-14", 1),
+        ]
+    finally:
+        runtime.close()
+
+
+def test_change_from_last_month_keeps_the_time_window_and_hold(runtime_factory: Any) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    planned = plan_payload(
+        runtime,
+        intent="How did revenue change from last month?",
+        partial_query={"policy_context": {"now": "2017-08-21"}},
+    )
+    assert planned["status"] == "low_confidence", planned
+    assert planned["why"]["code"] == "PLAN_UNMATCHED_TERMS"
+    assert "execute" not in planned["next"].get("ready_for", [])
+    assert planned["best"]["query_ir"]["time"]["range"] == {
+        "last": {"unit": "month", "value": 1}
+    }
 
 
 @pytest.mark.parametrize(
