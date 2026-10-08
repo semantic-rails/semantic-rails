@@ -107,7 +107,7 @@ packages are loaded by pointing `--path` at the directory:
 semantic-rails catalog --path ./my_pkg --verbosity summary
 semantic-rails plan --path ./my_pkg --intent "monthly revenue"
 semantic-rails mcp setup --path ./my_pkg
-semantic-rails mcp http --path ./my_pkg --host 127.0.0.1 --port 8091
+semantic-rails serve --path ./my_pkg --host 127.0.0.1 --port 8091
 ```
 
 Architect MCP and the REPL use the same workspace-scoped model, metric, and
@@ -2567,7 +2567,7 @@ Use `semantic-rails check` as the default GitHub PR gate.
 The discovery and query surface takes `--path` too, so a custom package gets
 the same agent loop as a registered one: `catalog`, `discover`, `inspect`,
 `valid-values`, `plan`, `build-options`, `validate`, `compile`, `query`, and
-`mcp stdio` / `mcp http` all accept it (query-error recovery hints reference
+`mcp stdio` / `serve` all accept it (query-error recovery hints reference
 these commands by name). The config/CI verbs — `parse-config`,
 `validate-config`, `check`, `build-package`, `run-examples`, `test-package`,
 `diff-package`, `impact-report`, `promote-package`, `doctor` — accept `--path`

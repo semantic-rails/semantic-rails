@@ -26,38 +26,22 @@ PACKAGE_PATH="$(pwd)/my_package"
 semantic-rails mcp setup --path "$PACKAGE_PATH"
 ```
 
-On POSIX systems, start a terminal-managed HTTP smoke in the background:
+For local HTTP clients, run one foreground server in a separate terminal:
 
 ```bash
-semantic-rails mcp start --path "$PACKAGE_PATH" --port 8091
-semantic-rails mcp status --path "$PACKAGE_PATH"
+semantic-rails serve --path "$PACKAGE_PATH" --host 127.0.0.1 --port 8091
 ```
 
-Managed `start/status/stop` is POSIX-only because it verifies process identity
-before signaling a background PID. It uses `ps` for that, so it also refuses (and
-starts nothing) where `ps` is missing, as in minimal container images such as
-`python:3.12-slim`; install `procps` there. A `ps` that can't run or doesn't answer
-within five seconds counts the same way, and `stop` never signals a process it
-could not identify. If identity observation fails, `stop` reports
-`ok: false` with `identity_unverifiable` and leaves the server registered so you
-can retry. An observed identity mismatch removes the stale registration without
-signaling the process. On Windows, prefer
-`semantic-rails mcp setup --install --yes` so the client launches stdio, or run
-`semantic-rails mcp http ...` as a foreground process in a separate terminal.
-
-For desktop MCP clients, prefer `semantic-rails mcp setup --install --yes`
-or the lower-level `client-config` commands below. The raw
-`semantic-rails mcp stdio --path "$PACKAGE_PATH"` and
-`semantic-rails mcp http --path "$PACKAGE_PATH" --host 127.0.0.1 --port 8091`
-commands are foreground servers; they stay open until the client disconnects or
-you stop the process.
+It serves both the HTTP API and stateless Streamable HTTP at `/mcp`. Stop it
+with Ctrl-C. Desktop MCP clients can launch stdio themselves with
+`semantic-rails mcp setup --path "$PACKAGE_PATH" --install --yes`.
 
 From a source checkout, prefix commands with `uv run`, or point at the bundled
 synthetic Jaffle Shop package:
 
 ```bash
 uv run semantic-rails mcp stdio --package jaffle_shop
-uv run semantic-rails mcp http --package jaffle_shop --host 127.0.0.1 --port 8091
+uv run semantic-rails serve --package jaffle_shop --host 127.0.0.1 --port 8091
 ```
 
 Then list tool names:
@@ -73,12 +57,6 @@ curl http://127.0.0.1:8091/mcp \
 
 The response should list six tools: `discover`, `inspect`, `valid-values`, `plan`, `execute` and
 `segment`.
-
-On POSIX, stop the managed server when you are done with the terminal smoke:
-
-```bash
-semantic-rails mcp stop --path "$PACKAGE_PATH"
-```
 
 `mcp setup` is the quick local workflow path before wiring a client: it loads the
 package, checks that the MCP tools are available, and previews the Claude/Codex

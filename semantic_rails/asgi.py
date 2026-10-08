@@ -21,7 +21,6 @@ from threading import BoundedSemaphore
 from typing import Any
 from urllib.parse import parse_qs
 
-from .api_keys import api_key_auth_result
 from .audit import emit_audit_event
 from .http_core import (
     CORS_ALLOW_HEADERS,
@@ -31,8 +30,12 @@ from .http_core import (
     request_id_from_parts,
 )
 from .mcp import SemanticLayerMCPAdapter
-from .mcp_streamable_http import MCP_MAX_REQUEST_BYTES, handle_streamable_http_request
-from .request_context import get_policy_context_resolver
+from .mcp_streamable_http import (
+    MCP_MAX_REQUEST_BYTES,
+    MCPHTTPResponse,
+    handle_streamable_http_request,
+    prepare_streamable_http_request,
+)
 from .runtime import Runtime
 
 Receive = Callable[[], Awaitable[dict[str, Any]]]
@@ -272,34 +275,16 @@ class SemanticLayerASGIApp:
         request_id: str,
         request_origin: str | None,
     ) -> None:
-        # The same bearer API keys that guard /api/v1/* guard /mcp. When no
-        # keys are configured (for example, local development), auth stays
-        # disabled.
-        # The execute tool lives behind this endpoint, so leaving it open
-        # while operators believe SEMANTIC_RAILS_API_KEYS protects the
-        # deployment would be a silent auth bypass.
-        auth_ok, _ = api_key_auth_result(headers)
-        if not auth_ok:
+        context = prepare_streamable_http_request(headers, request_id=request_id)
+        if isinstance(context, MCPHTTPResponse):
             return await self._send(
                 send,
-                401,
-                {
-                    "jsonrpc": "2.0",
-                    "id": None,
-                    "error": {
-                        "code": -32001,
-                        "message": "Missing or invalid bearer API key.",
-                    },
-                },
+                context.status,
+                context.payload or {},
                 request_origin=request_origin,
                 request_id=request_id,
                 allow_methods="POST, OPTIONS",
             )
-        context = get_policy_context_resolver().resolve(
-            headers,
-            payload=None,
-            request_id=request_id,
-        )
         body = b""
         if method == "POST":
             try:

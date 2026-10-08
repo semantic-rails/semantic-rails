@@ -10,7 +10,7 @@ shapes the runtime needs:
 * request-id derivation from header / query / payload precedence
   (:func:`request_id_from_parts`, :func:`clean_request_id`)
 * case-insensitive header lookup (:func:`header_value`)
-* public route acceptance for the canonical ``/api/v1/*`` HTTP surface
+* public route acceptance for ``/api/v1/*`` and the public ``/health`` probe
   (:func:`public_api_route`) and route-path normalization that maps
   ``/api/v1/foo`` to ``/foo`` (:func:`normalize_route`)
 * envelope-error helpers (:func:`issue`, :func:`status_label`)
@@ -75,6 +75,8 @@ PUBLIC_API_PREFIX = "/api/v1"
 
 def public_api_route(path: str) -> str | None:
     route = str(path or "/")
+    if route.rstrip("/") == "/health":
+        return "/health"
     if route == PUBLIC_API_PREFIX or route.startswith(f"{PUBLIC_API_PREFIX}/"):
         return normalize_route(route)
     return None

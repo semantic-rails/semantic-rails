@@ -12,21 +12,13 @@ import yaml
 
 from ...errors import SemanticLayerError
 from ...mcp import SemanticLayerMCPAdapter
-from ...mcp_manager import (
-    managed_mcp_lifecycle_report,
-    mcp_client_config_report,
-    mcp_status_report,
-    start_mcp_http_server,
-    stop_mcp_http_server,
-)
+from ...mcp_manager import mcp_client_config_report
 from ...mcp_server import refuse_stdio
-from ...mcp_server import serve_http as serve_mcp_http
 from ...mcp_server import serve_stdio as serve_mcp_stdio
 from ...runtime import Runtime
 from ..common import (
     _confirm,
     _is_bundled_ref,
-    _optional_ref_from_args,
     _print,
     _ref_from_args,
     _runtime_from_package_or_path,
@@ -97,16 +89,6 @@ def cmd_mcp_stdio(args: argparse.Namespace) -> None:
         adapter.close()
 
 
-def cmd_mcp_http(args: argparse.Namespace) -> None:
-    runtime = _runtime_from_package_or_path(args)
-    adapter = SemanticLayerMCPAdapter(runtime)
-    try:
-        adapter.list_tools()
-        serve_mcp_http(adapter, host=args.host, port=args.port)
-    finally:
-        adapter.close()
-
-
 def cmd_mcp_doctor(args: argparse.Namespace) -> None:
     runtime = _runtime_from_package_or_path(args)
     mcp = _mcp_tool_check(runtime)
@@ -114,25 +96,11 @@ def cmd_mcp_doctor(args: argparse.Namespace) -> None:
         runtime,
         prefer_path=bool(str(getattr(args, "path", "") or "").strip()),
     )
-    lifecycle = managed_mcp_lifecycle_report()
-    next_commands = [f"semantic-rails mcp setup {source_arg}"]
-    if lifecycle["supported"]:
-        next_commands.extend(
-            [
-                f"semantic-rails mcp status {source_arg}",
-                f"semantic-rails mcp start {source_arg} --port 8091",
-                "curl -s http://127.0.0.1:8091/health",
-                f"semantic-rails mcp stop {source_arg}",
-            ]
-        )
-    else:
-        next_commands.extend(
-            [
-                f"semantic-rails mcp setup {source_arg} --client both --mcp query --install --yes",
-                f"semantic-rails mcp stdio {source_arg}",
-                f"semantic-rails mcp http {source_arg} --host 127.0.0.1 --port 8091",
-            ]
-        )
+    next_commands = [
+        f"semantic-rails mcp setup {source_arg} --client both --mcp query --install --yes",
+        f"semantic-rails serve {source_arg} --host 127.0.0.1 --port 8091",
+        "curl -s http://127.0.0.1:8091/health",
+    ]
     payload = {
         "ok": bool(mcp["required_tools_present"]),
         "package": {
@@ -141,7 +109,6 @@ def cmd_mcp_doctor(args: argparse.Namespace) -> None:
             "warehouse": runtime.warehouse,
         },
         "mcp": mcp,
-        "managed_lifecycle": lifecycle,
         "next_commands": next_commands,
     }
     _print(payload)
@@ -178,7 +145,6 @@ def cmd_mcp_setup(args: argparse.Namespace) -> None:
             f"--mcp {args.mcp} --install --yes"
         ),
         f"semantic-rails mcp doctor {source_arg}",
-        f"semantic-rails mcp status {source_arg}",
     ]
     payload = {
         "ok": bool(mcp["required_tools_present"] and config.get("ok")),
@@ -234,27 +200,6 @@ def _print_mcp_setup_report(payload: dict[str, Any]) -> None:
     print("Next commands:")
     for command in list(payload.get("next_commands", []) or []):
         print(f"  {command}")
-
-
-def cmd_mcp_start(args: argparse.Namespace) -> None:
-    ref = _ref_from_args(args)
-    report = start_mcp_http_server(
-        ref,
-        name=args.name,
-        host=args.host,
-        port=args.port,
-    )
-    _print(report)
-    if not report["ok"]:
-        raise SystemExit(1)
-
-
-def cmd_mcp_stop(args: argparse.Namespace) -> None:
-    _print(stop_mcp_http_server(name=args.name, ref=_optional_ref_from_args(args)))
-
-
-def cmd_mcp_status(args: argparse.Namespace) -> None:
-    _print(mcp_status_report(_optional_ref_from_args(args)))
 
 
 def cmd_mcp_client_config(args: argparse.Namespace) -> None:
