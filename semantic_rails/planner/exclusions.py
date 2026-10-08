@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..ast import is_child_group
+from ._base import _name_matches
 from .coverage import CoverageGap, _is_number
 from .visibility import visible_value_domains
 
@@ -556,9 +557,27 @@ def _by_id(rows: Any, object_id: Any) -> Any:
     return next((row for row in list(rows or []) if getattr(row, "id", None) == object_id), None)
 
 
-def _plain_ref(config: Any, item: Any) -> bool:
-    """A select item that is one plain reference: ``{metric}``, or ``{measure}`` at the
-    measure's own default aggregation, with ``kind`` absent or naming the same."""
+def _named_subjects(config: Any, text: str, regions: list[Span]) -> set[str]:
+    """The measures and metrics whose declared name the question says whole outside every
+    exclusion ("signups excluding web")."""
+
+    rows = [
+        *(getattr(config, "measures", None) or []),
+        *(getattr(config, "metric_recipes", None) or []),
+    ]
+    return {
+        str(row.id)
+        for row in rows
+        if any(
+            not any(start < stop and begin < end for begin, stop in regions)
+            for _size, start, end in _name_matches(row, str(text or ""))
+        )
+    }
+
+
+def _plain_ref(config: Any, item: Any, subjects: set[str]) -> bool:
+    """A select item that is one plain reference to a subject the question names: ``{metric}``,
+    or ``{measure}`` at the measure's own default aggregation, ``kind`` absent or the same."""
 
     if not isinstance(item, dict) or not set(item) <= {"expression", "as"}:
         return False
@@ -567,10 +586,12 @@ def _plain_ref(config: Any, item: Any) -> bool:
         return False
     parts = set(expression) - {"kind"}
     if parts == {"metric"}:
-        return expression.get("kind", "metric") == "metric"
+        named = str(expression["metric"]) in subjects
+        return named and expression.get("kind", "metric") == "metric"
     if parts not in ({"measure"}, {"measure", "aggregation"}):
         return False
-    if expression.get("kind", "measure") != "measure":
+    named = str(expression["measure"]) in subjects
+    if not named or expression.get("kind", "measure") != "measure":
         return False
     if "aggregation" not in expression:
         return True
@@ -628,15 +649,20 @@ def _filter_entry(path: str, row: Any) -> dict[str, Any]:
 
 
 def _excess(
-    config: Any, query: dict[str, Any], named: dict[str, list[Any]], window: dict[str, Any]
+    config: Any,
+    query: dict[str, Any],
+    named: dict[str, list[Any]],
+    window: dict[str, Any],
+    subjects: set[str],
 ) -> list[dict[str, Any]]:
     """Every part of the draft outside a closed list, each with its path.
 
     Admitted: the inert keys and ``_`` annotations; ``group_by``, since the unasked-grouping
     check holds any grouping or grain the question doesn't trace to; one ``select`` item that
-    is a plain reference; ``where`` rows that drop a value an item names; and a ``time`` block
-    of the selected subject's own clock, a grain and the bounds of the question's ``window``.
-    Every other key, value or node is excess by its key alone, a new key included.
+    plainly references one of the question's named ``subjects``; ``where`` rows that drop a
+    value an item names; and a ``time`` block of the selected subject's own clock, a grain and
+    the bounds of the question's ``window``. Every other key, value or node is excess by its
+    key alone, a new key included.
     """
 
     out: list[dict[str, Any]] = []
@@ -647,7 +673,7 @@ def _excess(
             out += [
                 {"path": f"select[{index}]", "value": item}
                 for index, item in enumerate(value)
-                if index or not _plain_ref(config, item)
+                if index or not _plain_ref(config, item, subjects)
             ]
         elif key == "where" and isinstance(value, list):
             out += [
@@ -682,6 +708,7 @@ def exclusion_gaps(config: Any, text: str, query: dict[str, Any], window: Any) -
         query,
         config=config,
         window=dict(window.bounds),
+        subjects=_named_subjects(config, text, exclusion_regions(text, window.spans)),
         valid_values=_declared_values(config),
     )
 
@@ -692,6 +719,7 @@ def unrealized(
     *,
     config: Any = None,
     window: dict[str, Any] | None = None,
+    subjects: set[str] | None = None,
     valid_values: dict[str, list[Any]] | None = None,
 ) -> list[CoverageGap]:
     """One gap for each clause the draft doesn't realize item by item.
@@ -699,8 +727,9 @@ def unrealized(
     Each value item needs a top-level ``IS DISTINCT FROM`` filter on its value and its one
     bound dimension. Beside an exclusion the draft, whoever supplied it (the caller's
     ``partial_query`` included), carries only what ``_excess`` admits: those filters, one
-    plain measure or metric reference, the subject's own clock with the question's own time
-    ``window``, a grain, grouping, ordering and inert context. Anything else is ``excess``.
+    plain reference to a measure or metric the question names (``subjects``), the subject's
+    own clock with the question's own time ``window``, a grain, grouping, ordering and inert
+    context. Anything else is ``excess``.
     """
 
     if not clauses:
@@ -716,7 +745,7 @@ def unrealized(
         for index, row in enumerate(where)
         if _plain_filter(row)
     ]
-    excess = _excess(config, query, named, window or {})
+    excess = _excess(config, query, named, window or {}, subjects or set())
     gaps: list[CoverageGap] = []
     for number, clause in enumerate(clauses):
         report: dict[str, list[Any]] = {

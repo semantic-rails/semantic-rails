@@ -727,6 +727,9 @@ EXTRA = {
         "select[0]",
     ),
     "other aggregation": ("select", {**SIGNUPS, "aggregation": "count"}, "select[0]"),
+    # Plain references to subjects the question doesn't name: 5, and a conversion rate.
+    "other measure": ("select", {"measure": "measure.shop.order_count"}, "select[0]"),
+    "other metric": ("select", {"metric": "metric.shop.signup_to_order_7d"}, "select[0]"),
     **{
         f"{kind} expression": ("select", {"kind": kind, **parts}, "select[0]")
         for kind, parts in KINDS.items()
@@ -757,7 +760,7 @@ EXTRA = {
 # Rows whose draft fails Query IR validation on this package for some question or source,
 # before the exclusion check is reported.
 REFUSED = {
-    *("another clock", "dense rows", "another calendar", "other aggregation"),
+    *("another clock", "dense rows", "another calendar", "other aggregation", "other measure"),
     *(f"{kind} expression" for kind in ("aggregate_if", "prior_period", "rolling")),
     *(f"{kind} expression" for kind in ("cumulative", "period_to_date", "conversion")),
     *("distribution expression", "route decisions", "unknown key"),
