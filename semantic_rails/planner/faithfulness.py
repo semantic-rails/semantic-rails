@@ -67,13 +67,8 @@ from .time_windows import _time_window
 from .visibility import visible_object_ids
 
 
-def _shared_subjects(config: Any, text: str) -> list[Any]:
-    """Whole analytic names that remain indistinguishable, independent of ranking.
-
-    A label without its parenthetical counts, so the shared base of two variants
-    ("Conversion rate (7d)", "Conversion rate (7d, same store)") never picks one.
-    """
-
+def _selectable_subjects(config: Any, candidate_ids: list[str] | None = None) -> list[Any]:
+    """Visible published subjects, with equivalent authored answers collapsed."""
     rows = [
         *config.metric_recipes,
         *(row for row in config.measures if getattr(row, "publish", True)),
@@ -86,9 +81,41 @@ def _shared_subjects(config: Any, text: str) -> list[Any]:
     for metric in config.metric_recipes:
         wrapped = whole_aggregate(metric)
         other = measures.get(wrapped[0]) if wrapped is not None and not wrapped[2] else None
-        if other is not None and other.label == metric.label and other.name == metric.name:
+        if wrapped is not None and (
+            candidate_ids is not None
+            and metric.id in candidate_ids
+            and metric.id in visible
+            and other is not None
+            and other.id in candidate_ids
+            and (wrapped[1] or other.default_aggregation) == other.default_aggregation
+        ):
+            mirrors.add(other.id)
+        elif (
+            wrapped is not None
+            and other is not None
+            and other.label == metric.label
+            and other.name == metric.name
+            and (
+                candidate_ids is None
+                or (wrapped[1] or other.default_aggregation) == other.default_aggregation
+            )
+        ):
             mirrors.add(metric.id)
-    rows = [row for row in rows if row.id not in mirrors]
+    return [
+        row
+        for row in rows
+        if row.id not in mirrors and (candidate_ids is None or row.id in candidate_ids)
+    ]
+
+
+def _shared_subjects(config: Any, text: str) -> list[Any]:
+    """Whole analytic names that remain indistinguishable, independent of ranking.
+
+    A label without its parenthetical counts, so the shared base of two variants
+    ("Conversion rate (7d)", "Conversion rate (7d, same store)") never picks one.
+    """
+
+    rows = _selectable_subjects(config)
     fits = {}
     for row in rows:
         spans = _name_matches(row, text)
@@ -330,9 +357,30 @@ def intent_faithfulness_why(
         # value-specific absences are consequences of the same contradiction.
         gaps.extend(contradictions)
     else:
-        gaps.extend(_filter_value_gaps(runtime, text, query))
+        filter_text = text
+        if len(requested_subjects) >= 2 and not missing:
+            filter_text = _conjoined_filter_text(text, requested_subjects)
+        gaps.extend(_filter_value_gaps(runtime, filter_text, query))
 
-    return _coverage_why(gaps)
+    why = _coverage_why(gaps)
+    if why is not None and any(gap.kind == "multiple_subjects_unrealized" for gap in gaps):
+        objects = {
+            row.id: row for row in [*runtime._config.measures, *runtime._config.metric_recipes]
+        }
+        why["details"]["parts"] = [
+            {
+                **part,
+                "temporal_roles": [
+                    str(
+                        getattr(objects[key], "temporal_role", "")
+                        or getattr(objects[key], "default_temporal_role", "")
+                    )
+                    for key in part["candidate_ids"]
+                ],
+            }
+            for part in requested_subjects
+        ]
+    return why
 
 
 def _ambiguous_grouping_gaps(
@@ -493,8 +541,18 @@ def named_subject_why(
 ) -> dict[str, Any] | None:
     """A shared whole name cannot be settled by the ranking's label or score."""
 
-    rows = _shared_subjects(runtime._config, question)
-    if not rows or any(row.id in _projected_subject_ids(partial_query or {}) for row in rows):
+    parts = _conjoined_subjects(runtime, question)
+    projected = set(_projected_subject_ids(partial_query or {}))
+    rows = []
+    for part in parts:
+        rows = _selectable_subjects(runtime._config, part["candidate_ids"])
+        if len(rows) >= 2 and not any(row.id in projected for row in rows):
+            rows = sorted(rows, key=lambda row: row.id)
+            break
+        rows = []
+    if not parts:
+        rows = _shared_subjects(runtime._config, question)
+    if not rows or any(row.id in projected for row in rows):
         return None
     return _coverage_why(
         [
@@ -632,6 +690,13 @@ def _conjoined_subjects(runtime: Any, text: str) -> list[dict[str, Any]]:
             return []
         matches.append({"phrase": piece, "candidate_ids": candidate_ids})
     return matches
+
+
+def _conjoined_filter_text(text: str, subjects: list[dict[str, Any]]) -> str:
+    """Selected subject names consume only their first occurrence, never a later filter."""
+    for part in subjects:
+        text = text.replace(part["phrase"], "", 1)
+    return text
 
 
 def _matches_exact_subject_field(row: Any, piece_tokens: tuple[str, ...]) -> bool:

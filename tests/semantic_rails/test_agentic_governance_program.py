@@ -59,6 +59,7 @@ def _write_package(
     package_environments: list[str] | None = None,
     semantic_policies: list[dict] | None = None,
     extra_measures: dict | None = None,
+    extra_metrics: dict | None = None,
     measure_meta: dict | None = None,
 ) -> None:
     _write_yaml(
@@ -66,6 +67,7 @@ def _write_package(
         {
             "schema_version": 1,
             "package": {
+                "schema_strict": True,
                 "id": package_dir.name,
                 "name": package_dir.name,
                 "description": f"{package_dir.name} demo package",
@@ -90,7 +92,7 @@ def _write_package(
             "graph": {
                 "entities": {
                     "order": {
-                        "id": "entity.demo_order",
+                        "as": "entity.demo_order",
                         "name": "demo.Order",
                         "label": "Order",
                         "key": ["order_id"],
@@ -105,10 +107,8 @@ def _write_package(
         {
             "model": {
                 "id": "orders",
-                "entity": "order",
+                "entities": {"order": {}},
                 "relation": "order_fact",
-                "grain": ["order_id"],
-                "keys": {"primary": ["order_id"]},
                 "times": {
                     "ordered_at": {
                         "id": "temporal_role.demo_order_time",
@@ -122,13 +122,12 @@ def _write_package(
                 },
                 "measures": {
                     "order_count": {
-                        "id": "measure.demo.order_count",
+                        "as": "measure.demo.order_count",
                         "name": "sales.orders",
                         "label": "Orders",
                         "description": "Order count",
                         "kind": "entity_count",
                         "time": "ordered_at",
-                        "topics": ["orders"],
                         "meta": dict(measure_meta or {}),
                         "publish": {"id": "metric.sales.orders"},
                     },
@@ -137,7 +136,22 @@ def _write_package(
             }
         },
     )
-    _write_yaml(package_dir / "metrics.yml", {"metrics": {}})
+    _write_yaml(
+        package_dir / "metrics.yml",
+        {
+            "metrics": {
+                "sales.orders": {
+                    "id": "metric.sales.orders",
+                    "kind": "aggregate",
+                    "measure": "measure.demo.order_count",
+                    "label": "Orders",
+                    "description": "Order count",
+                    "value_type": "number",
+                },
+                **dict(extra_metrics or {}),
+            }
+        },
+    )
     _write_seed_sql(package_dir / "data" / "seed_example.sql")
 
 
@@ -215,14 +229,17 @@ def test_policy_scaffolding_hides_objects_and_blocks_queries(tmp_path: Path):
             {
                 "id": "policy.demo.hidden_secret",
                 "kind": "object_visibility",
-                "object_ids": ["measure.demo.secret_orders"],
+                "object_ids": ["measure.demo.secret_orders", "metric.sales.secret_orders"],
                 "action": "hidden",
                 "rationale": "internal only",
             },
             {
                 "id": "policy.demo.production_hidden_secret",
                 "kind": "object_visibility",
-                "object_ids": ["measure.demo.production_secret_orders"],
+                "object_ids": [
+                    "measure.demo.production_secret_orders",
+                    "metric.sales.production_secret_orders",
+                ],
                 "action": "hidden",
                 "environments": ["production"],
                 "rationale": "production only",
@@ -237,24 +254,40 @@ def test_policy_scaffolding_hides_objects_and_blocks_queries(tmp_path: Path):
         ],
         extra_measures={
             "secret_orders": {
-                "id": "measure.demo.secret_orders",
+                "as": "measure.demo.secret_orders",
                 "name": "sales.secret_orders",
                 "label": "Secret orders",
                 "description": "Hidden measure",
                 "kind": "entity_count",
                 "time": "ordered_at",
-                "topics": ["orders"],
                 "publish": False,
             },
             "production_secret_orders": {
-                "id": "measure.demo.production_secret_orders",
+                "as": "measure.demo.production_secret_orders",
                 "name": "sales.production_secret_orders",
                 "label": "Production secret orders",
                 "description": "Hidden only for production context",
                 "kind": "entity_count",
                 "time": "ordered_at",
-                "topics": ["orders"],
                 "publish": False,
+            },
+        },
+        extra_metrics={
+            "sales.secret_orders": {
+                "id": "metric.sales.secret_orders",
+                "kind": "aggregate",
+                "measure": "measure.demo.secret_orders",
+                "label": "Secret orders",
+                "description": "Hidden metric",
+                "value_type": "number",
+            },
+            "sales.production_secret_orders": {
+                "id": "metric.sales.production_secret_orders",
+                "kind": "aggregate",
+                "measure": "measure.demo.production_secret_orders",
+                "label": "Production secret orders",
+                "description": "Hidden only for production context",
+                "value_type": "number",
             },
         },
         measure_meta={"owner_team": "finance", "review_priority": "high", "change_risk": "medium"},
@@ -263,8 +296,9 @@ def test_policy_scaffolding_hides_objects_and_blocks_queries(tmp_path: Path):
     try:
         discovery = discover_payload(runtime, terms="secret", stage="initial", limit=5)
         assert all(row["id"] != "measure.demo.secret_orders" for row in discovery["measures"])
+        assert all(row["id"] != "metric.sales.secret_orders" for row in discovery["metrics"])
         assert any(
-            row["id"] == "measure.demo.production_secret_orders" for row in discovery["measures"]
+            row["id"] == "metric.sales.production_secret_orders" for row in discovery["metrics"]
         )
         production_discovery = discover_payload(
             runtime,
@@ -272,6 +306,10 @@ def test_policy_scaffolding_hides_objects_and_blocks_queries(tmp_path: Path):
             stage="initial",
             limit=5,
             partial_query={"policy_context": {"environment": "production"}},
+        )
+        assert all(
+            row["id"] != "metric.sales.production_secret_orders"
+            for row in production_discovery["metrics"]
         )
         assert all(
             row["id"] != "measure.demo.production_secret_orders"
@@ -288,6 +326,9 @@ def test_policy_scaffolding_hides_objects_and_blocks_queries(tmp_path: Path):
             assert exc.code == "OBJECT_NOT_FOUND"
         else:  # pragma: no cover - defensive branch
             raise AssertionError("hidden objects should not be inspectable")
+        with pytest.raises(SemanticLayerError) as exc:
+            inspect_payload(runtime, object_id="metric.sales.secret_orders")
+        assert exc.value.code == "OBJECT_NOT_FOUND"
         denied = runtime.validate(
             {
                 "version": 1,

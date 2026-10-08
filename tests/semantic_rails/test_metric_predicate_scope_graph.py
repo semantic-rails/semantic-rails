@@ -110,12 +110,15 @@ def _write_yaml(path: Path, payload: dict) -> None:
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
 
-def _write_package_header(package_dir: Path, package_id: str, graph_entities: dict) -> None:
+def _write_package_header(
+    package_dir: Path, package_id: str, graph_entities: dict, *, graph_relationships: dict
+) -> None:
     _write_yaml(
         package_dir / "package.yml",
         {
             "schema_version": 1,
             "package": {
+                "schema_strict": True,
                 "id": package_id,
                 "name": package_id,
                 "description": f"{package_id} predicate scope demo",
@@ -131,7 +134,10 @@ def _write_package_header(package_dir: Path, package_id: str, graph_entities: di
             },
         },
     )
-    _write_yaml(package_dir / "graph.yml", {"graph": {"entities": graph_entities}})
+    _write_yaml(
+        package_dir / "graph.yml",
+        {"graph": {"entities": graph_entities, "relationships": graph_relationships}},
+    )
 
 
 def _load_config(package_dir: Path):
@@ -198,32 +204,49 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
         f"{parent}_scope_demo",
         {
             owner: {
-                "id": f"entity.demo_{owner}",
+                "as": f"entity.demo_{owner}",
                 "name": f"demo.{owner.title()}",
                 "label": owner.title(),
                 "key": [f"{owner}_id"],
                 "model": f"{owner}s",
             },
             parent: {
-                "id": f"entity.demo_{parent}",
+                "as": f"entity.demo_{parent}",
                 "name": f"demo.{parent.title()}",
                 "label": parent.title(),
                 "key": [f"{parent}_id"],
                 "model": f"{parent}s",
             },
             child_entity: {
-                "id": f"entity.demo_{child_entity}",
+                "as": f"entity.demo_{child_entity}",
                 "name": f"demo.{child_name}",
                 "label": child_entity.replace("_", " ").capitalize(),
                 "key": [f"{child}_id"],
                 "model": f"{child}s",
             },
             fact: {
-                "id": f"entity.demo_{fact}",
+                "as": f"entity.demo_{fact}",
                 "name": f"demo.{fact.title()}",
                 "label": fact.title(),
                 "key": [f"{fact}_id"],
                 "model": f"{fact}s",
+            },
+        },
+        graph_relationships={
+            f"relationship.demo_{child}_{parent}": {
+                "id": f"relationship.demo_{child}_{parent}",
+                "entities": [child_entity, parent],
+                "cardinality": "many_to_one",
+            },
+            f"relationship.demo_{fact}_{owner}": {
+                "id": f"relationship.demo_{fact}_{owner}",
+                "entities": [fact, owner],
+                "cardinality": "many_to_one",
+            },
+            f"relationship.demo_{fact}_{child}": {
+                "id": f"relationship.demo_{fact}_{child}",
+                "entities": [fact, child_entity],
+                "cardinality": "many_to_one",
             },
         },
     )
@@ -232,12 +255,11 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
         {
             "model": {
                 "id": f"{owner}s",
-                "entity": owner,
+                "entities": {owner: {}},
                 "relation": f"demo_{owner}",
-                "grain": [f"{owner}_id"],
                 "dimensions": {
                     f"{owner}_id": {
-                        "id": f"dimension.demo_{owner}_id",
+                        "as": f"dimension.demo_{owner}_id",
                         "name": f"demo.{owner.title()}.{owner}_id",
                         "label": f"{owner.title()} id",
                         "kind": "id",
@@ -251,18 +273,17 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
         {
             "model": {
                 "id": f"{parent}s",
-                "entity": parent,
+                "entities": {parent: {}},
                 "relation": f"demo_{parent}",
-                "grain": [f"{parent}_id"],
                 "dimensions": {
                     f"{parent}_id": {
-                        "id": f"dimension.demo_{parent}_id",
+                        "as": f"dimension.demo_{parent}_id",
                         "name": f"demo.{parent.title()}.{parent}_id",
                         "label": f"{parent.title()} id",
                         "kind": "id",
                     },
                     f"{parent}_name": {
-                        "id": f"dimension.demo_{parent}_name",
+                        "as": f"dimension.demo_{parent}_name",
                         "name": f"demo.{parent.title()}.{parent}_name",
                         "label": f"{parent.title()} name",
                         "kind": "categorical",
@@ -276,26 +297,23 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
         {
             "model": {
                 "id": f"{child}s",
-                "entity": child_entity,
+                "entities": {child_entity: {}, parent: {"expr": [f"{parent}_id"]}},
                 "relation": f"demo_{child}",
-                "grain": [f"{child}_id"],
-                "keys": {"primary": [f"{child}_id"], "foreign": {parent: [f"{parent}_id"]}},
-                "joins": {parent: {"id": f"relationship.demo_{child}_{parent}", "to": parent}},
                 "dimensions": {
                     f"{child}_id": {
-                        "id": f"dimension.demo_{child}_id",
+                        "as": f"dimension.demo_{child}_id",
                         "name": f"demo.{child_name}.{child}_id",
                         "label": f"{child.title()} id",
                         "kind": "id",
                     },
                     f"{parent}_id": {
-                        "id": f"dimension.demo_{child}_{parent}_id",
+                        "as": f"dimension.demo_{child}_{parent}_id",
                         "name": f"demo.{child_name}.{parent}_id",
                         "label": f"{child.title()} {parent} id",
                         "kind": "id",
                     },
                     f"{child}_name": {
-                        "id": f"dimension.demo_{child}_name",
+                        "as": f"dimension.demo_{child}_name",
                         "name": f"demo.{child_name}.{child}_name",
                         "label": f"{child.title()} name",
                         "kind": "categorical",
@@ -309,35 +327,27 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
         {
             "model": {
                 "id": f"{fact}s",
-                "entity": fact,
+                "entities": {
+                    fact: {},
+                    owner: {"expr": [f"{owner}_id"]},
+                    child_entity: {"expr": [f"{child}_id"]},
+                },
                 "relation": f"demo_{fact}",
-                "grain": [f"{fact}_id"],
-                "keys": {
-                    "primary": [f"{fact}_id"],
-                    "foreign": {owner: [f"{owner}_id"], child_entity: [f"{child}_id"]},
-                },
-                "joins": {
-                    owner: {"id": f"relationship.demo_{fact}_{owner}", "to": owner},
-                    child_entity: {
-                        "id": f"relationship.demo_{fact}_{child}",
-                        "to": child_entity,
-                    },
-                },
                 "dimensions": {
                     f"{fact}_id": {
-                        "id": f"dimension.demo_{fact}_id",
+                        "as": f"dimension.demo_{fact}_id",
                         "name": f"demo.{fact.title()}.{fact}_id",
                         "label": f"{fact.title()} id",
                         "kind": "id",
                     },
                     f"{owner}_id": {
-                        "id": f"dimension.demo_{fact}_{owner}_id",
+                        "as": f"dimension.demo_{fact}_{owner}_id",
                         "name": f"demo.{fact.title()}.{owner}_id",
                         "label": f"{owner.title()} id",
                         "kind": "id",
                     },
                     f"{child}_id": {
-                        "id": f"dimension.demo_{fact}_{child}_id",
+                        "as": f"dimension.demo_{fact}_{child}_id",
                         "name": f"demo.{fact.title()}.{child}_id",
                         "label": f"{child.title()} id",
                         "kind": "id",
@@ -356,7 +366,7 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
                 },
                 "measures": {
                     f"{fact}_count": {
-                        "id": f"measure.demo.{fact}_count",
+                        "as": f"measure.demo.{fact}_count",
                         "name": f"{namespace}.{fact}s",
                         "label": f"{fact.title()}s",
                         "kind": "entity_count",
@@ -371,7 +381,14 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
         package_dir / "metrics.yml",
         {
             "metrics": {
+                f"{namespace}.{fact}s": {
+                    "value_type": "number",
+                    "id": f"metric.{namespace}.{fact}s",
+                    "kind": "aggregate",
+                    "measure": f"measure.demo.{fact}_count",
+                },
                 f"{namespace}.{fact}s_from_{owner}s_with_2plus_{fact}s_in_period": {
+                    "value_type": "number",
                     "id": f"metric.{namespace}.{fact}s_from_{owner}s_with_2plus_{fact}s_in_period",
                     "name": f"{namespace}.{fact}s_from_{owner}s_with_2plus_{fact}s_in_period",
                     "label": f"{fact.title()}s from {owner}s with 2+ {fact}s in period",
@@ -396,7 +413,7 @@ def test_contextual_metric_predicate_reuses_entity_graph_for_hierarchy_reduction
                             ]
                         },
                     },
-                }
+                },
             }
         },
     )
@@ -437,32 +454,59 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
         "history_scope_demo",
         {
             "customer": {
-                "id": "entity.demo_customer",
+                "as": "entity.demo_customer",
                 "name": "demo.Customer",
                 "label": "Customer",
                 "key": ["customer_id"],
                 "model": "customers",
             },
             "plan": {
-                "id": "entity.demo_plan",
+                "as": "entity.demo_plan",
                 "name": "demo.Plan",
                 "label": "Plan",
                 "key": ["plan_id"],
                 "model": "plans",
             },
             "customer_history": {
-                "id": "entity.demo_customer_history",
+                "as": "entity.demo_customer_history",
                 "name": "demo.CustomerHistory",
                 "label": "Customer history",
                 "key": ["customer_id", "valid_from"],
                 "model": "customer_history",
             },
             "order": {
-                "id": "entity.demo_order",
+                "as": "entity.demo_order",
                 "name": "demo.Order",
                 "label": "Order",
                 "key": ["order_id"],
                 "model": "orders",
+            },
+        },
+        graph_relationships={
+            "relationship.demo_customer_history_customer": {
+                "id": "relationship.demo_customer_history_customer",
+                "entities": ["customer_history", "customer"],
+                "cardinality": "many_to_one",
+            },
+            "relationship.demo_customer_history_plan": {
+                "id": "relationship.demo_customer_history_plan",
+                "entities": ["customer_history", "plan"],
+                "cardinality": "many_to_one",
+            },
+            "relationship.demo_order_customer": {
+                "id": "relationship.demo_order_customer",
+                "entities": ["order", "customer"],
+                "cardinality": "many_to_one",
+            },
+            "relationship.demo_order_customer_history": {
+                "id": "relationship.demo_order_customer_history",
+                "entities": ["order", "customer_history"],
+                "cardinality": "many_to_one",
+                "target": ["customer_id"],
+                "temporal_validity": {
+                    "valid_from": "demo_customer_history.valid_from",
+                    "valid_to": "demo_customer_history.valid_to",
+                },
             },
         },
     )
@@ -471,12 +515,11 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
         {
             "model": {
                 "id": "customers",
-                "entity": "customer",
+                "entities": {"customer": {}},
                 "relation": "demo_customer",
-                "grain": ["customer_id"],
                 "dimensions": {
                     "customer_id": {
-                        "id": "dimension.demo_customer_id",
+                        "as": "dimension.demo_customer_id",
                         "name": "demo.Customer.customer_id",
                         "label": "Customer id",
                         "kind": "id",
@@ -490,18 +533,17 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
         {
             "model": {
                 "id": "plans",
-                "entity": "plan",
+                "entities": {"plan": {}},
                 "relation": "demo_plan",
-                "grain": ["plan_id"],
                 "dimensions": {
                     "plan_id": {
-                        "id": "dimension.demo_plan_id",
+                        "as": "dimension.demo_plan_id",
                         "name": "demo.Plan.plan_id",
                         "label": "Plan id",
                         "kind": "id",
                     },
                     "plan_name": {
-                        "id": "dimension.demo_plan_name",
+                        "as": "dimension.demo_plan_name",
                         "name": "demo.Plan.plan_name",
                         "label": "Plan name",
                         "kind": "categorical",
@@ -515,35 +557,27 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
         {
             "model": {
                 "id": "customer_history",
-                "entity": "customer_history",
+                "entities": {
+                    "customer_history": {},
+                    "customer": {"expr": ["customer_id"]},
+                    "plan": {"expr": ["plan_id"]},
+                },
                 "relation": "demo_customer_history",
-                "grain": ["customer_id", "valid_from"],
-                "keys": {
-                    "primary": ["customer_id", "valid_from"],
-                    "foreign": {"customer": ["customer_id"], "plan": ["plan_id"]},
-                },
-                "joins": {
-                    "customer": {
-                        "id": "relationship.demo_customer_history_customer",
-                        "to": "customer",
-                    },
-                    "plan": {"id": "relationship.demo_customer_history_plan", "to": "plan"},
-                },
                 "dimensions": {
                     "customer_id": {
-                        "id": "dimension.demo_customer_history_customer_id",
+                        "as": "dimension.demo_customer_history_customer_id",
                         "name": "demo.CustomerHistory.customer_id",
                         "label": "Customer history customer id",
                         "kind": "id",
                     },
                     "plan_id": {
-                        "id": "dimension.demo_customer_history_plan_id",
+                        "as": "dimension.demo_customer_history_plan_id",
                         "name": "demo.CustomerHistory.plan_id",
                         "label": "Plan id",
                         "kind": "id",
                     },
                     "customer_status": {
-                        "id": "dimension.demo_customer_status",
+                        "as": "dimension.demo_customer_status",
                         "name": "demo.CustomerHistory.customer_status",
                         "label": "Customer status",
                         "kind": "categorical",
@@ -575,34 +609,21 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
         {
             "model": {
                 "id": "orders",
-                "entity": "order",
+                "entities": {
+                    "order": {},
+                    "customer": {"expr": ["customer_id"]},
+                    "customer_history": {"expr": ["customer_id"]},
+                },
                 "relation": "demo_order",
-                "grain": ["order_id"],
-                "keys": {
-                    "primary": ["order_id"],
-                    "foreign": {"customer": ["customer_id"], "customer_history": ["customer_id"]},
-                },
-                "joins": {
-                    "customer": {"id": "relationship.demo_order_customer", "to": "customer"},
-                    "customer_history": {
-                        "id": "relationship.demo_order_customer_history",
-                        "to": "customer_history",
-                        "target": ["customer_id"],
-                        "temporal_validity": {
-                            "valid_from": "demo_customer_history.valid_from",
-                            "valid_to": "demo_customer_history.valid_to",
-                        },
-                    },
-                },
                 "dimensions": {
                     "order_id": {
-                        "id": "dimension.demo_order_id",
+                        "as": "dimension.demo_order_id",
                         "name": "demo.Order.order_id",
                         "label": "Order id",
                         "kind": "id",
                     },
                     "customer_id": {
-                        "id": "dimension.demo_order_customer_id",
+                        "as": "dimension.demo_order_customer_id",
                         "name": "demo.Order.customer_id",
                         "label": "Customer id",
                         "kind": "id",
@@ -621,7 +642,7 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
                 },
                 "measures": {
                     "order_count": {
-                        "id": "measure.demo.order_count",
+                        "as": "measure.demo.order_count",
                         "name": "sales.orders",
                         "label": "Orders",
                         "kind": "entity_count",
@@ -636,7 +657,14 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
         package_dir / "metrics.yml",
         {
             "metrics": {
+                "sales.orders": {
+                    "value_type": "number",
+                    "id": "metric.sales.orders",
+                    "kind": "aggregate",
+                    "measure": "measure.demo.order_count",
+                },
                 "sales.orders_from_customers_with_2plus_orders_in_period": {
+                    "value_type": "number",
                     "id": "metric.sales.orders_from_customers_with_2plus_orders_in_period",
                     "name": "sales.orders_from_customers_with_2plus_orders_in_period",
                     "label": "Orders from customers with 2+ orders in period",
@@ -661,7 +689,7 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
                             ]
                         },
                     },
-                }
+                },
             }
         },
     )
