@@ -154,7 +154,11 @@ def _unasked_grouping_why(
         if (row.get("op") == "=" and not isinstance(row.get("value"), (list, tuple, dict)))
         or (str(row.get("op")).lower() == "in" and isinstance(row.get("value"), list))
     }
-    chosen = set(caller.get("group_by") or [])
+    from .snapshot import as_of_groupings  # noqa: WPS433 (snapshot reads _names_grain)
+
+    # The caller's grouping, and a balance's own day beside its day grain (a metric constraint
+    # may require it; it adds no row).
+    chosen = set(caller.get("group_by") or []) | as_of_groupings(config, query)
     grouped = [
         row
         for item in dict.fromkeys(query.get("group_by") or [])
