@@ -148,7 +148,7 @@ codex mcp add semantic-rails-demo --url https://semantic-rails.com/mcp
 
 The agent loop, tool policy and HTTP routes are in
 [docs/AGENT_QUICKSTART.md](https://github.com/semantic-rails/semantic-rails/blob/main/docs/AGENT_QUICKSTART.md).
-The full MCP contract, including `semantic-rails mcp http` for a local HTTP server, is in
+The full MCP contract, including `semantic-rails serve --port 8091` for a local `/mcp` endpoint, is in
 [docs/MCP_INTERFACE.md](https://github.com/semantic-rails/semantic-rails/blob/main/docs/MCP_INTERFACE.md).
 
 ## How it works
@@ -234,9 +234,7 @@ network connections only to:
 - the warehouses configured in your package's `connection` block;
 - DuckDB's extension repository (extensions.duckdb.org): DuckDB downloads an
   extension it doesn't bundle the first time a query needs one, for example for
-  MotherDuck, DuckLake or remote files;
-- its own local MCP server, when `semantic-rails mcp start` or `mcp status` checks
-  that server's `/health` endpoint.
+  MotherDuck, DuckLake or remote files.
 
 The hosted demo at semantic-rails.com is a separate deployment with its own
 [privacy notice](https://semantic-rails.com/legal/2026-09-12/privacy.html).

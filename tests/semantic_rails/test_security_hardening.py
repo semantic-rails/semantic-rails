@@ -26,7 +26,6 @@ from semantic_rails.diagnostics import exception_issue
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.http_core import MAX_REQUEST_BODY_BYTES, SemanticHTTPService
 from semantic_rails.mcp import SemanticLayerMCPAdapter
-from semantic_rails.mcp_server import _read_json
 from semantic_rails.metadata_parts.valid_values import (
     max_valid_values_limit,
     max_valid_values_offset,
@@ -219,20 +218,6 @@ def test_exception_issue_keeps_debug_authorized_sql():
 
 
 # --- F4: request body and pagination bounds ------------------------------
-
-
-def test_mcp_stdlib_read_json_rejects_oversized_body():
-    handler = SimpleNamespace(
-        headers={"Content-Length": str(MAX_REQUEST_BODY_BYTES + 1)}, rfile=None
-    )
-    with pytest.raises(ValueError, match="exceeds"):
-        _read_json(handler)
-
-
-def test_mcp_stdlib_read_json_rejects_invalid_content_length():
-    handler = SimpleNamespace(headers={"Content-Length": "banana"}, rfile=None)
-    with pytest.raises(ValueError, match="Content-Length"):
-        _read_json(handler)
 
 
 @contextlib.contextmanager

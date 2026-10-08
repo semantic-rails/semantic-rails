@@ -9,14 +9,7 @@ from pathlib import Path
 from ..config_validation import PackageReference, resolve_package_reference
 from ..errors import SemanticLayerError
 from ..local_config import init_local_profile
-from ..mcp_manager import (
-    DEFAULT_MCP_HOST,
-    DEFAULT_MCP_PORT,
-    managed_mcp_lifecycle_report,
-    mcp_client_config_report,
-    start_mcp_http_server,
-    stop_mcp_http_server,
-)
+from ..mcp_manager import mcp_client_config_report
 from .common import (
     _confirm,
     _package_ref_from_cwd,
@@ -52,17 +45,6 @@ def cmd_setup_interactive(args: argparse.Namespace) -> None:
         if not validation.get("ok"):
             raise SystemExit(1)
 
-    lifecycle = managed_mcp_lifecycle_report()
-    if lifecycle["supported"]:
-        if _confirm("Start a managed local MCP HTTP server now?", default=False):
-            _start_managed_mcp_from_wizard(ref)
-    else:
-        print(
-            "Managed background MCP start/stop is POSIX-only. On Windows, install "
-            "the generated client config so Claude/Codex launches stdio, or run "
-            "`semantic-rails mcp http` in a foreground terminal."
-        )
-
     client = _prompt_choice(
         "Install local MCP config into Claude/Codex?",
         choices=["none", "claude", "codex", "both"],
@@ -96,52 +78,9 @@ def cmd_setup_interactive(args: argparse.Namespace) -> None:
         f"semantic-rails project status --path {_quote(ref.source_path)}",
         f'semantic-rails ask --path {_quote(ref.source_path)} "total amount by event type" --run',
         f"semantic-rails mcp setup --path {_quote(ref.source_path)}",
-        "semantic-rails mcp status",
+        f"semantic-rails serve --path {_quote(ref.source_path)} --port 8091",
     ]:
         print(f"  {command}")
-
-
-def _start_managed_mcp_from_wizard(ref: PackageReference) -> None:
-    """Start the optional local server without turning a conflict into setup failure."""
-
-    try:
-        start = start_mcp_http_server(
-            ref,
-            name="default",
-            host=DEFAULT_MCP_HOST,
-            port=DEFAULT_MCP_PORT,
-        )
-    except SemanticLayerError as exc:
-        server = dict(exc.details.get("server", {}) or {})
-        stale = exc.code == "CONFIG_CONFLICT" and not server.get("pid_alive", True)
-        if stale:
-            print("A dead 'default' MCP registration is blocking startup.")
-            if _confirm("Remove the stale registration and retry?", default=True):
-                cleanup = stop_mcp_http_server(name="default")
-                print(f"Stale registration: {cleanup.get('status', 'removed')}")
-                start = start_mcp_http_server(
-                    ref,
-                    name="default",
-                    host=DEFAULT_MCP_HOST,
-                    port=DEFAULT_MCP_PORT,
-                )
-            else:
-                print("MCP server not started. Setup will continue.")
-                print("  semantic-rails mcp stop --name default")
-                return
-        elif exc.code == "CONFIG_CONFLICT":
-            print(f"MCP server not started: {exc}")
-            print("Setup will continue; inspect it with `semantic-rails mcp status`.")
-            print("Stop the named server explicitly before replacing it.")
-            return
-        else:
-            raise
-
-    _print_json(start)
-    if not start.get("ok"):
-        print("Managed MCP did not become healthy. Setup will continue.")
-        print("  semantic-rails mcp status")
-        print("  semantic-rails mcp stop --name default")
 
 
 def _interactive_package_ref(args: argparse.Namespace) -> PackageReference:

@@ -46,10 +46,14 @@ uv run semantic-rails init my_semantic_package
 uv run semantic-rails project validate --path ./my_semantic_package
 uv run semantic-rails serve --package jaffle_shop --port 8081
 uv run semantic-rails mcp stdio --package jaffle_shop
-uv run semantic-rails mcp http --package jaffle_shop --host 127.0.0.1 --port 8091
+uv run semantic-rails serve --package jaffle_shop --host 127.0.0.1 --port 8091
 ```
 
 ## HTTP Routes
+
+`serve` and ASGI also expose stateless Streamable HTTP at `/mcp`; see
+[MCP_INTERFACE.md](MCP_INTERFACE.md). `/health` and `/api/v1/health` are public
+health probes even when API keys are configured.
 
 Preferred stable routes:
 

@@ -8,7 +8,8 @@ Semantic Rails now has two runtime modes:
 Both modes serve the same stable `/api/v1/*` semantic API. The ASGI path is the clean deploy target
 for containers and process supervisors; it keeps authentication intentionally small so a service
 wrapper can add tenant isolation and stronger auth without changing Query IR.
-The ASGI app also serves stateless MCP Streamable HTTP at `/mcp`.
+Both modes also serve stateless MCP Streamable HTTP at `/mcp`, with the same API-key
+authentication and trusted policy-context resolver. `/health` remains a public probe.
 
 ## Docker
 

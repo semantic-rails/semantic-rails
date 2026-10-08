@@ -10,18 +10,14 @@ from typing import Any
 from ..config import get_package_config, list_package_ids, load_package_config
 from ..diagnostics import exception_issue
 from ..errors import SemanticLayerError
-from ..mcp_manager import CLIENTS, DEFAULT_MCP_HOST, DEFAULT_MCP_PORT, MCP_KINDS
+from ..mcp_manager import CLIENTS, MCP_KINDS
 from ..runtime import _enrich_runtime_error
 from ..visible_view import view_of
 from .commands.mcp import (
     cmd_mcp_client_config,
     cmd_mcp_doctor,
-    cmd_mcp_http,
     cmd_mcp_setup,
-    cmd_mcp_start,
-    cmd_mcp_status,
     cmd_mcp_stdio,
-    cmd_mcp_stop,
 )
 from .commands.package import (
     cmd_build_package,
@@ -615,7 +611,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_mcp = sub.add_parser(
         "mcp",
-        description="Run the packaged Model Context Protocol (MCP) server (stdio or HTTP/SSE transport).",
+        description="Run the stdio MCP server or configure local clients; use serve for HTTP /mcp.",
     )
     mcp_sub = p_mcp.add_subparsers(dest="mcp_cmd", required=True)
 
@@ -625,24 +621,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_package_or_path_args(p_mcp_stdio, package_choices)
     p_mcp_stdio.set_defaults(func=cmd_mcp_stdio)
-
-    p_mcp_http = mcp_sub.add_parser(
-        "http",
-        description="Run the MCP server over HTTP/SSE for remote agent integration.",
-    )
-    _add_package_or_path_args(p_mcp_http, package_choices)
-    p_mcp_http.add_argument(
-        "--host",
-        default="127.0.0.1",
-        help="Host interface to bind (default: 127.0.0.1).",
-    )
-    p_mcp_http.add_argument(
-        "--port",
-        type=int,
-        default=8091,
-        help="Port to bind (default: 8091).",
-    )
-    p_mcp_http.set_defaults(func=cmd_mcp_http)
 
     p_mcp_doctor = mcp_sub.add_parser(
         "doctor",
@@ -686,43 +664,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_mcp_setup.add_argument("--yes", action="store_true", help="Confirm writes with --install.")
     p_mcp_setup.add_argument("--json", action="store_true", help="Print a JSON report.")
     p_mcp_setup.set_defaults(func=cmd_mcp_setup, human_cli=True)
-
-    p_mcp_start = mcp_sub.add_parser(
-        "start",
-        description="Start a local managed MCP HTTP server in the background (POSIX only).",
-    )
-    _add_optional_reference_args(p_mcp_start, package_choices)
-    p_mcp_start.add_argument("--name", default="default", help="Local server name.")
-    p_mcp_start.add_argument("--host", default=DEFAULT_MCP_HOST, help="Host to bind.")
-    p_mcp_start.add_argument(
-        "--port",
-        type=int,
-        default=DEFAULT_MCP_PORT,
-        help="Port to bind (0 = OS-assigned; see `mcp status`).",
-    )
-    p_mcp_start.set_defaults(func=cmd_mcp_start)
-
-    p_mcp_stop = mcp_sub.add_parser(
-        "stop",
-        description=(
-            "Stop a managed local MCP HTTP server started by `semantic-rails mcp start`, "
-            "by server name or package path (POSIX only)."
-        ),
-    )
-    _add_optional_reference_args(p_mcp_stop, package_choices)
-    p_mcp_stop.add_argument(
-        "--name",
-        default="default",
-        help="Local server name. Ignored when --package or --path is provided.",
-    )
-    p_mcp_stop.set_defaults(func=cmd_mcp_stop)
-
-    p_mcp_status = mcp_sub.add_parser(
-        "status",
-        description="Show managed local MCP HTTP servers and available MCP launch commands.",
-    )
-    _add_optional_reference_args(p_mcp_status, package_choices)
-    p_mcp_status.set_defaults(func=cmd_mcp_status)
 
     p_mcp_client_config = mcp_sub.add_parser(
         "client-config",
@@ -882,7 +823,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_serve = sub.add_parser(
         "serve",
-        description="Start the local HTTP API server (foreground/blocking) on --host:--port.",
+        description="Start the local HTTP API and Streamable HTTP /mcp server (foreground/blocking) on --host:--port.",
     )
     _add_package_or_path_args(p_serve, package_choices)
     p_serve.add_argument(

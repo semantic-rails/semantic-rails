@@ -3,7 +3,7 @@
 `semantic_rails.mcp` exposes a dependency-free Model Context Protocol interface over the same
 runtime that serves `/api/v1/*`. The canonical implementation remains the in-process
 `SemanticLayerMCPAdapter`. The ASGI app serves stateless MCP Streamable HTTP at `/mcp`, while the
-CLI retains packaged stdio and legacy HTTP/SSE transports for local compatibility.
+CLI supports stdio and stateless Streamable HTTP through `semantic-rails serve` at `/mcp`.
 
 For `semantic-rails mcp stdio`, stdout contains only newline-delimited JSON-RPC messages;
 startup diagnostics go to stderr. If the selected package cannot load, `initialize`
@@ -800,50 +800,25 @@ uv run semantic-rails mcp stdio --package jaffle_shop
 uv run semantic-rails mcp doctor --package jaffle_shop
 PACKAGE_PATH="$(pwd)/my_package"
 uv run semantic-rails mcp stdio --path "$PACKAGE_PATH"
-uv run semantic-rails mcp http --package jaffle_shop --host 127.0.0.1 --port 8091
+uv run semantic-rails serve --package jaffle_shop --host 127.0.0.1 --port 8091
 ```
 
 `mcp doctor` loads the package and adapter once, confirms the required tools are
 registered, and prints the exact stdio/http commands to run next. It does not
 bind a port.
 
-Managed local HTTP server commands (POSIX only):
+The `serve` command runs a foreground server for both the HTTP API and
+stateless Streamable HTTP. Start it in a separate terminal and stop it with Ctrl-C:
 
 ```bash
-semantic-rails mcp start --path "$PACKAGE_PATH" --port 8091
-semantic-rails mcp status --path "$PACKAGE_PATH"
-semantic-rails mcp stop --path "$PACKAGE_PATH"
+semantic-rails serve --path "$PACKAGE_PATH" --host 127.0.0.1 --port 8091
 ```
 
-The setup wizard uses this same default server name. Starting the same healthy
-configuration is idempotent. If `status` reports a dead registration, stop it
-explicitly with `semantic-rails mcp stop --name default`; the interactive
-wizard can also remove a dead registration and retry.
-
-Use `mcp start --port 0` to let the operating system choose an available port.
-The manager holds the listening socket through server startup, so concurrent
-starts cannot claim the same port. The start response and `mcp status` report
-the assigned port. Repeating the same named start with `--port 0` reuses its
-healthy server; process identity and health nonce checks still apply.
-For port zero, if the host cannot resolve or bind, startup returns `INVALID_CONFIG` without
-spawning a process or writing a server record. Configuration conflicts report
-the server's `assigned_port` while comparing the originally requested port.
-The server consumes the inherited socket-fd environment variable at startup,
-including when an explicit port is used, so child processes do not inherit it.
-
-Windows users should install the generated stdio client config with
-`semantic-rails mcp setup --install --yes`, or run `mcp http` in a foreground
-terminal. `mcp doctor` reports the supported lifecycle and prints the matching
-commands for the current platform.
-
-The raw server commands are foreground processes. `mcp stdio` is intended for
-MCP hosts that launch a subprocess from their config; `mcp http` stays attached
-to the terminal until you stop it. Use them directly when a host or another
-terminal is managing the process:
+Local MCP clients can launch stdio with `mcp setup --install --yes`, on every
+supported platform. The raw stdio command stays open until its client disconnects:
 
 ```bash
 semantic-rails mcp stdio --path "$PACKAGE_PATH"
-semantic-rails mcp http --path "$PACKAGE_PATH" --host 127.0.0.1 --port 8091
 ```
 
 Casual local setup:
@@ -895,10 +870,14 @@ curl -s http://127.0.0.1:8091/mcp \
   | python -c 'import json, sys; tools=json.load(sys.stdin)["result"]["tools"]; print(f"{len(tools)} tools"); print("\n".join("- " + tool["name"] for tool in tools))'
 ```
 
-This compatibility server accepts JSON-RPC requests at `/mcp` and exposes an SSE endpoint at
-`/sse`; it is not the hosted Streamable HTTP transport. When
-`SEMANTIC_RAILS_API_KEYS` or `SEMANTIC_RAILS_API_KEY_FILE` is configured, `/mcp` and `/sse` require
-`Authorization: Bearer ...`, `X-API-Key`, or `X-Semantic-API-Key`. `/health` stays public.
+The local `serve` and ASGI servers use the same stateless Streamable HTTP
+handler at `/mcp`. When `SEMANTIC_RAILS_API_KEYS` or `SEMANTIC_RAILS_API_KEY_FILE`
+is configured, `/mcp` requires `Authorization: Bearer ...`, `X-API-Key`, or
+`X-Semantic-API-Key`. Without configured keys, authentication is disabled for
+local use. `/health` stays public. The endpoint validates Origin and MCP headers,
+refuses bodies larger than 64 KiB, and resolves policy context from trusted
+transport headers rather than tool arguments. Install a trusted policy-context
+resolver before exposing either server to callers with different permissions.
 
 Pip-installed stdio configuration can be generated from the project directory
 so the command and package path match the local machine:
@@ -944,14 +923,13 @@ own config/vault rather than reading a user's home directory.
 
 ## Transports and Protocol Versions
 
-Three entry points serve the same tools. They share one JSON-RPC dispatcher
+Two transports serve the same tools. They share one JSON-RPC dispatcher
 (`semantic_rails.mcp_server.handle_jsonrpc_message`), so they return identical results:
 
 | Entry point | Serves | Why it is kept |
 |---|---|---|
 | `semantic-rails mcp stdio` | stdio | Local agents such as Claude Code and Claude Desktop. The default. |
-| ASGI `/mcp` (`semantic_rails.mcp_streamable_http`) | Stateless Streamable HTTP | Network clients. Authenticated with the same API keys as `/api/v1/*`. |
-| `semantic-rails mcp http` | Legacy HTTP + SSE | Clients that predate Streamable HTTP. The MCP specification deprecated this transport in `2025-03-26`, and revision `2026-07-28` schedules it for removal after a twelve-month window. New integrations should use `/mcp`. |
+| ASGI or `semantic-rails serve` `/mcp` (`semantic_rails.mcp_streamable_http`) | Stateless Streamable HTTP | Network clients. Authenticated with the same API keys as `/api/v1/*`. |
 
 Each tool result carries its payload twice: as `structuredContent`, and as compact JSON in
 `content[0].text` for hosts that forward only text. Resource reads return compact JSON text.

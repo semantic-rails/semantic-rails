@@ -66,7 +66,7 @@ from .upgrade.service import upgrade_project as upgrade_project_service
 DEFAULT_ARCHITECT_PORT = 8010
 DEFAULT_WORKSPACE_ROOT = repo_root()
 ARCHITECT_INTERFACE_VERSION = "v1"
-ArchitectTransport = Literal["stdio", "sse", "streamable-http"]
+ArchitectTransport = Literal["stdio", "streamable-http"]
 # The network transports can write files, so they require a bearer token.
 ARCHITECT_TOKEN_ENV = "SEMANTIC_RAILS_ARCHITECT_TOKEN"
 ARCHITECT_TOKEN_FILE_ENV = "SEMANTIC_RAILS_ARCHITECT_TOKEN_FILE"
@@ -707,8 +707,8 @@ class _BearerTokenGate:
 class ArchitectMCPServer(FastMCP[Any]):
     """FastMCP whose HTTP apps always sit behind the Architect bearer-token gate.
 
-    Every way to serve the network transports (``run("sse")``,
-    ``run("streamable-http")``, ``sse_app()``, ``streamable_http_app()``) goes
+    Every way to serve Streamable HTTP (``run("streamable-http")``,
+    ``streamable_http_app()``) goes
     through these overrides, so none serves without ``bearer_token`` set to a
     valid token.
     """
@@ -732,7 +732,9 @@ class ArchitectMCPServer(FastMCP[Any]):
         ]
 
     def sse_app(self, mount_path: str | None = None) -> Starlette:
-        return self._gated(super().sse_app(mount_path))
+        raise SemanticLayerError(
+            "INVALID_CONFIG", "SSE transport is unsupported; use stdio or streamable-http."
+        )
 
     def streamable_http_app(self) -> Starlette:
         return self._gated(super().streamable_http_app())
@@ -748,12 +750,10 @@ class ArchitectMCPServer(FastMCP[Any]):
         return app
 
 
-def architect_http_app(
-    server: ArchitectMCPServer, transport: Literal["sse", "streamable-http"], token: str
-) -> Starlette:
+def architect_http_app(server: ArchitectMCPServer, token: str) -> Starlette:
     """The ASGI app for a network transport, behind the bearer-token gate."""
     server.bearer_token = _check_token(token)
-    return server.sse_app() if transport == "sse" else server.streamable_http_app()
+    return server.streamable_http_app()
 
 
 def create_architect_mcp_server(
@@ -1809,7 +1809,7 @@ def create_architect_mcp_server(
     ) -> dict[str, Any]:
         """Return copy-ready client configuration hints for running Architect MCP."""
         selected = str(transport or "stdio")
-        if selected not in {"stdio", "sse", "streamable-http"}:
+        if selected not in {"stdio", "streamable-http"}:
             return _report_error(
                 SemanticLayerError(
                     "INVALID_CONFIG",
@@ -1821,7 +1821,6 @@ def create_architect_mcp_server(
         if selected != "stdio":
             command.extend(["--host", host, "--port", str(port)])
         command.extend(["--workspace-root", str(root)])
-        url_path = "/sse" if selected == "sse" else "/mcp"
         stdio_args = [
             "-m",
             "semantic_rails.architect_mcp",
@@ -1835,18 +1834,6 @@ def create_architect_mcp_server(
             "semantic_rails.architect_mcp",
             "--transport",
             "streamable-http",
-            "--host",
-            host,
-            "--port",
-            str(port),
-            "--workspace-root",
-            str(root),
-        ]
-        sse_args = [
-            "-m",
-            "semantic_rails.architect_mcp",
-            "--transport",
-            "sse",
             "--host",
             host,
             "--port",
@@ -1870,26 +1857,20 @@ def create_architect_mcp_server(
                 "cwd": str(root),
             },
             "http": {
-                "url": f"http://{_url_host(host)}:{port}{url_path}",
+                "url": f"http://{_url_host(host)}:{port}/mcp",
                 "command": [sys.executable, *http_args],
                 "cwd": str(root),
                 "headers": auth_headers,
             },
-            "sse": {
-                "url": f"http://{_url_host(host)}:{port}/sse",
-                "command": [sys.executable, *sse_args],
-                "cwd": str(root),
-                "headers": auth_headers,
-            },
             "auth": {
-                "required_for": ["sse", "streamable-http"],
+                "required_for": ["streamable-http"],
                 "token_env": ARCHITECT_TOKEN_ENV,
                 "token_file_env": ARCHITECT_TOKEN_FILE_ENV,
                 "min_length": MIN_ARCHITECT_TOKEN_LENGTH,
             },
             "note": (
                 "Use port 8010 by default so the Architect MCP does not collide with the query MCP "
-                f"or local semantic-rails API. HTTP and SSE need {ARCHITECT_TOKEN_ENV} (or a token "
+                f"or local semantic-rails API. Streamable HTTP needs {ARCHITECT_TOKEN_ENV} (or a token "
                 "file) set for both the server and the client."
             ),
         }
@@ -1905,6 +1886,8 @@ def run_architect_mcp_server(
     workspace_root: str = DEFAULT_WORKSPACE_ROOT,
     token_file: str = "",
 ) -> None:
+    if transport not in {"stdio", "streamable-http"}:
+        raise SemanticLayerError("INVALID_CONFIG", "Unsupported Architect MCP transport")
     server = create_architect_mcp_server(workspace_root=workspace_root, host=host, port=port)
     if transport == "stdio":
         server.run("stdio")
@@ -1921,7 +1904,7 @@ def run_architect_mcp_server(
     import uvicorn
 
     uvicorn.run(
-        architect_http_app(server, transport, token),
+        architect_http_app(server, token),
         host=host,
         port=port,
         log_level=server.settings.log_level.lower(),
@@ -1930,7 +1913,7 @@ def run_architect_mcp_server(
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="semantic-rails-architect-mcp")
-    parser.add_argument("--transport", choices=["stdio", "sse", "streamable-http"], default="stdio")
+    parser.add_argument("--transport", choices=["stdio", "streamable-http"], default="stdio")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=DEFAULT_ARCHITECT_PORT)
     parser.add_argument("--workspace-root", default=DEFAULT_WORKSPACE_ROOT)

@@ -39,7 +39,7 @@ def test_cli_plan_rejects_empty_intent_with_json_error() -> None:
 
 def test_cli_query_accepts_path_flag_for_unregistered_packages() -> None:
     """`query` / `compile` / `validate` must accept --path the
-    same way `parse-config`, `validate-config`, and `mcp http` do — the
+    same way `parse-config`, `validate-config`, and `mcp stdio` do — the
     blind UX walkthrough cliffed off at "I just authored a package and
     now I can't query it without copying it into configs/semantic_rails/".
     Run a real query against the jaffle_shop package directory as a path,

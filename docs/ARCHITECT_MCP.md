@@ -17,8 +17,8 @@ or the query MCP defaults.
 
 ### Network transports
 
-The `sse` and `streamable-http` transports can write files, so they require a bearer token and
-refuse to start without one. The server reads it from `--token-file`, then the file named by
+The `streamable-http` transport can write files, so it requires a bearer token and
+refuses to start without one. The supported transports are stdio and Streamable HTTP. The server reads it from `--token-file`, then the file named by
 `SEMANTIC_RAILS_ARCHITECT_TOKEN_FILE`, then `SEMANTIC_RAILS_ARCHITECT_TOKEN`. A token is at least 32
 characters of letters, digits and `- . _ ~ + /` (optionally ending in `=`). Create one without
 printing it:
