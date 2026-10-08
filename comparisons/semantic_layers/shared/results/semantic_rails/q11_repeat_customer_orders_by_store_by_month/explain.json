@@ -100,8 +100,8 @@
     },
     "compile_stats": {
       "cache_hit": true,
-      "cache_lookup_ms": 1.27,
-      "compile_ms": 0.452,
+      "cache_lookup_ms": 1.397,
+      "compile_ms": 0.481,
       "dialect": "duckdb",
       "physical_plan_nodes": 9
     },
@@ -1465,7 +1465,7 @@
       },
       "version": 1
     },
-    "rendered_sql": "WITH leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_customers.customer_id AS g1,\n  SUM(comparison_customers.lifetime_order_count) AS m1\nFROM comparison_customers\nGROUP BY\n  comparison_customers.customer_id\n),\nleaf_1__lifetime_order_count_customer_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS base\n),\nleaf_1__lifetime_order_count_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__lifetime_order_count_customer_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_by_lifetime_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__lifetime_order_count_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 1\n),\nleaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nLEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nINNER JOIN leaf_1__qualified_customers_by_lifetime_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_order_count_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS repeat_customer_orders\nFROM guarded_base AS base\nORDER BY\n  t ASC,\n  g1 ASC",
+    "rendered_sql": "WITH leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_customers.customer_id AS g1,\n  SUM(comparison_customers.lifetime_order_count) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_customers\nGROUP BY\n  comparison_customers.customer_id\n),\nleaf_1__lifetime_order_count_customer_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS base\n),\nleaf_1__lifetime_order_count_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__lifetime_order_count_customer_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_by_lifetime_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__lifetime_order_count_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 1\n),\nleaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nLEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nINNER JOIN leaf_1__qualified_customers_by_lifetime_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_order_count_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS repeat_customer_orders\nFROM guarded_base AS base\nORDER BY\n  t ASC,\n  g1 ASC",
     "rewrite_strategy": {
       "status": "direct",
       "steps": []
@@ -1589,6 +1589,18 @@
                               "distinct": false,
                               "name": "SUM"
                             }
+                          },
+                          {
+                            "alias": "m1_rows",
+                            "expression": {
+                              "args": [
+                                {
+                                  "value": 1
+                                }
+                              ],
+                              "distinct": false,
+                              "name": "COUNT"
+                            }
                           }
                         ],
                         "where": []
@@ -1623,49 +1635,75 @@
                           {
                             "alias": "m1",
                             "expression": {
-                              "else_expr": null,
-                              "whens": [
+                              "args": [
                                 {
-                                  "condition": {
-                                    "left": {
-                                      "frame": "",
-                                      "function": {
-                                        "args": [
-                                          {
-                                            "parts": [
-                                              "base",
-                                              "m1"
-                                            ]
+                                  "parts": [
+                                    "base",
+                                    "m1"
+                                  ]
+                                },
+                                {
+                                  "else_expr": null,
+                                  "whens": [
+                                    {
+                                      "condition": {
+                                        "left": {
+                                          "left": {
+                                            "frame": "",
+                                            "function": {
+                                              "args": [
+                                                {
+                                                  "parts": [
+                                                    "base",
+                                                    "m1"
+                                                  ]
+                                                }
+                                              ],
+                                              "distinct": false,
+                                              "name": "COUNT"
+                                            },
+                                            "order_by": [],
+                                            "partition_by": []
+                                          },
+                                          "op": ">",
+                                          "right": {
+                                            "value": 0
                                           }
-                                        ],
-                                        "distinct": false,
-                                        "name": "COUNT"
+                                        },
+                                        "op": "AND",
+                                        "right": {
+                                          "left": {
+                                            "expr": {
+                                              "parts": [
+                                                "base",
+                                                "m1_rows"
+                                              ]
+                                            }
+                                          },
+                                          "op": "OR",
+                                          "right": {
+                                            "left": {
+                                              "parts": [
+                                                "base",
+                                                "m1_rows"
+                                              ]
+                                            },
+                                            "op": "=",
+                                            "right": {
+                                              "value": 0
+                                            }
+                                          }
+                                        }
                                       },
-                                      "order_by": [],
-                                      "partition_by": []
-                                    },
-                                    "op": ">",
-                                    "right": {
-                                      "value": 0
-                                    }
-                                  },
-                                  "result": {
-                                    "args": [
-                                      {
-                                        "parts": [
-                                          "base",
-                                          "m1"
-                                        ]
-                                      },
-                                      {
+                                      "result": {
                                         "value": 0
                                       }
-                                    ],
-                                    "distinct": false,
-                                    "name": "COALESCE"
-                                  }
+                                    }
+                                  ]
                                 }
-                              ]
+                              ],
+                              "distinct": false,
+                              "name": "COALESCE"
                             }
                           }
                         ],
@@ -1989,7 +2027,8 @@
             "parts": [
               "t"
             ]
-          }
+          },
+          "nulls_last": false
         },
         {
           "direction": "ASC",
@@ -1997,7 +2036,8 @@
             "parts": [
               "g1"
             ]
-          }
+          },
+          "nulls_last": false
         }
       ],
       "qualify": [],
@@ -2751,10 +2791,10 @@
   },
   "query_ir_hints": [],
   "recovery_hints": [],
-  "rendered_sql": "WITH leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_customers.customer_id AS g1,\n  SUM(comparison_customers.lifetime_order_count) AS m1\nFROM comparison_customers\nGROUP BY\n  comparison_customers.customer_id\n),\nleaf_1__lifetime_order_count_customer_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS base\n),\nleaf_1__lifetime_order_count_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__lifetime_order_count_customer_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_by_lifetime_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__lifetime_order_count_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 1\n),\nleaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nLEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nINNER JOIN leaf_1__qualified_customers_by_lifetime_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_order_count_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS repeat_customer_orders\nFROM guarded_base AS base\nORDER BY\n  t ASC,\n  g1 ASC",
+  "rendered_sql": "WITH leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS (\nSELECT\n  comparison_customers.customer_id AS g1,\n  SUM(comparison_customers.lifetime_order_count) AS m1,\n  COUNT(1) AS m1_rows\nFROM comparison_customers\nGROUP BY\n  comparison_customers.customer_id\n),\nleaf_1__lifetime_order_count_customer_source_1__guarded_base AS (\nSELECT\n  base.g1 AS g1,\n  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1\nFROM leaf_1__lifetime_order_count_customer_source_1__leaf_1 AS base\n),\nleaf_1__lifetime_order_count_customer_source_1 AS (\nSELECT\n  base.g1 AS \"dimension.jaffle_customer_id\",\n  base.m1 AS __predicate_value\nFROM leaf_1__lifetime_order_count_customer_source_1__guarded_base AS base\n),\nleaf_1__qualified_customers_by_lifetime_order_count_1 AS (\nSELECT DISTINCT\n  predicate_source.\"dimension.jaffle_customer_id\" AS \"dimension.jaffle_customer_id\"\nFROM leaf_1__lifetime_order_count_customer_source_1 AS predicate_source\nWHERE\n  predicate_source.__predicate_value > 1\n),\nleaf_1 AS (\nSELECT\n  comparison_stores.store_name AS g1,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,\n  COUNT(DISTINCT comparison_orders.order_id) AS m1\nFROM comparison_orders\nLEFT JOIN comparison_stores ON comparison_orders.store_id = comparison_stores.store_id\nINNER JOIN leaf_1__qualified_customers_by_lifetime_order_count_1 ON comparison_orders.customer_id = leaf_1__qualified_customers_by_lifetime_order_count_1.\"dimension.jaffle_customer_id\"\nGROUP BY\n  comparison_stores.store_name,\n  DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP))\n),\nguarded_base AS (\nSELECT\n  base.g1 AS g1,\n  base.t AS t,\n  CASE WHEN MAX(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1\nFROM leaf_1 AS base\n)\nSELECT\n  base.g1 AS \"dimension.jaffle_store_name\",\n  base.t AS \"temporal_role.jaffle_order_time__month\",\n  base.m1 AS repeat_customer_orders\nFROM guarded_base AS base\nORDER BY\n  t ASC,\n  g1 ASC",
   "request_context": {},
-  "semantic_fingerprint": "sha256:738a3e0d5ee52d27dd5b0d9ef53e670cc3a541c155a7a5a1f20888a94e619e87",
-  "source_fingerprint": "3be89439f14f4fbad2d7b21c52678ca261ead872cf6db820220d6a0bfa6ab055",
+  "semantic_fingerprint": "sha256:aac5e6deeae332b480c8e782df0d02116bab1711e756c910af6b285efd73f4de",
+  "source_fingerprint": "92a7dc155b7dfd213985fbfb14af23e8857dab2ebcbbca2b073e4f949609d910",
   "sql_plan": {
     "ctes": [
       {
@@ -2812,6 +2852,18 @@
                             "distinct": false,
                             "name": "SUM"
                           }
+                        },
+                        {
+                          "alias": "m1_rows",
+                          "expression": {
+                            "args": [
+                              {
+                                "value": 1
+                              }
+                            ],
+                            "distinct": false,
+                            "name": "COUNT"
+                          }
                         }
                       ],
                       "where": []
@@ -2846,49 +2898,75 @@
                         {
                           "alias": "m1",
                           "expression": {
-                            "else_expr": null,
-                            "whens": [
+                            "args": [
                               {
-                                "condition": {
-                                  "left": {
-                                    "frame": "",
-                                    "function": {
-                                      "args": [
-                                        {
-                                          "parts": [
-                                            "base",
-                                            "m1"
-                                          ]
+                                "parts": [
+                                  "base",
+                                  "m1"
+                                ]
+                              },
+                              {
+                                "else_expr": null,
+                                "whens": [
+                                  {
+                                    "condition": {
+                                      "left": {
+                                        "left": {
+                                          "frame": "",
+                                          "function": {
+                                            "args": [
+                                              {
+                                                "parts": [
+                                                  "base",
+                                                  "m1"
+                                                ]
+                                              }
+                                            ],
+                                            "distinct": false,
+                                            "name": "COUNT"
+                                          },
+                                          "order_by": [],
+                                          "partition_by": []
+                                        },
+                                        "op": ">",
+                                        "right": {
+                                          "value": 0
                                         }
-                                      ],
-                                      "distinct": false,
-                                      "name": "COUNT"
+                                      },
+                                      "op": "AND",
+                                      "right": {
+                                        "left": {
+                                          "expr": {
+                                            "parts": [
+                                              "base",
+                                              "m1_rows"
+                                            ]
+                                          }
+                                        },
+                                        "op": "OR",
+                                        "right": {
+                                          "left": {
+                                            "parts": [
+                                              "base",
+                                              "m1_rows"
+                                            ]
+                                          },
+                                          "op": "=",
+                                          "right": {
+                                            "value": 0
+                                          }
+                                        }
+                                      }
                                     },
-                                    "order_by": [],
-                                    "partition_by": []
-                                  },
-                                  "op": ">",
-                                  "right": {
-                                    "value": 0
-                                  }
-                                },
-                                "result": {
-                                  "args": [
-                                    {
-                                      "parts": [
-                                        "base",
-                                        "m1"
-                                      ]
-                                    },
-                                    {
+                                    "result": {
                                       "value": 0
                                     }
-                                  ],
-                                  "distinct": false,
-                                  "name": "COALESCE"
-                                }
+                                  }
+                                ]
                               }
-                            ]
+                            ],
+                            "distinct": false,
+                            "name": "COALESCE"
                           }
                         }
                       ],
@@ -3212,7 +3290,8 @@
           "parts": [
             "t"
           ]
-        }
+        },
+        "nulls_last": false
       },
       {
         "direction": "ASC",
@@ -3220,7 +3299,8 @@
           "parts": [
             "g1"
           ]
-        }
+        },
+        "nulls_last": false
       }
     ],
     "qualify": [],

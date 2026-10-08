@@ -1,7 +1,7 @@
 {
-  "generated_at": "2026-10-03T03:06:59+00:00",
+  "generated_at": "2026-10-08T17:04:46+00:00",
   "claims": [
-    "The 8 frozen-model questions (q17-q24) each change one parameter of a metric that q01-q16 already use: a window, an offset, a filter, an aggregation or a threshold. No layer's model defines the variant. With each layer's model left exactly as written for q01-q16, answered through the layer's query-time interface, out of 8: Semantic Rails 8 (8 native), MetricFlow 2 (2 native), Cube 7 (2 native, 5 workaround), Malloy 8 (8 native) and KtX 3 (2 native, 1 precomputed). Semantic Rails' current count uses unreleased engine commit f131e2f609b98bd395d55f1e0b53c12c302846d5; the latest release checked, v0.3.1, answers 6 of 8 on the same frozen model (q19 and q20 are refused because it requires a declared calendar). The competitor captures were not re-run on newer versions. Each other answer is labeled requires_model_change, with the reason and the documentation in shared/frozen_model.yml. Snowflake Semantic Views wasn't assessed: its capture can't be re-run.",
+    "The 8 frozen-model questions (q17-q24) each change one parameter of a metric that q01-q16 already use: a window, an offset, a filter, an aggregation or a threshold. No layer's model defines the variant. With each layer's model left exactly as written for q01-q16, answered through the layer's query-time interface, out of 8: Semantic Rails 8 (8 native), MetricFlow 2 (2 native), Cube 7 (2 native, 5 workaround), Malloy 8 (8 native) and KtX 3 (2 native, 1 precomputed). Semantic Rails' current count uses unreleased engine commit 156dcbc06cb2a53e48b6091d658db23f6f12744a; the latest release checked, v0.3.1, answers 6 of 8 on the same frozen model (q19 and q20 are refused because it requires a declared calendar). The competitor captures were not re-run on newer versions. Each other answer is labeled requires_model_change, with the reason and the documentation in shared/frozen_model.yml. Snowflake Semantic Views wasn't assessed: its capture can't be re-run.",
     "The 8 frozen-model questions are few, and the Semantic Rails authors chose them knowing which parameters Semantic Rails composes at query time and which some other layers set in the model. They probe where each layer's frozen-model boundary lies; they aren't a ranking, and they don't weigh what a model change costs in each layer.",
     "Every layer's model was written with q01-q16 in view, so a q01-q16 label says where an answer's logic lives, not whether the layer could answer a question its model wasn't written for; the frozen-model questions test that.",
     "On all 16 questions, the 5 layers checked on the current dataset (Semantic Rails, MetricFlow, Cube, Malloy and KtX) return the independent answer key's normalized outputs, with numbers matching within 1e-6. On the 8 frozen-model questions, all 28 answers the layers executed on the current dataset match it too.",
@@ -48,8 +48,8 @@
     {
       "id": "semantic_rails",
       "label": "Semantic Rails",
-      "version": "0.3.2rc2, not a release (engine tree fa6f7bf)",
-      "captured": "2026-10-03",
+      "version": "0.3.2rc3, not a release (engine tree 3e5efef)",
+      "captured": "2026-10-08",
       "dataset": "current",
       "environment": null,
       "setup_status": "executed",
@@ -940,11 +940,11 @@
         "label": "Semantic Rails",
         "baseline_models": 4,
         "baseline_files": 5,
-        "baseline_loc": 179,
+        "baseline_loc": 178,
         "baseline_relationships": 3,
         "stretch_models": 7,
         "stretch_files": 9,
-        "stretch_loc": 415,
+        "stretch_loc": 414,
         "stretch_relationships": 12
       },
       {
