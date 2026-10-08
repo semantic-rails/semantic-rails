@@ -1896,6 +1896,7 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
     operational_contract = load_operational_contract(defaults, path=path)
     meta_contract = load_meta_contract(defaults, path=path)
 
+    model_default_times: dict[str, str] = {}
     for model_id, model in model_rows.items():
         is_fact = model_id in fact_models
         model_meta = _normalize_meta(model.get("meta"), f"{path}: model '{model_id}'")
@@ -1949,6 +1950,13 @@ def _parse_package(raw: dict[str, Any], *, path: str) -> PackageConfig:
         )
         dims = dict(model.get("dimensions", {}) or {})
         times = dict(model.get("times", {}) or {})
+        default_keys = [key for key, spec in times.items() if bool(dict(spec or {}).get("default"))]
+        if len(default_keys) > 1:
+            raise SemanticLayerError(
+                "INVALID_CONFIG",
+                f"{path}: model '{model_id}' has multiple default: true time roles: {sorted(default_keys)}; declare at most one",
+            )
+        model_default_times[model_id] = str(next(iter(default_keys), ""))
 
         for dim_key, dim_spec_raw in dims.items():
             dim_spec = {**dim_defaults, **dict(dim_spec_raw or {})}

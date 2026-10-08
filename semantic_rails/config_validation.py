@@ -918,7 +918,6 @@ def _compiled_package_errors(config, source_path: Path) -> list[str]:
                     f"support and timezone handling.",
                 )
 
-    _check_default_query_axis_collisions(config, source_path, errors)
     _check_disallowed_names(config, source_path, errors)
     if getattr(config.package, "schema_strict", False):
         _check_strict_authoring(config, source_path, errors)
@@ -946,31 +945,6 @@ def _check_strict_authoring(config, source_path: Path, errors: list[str]) -> Non
                 f"{source_path}: measure {measure.id} has accumulation.kind {kind!r} "
                 f"which is not in the strict enum {{flow, stock, event, population}}. "
                 f"Use one of those values or remove the accumulation block.",
-            )
-
-
-def _check_default_query_axis_collisions(config, source_path: Path, errors: list[str]) -> None:
-    """Reject if more than one temporal_role per entity sets default_query_time_axis=True.
-
-    A model can have multiple temporal columns (ordered_at, fulfilled_at, ...)
-    but at most one should be the implicit default time axis for queries.
-    """
-    dim_to_entity = {dim.id: dim.entity for dim in config.dimensions}
-    by_entity: dict[str, list[str]] = {}
-    for role in config.temporal_roles:
-        if not role.default_query_time_axis:
-            continue
-        entity_id = dim_to_entity.get(role.dimension, "")
-        if not entity_id:
-            continue
-        by_entity.setdefault(entity_id, []).append(role.id)
-    for entity_id, role_ids in by_entity.items():
-        if len(role_ids) > 1:
-            add_error(
-                errors,
-                f"{source_path}: entity {entity_id} has multiple temporal_roles with "
-                f"default_query_axis=true: {sorted(role_ids)}. At most one default time "
-                f"axis is allowed per model/entity.",
             )
 
 
