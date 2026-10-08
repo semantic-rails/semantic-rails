@@ -14,7 +14,7 @@
 # A layer not listed here isn't assessed on the variants.
 semantic_rails:
   model: [semantic_rails/package]
-  sha256: ab97e3f5c64e83b358614b713a06460ceaa182aa3673dae8acc6a1b2d0693285
+  sha256: f7790e31afc8e7a6c08fac57f59b540c929f8bcac7ce2ce9ed0210163f243ad6
   interface: The Query API (conversion, rolling, prior_period, aggregate overrides, scoped aggregates and metric_filters).
   requires_model_change: {}
 

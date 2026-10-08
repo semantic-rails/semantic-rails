@@ -863,7 +863,7 @@ whole package, so hiding an object never removes or changes a `deny`,
   conditions or preview dimensions read it; a conversion metric whose dimension bindings
   name it), every object that names it in any of its fields (a value domain listing a hidden
   dimension, a relationship to a hidden entity, a time role over a hidden dimension, a
-  measure listing it among its `comparison_peers`), and, while anything is hidden, every
+  metric listing it among its `preferred_companion_metrics`), and, while anything is hidden, every
   object whose dependencies cannot be resolved.
 - **Exactly like an unknown id:** a request that names a hidden object, in any position and
   spelling, gets the response the package without it would give (usually
@@ -1281,8 +1281,7 @@ Counts, sums, ratios, grouping, filters and lookups work without a time axis.
 Explicit Query IR requests for time ranges, grains, windows, temporal overrides,
 prior-period or cumulative expressions are refused with
 `INVALID_TEMPORAL_ROLE`: the package declares no time. Declare a `times:` entry
-before requesting time analysis. A `defaults.time.default_query_axis: true`
-also requires a declared temporal role. On a package without time, every
+before requesting time analysis. On a package without time, every
 natural-language plan with a draft returns `low_confidence`, retains its Query IR
 and adds the same `INVALID_TEMPORAL_ROLE` warning: "This package has no time; check
 the question doesn't ask for a time breakdown or window." This includes plain
@@ -1293,8 +1292,12 @@ Architect and CLI scaffolds accept a blank
 `time_column` to generate a package, seed, examples and tests without dates.
 
 The `times:` block key IS the temporal role. The backing date/timestamp dimension
-is auto-created from `column:`. `default: true` replaces the separate
-`default_time:` field.
+is auto-created from `column:`. Mark at most one role per model with `default: true`;
+the loader refuses multiple defaults with `INVALID_CONFIG`. This role supplies the model's
+default clock and has `default_query_time_axis: true` in catalog output. Separate models
+may have defaults on the same entity. `default_time` and `default_query_axis` are refused
+with `INVALID_CONFIG`; the `time-default-axis` upgrade rule deletes the old axis hints.
+`defaults.time.default` is also refused: declare the default on the model's role itself.
 
 ```yaml
 times:
@@ -1308,7 +1311,7 @@ times:
     default: true
 ```
 
-`class:`, `supported_grains:`, and `default_query_axis:` are load-bearing — the
+`class:`, `supported_grains:`, and `default:` are load-bearing — the
 planner uses them to decide alignment and pick implicit time axes.
 
 A measure is timed by the roles in its own `times:` list, or, when it lists none, by its
@@ -1591,6 +1594,9 @@ single-column `via` key.
 Each answer carries a `parent_lookup` rewrite step (`REWRITE_APPLIED`) naming `from`, `via`
 and the relationships it used. Interchange export leaves lookups out as unsupported.
 
+`clock_variants`, `comparison_peers` and `preferred_filter_ops` are unsupported authoring
+keys and are refused with `INVALID_CONFIG` in every validation profile. Cards omit them.
+
 ## Metrics
 
 Metrics codify governed access patterns. Each metric carries a `kind:` that
@@ -1818,8 +1824,7 @@ checks (which is why the `init` starter can author `grain:` alongside `entities:
 | `accumulation:` value not in `{flow, stock, event, population}` | Use the canonical enum |
 | Metric with absent, null, empty or whitespace-only `value_type:` (both layouts) | Declare a nonblank string explicitly; `number` is valid when intentional, including for ratio or derived metrics |
 | Buried `expression:` AST on metric kinds with direct named fields | Use direct fields (`kind: derived` and `kind: conversion` keep the AST) |
-| `dimension.preferred_filter_ops` | Drop — metadata-only, no planner gating |
-| `measure.clock_variants`, `comparison_peers`, `preferred_companion_metrics` | Drop on measures — metadata-only, no planner gating. (`preferred_companion_metrics` is allowed on metrics as advisory governance metadata; companion-metric relationships are too volatile to lock in at the measure layer.) |
+| `measure.preferred_companion_metrics` | Drop on measures; allowed on metrics as advisory governance metadata |
 | `topics:` on any object | Drop — no validation, no scaling pattern |
 | `policy.kind: plan_constraint` | Drop — runtime no-op (the real kinds are `package_release`, `object_visibility`, `object_access`, `protected_object`, `metric_constraint`, `row_filter`) |
 
@@ -2463,7 +2468,7 @@ model:
       time: refund_recognized_time   # explicit override
 ```
 
-Metrics do NOT inherit `default_time` from a model — they remain explicit because
+Metrics do NOT inherit a model's default time — they remain explicit because
 metrics often span entities.
 
 ## Examples and tests
@@ -2776,6 +2781,7 @@ named definition by hand before upgrading.
 | `policy-flat` | 0.3.2 | Nested policy `config:`, `visibility`, `rule`, and `description` (except nested row filters) | Flat kind-specific fields, `action` and `rationale`; nested scope or identity fields, disagreements, and release-label changes stop without choices |
 | `policy-redact-deny` | 0.3.2 | `object_access` action `redact` | `deny`; refusal decisions stay the same and effect labels now name `deny` |
 | `query-ir-version` | 0.3.2 | `version: 2` (including quoted `"2"`) in example and test queries | `version: 1`, which has the same query shape |
+| `time-default-axis` | 0.3.2 | `default_query_axis` on time roles or under `defaults.time` | Deleted; `default: true` supplies each model's default axis. A required axis without any declared time stops for a manual declaration |
 
 ## Reference
 

@@ -351,7 +351,7 @@ def test_full_catalog_payload_filters_restricted_companions(tmp_path, roles, eli
     (root / "metrics" / "core" / "time_series_metrics.yml").unlink()
     path = root / "models" / "core" / "orders.yml"
     data = yaml.safe_load(path.read_text())
-    keys = ("comparison_peers", "clock_variants", "preferred_companion_metrics")
+    keys = ("preferred_companion_metrics",)
     for key in keys:
         data["model"]["measures"]["order_cost_usd"][key] = [REVENUE_METRIC, CUSTOMERS]
     _write(path, data)

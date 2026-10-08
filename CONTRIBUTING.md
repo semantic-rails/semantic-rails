@@ -135,16 +135,19 @@ Tests bound every wait: subprocess calls, `urlopen`, `communicate`, and
 `join`/`wait` take a timeout; `tests/semantic_rails/test_bounded_waits.py`
 enforces it.
 
-Backend CI partitions whole test files into four deterministic shards for each
-Python version. Files are assigned longest first to the lightest shard, with paths
-and shard indices breaking ties. `tests/shard_durations.json` records summed
+Backend CI partitions whole test files into four deterministic shards. Pull requests
+run Python 3.12 only; merge groups and manual runs cover Python 3.11, 3.12, 3.13
+and 3.14. The merge queue is the complete compatibility gate: a failure on another
+Python version ejects the change before merging. Files are assigned longest first
+to the lightest shard, with paths and shard indices breaking ties.
+`tests/shard_durations.json` records summed
 per-test seconds for each file; unknown files use the median cost. Ownership uses
 the full on-disk test-file inventory so targeted runs and the flake guard retain
 the full suite's assignment. Set `SR_SHARD_COUNT`
 and zero-based `SR_SHARD_INDEX` to reproduce a shard locally; unset both to run
 without partitioning. Quarantine IDs are validated against the full collection
 before partitioning. Every Python/version shard uploads its JUnit report, and the
-required "All checks pass" gate waits for the entire backend matrix. Backend
+required "All checks pass" gate waits for the event's entire backend matrix. Backend
 full-suite jobs skip pushes to main/master: pull requests and merge groups test
 the suite before merging, while pushes retain lint, security, documentation and
 Postgres checks. Direct pushes therefore rely on branch protection to require

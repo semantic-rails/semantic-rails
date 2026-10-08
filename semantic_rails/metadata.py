@@ -968,7 +968,6 @@ def _object_card(
             {
                 "root_entity": dim.entity,
                 "kind_semantics": dim.semantic_kind or dim.data_type,
-                "preferred_filter_ops": list(dim.preferred_filter_ops),
                 "value_domain_summary": {
                     "value_domain_id": domain.id if domain is not None else "",
                     "value_count": len(domain.values) if domain is not None else 0,
@@ -1070,7 +1069,6 @@ def _summary_row(
             "aliases": list(obj.get("aliases", []) or []),
             "comparison_family": card.get("comparison_family", ""),
             "comparison_mode": card.get("comparison_mode", ""),
-            "clock_variants": list(card.get("clock_variants", []) or []),
             "preferred_companion_metrics": list(card.get("preferred_companion_metrics", []) or []),
         },
     )
@@ -1483,9 +1481,6 @@ def _relevance_score(
             if _contains_token(document.description_fields, candidate_token):
                 score += 6.0 * idf_weight
                 reasons.append(f"description matched '{candidate_token}'")
-            if _contains_token(document.comparison_fields, candidate_token):
-                score += 6.0 * idf_weight
-                reasons.append(f"comparison metadata matched '{candidate_token}'")
     coverage = _name_coverage(candidate, tokens)
     if coverage:
         # The candidate's whole name is in the question ("revenue by store"
@@ -1882,8 +1877,6 @@ def _dimension_builder_score(
             "topics": list(getattr(dim, "topics", []) or []),
             "available": True,
             "comparison_family": "",
-            "comparison_peers": [],
-            "clock_variants": [],
         },
         preferred_kind="dimension",
         stage=stage,

@@ -95,8 +95,6 @@ SELECT = [{"expression": AMOUNT, "as": "amount"}]
 NO_CLOCK = {"default": "", "times": ""}
 DEFAULT_TIME = {"default": ", default: true", "times": ""}
 MEASURE_TIME = {"default": "", "times": ", times: [opened_on]"}
-# A package-wide default query clock without `default: true`: the measure still has no time role.
-QUERY_AXIS = {"default": ", default_query_axis: true", "times": ""}
 
 
 def _package(root: Path, variant: dict[str, str]) -> Path:
@@ -353,9 +351,6 @@ def _mixed_grain_error(package: Path, measures: list[str]) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize(
-    "variant", [NO_CLOCK, QUERY_AXIS], ids=["no_default_axis", "package_query_axis"]
-)
-@pytest.mark.parametrize(
     "measures",
     [
         ["measure.ins.claim_amount"],
@@ -365,10 +360,10 @@ def _mixed_grain_error(package: Path, measures: list[str]) -> dict[str, Any]:
     ids=["clockless", "clocked_then_clockless", "clockless_then_clocked"],
 )
 def test_the_grain_recovery_never_suggests_a_time_grain_when_any_measure_has_no_clock(
-    tmp_path, variant, measures
+    tmp_path, measures
 ):
     """Grouping by a fanned-out time used to offer 'query it by a time grain', which is refused."""
-    error = _mixed_grain_error(_package(tmp_path, variant), measures)
+    error = _mixed_grain_error(_package(tmp_path, NO_CLOCK), measures)
     assert error["details"]["time_axis_recovery"] == {
         "calendar_dimension": "dimension.ins_payment_paid_at"
     }

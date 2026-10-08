@@ -1514,7 +1514,7 @@ KEPT_CHOICES = [
      {"kind": "entity_count"}),
     ("measure", "total_amount", {"default_agg": "MEDIAN", "value_type": "ratio"}, {"default_agg": "median"}),
     ("dimension", "event_type", {"kind": "number", "description": "Event type."}, None),
-    ("time", "occurred_at", {"kind": "Date", "class": "State_Time", "default_query_axis": True},
+    ("time", "occurred_at", {"kind": "Date", "class": "State_Time", "default": True},
      {"kind": "date", "class": "state_time"}),
     ("metric", "m", {"value_type": "ratio"}, None),
 ]  # fmt: skip

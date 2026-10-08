@@ -2,7 +2,8 @@ WITH leaf_1 AS (
 SELECT
   comparison_customer_history.customer_segment AS g1,
   DATE_TRUNC('month', CAST(comparison_orders.ordered_at AS TIMESTAMP)) AS t,
-  SUM(comparison_orders.order_total_cents / 100.0) AS m1
+  SUM(comparison_orders.order_total_cents / 100.0) AS m1,
+  COUNT(1) AS m1_rows
 FROM comparison_orders
 LEFT JOIN comparison_customer_history ON comparison_orders.customer_id = comparison_customer_history.customer_id AND comparison_customer_history.valid_from <= comparison_orders.ordered_at AND (comparison_customer_history.valid_to > comparison_orders.ordered_at OR (comparison_customer_history.valid_to IS NULL))
 GROUP BY
@@ -13,7 +14,7 @@ guarded_base AS (
 SELECT
   base.g1 AS g1,
   base.t AS t,
-  CASE WHEN COUNT(base.m1) OVER () > 0 THEN COALESCE(base.m1, 0) END AS m1
+  COALESCE(base.m1, CASE WHEN COUNT(base.m1) OVER () > 0 AND ((base.m1_rows IS NULL) OR base.m1_rows = 0) THEN 0 END) AS m1
 FROM leaf_1 AS base
 )
 SELECT

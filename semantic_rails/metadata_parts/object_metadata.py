@@ -19,8 +19,6 @@ def _comparison_metadata(obj: Any) -> dict[str, Any]:
     return {
         "comparison_family": str(getattr(obj, "comparison_family", "") or ""),
         "comparison_mode": str(getattr(obj, "comparison_mode", "") or ""),
-        "comparison_peers": list(getattr(obj, "comparison_peers", []) or []),
-        "clock_variants": list(getattr(obj, "clock_variants", []) or []),
         "preferred_companion_metrics": list(getattr(obj, "preferred_companion_metrics", []) or []),
     }
 

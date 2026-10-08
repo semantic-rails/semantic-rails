@@ -43,7 +43,6 @@ LEGACY = {
         "    aggregation_entity: self\n"
         "  time:\n"
         "    timezone: UTC\n"
-        "    default_query_axis: false\n"
     ),
     "graph.yml": (
         "graph:\n"

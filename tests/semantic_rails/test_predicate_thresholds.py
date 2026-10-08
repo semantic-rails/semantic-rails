@@ -114,7 +114,7 @@ def _model(
         f"model:\n  id: {model_id}\n  relation: {model_id}\n  entities:\n{entity_lines}\n"
         f"  times:\n    {column}:\n      label: {column}\n      column: {column}\n"
         f"      kind: timestamp\n      class: event_time\n      as: temporal_role.pred_{role}\n"
-        f"      default: true\n      default_query_axis: true\n{dimensions}"
+        f"      default: true\n{dimensions}"
         f"  measures:\n{measures}"
     )
 

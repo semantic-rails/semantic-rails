@@ -84,7 +84,6 @@ class CatalogSearchDocument:
     derived_tokens: tuple[str, ...]
     topic_fields: tuple[str, ...]
     description_fields: tuple[str, ...]
-    comparison_fields: tuple[str, ...]
     lowered_title: str
 
     @classmethod
@@ -96,8 +95,6 @@ class CatalogSearchDocument:
         label: str = "",
         description: str = "",
         topics: tuple[str, ...] = (),
-        comparison_peers: tuple[str, ...] = (),
-        clock_variants: tuple[str, ...] = (),
     ) -> CatalogSearchDocument:
         def _normalized(values: tuple[str, ...]) -> tuple[str, ...]:
             return tuple(
@@ -115,7 +112,6 @@ class CatalogSearchDocument:
             derived_tokens=_normalized(tuple(derive_discovery_tokens(name, label, description))),
             topic_fields=_normalized(topics),
             description_fields=_normalized((description,)),
-            comparison_fields=_normalized((*comparison_peers, *clock_variants)),
             lowered_title=f"{label} {name}".lower(),
         )
 
@@ -129,12 +125,6 @@ class CatalogSearchDocument:
             label=str(candidate.get("label", "") or ""),
             description=str(candidate.get("description", "") or ""),
             topics=tuple(str(value) for value in list(candidate.get("topics", []) or [])),
-            comparison_peers=tuple(
-                str(value) for value in list(candidate.get("comparison_peers", []) or [])
-            ),
-            clock_variants=tuple(
-                str(value) for value in list(candidate.get("clock_variants", []) or [])
-            ),
         )
 
 
@@ -212,12 +202,6 @@ def _document_from_row(row: Any) -> CatalogSearchDocument:
         label=str(getattr(row, "label", "") or ""),
         description=str(getattr(row, "description", "") or ""),
         topics=tuple(str(value) for value in list(getattr(row, "topics", []) or [])),
-        comparison_peers=tuple(
-            str(value) for value in list(getattr(row, "comparison_peers", []) or [])
-        ),
-        clock_variants=tuple(
-            str(value) for value in list(getattr(row, "clock_variants", []) or [])
-        ),
     )
 
 

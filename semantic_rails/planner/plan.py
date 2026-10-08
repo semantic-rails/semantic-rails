@@ -471,6 +471,8 @@ def plan_payload(
         payload["why"] = value_why
     elif shape_why is not None:
         payload["why"] = shape_why
+    elif best_draft.blocked_reason.get("code") == "PLAN_INTENT_COVERAGE_GAP":
+        payload["why"] = best_draft.blocked_reason
     elif not best_ok:
         errors = list(best_validation.get("errors") or [])
         payload["why"] = _trim_why_errors(errors)
