@@ -466,8 +466,8 @@ def plan_payload(
                 reason["actual"] = f"why.details.fallback_slots.{slot}"
             payload["why"] = {**fallback_drift_why, "details": details}
     elif faithfulness_why is not None:
-        # One why, but an unresolved or shortened window stays visible. A hold that returns
-        # no query leaves no rows to filter from a shortened window.
+        # One why, but an unresolved, shortened or incomplete window stays visible. A hold that
+        # returns no query leaves no rows to filter and no window to end at a complete period.
         unrunnable = faithfulness_why["code"] == "TIME_WINDOW_UNRESOLVED"
         dropped = (time_why or {}).get("code") in {
             "TIME_WINDOW_START_DROPPED",
