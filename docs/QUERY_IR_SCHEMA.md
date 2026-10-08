@@ -1302,6 +1302,11 @@ dense rows (for example, the inline `prior_period` LAG window in the
 
 - A calendar the package authors for the requested `calendar_id` always
   fills (the `default` one when the query names none).
+  Its requested grain column and any declared `date_day` column must have
+  `kind: date`. Other declared types refuse before execution with
+  `REWRITE_NOT_SUPPORTED`; `details` names `calendar_id`, `column` and
+  `declared_type`, and the message asks the author to declare that column as
+  a date. The same rule applies to non-default calendar grain bindings.
 - With no authored `default` calendar, the **implicit calendar** fills a
   `default` query: a Gregorian day spine the engine generates in SQL, bucketed
   with the same truncation as the query's time column (calendar months,

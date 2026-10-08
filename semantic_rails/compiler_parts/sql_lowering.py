@@ -5300,6 +5300,29 @@ def _calendar_join_for_leaf(
     )
 
 
+def _require_calendar_date_columns(
+    config: PackageConfig, calendar_entity_id: str, calendar_id: str, grain_column: str
+) -> None:
+    """Authored calendar anchors and their day join column must declare dates."""
+    for dimension in config.dimensions:
+        if dimension.entity != calendar_entity_id or dimension.column not in {
+            grain_column,
+            "date_day",
+        }:
+            continue
+        if dimension.data_type != "date":
+            raise SemanticLayerError(
+                "REWRITE_NOT_SUPPORTED",
+                f"Calendar '{calendar_id}' column '{dimension.column}' must be declared as a date; "
+                f"declare `{dimension.column}` as a date",
+                details={
+                    "calendar_id": calendar_id,
+                    "column": dimension.column,
+                    "declared_type": dimension.data_type,
+                },
+            )
+
+
 def _leaf_calendar_binding(plan: LogicalPlan, config: PackageConfig) -> tuple[str, str, str] | None:
     """When the query requests a non-default calendar (e.g. fiscal) on a
     role whose underlying entity is bound to a different calendar, the
@@ -5370,6 +5393,7 @@ def _leaf_calendar_binding(plan: LogicalPlan, config: PackageConfig) -> tuple[st
     )
     if grain_dim is None:
         return None
+    _require_calendar_date_columns(config, calendar_entity.id, requested_calendar, grain_column)
     _entity_index(config).get(calendar_entity.id)
     _dimension_index(config).get(grain_dim.id)
     return calendar_entity.table, grain_dim.column, "date_day"
@@ -5431,6 +5455,7 @@ def _calendar_fill_binding(
             "REWRITE_NOT_SUPPORTED",
             f"time.fill requires calendar dimension '{calendar_column}' on '{calendar_entity.id}'",
         )
+    _require_calendar_date_columns(config, calendar_entity.id, requested_calendar, calendar_column)
     _entity_index(config).get(calendar_entity.id)
     _dimension_index(config).get(dimension.id)
     return calendar_entity.table, calendar_column, _day_column(config, dimension, plan.time)

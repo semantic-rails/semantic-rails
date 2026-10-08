@@ -15,6 +15,7 @@ import duckdb
 import pytest
 
 from semantic_rails.compiler import compile_query
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
 from semantic_rails.runtime import Runtime
 from tests.semantic_rails.conftest import copy_package_config
@@ -218,9 +219,7 @@ def test_fill_keeps_every_bucket_with_rows(runtime_factory, grain, start, end, g
     assert filled == unfilled
 
 
-def test_timestamp_calendar_keeps_base_intraday_bounds(tmp_path):
-    # Timestamp calendar storage is ambiguous, so its bucket predicate remains
-    # the original raw-bound form.
+def test_timestamp_calendar_refuses_base_intraday_bounds(tmp_path):
     package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
         connection.execute(
@@ -241,21 +240,19 @@ def test_timestamp_calendar_keeps_base_intraday_bounds(tmp_path):
             **_JULY_BY_WEEK,
             "time": {**_JULY_BY_WEEK["time"], "start": "2017-07-03T12:00:00", "end": "2017-07-04"},
         }
-        sql = compile_query(config, Registry(config), query)["sql"]
-        rows = runtime._get_adapter().query(sql)
+        with pytest.raises(SemanticLayerError) as refused:
+            compile_query(config, Registry(config), query)
         unfilled = _bucket_counts(runtime, "week", "2017-07-03T12:00:00", "2017-07-04", fill=False)
     finally:
         runtime.close()
 
-    alias = "temporal_role.jaffle_order_time__week"
     assert unfilled
-    assert {
-        (_as_date(row[alias]), None): row["orders"] for row in rows if row["orders"]
-    } == unfilled
-    assert "jaffle_calendar.week_start >= '2017-07-03T12:00:00'" in sql
+    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+    assert refused.value.details["column"] == "date_day"
+    assert refused.value.details["declared_type"] == "timestamp"
 
 
-def test_timestamp_calendar_retains_base_partial_week_limit(tmp_path):
+def test_timestamp_calendar_refuses_base_partial_week_limit(tmp_path):
     package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
         connection.execute(
@@ -273,18 +270,15 @@ def test_timestamp_calendar_retains_base_partial_week_limit(tmp_path):
                 for row in config.dimensions
             ],
         )
-        sql = compile_query(config, Registry(config), _JULY_BY_WEEK)["sql"]
-        rows = connection.execute(
-            'SELECT CAST("temporal_role.jaffle_order_time__week" AS DATE), orders '
-            f"FROM ({sql}) AS timestamp_result"
-        ).fetchall()
+        with pytest.raises(SemanticLayerError) as refused:
+            compile_query(config, Registry(config), _JULY_BY_WEEK)
 
-    assert rows
-    assert min(day for day, _ in rows) == date(2017, 7, 3)
-    assert "jaffle_calendar.week_start >= '2017-07-01'" in sql
+    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+    assert refused.value.details["column"] == "date_day"
+    assert refused.value.details["declared_type"] == "timestamp"
 
 
-def test_timestamp_calendar_keeps_raw_bounds_across_session_timezone(tmp_path):
+def test_timestamp_calendar_refuses_across_session_timezone(tmp_path):
     package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
         connection.execute("SET TimeZone='UTC'")
@@ -320,15 +314,12 @@ def test_timestamp_calendar_keeps_raw_bounds_across_session_timezone(tmp_path):
                 "end": "2017-07-05T00:00:00+09:00",
             },
         }
-        sql = compile_query(config, Registry(config), query)["sql"]
-        rows = connection.execute(
-            'SELECT CAST("temporal_role.jaffle_order_time__day" AS VARCHAR), orders '
-            f"FROM ({sql}) AS tokyo_result"
-        ).fetchall()
+        with pytest.raises(SemanticLayerError) as refused:
+            compile_query(config, Registry(config), query)
 
-    # No order exists at all, so there is no data to call zero: the bucket reads NULL.
-    assert rows == [("2017-07-03 15:00:00+00", None)]
-    assert "jaffle_calendar.date_day >= '2017-07-04T00:00:00+09:00'" in sql
+    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+    assert refused.value.details["column"] == "date_day"
+    assert refused.value.details["declared_type"] == "timestamp"
 
 
 @pytest.mark.parametrize(
@@ -353,7 +344,7 @@ def test_timestamp_calendar_keeps_raw_bounds_across_session_timezone(tmp_path):
     ],
     ids=["utc-calendar", "new-york-calendar"],
 )
-def test_fill_preserves_offset_window_days_with_timestamptz_data(
+def test_fill_refuses_timestamp_calendar_with_offset_window(
     tmp_path, zone, start, end, first, second, days
 ):
     package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
@@ -408,13 +399,16 @@ def test_fill_preserves_offset_window_days_with_timestamptz_data(
                 f"FROM ({sql}) AS filled_result"
             ).fetchall()
 
-        filled = rows(True)
+        with pytest.raises(SemanticLayerError) as refused:
+            rows(True)
         unfilled = rows(False)
 
     expected = {day: 1 for day in days}
-    assert len(unfilled) == len(filled) == len(expected)
+    assert len(unfilled) == len(expected)
     assert dict(unfilled) == expected
-    assert dict(filled) == expected
+    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+    assert refused.value.details["column"] == "date_day"
+    assert refused.value.details["declared_type"] == "timestamp"
 
 
 @pytest.mark.parametrize(
@@ -932,8 +926,14 @@ def test_fill_binds_and_checks_calendar_day_only_when_sql_reads_it(bounds, reads
         key: value for key, value in _JULY_BY_WEEK["time"].items() if key not in {"start", "end"}
     }
     query = {**_JULY_BY_WEEK, "time": {**time, **bounds}}
+    if day_type != "date":
+        with pytest.raises(SemanticLayerError) as refused:
+            bind_query(config, None, query)
+        assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+        assert refused.value.details["column"] == "date_day"
+        assert refused.value.details["declared_type"] == day_type
+        return
     bound = bind_query(config, None, query)
-    reads_day = reads_day and day_type == "date"
     assert (day_id in bound.object_ids) is reads_day
 
     denied_day = dataclasses.replace(
