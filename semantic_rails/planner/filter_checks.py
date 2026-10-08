@@ -298,20 +298,11 @@ class _FieldConstraints:
             named is None or grouped or all(_contains_literal(named, item) for item in survivors)
         )
 
-    def drops(self, canonical: Any, *, named: list[Any] | None = None) -> bool:
-        """The value is dropped. Given the question's ``named`` values, no other
-        value that would otherwise survive is dropped too."""
+    def drops(self, canonical: Any) -> bool:
+        """The value is dropped."""
 
-        if self.uncertain or not any(
+        return not self.uncertain and any(
             _contains_literal(choices, canonical) for choices in self.dropping
-        ):
-            return False
-        kept = self.kept_literals()
-        return named is None or all(
-            _contains_literal(named, item)
-            or (kept is not None and not _contains_literal(kept, item))
-            for choices in self.dropping
-            for item in choices
         )
 
 
