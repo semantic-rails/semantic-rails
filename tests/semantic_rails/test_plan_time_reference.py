@@ -920,32 +920,52 @@ def test_current_windows_use_the_query_clock(
     assert sum(row[query["select"][0]["as"]] for row in rows) == gold
 
 
-@pytest.mark.parametrize("subject", ["new accounts", "MRR"])
-@pytest.mark.parametrize(
-    "phrase",
-    [
-        "now",
-        "right now",
-        "currently",
-        "at the moment",
-        "as of now",
-        "current",
-        "at the end of last month",
-        "end of last month",
-        "as of last month",
-        "as of September 2026",
-        "as of 2026-09-30",
-    ],
-)
-def test_as_of_cues_are_held_in_full(subscriptions: Runtime, subject: str, phrase: str) -> None:
+# Each as-of cue, with the day it reads a balance on.
+AS_OF = {
+    "now": "2026-10-04",
+    "right now": "2026-10-04",
+    "currently": "2026-10-04",
+    "at the moment": "2026-10-04",
+    "as of now": "2026-10-04",
+    "current": "2026-10-04",
+    "at the end of last month": "2026-09-30",
+    "end of last month": "2026-09-30",
+    "as of last month": "2026-09-30",
+    "as of September 2026": "2026-09-30",
+    "as of 2026-09-30": "2026-09-30",
+}
+
+
+@pytest.mark.parametrize("phrase", list(AS_OF))
+def test_as_of_cues_are_held_in_full(subscriptions: Runtime, phrase: str) -> None:
     plan = plan_payload(
-        subscriptions, intent=f"{subject} {phrase}", partial_query={"policy_context": NOW}
+        subscriptions, intent=f"new accounts {phrase}", partial_query={"policy_context": NOW}
     )
     assert plan["status"] == "low_confidence", plan
     assert plan["why"]["code"] == "TIME_WINDOW_UNRESOLVED", plan.get("why")
     assert plan["why"]["details"]["unresolved_phrases"] == [phrase.lower()]
     assert not plan["next"].get("ready_for")
     assert not (plan.get("best") or {}).get("query_ir")
+
+
+@pytest.mark.parametrize(("phrase", "day"), list(AS_OF.items()))
+def test_as_of_cues_read_a_balance_on_their_day(
+    subscriptions: Runtime, phrase: str, day: str
+) -> None:
+    plan = plan_payload(
+        subscriptions, intent=f"MRR {phrase}", partial_query={"policy_context": NOW}
+    )
+    assert plan["status"] == "ok", plan.get("why")
+    query = plan["best"]["query_ir"]
+    assert (query["time"]["grain"], query["time"]["start"]) == ("day", day)
+    rows = subscriptions.query({**query, "policy_context": NOW})["rows"]
+    with duckdb.connect(":memory:") as connection:
+        connection.execute(SEED)
+        [(gold,)] = connection.execute(
+            "SELECT SUM(mrr) FROM account_day WHERE day = ?", [day]
+        ).fetchall()
+    # The seed has rows for 2026-10-04 only: a day without rows returns none, never another.
+    assert [row[query["select"][0]["as"]] for row in rows] == ([] if gold is None else [gold])
 
 
 def test_current_before_a_metric_is_an_as_of_cue(subscriptions: Runtime) -> None:

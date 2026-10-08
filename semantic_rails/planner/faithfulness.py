@@ -58,6 +58,7 @@ from .filter_checks import (
 from .generators import _target_focus_text
 from .intent_ir import IntentIR
 from .ranking_checks import _ranking_gaps
+from .snapshot import snapshot_day_gaps, snapshot_read
 from .time_checks import (
     _caller_window_gaps,
     _fiscal_calendar_gaps,
@@ -372,6 +373,8 @@ def intent_faithfulness_why(
     if role_window_why is not None:
         return role_window_why
     caller_time = (partial_query or {}).get("time")
+    # A balance read on the closing day of the question's window answers that window.
+    read = snapshot_read(runtime, question, query)
     if isinstance(caller_time, dict) and any(
         caller_time.get(key) for key in ("start", "end", "range")
     ):
@@ -381,13 +384,21 @@ def intent_faithfulness_why(
             _caller_window_gaps(runtime, text, query)
             or _caller_window_gaps(runtime, text, query, timezone="UTC")
         )
-    else:
+    elif read is None:
         gaps.extend(_time_window_gaps(runtime, text, query))
     gaps.extend(_fiscal_calendar_gaps(runtime._config, text, query))
     gaps.extend(_subject_window_gaps(runtime._config, query))
-    if not _time_window(question, policy_context=query.get("policy_context")).as_of:
-        # As-of cues already hold as TIME_WINDOW_UNRESOLVED, without a query.
-        gaps.extend(_stock_as_of_gaps(runtime._config, query))
+    # Unconsumed as-of cues have their own TIME_WINDOW_UNRESOLVED hold; the balance's
+    # independent completion/subject checks still apply, including to caller windows.
+    stock_gaps = (
+        _stock_as_of_gaps(runtime._config, query)
+        if (
+            read is not None
+            or not _time_window(question, policy_context=query.get("policy_context")).as_of
+        )
+        else []
+    )
+    gaps.extend(stock_gaps or snapshot_day_gaps(runtime, question, query, partial_query))
     gaps.extend(_ranking_gaps(runtime, text, query))
     gaps.extend(_ambiguous_grouping_gaps(text, query, partial_query or {}))
     gaps.extend(_where_clause_gaps(runtime, text, query))

@@ -665,7 +665,7 @@ _CASES = [
         "PLAN_INTENT_COVERAGE_GAP",
         "PLAN_UNASKED_GROUPING",
     ),
-    _Case("Store name", "PLAN_INTENT_COVERAGE_GAP", "PLAN_INTENT_COVERAGE_GAP"),
+    _Case("Store name", "PLAN_UNMATCHED_TERMS", "PLAN_UNMATCHED_TERMS"),
     _Case("item revenue where store", "PLAN_UNMATCHED_TERMS", "PLAN_UNMATCHED_TERMS"),
 ]
 

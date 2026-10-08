@@ -17,6 +17,7 @@ from .coverage import (
     _value_phrases,
 )
 from .ranking_checks import _dimension_nouns, _ranking_at, _ranking_words
+from .snapshot import snapshot_read
 from .time_checks import _question_time, _window_agrees
 
 
@@ -178,6 +179,9 @@ def _consumed_spans(
     time = _time_block(query)
     if any(time.get(key) for key in ("start", "end", "range")):
         spans.extend(_window_spans(lowered, time, query.get("policy_context")))
+    if (read := snapshot_read(runtime, lowered, query)) is not None:
+        # A balance read on the day an as-of phrase or a window names consumes that phrase.
+        spans.extend(read.spans)
     normal = [_singular(_TERM_SYNONYMS.get(word, word)) for word, _start, _end in tokens]
     referenced = set(_referenced_ids(query))
     calendar_id = str(time.get("calendar_id") or "default")
