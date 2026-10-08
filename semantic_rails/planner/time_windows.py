@@ -336,7 +336,7 @@ def _resolved_time_window(lowered: str, today: date) -> _TimeWindow:
         intensifiers = [
             span
             for span, bounds, _unit in windows
-            if not bounds and lowered[span[0] : span[1]] in {"ever", "in total"}
+            if not bounds and " ".join(lowered[span[0] : span[1]].split()) in {"ever", "in total"}
         ]
         windows = [row for row in windows if row[0] not in intensifiers]
     if any(not row[1] for row in windows):

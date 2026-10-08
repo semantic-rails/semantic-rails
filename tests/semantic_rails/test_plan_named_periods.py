@@ -422,6 +422,15 @@ def test_scoped_beginning_is_not_all_time(shop, phrase):
             2,
         ),
         (
+            "signups in  total last month",
+            "signups",
+            "DISTINCT customer_id",
+            "signed_up_at",
+            "2024-06-01",
+            "2024-07-01",
+            2,
+        ),
+        (
             "orders in total in 2017",
             "orders",
             "order_id",
@@ -481,7 +490,7 @@ def test_bounded_reading_matches_shop_reference_sql(
     assert gold == expected
     rows = shop.query(query)["rows"]
     assert sum(row[query["select"][0]["as"]] or 0 for row in rows) == gold
-    for word in ("ever", "in total"):
+    for word in ("ever", "in total", "in  total"):
         if word in intent:
             assert any(intent[start:end] == word for start, end in read.spans)
 
