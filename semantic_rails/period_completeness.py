@@ -2,14 +2,14 @@
 
 A draft compares periods when its Query IR, parsed as execution parses it, carries a
 ``prior_period`` expression anywhere (a select or a metric filter, inside arithmetic or not),
-or reads a metric whose definition carries one, through any chain of metrics. Such a draft is
-ready only when every period it
-returns is complete at the request's ``now``: ``time.end`` falls on a boundary of the
-``time.grain`` buckets, in the temporal role's zone, no later than ``now``. The periods it
-compares against come earlier, so they are complete too. Without ``time.end`` the window
-reaches ``now``, and its last period is the one in progress. The check reads the bounds it
-can and holds whatever it can't: a non-default calendar's buckets, a ``where`` bound on a
-date, which can cut a period short, or a clock it can't read.
+or reads a metric whose definition carries one, through any chain of metrics. Such a draft
+is ready only when every period it returns is complete at the request's ``now``: ``time.end``
+falls on a boundary of the ``time.grain`` buckets, in the temporal role's zone, no later than
+``now``. The periods it compares against come earlier, so they are complete too. Without
+``time.end`` the window reaches ``now``, and its last period is the one in progress. The
+check reads the bounds it can and holds whatever it can't: a draft it can't parse, a
+non-default calendar's buckets, a ``where`` bound on a date, which can cut a period short,
+or a clock it can't read.
 
 ``plan`` and the granted-metric plan both call it before offering ``ready_for: execute``.
 """
