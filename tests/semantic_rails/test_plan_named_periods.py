@@ -126,6 +126,12 @@ ANSWER_CASES = [
     ("on Wed Sept 30", "2026-09-30", "2026-10-01", 1),
     ("on September 1st", "2026-09-01", "2026-09-02", 0),
     ("on Sept 30", "2026-09-30", "2026-10-01", 1),
+    ("in Sep", "2026-09-01", "2026-10-01", 3),
+    ("for the third quarter", "2026-07-01", "2026-10-01", 3),
+    ("in H1", "2026-01-01", "2026-07-01", 0),
+    ("since September 1st", "2026-09-01", "2026-10-05", 3),
+    ("since October", "2026-10-01", "2026-10-05", 0),
+    ("since Q4", "2026-10-01", "2026-10-05", 0),
     ("in September 2026", "2026-09-01", "2026-10-01", 3),
     ("in Q3 2026", "2026-07-01", "2026-10-01", 3),
     ("on September 30, 2026", "2026-09-30", "2026-10-01", 1),
@@ -306,3 +312,17 @@ def test_named_period_uses_the_reference_timezone():
     }
     local = _time_window("new accounts in September", now, timezone="America/New_York")
     assert not local.bounds and len(local.readings) == 2
+
+
+@pytest.mark.parametrize(
+    ("phrase", "now"),
+    [
+        ("on October 5", NOW),
+        ("on February 29", {"now": "2024-02-29T06:00:00Z"}),
+    ],
+)
+def test_current_named_day_clarification_has_no_reversed_range(phrase, now):
+    read = _time_window(f"new accounts {phrase}", now)
+    assert not read.bounds and len(read.readings) == 2
+    assert "not a complete day yet" in read.readings[0]
+    assert "to" in read.readings[1]

@@ -621,9 +621,14 @@ def _named_calendar_windows(
                     continue
                 if prior:
                     break
+            current = (
+                f"{bounds['start']} (not a complete day yet)"
+                if start == today
+                else f"{bounds['start']} through {(today - timedelta(days=1)).isoformat()} (complete days)"
+            )
             readings.extend(
                 [
-                    f"{bounds['start']} through {(today - timedelta(days=1)).isoformat()} (complete days)",
+                    current,
                     f"{prior['start']} to {prior['end']} (end exclusive)",
                 ]
             )
