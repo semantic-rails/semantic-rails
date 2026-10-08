@@ -1,8 +1,9 @@
 """Readiness: a period comparison never puts an incomplete period beside a complete one.
 
-A draft compares periods when its Query IR carries a ``prior_period`` expression anywhere
-(a select or a metric filter, inside arithmetic or not), or reads a metric whose definition
-carries one, through any chain of metrics. Such a draft is ready only when every period it
+A draft compares periods when its Query IR, parsed as execution parses it, carries a
+``prior_period`` expression anywhere (a select or a metric filter, inside arithmetic or not),
+or reads a metric whose definition carries one, through any chain of metrics. Such a draft is
+ready only when every period it
 returns is complete at the request's ``now``: ``time.end`` falls on a boundary of the
 ``time.grain`` buckets, in the temporal role's zone, no later than ``now``. The periods it
 compares against come earlier, so they are complete too. Without ``time.end`` the window
@@ -15,14 +16,21 @@ date, which can cut a period short, or a clock it can't read.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from dataclasses import fields, is_dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .ast import _floor_period, _parse_now, _shift_period, _time_spec_from_payload, every_filter
+from .ast import (
+    _floor_period,
+    _parse_now,
+    _shift_period,
+    _time_spec_from_payload,
+    every_filter,
+    normalize_query,
+)
 from .errors import SemanticLayerError
-from .expressions import expr_to_dict
+from .expressions import MetricRecipeRefExpr, OffsetWindowExpr, PriorPeriodExpr
 from .schema import base_of
 
 _CODE = "PERIOD_COMPARISON_INCOMPLETE"
@@ -45,26 +53,40 @@ _MONTHS = (
 
 
 def compares_periods(config: Any, query: dict[str, Any]) -> bool:
-    """Whether the draft reads a ``prior_period`` expression, its own or a metric's.
+    """Whether the draft, parsed as execution parses it, reads a ``prior_period`` expression,
+    its own or a metric's.
 
-    A metric definition plan can't read counts as one: unknown means comparing.
+    Unknown means comparing: a draft that doesn't parse, or a metric whose definition plan
+    can't read, counts as one.
     """
 
+    try:
+        parsed = normalize_query(query, config=config)
+    except Exception:  # noqa: BLE001 — a draft that doesn't parse can't prove none
+        return True
     recipes = {str(row.id): row for row in getattr(base_of(config), "metric_recipes", []) or []}
     seen: set[str] = set()
-    pending: list[Any] = [query]
+    pending: list[Any] = [
+        *(row.expression for row in parsed.select),
+        *(row.expression for row in parsed.metric_filters),
+    ]
     while pending:
-        for node in _nodes(pending.pop()):
-            if str(node.get("kind", "") or "").casefold() == "prior_period":
-                return True
-            for key in ("metric", "metric_recipe"):
-                metric_id = node.get(key)
-                if isinstance(metric_id, str) and metric_id in recipes and metric_id not in seen:
-                    seen.add(metric_id)
-                    try:
-                        pending.append(expr_to_dict(recipes[metric_id].expression))
-                    except Exception:  # noqa: BLE001 — an unreadable definition can't prove none
-                        return True
+        node = pending.pop()
+        if isinstance(node, list):
+            pending.extend(node)
+        elif isinstance(node, PriorPeriodExpr) or (
+            isinstance(node, OffsetWindowExpr) and node.kind == "prior_period"
+        ):
+            return True
+        elif isinstance(node, MetricRecipeRefExpr):
+            if node.metric_recipe not in seen:
+                seen.add(node.metric_recipe)
+                expression = getattr(recipes.get(node.metric_recipe), "expression", None)
+                if not is_dataclass(expression):
+                    return True
+                pending.append(expression)
+        elif is_dataclass(node):
+            pending.extend(getattr(node, item.name) for item in fields(node))
     return False
 
 
@@ -96,7 +118,7 @@ def incomplete_period_why(
             "The draft compares periods, but the request's now can't be read, so plan can't "
             "tell that each period is complete.",
             {"path": "policy_context.now"},
-            "Pass policy_context.now as an ISO date or timestamp, then validate.",
+            "Pass policy_context.now as an ISO date or timestamp, then plan again.",
         )
     now_text = f"{now.isoformat(timespec='seconds')} {zone}"
     calendar = str(time.get("calendar_id", "") or "default").strip()
@@ -107,7 +129,7 @@ def incomplete_period_why(
             f"({now_text}).",
             {"path": "time.calendar_id", "calendar_id": calendar, "now": now_text},
             "Compare periods on the default calendar instead: drop query.time.calendar_id and "
-            "set query.time.end to a period end no later than now, then validate.",
+            f"{_set_end(time, 'a period end no later than now')}, then plan again.",
         )
     if grain not in _GRAINS:
         return _hold(
@@ -115,7 +137,7 @@ def incomplete_period_why(
             f"periods it returns, so plan can't tell that each one is complete at now "
             f"({now_text}).",
             {"path": "time.grain", "grain": grain, "now": now_text},
-            "Set query.time.grain to the period the comparison reports, then validate.",
+            "Set query.time.grain to the period the comparison reports, then plan again.",
         )
     dated = sorted(
         {
@@ -128,10 +150,12 @@ def incomplete_period_why(
         spec = _time_spec_from_payload(time, policy_context=policy_context, config=config)
         end = _local(_parse_bound(spec.end), zone) if spec is not None and spec.end else None
         reason = "the draft has no time.end, so its window runs to now"
+        # The alternative replaces a range, so it keeps the rows from the range's start.
+        kept = start or (spec.start if spec is not None and "range" in time else "")
     except (SemanticLayerError, ValueError, OverflowError):
-        end, reason = None, "plan can't read its time.end"  # proves no boundary
+        end, reason, kept = None, "plan can't read its time.end", start  # proves no boundary
     try:
-        first = _local(_parse_bound(start), zone) if start else None
+        first = _local(_parse_bound(kept), zone) if kept else None
     except ValueError:
         first = None
     current = _floor(now, grain)
@@ -144,7 +168,7 @@ def incomplete_period_why(
             f"{', '.join(dated)}, which can cut a {grain} short, so plan can't tell that each "
             f"{grain} is complete at now ({now_text}).",
             {"path": "where", "fields": dated, "grain": grain, "now": now_text},
-            _alternative(grain, complete_end, first, lead=f"Remove the filter on {dated[0]}. "),
+            _alternative(time, grain, complete_end, first),
         )
     if end is None or end > now:
         incomplete = complete_end = current
@@ -168,19 +192,8 @@ def incomplete_period_why(
             "complete_end": _iso(complete_end, grain),
             **({"requested_start": str(start)} if start else {}),
         },
-        _alternative(grain, complete_end, first),
+        _alternative(time, grain, complete_end, first),
     )
-
-
-def _nodes(value: Any) -> Iterator[dict[str, Any]]:
-    """Every object in a Query IR or expression, nested ones included."""
-
-    if isinstance(value, dict):
-        yield value
-        value = list(value.values())
-    if isinstance(value, list):
-        for child in value:
-            yield from _nodes(child)
 
 
 def _hold(message: str, details: dict[str, Any], hint: str) -> dict[str, Any]:
@@ -193,20 +206,29 @@ def _hold(message: str, details: dict[str, Any], hint: str) -> dict[str, Any]:
 
 
 def _alternative(
-    grain: str, complete_end: datetime, first: datetime | None, *, lead: str = ""
+    time: dict[str, Any], grain: str, complete_end: datetime, first: datetime | None
 ) -> str:
     """The complete-periods alternative: every period up to the last one that has ended,
-    from the question's dropped start (``first``) on."""
+    from the question's dropped start or the range's start (``first``) on."""
 
     last = _label(_previous(complete_end, grain), grain)
-    bound = f"set query.time.end to {_iso(complete_end, grain)} (end-exclusive)"
+    bound = f"{_set_end(time, _iso(complete_end, grain))} (end-exclusive)"
     if first is not None and first >= complete_end:
         return (
-            f"{lead}No {grain} from {_iso(first, grain)} on is complete yet. Compare complete "
-            f"{grain}s through {last} instead: {bound}, then validate."
+            f"No {grain} from {_iso(first, grain)} on is complete yet. Compare complete "
+            f"{grain}s through {last} instead: {bound}, then plan again."
         )
     keep = f"; keep the rows dated {_iso(first, grain)} or later" if first else ""
-    return f"{lead}Compare complete {grain}s through {last}: {bound}, then validate{keep}."
+    return f"Compare complete {grain}s through {last}: {bound}, then plan again{keep}."
+
+
+def _set_end(time: dict[str, Any], end: str) -> str:
+    """Bound the window at ``end``. A range takes no ``time.end`` beside it, and a
+    ``time.start`` would cut the earlier periods a comparison reads, so the end replaces it."""
+
+    if "range" in time:
+        return f"replace query.time.range with query.time.end set to {end}"
+    return f"set query.time.end to {end}"
 
 
 def _is_dated(config: Any, field: Any) -> bool:
