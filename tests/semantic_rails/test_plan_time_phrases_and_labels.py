@@ -1067,13 +1067,18 @@ def test_a_window_stated_twice_the_same_way_is_one_window(
         "orders in Q1 2017 by stores opened in Q1 2017",
         "revenue in 2017 for products launched in 2017",
         "revenue in Q1 2017 and orders in Q1 2017",
-        "revenue in 2017 (excluding stores opened in 2017)",
     ],
 )
 def test_the_same_window_beside_another_condition_is_not_a_restatement(text: str) -> None:
     window = _time_window(text)
     assert window.bounds == {}
     assert len(window.conflicts) >= 1 and window.unresolved != ()
+
+
+def test_an_excluded_condition_does_not_restate_a_positive_window() -> None:
+    window = _time_window("revenue in 2017 (excluding stores opened in 2017)")
+    assert window.bounds == {} and window.unresolved != ()
+    assert len(window.windows) == 1 and window.conflicts == ()
 
 
 @pytest.mark.parametrize(

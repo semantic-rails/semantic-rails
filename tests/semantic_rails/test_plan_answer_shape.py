@@ -598,7 +598,11 @@ def test_a_contraction_is_expanded_before_any_check(jaffle: Runtime, question: s
         # "what's" reads as "what is"; "blorps" still carries meaning.
         ("What's revenue from blorps last month?", UNMATCHED, {"blorps"}),
         # "can't" reads as "can not": a negation the draft lacks, never a tail to drop.
-        ("Revenue we can't collect last month", GAP, {"negation_unrealized"}),
+        (
+            "Revenue we can't collect last month",
+            GAP,
+            {"negation_unrealized", "time_window_unresolved"},
+        ),
     ],
 )
 def test_a_meaningful_word_or_tail_is_not_offered(

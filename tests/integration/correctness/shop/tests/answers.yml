@@ -7462,10 +7462,21 @@ tests:
       policy_context: {now: '2024-07-05T06:00:00Z'}
       where: [{field: dimension.shop_customer_channel, op: '!=', value: store}]
     query:
-      select: [{as: signups, expression: {measure: measure.shop.signup_count}}]
-      where:
-        - {field: dimension.shop_customer_channel, op: '!=', value: store}
-        - {field: dimension.shop_customer_signed_up_at, op: NOT BETWEEN, value: ['2024-06-01', '2024-06-30T23:59:59.999999']}
+      select:
+        - as: signups
+          expression:
+            kind: arithmetic
+            op: subtract
+            left: {measure: measure.shop.signup_count}
+            right:
+              kind: aggregate
+              measure: measure.shop.signup_count
+              aggregation: count_distinct
+              filter:
+                all:
+                  - {field: dimension.shop_customer_signed_up_at, op: '>=', value: '2024-06-01'}
+                  - {field: dimension.shop_customer_signed_up_at, op: '<', value: '2024-07-01'}
+      where: [{field: dimension.shop_customer_channel, op: '!=', value: store}]
     expected_rows: [{signups: 2}]
     reference_sql: |
       SELECT COUNT(DISTINCT customer_id) FROM signups WHERE channel <> 'store'
