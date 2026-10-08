@@ -385,13 +385,17 @@ A draft that validates can still leave out part of the question. `plan` returns
 
 An exclusion ("excluding", "except", "without", "not", "but not", "other than", "apart from",
 "aside from", "minus", "outside of", "all stores but") names a list of items: a declared value
-name (its value, label or alias, quoted or not), a time phrase, or any other word in an item's
-place. Commas, semicolons, slashes, "&", "and", "or", "nor", "plus", "as well as", "along
-with", "alongside", "together with", dashes, line breaks and brackets separate items; a
+name (its value, label or alias, in double quotes or none), a time phrase, or any other word in
+an item's place. Commas, semicolons, slashes, "&", "and", "or", "nor", "plus", "as well as",
+"along with", "alongside", "together with", dashes, line breaks and brackets separate items; a
 separator inside a declared name ("Click & Collect") doesn't split it. The list ends at the
-first word that is neither. The first time phrase after it with only words between is the
-question's window ("signups excluding web in June 2024"); any other value, quoted or time
-mention before the next exclusion, an "including" or the question's end is an unread item.
+first word that is neither. Every other character up to that word is an unread item, so a
+single-quoted name (`'store'`, `‘store’`) or a name with no letter or digit (`-`, `_`) holds;
+only the question's final `.`, `?` or `!` is exempt. The first time phrase after the list with
+only words between is the question's window ("signups excluding web in June 2024"); any other
+value, quoted or time mention before the next exclusion, an "including" or the question's end
+is an unread item. When an exclusion word or an "including" falls inside a quoted string or a
+declared value name ("Including Top", "All but Web"), the whole question is one unread item.
 
 Every item needs its own top-level `where` filter on its one dimension,
 `{"field": ..., "op": "IS DISTINCT FROM", "value": ...}`, which keeps rows with no recorded
@@ -400,7 +404,9 @@ those rows, so they don't realize an exclusion, and `plan` drafts `IS DISTINCT F
 No top-level filter may exclude a value the question doesn't name, and on an item's dimension
 a filter that keeps values may keep only values the question names; the caller's own
 `partial_query` filters may exclude or keep other values, but realize an item only by
-excluding that value. A filter inside a child group or a selected expression proves nothing.
+excluding that value. A filter inside a child group or a selected expression proves nothing,
+and a child group, compound condition or selected expression's filter that the caller's
+`partial_query` didn't supply is `excess` (`{"path": ..., "kind": "scoped"}`).
 Query IR has no window complement, so a time exclusion ("signups not in June 2024") always
 holds, and its phrase is reported unresolved instead of being read as the window. A clause
 that misses any of this holds with `negation_unrealized`, or `negation_reversed` when every
