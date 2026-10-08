@@ -31,6 +31,9 @@ _PAIR = re.compile(
     re.IGNORECASE,
 )
 _COMPARISON_RE = re.compile(rf"\b(?:{_COMPARISON})\b", re.IGNORECASE)
+# The keys of the draft ``_match`` builds; policy_context rides on hand-authored drafts.
+_DRAFT_KEYS = frozenset({"version", "select", "time", "order_by", "policy_context"})
+_DRAFT_TIME_KEYS = frozenset({"temporal_role", "grain", "range", "fill"})
 
 
 @dataclass(frozen=True)
@@ -90,12 +93,14 @@ def completed_period_pair(
     values = query.get("select") or []
     if not isinstance(time, dict) or not isinstance(values, list):
         return None
+    # A period pair is ready only for the exact draft shape it builds; anything else the
+    # caller adds holds.
     if (
         runtime is None
+        or _adds_keys(query, _DRAFT_KEYS)
+        or _adds_keys(time, _DRAFT_TIME_KEYS)
         or len(values) != 1
         or not isinstance(values[0], dict)
-        or query.get("group_by")
-        or query.get("limit") is not None
         or time.get("grain") != unit
         or time.get("fill") is not True
         or time.get("range") != pair.bounds["range"]
@@ -123,6 +128,10 @@ def completed_period_pair(
     except (SemanticLayerError, ValueError, TypeError, OverflowError):
         return None
     return pair
+
+
+def _adds_keys(block: dict[str, Any], allowed: frozenset[str]) -> bool:
+    return any(value not in (None, [], {}) for key, value in block.items() if key not in allowed)
 
 
 def _flow_subject(config: Any, expression: dict[str, Any]) -> bool:

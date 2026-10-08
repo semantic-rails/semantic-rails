@@ -339,6 +339,58 @@ def test_order_pair_requires_fill(
     assert held["why"]["code"] == "PLAN_UNASKED_GROUPING"
 
 
+ORDER_QUESTION = "How many orders did we get last week compared with the week before?"
+ORDER_NOW = {"now": "2017-08-21"}
+# Keeping only periods with orders drops the filled zero-valued week.
+ORDER_FILTER: dict[str, Any] = {
+    "metric_filters": [
+        {
+            "expression": {
+                "aggregation": "count_distinct",
+                "measure": "measure.jaffle.order_count",
+            },
+            "op": ">",
+            "value": 0,
+        }
+    ]
+}
+
+
+@pytest.mark.parametrize(
+    "addition",
+    [
+        ORDER_FILTER,
+        {"where": [{"field": "dimension.jaffle_order_has_food_item", "op": "=", "value": True}]},
+        {"limit": 10},
+        {"time": {"week_start": "monday"}},
+    ],
+    ids=["metric_filters", "where", "limit", "unknown_time_key"],
+)
+def test_order_pair_holds_caller_additions(runtime_factory: Any, addition: dict[str, Any]) -> None:
+    runtime = runtime_factory("jaffle_shop")
+    planned = plan_payload(
+        runtime, intent=ORDER_QUESTION, partial_query={"policy_context": ORDER_NOW}
+    )
+    assert planned["status"] == "ok", planned.get("why")
+    query = deepcopy(planned["best"]["query_ir"])
+    query["policy_context"] = ORDER_NOW
+    # Readiness checks see the relative draft before the public Query IR resolves dates.
+    query["time"].pop("start", None)
+    query["time"].pop("end", None)
+    query["time"]["range"] = {"last": {"unit": "week", "value": 2}}
+    assert completed_period_pair(ORDER_QUESTION, runtime=runtime, query=query) is not None
+    for key, value in addition.items():
+        query[key] = {**query[key], **value} if key == "time" else value
+    assert completed_period_pair(ORDER_QUESTION, runtime=runtime, query=query) is None
+    held = plan_payload(
+        runtime, intent=ORDER_QUESTION, partial_query={"policy_context": ORDER_NOW, **addition}
+    )
+    assert held["status"] != "ok", held
+    assert "execute" not in held["next"].get("ready_for", [])
+    if "metric_filters" in addition:
+        assert held["best"]["query_ir"]["metric_filters"] == ORDER_FILTER["metric_filters"]
+
+
 def test_completed_order_pair_fills_an_empty_week(tmp_path: Path) -> None:
     package = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     database = package / "jaffle_shop.duckdb"
@@ -378,6 +430,18 @@ def test_completed_order_pair_fills_an_empty_week(tmp_path: Path) -> None:
                 ("2017-08-14", 1),
             ]
         )
+        filtered = plan_payload(
+            runtime,
+            intent=ORDER_QUESTION,
+            partial_query={"policy_context": ORDER_NOW, **ORDER_FILTER},
+        )
+        assert filtered["status"] != "ok", filtered
+        assert "execute" not in filtered["next"].get("ready_for", [])
+        held = filtered["best"]["query_ir"]
+        assert held["metric_filters"] == ORDER_FILTER["metric_filters"]
+        # The held draft would lose the empty week, so it never reaches execute.
+        lost = [(str(row[clock])[:10], row[alias]) for row in typed_rows(runtime.query(held))]
+        assert lost == [("2017-08-14", 1)] != actual
     finally:
         runtime.close()
 
