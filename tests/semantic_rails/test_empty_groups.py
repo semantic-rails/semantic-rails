@@ -954,24 +954,25 @@ FUTURE_GOLD = (
 @pytest.mark.parametrize("fill", [False, True])
 @pytest.mark.parametrize("shape", ["count", "sum"])
 def test_a_never_matched_operand_reads_null_beyond_the_loaded_range(
-    future_shop: Runtime, shape: str, fill: bool
+    future_shop: Runtime, shape: str, fill: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rt = _conditional_revenue(future_shop, IN_STORE_B) if shape == "sum" else future_shop
     try:
         b = SHOP_REVENUE if shape == "sum" else {"measure": "measure.shop.store_b_orders"}
-        response = rt.query(
-            {
-                "select": _select(b=b),
-                "time": {**SHOP_MONTH, "start": "2098-01-01", "end": "2098-02-01", "fill": fill},
-            }
-        )
+        query = {
+            "select": _select(b=b),
+            "time": {**SHOP_MONTH, "start": "2098-01-01", "end": "2098-02-01", "fill": fill},
+        }
+        response = rt.query(query)
         gold = _gold(rt, FUTURE_GOLD.format(value=FUTURE_B[shape], where=""))
         assert gold == [{"b": None}]
         assert [{"b": row["b"]} for row in typed_rows(response)] == gold
-        code = "NO_DATA_YET" if fill else "NO_DATA_IN_SCOPE"
-        assert _warnings(response, code)[0]["details"]["outputs"] == ["b"]
-        if fill:
-            assert _warnings(response) == []
+        # Authored DATE spine keys and TIMESTAMP coverage cannot prove a dated edge.
+        assert _warnings(response, "NO_DATA_YET") == []
+        assert _warnings(response)[0]["details"]["outputs"] == ["b"]
+        with monkeypatch.context() as patch:
+            patch.setattr("semantic_rails.runtime._no_data_yet_warnings", lambda *a, **k: [])
+            assert response["warnings"] == rt.query(query)["warnings"]
     finally:
         if rt is not future_shop:
             rt.close()

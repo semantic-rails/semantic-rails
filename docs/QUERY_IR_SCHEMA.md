@@ -1243,11 +1243,15 @@ when earlier buckets have values. Its `details.outputs` names the affected outpu
 `edge_source: "last_bucket"`: for example, "No data yet after the week of 2026-09-07, the
 last week with data, so later weeks read NULL, not 0." This date names the bucket, not the
 raw last event day; moving an event within the same bucket leaves the warning unchanged.
+Series compare only the SQL-produced bucket keys from the same calendar and timezone,
+at their full precision. Day and coarser edges are dates; sub-day edges are full ISO
+timestamps. Incompatible adapter types retain existing warnings. An empty series with
+dated coverage makes no dated claim and keeps `EMPTY_RESULT_WINDOW` and other warnings.
 
 An empty window total whose visible data all precedes the window uses the resolved window
 start as its `edge`, with `edge_source: "before_window"`: "No data yet in this window: its
 data ends before 2026-09-21, the window start, so the total reads NULL, not 0." With no visible
-data the warning has `edge: null` and names no date. A proven empty answer beyond coverage
+data the warning has `edge: null` and `edge_source: null` and names no date. A proven empty total beyond coverage
 gets `NO_DATA_YET` in place of `EMPTY_RESULT_WINDOW`; affected outputs do not also get
 `NO_DATA_IN_SCOPE`. Data only after the window, an unresolved window start, and other
 unproven edges retain the existing warnings.

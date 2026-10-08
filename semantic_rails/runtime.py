@@ -1522,8 +1522,9 @@ def _requested_window(compiled, payload):
 
 def _no_data_yet_warnings(runtime, compiled, rows, payload, *, excluded_outputs=()):
     """Disclose only edges proven by the same coverage that guarded the answer's NULLs."""
+    from datetime import date, datetime
+
     from .compiler_parts.aliasing import AliasRegistry
-    from .temporal_support import _date_key
 
     time = compiled["logical_plan"].time
     outputs = {
@@ -1573,7 +1574,7 @@ def _no_data_yet_warnings(runtime, compiled, rows, payload, *, excluded_outputs=
             if not names:
                 continue
             edges = [coverage[f"{p}__loaded_to"] for p in sorted(names)]
-            edge, source = None, "last_bucket"
+            edge, source = None, None
             if time.get("window_total") and any(
                 coverage.get(f"{p}__loaded_from") == 1 for p in names
             ):
@@ -1586,19 +1587,29 @@ def _no_data_yet_warnings(runtime, compiled, rows, payload, *, excluded_outputs=
                 edge, source = window["start"], "before_window"
             else:
                 # Require every mapped leaf to have a dated edge before claiming one.
-                if any(value is None for value in edges):
+                if not rows or any(value is None for value in edges):
                     continue
-                latest = max(_date_key(value) for value in edges)
+                buckets = [row.get(time_key) for row in rows if row.get(output) is None]
+                values = [*edges, *buckets]
+                # Compare SQL's bucket keys only, never raw bounds or coerced dates.
                 if not (
-                    any(
-                        row.get(output) is None and _date_key(row.get(time_key)) > latest
-                        for row in rows
+                    all(type(value) is date for value in values)
+                    or (
+                        all(type(value) is datetime for value in values)
+                        and len({value.utcoffset() is None for value in values}) == 1
                     )
-                    if rows
-                    else window["start"] and window["start"] > latest
                 ):
                     continue
-                edge = latest
+                latest = max(edges)
+                if not any(bucket > latest for bucket in buckets):
+                    continue
+                edge = (
+                    latest.date().isoformat()
+                    if type(latest) is datetime
+                    and time.get("grain") in {"day", "week", "month", "quarter", "year"}
+                    else latest.isoformat()
+                )
+                source = "last_bucket"
             detail = {"id": measure, "edge": edge, "edge_source": source}
             if detail not in measures:
                 measures.append(detail)

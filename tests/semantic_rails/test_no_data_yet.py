@@ -1,7 +1,7 @@
 """Fail-safe coverage marker decisions and per-measure attribution."""
 
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
@@ -35,7 +35,7 @@ def total(package_config_factory):
         (-1, 1, "2026-09-21", None),
         (1, 1, "2026-09-21", None),
         (1, None, "2026-09-21", None),
-        (None, None, "2026-09-21", "last_bucket"),
+        (None, None, "2026-09-21", "undated"),
         (-1, -1, "", None),
     ],
 )
@@ -66,7 +66,7 @@ def test_window_total_markers_only_disclose_proven_edges(
             {
                 "id": REVENUE,
                 "edge": start if expected == "before_window" else None,
-                "edge_source": expected,
+                "edge_source": None if expected == "undated" else expected,
             }
         ]
 
@@ -145,5 +145,103 @@ def test_one_warning_attributes_each_measure_to_its_own_coverage(
             "edge": "2026-09-21" if window_total else "2026-09-07",
             "edge_source": "before_window" if window_total else "last_bucket",
         },
-        {"id": ORDERS, "edge": None, "edge_source": "last_bucket"},
+        {"id": ORDERS, "edge": None, "edge_source": None},
     ]
+
+
+@pytest.mark.parametrize(
+    "grain,edges,buckets,expected",
+    [
+        ("week", [datetime(2024, 9, 16)], [], None),
+        ("day", [datetime(2024, 9, 21)], [], None),
+        ("hour", [datetime(2024, 9, 21, 10)], [datetime(2024, 9, 21, 11)], "2024-09-21T10:00:00"),
+        ("hour", [datetime(2024, 9, 21, 10)], [datetime(2024, 9, 21, 10)], None),
+        ("day", [date(2024, 9, 21)], [date(2024, 9, 22)], "2024-09-21"),
+        ("week", [datetime(2024, 9, 16)], [datetime(2024, 9, 23)], "2024-09-16"),
+        (
+            "hour",
+            [datetime(2024, 9, 21, 10, 0, 0, 123456, tzinfo=UTC)],
+            [datetime(2024, 9, 21, 7, tzinfo=timezone(timedelta(hours=-4)))],
+            "2024-09-21T10:00:00.123456+00:00",
+        ),
+        ("day", [date(2024, 9, 21)], [datetime(2024, 9, 22)], None),
+        ("day", [datetime(2024, 9, 21)], [date(2024, 9, 22)], None),
+        ("hour", [datetime(2024, 9, 21, 10, tzinfo=UTC)], [datetime(2024, 9, 21, 11)], None),
+        ("hour", [datetime(2024, 9, 21, 10)], [datetime(2024, 9, 21, 11, tzinfo=UTC)], None),
+        ("day", ["2024-09-21"], ["2024-09-22"], None),
+        ("day", [date(2024, 9, 21)], [None], None),
+        ("day", [date(2024, 9, 21)], [date(2024, 9, 22), "2024-09-23"], None),
+        ("day", [date(2024, 9, 20), datetime(2024, 9, 21)], [date(2024, 9, 22)], None),
+        (
+            "hour",
+            [datetime(2024, 9, 21, 9), datetime(2024, 9, 21, 10, tzinfo=UTC)],
+            [datetime(2024, 9, 21, 11)],
+            None,
+        ),
+        ("day", [None], [], "undated"),
+    ],
+)
+def test_series_compares_only_compatible_sql_bucket_keys(
+    package_config_factory, monkeypatch, grain, edges, buckets, expected
+):
+    config, _ = package_config_factory("jaffle_shop")
+    config = replace(
+        config,
+        temporal_roles=[
+            replace(role, supported_grains=[*role.supported_grains, "hour"])
+            if role.id == ROLE
+            else role
+            for role in config.temporal_roles
+        ],
+    )
+    query = {
+        "select": [{"expression": {"measure": REVENUE}, "as": "value"}],
+        "time": {
+            "temporal_role": ROLE,
+            "grain": grain,
+            "fill": grain != "hour",
+            "start": "2024-09-22",
+            "end": "2024-09-23",
+        },
+    }
+    if grain == "hour":
+        query["select"][0]["expression"].update(
+            kind="aggregate",
+            filter={
+                "all": [
+                    {
+                        "field": "dimension.jaffle_order_customer_order_number",
+                        "op": "!=",
+                        "value": 9999,
+                    }
+                ]
+            },
+        )
+    compiled = compile_query(config, Registry(config), query)
+    coverage = next(c for c in compiled["sql_ast"].ctes if c.name == "coverage_1")
+    for index in range(2, len(edges) + 1):
+        compiled["sql_ast"].ctes.append(replace(coverage, name=f"coverage_{index}"))
+    monkeypatch.setattr(
+        runtime_module,
+        "_guard_probe_names",
+        lambda *a: (
+            {"m1": {f"coverage_{i}" for i in range(1, len(edges) + 1)}},
+            {"value": {f"coverage_{i}" for i in range(1, len(edges) + 1)}},
+        ),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_compiled_cte_row",
+        lambda *a: {f"coverage_{i}__loaded_to": edge for i, edge in enumerate(edges, 1)},
+    )
+    rows = [{f"{ROLE}__{grain}": bucket, "value": None} for bucket in buckets]
+    warnings = _no_data_yet_warnings(None, compiled, rows, query)
+    assert bool(warnings) is (expected is not None)
+    if expected:
+        assert warnings[0]["details"]["measures"] == [
+            {
+                "id": REVENUE,
+                "edge": None if expected == "undated" else expected,
+                "edge_source": None if expected == "undated" else "last_bucket",
+            }
+        ]

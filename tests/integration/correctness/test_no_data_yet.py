@@ -10,9 +10,11 @@ import yaml
 
 from semantic_rails import runtime as runtime_module
 from semantic_rails.config import load_package_config
+from semantic_rails.dialects import SqlDialect
 from semantic_rails.embedding import RequestContext
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import SeedSpec
+from semantic_rails.sql_ast import SqlCast, SqlLiteral
 
 from .conftest import _rows
 from .test_correctness import _backend
@@ -54,17 +56,24 @@ def sparse_runtime(request, backend_name, tmp_path):
                         "column": "event_at",
                         "kind": "timestamp",
                         "class": "event_time",
+                        "supported_grains": ["hour", "day", "week", "month", "quarter", "year"],
                         "default": True,
                     }
                 },
                 "dimensions": {"caller": {"kind": "categorical"}},
                 "measures": {
+                    "amount": {
+                        "kind": "aggregate",
+                        "expr": "amount",
+                        "accumulation": {"kind": "flow"},
+                        "rollup": "additive",
+                    },
                     "new_workspaces": {
                         "kind": "entity_count",
                         "entity_key": "event_id",
                         "accumulation": {"kind": "flow"},
                         "rollup": "additive",
-                    }
+                    },
                 },
             }
         },
@@ -98,10 +107,10 @@ def sparse_runtime(request, backend_name, tmp_path):
             ),
         )
     seed = (
-        f"CREATE TABLE {events} (event_id INTEGER, caller VARCHAR, event_at TIMESTAMP);"
+        f"CREATE TABLE {events} (event_id INTEGER, caller VARCHAR, event_at TIMESTAMP, amount INTEGER);"
         f"CREATE TABLE {loads} AS SELECT d AS through_day FROM "
         "generate_series(TIMESTAMP '2026-09-01', TIMESTAMP '2026-09-30', INTERVAL '1 day') t(d);"
-        f"INSERT INTO {events} VALUES (1, 'early', TIMESTAMP '2026-09-12');"
+        f"INSERT INTO {events} VALUES (1, 'early', TIMESTAMP '2026-09-12', NULL);"
     )
     if backend_name == "duckdb":
         with duckdb.connect(str(tmp_path / "events.duckdb")) as conn:
@@ -212,10 +221,10 @@ def test_moving_an_event_within_the_bucket_has_identical_warning(sparse_runtime,
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
 @pytest.mark.parametrize("grain", ["week", ""])
-@pytest.mark.parametrize("caller,expected", [("early", True), ("late", False), ("missing", True)])
-def test_coverage_uses_only_the_callers_visible_rows(sparse_runtime, grain, caller, expected):
+@pytest.mark.parametrize("caller", ["early", "late", "missing"])
+def test_coverage_uses_only_the_callers_visible_rows(sparse_runtime, grain, caller):
     rt, events, _ = sparse_runtime
-    _mutate(rt, f"INSERT INTO {events} VALUES (2, 'late', TIMESTAMP '2026-09-23')")
+    _mutate(rt, f"INSERT INTO {events} VALUES (2, 'late', TIMESTAMP '2026-09-23', NULL)")
     query = _query(grain=grain, caller=caller)
     if grain:
         query["time"].pop("fill")
@@ -232,12 +241,13 @@ def test_coverage_uses_only_the_callers_visible_rows(sparse_runtime, grain, call
             },
         )
     result = rt.query(query)
+    expected = caller == "missing" or (caller == "early" and not grain)
     assert any(row["code"] == "NO_DATA_YET" for row in result["warnings"]) is expected
     if expected:
         warning = _warning(result)
         if caller == "missing":
             assert warning["details"]["measures"] == [
-                {"id": MEASURE, "edge": None, "edge_source": "last_bucket"}
+                {"id": MEASURE, "edge": None, "edge_source": None}
             ]
             assert "2026-09-12" not in warning["message"] and "2026-09-23" not in warning["message"]
 
@@ -275,10 +285,10 @@ def test_unproven_coverage_keeps_the_existing_empty_window_warning(
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
-def test_two_row_filtered_series_get_their_own_bucket_edges(sparse_runtime):
+def test_empty_row_filtered_series_keep_existing_warnings(sparse_runtime, monkeypatch):
     rt, events, _ = sparse_runtime
-    _mutate(rt, f"INSERT INTO {events} VALUES (2, 'late', TIMESTAMP '2026-09-23')")
-    for caller, edge in [("early", "2026-09-07"), ("late", "2026-09-21")]:
+    _mutate(rt, f"INSERT INTO {events} VALUES (2, 'late', TIMESTAMP '2026-09-23', NULL)")
+    for caller in ["early", "late"]:
         query = _query(start="2026-09-28", end="2026-10-05", caller=caller)
         query["time"].pop("fill")
         query["select"][0]["expression"].update(
@@ -293,10 +303,81 @@ def test_two_row_filtered_series_get_their_own_bucket_edges(sparse_runtime):
                 ]
             },
         )
-        warning = _warning(rt.query(query))
+        result = rt.query(query)
+        assert result["rows"] == []
+        assert not any(row["code"] == "NO_DATA_YET" for row in result["warnings"])
+        assert any(row["code"] == "EMPTY_RESULT_WINDOW" for row in result["warnings"])
+        with monkeypatch.context() as patch:
+            patch.setattr(runtime_module, "_no_data_yet_warnings", lambda *a, **k: [])
+            assert result["warnings"] == rt.query(query)["warnings"]
+
+
+@pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
+@pytest.mark.parametrize(
+    "grain,start,end,edge",
+    [
+        ("week", "2024-09-22", "2024-09-23", None),
+        ("day", "2024-09-21T11:00:00", "2024-09-22", None),
+        ("hour", "2024-09-21T10:00:00", "2024-09-21T12:00:00", "2024-09-21T10:00:00"),
+        ("hour", "2024-09-21T10:00:00", "2024-09-21T11:00:00", None),
+    ],
+)
+def test_series_disclosure_uses_bucket_precision(
+    sparse_runtime, monkeypatch, grain, start, end, edge
+):
+    rt, events, _ = sparse_runtime
+    _mutate(rt, f"UPDATE {events} SET event_at=TIMESTAMP '2024-09-21 10:30:00'")
+    query = _query(grain=grain, start=start, end=end)
+    query["time"].pop("fill")
+    query["select"][0]["expression"].update(
+        kind="aggregate",
+        filter={"all": [{"field": "dimension.events_event_caller", "op": "!=", "value": "early"}]},
+    )
+    if grain == "hour":
+        # Freeze the coverage cutoff: 11:30 is a visible but not yet loaded event.
+        monkeypatch.setattr(
+            SqlDialect, "now", lambda *a: SqlCast(SqlLiteral("2024-09-21 10:59:00"), "TIMESTAMP")
+        )
+        _mutate(
+            rt, f"INSERT INTO {events} VALUES (2, 'early', TIMESTAMP '2024-09-21 11:30:00', NULL)"
+        )
+        query["select"][0]["expression"].update(measure="measure.events.amount")
+        query["select"][0]["expression"]["filter"]["all"][0]["value"] = "never"
+    result = rt.query(query)
+    assert result["ok"]
+    assert (
+        _rows(
+            rt,
+            f"SELECT MAX(date_trunc('{grain}', event_at)) FROM {events} WHERE event_at <= TIMESTAMP '2024-09-21 10:59:00'",
+        )[0][0].isoformat()
+        == (
+            {
+                "week": "2024-09-16T00:00:00",
+                "day": "2024-09-21T00:00:00",
+                "hour": "2024-09-21T10:00:00",
+            }[grain]
+        )
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(runtime_module, "_no_data_yet_warnings", lambda *a, **k: [])
+        before = rt.query(query)
+    assert result["rows"] == before["rows"]
+    assert result["rendered_sql"] == before["rendered_sql"]
+    if edge:
+        assert [row["value"] for row in result["rows"]] == [None, None]
+        warning = _warning(result)
         assert warning["details"]["measures"] == [
-            {"id": MEASURE, "edge": edge, "edge_source": "last_bucket"}
+            {"id": "measure.events.amount", "edge": edge, "edge_source": "last_bucket"}
         ]
+        assert edge in warning["message"]
+    else:
+        assert not any(row["code"] == "NO_DATA_YET" for row in result["warnings"])
+        assert result["warnings"] == before["warnings"]
+        if grain == "hour":
+            assert [row["value"] for row in result["rows"]] == [None]
+        else:
+            assert result["rows"] == []
+            assert any(row["code"] == "EMPTY_RESULT_WINDOW" for row in result["warnings"])
 
 
 @pytest.mark.parametrize("backend_name", ["duckdb", "postgres"])
