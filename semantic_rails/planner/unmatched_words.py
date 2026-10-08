@@ -20,7 +20,8 @@ from .coverage import (
     _value_names,
     _value_phrases,
 )
-from .filter_checks import _excluded_value_spans, _field_predicates, _positive_filter_evidence
+from .exclusions import exclusion_regions
+from .filter_checks import _field_predicates, _positive_filter_evidence
 from .groupings import _explicit_grain, _requested_grouping_spans
 from .time_checks import _fiscal_calendar_gaps
 from .time_phrases import (
@@ -119,10 +120,14 @@ _FRAMING_WORDS = frozenset(
             "compared",
             "comparison",
             "together",
-            # Negations; the negation check owns them.
+            # Exclusion markers; the exclusion check owns them.
+            "apart",
+            "aside",
             "except",
             "excluding",
+            "minus",
             "not",
+            "outside",
             "without",
         ],
         *[
@@ -291,8 +296,9 @@ def _honored_clause_spans(runtime: Any, text: str, query: dict[str, Any]) -> lis
         spans.extend(match.span() for match in _FISCAL_RE.finditer(lowered))
     if _query_contains_prior_period(runtime, query):
         spans.extend(match.span() for match in _PRIOR_PERIOD_RE.finditer(lowered))
+    excluded = exclusion_regions(text)
     for marker in re.finditer(r"\b(?:including|include)\s+", lowered):
-        negative = any(start <= marker.start() < end for start, end in _excluded_value_spans(text))
+        negative = any(start <= marker.start() < end for start, end in excluded)
         predicates = _field_predicates(query)
         for phrase, rows in _value_phrases(runtime._config).items():
             pattern = re.escape(phrase).replace(r"\ ", r"[\s_-]+") + r"\b"

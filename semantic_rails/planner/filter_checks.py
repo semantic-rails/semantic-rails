@@ -1,4 +1,4 @@
-"""Faithfulness: filter values, where clauses, exclusions and contradictions."""
+"""Faithfulness: filter values, where clauses and contradictions."""
 
 from __future__ import annotations
 
@@ -18,38 +18,12 @@ from .coverage import (
     _referenced_ids,
     _value_phrases,
 )
+from .exclusions import exclusion_regions
 from .visibility import visible_dimensions
 
-_EXCLUSION_VALUE_RE = (
-    r"(?P<value>[^,.;]+?)(?=\s+(?:and\s+)?(?:excluding|except|without|but\s+not|not)\b|[,.;]|$)"
-)
-_NEGATION_RE = re.compile(
-    r"\b(?P<marker>excluding|except|without|but\s+not|not)\s+"
-    r"(?!only\b)" + _EXCLUSION_VALUE_RE,
-    re.IGNORECASE,
-)
-# "for all stores but Brooklyn": "but" excludes after all/every/each/any.
-_ALL_BUT_RE = re.compile(
-    r"\b(?:all|every|each|any)\s+(?:[a-z-]+\s+){0,3}?(?P<marker>but)\s+(?!not\b)"
-    + _EXCLUSION_VALUE_RE,
-    re.IGNORECASE,
-)
-
-
-_NEGATIVE_OPS = frozenset(
-    {
-        "!=",
-        "<>",
-        "IS NOT",
-        "IS NOT NULL",
-        "NOT IN",
-        "NOT LIKE",
-        "NOT BETWEEN",
-    }
-)
 # Filter ops that keep the values they name, and ops that drop them.
 _KEEPING_OPS = frozenset({"=", "==", "IN"})
-_EXCLUDING_OPS = frozenset({"!=", "<>", "NOT IN"})
+_EXCLUDING_OPS = frozenset({"!=", "<>", "NOT IN", "IS DISTINCT FROM"})
 # Everyday words that are also values in some catalogs ("new", "all", "other",
 # "us", "open"). One names its value only next to a word of the value's
 # dimension ("new customers"); otherwise the PLAN_UNMATCHED_TERMS warning,
@@ -98,16 +72,16 @@ _GENERIC_ID_WORDS = frozenset(
 
 
 def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[CoverageGap]:
-    """Every governed value the question names must reach the draft.
+    """Every governed value the question names outside an exclusion must reach the draft.
 
-    A value is honored by a filter with the requested polarity, by
-    grouping on its dimension when no filter drops it, or by a chosen object
-    whose name carries the question's word for it ("new customer orders"
-    answered by a new-customer measure). A filter that also keeps an unnamed
-    value in an ungrouped total, or drops an unnamed value, is not. Longer
-    values mask the words inside them ("New Orleans" is not "new"). Numbers,
-    and everyday words not tied to their dimension in the question, are left
-    to the unmatched-terms warning.
+    A value is honored by a filter that keeps it, by grouping on its dimension
+    when no filter drops it, or by a chosen object whose name carries the
+    question's word for it ("new customer orders" answered by a new-customer
+    measure). A filter that also keeps an unnamed value in an ungrouped total
+    is not. Longer values mask the words inside them ("New Orleans" is not
+    "new"). Numbers, and everyday words not tied to their dimension in the
+    question, are left to the unmatched-terms warning. ``exclusions`` owns
+    every value an exclusion clause names, everyday words included.
     """
 
     config = runtime._config
@@ -118,16 +92,15 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
         return []
     predicates = _field_predicates(query)
     # Every value the question names, in either polarity, by dimension. An
-    # ungrouped total keeps only these, and an exclusion drops only these.
+    # ungrouped total keeps only these.
     named: dict[str, list[Any]] = {}
     for _span, phrase in matches:
         for domain, value in phrases[phrase]:
             for dimension in domain.dimensions:
                 named.setdefault(str(dimension), []).append(value.value)
-    # Keep punctuation and explicit inclusion transitions when assigning
-    # polarity. _plain removes both, so its offsets cannot define a clause.
+    # _plain removes punctuation, so its offsets cannot place a clause.
     source_words = list(re.finditer(r"[^\W_]+", text.lower()))
-    excluded_spans = _excluded_value_spans(text)
+    excluded = exclusion_regions(text)
     grouped = {str(item) for item in list(query.get("group_by") or [])}
     referenced = set(_referenced_ids(query))
     carried = {
@@ -143,29 +116,18 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
         first_word = plain.count(" ", 0, span[0])
         last_word = first_word + plain[span[0] : span[1]].count(" ")
         original_span = (source_words[first_word].start(), source_words[last_word].end())
-        negative = any(
-            start <= original_span[0] and original_span[1] <= end for start, end in excluded_spans
-        )
+        if any(start <= original_span[0] < end for start, end in excluded):
+            continue
         if phrase in _EVERYDAY_WORDS and not _tied_to_dimension(config, plain, span, rows):
             continue
-        if any(
-            _value_honored(domain, value, predicates, grouped, negative, named)
-            for domain, value in rows
-        ):
-            continue
-        # The dedicated negation check already reports a missing negative
-        # predicate or a positive predicate on this excluded value.
-        if negative and (
-            not _query_has_negative_semantics(query)
-            or _positive_filter_evidence(runtime, query, phrase)
-        ):
+        if any(_value_honored(domain, value, predicates, grouped, named) for domain, value in rows):
             continue
         relevant_filter = any(
             str(dimension) in predicates
             for domain, value in rows
             for dimension in domain.dimensions
         )
-        if not negative and not relevant_filter and set(_tokens(phrase)) <= carried:
+        if not relevant_filter and set(_tokens(phrase)) <= carried:
             continue
         said.append(phrase)
         for domain, value in rows:
@@ -238,33 +200,6 @@ def _where_clause_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
                 )
             )
     return gaps
-
-
-def _exclusion_matches(text: str) -> list[re.Match[str]]:
-    return sorted(
-        (match for pattern in (_NEGATION_RE, _ALL_BUT_RE) for match in pattern.finditer(text)),
-        key=lambda match: match.start(),
-    )
-
-
-def _excluded_value_spans(text: str) -> list[tuple[int, int]]:
-    """Negative clauses include comma lists, ending at an explicit inclusion."""
-
-    spans: list[tuple[int, int]] = []
-    matches = _exclusion_matches(text)
-    for index, match in enumerate(matches):
-        start = match.start("value")
-        tail = text[start:]
-        # In "not including Brooklyn", the first "including" completes
-        # the exclusion; only a later one opens a positive clause.
-        initial = re.match(r"(?:including|include)\b", tail, re.IGNORECASE)
-        scan_from = initial.end() if initial else 0
-        stop = re.search(r"[.;!?]|\b(?:including|include)\b", tail[scan_from:], re.IGNORECASE)
-        end = start + scan_from + stop.start() if stop else len(text)
-        if index + 1 < len(matches):
-            end = min(end, matches[index + 1].start())
-        spans.append((start, end))
-    return spans
 
 
 def _value_matches(
@@ -441,22 +376,18 @@ def _value_honored(
     value: Any,
     predicates: dict[str, _FieldConstraints],
     grouped: set[str],
-    negative: bool,
     named: dict[str, list[Any]],
 ) -> bool:
-    """A filter has the requested polarity without keeping or dropping values the
-    question doesn't name, or grouping keeps a positive value."""
+    """A filter keeps the value without keeping values the question doesn't name,
+    or grouping keeps it."""
 
     canonical = value.value
     for dimension in (str(item) for item in domain.dimensions):
         entry = predicates.get(dimension)
-        names = named.get(dimension, [])
         if entry is not None:
-            if negative and entry.drops(canonical, named=names):
+            if entry.keeps(canonical, grouped=dimension in grouped, named=named.get(dimension, [])):
                 return True
-            if not negative and entry.keeps(canonical, grouped=dimension in grouped, named=names):
-                return True
-        elif not negative and dimension in grouped:
+        elif dimension in grouped:
             return True
     return False
 
@@ -498,22 +429,6 @@ def _contradictory_filter_gaps(query: dict[str, Any]) -> list[CoverageGap]:
             },
         )
     ]
-
-
-def _query_has_negative_semantics(query: dict[str, Any]) -> bool:
-    for node in _dict_nodes(query):
-        kind = str(node.get("kind", "") or "").casefold()
-        if kind in {"not", "not_in", "not_between"} or node.get("negated") is True:
-            return True
-        if is_child_group(node) and node.get("match") == "none":
-            return True
-        op = " ".join(str(node.get("op", "") or "").upper().split())
-        if op in _NEGATIVE_OPS:
-            return True
-        value = node.get("value")
-        if value is False or (value == 0 and op in {"=", "<", "<="}):
-            return True
-    return False
 
 
 def _positive_filter_evidence(
