@@ -3,7 +3,8 @@
 With ``time.fill: true`` the series of buckets came from the calendar's
 bucket-start column, filtered to the window. A week or month that starts
 before ``start`` was left out, so its rows from inside the window vanished:
-July 2017 by week lost the week of June 26, which holds July 1-2.
+July 2017 by week lost the week of June 26, which holds July 1-2. Every fill
+now uses the implicit Gregorian calendar; an authored one takes no part.
 """
 
 from __future__ import annotations
@@ -86,30 +87,17 @@ def test_fill_keeps_the_bucket_that_starts_before_the_window(
     assert {bucket: orders for bucket, orders in filled.items() if orders} == unfilled
 
 
-def test_fiscal_fill_keeps_the_fiscal_quarter_that_starts_before_the_window(runtime_factory):
-    # A fiscal query needs fill, so compare it with orders grouped by the fiscal calendar
-    # over the same half-open window. The fiscal quarter of November 2016 holds January.
+@pytest.mark.parametrize("fill", [True, False])
+def test_a_fiscal_quarter_is_refused_with_or_without_fill(runtime_factory, fill):
     runtime = runtime_factory("jaffle_shop")
     try:
-        filled = _series(
-            runtime, "quarter", "2017-01-01", "2017-10-01", fill=True, calendar_id="fiscal"
-        )
-        oracle = runtime._get_adapter().query(
-            """
-            SELECT fiscal.quarter_start AS quarter, COUNT(DISTINCT o.order_id) AS orders
-            FROM jaffle_order AS o
-            JOIN jaffle_calendar_fiscal AS fiscal
-              ON fiscal.date_day = CAST(o.ordered_at AS DATE)
-            WHERE o.ordered_at >= '2017-01-01' AND o.ordered_at < '2017-10-01'
-            GROUP BY fiscal.quarter_start
-            """
-        )
+        with pytest.raises(SemanticLayerError) as refused:
+            _series(runtime, "quarter", "2017-01-01", "2017-10-01", fill=fill, calendar_id="fiscal")
     finally:
         runtime.close()
 
-    assert min(filled) == date(2016, 11, 1)
-    expected = {_as_date(row["quarter"]): row["orders"] for row in oracle}
-    assert {quarter: orders for quarter, orders in filled.items() if orders} == expected
+    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
+    assert refused.value.details["reason"] == "calendar_not_supported_yet"
 
 
 _JULY_BY_WEEK = {
@@ -141,30 +129,33 @@ def _with_calendar(config, *, key=None, keep_date_day=True):
 
 
 @pytest.mark.parametrize("key", [["date_id"], ["date_key"]], ids=["integer-id", "text-key"])
-def test_fill_refuses_a_surrogate_calendar_key(runtime_factory, key):
+def test_fill_bounds_the_window_by_date_day_not_the_calendar_key(runtime_factory, key):
+    # A calendar can be keyed by a surrogate. The window must still be bounded by its
+    # date_day column; the surrogate column doesn't even exist here.
     runtime = runtime_factory("jaffle_shop")
     try:
         config = _with_calendar(runtime.config, key=key)
-        with pytest.raises(SemanticLayerError) as refused:
-            compile_query(config, Registry(config), _JULY_BY_WEEK)
-        assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-        assert refused.value.details["reason"] == "calendar_day_key_unproven"
-        assert refused.value.details["declared_key"] == key
+        sql = compile_query(config, Registry(config), _JULY_BY_WEEK)["sql"]
+        rows = runtime._get_adapter().query(sql)
     finally:
         runtime.close()
 
+    assert key[0] not in sql
+    alias = "temporal_role.jaffle_order_time__week"
+    assert min(_as_date(row[alias]) for row in rows) == date(2017, 6, 26)
+    assert sum(row["orders"] or 0 for row in rows) == 7438
 
-def test_fill_refuses_an_undeclared_day(runtime_factory):
+
+def test_fill_without_a_date_day_column_uses_the_implicit_calendar(runtime_factory):
+    # The authored calendar takes no part, so its missing date_day changes nothing.
     runtime = runtime_factory("jaffle_shop")
     try:
         config = _with_calendar(runtime.config, keep_date_day=False)
-        with pytest.raises(SemanticLayerError) as refused:
-            compile_query(config, Registry(config), _JULY_BY_WEEK)
-        assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-        assert refused.value.details["reason"] == "calendar_day_key_unproven"
-        assert refused.value.details["declared_type"] is None
+        sql = compile_query(config, Registry(config), _JULY_BY_WEEK)["sql"]
     finally:
         runtime.close()
+
+    assert "implicit_calendar" in sql and "jaffle_calendar" not in sql
 
 
 def _bucket_counts(runtime, grain: str, start: str, end: str, *, fill: bool, group_by=None):
@@ -215,7 +206,8 @@ def test_fill_keeps_every_bucket_with_rows(runtime_factory, grain, start, end, g
     assert filled == unfilled
 
 
-def test_timestamp_calendar_refuses_base_intraday_bounds(tmp_path):
+def test_timestamp_calendar_keeps_base_intraday_bounds(tmp_path):
+    # Timestamp calendar storage is ambiguous; the implicit calendar never reads it.
     package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
         connection.execute(
@@ -236,19 +228,21 @@ def test_timestamp_calendar_refuses_base_intraday_bounds(tmp_path):
             **_JULY_BY_WEEK,
             "time": {**_JULY_BY_WEEK["time"], "start": "2017-07-03T12:00:00", "end": "2017-07-04"},
         }
-        with pytest.raises(SemanticLayerError) as refused:
-            compile_query(config, Registry(config), query)
+        sql = compile_query(config, Registry(config), query)["sql"]
+        rows = runtime._get_adapter().query(sql)
         unfilled = _bucket_counts(runtime, "week", "2017-07-03T12:00:00", "2017-07-04", fill=False)
     finally:
         runtime.close()
 
+    alias = "temporal_role.jaffle_order_time__week"
     assert unfilled
-    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-    assert refused.value.details["column"] == "date_day"
-    assert refused.value.details["declared_type"] == "timestamp"
+    assert {
+        (_as_date(row[alias]), None): row["orders"] for row in rows if row["orders"]
+    } == unfilled
+    assert "jaffle_calendar" not in sql
 
 
-def test_timestamp_calendar_refuses_base_partial_week_limit(tmp_path):
+def test_timestamp_calendar_retains_base_partial_week_limit(tmp_path):
     package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
         connection.execute(
@@ -266,15 +260,19 @@ def test_timestamp_calendar_refuses_base_partial_week_limit(tmp_path):
                 for row in config.dimensions
             ],
         )
-        with pytest.raises(SemanticLayerError) as refused:
-            compile_query(config, Registry(config), _JULY_BY_WEEK)
+        sql = compile_query(config, Registry(config), _JULY_BY_WEEK)["sql"]
+        rows = connection.execute(
+            'SELECT CAST("temporal_role.jaffle_order_time__week" AS DATE), orders '
+            f"FROM ({sql}) AS timestamp_result"
+        ).fetchall()
 
-    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-    assert refused.value.details["column"] == "date_day"
-    assert refused.value.details["declared_type"] == "timestamp"
+    assert rows
+    # The week of June 26 holds July 1-2 (see test_fill_keeps_the_bucket_that_starts_...).
+    assert min(day for day, _ in rows) == date(2017, 6, 26)
+    assert "jaffle_calendar" not in sql
 
 
-def test_timestamp_calendar_refuses_across_session_timezone(tmp_path):
+def test_timestamp_calendar_keeps_raw_bounds_across_session_timezone(tmp_path):
     package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
         connection.execute("SET TimeZone='UTC'")
@@ -310,12 +308,15 @@ def test_timestamp_calendar_refuses_across_session_timezone(tmp_path):
                 "end": "2017-07-05T00:00:00+09:00",
             },
         }
-        with pytest.raises(SemanticLayerError) as refused:
-            compile_query(config, Registry(config), query)
+        sql = compile_query(config, Registry(config), query)["sql"]
+        rows = connection.execute(
+            'SELECT CAST("temporal_role.jaffle_order_time__day" AS VARCHAR), orders '
+            f"FROM ({sql}) AS tokyo_result"
+        ).fetchall()
 
-    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-    assert refused.value.details["column"] == "date_day"
-    assert refused.value.details["declared_type"] == "timestamp"
+    # No order exists at all, so there is no data to call zero: Tokyo's July 4 reads NULL.
+    assert rows == [("2017-07-04 00:00:00", None)]
+    assert "jaffle_calendar" not in sql
 
 
 @pytest.mark.parametrize(
@@ -340,7 +341,7 @@ def test_timestamp_calendar_refuses_across_session_timezone(tmp_path):
     ],
     ids=["utc-calendar", "new-york-calendar"],
 )
-def test_fill_refuses_timestamp_calendar_with_offset_window(
+def test_fill_preserves_offset_window_days_with_timestamptz_data(
     tmp_path, zone, start, end, first, second, days
 ):
     package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
@@ -395,16 +396,13 @@ def test_fill_refuses_timestamp_calendar_with_offset_window(
                 f"FROM ({sql}) AS filled_result"
             ).fetchall()
 
-        with pytest.raises(SemanticLayerError) as refused:
-            rows(True)
+        filled = rows(True)
         unfilled = rows(False)
 
     expected = {day: 1 for day in days}
-    assert len(unfilled) == len(expected)
+    assert len(unfilled) == len(filled) == len(expected)
     assert dict(unfilled) == expected
-    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-    assert refused.value.details["column"] == "date_day"
-    assert refused.value.details["declared_type"] == "timestamp"
+    assert dict(filled) == expected
 
 
 @pytest.mark.parametrize(
@@ -590,169 +588,146 @@ def test_fill_boundary_dates_do_not_overflow(
     else:
         assert rows
         assert sum(row["orders"] or 0 for row in rows) >= 1
-        assert f"jaffle_calendar.date_day {expected_operator} '{expected_day}'" in sql
+        assert f"implicit_calendar.date_day {expected_operator} '{expected_day}'" in sql
 
 
 @pytest.mark.parametrize(
-    ("zone", "calendar_day", "start", "end", "expected"),
+    ("zone", "start", "end", "expected"),
     [
         (
             "UTC",
-            "9999-12-31",
             "9999-12-30T00:00:00",
             "9999-12-31T00:00:00",
-            [],
+            [date(9999, 12, 30)],
         ),
         (
             "UTC",
-            "9999-12-31",
             "9999-12-30T00:00:00",
             "9999-12-31T00:00:00.000000001",
-            [date(9999, 12, 31)],
+            [date(9999, 12, 30), date(9999, 12, 31)],
         ),
         (
             "America/New_York",
-            "9999-12-31",
             "9999-12-30T00:00:00+00:00",
             "9999-12-31T23:59:59+00:00",
-            [date(9999, 12, 31)],
+            [date(9999, 12, 29), date(9999, 12, 30), date(9999, 12, 31)],
         ),
         (
             "Asia/Tokyo",
-            "0001-01-01",
             "0001-01-01T00:00:00+00:00",
             "0001-01-02T00:00:00+00:00",
-            [date(1, 1, 1)],
+            [date(1, 1, 1), date(1, 1, 2)],
         ),
         (
             "UTC",
-            "0001-01-01",
             "0001-01-01T00:00:00+01:00",
             "0001-01-02T00:00:00+01:00",
             [date(1, 1, 1)],
         ),
         (
             "UTC",
-            "9999-12-31",
             "9999-12-30T00:00:00-01:00",
             "9999-12-31T23:00:00-01:00",
-            [date(9999, 12, 31)],
+            [date(9999, 12, 30), date(9999, 12, 31)],
         ),
         (
             "Asia/Tokyo",
-            "0001-01-01",
             "0001-01-01T00:30:00+01:00",
             "0001-01-01T01:30:00+01:00",
             [date(1, 1, 1)],
         ),
         (
             "America/New_York",
-            "9999-12-31",
             "9999-12-31T22:30:00-01:00",
             "9999-12-31T23:30:00-01:00",
             [date(9999, 12, 31)],
         ),
         (
             "UTC",
-            "0001-01-01",
             "0001-01-01T00:00:00+14:00",
             "0001-01-01T01:00:00+14:00",
             [],
         ),
         (
             "UTC",
-            "9999-12-31",
             "9999-12-31T23:00:00-14:00",
             "9999-12-31T23:30:00-14:00",
             [],
         ),
         (
             "America/New_York",
-            "0001-01-01",
             "0001-01-01T00:00:00+00:00",
             "0001-01-01T01:00:00+00:00",
             [],
         ),
         (
             "Asia/Tokyo",
-            "9999-12-31",
             "9999-12-31T23:00:00+00:00",
             "9999-12-31T23:30:00+00:00",
             [],
         ),
         (
             "UTC",
-            "0001-01-01",
             "0001-01-01T00:00:00+01:00",
             "0001-01-01T00:00:00+01:00",
             [],
         ),
         (
             "UTC",
-            "9999-12-31",
             "9999-12-31T23:30:00-01:00",
             "9999-12-31T23:00:00-01:00",
             [],
         ),
         (
             "UTC",
-            "0001-01-01",
             "0001-01-01T00:00:00+01:00",
             "0001-01-01T00:00:00+00:00",
             [],
         ),
         (
             "UTC",
-            "0001-01-01",
             "0001-01-01T00:00:00+01:00",
             "0001-01-01T00:00:00.000000001+00:00",
             [date(1, 1, 1)],
         ),
         (
             "UTC",
-            "9999-12-31",
             "9999-12-31T23:59:59.999999998+00:00",
             "9999-12-31T23:59:59.999999999+00:00",
             [date(9999, 12, 31)],
         ),
         (
             "UTC",
-            "0001-01-01",
             "0001-01-01T01:00:00+01:00",
             "0001-01-01T00:00:00+00:00",
             [],
         ),
         (
             "UTC",
-            "9999-12-31",
             "9999-12-31T23:00:00.000000002-01:00",
             "9999-12-31T23:00:00.000000001-01:00",
             [],
         ),
         (
             "UTC",
-            "0001-01-01",
             "0001-01-01T01:00:00,123456+01:00",
             "0001-01-01T00:00:00.123456+00:00",
             [],
         ),
         (
             "Asia/Tokyo",
-            "0001-01-01",
             "0001-01-01T00:41:30+10:00",
             "0001-01-01T00:42:30+10:00",
             [date(1, 1, 1)],
         ),
         (
             "Asia/Tokyo",
-            "0001-01-01",
             "0001-01-01T00:40:00+10:00",
             "0001-01-01T00:41:01+10:00",
             [],
         ),
         (
             "Asia/Tokyo",
-            "0001-01-01",
             "0001-01-01T00:40:00+10:00",
             "0001-01-01T00:41:01.000000001+10:00",
             [date(1, 1, 1)],
@@ -785,11 +760,10 @@ def test_fill_boundary_dates_do_not_overflow(
     ],
 )
 def test_fill_date_extremes_with_representable_zone_conversion(
-    tmp_path, zone, calendar_day, start, end, expected
+    tmp_path, zone, start, end, expected
 ):
     package_dir = copy_package_config(tmp_path, "jaffle_shop", preseed_db=True, writable=True)
     with duckdb.connect(str(package_dir / "jaffle_shop.duckdb")) as connection:
-        connection.execute("INSERT INTO jaffle_calendar VALUES (?, ?, ?, ?, ?)", [calendar_day] * 5)
         from semantic_rails.config import load_package_config
 
         config = load_package_config(str(package_dir))
@@ -817,9 +791,8 @@ def test_fill_date_extremes_with_representable_zone_conversion(
     assert all(count is None for _, count in rows)
 
 
-def test_offset_fill_marks_source_bucket_presence_for_clickhouse():
-    # ClickHouse defaults unmatched FULL OUTER JOIN fields to their type's zero
-    # value, so the chosen bucket must not depend on an unmatched field being NULL.
+def test_offset_fill_refuses_on_clickhouse():
+    # ClickHouse has no implicit calendar, and an authored one takes no part in a fill.
     from semantic_rails.config import load_package_config, resolve_repo_path
 
     config = load_package_config(resolve_repo_path("configs/semantic_rails/jaffle_shop"))
@@ -835,14 +808,8 @@ def test_offset_fill_marks_source_bucket_presence_for_clickhouse():
             "end": "2017-07-04T01:00:00-02:00",
         },
     }
-    sql = compile_query(config, Registry(config), query)["sql"]
-
-    assert "1 AS source_present" in sql
-    assert (
-        "CASE WHEN leaf_time_keys.source_present = 1 THEN leaf_time_keys.t ELSE calendar_time.t END"
-        in sql
-    )
-    assert "COALESCE(calendar_time" not in sql
+    with pytest.raises(SemanticLayerError, match="no implicit calendar"):
+        compile_query(config, Registry(config), query)
 
 
 @pytest.mark.parametrize(
@@ -867,9 +834,8 @@ def test_fill_has_no_rows_for_an_empty_interval(runtime_factory, start, end):
     assert filled == unfilled == []
 
 
-def test_a_windowed_fill_binds_the_calendar_day_it_reads():
-    # The fill window reads the calendar's date_day, so it is a bound object, checked
-    # like the grain column. Without fill the query never reads it.
+def test_a_windowed_fill_never_binds_the_authored_calendar_day():
+    # The implicit calendar fills the window; the authored date_day is never read.
     from semantic_rails import compiler
     from semantic_rails.config import load_package_config, resolve_repo_path
 
@@ -881,17 +847,17 @@ def test_a_windowed_fill_binds_the_calendar_day_it_reads():
     }
     unfilled = {**_JULY_BY_WEEK, "time": {**_JULY_BY_WEEK["time"], "fill": False}}
 
-    assert days & compiler.bind_query(config, None, _JULY_BY_WEEK).object_ids
+    assert not days & compiler.bind_query(config, None, _JULY_BY_WEEK).object_ids
     assert not days & compiler.bind_query(config, None, unfilled).object_ids
 
 
 @pytest.mark.parametrize(
     ("bounds", "reads_day"),
     [
-        ({}, True),
-        ({"start": "2017-07-01"}, True),
-        ({"end": "2017-08-01"}, True),
-        ({"start": "2017-07-01", "end": "2017-08-01"}, True),
+        ({}, False),
+        ({"start": "2017-07-01"}, False),
+        ({"end": "2017-08-01"}, False),
+        ({"start": "2017-07-01", "end": "2017-08-01"}, False),
     ],
     ids=["unbounded", "start-only", "end-only", "both-bounds"],
 )
@@ -922,14 +888,8 @@ def test_fill_binds_and_checks_calendar_day_only_when_sql_reads_it(bounds, reads
         key: value for key, value in _JULY_BY_WEEK["time"].items() if key not in {"start", "end"}
     }
     query = {**_JULY_BY_WEEK, "time": {**time, **bounds}}
-    if day_type != "date":
-        with pytest.raises(SemanticLayerError) as refused:
-            bind_query(config, None, query)
-        assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-        assert refused.value.details["column"] == "date_day"
-        assert refused.value.details["declared_type"] == day_type
-        return
     bound = bind_query(config, None, query)
+    reads_day = reads_day and day_type == "date"
     assert (day_id in bound.object_ids) is reads_day
 
     denied_day = dataclasses.replace(
