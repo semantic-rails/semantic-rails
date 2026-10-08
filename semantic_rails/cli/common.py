@@ -417,14 +417,6 @@ def _add_package_or_path_args(parser: argparse.ArgumentParser, package_choices: 
     )
 
 
-def _optional_ref_from_args(args: argparse.Namespace) -> PackageReference | None:
-    package = str(getattr(args, "package", "") or "").strip()
-    path = str(getattr(args, "path", "") or "").strip()
-    if not package and not path:
-        return None
-    return resolve_package_reference(package_id=package, path=path)
-
-
 def _source_arg_from_runtime(runtime: Runtime, *, prefer_path: bool) -> str:
     if prefer_path:
         return f"--path {shlex.quote(runtime.source_path)}"

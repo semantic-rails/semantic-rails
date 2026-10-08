@@ -266,12 +266,6 @@ def test_setup_without_registered_package_points_to_init(
     assert "semantic-rails init my_package --yes" in report["next_actions"]
 
 
-def test_mcp_start_help_explains_os_assigned_ports() -> None:
-    proc = _run_cli("mcp", "start", "--help")
-    assert proc.returncode == 0
-    assert "Port to bind (0 = OS-assigned; see `mcp status`)." in " ".join(proc.stdout.split())
-
-
 def test_mcp_doctor_loads_path_package_and_lists_tools(tmp_path: Path) -> None:
     _run_json(
         "init",
@@ -290,11 +284,8 @@ def test_mcp_doctor_loads_path_package_and_lists_tools(tmp_path: Path) -> None:
     assert payload["package"]["source_path"] == str(project_path)
     assert payload["mcp"]["tool_count"] == 5
     assert payload["mcp"]["required_tools_present"] is True
-    assert "supported" in payload["managed_lifecycle"]
-    if payload["managed_lifecycle"]["supported"]:
-        assert any(" mcp start " in command for command in payload["next_commands"])
-    else:
-        assert not any(" mcp start " in command for command in payload["next_commands"])
+    assert any(" serve " in command for command in payload["next_commands"])
+    assert any("--install --yes" in command for command in payload["next_commands"])
 
 
 def test_mcp_doctor_lists_six_tools_with_segments(runtime_factory, monkeypatch, capsys) -> None:
@@ -327,38 +318,7 @@ def test_mcp_doctor_detects_missing_required_tool(runtime_factory, monkeypatch, 
     assert result["missing_required_tools"] == [missing]
 
 
-def test_mcp_doctor_uses_windows_safe_foreground_commands(
-    runtime_factory, monkeypatch, capsys
-) -> None:
-    import semantic_rails.cli.commands.mcp as mcp_commands
-
-    runtime = runtime_factory("jaffle_shop")
-    monkeypatch.setattr(mcp_commands, "_runtime_from_package_or_path", lambda _args: runtime)
-    monkeypatch.setattr(
-        mcp_commands,
-        "managed_mcp_lifecycle_report",
-        lambda: {
-            "supported": False,
-            "platform": "win32",
-            "mode": "foreground-only",
-            "reason": "Managed lifecycle is unavailable.",
-            "windows_alternative": "Use stdio or foreground HTTP.",
-        },
-    )
-
-    mcp_commands.cmd_mcp_doctor(argparse.Namespace(package="jaffle_shop", path=""))
-    payload = json.loads(capsys.readouterr().out)
-
-    assert payload["managed_lifecycle"]["supported"] is False
-    assert not any(" mcp start " in command for command in payload["next_commands"])
-    assert not any(" mcp stop" in command for command in payload["next_commands"])
-    assert any("mcp stdio" in command for command in payload["next_commands"])
-    assert any("--install --yes" in command for command in payload["next_commands"])
-
-
-def test_interactive_setup_does_not_offer_managed_start_when_unsupported(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
+def test_interactive_setup_offers_foreground_serve(tmp_path: Path, monkeypatch, capsys) -> None:
     import semantic_rails.cli.setup_wizard as setup_wizard
     from semantic_rails.config_validation import PackageReference
 
@@ -369,17 +329,6 @@ def test_interactive_setup_does_not_offer_managed_start_when_unsupported(
         "_interactive_package_ref",
         lambda _args: PackageReference(source_path=str(tmp_path / "package")),
     )
-    monkeypatch.setattr(
-        setup_wizard,
-        "managed_mcp_lifecycle_report",
-        lambda: {
-            "supported": False,
-            "platform": "win32",
-            "mode": "foreground-only",
-            "reason": "Managed lifecycle is unavailable.",
-            "windows_alternative": "Use stdio or foreground HTTP.",
-        },
-    )
 
     def decline(label: str, *, default: bool) -> bool:
         prompts.append(label)
@@ -387,19 +336,11 @@ def test_interactive_setup_does_not_offer_managed_start_when_unsupported(
 
     monkeypatch.setattr(setup_wizard, "_confirm", decline)
     monkeypatch.setattr(setup_wizard, "_prompt_choice", lambda *a, **k: "none")
-    monkeypatch.setattr(
-        setup_wizard,
-        "start_mcp_http_server",
-        lambda *a, **k: pytest.fail("managed server must not start on an unsupported platform"),
-    )
-
     setup_wizard.cmd_setup_interactive(SimpleNamespace(json=False))
     output = capsys.readouterr().out
 
     assert not any("Start a managed" in prompt for prompt in prompts)
-    assert "POSIX-only" in output
-    assert "Windows" in output
-    assert "stdio" in output
+    assert f"semantic-rails serve --path {tmp_path / 'package'} --port 8091" in output
     assert f"semantic-rails repl --path {tmp_path / 'package'}" in output
 
 
@@ -429,80 +370,7 @@ def test_interactive_setup_creates_the_same_package_as_project_new(
     assert sources(wizard_package) == shared == sources(tmp_path / "my_package")
 
 
-def test_interactive_setup_cleans_dead_mcp_registration_and_retries(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
-    import semantic_rails.cli.setup_wizard as setup_wizard
-    from semantic_rails.config_validation import PackageReference
-    from semantic_rails.errors import SemanticLayerError
-
-    ref = PackageReference(source_path=str(tmp_path / "package"))
-    starts: list[str] = []
-    stops: list[str] = []
-
-    def start(*_args, **_kwargs):
-        starts.append("start")
-        if len(starts) == 1:
-            raise SemanticLayerError(
-                "CONFIG_CONFLICT",
-                "dead registration",
-                details={"server": {"pid_alive": False}},
-            )
-        return {"ok": True, "status": "started"}
-
-    monkeypatch.setattr(setup_wizard, "start_mcp_http_server", start)
-    monkeypatch.setattr(
-        setup_wizard,
-        "stop_mcp_http_server",
-        lambda *, name: stops.append(name) or {"ok": True, "status": "not_running"},
-    )
-    monkeypatch.setattr(setup_wizard, "_confirm", lambda *_args, **_kwargs: True)
-
-    setup_wizard._start_managed_mcp_from_wizard(ref)
-
-    output = capsys.readouterr().out
-    assert "dead 'default' MCP registration" in output
-    assert "Stale registration: not_running" in output
-    assert '"status": "started"' in output
-    assert starts == ["start", "start"]
-    assert stops == ["default"]
-
-
-def test_interactive_setup_keeps_live_mcp_conflict_nonfatal(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
-    import semantic_rails.cli.setup_wizard as setup_wizard
-    from semantic_rails.config_validation import PackageReference
-    from semantic_rails.errors import SemanticLayerError
-
-    monkeypatch.setattr(
-        setup_wizard,
-        "start_mcp_http_server",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            SemanticLayerError(
-                "CONFIG_CONFLICT",
-                "live server has another configuration",
-                details={"server": {"pid_alive": True}},
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        setup_wizard,
-        "stop_mcp_http_server",
-        lambda **_kwargs: pytest.fail("a live conflicting registration must not be removed"),
-    )
-
-    setup_wizard._start_managed_mcp_from_wizard(
-        PackageReference(source_path=str(tmp_path / "package"))
-    )
-
-    output = capsys.readouterr().out
-    assert "MCP server not started" in output
-    assert "Setup will continue" in output
-    assert "semantic-rails mcp status" in output
-
-
-def test_mcp_status_and_client_config_install_use_local_files(tmp_path: Path) -> None:
+def test_mcp_client_config_install_uses_local_files(tmp_path: Path) -> None:
     env = {
         "SEMANTIC_RAILS_HOME": str(tmp_path / "semantic_rails_home"),
         "SEMANTIC_RAILS_CLAUDE_CONFIG": str(tmp_path / "Claude" / "claude_desktop_config.json"),
@@ -519,12 +387,6 @@ def test_mcp_status_and_client_config_install_use_local_files(tmp_path: Path) ->
         env=env,
     )
     project_path = tmp_path / "client_core"
-
-    status = _run_json("mcp", "status", "--path", str(project_path), env=env)
-    available = {row["name"] for row in status["available"]}
-    assert "semantic-rails-query-stdio" in available
-    assert "semantic-rails-query-http" in available
-    assert "semantic-rails-architect-stdio" in available
 
     installed = _run_json(
         "mcp",
@@ -1290,3 +1152,10 @@ def test_setup_human_output_is_concise_and_actionable() -> None:
     assert "registered_packages" in proc.stdout
     assert "semantic-rails init my_package" in proc.stdout
     assert "semantic-rails init --output" not in proc.stdout
+
+
+@pytest.mark.parametrize("command", ["http", "start", "stop", "status"])
+def test_removed_mcp_commands_are_rejected(command):
+    proc = _run_cli("mcp", command, "--help")
+    assert proc.returncode == 2
+    assert "invalid choice" in proc.stderr

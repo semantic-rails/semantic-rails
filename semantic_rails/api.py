@@ -1,4 +1,4 @@
-"""Threaded ``http.server``-based HTTP front end for the v1 API.
+"""Threaded ``http.server`` front end for the v1 API and Streamable HTTP MCP.
 
 Wraps :class:`semantic_rails.http_core.SemanticHTTPService` in a
 ``ThreadingHTTPServer`` request handler so concurrent agent calls do
@@ -33,6 +33,14 @@ from .http_core import (
     public_api_route,
     request_id_from_parts,
 )
+from .mcp import SemanticLayerMCPAdapter
+from .mcp_streamable_http import (
+    MCP_MAX_REQUEST_BYTES,
+    MCPHTTPResponse,
+    _error,
+    handle_streamable_http_request,
+    prepare_streamable_http_request,
+)
 from .request_context import warn_if_default_policy_resolver_exposed
 from .runtime import Runtime
 
@@ -43,6 +51,7 @@ class AppState:
     def __init__(self, package_id: str, *, path: str = ""):
         self.runtime = Runtime.from_path(path) if path else Runtime(package_id)
         self.package_id = self.runtime.package_id
+        self.mcp_adapter = SemanticLayerMCPAdapter(self.runtime)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -93,7 +102,69 @@ class Handler(BaseHTTPRequestHandler):
     def _auth_error(self) -> None:
         _json(self, 401, self._service().unauthorized_payload())
 
+    def _is_mcp_route(self) -> bool:
+        return urlparse(self.path).path.rstrip("/") == "/mcp"
+
+    def _handle_mcp(self) -> None:
+        headers = self._request_headers()
+        request_id = request_id_from_parts(headers, self._query_params())
+        context = prepare_streamable_http_request(headers, request_id=request_id)
+        if isinstance(context, MCPHTTPResponse):
+            response = context
+        else:
+            body = b""
+            if self.command == "POST":
+                try:
+                    length = int(self.headers.get("Content-Length", "0") or "0")
+                    if length < 0 or self.headers.get("Transfer-Encoding"):
+                        raise ValueError("Unsupported request body framing.")
+                except ValueError:
+                    return self._send_mcp(
+                        _error(400, -32600, "Invalid Content-Length or Transfer-Encoding header."),
+                        request_id,
+                    )
+                body = (
+                    b"x" * (MCP_MAX_REQUEST_BYTES + 1)
+                    if length > MCP_MAX_REQUEST_BYTES
+                    else self.rfile.read(length)
+                )
+            response = handle_streamable_http_request(
+                self.state.mcp_adapter,
+                method=self.command,
+                headers=headers,
+                body=body,
+                request_context=context,
+            )
+        self._send_mcp(response, request_id)
+
+    def _send_mcp(self, response: MCPHTTPResponse, request_id: str) -> None:
+        body = (
+            json.dumps(response.payload, separators=(",", ":"), sort_keys=True, default=str).encode(
+                "utf-8"
+            )
+            if response.payload is not None
+            else b""
+        )
+        self.send_response(response.status)
+        if response.payload is not None:
+            self.send_header("Content-Type", "application/json")
+        allow_origin = cors_origin_header(self.headers.get("Origin"))
+        if allow_origin:
+            self.send_header("Access-Control-Allow-Origin", allow_origin)
+        self.send_header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
+        self.send_header("Access-Control-Expose-Headers", "X-Request-ID")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("X-Request-ID", request_id)
+        for name, value in response.headers.items():
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
     def do_OPTIONS(self) -> None:  # noqa: N802
+        if self._is_mcp_route():
+            return self._handle_mcp()
         self._prepare_request()
         if self._public_route() is None:
             return _json(self, 404, self._service().not_found_payload())
@@ -109,6 +180,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
+        if self._is_mcp_route():
+            return self._handle_mcp()
         self._prepare_request()
         route = self._public_route()
         if route is None:
@@ -131,6 +204,8 @@ class Handler(BaseHTTPRequestHandler):
         return _json(self, status, payload)
 
     def do_POST(self) -> None:  # noqa: N802
+        if self._is_mcp_route():
+            return self._handle_mcp()
         self._prepare_request()
         route = self._public_route()
         if route is None:
@@ -177,6 +252,14 @@ class Handler(BaseHTTPRequestHandler):
                 exc, stage="http", context=getattr(self, "_request_context", None)
             )
         return _json(self, status, result)
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        if self._is_mcp_route():
+            return self._handle_mcp()
+        self._prepare_request()
+        return _json(self, 404, self._service().not_found_payload())
+
+    do_PUT = do_PATCH = do_HEAD = do_TRACE = do_CONNECT = do_DELETE
 
 
 def _json(handler: Handler, status: int, payload: dict[str, Any]) -> None:

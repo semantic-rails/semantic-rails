@@ -22,4 +22,4 @@ def test_runtime_docs_do_not_repeat_pre_server_claims():
     assert "Snow CLI is the supported connection kind" not in text
     assert "snowflake_native" in text
     assert "semantic-rails mcp stdio" in text
-    assert "semantic-rails mcp http" in text
+    assert "semantic-rails serve" in text

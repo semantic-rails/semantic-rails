@@ -1,8 +1,7 @@
 """Stateless MCP Streamable HTTP request handling.
 
 This module contains no server framework dependencies. The ASGI deployment
-uses it at ``/mcp`` while the existing stdio and legacy HTTP/SSE transports
-remain available for local compatibility.
+and the local ``serve`` command share it at ``/mcp``.
 """
 
 from __future__ import annotations
@@ -12,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from .api_keys import api_key_auth_result
 from .http_core import MAX_REQUEST_BODY_BYTES, cors_origin_header, request_id_from_parts
 from .mcp_server import (
     MCP_PROTOCOL_VERSION,
@@ -58,6 +58,19 @@ def _valid_accept(value: str) -> bool:
         part.split(";", 1)[0].strip().lower() for part in value.split(",") if part.strip()
     }
     return MCP_ACCEPT_JSON in media_types and MCP_ACCEPT_SSE in media_types
+
+
+def prepare_streamable_http_request(
+    headers: Mapping[str, Any], *, request_id: str
+) -> RequestContext | MCPHTTPResponse:
+    """Authenticate before reading a body and resolve transport-trusted identity."""
+    auth_ok, _ = api_key_auth_result(headers)
+    if not auth_ok:
+        return MCPHTTPResponse(
+            status=401,
+            payload=_jsonrpc_error(None, -32001, "Missing or invalid bearer API key."),
+        )
+    return get_policy_context_resolver().resolve(headers, payload=None, request_id=request_id)
 
 
 def handle_streamable_http_request(
