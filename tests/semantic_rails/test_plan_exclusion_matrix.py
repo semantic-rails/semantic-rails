@@ -8,6 +8,7 @@ compared with independent DuckDB SQL by the customers they select and by their t
 from __future__ import annotations
 
 import itertools
+import json
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -17,7 +18,7 @@ import duckdb
 import pytest
 
 from semantic_rails.planner import plan_payload
-from semantic_rails.planner.exclusions import exclusion_clauses, exclusion_gaps
+from semantic_rails.planner.exclusions import _INERT_KEYS, exclusion_clauses, exclusion_gaps
 from semantic_rails.planner.time_windows import _time_window
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ValueDomainConfig, ValueDomainValue
@@ -495,6 +496,13 @@ def test_a_list_dropped_exactly_is_ready(shop, question):
     )
 
 
+def test_an_excluded_value_named_top_is_no_ranking(shop):
+    # Read as "top 5", it drafted a limit, which truncates a grouped answer.
+    payload = _plan(shop, "signups excluding web and Top")
+    assert "limit" not in payload["best"]["query_ir"]
+    _assert_ready(shop, payload, _reference(shop, BOTH))
+
+
 def test_the_planner_drafts_the_null_keeping_exclusion(shop):
     payload = _plan(shop, "signups excluding web")
     assert payload["best"]["query_ir"]["where"] == _drops("web")
@@ -591,7 +599,7 @@ SCOPES = {
                 }
             ]
         },
-        "select[0].expression.where",
+        "select[0]",
     ),
 }
 READY = {
@@ -608,7 +616,7 @@ def test_adding_an_unrelated_scope_never_keeps_readiness(shop, monkeypatch, ques
     draft = _signups([*where, *change.get("where", [])])
     draft["select"] = change.get("select", draft["select"])
     excess = [row for gap in _gaps(shop, question, draft) for row in gap.actual["excess"]]
-    assert excess == [{"path": path.format(len(where)), "kind": "scoped"}]
+    assert [row["path"] for row in excess] == [path.format(len(where))]
     _draft_plan(monkeypatch, draft)
     payload = _plan(shop, question)
     assert "execute" not in payload["next"].get("ready_for", [])
@@ -616,24 +624,168 @@ def test_adding_an_unrelated_scope_never_keeps_readiness(shop, monkeypatch, ques
         _assert_held(payload)
 
 
-# One predicate beyond an exact exclusion each, as (the draft's part, the predicate). Beside
-# "signups excluding web" (4) each one changed the answer or would on other data.
+SIGNUPS = {"measure": "measure.shop.signup_count"}
+SIGNED_UP = "temporal_role.shop_customer_signed_up_at"
+FOUR = {"kind": "literal", "value": 4}
+# Every select expression kind but a plain measure or metric reference, with its parts.
+KINDS = {
+    "measure_ref": SIGNUPS,
+    "aggregate": SIGNUPS,
+    "semi_additive": SIGNUPS,
+    "scoped_aggregate": {**SIGNUPS, "where": [{"field": CUSTOMER, "op": "!=", "value": 102}]},
+    "aggregate_if": {
+        "aggregation": "count",
+        "condition": {
+            "kind": "comparison",
+            "op": "!=",
+            "left": {"kind": "column", "column": "channel", "entity": "entity.shop_customer"},
+            "right": {"kind": "literal", "value": "web"},
+        },
+    },
+    "arithmetic": {"op": "+", "left": SIGNUPS, "right": FOUR},
+    "binary": {"op": "-", "left": SIGNUPS, "right": FOUR},
+    "ratio": {"numerator": SIGNUPS, "denominator": SIGNUPS},
+    "literal": {"value": 4},
+    "prior_period": {"input": SIGNUPS, "offset": {"unit": "month", "value": 1}},
+    "rolling": {"input": SIGNUPS, "window": {"unit": "day", "value": 7}},
+    "cumulative": {"input": SIGNUPS},
+    "period_to_date": {"input": SIGNUPS, "period": "month"},
+    "conversion": {
+        "base": SIGNUPS,
+        "converted": SIGNUPS,
+        "entity": "entity.shop_customer",
+        "window": {"unit": "day", "value": 7},
+        "matching_mode": "first_converted_after_base",
+    },
+    "distribution": {
+        "function": "avg",
+        "over": {"kind": "entity_value", "entity": "entity.shop_customer", "input": SIGNUPS},
+    },
+    "call": {"name": "abs", "args": [SIGNUPS]},
+    "between": {"expr": SIGNUPS, "low": FOUR, "high": FOUR},
+    "not_between": {"expr": SIGNUPS, "low": FOUR, "high": FOUR},
+}
+# One part beyond an exact exclusion each, as (the draft's key, the part, its excess path).
+# Beside "signups excluding web" (4) each one changed the answer or could.
 EXTRA = {
-    "keeping, other dimension": ("where", {"field": CUSTOMER, "op": "=", "value": 102}),  # 1
-    "unreadable, other dimension": ("where", {"field": CUSTOMER, "op": ">", "value": 105}),  # 1
-    "keeping, excluded dimension": ("where", {"field": CHANNEL, "op": "=", "value": "store"}),
-    "dropping another value": ("where", {"field": CHANNEL, "op": "!=", "value": "partner"}),
-    "null-keeping drop of another value": ("where", _drops("partner")[0]),
-    "child group": ("where", NO_STORE_B),  # 2
+    "keeping, other dimension": (
+        "where",
+        {"field": CUSTOMER, "op": "=", "value": 102},  # 1
+        "where[1]",
+    ),
+    "unreadable, other dimension": (
+        "where",
+        {"field": CUSTOMER, "op": ">", "value": 105},  # 1
+        "where[1]",
+    ),
+    "keeping, excluded dimension": (
+        "where",
+        {"field": CHANNEL, "op": "=", "value": "store"},
+        "where[1]",
+    ),
+    "dropping another value": (
+        "where",
+        {"field": CHANNEL, "op": "!=", "value": "partner"},
+        "where[1]",
+    ),
+    "NOT IN the excluded value": (  # 3: drops the signup with no channel
+        "where",
+        {"field": CHANNEL, "op": "NOT IN", "value": ["web"]},
+        "where[1]",
+    ),
+    "null-keeping drop of another value": ("where", _drops("partner")[0], "where[1]"),
+    "child group": ("where", NO_STORE_B, "where[1]"),  # 2
     "metric filter": (  # no rows
         "metric_filters",
-        {"expression": {"measure": "measure.shop.signup_count"}, "op": "<", "value": 4},
+        {"expression": SIGNUPS, "op": "<", "value": 4},
+        "metric_filters",
     ),
     "window the question doesn't state": (
         "time",
-        {"temporal_role": "temporal_role.shop_customer_signed_up_at", "start": "2024-01-01"},
+        {"temporal_role": SIGNED_UP, "start": "2024-01-01"},
+        "time.start",
     ),
+    "another clock": (
+        "time",
+        {"temporal_role": "temporal_role.shop_order_ordered_at"},
+        "time.temporal_role",
+    ),
+    "dense rows": ("time", {"fill": True}, "time.fill"),
+    "another calendar": ("time", {"calendar_id": "fiscal"}, "time.calendar_id"),
+    "case": (  # 0
+        "select",
+        {
+            "kind": "case",
+            "whens": [
+                {
+                    "when": {"kind": "comparison", "op": ">", "left": SIGNUPS, "right": FOUR},
+                    "then": SIGNUPS,
+                }
+            ],
+            "else": {"kind": "literal", "value": 0},
+        },
+        "select[0]",
+    ),
+    "other aggregation": ("select", {**SIGNUPS, "aggregation": "count"}, "select[0]"),
+    **{
+        f"{kind} expression": ("select", {"kind": kind, **parts}, "select[0]")
+        for kind, parts in KINDS.items()
+    },
+    "limit 0": ("limit", 0, "limit"),  # no rows
+    "limit 1": ("limit", 1, "limit"),
+    "limits": ("limits", {"max_rows": 1}, "limits"),
+    "temporal role overrides": (
+        "temporal_role_overrides",
+        {SIGNUPS["measure"]: SIGNED_UP},
+        "temporal_role_overrides",
+    ),
+    "observation scope": ("observation_scope", "query", "observation_scope"),
+    "export": ("export", True, "export"),
+    "route decisions": (
+        "route_decisions",
+        [
+            {
+                "source_entity": "entity.shop_customer",
+                "target_entity": "entity.shop_order",
+                "relationship_path": ["relationship.shop_order_customer"],
+            }
+        ],
+        "route_decisions",
+    ),
+    "unknown key": ("rows_per_group", 1, "rows_per_group"),
 }
+# Rows whose draft fails Query IR validation on this package for some question or source,
+# before the exclusion check is reported.
+REFUSED = {
+    *("another clock", "dense rows", "another calendar", "other aggregation"),
+    *(f"{kind} expression" for kind in ("aggregate_if", "prior_period", "rolling")),
+    *(f"{kind} expression" for kind in ("cumulative", "period_to_date", "conversion")),
+    *("distribution expression", "route decisions", "unknown key"),
+}
+VALIDATION_FAILED = {"VALIDATION_FAILED", "PLAN_FALLBACK_SEMANTIC_DRIFT"}
+
+
+def _with(query: dict[str, Any], key: str, part: Any) -> dict[str, Any]:
+    """``query`` with ``part``: merged into ``time``, in place of the selected expression,
+    appended to a list, or set."""
+
+    if key == "time":
+        return {**query, "time": {**query.get("time", {}), **part}}
+    if key == "select":
+        return {**query, "select": [{**query["select"][0], "expression": part}]}
+    if key in {"where", "metric_filters"}:
+        return {**query, key: [*query.get(key, []), part]}
+    return {**query, key: part}
+
+
+def _caller(key: str, part: Any, added: dict[str, Any]) -> Any:
+    """The caller's ``partial_query`` value at ``key`` that the planner merges into ``added``."""
+
+    if key == "select":
+        return [{"as": "caller_signups", "expression": part}]
+    if key in {"where", "metric_filters"}:
+        return [part]
+    return added[key]
 
 
 @pytest.mark.parametrize("source", ["generator", "caller"])
@@ -641,26 +793,77 @@ EXTRA = {
 @pytest.mark.parametrize(
     "question", ["signups excluding web", "signups excluding web in June 2024"]
 )
-def test_any_other_predicate_beside_an_exclusion_holds(shop, monkeypatch, question, extra, source):
+def test_any_other_part_beside_an_exclusion_holds(shop, monkeypatch, question, extra, source):
     window = f" AND {JUNE_2024}" if "June" in question else ""
     exact = _plan(shop, question)
     _assert_ready(shop, exact, _reference(shop, "channel IS DISTINCT FROM 'web'" + window))
     query = exact["best"]["query_ir"]
-    key, predicate = EXTRA[extra]
-    if key == "time":
-        added = {**query.get("time", {}), **predicate}
-    else:
-        added = [*query.get(key, []), predicate]
-    [gap] = _gaps(shop, question, {**query, key: added})
-    assert gap.actual["excess"], gap.actual
+    key, part, path = EXTRA[extra]
+    added = _with(query, key, part)
+    [gap] = _gaps(shop, question, added)
+    assert path in [row["path"] for row in gap.actual["excess"]], gap.actual
     if source == "generator":
-        _draft_plan(monkeypatch, {**query, key: added})
-        _assert_held(_plan(shop, question))
+        _draft_plan(monkeypatch, added)
+        payload = _plan(shop, question)
     else:
-        partial = {"policy_context": NOW, key: added if key == "time" else [predicate]}
+        partial = {"policy_context": NOW, key: _caller(key, part, added)}
         payload = plan_payload(shop, intent=question, partial_query=partial)
+    if payload["why"]["code"] in VALIDATION_FAILED:
+        assert extra in REFUSED, payload["why"]
         assert payload["status"] != "ok"
         assert "execute" not in payload["next"].get("ready_for", [])
+    else:
+        _assert_held(payload)
+
+
+@pytest.mark.parametrize(
+    "control",
+    [
+        lambda query: query,
+        lambda query: {**query, "order_by": [{"field": "signup_count", "direction": "DESC"}]},
+        lambda query: {**query, "_note": "drafted for a test"},
+        lambda query: {**query, "verbosity": "minimal"},
+        lambda query: _with(query, "select", {"kind": "measure", **SIGNUPS}),
+    ],
+    ids=["canonical", "order by the alias", "annotation", "verbosity", "kind measure"],
+)
+@pytest.mark.parametrize(
+    "question", ["signups excluding web", "signups excluding web in June 2024"]
+)
+def test_what_changes_no_number_beside_an_exclusion_stays_ready(
+    shop, monkeypatch, question, control
+):
+    window = f" AND {JUNE_2024}" if "June" in question else ""
+    expected = _reference(shop, "channel IS DISTINCT FROM 'web'" + window)
+    _draft_plan(monkeypatch, control(_plan(shop, question)["best"]["query_ir"]))
+    _assert_ready(shop, _plan(shop, question), expected)
+
+
+def test_every_query_ir_key_and_expression_kind_is_classified():
+    # A new key or kind is excess beside an exclusion until it is admitted or has a row here.
+    schema = json.loads((SHOP.parents[3] / "schemas" / "query_ir.v1.json").read_text())
+    defs = schema["$defs"]
+    rows = list(EXTRA.values())
+    admitted = {*_INERT_KEYS, "group_by", "select", "where", "time"}
+    assert set(schema["properties"]) <= admitted | {key for key, _part, _path in rows}
+    shapes = [defs[ref["$ref"].rsplit("/", 1)[-1]] for ref in defs["SelectExpression"]["oneOf"]]
+    shapes += [
+        defs[ref["$ref"].rsplit("/", 1)[-1]] for shape in shapes for ref in shape.get("oneOf", [])
+    ]
+    kinds = {
+        kind
+        for shape in shapes
+        for row in [shape.get("properties", {}).get("kind", {})]
+        for kind in row.get("enum", [row["const"]] if "const" in row else [])
+    }
+    selected = {part.get("kind") for key, part, _path in rows if key == "select"}
+    assert kinds - {"measure", "metric"} <= selected
+    time = set(defs["TimeBlock"]["properties"]) - {
+        "temporal_role",
+        "grain",
+        *("start", "end", "range"),
+    }
+    assert {f"time.{key}" for key in time} <= {path for key, _part, path in rows if key == "time"}
 
 
 def test_a_value_named_outside_the_exclusion_holds(shop, monkeypatch):
