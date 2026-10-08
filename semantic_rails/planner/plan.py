@@ -27,6 +27,7 @@ from typing import Any
 
 from ..ast import every_filter
 from ..errors import SemanticLayerError
+from ..period_completeness import incomplete_period_why
 from ..runtime import runtime_request_scope
 from ..temporal_support import validate_temporal_support
 from .answer_shape import _answer_shape_why
@@ -50,7 +51,6 @@ from .intent_holds import (
 )
 from .intent_ir import IntentIR, compose_hints, parse_intent
 from .orchestrator import compose
-from .period_checks import incomplete_period_why
 from .plan_query import (
     _checked_partial_query,
     _merge_partial_query,
@@ -65,7 +65,7 @@ from .plan_trace import (
     _select_best_plan,
     _slim_best,
 )
-from .time_reference import with_time_reference
+from .time_reference import time_policy_context, with_time_reference
 from .time_windows import _with_fiscal_calendar
 from .unasked_groupings import _unasked_grouping_why
 from .unmatched_words import (
@@ -359,7 +359,12 @@ def plan_payload(
         or _unclocked_window_why(runtime._config, intent_str, best_draft.query, partial_query)
         # A period comparison is ready only when each period it returns has ended; keeping
         # the rows from a dropped start would still return the one in progress.
-        or incomplete_period_why(runtime._config, best_draft.query, start=dropped_start)
+        or incomplete_period_why(
+            runtime._config,
+            best_draft.query,
+            start=dropped_start,
+            policy_context=time_policy_context(),
+        )
         or _start_dropped_why(dropped_start)
         if best_ok
         else None

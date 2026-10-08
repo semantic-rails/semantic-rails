@@ -1007,6 +1007,12 @@ snapshot over no rows is undefined, not zero.
 The shift can therefore reach into months that have no orders, and a
 gap there is reported as a gap rather than as a measurement.
 
+A query runs the periods it asks for, including one still in progress. `plan` calls a period
+comparison ready only when `time.end` closes its last bucket no later than `now`; otherwise it
+holds the draft with `PERIOD_COMPARISON_INCOMPLETE` (see
+[MCP_INTERFACE.md](MCP_INTERFACE.md)), so a month so far never reads as a change from the whole
+previous month.
+
 ### Worked example file
 
 [`examples/inline_yoy.json`](../examples/inline_yoy.json) is the

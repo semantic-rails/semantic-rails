@@ -235,7 +235,7 @@ def _start_dropped_why(start: Any) -> dict[str, Any] | None:
     """Explain a window whose start a lookback metric couldn't take.
 
     A period comparison whose kept rows would still hold an incomplete period gets
-    ``PERIOD_COMPARISON_INCOMPLETE`` instead (``period_checks``), never this hint to execute.
+    ``PERIOD_COMPARISON_INCOMPLETE`` instead (``period_completeness``), never this hint to execute.
     """
 
     if not start:

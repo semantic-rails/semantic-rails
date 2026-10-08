@@ -18,7 +18,7 @@ from .ast import child_groups, every_filter, normalize_query
 from .compiler import bind_metadata_objects, bind_query
 from .errors import ERROR_CODES, SemanticLayerError, query_execution_error
 from .expressions import MetricRecipeRefExpr, collect_object_references
-from .planner.period_checks import incomplete_period_why
+from .period_completeness import incomplete_period_why
 from .policies import enforce_query_policies, withheld_rank_order
 from .policy_rules import check_request_environment
 from .request_context import RequestContext, context_from_policy_context

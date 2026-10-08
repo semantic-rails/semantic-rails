@@ -6,23 +6,24 @@ carries one, through any chain of metrics. Such a draft is ready only when every
 returns is complete at the request's ``now``: ``time.end`` falls on a boundary of the
 ``time.grain`` buckets, in the temporal role's zone, no later than ``now``. The periods it
 compares against come earlier, so they are complete too. Without ``time.end`` the window
-reaches ``now``, and its last period is the one in progress. Plan checks the bounds it can
-read and holds whatever it can't: a non-default calendar's buckets, or a ``where`` bound on
-a date, which can cut a period short.
+reaches ``now``, and its last period is the one in progress. The check reads the bounds it
+can and holds whatever it can't: a non-default calendar's buckets, a ``where`` bound on a
+date, which can cut a period short, or a clock it can't read.
+
+``plan`` and the granted-metric plan both call it before offering ``ready_for: execute``.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ..ast import _floor_period, _parse_now, _shift_period, _time_spec_from_payload, every_filter
-from ..errors import SemanticLayerError
-from ..expressions import expr_to_dict
-from ..visible_view import base_of
-from .coverage import _dict_nodes, _time_block
-from .time_reference import time_policy_context
+from .ast import _floor_period, _parse_now, _shift_period, _time_spec_from_payload, every_filter
+from .errors import SemanticLayerError
+from .expressions import expr_to_dict
+from .schema import base_of
 
 _CODE = "PERIOD_COMPARISON_INCOMPLETE"
 _SUB_DAY = {"hour": timedelta(hours=1), "minute": timedelta(minutes=1)}
@@ -53,7 +54,7 @@ def compares_periods(config: Any, query: dict[str, Any]) -> bool:
     seen: set[str] = set()
     pending: list[Any] = [query]
     while pending:
-        for node in _dict_nodes(pending.pop()):
+        for node in _nodes(pending.pop()):
             if str(node.get("kind", "") or "").casefold() == "prior_period":
                 return True
             for key in ("metric", "metric_recipe"):
@@ -77,21 +78,26 @@ def incomplete_period_why(
     """The hold for a period comparison whose periods are not all complete at ``now``.
 
     ``start`` is the question's window start a draft left out (``TIME_WINDOW_START_DROPPED``):
-    the complete-periods alternative keeps the rows from it. ``policy_context`` defaults to the
-    plan's clock.
+    the complete-periods alternative keeps the rows from it. ``policy_context`` carries the
+    request's ``now``; without one, the check reads the clock execution would.
     """
 
     if not compares_periods(config, query):
         return None
-    time = _time_block(query)
+    raw_time = query.get("time")
+    time: dict[str, Any] = raw_time if isinstance(raw_time, dict) else {}
     grain = str(time.get("grain", "") or "").strip().lower()
     role = next((row for row in config.temporal_roles if row.id == time.get("temporal_role")), None)
     zone = str(getattr(role, "timezone", "") or "UTC")
-    context = time_policy_context(policy_context)
     try:
-        now = _local(_parse_now(context), zone)
-    except (SemanticLayerError, ValueError):
-        return None  # validation refuses an unreadable clock itself
+        now = _local(_parse_now(policy_context), zone)
+    except (SemanticLayerError, ValueError, KeyError):
+        return _hold(
+            "The draft compares periods, but the request's now can't be read, so plan can't "
+            "tell that each period is complete.",
+            {"path": "policy_context.now"},
+            "Pass policy_context.now as an ISO date or timestamp, then validate.",
+        )
     now_text = f"{now.isoformat(timespec='seconds')} {zone}"
     calendar = str(time.get("calendar_id", "") or "default").strip()
     if calendar.lower() != "default":
@@ -119,7 +125,7 @@ def incomplete_period_why(
         }
     )
     try:
-        spec = _time_spec_from_payload(time, policy_context=context, config=config)
+        spec = _time_spec_from_payload(time, policy_context=policy_context, config=config)
         end = _local(_parse_bound(spec.end), zone) if spec is not None and spec.end else None
         reason = "the draft has no time.end, so its window runs to now"
     except (SemanticLayerError, ValueError, OverflowError):
@@ -164,6 +170,17 @@ def incomplete_period_why(
         },
         _alternative(grain, complete_end, first),
     )
+
+
+def _nodes(value: Any) -> Iterator[dict[str, Any]]:
+    """Every object in a Query IR or expression, nested ones included."""
+
+    if isinstance(value, dict):
+        yield value
+        value = list(value.values())
+    if isinstance(value, list):
+        for child in value:
+            yield from _nodes(child)
 
 
 def _hold(message: str, details: dict[str, Any], hint: str) -> dict[str, Any]:

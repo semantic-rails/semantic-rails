@@ -20,9 +20,9 @@ import duckdb
 import pytest
 
 from semantic_rails.expressions import parse_semantic_expression
+from semantic_rails.period_completeness import incomplete_period_why
 from semantic_rails.planner import plan as plan_module
 from semantic_rails.planner.orchestrator import compose
-from semantic_rails.planner.period_checks import incomplete_period_why
 from semantic_rails.planner.plan import plan_payload
 from semantic_rails.request_context import RequestContext
 from semantic_rails.runtime import Runtime
@@ -708,3 +708,13 @@ def test_a_period_is_complete_when_its_bucket_has_ended_by_now(
 def test_a_draft_that_compares_nothing_is_not_checked(select: dict[str, Any]) -> None:
     query = {"select": [select], "time": {"temporal_role": "role", "grain": "month"}}
     assert incomplete_period_why(_CONFIG, query, policy_context={"now": NOW}) is None
+
+
+def test_a_clock_that_cannot_be_read_holds_a_comparison() -> None:
+    query = {
+        "select": [{"expression": {"metric": "metric.growth"}}],
+        "time": {"temporal_role": "role", "grain": "month", "end": "2018-01-01"},
+    }
+    why = incomplete_period_why(_CONFIG, query, policy_context={"now": "next tuesday"})
+    assert why is not None and why["code"] == HELD
+    assert why["details"] == {"path": "policy_context.now"}
