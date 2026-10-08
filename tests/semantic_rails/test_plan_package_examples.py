@@ -374,5 +374,63 @@ def test_bundled_examples_verbatim_equal_authored_results(runtime_factory, examp
     assert result["best"]["query_ir"] == entry["query"]
     actual = runtime.query(result["best"]["query_ir"])
     gold = runtime.query(entry["query"])
+    assert actual["output_columns"] == gold["output_columns"]
     assert actual["rows"] == gold["rows"]
     runtime.close()
+
+
+@pytest.mark.parametrize("question", ["Revenue above 2 dollars", "Revenue above 3 dollars"])
+def test_threshold_equal_to_limit_is_not_a_count_slot(subscriptions, question):
+    _replace_entries(
+        subscriptions, {"threshold": {"question": "Revenue above 2 dollars", "query": QUERY}}
+    )
+    result = _plan(subscriptions, question)
+    if "3" in question:
+        assert (result.get("best") or {}).get("pattern") != "package_example"
+    else:
+        assert result["status"] == "ok"
+
+
+@pytest.mark.parametrize("time", ["invalid", 2])
+def test_invalid_example_time_shape_does_not_crash_slot_matching(subscriptions, time):
+    _replace_entries(
+        subscriptions, {"bad_time": {"question": QUESTION, "query": {**QUERY, "time": time}}}
+    )
+    result = _plan(subscriptions, QUESTION.replace("2", "3"))
+    assert (result.get("best") or {}).get("pattern") != "package_example"
+
+
+def test_time_slot_remains_held_when_snapshot_grain_is_unsupported(subscriptions):
+    _replace_entries(
+        subscriptions,
+        {"top_mrr": {"question": QUESTION.replace("today", "yesterday"), "query": QUERY}},
+    )
+    result = _plan(subscriptions, QUESTION.replace("today", "this year"))
+    assert result["status"] == "low_confidence"
+    assert result["best"]["pattern"] == "package_example"
+    assert result["best"]["validation_ok"] is False
+    assert result["best"]["query_ir"]["time"]["grain"] == "year"
+    assert "execute" not in result["next"]["ready_for"]
+
+
+def test_example_draft_cannot_bypass_shared_planned_row_validation(subscriptions, monkeypatch):
+    from semantic_rails.planner import plan as plan_module
+
+    original = plan_module._planned_row
+    calls = []
+
+    def refuse(*args):
+        calls.append(args[2])
+        row = original(*args)
+        row["validation"] = {
+            "ok": False,
+            "errors": [{"code": "POLICY_DENIED", "message": "Held by shared planning validation."}],
+        }
+        return row
+
+    monkeypatch.setattr(plan_module, "_planned_row", refuse)
+    result = _plan(subscriptions)
+    assert calls == ["package_example"]
+    assert result["status"] == "low_confidence"
+    assert result["best"]["validation_ok"] is False
+    assert not result["next"]["ready_for"]

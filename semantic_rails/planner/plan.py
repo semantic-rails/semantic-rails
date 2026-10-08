@@ -182,6 +182,7 @@ def plan_payload(
         partial_query,
         normalize=lambda text: _normalize_question(text, _apostrophe_names(catalog_config)),
         planned_row=_planned_row,
+        detail=detail_level,
     )
 
     def finish(payload: dict[str, Any]) -> dict[str, Any]:

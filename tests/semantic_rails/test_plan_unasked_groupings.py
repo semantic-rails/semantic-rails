@@ -674,6 +674,7 @@ def _outcome(payload: dict[str, Any]) -> str:
 def test_the_check_only_holds_a_plan_that_was_ready(
     jaffle: Runtime, monkeypatch: pytest.MonkeyPatch, case: _Case
 ) -> None:
+    jaffle._package_examples = []  # These cases test generic grouping checks.
     after = plan_payload(jaffle, intent=case.intent)
     with monkeypatch.context() as without_checks:
         # The two checks are the only readers of the listed groupings, with the answer-shape

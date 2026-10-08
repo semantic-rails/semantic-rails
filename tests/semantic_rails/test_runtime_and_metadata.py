@@ -1153,6 +1153,7 @@ def test_plan_generic_q4_bounds_and_paying_filter_not_group_by(tmp_path: Path):
 
 def test_plan_avoids_irrelevant_value_filters(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
+    runtime._package_examples = []  # Exercise generic value-filter inference.
     try:
         top_stores = plan_candidate_envelope(
             runtime, intent="top stores by revenue", limit=2, verbosity="full"
@@ -1174,6 +1175,7 @@ def test_plan_avoids_irrelevant_value_filters(runtime_factory):
 
 def test_plan_does_not_invent_generic_dimension_value_filters(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
+    runtime._package_examples = []  # Exercise generic value-filter inference.
     try:
         planned = plan_candidate_envelope(
             runtime, intent="top stores by revenue", limit=2, verbosity="full"
