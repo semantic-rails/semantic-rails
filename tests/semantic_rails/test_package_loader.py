@@ -23,6 +23,7 @@ def _write_minimal_package(
     defaults_extra: dict | None = None,
     model_extra: dict | None = None,
     measure_extra: dict | None = None,
+    orders_metric_extra: dict | None = None,
     metric_extra: dict | None = None,
 ) -> None:
     _write_yaml(
@@ -106,13 +107,7 @@ def _write_minimal_package(
                     "kind": "aggregate",
                     "measure": "measure.demo.order_count",
                     "label": "Orders",
-                    "operational": {
-                        **dict((model_extra or {}).get("operational_defaults") or {}),
-                        **dict((measure_extra or {}).get("operational") or {}),
-                        **dict(
-                            ((measure_extra or {}).get("publish") or {}).get("operational") or {}
-                        ),
-                    },
+                    **dict(orders_metric_extra or {}),
                 },
                 "sales.orders_copy": {
                     "value_type": "number",
@@ -549,7 +544,7 @@ def test_loader_accepts_snowflake_package_without_duckdb_seed(tmp_path: Path):
     assert config.package.default_db == ""
 
 
-def test_loader_applies_operational_metadata_contract_and_inheritance(tmp_path: Path):
+def test_loader_applies_operational_metadata_contract_and_model_defaults(tmp_path: Path):
     package_dir = tmp_path / "operational_demo"
     _write_minimal_package(
         package_dir,
@@ -580,19 +575,27 @@ def test_loader_applies_operational_metadata_contract_and_inheritance(tmp_path: 
                 "operational": {"verified": True},
             },
         },
+        orders_metric_extra={
+            "operational": {
+                "owner": "finance",
+                "team": "growth",
+                "tags": ["core"],
+                "verified": True,
+            }
+        },
         metric_extra={"operational": {"owner": "curated", "team": "strategy", "verified": False}},
     )
 
     config = load_package_config(str(package_dir))
 
     measure = next(row for row in config.measures if row.id == "measure.demo.order_count")
-    auto_metric = next(row for row in config.metric_recipes if row.id == "metric.sales.orders")
+    orders_metric = next(row for row in config.metric_recipes if row.id == "metric.sales.orders")
     curated_metric = next(
         row for row in config.metric_recipes if row.id == "metric.sales.orders_copy"
     )
 
     assert measure.operational == {"owner": "finance", "team": "growth", "tags": ["core"]}
-    assert auto_metric.operational == {
+    assert orders_metric.operational == {
         "owner": "finance",
         "team": "growth",
         "tags": ["core"],
@@ -638,7 +641,7 @@ def test_loader_rejects_missing_required_operational_fields(tmp_path: Path):
     assert "missing required operational fields" in str(exc.value)
 
 
-def test_loader_rejects_inherited_measure_fields_not_declared_for_metrics(tmp_path: Path):
+def test_loader_rejects_metric_operational_fields_not_declared_for_metrics(tmp_path: Path):
     package_dir = tmp_path / "operational_demo"
     _write_minimal_package(
         package_dir,
@@ -658,7 +661,7 @@ def test_loader_rejects_inherited_measure_fields_not_declared_for_metrics(tmp_pa
             }
         },
         model_extra={"operational_defaults": {"owner": "finance"}},
-        measure_extra={"operational": {"tags": ["core"]}},
+        orders_metric_extra={"operational": {"owner": "finance", "tags": ["core"]}},
     )
 
     with pytest.raises(SemanticLayerError) as exc:
@@ -666,6 +669,7 @@ def test_loader_rejects_inherited_measure_fields_not_declared_for_metrics(tmp_pa
 
     assert exc.value.code == "INVALID_CONFIG"
     assert "is not declared in defaults.operational.metric.fields" in str(exc.value)
+    assert f"{package_dir}: metric 'metric.sales.orders' operational.tags" in str(exc.value)
 
 
 def test_loader_rejects_duplicate_metric_ids(tmp_path: Path):

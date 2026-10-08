@@ -576,6 +576,7 @@ _SHIP_TO_KEY = {
             id="distinct-buyers-composite-key",
         ),
         pytest.param(
+            # A related entity's key cannot make monthly distinct-buyer counts safe to re-sum into quarterly totals.
             ({"monthly": _MONTHLY}, {"ship_to": None}),
             _rollup_query(_BUYERS, "count_distinct", "quarter"),
             "aggregation_not_reaggregable",

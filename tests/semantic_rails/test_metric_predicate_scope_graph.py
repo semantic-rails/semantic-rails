@@ -486,7 +486,7 @@ def test_contextual_metric_predicate_requires_time_anchor_for_time_varying_conte
             "relationship.demo_customer_history_customer": {
                 "id": "relationship.demo_customer_history_customer",
                 "entities": ["customer_history", "customer"],
-                "cardinality": "one_to_one",
+                "cardinality": "many_to_one",
             },
             "relationship.demo_customer_history_plan": {
                 "id": "relationship.demo_customer_history_plan",
