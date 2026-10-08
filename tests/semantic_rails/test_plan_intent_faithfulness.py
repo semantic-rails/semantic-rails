@@ -95,7 +95,8 @@ def test_faithfulness_gate_preserves_realized_and_supported_shapes(
         runtime.close()
 
     holds = {
-        "revenue vs prior year by store": "PLAN_UNMATCHED_TERMS",
+        # Its window runs to now, so the month in progress would sit beside a complete one.
+        "revenue vs prior year by store": "PERIOD_COMPARISON_INCOMPLETE",
         "revenue vs order count by store last quarter": "PLAN_FALLBACK_SEMANTIC_DRIFT",
         "orders by store and month": "PLAN_UNMATCHED_TERMS",
         "orders by store in Brooklyn": "PLAN_FALLBACK_SEMANTIC_DRIFT",

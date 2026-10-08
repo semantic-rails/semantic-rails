@@ -288,8 +288,10 @@ def test_a_period_comparison_drops_its_start_where_both_zones_agree(local_orders
         partial_query={"policy_context": {"now": "2026-07-01T12:00:00Z"}},
     )
     assert plan["status"] == "low_confidence"
-    assert plan["why"]["code"] == "TIME_WINDOW_START_DROPPED", plan.get("why")
+    # July has begun in both zones, so only the months through June are complete.
+    assert plan["why"]["code"] == "PERIOD_COMPARISON_INCOMPLETE", plan.get("why")
     assert plan["why"]["details"]["requested_start"] == "2026-01-01"
+    assert plan["why"]["details"]["complete_end"] == "2026-07-01"
     time = plan["best"]["query_ir"]["time"]
     assert "start" not in time and time["end"] == "2027-01-01"
 

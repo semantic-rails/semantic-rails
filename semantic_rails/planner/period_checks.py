@@ -92,7 +92,7 @@ def incomplete_period_why(
         now = _local(_parse_now(context), zone)
     except (SemanticLayerError, ValueError):
         return None  # validation refuses an unreadable clock itself
-    now_text = f"{now.isoformat(timespec='seconds')} ({zone})"
+    now_text = f"{now.isoformat(timespec='seconds')} {zone}"
     calendar = str(time.get("calendar_id", "") or "default").strip()
     if calendar.lower() != "default":
         return _hold(
@@ -100,8 +100,8 @@ def incomplete_period_why(
             f"that calendar's periods end, so it can't tell that each one is complete at now "
             f"({now_text}).",
             {"path": "time.calendar_id", "calendar_id": calendar, "now": now_text},
-            "Compare periods on the default calendar, with query.time.end on a period end no "
-            "later than now; plan holds a comparison on another calendar either way.",
+            "Compare periods on the default calendar instead: drop query.time.calendar_id and "
+            "set query.time.end to a period end no later than now, then validate.",
         )
     if grain not in _GRAINS:
         return _hold(
