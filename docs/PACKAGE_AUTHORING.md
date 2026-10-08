@@ -2463,23 +2463,16 @@ metrics often span entities.
 
 ## Examples and tests
 
-Examples also teach `plan` the package's own questions. An example answers its
-exact question with the authored Query IR and pattern `package_example`. Words,
-numbers and symbols compare exactly; case, sentence punctuation (`. , ; : ? ! '
-" ( ) -` and curly quotes), contractions, regular plurals and whitespace are set
-aside. A number keeps its sign, decimal point and separators: `2.5` is not
-`25`, `9.0` is not `90` or `9`, and `-5` is not `5`. Any other mark is its own
-word, so "above 5%", "above $5" and "above 5" are three different questions.
+Examples also teach `plan` the package's own questions. An example answers only
+its exact question, with the authored Query IR and pattern `package_example`.
+Case and whitespace aside (and the contractions `plan` expands in every
+question, so "What's" reads as "What is"), any other wording gets normal
+planning: different punctuation, plurals, numbers, signs or symbols, a different
+top-N count, or another day or time phrase. The authored query is never edited.
 The author's groupings, filters, ordering and limit count as requested, and the
 whole matched question is recorded as a consumed span. The query still passes
-the normal validation and caller visibility checks.
-
-An example also answers the same question with a different top-N count when the
-count in its question equals the query's `limit`; only `limit` changes. Any
-other question gets normal planning: an example for "Revenue on 2026-09-30" or
-"yesterday" never answers another day, and the authored `time` block is never
-edited. There is no fuzzy matching. Several
-valid, visible examples matching the same question require clarification with
+the normal validation and caller visibility checks. There is no fuzzy matching.
+Several valid, visible examples matching the same question require clarification with
 their IDs. Invalid examples fall through to normal planning with their IDs in
 `why.details.invalid_examples`; examples referring to hidden objects, in a value
 or in a mapping key such as `temporal_role_overrides`, are skipped without

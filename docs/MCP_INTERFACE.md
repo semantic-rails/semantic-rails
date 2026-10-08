@@ -120,13 +120,10 @@ tool/schema drift cannot be merged silently.
 - `plan`: draft Query IR from a natural-language question. A fully matched
   package example uses its validated authored query (`best.pattern:
   package_example`), including its groupings, filters and limit. An example
-  answers its exact question: words, numbers and symbols such as `$`, `%` and
-  `<` compare exactly, while case, sentence punctuation (`. , ; : ? ! ' " ( ) -`
-  and curly quotes), contractions, regular plurals and whitespace are set
-  aside. It also answers the same question with a different top-N count when
-  the authored count equals the query's `limit` (only `limit` changes). Any
-  other question, including another date or time phrase, gets normal
-  planning. Multiple
+  answers only its exact question: case and whitespace aside (and the
+  contractions `plan` expands in every question), any other wording, including
+  punctuation, plurals, numbers, signs, symbols, a different top-N count or
+  another date or time phrase, gets normal planning. Multiple
   valid visible matches return
   `needs_clarification` with `PLAN_AMBIGUOUS_EXAMPLE` and
   `why.details.example_ids`. Invalid examples fall through with

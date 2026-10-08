@@ -412,7 +412,10 @@ def test_a_signed_currency_threshold_answers_only_its_own_sign(runtime_factory):
     runtime = runtime_factory("jaffle_shop")
     try:
         runtime._package_examples = [
-            ("negative", {"question": "Total revenue above -$5", "query": _jaffle_revenue_above(-5)})
+            (
+                "negative",
+                {"question": "Total revenue above -$5", "query": _jaffle_revenue_above(-5)},
+            )
         ]
         verbatim = plan_payload(runtime, intent="Total revenue above -$5")
         unsigned = plan_payload(runtime, intent="Total revenue above $5")

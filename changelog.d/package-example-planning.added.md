@@ -1,3 +1,3 @@
-- Plan answers package example questions asked exactly (or with a different top-N count
-  equal to the authored limit) with their validated authored queries, and asks for
-  clarification when several visible examples match.
+- Plan answers a package example's question, asked exactly (case and whitespace aside),
+  with its validated authored query, and asks for clarification when several visible
+  examples match.
