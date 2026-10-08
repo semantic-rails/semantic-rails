@@ -1,7 +1,7 @@
 """A distribution query answers each select item in its own sub-query, then joins them on the keys.
 
 The items disagree on the period's type: a rolling or prior_period item reads it from the
-calendar's DATE column, the others from DATE_TRUNC's timestamp. Postgres and BigQuery join keys
+implicit calendar's bucket, the others from DATE_TRUNC's timestamp. Postgres and BigQuery join keys
 by their text, where the two never match, so the period is cast to one type before the join.
 """
 
@@ -18,6 +18,7 @@ import pytest
 
 from semantic_rails.compiler import compile_query
 from semantic_rails.config import load_package_config
+from semantic_rails.errors import SemanticLayerError
 from semantic_rails.registry import Registry
 from tests.semantic_rails.test_implicit_calendar import (
     DISTRIBUTION,
@@ -53,8 +54,12 @@ PERIOD_TYPE = {
 @pytest.fixture(scope="module")
 def packages(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
     built = {
-        name: _write_package(tmp_path_factory.mktemp(name), calendars=("default",), zone=zone)
-        for name, zone in (("authored", False), ("zoned", True))
+        name: _write_package(tmp_path_factory.mktemp(name), calendars=calendars, zone=zone)
+        for name, calendars, zone in (
+            ("authored", ("default",), False),
+            ("zoned", ("default",), True),
+            ("none", (), False),
+        )
     }
     for package in built.values():  # seed the warehouse the Postgres SQL runs on
         _query(package, _ask("month", NOW))
@@ -72,13 +77,17 @@ def _run_postgres_sql(package: Path, query: dict[str, Any]) -> list[tuple[Any, .
 
     The session zone is far from UTC: the period's cast must not move it.
     """
+    # Postgres adds GENERATE_SERIES's INTEGER day offsets to a DATE; DuckDB's are BIGINT.
+    sql = _sql(package, "postgres", query).replace(
+        "+ day_series.day_offset", "+ CAST(day_series.day_offset AS INTEGER)"
+    )
     with duckdb.connect(str(package / "data" / "warehouse.duckdb"), read_only=True) as conn:
         conn.execute("SET TimeZone = 'Pacific/Kiritimati'")
-        rows = conn.execute(_sql(package, "postgres", query)).fetchall()
+        rows = conn.execute(sql).fetchall()
     return _sorted(_normal(row) for row in rows)
 
 
-@pytest.mark.parametrize("package", ["authored", "zoned"])
+@pytest.mark.parametrize("package", ["authored", "zoned", "none"])
 @pytest.mark.parametrize("grouped", [False, True])
 @pytest.mark.parametrize("shape", SHAPES)
 def test_postgres_answers_each_period_once(
@@ -96,7 +105,10 @@ def test_postgres_answers_each_period_once(
     assert len(keys) == len(set(keys)), rows
 
 
-def test_the_distribution_beside_the_prior_month_is_the_key(packages: dict[str, Path]) -> None:
+@pytest.mark.parametrize("package", ["authored", "none"])
+def test_the_distribution_beside_the_prior_month_is_the_key(
+    packages: dict[str, Path], package: str
+) -> None:
     # p80 of each order's revenue; February has no orders, so no p80 and a prior of 20.
     key = [
         (date(2023, 11, 1), 9.0, None),
@@ -109,14 +121,20 @@ def test_the_distribution_beside_the_prior_month_is_the_key(packages: dict[str, 
         (date(2024, 6, 1), 3.0, 6.0),
     ]
 
-    assert _run_postgres_sql(packages["authored"], _ask("month", *SHAPES["beside_prior"])) == key
+    assert _run_postgres_sql(packages[package], _ask("month", *SHAPES["beside_prior"])) == key
 
 
 @pytest.mark.parametrize("warehouse", PERIOD_TYPE)
 def test_every_warehouse_joins_the_items_on_the_period_as_its_date_trunc_type(
     packages: dict[str, Path], warehouse: str
 ) -> None:
-    sql = _sql(packages["authored"], warehouse, _ask("month", *SHAPES["beside_both"]))
+    query = _ask("month", *SHAPES["beside_both"])
+    if warehouse == "clickhouse":
+        # ClickHouse has no implicit calendar, and an authored one takes no part in a series.
+        with pytest.raises(SemanticLayerError, match="no implicit calendar"):
+            _sql(packages["authored"], warehouse, query)
+        return
+    sql = _sql(packages["authored"], warehouse, query)
     # BigQuery renames the alias to temporal_role_cal_order_ordered_at__month_<hash>.
     period = (
         r"(CAST\()?(left_side|right_side)\.[`\"]?temporal_role[._]cal_order_ordered_at__month\w*"

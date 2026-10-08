@@ -1326,7 +1326,7 @@ dense rows (for example, the inline `prior_period` LAG window in the
   Athena a series is capped at 10,000 days (about 27 years); past that the
   warehouse refuses the query. A query whose parts compile as separate
   sub-queries (for example a `distribution` beside a `rolling` or `prior_period`
-  window) is refused too.
+  window) carries the series into each part.
 
 Two consequences apply to any calendar. The first rows of a `rolling` window
 cover only the periods the series has (a 3-month window at the first month

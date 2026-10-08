@@ -28,10 +28,12 @@ from ..sql_ast import (
     SqlIsNull,
     SqlJoin,
     SqlLiteral,
+    SqlNamedArg,
     SqlOrder,
     SqlOrderTerm,
     SqlParameterizedCall,
     SqlSelect,
+    SqlTableFunction,
     SqlTableRef,
     SqlWindow,
     SqlWithinGroup,
@@ -114,19 +116,28 @@ def _namespace_sql_select(select: SqlSelect, prefix: str) -> SqlSelect:
             )
         return expr
 
-    def _table(table: SqlTableRef) -> SqlTableRef:
+    def _table(table: SqlTableRef | SqlTableFunction) -> SqlTableRef | SqlTableFunction:
+        if isinstance(table, SqlTableFunction):
+            # A generated series (the implicit calendar's days) reads its bounds' CTE.
+            return SqlTableFunction(
+                name=table.name,
+                args=[_expr(arg) for arg in table.args],
+                named_args=[SqlNamedArg(arg.name, _expr(arg.value)) for arg in table.named_args],
+                alias=table.alias,
+                columns=list(table.columns),
+                lateral=table.lateral,
+            )
         return SqlTableRef(name=rename.get(table.name, table.name), alias=table.alias)
 
     def _select(node: SqlSelect) -> SqlSelect:
         if not isinstance(node.from_table, SqlTableRef) or not all(
-            isinstance(join.table, SqlTableRef) for join in node.joins
+            isinstance(join.table, (SqlTableRef, SqlTableFunction)) for join in node.joins
         ):
-            # A generated series (the implicit calendar's days) can't be renamed into a
-            # sub-query here; refuse rather than emit SQL that lost its arguments.
+            # Refuse any other relation rather than emit SQL that lost its arguments.
             raise SemanticLayerError(
                 "REWRITE_NOT_SUPPORTED",
-                "This query compiles its parts as separate sub-queries, which cannot hold the "
-                "implicit calendar that fills its series",
+                "This query compiles its parts as separate sub-queries, which cannot hold "
+                "this relation",
             )
         return SqlSelect(
             select=[SqlField(_expr(field.expression), field.alias) for field in node.select],
@@ -134,7 +145,7 @@ def _namespace_sql_select(select: SqlSelect, prefix: str) -> SqlSelect:
             joins=[
                 SqlJoin(
                     join_type=join.join_type,
-                    table=_table(join.table),  # type: ignore[arg-type]  # join tables are SqlTableRef here
+                    table=_table(join.table),
                     on=_expr(join.on),
                 )
                 for join in node.joins

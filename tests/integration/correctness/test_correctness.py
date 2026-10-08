@@ -910,6 +910,19 @@ def _cases() -> Iterator[Case]:
     query = _ask("quarter", p80, group_by=[STORE])
     yield Case("distribution_p80_by_store", "utc_authored", query, _by("quarter", P80, store=True))
     for name, select, value in (
+        ("distribution_and_rolling", [p80, trailing_3], f"{MONTH_P80}, {TRAILING_3}"),
+        ("distribution_and_prior", [median, prior_month], f"{MONTH_MEDIAN}, {PRIOR_MONTH}"),
+        ("rolling_and_distribution", [trailing_3, p80], f"{TRAILING_3}, {MONTH_P80}"),
+    ):
+        yield _dense(name, "utc_authored", "month", select, value)
+    yield _dense(
+        "distribution_revenue_and_prior",
+        "utc_authored",
+        "month",
+        [revenue, median, prior_month],
+        f"{NOW}, {MONTH_MEDIAN}, {PRIOR_MONTH}",
+    )
+    for name, select, value in (
         ("cumulative_and_quarter_to_date", [cumulative, qtd], f"{CUMULATIVE}, {QUARTER_TO_DATE}"),
         ("distribution_and_cumulative", [median, cumulative], f"{MONTH_MEDIAN}, {CUMULATIVE}"),
         ("distribution_and_quarter_to_date", [median, qtd], f"{MONTH_MEDIAN}, {QUARTER_TO_DATE}"),

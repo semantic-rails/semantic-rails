@@ -642,7 +642,7 @@ def test_catalog_payload_groups_objects_by_kind(runtime_factory):
         capability_kinds = {row["kind"] for row in catalog["capabilities"]}
         assert "dense_fill" in capability_kinds
         assert "historical_joins" in capability_kinds
-        assert "alternate_calendars" in capability_kinds
+        assert "alternate_calendars" not in capability_kinds  # refused in this release
         assert "metric_predicates" in capability_kinds
         assert "percentile_metrics" in capability_kinds
         assert "conversion_metrics" in capability_kinds

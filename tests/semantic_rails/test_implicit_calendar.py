@@ -470,17 +470,17 @@ LARGE_ORDER = {
 }
 
 
-@pytest.mark.parametrize("package", ["none", "authored"])
-def test_a_query_compiled_as_sub_queries_refuses_the_implicit_calendar(
-    packages: dict[str, Path], package: str
+def test_a_query_compiled_as_sub_queries_holds_the_implicit_calendar(
+    packages: dict[str, Path],
 ) -> None:
-    # An authored default calendar no longer fills a series, so it refuses too.
+    # Each part is namespaced, the implicit calendar's generated day series included; an
+    # authored default calendar takes no part, so both packages compile the same series.
     query = _ask("month", DISTRIBUTION, _rolling("month", 3))
-    with pytest.raises(SemanticLayerError) as refused:
-        _query(packages[package], query)
+    rows, sql = _query(packages["none"], query)
+    authored_rows, authored_sql = _query(packages["authored"], query)
 
-    assert refused.value.code == "REWRITE_NOT_SUPPORTED"
-    assert "separate sub-queries" in str(refused.value)
+    assert "implicit_calendar" in sql and "dim_date" not in authored_sql
+    assert rows == authored_rows
 
 
 def _distribution(function: str, input_: dict[str, Any], **extra: Any) -> dict[str, Any]:
@@ -559,11 +559,13 @@ def test_an_unfilled_distribution_matches_the_key(
     assert _query(packages["authored"], _ask("month", select))[0] == [
         row for row in key if row[1] is not None
     ]
-    # A prior-period sibling compiles as sub-queries, which the implicit calendar can't fill.
+    # A prior-period sibling fills its own branch; the distribution reads NULL in February.
     beside = _ask("month", _prior("month"), select)
-    with pytest.raises(SemanticLayerError) as refused:
-        _query(packages["authored"], beside)
-    assert "separate sub-queries" in str(refused.value)
+    for package in ("authored", "none"):
+        assert _query(packages[package], beside)[0] == _key(
+            packages[package],
+            _series_key("month", f"{_revenue_at('1 MONTH')}, {_per_order(aggregate)}"),
+        )
 
 
 PRIOR_REVENUE = _prior("month")["expression"]

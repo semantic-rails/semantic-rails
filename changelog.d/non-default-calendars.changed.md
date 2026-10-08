@@ -6,6 +6,7 @@
   calendars return in a later release.
 - Every fill, `rolling` and `prior_period` series now uses the implicit Gregorian
   calendar; an authored default calendar no longer supplies the series. ClickHouse,
-  which has no implicit calendar, refuses them, and so does a query whose parts compile
-  as separate sub-queries (a `distribution` beside a `rolling` or `prior_period`
-  window), even when the package authors a default calendar.
+  which has no implicit calendar, refuses them even when the package authors one. A
+  query whose parts compile as separate sub-queries (a `distribution` beside a
+  `rolling` or `prior_period` window) now carries that series into each part, so it
+  answers without an authored calendar too.

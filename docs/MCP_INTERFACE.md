@@ -1025,7 +1025,6 @@ expression kind names the received kind and its request path (for example,
 | `INVALID_TEMPORAL_ROLE` | Unknown temporal role; pick one from `details.compatible_temporal_roles`. |
 | `INCOMPATIBLE_TEMPORAL_ROLE` | Selected role is not compatible with the chosen measure/metric, or the measure has no time role at all (`details.compatible` is empty; declare one on the model or the measure). |
 | `INVALID_TEMPORAL_BINDING` | Time block targets a clock incompatible with a conversion's anchor; filter on `details.anchor_temporal_role` or push the constraint into a conversion metric. |
-| `INCOMPATIBLE_CALENDAR` | Not raised in this release: a non-default calendar refuses with `REWRITE_NOT_SUPPORTED` (`calendar_not_supported_yet`). |
 | `FANOUT_UNSAFE` | Breakdown crosses a 1-to-many relationship without a pre-aggregation boundary, or joins into a `temporal_validity` window without a query `time`. |
 | `ROLLUP_UNSAFE` | Roll-up combines non-additive primitives; declare the aggregation entity or supply sketch metadata. For an `additive: false` measure summed above its stored grain, group by or filter (=) each key dimension. Keys are named only on validate, compile and run errors. The message, `details.key_dimensions` and hint name those dimensions only when every key column is a dimension of the caller's view; a key a hidden dimension declares keeps the generic refusal. |
 | `MEASURE_VALIDITY_BOUNDARY` | Query crosses a declared measure-validity window; split by sub-window. |
