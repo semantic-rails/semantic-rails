@@ -111,11 +111,17 @@ def _assert_held(payload: dict[str, Any]) -> None:
 
 
 def _items(runtime: Runtime, question: str) -> list[tuple[str, str]]:
+    window = _time_window(question, policy_context=NOW)
     return [
         (item.kind, item.text)
-        for clause in exclusion_clauses(runtime._config, question, NOW)
+        for clause in exclusion_clauses(runtime._config, question, window)
         for item in clause.items
     ]
+
+
+def _gaps(runtime: Runtime, question: str, query: dict[str, Any], **kwargs: Any):
+    window = _time_window(question, policy_context=NOW)
+    return exclusion_gaps(runtime._config, question, query, window, **kwargs)
 
 
 # --- the list an exclusion names ----------------------------------------------
@@ -162,9 +168,9 @@ SPELLINGS = [("web", "Top", "Top"), ("Web", '"Top"', '"Top"'), ("the web", "stor
 def test_every_list_form_reads_each_item(shop, marker, form, spelling):
     question = marker.format(form.format(*spelling[:2]))
     assert [kind for kind, _text in _items(shop, question)] == ["value", "value"], question
-    gaps = exclusion_gaps(shop._config, question, {"where": _drops("web", "store")})
+    gaps = _gaps(shop, question, {"where": _drops("web", "store")})
     assert gaps == [], question
-    [gap] = exclusion_gaps(shop._config, question, {"where": _drops("web")})
+    [gap] = _gaps(shop, question, {"where": _drops("web")})
     assert gap.actual["missing"] == [spelling[2]]
 
 
@@ -232,7 +238,7 @@ def test_short_and_symbol_names_are_items(tmp_path, monkeypatch, label, question
     runtime = _open(tmp_path, _values(label))
     try:
         assert [kind for kind, _text in _items(runtime, question)] == ["value", "value"]
-        assert len(exclusion_gaps(runtime._config, question, {"where": _drops("web")})) == 1
+        assert len(_gaps(runtime, question, {"where": _drops("web")})) == 1
         # The planner drafts the second item too.
         payload = _plan(runtime, question, _drops("web"))
         _assert_ready(runtime, payload, _reference(runtime, "channel IS NULL"))
@@ -302,7 +308,7 @@ QUESTIONS = [
 @pytest.mark.parametrize(("question", "draft"), list(itertools.product(QUESTIONS, DRAFTS)))
 def test_only_an_exact_null_keeping_drop_of_every_item_is_ready(shop, question, draft):
     where, ready = DRAFTS[draft]
-    gaps = exclusion_gaps(shop._config, question, {"where": where, "policy_context": NOW})
+    gaps = _gaps(shop, question, {"where": where, "policy_context": NOW})
     assert (gaps == []) is ready
     if ready:
         window = f" AND {JUNE_2024}" if "June" in question else ""
@@ -441,11 +447,11 @@ def test_a_caller_constraint_never_discharges_an_item(shop):
         _plan(shop, question, [*_drops("partner", op="!="), *_drops("web")]),
         _reference(shop, "channel <> 'partner' AND channel IS DISTINCT FROM 'web'"),
     )
-    gaps = exclusion_gaps(shop._config, question, {"where": _drops("store")})
+    gaps = _gaps(shop, question, {"where": _drops("store")})
     assert [gap.actual["missing"] for gap in gaps] == [["web"]]
-    assert exclusion_gaps(
-        shop._config, question, {"where": _drops("store")}, caller={"where": _drops("store")}
-    )[0].actual["missing"] == ["web"]
+    caller = {"where": _drops("store")}
+    [gap] = _gaps(shop, question, {"where": _drops("store")}, caller=caller)
+    assert gap.actual["missing"] == ["web"]
 
 
 def test_an_exclusion_inside_a_selected_expression_is_no_evidence(shop):
@@ -458,7 +464,7 @@ def test_an_exclusion_inside_a_selected_expression_is_no_evidence(shop):
             "where": _drops("store"),
         },
     }
-    [gap] = exclusion_gaps(shop._config, question, {"select": [scoped], "where": _drops("web")})
+    [gap] = _gaps(shop, question, {"select": [scoped], "where": _drops("web")})
     assert "Top" in gap.actual["missing"]
 
 

@@ -27,6 +27,7 @@ from semantic_rails.planner.faithfulness import intent_faithfulness_why
 from semantic_rails.planner.filter_checks import _filter_value_gaps
 from semantic_rails.planner.intent_ir import parse_intent
 from semantic_rails.planner.ranking_checks import _ranking_request
+from semantic_rails.planner.time_windows import _time_window
 from semantic_rails.planner.unmatched_words import unmatched_intent_terms
 from semantic_rails.runtime import Runtime
 from semantic_rails.schema import ValueDomainConfig, ValueDomainValue
@@ -614,7 +615,9 @@ def test_question_alias_maps_to_canonical_but_draft_alias_is_not_literal() -> No
         (
             "revenue excluding Big Apple",
             KEEPS,
-            lambda runtime, text, query: exclusion_gaps(runtime._config, text, query),
+            lambda runtime, text, query: exclusion_gaps(
+                runtime._config, text, query, _time_window(text)
+            ),
             "negation_unrealized",
         ),
     ):

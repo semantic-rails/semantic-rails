@@ -273,7 +273,8 @@ def intent_faithfulness_why(
         )
 
     # Every item of every exclusion clause needs its own exact predicate.
-    gaps.extend(exclusion_gaps(runtime._config, text, query, caller=partial_query))
+    window = _time_window(text, policy_context=query.get("policy_context"))
+    gaps.extend(exclusion_gaps(runtime._config, text, query, window, caller=partial_query))
 
     requested_subjects = _conjoined_subjects(runtime, text)
     if len(requested_subjects) >= 2:

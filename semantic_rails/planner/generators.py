@@ -194,9 +194,12 @@ def _normalize_value_filters(
         else row
         for row in list(query.get("where", []) or [])
     ]
-    clauses = exclusion_clauses(config, text) if config is not None else []
+    from .time_windows import _time_window  # noqa: WPS433
+
+    window = _time_window(text)
+    clauses = exclusion_clauses(config, text, window) if config is not None else []
     items = [(item.binding, item.span) for clause in clauses for item in clause.items]
-    regions = exclusion_regions(text) if clauses else []
+    regions = exclusion_regions(text, window.spans) if clauses else []
     kept: list[dict[str, Any]] = []
     for row in matched_values or []:
         span = row.get("matched_span")

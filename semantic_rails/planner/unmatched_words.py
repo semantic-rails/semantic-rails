@@ -289,12 +289,13 @@ def _honored_clause_spans(runtime: Any, text: str, query: dict[str, Any]) -> lis
     holds a draft that misses an item."""
 
     lowered = text.lower()
-    spans: list[tuple[int, int]] = exclusion_words(text)
+    time_spans = _time_window(text).spans
+    spans: list[tuple[int, int]] = exclusion_words(text, time_spans)
     if not _fiscal_calendar_gaps(runtime._config, text, query):
         spans.extend(match.span() for match in _FISCAL_RE.finditer(lowered))
     if _query_contains_prior_period(runtime, query):
         spans.extend(match.span() for match in _PRIOR_PERIOD_RE.finditer(lowered))
-    excluded = exclusion_regions(text)
+    excluded = exclusion_regions(text, time_spans)
     for marker in re.finditer(r"\b(?:including|include)\s+", lowered):
         negative = any(start <= marker.start() < end for start, end in excluded)
         predicates = _field_predicates(query)

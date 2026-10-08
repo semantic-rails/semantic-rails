@@ -319,28 +319,26 @@ def excluded_time_spans(lowered: str, time_spans: list[Span]) -> list[Span]:
     )
 
 
-def _question_regions(text: str) -> list[_Region]:
-    from .time_windows import _time_window  # noqa: WPS433 - time_windows reads this module
-
+def _question_regions(text: str, time_spans: Any) -> list[_Region]:
     lowered = str(text or "").lower()
     if not _markers(lowered):
         return []
-    spans = list(_time_window(str(text or "")).spans)
-    return _regions(lowered, _tokenize(lowered), spans)
+    return _regions(lowered, _tokenize(lowered), list(time_spans))
 
 
-def exclusion_words(text: str) -> list[Span]:
+def exclusion_words(text: str, time_spans: Any) -> list[Span]:
     """Where each exclusion marker ("excluding", "other than") and each separator of its list
-    ("as well as") sits: words the exclusion check accounts for."""
+    ("as well as") sits: words the exclusion check accounts for. ``time_spans`` are the time
+    reader's spans of the question (``_time_window(text).spans``)."""
 
-    regions = _question_regions(text)
+    regions = _question_regions(text, time_spans)
     return sorted(span for region in regions for span in (region.marker, *region.separators))
 
 
-def exclusion_regions(text: str) -> list[Span]:
+def exclusion_regions(text: str, time_spans: Any) -> list[Span]:
     """Where each exclusion clause sits, from its marker to its end."""
 
-    return [(region.marker[0], region.end) for region in _question_regions(text)]
+    return [(region.marker[0], region.end) for region in _question_regions(text, time_spans)]
 
 
 def _value_names(config: Any) -> Names:
@@ -367,12 +365,9 @@ def _value_names(config: Any) -> Names:
     return out
 
 
-def exclusion_clauses(
-    config: Any, text: str, policy_context: dict[str, Any] | None = None
-) -> list[ExclusionClause]:
-    """Every exclusion clause of the question, with its typed items."""
-
-    from .time_windows import _time_window  # noqa: WPS433 - time_windows reads this module
+def exclusion_clauses(config: Any, text: str, window: Any) -> list[ExclusionClause]:
+    """Every exclusion clause of the question, with its typed items. ``window`` is the time
+    reader's reading of the question (``_time_window``), which reads this module."""
 
     text = str(text or "")
     lowered = text.lower()
@@ -382,7 +377,6 @@ def exclusion_clauses(
         # Lowercasing moved the offsets: nothing in the question can be read safely.
         unread = ExcludedItem("unknown", (0, len(text)), text)
         return [ExclusionClause((0, 0), text, (unread,), len(text))]
-    window = _time_window(text, policy_context=policy_context)
     time_spans = list(window.spans)
     excluded = {*window.excluded, *excluded_time_spans(lowered, time_spans)}
     tokens = _tokenize(lowered)
@@ -516,11 +510,16 @@ def _positive_values(
 
 
 def exclusion_gaps(
-    config: Any, text: str, query: dict[str, Any], *, caller: dict[str, Any] | None = None
+    config: Any,
+    text: str,
+    query: dict[str, Any],
+    window: Any,
+    *,
+    caller: dict[str, Any] | None = None,
 ) -> list[CoverageGap]:
     """The question's exclusion clauses that the draft doesn't realize item by item."""
 
-    clauses = exclusion_clauses(config, text, query.get("policy_context"))
+    clauses = exclusion_clauses(config, text, window)
     if not clauses:
         return []
     return unrealized(

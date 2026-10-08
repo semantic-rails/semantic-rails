@@ -19,6 +19,7 @@ from .coverage import (
     _value_phrases,
 )
 from .exclusions import exclusion_regions
+from .time_windows import _time_window
 from .visibility import visible_dimensions
 
 # Filter ops that keep the values they name, and ops that drop them.
@@ -100,7 +101,7 @@ def _filter_value_gaps(runtime: Any, text: str, query: dict[str, Any]) -> list[C
                 named.setdefault(str(dimension), []).append(value.value)
     # _plain removes punctuation, so its offsets cannot place a clause.
     source_words = list(re.finditer(r"[^\W_]+", text.lower()))
-    excluded = exclusion_regions(text)
+    excluded = exclusion_regions(text, _time_window(text).spans)
     grouped = {str(item) for item in list(query.get("group_by") or [])}
     referenced = set(_referenced_ids(query))
     carried = {
