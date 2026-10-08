@@ -1,19 +1,13 @@
 """Shape a balance draft to the one day it reads.
 
-A balance is a stock whose key holds a series column besides its clock: it answers with each
-series' last snapshot in the period read, so a series that stopped reporting (a closed account)
-keeps its last value unless each answer row reads one day. The invariant: a draft whose subject
-is a balance reads exactly one as-of day, the last complete day before now when the question
-names none ("What's our MRR?", "MRR right now"), or the closing day of the period it names ("MRR
-at the end of last month", "MRR last month", "MRR as of 2026-09-30"; a stated period's opening
-day for a start-of-period stock), and it groups by that day when a metric constraint requires it.
-
-``shape_snapshot`` is the one place a draft gets that shape: ``_planned_row`` calls it for every
-draft, and once more for a policy denial that asks for the day grouping. Readiness reads the same
-``_expected_read``: a draft consumes the question's as-of words or window only when it reads the
-day they name (``snapshot_read``), and ``time_checks._stock_as_of_gaps`` still holds a balance
-draft without a day grain. A day not yet complete is never drafted, and no earlier day stands in
-for one: a last complete day with no rows returns no rows.
+The invariant: a draft whose subject is a balance (a stock whose key holds a series column
+besides its clock) reads exactly one as-of day, the last complete day before now when the
+question names none ("What's our MRR?", "MRR right now"), or the closing day of the period it
+names ("at the end of last month", "MRR last month"), and it groups by that day when a metric
+constraint requires it. ``shape_snapshot`` is the one place a draft gets that shape; readiness
+reads the same ``_expected_read`` (``snapshot_read``), and ``time_checks._stock_as_of_gaps``
+still holds a balance draft without a day grain. A day not yet complete is never drafted, and no
+earlier day stands in for one.
 """
 
 from __future__ import annotations
@@ -43,6 +37,7 @@ from .unasked_groupings import _names_grain
 
 _DAY = timedelta(days=1)
 _LAST_DAY = {"range": {"last": {"unit": "day", "value": 1}}}
+_PLAIN_SELECT = frozenset({"measure", "metric", "aggregation"})
 
 
 @dataclass(frozen=True)
@@ -97,11 +92,7 @@ def _balance(config: Any, query: dict[str, Any]) -> _Balance | None:
     select = list(query.get("select") or [])
     for item in select:
         expression = item.get("expression") if isinstance(item, dict) else None
-        if not isinstance(expression, dict) or set(expression) - {
-            "measure",
-            "metric",
-            "aggregation",
-        }:
+        if not isinstance(expression, dict) or set(expression) - _PLAIN_SELECT:
             return None
         recipe = recipes.get(str(expression.get("metric") or ""))
         body = recipe.expression if recipe is not None else None
