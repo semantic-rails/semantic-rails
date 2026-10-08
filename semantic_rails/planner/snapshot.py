@@ -75,9 +75,10 @@ def _balance(config: Any, query: dict[str, Any]) -> _Balance | None:
 
     A closed list: each select is a stock measure, or a metric whose whole expression is one
     aggregate of a stock measure (filtered or not, with no window), at the stock's own
-    aggregation. They share one clock and one snapshot kind, at least one is a balance, and none
-    is read through a predicate. Anything else (arithmetic, a ratio, a flow beside the stock, a
-    daily rollup alone) is not shaped, and readiness decides it as before.
+    aggregation. They share one clock, an ``as_of_time`` snapshot clock, and one snapshot kind;
+    at least one is a balance, and none is read through a predicate. Anything else (arithmetic,
+    a ratio, a flow beside the stock, a daily rollup alone, a stock on an event clock) is not
+    shaped, and readiness decides it as before.
     """
 
     measures = {row.id: row for row in config.measures}
@@ -108,7 +109,7 @@ def _balance(config: Any, query: dict[str, Any]) -> _Balance | None:
         aggregation = aggregation or str(expression.get("aggregation") or "")
         if (
             measure is None
-            or measure.measure_class != "semi_additive"
+            or getattr(measure, "measure_class", "") != "semi_additive"
             or aggregation not in ("", measure.default_aggregation)
         ):
             return None
@@ -125,9 +126,11 @@ def _balance(config: Any, query: dict[str, Any]) -> _Balance | None:
         series = _multi_series_stocks(config, query)
     except Exception:  # noqa: BLE001 — an unreadable stock is not shaped; readiness holds it
         return None
-    if not select or len(clocks) != 1 or "" in clocks or len(snapshots) != 1:
+    if not select or len(clocks) != 1 or len(snapshots) != 1:
         return None
-    if not series or any(series.values()):
+    # The as-of day is a day of the snapshot clock; any other clock (a first-order time) isn't.
+    role = _object_by_id(getattr(config, "temporal_roles", []), next(iter(clocks)))
+    if getattr(role, "temporal_class", "") != "as_of_time" or not series or any(series.values()):
         return None
     label = labels[0] if len(labels) == 1 and labels[0] else "the balance"
     return _Balance(clocks.pop(), snapshots.pop(), tuple(dict.fromkeys(stocks)), label)
