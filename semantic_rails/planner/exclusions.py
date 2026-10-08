@@ -17,9 +17,9 @@ quoted string or a declared name ("Including Top") leaves the whole question unr
 
 ``unrealized`` holds every item to its own predicate: a value item is realized only by an outer
 ``IS DISTINCT FROM`` filter on its one bound dimension, since an exclusion keeps rows with no
-recorded value and ``!=`` or ``NOT IN`` drop them. Beside an exclusion the draft carries no
-predicate but those filters and the question's own window, whoever supplied it. Query IR has
-no window complement, so a time item is never realized.
+recorded value and ``!=`` or ``NOT IN`` drop them. Beside an exclusion the draft, whoever
+supplied it, carries only a closed list of parts (``_excess``); anything else holds. Query IR
+has no window complement, so a time item is never realized.
 """
 
 from __future__ import annotations
@@ -542,51 +542,133 @@ def _plain_filter(node: Any) -> bool:
     )
 
 
-# Keys of a selected expression that narrow the rows it reads.
-_SCOPING_KEYS = frozenset({"where", "predicates", "filter", "condition"})
+# Draft keys that change no number: syntax, context and ordering, with any value.
+_INERT_KEYS = frozenset(
+    {
+        *("version", "policy_context", "request_context", "request_id", "verbosity"),
+        *("sql_profile", "debug", "explain", "order_by"),
+    }
+)
+_BOUNDS = frozenset({"start", "end", "range"})
 
 
-def _scopes(query: dict[str, Any]) -> list[dict[str, Any]]:
-    """Every predicate outside the top-level filters: each child group or compound condition in
-    ``where``, each metric filter, and each selected expression's filter or condition."""
+def _by_id(rows: Any, object_id: Any) -> Any:
+    return next((row for row in list(rows or []) if getattr(row, "id", None) == object_id), None)
 
-    out = [
-        {"path": f"where[{index}]", "kind": "scoped"}
-        for index, node in enumerate(list(query.get("where") or []))
-        if not _plain_filter(node)
-    ] + [
-        {"path": f"metric_filters[{index}]", "kind": "metric_filter"}
-        for index, _node in enumerate(list(query.get("metric_filters") or []))
-    ]
 
-    def walk(value: Any, path: str) -> None:
-        if isinstance(value, dict):
-            if value.get("kind") == "metric_predicate":
-                out.append({"path": path, "kind": "scoped"})
-                return
-            for key, child in value.items():
-                if key in _SCOPING_KEYS and child:
-                    out.append({"path": f"{path}.{key}", "kind": "scoped"})
-                else:
-                    walk(child, f"{path}.{key}")
-        elif isinstance(value, list):
-            for number, child in enumerate(value):
-                walk(child, f"{path}[{number}]")
+def _plain_ref(config: Any, item: Any) -> bool:
+    """A select item that is one plain reference: ``{metric}``, or ``{measure}`` at the
+    measure's own default aggregation, with ``kind`` absent or naming the same."""
 
-    walk(query.get("select"), "select")
+    if not isinstance(item, dict) or not set(item) <= {"expression", "as"}:
+        return False
+    expression = item.get("expression")
+    if not isinstance(expression, dict):
+        return False
+    parts = set(expression) - {"kind"}
+    if parts == {"metric"}:
+        return expression.get("kind", "metric") == "metric"
+    if parts not in ({"measure"}, {"measure", "aggregation"}):
+        return False
+    if expression.get("kind", "measure") != "measure":
+        return False
+    if "aggregation" not in expression:
+        return True
+    measure = _by_id(getattr(config, "measures", None), expression["measure"])
+    default = getattr(measure, "default_aggregation", None)
+    return default is not None and expression["aggregation"] == default
+
+
+def _clocks(config: Any, select: Any) -> set[str]:
+    """Each selected subject's own clock, the one ``plan`` reads the question's window on."""
+
+    from ..metadata import _compatible_temporal_roles_for_expr  # noqa: WPS433
+
+    clocks: set[str] = set()
+    for item in select if isinstance(select, list) else []:
+        expression = item.get("expression") if isinstance(item, dict) else None
+        if not isinstance(expression, dict):
+            continue
+        measure = _by_id(getattr(config, "measures", None), expression.get("measure"))
+        recipe = _by_id(getattr(config, "metric_recipes", None), expression.get("metric"))
+        if measure is not None:
+            roles = list(getattr(measure, "compatible_temporal_roles", None) or [])
+        elif recipe is not None and getattr(recipe, "temporal_role", None):
+            roles = [recipe.temporal_role]
+        elif recipe is not None:
+            roles = _compatible_temporal_roles_for_expr(config, recipe.expression)
+        else:
+            continue
+        clocks.update(str(role) for role in roles[:1])
+    return clocks
+
+
+def _drops_a_named_value(row: Any, named: dict[str, list[Any]]) -> bool:
+    """Exactly ``{field, op: IS DISTINCT FROM, value}`` on a value an item names."""
+
+    if not _plain_filter(row) or set(row) != {"field", "op", "value"}:
+        return False
+    read = _read_filter(row)
+    return (
+        read is not None
+        and read[0] == _KEEPS_UNRECORDED
+        and _contains_literal(named.get(row["field"], []), read[1][0])
+    )
+
+
+def _filter_entry(path: str, row: Any) -> dict[str, Any]:
+    if not _plain_filter(row):
+        return {"path": path, "value": row}
+    return {
+        "path": path,
+        "field": row["field"],
+        "op": row.get("op", "="),
+        "value": row.get("value"),
+    }
+
+
+def _excess(
+    config: Any, query: dict[str, Any], named: dict[str, list[Any]], window: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Every part of the draft outside a closed list, each with its path.
+
+    Admitted: the inert keys and ``_`` annotations; ``group_by``, since the unasked-grouping
+    check holds any grouping or grain the question doesn't trace to; one ``select`` item that
+    is a plain reference; ``where`` rows that drop a value an item names; and a ``time`` block
+    of the selected subject's own clock, a grain and the bounds of the question's ``window``.
+    Every other key, value or node is excess by its key alone, a new key included.
+    """
+
+    out: list[dict[str, Any]] = []
+    for key, value in query.items():
+        if key in _INERT_KEYS or key == "group_by" or str(key).startswith("_"):
+            continue
+        if key == "select" and isinstance(value, list):
+            out += [
+                {"path": f"select[{index}]", "value": item}
+                for index, item in enumerate(value)
+                if index or not _plain_ref(config, item)
+            ]
+        elif key == "where" and isinstance(value, list):
+            out += [
+                _filter_entry(f"where[{index}]", row)
+                for index, row in enumerate(value)
+                if not _drops_a_named_value(row, named)
+            ]
+        elif key == "time" and isinstance(value, dict):
+            clocks = _clocks(config, query.get("select"))
+            out += [
+                {"path": f"time.{part}", "value": item}
+                for part, item in value.items()
+                if not (
+                    part == "grain"
+                    or (part == "temporal_role" and item in clocks)
+                    or (part in _BOUNDS and item == window.get(part))
+                )
+            ]
+        else:
+            out.append({"path": str(key), "value": value})
     return out
-
-
-def _other_window(query: dict[str, Any], stated: dict[str, Any]) -> list[dict[str, Any]]:
-    """The draft's time bounds the question doesn't state (``stated`` is its window)."""
-
-    time = query.get("time")
-    time = time if isinstance(time, dict) else {}
-    return [
-        {"path": f"time.{key}", "value": time[key]}
-        for key in ("start", "end", "range")
-        if time.get(key) and time[key] != stated.get(key)
-    ]
 
 
 def exclusion_gaps(config: Any, text: str, query: dict[str, Any], window: Any) -> list[CoverageGap]:
@@ -598,6 +680,7 @@ def exclusion_gaps(config: Any, text: str, query: dict[str, Any], window: Any) -
     return unrealized(
         clauses,
         query,
+        config=config,
         window=dict(window.bounds),
         valid_values=_declared_values(config),
     )
@@ -607,17 +690,17 @@ def unrealized(
     clauses: list[ExclusionClause],
     query: dict[str, Any],
     *,
+    config: Any = None,
     window: dict[str, Any] | None = None,
     valid_values: dict[str, list[Any]] | None = None,
 ) -> list[CoverageGap]:
     """One gap for each clause the draft doesn't realize item by item.
 
-    A draft beside an exclusion carries exactly one predicate per value item, a top-level
-    ``IS DISTINCT FROM`` filter on its value and its one bound dimension, and the question's
-    own time ``window``. Every other predicate is ``excess``: another top-level filter of any
-    operator, field or provenance (the caller's ``partial_query`` included), a child group or
-    compound condition, a metric filter, a selected expression's filter or condition, or time
-    bounds the question doesn't state.
+    Each value item needs a top-level ``IS DISTINCT FROM`` filter on its value and its one
+    bound dimension. Beside an exclusion the draft, whoever supplied it (the caller's
+    ``partial_query`` included), carries only what ``_excess`` admits: those filters, one
+    plain measure or metric reference, the subject's own clock with the question's own time
+    ``window``, a grain, grouping, ordering and inert context. Anything else is ``excess``.
     """
 
     if not clauses:
@@ -633,14 +716,7 @@ def unrealized(
         for index, row in enumerate(where)
         if _plain_filter(row)
     ]
-    excess = [
-        {"path": path, "field": row["field"], "op": row.get("op", "="), "value": row.get("value")}
-        for path, row, read in filters
-        if read is None
-        or read[0] != _KEEPS_UNRECORDED
-        or not _contains_literal(named.get(row["field"], []), read[1][0])
-    ]
-    scopes = _scopes(query) + _other_window(query, window or {})
+    excess = _excess(config, query, named, window or {})
     gaps: list[CoverageGap] = []
     for number, clause in enumerate(clauses):
         report: dict[str, list[Any]] = {
@@ -681,11 +757,12 @@ def unrealized(
                 report["matched"] += realized
             else:
                 report["missing"].append(item.text)
+        # A filter rides on the clause naming its field; any other excess on the first one.
         extra = [
             row
             for row in excess
-            if row["field"] in fields or (number == 0 and row["field"] not in named)
-        ] + (scopes if number == 0 else [])
+            if row.get("field") in fields or (number == 0 and row.get("field") not in named)
+        ]
         if not (extra or any(report[key] for key in report if key != "matched")):
             continue
         gaps.append(_clause_gap(clause, where, report, extra, valid_values))
