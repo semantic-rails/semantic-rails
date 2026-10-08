@@ -326,8 +326,8 @@ A draft that validates can still leave out part of the question. `plan` returns
   scopes do not prove an outer filter's result. Grouping does not cure an uncertain filter.
   Without grouping by the field, the draft returns one total, so its filter must keep only
   values the question names: "revenue for Brooklyn" filtered to Brooklyn and Philadelphia
-  is a gap, while "revenue for Brooklyn and Philadelphia" is not. An exclusion must drop
-  only values the question names, with or without grouping;
+  is a gap, while "revenue for Brooklyn and Philadelphia" is not. Values an exclusion names
+  follow the exclusion rule below;
 - combines top-level filters on one field so no value can survive, which returns no rows
   (`contradictory_filters`);
 - misses a negation, a prior-period comparison ("vs prior fiscal quarter" included) or one of
@@ -383,9 +383,30 @@ A draft that validates can still leave out part of the question. `plan` returns
   the `PLAN_UNMATCHED_TERMS` checks below included, so it holds only a draft nothing else
   holds.
 
-When a question has several exclusion clauses, `plan` checks each clause. A
-negative filter for one value does not make a later excluded value safe if the
-draft includes it.
+An exclusion ("excluding", "except", "without", "not", "but not", "other than", "apart from",
+"aside from", "minus", "outside of", "all stores but") names a list of items: a declared value
+name (its value, label or alias, quoted or not), a time phrase, or any other word in an item's
+place. Commas, semicolons, slashes, "&", "and", "or", "nor", "plus", "as well as", "along
+with", "alongside", "together with", dashes, line breaks and brackets separate items; a
+separator inside a declared name ("Click & Collect") doesn't split it. The list ends at the
+first word that is neither. The first time phrase after it with only words between is the
+question's window ("signups excluding web in June 2024"); any other value, quoted or time
+mention before the next exclusion, an "including" or the question's end is an unread item.
+
+Every item needs its own top-level `where` filter on its one dimension,
+`{"field": ..., "op": "IS DISTINCT FROM", "value": ...}`, which keeps rows with no recorded
+value: "signups excluding web" counts the signups with no channel. `!=` and `NOT IN` drop
+those rows, so they don't realize an exclusion, and `plan` drafts `IS DISTINCT FROM` itself.
+No top-level filter may exclude a value the question doesn't name, and on an item's dimension
+a filter that keeps values may keep only values the question names; the caller's own
+`partial_query` filters may exclude or keep other values, but realize an item only by
+excluding that value. A filter inside a child group or a selected expression proves nothing.
+Query IR has no window complement, so a time exclusion ("signups not in June 2024") always
+holds, and its phrase is reported unresolved instead of being read as the window. A clause
+that misses any of this holds with `negation_unrealized`, or `negation_reversed` when every
+filter that keeps values keeps an item. Each clause is checked on its own; its `actual` lists
+the `matched` filter paths and what is `missing`, `unresolved`, `excess` or in
+`drops_rows_without_a_value`.
 
 `why.details.gaps` names each clause. Question words the draft uses nowhere, other than
 framing words (including verbs and function words such as "dated", "placed", "only", "using"),

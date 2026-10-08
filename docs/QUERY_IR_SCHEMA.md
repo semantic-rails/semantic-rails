@@ -546,7 +546,14 @@ with `REWRITE_NOT_SUPPORTED`; select the distribution separately.
 
 Supported `op` values (all compile end-to-end):
 `=`, `!=`, `<`, `<=`, `>`, `>=`, `IN`, `NOT IN`, `LIKE`, `NOT LIKE`,
-`IS NULL`, `IS NOT NULL`.
+`IS NULL`, `IS NOT NULL`, `IS DISTINCT FROM`.
+
+`IS DISTINCT FROM` with a scalar excludes one value and keeps rows with no
+value: "signups excluding web" is `{"field": "dimension.shop_customer_channel",
+"op": "IS DISTINCT FROM", "value": "web"}`, which counts the signups with no
+channel. `!=` and `NOT IN` drop those rows too. `plan` drafts an exclusion this
+way and holds one that uses `!=` or `NOT IN` (see
+[Plan](MCP_INTERFACE.md#plan)).
 
 `value` rules:
 
