@@ -9,11 +9,15 @@
   single-quoted name such as `'store'`, or a name with no letter or digit such as `-`), when an
   exclusion word or "including" falls inside a quoted string or a declared value name
   ("Including Top").
-- Beside an exclusion, any other predicate holds, whether `plan` drafted it or the caller's
-  `partial_query` supplied it: another filter on any field, a child group, a compound
-  condition, a metric filter, a selected expression's filter, or a time bound the question
-  doesn't state. A question that both excludes and keeps values ("web signups excluding Top",
-  "excluding Brooklyn, including Philadelphia") holds too.
+- Beside an exclusion the draft carries only one plain measure or metric reference, the
+  exclusion's own `IS DISTINCT FROM` filters, a `time` block with the subject's own clock, a
+  grain and the window the question states, `group_by`, `order_by` and inert context;
+  anything else holds, whether `plan` drafted it or the caller's `partial_query` supplied it:
+  another filter on any field, a child group, a CASE or any other selected expression, a
+  metric filter, `limit` (even 0), `limits`, `route_decisions`, `temporal_role_overrides`,
+  `observation_scope`, `export`, an unstated time bound or any key not listed. A question
+  that both excludes and keeps values ("web signups excluding Top", "excluding Brooklyn,
+  including Philadelphia") holds too, and an excluded value named "Top" is no ranking.
 - A time exclusion ("signups not in June 2024", "excluding Jun. 25, 2024") holds instead of
   being read as the question's window, since Query IR has no window complement.
 - For "excluding web", `plan` now drafts `IS DISTINCT FROM 'web'` instead of `= 'web'`, so

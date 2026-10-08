@@ -401,13 +401,21 @@ Every item needs its own top-level `where` filter on its one dimension,
 `{"field": ..., "op": "IS DISTINCT FROM", "value": ...}`, which keeps rows with no recorded
 value: "signups excluding web" counts the signups with no channel. `!=` and `NOT IN` drop
 those rows, so they don't realize an exclusion, and `plan` drafts `IS DISTINCT FROM` itself.
-Beside an exclusion the draft carries no other predicate, whether `plan` or the caller's
-`partial_query` supplied it. Each of these is `excess`: any other top-level filter, of any
-operator or field (`{"path", "field", "op", "value"}`); a child group, a compound condition
-or a selected expression's filter or condition (`{"path", "kind": "scoped"}`); a metric
-filter (`{"path", "kind": "metric_filter"}`); and a `time` bound other than the window the
-question states (`{"path": "time.start", "value"}`). A filter inside a child group or a
-selected expression never realizes an item. A question that both excludes and keeps values
+Beside an exclusion the draft, whether `plan` or the caller's `partial_query` supplied it,
+carries only: one `select` item that plainly references a measure (at its default
+aggregation) or a metric; those `IS DISTINCT FROM` filters; a `time` block holding the
+selected subject's own `temporal_role`, a `grain` and only the bounds of the window the
+question states; `group_by` (a grouping the question doesn't ask for holds on its own);
+`order_by`; and `version`, context, `request_id`, `verbosity`, `sql_profile`, `debug`,
+`explain` and `_` annotations. Anything else holds as `excess`, each entry naming its `path`:
+another filter of any operator or field (`{"path", "field", "op", "value"}`), and any other
+part (`{"path", "value"}`) such as a child group or compound condition, any other selected
+expression (CASE, a scoped or conditional aggregate, a ratio, another aggregation), a metric
+filter, `limit` (even 0), `limits`, `route_decisions`, `temporal_role_overrides`,
+`observation_scope`, `export`, another clock, `time.fill`, `time.calendar_id`, a time bound
+the question doesn't state, or a key this list doesn't name. A filter inside a child group or
+a selected expression never realizes an item. An excluded value named "Top" is never read as
+a ranking. A question that both excludes and keeps values
 ("web signups excluding Top", "excluding Brooklyn, including Philadelphia") holds for now.
 Query IR has no window complement, so a time exclusion ("signups not in June 2024") always
 holds, and its phrase is reported unresolved instead of being read as the window. A clause
