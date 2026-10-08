@@ -346,8 +346,9 @@ def test_time_slot_requires_literal_agreement_and_matches_reference(subscription
     assert [(row[NAME], row["mrr"]) for row in rows] == _reference(subscriptions, day, limit)
 
 
-def test_time_slot_never_rescues_disagreeing_authored_window(subscriptions):
-    result = _plan(subscriptions, QUESTION.replace("today", "on 2026-09-30"))
+@pytest.mark.parametrize("time_phrase", ["on 2026-09-30", "yesterday"])
+def test_time_slot_never_rescues_disagreeing_authored_window(subscriptions, time_phrase):
+    result = _plan(subscriptions, QUESTION.replace("today", time_phrase))
     assert (result.get("best") or {}).get("pattern") != "package_example"
 
 
