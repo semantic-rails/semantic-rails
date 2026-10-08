@@ -72,6 +72,88 @@ def _assert_unrealized(payload):
     assert gap["actual"]["negative_predicate_present"] is False
 
 
+@pytest.fixture()
+def listed_channels(shop):
+    shop._config = replace(
+        shop._config,
+        value_domains=[
+            ValueDomainConfig(
+                id="value_domain.channels",
+                dimensions=[CHANNEL],
+                values=[
+                    ValueDomainValue(value="web", label="Web"),
+                    ValueDomainValue(value="store", label="Top"),
+                ],
+            )
+        ],
+        measures=[
+            replace(
+                measure,
+                description="Count distinct customers signing up through web and Top channels.",
+            )
+            if measure.id == "measure.shop.signup_count"
+            else measure
+            for measure in shop._config.measures
+        ],
+    )
+    return shop
+
+
+@pytest.mark.parametrize(
+    ("op", "value", "status", "draft_count"),
+    [
+        ("!=", "web", "low_confidence", 3),
+        ("NOT IN", ["web", "store"], "ok", 0),
+    ],
+)
+def test_every_named_exclusion_value_needs_a_negative_predicate(
+    listed_channels, op, value, status, draft_count
+):
+    reference = _reference(
+        listed_channels,
+        "SELECT COUNT(DISTINCT customer_id) FROM signups WHERE channel NOT IN ('web', 'store')",
+    )
+    assert reference == 0
+    payload = plan_payload(
+        listed_channels,
+        intent='signups excluding web and "Top"',
+        partial_query={
+            "where": [{"field": CHANNEL, "op": op, "value": value}],
+            "policy_context": NOW,
+        },
+    )
+    count = listed_channels.query(payload["best"]["query_ir"])["rows"][0]["signup_count"]
+    assert count == draft_count
+    if status == "ok":
+        assert payload["status"] == "ok", payload
+        assert payload["next"]["ready_for"] == ["execute"]
+        assert count == reference
+    else:
+        _assert_unrealized(payload)
+        assert count != reference
+
+
+def test_an_unknown_exclusion_list_item_cannot_disappear(listed_channels):
+    reference = _reference(
+        listed_channels,
+        "SELECT COUNT(DISTINCT customer_id) FROM signups WHERE channel NOT IN ('web', 'partner')",
+    )
+    assert reference == 3
+    payload = plan_payload(
+        listed_channels,
+        intent="signups excluding web and partner",
+        partial_query={
+            "where": [{"field": CHANNEL, "op": "!=", "value": "web"}],
+            "policy_context": NOW,
+        },
+    )
+    assert listed_channels.query(payload["best"]["query_ir"])["rows"] == [
+        {"signup_count": reference}
+    ]
+    assert_plan_held(payload, "PLAN_UNMATCHED_TERMS")
+    assert payload["why"]["details"]["terms"] == ["partner"]
+
+
 @pytest.mark.parametrize(
     ("question", "start", "end", "expected"),
     [

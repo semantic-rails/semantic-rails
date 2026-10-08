@@ -546,14 +546,17 @@ def _positive_filter_evidence(
 
 
 def _negative_filter_evidence(runtime: Any, query: dict[str, Any], excluded_text: str) -> bool:
-    """An exact outer predicate drops a canonical value named in the exclusion."""
+    """Every matched exclusion value is dropped by an exact outer predicate."""
 
     constraints = _field_predicates(query)
     phrases = _value_phrases(runtime._config)
-    return any(
-        entry is not None and entry.drops(value.value)
-        for _span, phrase in _value_matches(_plain(excluded_text), phrases)
-        for domain, value in phrases[phrase]
-        for dimension in domain.dimensions
-        for entry in [constraints.get(str(dimension))]
+    matches = _value_matches(_plain(excluded_text), phrases)
+    return bool(matches) and all(
+        any(
+            entry is not None and entry.drops(value.value)
+            for domain, value in phrases[phrase]
+            for dimension in domain.dimensions
+            for entry in [constraints.get(str(dimension))]
+        )
+        for _span, phrase in matches
     )
