@@ -17,9 +17,9 @@ quoted string or a declared name ("Including Top") leaves the whole question unr
 
 ``unrealized`` holds every item to its own predicate: a value item is realized only by an outer
 ``IS DISTINCT FROM`` filter on its one bound dimension, since an exclusion keeps rows with no
-recorded value and ``!=`` or ``NOT IN`` drop them, with no value the question doesn't name
-excluded beside it, and no child group, compound condition or selected expression's filter
-the caller didn't supply. Query IR has no window complement, so a time item is never realized.
+recorded value and ``!=`` or ``NOT IN`` drop them. Beside an exclusion the draft carries no
+predicate but those filters and the question's own window, whoever supplied it. Query IR has
+no window complement, so a time item is never realized.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..ast import is_child_group
-from .coverage import CoverageGap, _dict_nodes, _is_number
+from .coverage import CoverageGap, _is_number
 from .visibility import visible_value_domains
 
 _MARKER_RE = re.compile(
@@ -542,72 +542,54 @@ def _plain_filter(node: Any) -> bool:
     )
 
 
-def _nested_predicates(query: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
-    """Each condition outside ``where``, such as a selected expression's filter, by path."""
+# Keys of a selected expression that narrow the rows it reads.
+_SCOPING_KEYS = frozenset({"where", "predicates", "filter", "condition"})
 
-    out: list[tuple[str, dict[str, Any]]] = []
+
+def _scopes(query: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every predicate outside the top-level filters: each child group or compound condition in
+    ``where``, each metric filter, and each selected expression's filter or condition."""
+
+    out = [
+        {"path": f"where[{index}]", "kind": "scoped"}
+        for index, node in enumerate(list(query.get("where") or []))
+        if not _plain_filter(node)
+    ] + [
+        {"path": f"metric_filters[{index}]", "kind": "metric_filter"}
+        for index, _node in enumerate(list(query.get("metric_filters") or []))
+    ]
 
     def walk(value: Any, path: str) -> None:
         if isinstance(value, dict):
-            if isinstance(value.get("field"), str) and ("op" in value or "value" in value):
-                out.append((path, value))
+            if value.get("kind") == "metric_predicate":
+                out.append({"path": path, "kind": "scoped"})
+                return
             for key, child in value.items():
-                walk(child, f"{path}.{key}")
+                if key in _SCOPING_KEYS and child:
+                    out.append({"path": f"{path}.{key}", "kind": "scoped"})
+                else:
+                    walk(child, f"{path}.{key}")
         elif isinstance(value, list):
             for number, child in enumerate(value):
                 walk(child, f"{path}[{number}]")
 
-    for key, value in query.items():
-        if key != "where":
-            walk(value, key)
+    walk(query.get("select"), "select")
     return out
 
 
-def _scoped_fields(query: dict[str, Any]) -> set[str]:
-    """Fields a child group, a selected expression or any other compound condition reads in a
-    scope of its own."""
+def _other_window(query: dict[str, Any], stated: dict[str, Any]) -> list[dict[str, Any]]:
+    """The draft's time bounds the question doesn't state (``stated`` is its window)."""
 
-    out: set[str] = set()
-    for node in list(query.get("where") or []):
-        if not _plain_filter(node):
-            out.update(
-                row["field"] for row in _dict_nodes(node) if isinstance(row.get("field"), str)
-            )
-    out.update(node["field"] for _path, node in _nested_predicates(query))
-    return out
+    time = query.get("time")
+    time = time if isinstance(time, dict) else {}
+    return [
+        {"path": f"time.{key}", "value": time[key]}
+        for key in ("start", "end", "range")
+        if time.get(key) and time[key] != stated.get(key)
+    ]
 
 
-def _positive_values(
-    config: Any, text: str, clauses: list[ExclusionClause]
-) -> dict[str, list[Any]]:
-    """The values the question names outside every exclusion clause, by dimension."""
-
-    tokens = _tokenize(str(text or "").lower())
-    lists = _Lists(tokens, [], _value_names(config))
-    out: dict[str, list[Any]] = {}
-    index = 0
-    while index < len(tokens):
-        start = tokens[index].start
-        found = None
-        if not any(clause.marker[0] <= start < clause.end for clause in clauses):
-            found = lists.value_at(index, len(tokens))
-        if found is None:
-            index += 1
-            continue
-        index, dimensions = found
-        for dimension, values in dimensions.items():
-            out.setdefault(dimension, []).extend(values)
-    return out
-
-
-def exclusion_gaps(
-    config: Any,
-    text: str,
-    query: dict[str, Any],
-    window: Any,
-    *,
-    caller: dict[str, Any] | None = None,
-) -> list[CoverageGap]:
+def exclusion_gaps(config: Any, text: str, query: dict[str, Any], window: Any) -> list[CoverageGap]:
     """The question's exclusion clauses that the draft doesn't realize item by item."""
 
     clauses = exclusion_clauses(config, text, window)
@@ -616,8 +598,7 @@ def exclusion_gaps(
     return unrealized(
         clauses,
         query,
-        caller=caller,
-        positive=_positive_values(config, text, clauses),
+        window=dict(window.bounds),
         valid_values=_declared_values(config),
     )
 
@@ -626,59 +607,40 @@ def unrealized(
     clauses: list[ExclusionClause],
     query: dict[str, Any],
     *,
-    caller: dict[str, Any] | None = None,
-    positive: dict[str, list[Any]] | None = None,
+    window: dict[str, Any] | None = None,
     valid_values: dict[str, list[Any]] | None = None,
 ) -> list[CoverageGap]:
     """One gap for each clause the draft doesn't realize item by item.
 
-    A value item needs an outer ``IS DISTINCT FROM`` filter on its value, on its one bound
-    dimension, which no other scope conditions. No outer filter may exclude a value the question
-    doesn't name, and on an item's dimension a filter that keeps values keeps only values the
-    question names (``positive``, outside its exclusions). No child group, compound condition
-    or selected expression's filter may narrow the answer. The caller's own ``partial_query``
-    filters and scopes may exclude or keep other values, but realize an item only by dropping
-    that value.
+    A draft beside an exclusion carries exactly one predicate per value item, a top-level
+    ``IS DISTINCT FROM`` filter on its value and its one bound dimension, and the question's
+    own time ``window``. Every other predicate is ``excess``: another top-level filter of any
+    operator, field or provenance (the caller's ``partial_query`` included), a child group or
+    compound condition, a metric filter, a selected expression's filter or condition, or time
+    bounds the question doesn't state.
     """
 
     if not clauses:
         return []
     where = list(query.get("where") or [])
-    caller_where = list((caller or {}).get("where") or [])
-    caller_rows = [row for row in caller_where if isinstance(row, dict)]
-    caller_nested = [node for _path, node in _nested_predicates(caller or {})]
-    # Every scope the caller didn't supply narrows the answer beyond what the question names.
-    scopes = [
-        {"path": f"where[{index}]", "kind": "scoped"}
-        for index, node in enumerate(where)
-        if not _plain_filter(node) and node not in caller_where
-    ] + [
-        {"path": path, "kind": "scoped"}
-        for path, node in _nested_predicates(query)
-        if node not in caller_nested
-    ]
     named: dict[str, list[Any]] = {}
     for clause in clauses:
         for item in clause.items:
             if item.binding is not None:
                 named.setdefault(item.binding[0], []).append(item.binding[1])
-    positive = positive or {}
-    scoped = _scoped_fields(query)
     filters = [
         (f"where[{index}]", row, _read_filter(row))
         for index, row in enumerate(where)
         if _plain_filter(row)
     ]
     excess = [
-        {"path": path, "field": row["field"], "value": literal}
+        {"path": path, "field": row["field"], "op": row.get("op", "="), "value": row.get("value")}
         for path, row, read in filters
-        if read is not None
-        and row not in caller_rows
-        and (read[0] not in _KEEPING or row["field"] in named)
-        for literal in read[1]
-        if not _contains_literal(named.get(row["field"], []), literal)
-        and not (read[0] in _KEEPING and _contains_literal(positive.get(row["field"], []), literal))
+        if read is None
+        or read[0] != _KEEPS_UNRECORDED
+        or not _contains_literal(named.get(row["field"], []), read[1][0])
     ]
+    scopes = _scopes(query) + _other_window(query, window or {})
     gaps: list[CoverageGap] = []
     for number, clause in enumerate(clauses):
         report: dict[str, list[Any]] = {
@@ -697,7 +659,7 @@ def unrealized(
             field_id, canonical = item.binding
             fields.add(field_id)
             rows = [(path, row, read) for path, row, read in filters if row["field"] == field_id]
-            if field_id in scoped or any(read is None for _path, _row, read in rows):
+            if any(read is None for _path, _row, read in rows):
                 report["missing"].append(item.text)
                 continue
             readable = [(path, row, *read) for path, row, read in rows if read is not None]

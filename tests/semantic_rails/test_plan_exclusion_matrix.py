@@ -535,17 +535,9 @@ def test_an_exclusion_keeps_rows_with_no_recorded_value(tmp_path):
 
 def test_a_caller_constraint_never_discharges_an_item(shop):
     question = "signups excluding web"
-    # The caller's own exclusion of another value may stand beside the question's.
-    _assert_ready(
-        shop,
-        _plan(shop, question, [*_drops("partner", op="!="), *_drops("web")]),
-        _reference(shop, "channel <> 'partner' AND channel IS DISTINCT FROM 'web'"),
-    )
     gaps = _gaps(shop, question, {"where": _drops("store")})
     assert [gap.actual["missing"] for gap in gaps] == [["web"]]
-    caller = {"where": _drops("store")}
-    [gap] = _gaps(shop, question, {"where": _drops("store")}, caller=caller)
-    assert gap.actual["missing"] == ["web"]
+    _assert_held(_plan(shop, question, _drops("store")))
 
 
 def test_an_exclusion_inside_a_selected_expression_is_no_evidence(shop):
@@ -599,7 +591,7 @@ SCOPES = {
                 }
             ]
         },
-        "select[0].expression.where[0]",
+        "select[0].expression.where",
     ),
 }
 READY = {
@@ -624,18 +616,63 @@ def test_adding_an_unrelated_scope_never_keeps_readiness(shop, monkeypatch, ques
         _assert_held(payload)
 
 
-def test_a_callers_child_group_keeps_its_provenance(shop):
-    question = "signups excluding web"
-    query = _signups([*_drops("web"), NO_STORE_B])
-    assert _gaps(shop, question, query, caller={"where": [*_drops("web"), NO_STORE_B]}) == []
-    # The caller supplies the scope, and the question's exclusion still holds beside it.
-    expected = _reference(
-        shop,
-        "channel IS DISTINCT FROM 'web' AND NOT EXISTS (SELECT 1 FROM orders "
-        "WHERE orders.customer_id = signups.customer_id AND orders.store_id = 'b')",
+# One predicate beyond an exact exclusion each, as (the draft's part, the predicate). Beside
+# "signups excluding web" (4) each one changed the answer or would on other data.
+EXTRA = {
+    "keeping, other dimension": ("where", {"field": CUSTOMER, "op": "=", "value": 102}),  # 1
+    "unreadable, other dimension": ("where", {"field": CUSTOMER, "op": ">", "value": 105}),  # 1
+    "keeping, excluded dimension": ("where", {"field": CHANNEL, "op": "=", "value": "store"}),
+    "dropping another value": ("where", {"field": CHANNEL, "op": "!=", "value": "partner"}),
+    "null-keeping drop of another value": ("where", _drops("partner")[0]),
+    "child group": ("where", NO_STORE_B),  # 2
+    "metric filter": (  # no rows
+        "metric_filters",
+        {"expression": {"measure": "measure.shop.signup_count"}, "op": "<", "value": 4},
+    ),
+    "window the question doesn't state": (
+        "time",
+        {"temporal_role": "temporal_role.shop_customer_signed_up_at", "start": "2024-01-01"},
+    ),
+}
+
+
+@pytest.mark.parametrize("source", ["generator", "caller"])
+@pytest.mark.parametrize("extra", EXTRA)
+@pytest.mark.parametrize(
+    "question", ["signups excluding web", "signups excluding web in June 2024"]
+)
+def test_any_other_predicate_beside_an_exclusion_holds(shop, monkeypatch, question, extra, source):
+    window = f" AND {JUNE_2024}" if "June" in question else ""
+    exact = _plan(shop, question)
+    _assert_ready(shop, exact, _reference(shop, "channel IS DISTINCT FROM 'web'" + window))
+    query = exact["best"]["query_ir"]
+    key, predicate = EXTRA[extra]
+    if key == "time":
+        added = {**query.get("time", {}), **predicate}
+    else:
+        added = [*query.get(key, []), predicate]
+    [gap] = _gaps(shop, question, {**query, key: added})
+    assert gap.actual["excess"], gap.actual
+    if source == "generator":
+        _draft_plan(monkeypatch, {**query, key: added})
+        _assert_held(_plan(shop, question))
+    else:
+        partial = {"policy_context": NOW, key: added if key == "time" else [predicate]}
+        payload = plan_payload(shop, intent=question, partial_query=partial)
+        assert payload["status"] != "ok"
+        assert "execute" not in payload["next"].get("ready_for", [])
+
+
+def test_a_value_named_outside_the_exclusion_holds(shop, monkeypatch):
+    # Mixed questions aren't read yet: "store" keeps a value beside the exclusion.
+    question = "store signups excluding web"
+    _assert_held(_plan(shop, question))
+    _draft_plan(monkeypatch, _signups([{"field": CHANNEL, "op": "=", "value": "store"}]))
+    assert _plan(shop, question)["status"] != "ok"
+    _draft_plan(
+        monkeypatch, _signups([*_drops("web"), {"field": CHANNEL, "op": "=", "value": "store"}])
     )
-    assert expected == {105, 107}
-    _assert_ready(shop, _plan(shop, question, [*_drops("web"), NO_STORE_B]), expected)
+    _assert_held(_plan(shop, question))
 
 
 STORE = "dimension.jaffle_store_name"

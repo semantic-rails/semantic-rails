@@ -393,14 +393,6 @@ def test_every_named_value_must_reach_a_filter(adapter: SemanticLayerMCPAdapter)
             "revenue for Brooklyn and Philadelphia",
             False,
         ),
-        (
-            [
-                {"field": STORE, "op": "IN", "value": ["Brooklyn", "Philadelphia"]},
-                {"field": STORE, "op": KEEPS, "value": "Brooklyn"},
-            ],
-            "revenue excluding Brooklyn, including Philadelphia",
-            True,
-        ),
     ],
 )
 def test_conjunctive_value_constraints_have_effective_intersection(
@@ -662,7 +654,7 @@ def test_exclusion_must_name_the_requested_value(adapter: SemanticLayerMCPAdapte
     assert gap["kind"] == "negation_unrealized"
     assert gap["actual"]["missing"] == ["Brooklyn"]
     assert gap["actual"]["excess"] == [
-        {"path": "where[0]", "field": STORE, "value": "Philadelphia"}
+        {"path": "where[0]", "field": STORE, "op": op, "value": "Philadelphia"}
     ]
 
 
@@ -775,10 +767,10 @@ def test_explicit_inclusion_ends_exclusion_scope(
 ) -> None:
     wrong = _query(where=[{"field": STORE, "op": "NOT IN", "value": ["Brooklyn", "Philadelphia"]}])
     assert _gap_kinds(adapter, text, wrong) == ["negation_unrealized", "filter_values_unrealized"]
-    for exclusion, kinds in (
-        ({"op": KEEPS, "value": "Brooklyn"}, []),
-        ({"op": "!=", "value": "Brooklyn"}, ["negation_unrealized"]),
-        ({"op": "NOT IN", "value": ["Brooklyn"]}, ["negation_unrealized"]),
+    for exclusion in (
+        {"op": KEEPS, "value": "Brooklyn"},
+        {"op": "!=", "value": "Brooklyn"},
+        {"op": "NOT IN", "value": ["Brooklyn"]},
     ):
         draft = _query(
             where=[
@@ -786,7 +778,14 @@ def test_explicit_inclusion_ends_exclusion_scope(
                 {"field": STORE, "op": "=", "value": "Philadelphia"},
             ]
         )
-        assert _gap_kinds(adapter, text, draft) == kinds
+        # Philadelphia is no excluded item, but beside an exclusion any other predicate holds:
+        # a question that both excludes and keeps values isn't read yet.
+        [gap] = _gaps(adapter, text, draft)
+        assert gap["kind"] == "negation_unrealized"
+        assert gap["actual"]["missing"] == []
+        assert {"path": "where[1]", "field": STORE, "op": "=", "value": "Philadelphia"} in gap[
+            "actual"
+        ]["excess"]
 
 
 def test_comma_separated_exclusions_remain_negative(adapter: SemanticLayerMCPAdapter) -> None:
@@ -839,7 +838,7 @@ def test_comma_separated_exclusions_remain_negative(adapter: SemanticLayerMCPAda
                 {"field": STORE, "op": "IN", "value": ["Philadelphia", "New Orleans"]},
             ],
             "v IS DISTINCT FROM 'Brooklyn' AND v IN ('Philadelphia', 'New Orleans')",
-            ["negation_reversed"],
+            ["negation_unrealized", "negation_reversed"],
             True,
         ),
         (
@@ -868,7 +867,8 @@ def test_comma_separated_exclusions_remain_negative(adapter: SemanticLayerMCPAda
             ],
             "v IS DISTINCT FROM 'Brooklyn' AND v IS DISTINCT FROM 'New Orleans' "
             "AND v = 'Philadelphia'",
-            [],
+            # The kept value is a predicate on both clauses' field that neither names.
+            ["negation_unrealized", "negation_unrealized"],
             False,
         ),
         (
@@ -1313,7 +1313,7 @@ BROOKLYN_REVENUE = {
                     {"field": STORE, "op": "=", "value": "Philadelphia"},
                 ]
             ),
-            "ok",
+            "low_confidence",
         ),
         # A nested scope validates, but doesn't supply query-level membership.
         (
