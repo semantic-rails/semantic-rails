@@ -20,7 +20,7 @@ from .coverage import (
     _value_names,
     _value_phrases,
 )
-from .exclusions import exclusion_markers, exclusion_regions
+from .exclusions import exclusion_regions, exclusion_words
 from .filter_checks import _field_predicates, _positive_filter_evidence
 from .groupings import _explicit_grain, _requested_grouping_spans
 from .time_checks import _fiscal_calendar_gaps
@@ -285,10 +285,11 @@ def _used_ids(config: Any, query: dict[str, Any]) -> set[str]:
 def _honored_clause_spans(runtime: Any, text: str, query: dict[str, Any]) -> list[tuple[int, int]]:
     """The clauses another check owns, when the draft honors them: a fiscal calendar ("fiscal
     revenue on April 3, 2017"), a prior-period comparison, or an included/excluded value.
-    The exclusion check owns its markers ("other than"); it holds a draft that misses an item."""
+    The exclusion check owns its markers ("other than") and list separators ("as well as"); it
+    holds a draft that misses an item."""
 
     lowered = text.lower()
-    spans: list[tuple[int, int]] = exclusion_markers(text)
+    spans: list[tuple[int, int]] = exclusion_words(text)
     if not _fiscal_calendar_gaps(runtime._config, text, query):
         spans.extend(match.span() for match in _FISCAL_RE.finditer(lowered))
     if _query_contains_prior_period(runtime, query):

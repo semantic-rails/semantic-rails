@@ -96,6 +96,7 @@ class _Region:
     end: int
     first: int  # the first token after the marker
     window: Span | None  # the positive window after the list
+    separators: tuple[Span, ...] = ()
 
 
 def _tokenize(lowered: str) -> list[_Token]:
@@ -148,6 +149,8 @@ class _Lists:
         self.time_spans = list(time_spans)
         self.time_ends = {start: end for start, end in sorted(time_spans, reverse=True)}
         self.names = names
+        # The separators the lists read, which the exclusion check accounts for.
+        self.separators: list[Span] = []
 
     def value_at(
         self, index: int, stop: int, *, exact: bool = False
@@ -161,7 +164,14 @@ class _Lists:
         if self.names is None:
             plain = _word(tokens[index]) and tokens[index].text not in _LEADS
             return (index + 1, {}) if plain and (not exact or index + 1 == stop) else None
-        for words, dimensions in self.names.get(tokens[index].text, []):
+        first = tokens[index].text
+        # A one-word name may be said in the plural ("stores").
+        candidates = [
+            *self.names.get(first, []),
+            *(row for row in self.names.get(first[:-1], []) if len(row[0]) == 1),
+            *(row for row in self.names.get(first[:-2], []) if len(row[0]) == 1),
+        ]
+        for words, dimensions in sorted(candidates, key=lambda row: -len(row[0])):
             end = index + len(words)
             if end > stop or (exact and end != stop):
                 continue
@@ -217,6 +227,7 @@ class _Lists:
                 return found
             taken = _separator_at(tokens, index)
             if taken:
+                self.separators.append((tokens[index].start, tokens[index + taken - 1].end))
                 index += taken
             elif tokens[index].text in _LEADS:
                 index += 1
@@ -248,6 +259,7 @@ class _Lists:
                 taken = _separator_at(tokens, index)
                 if not taken:
                     break
+                self.separators.append((tokens[index].start, tokens[index + taken - 1].end))
                 index += taken
                 separated = True
             if not separated:
@@ -286,8 +298,10 @@ def _regions(lowered: str, tokens: list[_Token], time_spans: list[Span]) -> list
         if inclusion is not None:
             end = inclusion.start()
         first = _index_at(tokens, marker[1])
-        _items, stop = _Lists(tokens, time_spans, None).read(first, end)
-        out.append(_Region(marker, end, first, _trailing_window(tokens, stop, end, time_spans)))
+        lists = _Lists(tokens, time_spans, None)
+        _items, stop = lists.read(first, end)
+        window = _trailing_window(tokens, stop, end, time_spans)
+        out.append(_Region(marker, end, first, window, tuple(lists.separators)))
     return out
 
 
@@ -305,10 +319,21 @@ def excluded_time_spans(lowered: str, time_spans: list[Span]) -> list[Span]:
     )
 
 
-def exclusion_markers(text: str) -> list[Span]:
-    """Where each exclusion marker sits ("excluding", "other than")."""
+def exclusion_words(text: str) -> list[Span]:
+    """Where each exclusion marker ("excluding", "other than") and each separator of its list
+    ("as well as") sits: words the exclusion check accounts for."""
 
-    return _markers(str(text or "").lower())
+    from .time_windows import _time_window  # noqa: WPS433 - time_windows reads this module
+
+    lowered = str(text or "").lower()
+    if not _markers(lowered):
+        return []
+    spans = list(_time_window(str(text or "")).spans)
+    return sorted(
+        span
+        for region in _regions(lowered, _tokenize(lowered), spans)
+        for span in (region.marker, *region.separators)
+    )
 
 
 def exclusion_regions(text: str) -> list[Span]:
@@ -663,7 +688,7 @@ __all__ = [
     "excluded_time_spans",
     "exclusion_clauses",
     "exclusion_gaps",
-    "exclusion_markers",
+    "exclusion_words",
     "exclusion_regions",
     "unrealized",
 ]
