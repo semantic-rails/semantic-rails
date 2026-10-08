@@ -8,7 +8,8 @@
 - An exclusion also holds when its list has a character no item, separator or lead reads (a
   single-quoted name such as `'store'`, or a name with no letter or digit such as `-`), when an
   exclusion word or "including" falls inside a quoted string or a declared value name
-  ("Including Top").
+  ("Including Top"), or when an exclusion word falls inside a grouping phrase ("revenue by
+  store excluding Brooklyn", which would otherwise lose its grouping).
 - Beside an exclusion the draft carries only one plain reference to a measure or metric the
   question names, the exclusion's own `IS DISTINCT FROM` filters, a `time` block with the
   subject's own clock, a grain and the window the question states, `group_by`, `order_by`

@@ -395,7 +395,9 @@ only the question's final `.`, `?` or `!` is exempt. The first time phrase after
 only words between is the question's window ("signups excluding web in June 2024"); any other
 value, quoted or time mention before the next exclusion, an "including" or the question's end
 is an unread item. When an exclusion word or an "including" falls inside a quoted string or a
-declared value name ("Including Top", "All but Web"), the whole question is one unread item.
+declared value name ("Including Top", "All but Web"), or an exclusion word inside a grouping
+phrase ("revenue by store excluding Brooklyn", which would lose its grouping), the whole
+question is one unread item.
 
 Every item needs its own top-level `where` filter on its one dimension,
 `{"field": ..., "op": "IS DISTINCT FROM", "value": ...}`, which keeps rows with no recorded
