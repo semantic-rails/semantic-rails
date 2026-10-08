@@ -13,7 +13,8 @@ or "!" is the only exception. The first time phrase after the list with only wor
 ("excluding web in June 2024") stays a positive window; every other value, quoted or time
 mention up to the clause's end (the next marker, an "including", or the end of the question)
 is an ``unknown`` item, and a clause with no item gets one. A marker or "including" inside a
-quoted string or a declared name ("Including Top") leaves the whole question unread.
+quoted string or a declared name ("Including Top"), or a marker inside a grouping phrase ("by
+store excluding Brooklyn"), leaves the whole question unread.
 
 ``unrealized`` holds every item to its own predicate: a value item is realized only by an outer
 ``IS DISTINCT FROM`` filter on its one bound dimension, since an exclusion keeps rows with no
@@ -403,6 +404,16 @@ def _marker_inside_a_name(lowered: str, tokens: list[_Token], names: Names) -> b
     return any(start < end and begin < stop for start, stop in words for begin, end in spans)
 
 
+def _marker_inside_a_grouping(lowered: str) -> bool:
+    """Whether a marker sits inside a grouping phrase as the grouping reader reads it ("revenue
+    by store excluding Brooklyn" reads "store excluding brooklyn"), which drops its grouping."""
+
+    from .groupings import _requested_grouping_spans  # noqa: WPS433 - groupings reads this module
+
+    spans = _requested_grouping_spans(lowered)
+    return any(start <= marker < end for start, end in spans for marker, _end in _markers(lowered))
+
+
 _RUN_RE = re.compile(r"[^\0\s](?:[^\0]*[^\0\s])?")
 
 
@@ -432,7 +443,7 @@ def exclusion_clauses(config: Any, text: str, window: Any) -> list[ExclusionClau
         return _unread(text)
     tokens = _tokenize(lowered)
     names = _value_names(config)
-    if _marker_inside_a_name(lowered, tokens, names):
+    if _marker_inside_a_name(lowered, tokens, names) or _marker_inside_a_grouping(lowered):
         return _unread(text)
     time_spans = list(window.spans)
     excluded = {*window.excluded, *excluded_time_spans(lowered, time_spans)}

@@ -885,6 +885,32 @@ STORE = "dimension.jaffle_store_name"
 
 
 @pytest.mark.parametrize(
+    "question",
+    [
+        # Each one was ready with one total: the grouping read "store excluding brooklyn".
+        "revenue by store excluding Brooklyn",
+        "revenue by store not Brooklyn",
+        "orders by store except New Orleans",
+        # Ready by month alone, without the store.
+        "revenue by month and store excluding Brooklyn",
+        "revenue by month excluding Brooklyn",
+    ],
+)
+def test_an_exclusion_inside_a_grouping_phrase_holds(runtime_factory, question):
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        window = _time_window(question)
+        assert [
+            item.text
+            for clause in exclusion_clauses(runtime._config, question, window)
+            for item in clause.items
+        ] == [question]
+        _assert_held(plan_payload(runtime, intent=question))
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
     ("question", "excluded"),
     [
         ("revenue excluding Brooklyn", "Brooklyn"),
