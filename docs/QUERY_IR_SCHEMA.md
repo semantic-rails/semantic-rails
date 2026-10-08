@@ -1300,9 +1300,13 @@ dense rows (for example, the inline `prior_period` LAG window in the
 
 ### Which calendar fills
 
-An ungrouped filled bounded series on the default calendar that comes back short is
-an error (`FILL_INCOMPLETE`) naming the periods, never an answer, unless metric filters,
-a query limit or result truncation can remove periods.
+An ungrouped filled bounded series on the default calendar answers only when its periods
+are exactly the buckets the window computes (Monday weeks). One whose periods can't be
+proved complete is an error (`FILL_INCOMPLETE`), never an answer: a short series names the
+missing periods, and periods on another anchor (an authored Sunday-week calendar), an
+invalid period, or a `start` or `end` that doesn't parse exactly (digits finer than a
+microsecond) carry `reason: "unverifiable"`. Metric filters, a query limit or result
+truncation can remove periods, so they skip the check.
 
 - A calendar the package authors for the requested `calendar_id` always
   fills (the `default` one when the query names none).

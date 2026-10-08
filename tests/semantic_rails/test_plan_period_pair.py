@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -389,6 +390,43 @@ def test_order_pair_holds_caller_additions(runtime_factory: Any, addition: dict[
     assert "execute" not in held["next"].get("ready_for", [])
     if "metric_filters" in addition:
         assert held["best"]["query_ir"]["metric_filters"] == ORDER_FILTER["metric_filters"]
+
+
+@pytest.mark.parametrize(
+    "bound",
+    [
+        {"end": "2017-08-21T00:00:00.0000001"},
+        {"end": "2017-08-21T00:00:00"},
+        {"start": "2017-08-07T12:00:00"},
+    ],
+)
+def test_order_pair_holds_resolved_bounds_with_a_time_part(
+    runtime_factory: Any, monkeypatch: pytest.MonkeyPatch, bound: dict[str, str]
+) -> None:
+    from semantic_rails.planner.patterns import period_pair
+
+    runtime = runtime_factory("jaffle_shop")
+    planned = plan_payload(
+        runtime, intent=ORDER_QUESTION, partial_query={"policy_context": ORDER_NOW}
+    )
+    assert planned["status"] == "ok", planned.get("why")
+    query = deepcopy(planned["best"]["query_ir"])
+    query["policy_context"] = ORDER_NOW
+    query["time"].pop("start", None)
+    query["time"].pop("end", None)
+    query["time"]["range"] = {"last": {"unit": "week", "value": 2}}
+    assert completed_period_pair(ORDER_QUESTION, runtime=runtime, query=query) is not None
+    resolve = period_pair._time_spec_from_payload
+    monkeypatch.setattr(
+        period_pair,
+        "_time_spec_from_payload",
+        lambda *args, **kwargs: replace(resolve(*args, **kwargs), **bound),
+    )
+    # Only whole-day bounds equal to the two computed periods qualify.
+    assert completed_period_pair(ORDER_QUESTION, runtime=runtime, query=query) is None
+    held = plan_payload(runtime, intent=ORDER_QUESTION, partial_query={"policy_context": ORDER_NOW})
+    assert held["status"] != "ok", held
+    assert "execute" not in held["next"].get("ready_for", [])
 
 
 def test_completed_order_pair_fills_an_empty_week(tmp_path: Path) -> None:

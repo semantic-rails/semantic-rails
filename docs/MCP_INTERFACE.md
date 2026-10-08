@@ -515,8 +515,9 @@ period may be "the prior week" or "the week prior". "Last week, up or down" comp
 the immediately preceding week. The draft selects the named governed flow metric when
 available, carries two completed periods at their own grain, fills empty periods and orders
 the dated rows ascending. Readiness requires `time.fill: true` on the final draft;
-a draft with missing or disabled fill is held. A filled bounded pair that comes back
-short is an error (`FILL_INCOMPLETE`) naming the periods, never an answer. A pair is ready
+a draft with missing or disabled fill is held. A filled bounded pair whose periods can't be
+proved complete (short, misaligned with the calendar's weeks, or bounds finer than
+microseconds) is an error (`FILL_INCOMPLETE`), never an answer. A pair is ready
 only for the exact draft shape it builds: caller-added filters, metric filters, limits, groupings or other time keys hold.
 An explicitly requested grain must match
 the pair's unit. The comparison phrase is consumed whole. A stock, mixed units, two named
@@ -1089,6 +1090,7 @@ expression kind names the received kind and its request path (for example,
 | `INVALID_SEGMENT` | Segment definition is invalid. |
 | `MISSING_DEPENDENCY` | Required upstream object is missing. |
 | `QUERY_EXECUTION_ERROR` | Warehouse refused or aborted execution. |
+| `FILL_INCOMPLETE` | An ungrouped filled bounded series on the default calendar returned periods other than exactly the buckets its window computes. No rows are returned. `details.missing_periods` lists computed buckets with no row. `details.reason: "unverifiable"` means completeness can't be proved: a period outside the computed buckets (another week anchor) or an invalid one, with `details.expected_periods` and `details.returned_periods` counting each side, or a `start`/`end` that doesn't parse exactly (digits finer than a microsecond), named in `details.bounds`. |
 | `PATH_NOT_FOUND` | No valid join path between the requested objects; `details.reason: excluded_by_decision` means every route walks a pair the package's `graph.path_preferences` rows (`details.rows`) record differently. `details.reachable_targets` and suggested group-by dimensions share compilation's path traversal and route-selection rules, respecting relationship directions, hop limits, route ambiguity, and recorded path preferences, including inherited decisions. The lists are exact under these path rules, without caching rejected routes, and are route-eligible: fan-out and policy checks still apply. Unrelated route rows retain bounded reachability scans; inherited-route searches skip branches that cannot reach the target within the remaining hops. |
 | `POLICY_DENIED` | Policy context blocks a referenced object or query cut. `policy_effects` state each policy as the caller may see it: one that lists a hidden object, or whose text names one, appears without `policy_id` and with its action's fixed text. While anything is hidden from the caller, a raw-column aggregate is refused with empty `blocked_objects`, `policy_effects` and `policy_violations`. When what the caller may see can't be resolved, every tool refuses before binding or the warehouse with `details: {"reason": "visibility_unresolved"}`, naming nothing. |
 | `INVALID_METRIC_PREDICATE` | `metric_predicates[]` entry is malformed. |
