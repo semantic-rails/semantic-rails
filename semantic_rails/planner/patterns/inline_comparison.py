@@ -18,6 +18,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ...naming import semantic_token as _semantic_token
 from .._base import (
     RuntimeCompositionDraft,
     _aggregation_from_text,
@@ -25,7 +26,6 @@ from .._base import (
     _preferred_metric,
     _resolved,
     _runtime_composition_terms,
-    _semantic_token,
 )
 from ..groupings import _maybe_group_by, _time_spec
 from ..qualifiers import _add_order

@@ -2,15 +2,52 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
 
 from semantic_rails.compiler import compile_query
+from semantic_rails.compiler_parts.sql_lowering import _query_metric_predicates
 from semantic_rails.config import load_package_config
 from semantic_rails.errors import SemanticLayerError
 from semantic_rails.expressions import parse_semantic_expression
 from semantic_rails.registry import Registry
+
+
+@pytest.mark.parametrize(
+    ("envelope", "accepted"),
+    [
+        ({"op": "=", "value": True}, True),
+        ({"op": " = ", "value": True}, True),
+        ({"value": True}, True),
+        ({"op": "=", "value": False}, False),
+        ({"op": "=", "value": 1}, False),
+        ({"op": "!=", "value": True}, False),
+        ({"op": "="}, False),
+    ],
+)
+def test_predicate_collection_enforces_the_envelope_when_binding_is_bypassed(envelope, accepted):
+    expression = {
+        "kind": "metric_predicate",
+        "entity": "entity.shop_customer",
+        "input": {"measure": "measure.shop.order_count"},
+        "op": ">",
+        "value": 1,
+    }
+    plan = SimpleNamespace(query={"metric_filters": [{"expression": expression, **envelope}]})
+    if accepted:
+        assert _query_metric_predicates(plan) == [
+            parse_semantic_expression(expression, context="query")
+        ]
+    else:
+        with pytest.raises(SemanticLayerError) as exc:
+            _query_metric_predicates(plan)
+        assert exc.value.code == "INVALID_METRIC_FILTER"
+        assert exc.value.details == {
+            "op": envelope.get("op", "="),
+            "value": envelope.get("value"),
+        }
 
 
 @pytest.mark.parametrize("form", ["inline", "recipe", "input_recipe"])

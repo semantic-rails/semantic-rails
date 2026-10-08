@@ -108,11 +108,11 @@ from .compiler_parts.post_aggregation import (
 from .compiler_parts.sql_lowering import (
     _count_key_expr,
     _expr_contains_distribution,
-    _last_token,
     _plan_requires_agent_dag_lowering,
+    _query_metric_predicates,
     _reads_chosen_snapshot,
     _refuse_converted_role,
-    _slug,
+    _validate_metric_predicate_filter_envelope,
     child_group_route,
     recording_stock_key_gaps,
 )
@@ -192,6 +192,8 @@ from .ir import (
     SemanticDag,
     SemanticDagNode,
 )
+from .naming import semantic_token as _semantic_token
+from .naming import slug as _slug
 from .registry import Registry
 from .relation_pipelines import attach_relation_ctes
 from .renderer import render_select_for_profile
@@ -305,17 +307,6 @@ __all__ = [
     "render_select_for_profile",
     "resolve_path",
 ]
-
-
-def _semantic_token(value: str, *, fallback: str = "item") -> str:
-    raw_value = str(value or "")
-    token = _last_token(value)
-    if raw_value.startswith("entity.") and "_" in token:
-        token = token.split("_", 1)[1]
-    for prefix in ("jaffle_", "entity_", "metric_recipe_", "measure_"):
-        if token.startswith(prefix):
-            token = token[len(prefix) :]
-    return _slug(token, fallback=fallback)
 
 
 def _plural(value: str) -> str:
@@ -1724,19 +1715,6 @@ def _unsupported_conversion(expr: ConversionExpr) -> SemanticLayerError:
     )
 
 
-def _query_metric_predicates(plan: LogicalPlan) -> list[MetricPredicateExpr]:
-    predicates: list[MetricPredicateExpr] = []
-    for item in list(plan.query.get("metric_filters", []) or []):
-        raw_expr = item.get("expression")
-        if not raw_expr:
-            continue
-        expr = _parse_public_expr(dict(raw_expr))
-        if isinstance(expr, MetricPredicateExpr):
-            _validate_metric_predicate_filter_envelope(dict(item))
-            predicates.append(expr)
-    return predicates
-
-
 _NUMERIC_DATA_TYPES = {"integer", "number"}
 
 
@@ -1811,16 +1789,6 @@ def _validate_where_value_type(dim, item) -> None:
                     "op": item.op,
                 },
             )
-
-
-def _validate_metric_predicate_filter_envelope(item: dict[str, Any]) -> None:
-    if str(item.get("op", "=")).strip() == "=" and item.get("value") is True:
-        return
-    raise SemanticLayerError(
-        "INVALID_METRIC_FILTER",
-        "metric_predicate filters must use op '=' and value true; put the threshold inside expression.op/expression.value",
-        details={"op": item.get("op", "="), "value": item.get("value")},
-    )
 
 
 def _all_metric_predicates(
