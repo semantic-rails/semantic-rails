@@ -75,6 +75,8 @@ PUBLIC_API_PREFIX = "/api/v1"
 
 def public_api_route(path: str) -> str | None:
     route = str(path or "/")
+    if route.rstrip("/") == "/health":
+        return "/health"
     if route == PUBLIC_API_PREFIX or route.startswith(f"{PUBLIC_API_PREFIX}/"):
         return normalize_route(route)
     return None

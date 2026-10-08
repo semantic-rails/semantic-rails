@@ -159,11 +159,9 @@ def test_serve_tools_match_asgi_and_stdio(runtime_factory, monkeypatch, message,
             else:
                 answer = result["structuredContent"]
                 assert answer["ok"] is True
-                assert answer["result"]["rows"] == baseline["structuredContent"]["result"]["rows"]
-                assert (
-                    answer["result"]["rendered_sql"]
-                    == baseline["structuredContent"]["result"]["rendered_sql"]
-                )
+                assert answer["rows"] == baseline["structuredContent"]["rows"]
+                assert answer["rows"] and answer["rows"][0]["orders"] > 0
+                assert answer["rendered_sql"] == baseline["structuredContent"]["rendered_sql"]
 
 
 @pytest.mark.parametrize("backend", ["serve", "asgi"])
@@ -190,6 +188,8 @@ def test_serve_and_asgi_require_configured_keys(frontends, monkeypatch, backend,
         ("DELETE", "/mcp", {}, None, 405),
         ("PUT", "/mcp", {}, None, 405),
         ("PATCH", "/mcp", {}, None, 405),
+        ("TRACE", "/mcp", {}, None, 405),
+        ("CONNECT", "/mcp", {}, None, 405),
         ("POST", "/sse", {}, None, 404),
         ("GET", "/sse", {}, None, 404),
         ("OPTIONS", "/mcp", {}, None, 204),
@@ -209,7 +209,10 @@ def test_serve_matches_asgi_transport_refusals(frontends, method, path, headers,
     local = frontends("serve", method=method, path=path, headers=headers, raw=raw)
     remote = frontends("asgi", method=method, path=path, headers=headers, raw=raw)
     assert local[0] == remote[0] == status
-    assert local[2] == remote[2]
+    if status == 404:
+        assert json.loads(local[2])["error"] == json.loads(remote[2])["error"]
+    else:
+        assert local[2] == remote[2]
     for response_headers in (local[1], remote[1]):
         normalized = {k.lower(): v for k, v in response_headers.items()}
         assert normalized["x-request-id"] == "transport-parity"
@@ -278,6 +281,31 @@ def test_serve_preserves_trusted_visibility_and_environment(
                     assert hidden not in json.dumps(answer)
                 else:
                     assert answer["ok"] is False
-                    assert answer["error"]["code"] == "POLICY_ENVIRONMENT_UNDECLARED"
+                    assert answer["error"]["code"] == "INVALID_QUERY"
+                    assert answer["error"]["details"]["environment"] == "undeclared"
     finally:
         set_policy_context_resolver(HeaderPolicyContextResolver())
+
+
+@pytest.mark.parametrize(
+    ("headers", "status"),
+    [
+        ({"Content-Length": "-1"}, 400),
+        ({"Content-Length": "invalid"}, 400),
+        ({"Transfer-Encoding": "chunked"}, 400),
+        ({"Content-Length": str(MCP_MAX_REQUEST_BYTES + 1)}, 413),
+    ],
+)
+def test_serve_refuses_invalid_or_oversized_framing_without_reading(frontends, headers, status):
+    assert frontends("serve", headers=headers, raw=b"")[0] == status
+
+
+def test_serve_authenticates_before_reading_the_body(frontends, monkeypatch):
+    monkeypatch.setenv("SEMANTIC_RAILS_API_KEYS", "test-key")
+    assert frontends("serve", headers={"Content-Length": "1000"}, raw=b"")[0] == 401
+
+
+def test_serve_head_refuses_streaming(frontends):
+    status, headers, body = frontends("serve", method="HEAD")
+    assert status == 405 and not body
+    assert headers["Allow"] == "POST, OPTIONS"

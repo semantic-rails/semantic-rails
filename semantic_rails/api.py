@@ -1,4 +1,4 @@
-"""Threaded ``http.server``-based HTTP front end for the v1 API.
+"""Threaded ``http.server`` front end for the v1 API and Streamable HTTP MCP.
 
 Wraps :class:`semantic_rails.http_core.SemanticHTTPService` in a
 ``ThreadingHTTPServer`` request handler so concurrent agent calls do
@@ -259,7 +259,7 @@ class Handler(BaseHTTPRequestHandler):
         self._prepare_request()
         return _json(self, 404, self._service().not_found_payload())
 
-    do_PUT = do_PATCH = do_HEAD = do_DELETE
+    do_PUT = do_PATCH = do_HEAD = do_TRACE = do_CONNECT = do_DELETE
 
 
 def _json(handler: Handler, status: int, payload: dict[str, Any]) -> None:
