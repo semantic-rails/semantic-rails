@@ -23,6 +23,7 @@ Module map:
 * ``intent_ir`` — the typed parse of a question (``parse_intent``).
 * ``orchestrator`` — run the pattern registry over the IR (``compose``).
 * ``plan`` — ``plan_payload``: drafts, readiness holds and the payload.
+* ``snapshot`` — the one day a balance draft reads, and the day grouping a policy requires.
 * ``plan_query`` — the caller's partial query: merge, validate, trim errors.
 * ``plan_trace`` — the best draft by semantic drift; trace and slim payloads.
 * ``grouping_checks`` — groupings the question asks for that the draft dropped.

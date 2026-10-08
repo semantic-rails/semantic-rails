@@ -264,9 +264,7 @@ def test_store_list_is_grouped_by_store_or_withholds_execution(
         assert payload["status"] == "low_confidence", payload
         assert "execute" not in payload["next"].get("ready_for", []), payload
         assert payload["why"]["code"] == (
-            "PLAN_INTENT_COVERAGE_GAP"
-            if path == "primary" or intent.startswith("stores")
-            else "PLAN_UNMATCHED_TERMS"
+            "PLAN_INTENT_COVERAGE_GAP" if path == "primary" else "PLAN_UNMATCHED_TERMS"
         ), payload
     finally:
         runtime.close()
@@ -391,7 +389,7 @@ def test_qualification_requires_entity_keys_or_a_selected_key_count(
 
 
 @pytest.mark.parametrize("path", ["primary", "fallback"])
-@pytest.mark.parametrize("grain", [None, "month", "year"])
+@pytest.mark.parametrize("grain", ["month", "year"])
 def test_number_of_open_stores_without_one_day_is_held(
     runtime_factory, monkeypatch, path, grain
 ) -> None:
@@ -415,6 +413,40 @@ def test_number_of_open_stores_without_one_day_is_held(
             "stocks": ["measure.jaffle.open_store_count_eop"],
         }
         assert gap["actual"] == {"grain": grain}
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("path", ["primary", "fallback"])
+def test_number_of_open_stores_reads_the_last_complete_day(
+    runtime_factory, monkeypatch, path
+) -> None:
+    # Each store reports three snapshots, then stops: only one still reports on 2018-05-01,
+    # while each store's last snapshot would count all five.
+    now = {"now": "2018-05-02T06:00:00Z"}
+    question = "number of stores open"
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        _force_fallback(runtime, monkeypatch, question, path)
+        payload = plan_payload(runtime, intent=question, partial_query={"policy_context": now})
+        assert payload["status"] == "ok", payload.get("why")
+        query = payload["best"]["query_ir"]
+        assert (query["time"]["start"], query["time"]["end"]) == ("2018-05-01", "2018-05-02")
+        rows = runtime.query({**query, "policy_context": now})["rows"]
+        answer = [row[query["select"][0]["as"]] for row in rows]
+        runtime.close()
+        with duckdb.connect(runtime.db_path, read_only=True) as connection:
+            [(gold,)] = connection.execute(
+                "SELECT SUM(open_store_count) FROM jaffle_store_inventory_snapshot "
+                "WHERE date_day = DATE '2018-05-01'"
+            ).fetchall()
+            [(last,)] = connection.execute(
+                "SELECT SUM(open_store_count) FROM jaffle_store_inventory_snapshot "
+                "WHERE (store_id, date_day) IN (SELECT (store_id, MAX(date_day)) "
+                "FROM jaffle_store_inventory_snapshot GROUP BY store_id)"
+            ).fetchall()
+        assert answer == [gold] == [1]
+        assert last == 5
     finally:
         runtime.close()
 

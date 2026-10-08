@@ -3,7 +3,9 @@
 A stock answers with each series' last snapshot in each period, then adds up the series. When
 a series stops reporting (an account closes and its daily rows stop), a period, or a read with
 no time block, keeps that series' last value, so the draft is held unless each row reads one
-day. Accounts a, b and d hold 99 a day through 2026-10-04 on the basic plan; e holds 500 on
+day. plan reads a question that names no day on the last complete day, and one period on its
+closing day (``planner/snapshot.py``); a series of periods stays held.
+Accounts a, b and d hold 99 a day through 2026-10-04 on the basic plan; e holds 500 on
 the pro plan through 2026-09-15 and f 50 through 2026-09-30. A stock keyed by its clock alone
 (a daily rollup) is one series and is unchanged. Reference values come from plain SQL.
 """
@@ -167,15 +169,10 @@ def _assert_held(plan: dict[str, Any], grain: str | None) -> None:
 @pytest.mark.parametrize(
     ("intent", "grain"),
     [
-        ("What's our MRR?", None),
-        ("What is our MRR?", None),
-        ("MRR", None),
         ("total MRR", None),
-        ("How much MRR do we have?", None),
-        ("MRR by plan", None),
-        ("MRR last week", "week"),
-        ("MRR last month", "month"),
         ("MRR by week", "week"),
+        ("MRR by month", "month"),
+        ("MRR last 3 months", "month"),
     ],
 )
 def test_a_balance_over_more_than_one_day_per_row_is_held(
@@ -184,21 +181,47 @@ def test_a_balance_over_more_than_one_day_per_row_is_held(
     _assert_held(_plan(runtime, intent, detail=detail), grain)
 
 
-def test_the_held_drafts_keep_closed_accounts(runtime: Runtime) -> None:
-    # Each series' last value: the closed accounts e (500) and f (50) are still counted.
+@pytest.mark.parametrize("detail", ["best", "full"])
+@pytest.mark.parametrize(
+    ("intent", "day"),
+    [
+        ("What's our MRR?", "2026-10-04"),
+        ("What is our MRR?", "2026-10-04"),
+        ("MRR", "2026-10-04"),
+        ("How much MRR do we have?", "2026-10-04"),
+        ("MRR by plan", "2026-10-04"),
+        ("MRR last week", "2026-10-04"),
+        ("MRR last month", "2026-09-30"),
+    ],
+)
+def test_a_balance_with_no_day_or_one_period_reads_its_closing_day(
+    runtime: Runtime, intent: str, day: str, detail: str
+) -> None:
+    # No day: the last complete day before the clock. One period: its closing day.
+    plan = _plan(runtime, intent, detail=detail)
+    assert plan["best"]["query_ir"]["time"]["start"] == day
+    assert _stock_gaps(plan) == []
+    assert _value(runtime, plan) == _closing_day(day)
+
+
+def test_a_balance_read_on_one_day_drops_closed_accounts(runtime: Runtime) -> None:
+    # Each series' last value would still count the closed accounts e (500) and f (50).
     assert _closing_day("2026-10-04") == 297
     assert _reference("SELECT SUM(mrr) FROM account_day WHERE (account_id, day) IN "
                       "(SELECT (account_id, MAX(day)) FROM account_day GROUP BY account_id)") == 847  # fmt: skip
-    query = _plan(runtime, "MRR")["best"]["query_ir"]
-    [row] = runtime.query(query)["rows"]
-    assert row[query["select"][0]["as"]] == 847
+    assert _value(runtime, _plan(runtime, "MRR")) == 297
 
 
-def test_mcp_plan_holds_a_balance_with_no_time_block(runtime: Runtime) -> None:
-    plan = SemanticLayerMCPAdapter(runtime).call_tool(
+def test_mcp_plan_reads_a_balance_on_the_last_complete_day(runtime: Runtime) -> None:
+    adapter = SemanticLayerMCPAdapter(runtime)
+    plan = adapter.call_tool(
         "plan", {"intent": "What's our MRR?", "query": {"policy_context": NOW}}
     )
-    _assert_held(plan, None)
+    assert plan["status"] == "ok", plan.get("why")
+    time = plan["best"]["query_ir"]["time"]
+    assert (time["grain"], time["start"], time["end"]) == ("day", "2026-10-04", "2026-10-05")
+    held = adapter.call_tool("plan", {"intent": "MRR by week", "query": {"policy_context": NOW}})
+    _assert_held(held, "week")
 
 
 @pytest.mark.parametrize(
@@ -251,7 +274,7 @@ def test_a_stock_read_through_a_metric_filter_or_a_nested_metric_is_held(
     [gap] = time_checks._stock_as_of_gaps(nested, query)
     assert gap.expected == {"grain": "day", "stocks": [MEASURE]}
     selected = {"select": [{"expression": {"metric": metric.id}, "as": "mrr"}]}
-    _assert_held(_plan(runtime, "MRR", partial=selected), None)
+    _assert_held(_plan(runtime, "MRR by week", partial=selected), "week")
 
 
 def test_a_where_item_with_a_stock_expression_is_refused(qualifying_runtime: Runtime) -> None:
@@ -338,7 +361,7 @@ def test_the_recovery_hint_uses_the_selected_label_and_a_date_placeholder(runtim
         (row for row in runtime._config.metric_recipes if row.id == "metric.billing.mrr"), None
     )
     partial = {"select": [{"expression": {"metric": metric.id}, "as": "mrr"}]} if metric else {}
-    plan = _plan(runtime, "MRR", partial=partial)
+    plan = _plan(runtime, "MRR by week", partial=partial)
     [hint] = [hint for hint in plan["why"]["recovery_hints"] if hint["kind"] == "ask_for_one_day"]
     assert hint["message"] == (
         "Ask for 'MRR yesterday' or 'MRR on <YYYY-MM-DD>', "
