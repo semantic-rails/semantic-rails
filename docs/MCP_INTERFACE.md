@@ -510,15 +510,18 @@ Adjacent completed-period comparisons have a closed grammar: "last week compared
 week before", "last month vs the previous month", and "yesterday vs the day before".
 The first period is "last day/week/month/quarter/year" or "yesterday"; the second is the same
 unit immediately before it.
-The connector may also be "compared to", "versus", "against" or "change from"; the second
+The connector may also be "compared to", "versus" or "against"; the second
 period may be "the prior week" or "the week prior". "Last week, up or down" compares with
 the immediately preceding week. The draft selects the named governed flow metric when
 available, carries two completed periods at their own grain, fills empty periods and orders
-the dated rows ascending. The comparison phrase is consumed whole. A stock, mixed units,
-two named windows, the same period last year, or a current partial period such as "this month
-vs the month before" stays `low_confidence`, without `execute` readiness. Newly recognized
-pairs with mixed units, stocks or a partial current period carry `PLAN_INTENT_COVERAGE_GAP`
-inside `why.errors` and guidance to clarify; other unsupported comparisons retain the
+the dated rows ascending. Readiness requires `time.fill: true` on the final draft;
+a draft with missing or disabled fill is held. An explicitly requested grain must match
+the pair's unit. The comparison phrase is consumed whole. A stock, mixed units, two named
+windows, the same period last year, or a current partial period such as "this month vs the
+month before" stays `low_confidence`, without `execute` readiness. Newly recognized
+pairs with mixed units, a conflicting requested grain, stocks or a partial current period
+carry `PLAN_INTENT_COVERAGE_GAP` inside `why.errors` and guidance to clarify; other unsupported
+comparisons retain the
 existing time or intent hold. An inline period
 shift preserves a stated window; a conflicting lookback stays
 held by the existing time-window validation rather than silently removing the window.

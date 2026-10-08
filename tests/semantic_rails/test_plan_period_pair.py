@@ -120,14 +120,6 @@ def _draft() -> dict[str, Any]:
             [1, 1],
         ),
         (
-            "New accounts by week last week vs the week before",
-            "new_accounts",
-            "week",
-            "2026-09-21",
-            "2026-10-05",
-            [1, 1],
-        ),
-        (
             "new accounts last week, up or down",
             "new_accounts",
             "week",
@@ -274,6 +266,37 @@ def test_stock_pair_stays_held(subscriptions: Runtime) -> None:  # noqa: F811
     assert result["why"]["errors"][0]["code"] == "PLAN_INTENT_COVERAGE_GAP"
 
 
+def test_same_grain_pair_keeps_two_dated_counts(tmp_path: Path) -> None:
+    root = _package(tmp_path, synonyms=True)
+    with duckdb.connect(str(root / "shop.duckdb")) as connection:
+        connection.execute(COVERAGE_SEED)
+        reference = connection.execute("""
+            SELECT CAST(date_trunc('week', occurred_at) AS DATE), COUNT(DISTINCT event_id)
+            FROM event_records
+            WHERE occurred_at >= DATE '2026-09-21' AND occurred_at < DATE '2026-10-05'
+              AND kind = 'signup' AND segment = 'customer'
+            GROUP BY 1 ORDER BY 1
+        """).fetchall()
+    runtime = Runtime.from_path(str(root))
+    try:
+        question = "New accounts by week last week vs the week before"
+        assert completed_period_pair(question) is not None
+        planned = plan_payload(runtime, intent=question, partial_query={"policy_context": NOW})
+        assert planned["status"] == "ok", planned.get("why")
+        assert planned["next"]["ready_for"] == ["execute"]
+        query = planned["best"]["query_ir"]
+        rows = typed_rows(runtime.query(query))
+        clock = f"{query['time']['temporal_role']}__week"
+        alias = query["select"][0]["as"]
+        assert (
+            [(str(row[clock])[:10], row[alias]) for row in rows]
+            == [(str(bucket), count) for bucket, count in reference]
+            == [("2026-09-21", 1), ("2026-09-28", 1)]
+        )
+    finally:
+        runtime.close()
+
+
 @pytest.mark.parametrize("fill", [False, None], ids=["disabled", "missing"])
 def test_order_pair_requires_fill(
     runtime_factory: Any, monkeypatch: pytest.MonkeyPatch, fill: bool | None
@@ -285,6 +308,11 @@ def test_order_pair_requires_fill(
     assert planned["status"] == "ok", planned.get("why")
     query = deepcopy(planned["best"]["query_ir"])
     query["policy_context"] = context
+    # Readiness checks see the relative draft before the public Query IR resolves dates.
+    query["time"].pop("start", None)
+    query["time"].pop("end", None)
+    query["time"]["range"] = {"last": {"unit": "week", "value": 2}}
+    assert completed_period_pair(question, runtime=runtime, query=query) is not None
     if fill is None:
         del query["time"]["fill"]
     else:
@@ -308,7 +336,7 @@ def test_order_pair_requires_fill(
     held = plan_payload(runtime, intent=question, partial_query={"policy_context": context})
     assert held["status"] != "ok", held
     assert "execute" not in held["next"].get("ready_for", [])
-    assert held["why"]["code"] == "PLAN_INTENT_COVERAGE_GAP"
+    assert held["why"]["code"] == "PLAN_UNASKED_GROUPING"
 
 
 def test_completed_order_pair_fills_an_empty_week(tmp_path: Path) -> None:
@@ -342,10 +370,14 @@ def test_completed_order_pair_fills_an_empty_week(tmp_path: Path) -> None:
         clock = f"{query['time']['temporal_role']}__week"
         alias = query["select"][0]["as"]
         actual = [(str(row[clock])[:10], row[alias]) for row in rows]
-        assert actual == [(str(bucket), count) for bucket, count in reference] == [
-            ("2017-08-07", 0),
-            ("2017-08-14", 1),
-        ]
+        assert (
+            actual
+            == [(str(bucket), count) for bucket, count in reference]
+            == [
+                ("2017-08-07", 0),
+                ("2017-08-14", 1),
+            ]
+        )
     finally:
         runtime.close()
 
@@ -360,9 +392,8 @@ def test_change_from_last_month_keeps_the_time_window_and_hold(runtime_factory: 
     assert planned["status"] == "low_confidence", planned
     assert planned["why"]["code"] == "PLAN_UNMATCHED_TERMS"
     assert "execute" not in planned["next"].get("ready_for", [])
-    assert planned["best"]["query_ir"]["time"]["range"] == {
-        "last": {"unit": "month", "value": 1}
-    }
+    time = normalize_query(planned["best"]["query_ir"], config=runtime._config).time
+    assert time and (time.start, time.end) == ("2017-07-01", "2017-08-01")
 
 
 @pytest.mark.parametrize(

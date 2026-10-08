@@ -21,7 +21,7 @@ from ..time_reference import time_policy_context, time_timezone
 from ._protocol import IntentPattern
 
 _UNIT = r"day|week|month|quarter|year"
-_COMPARISON = r"compared\s+(?:with|to)|vs\.?|versus|against|change\s+from|up\s+or\s+down"
+_COMPARISON = r"compared\s+(?:with|to)|vs\.?|versus|against|up\s+or\s+down"
 _PAIR = re.compile(
     rf"\b(?P<first>(?:last|this)\s+(?P<unit>{_UNIT})|yesterday)\s*,?\s+"
     rf"(?:(?:{_COMPARISON})\s+(?:the\s+)?"
@@ -78,6 +78,10 @@ def completed_period_pair(
         or _time_cues(prefix)
     ):
         return None
+    from ..groupings import _explicit_grain  # noqa: WPS433
+
+    if (grain := _explicit_grain(prefix)) and grain != unit:
+        return None
     # Punctuation belongs to the question, not the consumed time phrase.
     pair = PeriodPair(unit, (match.start(), match.start() + len(match.group().rstrip(" ?.!"))))
     if query is None:
@@ -93,6 +97,7 @@ def completed_period_pair(
         or query.get("group_by")
         or query.get("limit") is not None
         or time.get("grain") != unit
+        or time.get("fill") is not True
         or time.get("range") != pair.bounds["range"]
         or query.get("order_by") != [{"field": "time", "direction": "ASC"}]
     ):
