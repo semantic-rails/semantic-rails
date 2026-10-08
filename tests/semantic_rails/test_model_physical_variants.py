@@ -28,6 +28,7 @@ def _write_variant_package(package_dir: Path) -> None:
         {
             "schema_version": 1,
             "package": {
+                "schema_strict": True,
                 "id": "variant_demo",
                 "name": "variant_demo",
                 "description": "Physical variant routing demo",
@@ -50,7 +51,7 @@ def _write_variant_package(package_dir: Path) -> None:
             "graph": {
                 "entities": {
                     "order": {
-                        "id": "entity.demo_order",
+                        "as": "entity.demo_order",
                         "name": "demo.Order",
                         "label": "Order",
                         "key": ["order_id"],
@@ -65,9 +66,8 @@ def _write_variant_package(package_dir: Path) -> None:
         {
             "model": {
                 "id": "orders",
-                "entity": "order",
+                "entities": {"order": {}},
                 "relation": "order_fact",
-                "grain": ["order_id"],
                 "times": {
                     "ordered_at": {
                         "id": "temporal_role.demo_order_time",
@@ -82,26 +82,26 @@ def _write_variant_package(package_dir: Path) -> None:
                 },
                 "dimensions": {
                     "store_id": {
-                        "id": "dimension.demo_store_id",
+                        "as": "dimension.demo_store_id",
                         "column": "store_id",
                         "kind": "categorical",
                     },
                     "customer_id": {
-                        "id": "dimension.demo_customer_id",
+                        "as": "dimension.demo_customer_id",
                         "column": "customer_id",
                         "kind": "categorical",
                     },
                 },
                 "measures": {
                     "revenue_usd": {
-                        "id": "measure.demo.revenue_usd",
+                        "as": "measure.demo.revenue_usd",
                         "kind": "aggregate",
                         "expr": "order_total_cents / 100.0",
                         "time": "ordered_at",
                         "rollup": "additive",
                     },
                     "order_count": {
-                        "id": "measure.demo.order_count",
+                        "as": "measure.demo.order_count",
                         "kind": "entity_count",
                         "entity_key": "order_id",
                         "time": "ordered_at",
@@ -314,13 +314,13 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
                 "warehouse": "duckdb",
                 "default_db": "x.duckdb",
                 "seed": {"kind": "external"},
-                "schema_strict": bool(overrides.get("fact_days")),
+                "schema_strict": True,
             },
             "defaults": {"time": {"timezone": "UTC", "default_query_axis": False}},
         },
     )
     order = {
-        "id": "entity.order",
+        "as": "entity.order",
         "key": ["order_id"],
         "model": "orders",
         **overrides.get("entity", {}),
@@ -338,38 +338,57 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
         fact = {"id": "order_days", "kind": "fact", "relation": "order_days"}
         fact |= {"time_entity": "fiscal", "time_column": "date_day"}
         fact["times"] = {"date_day": {**day, "class": "event_time"}}
-        fact["dimensions"] = {"store_id": {"id": "dimension.day_store_id", "kind": "categorical"}}
+        fact["dimensions"] = {"store_id": {"as": "dimension.day_store_id", "kind": "categorical"}}
         fact["measures"] = {
-            "days": {"id": "measure.days", "kind": "entity_count", "time": "date_day"}
+            "days": {"as": "measure.days", "kind": "entity_count", "time": "date_day"}
         }
         fact["measures"]["days"].update(overrides.get("day_measure", {}))
         fact["variants"] = variants
         _write_yaml(package_dir / "models" / "order_days.yml", {"model": fact})
-    graph: dict = {"entities": entities}
+    graph: dict = {"entities": entities, "relationships": {}}
     if overrides.get("lines"):  # an order has many lines
-        entities["line"] = {"id": "entity.line", "key": ["line_id"], "model": "order_lines"}
-        product = {"id": "dimension.product", "column": "product", "kind": "categorical"}
-        lines = {"id": "order_lines", "entity": "line", "relation": "order_lines"}
-        lines |= {"grain": ["line_id"], "dimensions": {"product": product}}
-        lines["joins"] = {"order": {"id": _LINE_ORDER, "to": "order", "via": ["order_id"]}}
+        entities["line"] = {"as": "entity.line", "key": ["line_id"], "model": "order_lines"}
+        product = {"as": "dimension.product", "column": "product", "kind": "categorical"}
+        lines = {
+            "id": "order_lines",
+            "entities": {"line": {}, "order": {}},
+            "relation": "order_lines",
+        }
+        lines["dimensions"] = {"product": product}
+        graph["relationships"]["lines_order"] = {
+            "id": _LINE_ORDER,
+            "entities": ["line", "order"],
+            "cardinality": "many_to_one",
+        }
         _write_yaml(package_dir / "models" / "order_lines.yml", {"model": lines})
     if "ship_to" in overrides:  # orders reach customers by the buyer, or also by the ship-to
         entities["customer"] = {
-            "id": "entity.customer",
+            "as": "entity.customer",
             "key": ["customer_id"],
             "model": "customers",
         }
-        region = {"id": "dimension.region", "column": "region", "kind": "categorical"}
-        customers = {"id": "customers", "entity": "customer", "relation": "customers"}
-        customers |= {"grain": ["customer_id"], "dimensions": {"region": region}}
+        region = {"as": "dimension.region", "column": "region", "kind": "categorical"}
+        customers = {"id": "customers", "entities": {"customer": {}}, "relation": "customers"}
+        customers["dimensions"] = {"region": region}
         _write_yaml(package_dir / "models" / "customers.yml", {"model": customers})
         if overrides["ship_to"] is not None:  # None: the buyer relationship only
             route = [_SHIP_TO] if overrides["ship_to"] else [_BUYER]
             pin = {"source_entity": "order", "target_entity": "customer"}
             graph["path_preferences"] = [pin | {"relationship_path": route}]
+        graph["relationships"].update(
+            {
+                key: {
+                    "id": f"relationship.orders_{key}",
+                    "entities": ["order", "customer"],
+                    "via": [key + "_id"],
+                    "cardinality": "many_to_one",
+                }
+                for key in ("customer", "ship_to")[: 1 if overrides.get("ship_to") is None else 2]
+            }
+        )
     _write_yaml(package_dir / "graph.yml", {"graph": graph})
     dims = {
-        key: {"id": f"dimension.{key}", "column": key, "kind": "categorical"}
+        key: {"as": f"dimension.{key}", "column": key, "kind": "categorical"}
         for key in ("store_id", "customer_id")
     }
     time = {"id": "temporal_role.t", "dimension_id": "dimension.ordered_at", "column": "ordered_at"}
@@ -378,39 +397,32 @@ def _rollup_package(package_dir: Path, variants: dict, overrides: dict | None = 
     stock = {"accumulation": {"kind": "stock", "snapshot": "end_of_period"}}
     model = {
         "id": "orders",
-        "entity": "order",
-        "joins": {
-            key: {"id": f"relationship.orders_{key}", "to": "customer", "via": [key + "_id"]}
-            for key in ("customer", "ship_to")[: 1 if overrides.get("ship_to") is None else 2]
-        }
-        if "ship_to" in overrides
-        else {},
+        "entities": {"order": {}, **({"customer": {}} if "ship_to" in overrides else {})},
         "relation": "order_fact",
-        "grain": ["order_id"],
         "times": {
             "ordered_at": {**time, "kind": "timestamp", "class": "event_time", "default": True}
         },
         "dimensions": dims,
         "measures": {
-            "revenue": {"id": "measure.revenue", "kind": "aggregate", "expr": "amount", **measure},
+            "revenue": {"as": "measure.revenue", "kind": "aggregate", "expr": "amount", **measure},
             "order_count": {
-                "id": "measure.order_count",
+                "as": "measure.order_count",
                 "kind": "entity_count",
                 "entity_key": "order_id",
                 **measure,
             },
             "buyers": {
-                "id": "measure.buyers",
+                "as": "measure.buyers",
                 "kind": "entity_count",
                 "entity_key": "customer_id",
                 **measure,
             },
-            "balance": {"id": "measure.balance", "kind": "aggregate", "expr": "amount", **measure}
+            "balance": {"as": "measure.balance", "kind": "aggregate", "expr": "amount", **measure}
             | stock,
             **(
                 {
                     "weight": {
-                        "id": "measure.weight",
+                        "as": "measure.weight",
                         "kind": "aggregate",
                         "expr": "customers.weight",
                     }
@@ -564,7 +576,8 @@ _SHIP_TO_KEY = {
             id="distinct-buyers-composite-key",
         ),
         pytest.param(
-            ({"monthly": _MONTHLY}, {"entity": {"key": ["customer_id"]}}),
+            # A related entity's key cannot make monthly distinct-buyer counts safe to re-sum into quarterly totals.
+            ({"monthly": _MONTHLY}, {"ship_to": None}),
             _rollup_query(_BUYERS, "count_distinct", "quarter"),
             "aggregation_not_reaggregable",
             id="distinct-entity-key-not-row-grain",
@@ -1077,12 +1090,16 @@ def test_foreign_key_rollup_checks_its_declared_path(tmp_path: Path, fanout_path
     _rollup_package(package, {"buyer": variant}, {"lines": True, "ship_to": None})
     source = package / "models" / "order_lines.yml"
     lines = yaml.safe_load(source.read_text())
-    lines["model"]["joins"]["customer"] = {
-        "id": "relationship.lines_customer",
-        "to": "customer",
-        "via": ["customer_id"],
-    }
+    lines["model"]["entities"]["customer"] = {}
     _write_yaml(source, lines)
+    graph_path = package / "graph.yml"
+    graph = yaml.safe_load(graph_path.read_text())
+    graph["graph"]["relationships"]["lines_customer"] = {
+        "id": "relationship.lines_customer",
+        "entities": ["line", "customer"],
+        "cardinality": "many_to_one",
+    }
+    _write_yaml(graph_path, graph)
     config = load_package_config(str(package))
     query = _rollup_query(_REVENUE, "sum", "month")
     compiled = compile_query(config, Registry(config), query)

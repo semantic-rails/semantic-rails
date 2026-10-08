@@ -54,6 +54,7 @@ def _write_operational_package(package_dir: Path) -> None:
         {
             "schema_version": 1,
             "package": {
+                "schema_strict": True,
                 "id": "operational_demo",
                 "name": "operational_demo",
                 "description": "Operational metadata demo",
@@ -90,7 +91,7 @@ def _write_operational_package(package_dir: Path) -> None:
             "graph": {
                 "entities": {
                     "order": {
-                        "id": "entity.demo_order",
+                        "as": "entity.demo_order",
                         "name": "demo.Order",
                         "label": "Order",
                         "key": ["order_id"],
@@ -105,9 +106,8 @@ def _write_operational_package(package_dir: Path) -> None:
         {
             "model": {
                 "id": "orders",
-                "entity": "order",
+                "entities": {"order": {}},
                 "relation": "order_fact",
-                "grain": ["order_id"],
                 "operational_defaults": {"owner": "finance"},
                 "times": {
                     "ordered_at": {
@@ -122,7 +122,7 @@ def _write_operational_package(package_dir: Path) -> None:
                 },
                 "measures": {
                     "order_count": {
-                        "id": "measure.demo.order_count",
+                        "as": "measure.demo.order_count",
                         "name": "sales.orders",
                         "label": "Orders",
                         "kind": "entity_count",
@@ -141,7 +141,16 @@ def _write_operational_package(package_dir: Path) -> None:
         package_dir / "metrics.yml",
         {
             "metrics": {
+                "sales.orders": {
+                    "value_type": "number",
+                    "id": "metric.sales.orders",
+                    "kind": "aggregate",
+                    "measure": "measure.demo.order_count",
+                    "label": "Orders",
+                    "operational": {"owner": "finance", "tags": ["core"], "verified": True},
+                },
                 "sales.orders_copy": {
+                    "value_type": "number",
                     "id": "metric.sales.orders_copy",
                     "name": "sales.orders_copy",
                     "label": "Orders copy",
@@ -149,7 +158,7 @@ def _write_operational_package(package_dir: Path) -> None:
                     "temporal_role": "temporal_role.demo_order_time",
                     "expression": {"kind": "aggregate", "measure": "measure.demo.order_count"},
                     "operational": {"owner": "curated", "verified": False},
-                }
+                },
             }
         },
     )
@@ -161,6 +170,7 @@ def _write_generic_planning_package(package_dir: Path) -> None:
         {
             "schema_version": 1,
             "package": {
+                "schema_strict": True,
                 "id": "generic_planning_demo",
                 "name": "generic_planning_demo",
                 "description": "Generic planning scoring demo",
@@ -182,7 +192,7 @@ def _write_generic_planning_package(package_dir: Path) -> None:
             "graph": {
                 "entities": {
                     "event": {
-                        "id": "entity.demo_event",
+                        "as": "entity.demo_event",
                         "name": "demo.Event",
                         "label": "Event",
                         "key": ["event_id"],
@@ -197,9 +207,8 @@ def _write_generic_planning_package(package_dir: Path) -> None:
         {
             "model": {
                 "id": "events",
-                "entity": "event",
+                "entities": {"event": {}},
                 "relation": "demo_events",
-                "grain": ["event_id"],
                 "times": {
                     "event_at": {
                         "id": "temporal_role.demo_event_time",
@@ -213,21 +222,21 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                 },
                 "dimensions": {
                     "product": {
-                        "id": "dimension.demo_product",
+                        "as": "dimension.demo_product",
                         "name": "demo.Event.product",
                         "label": "Product",
                         "column": "product",
                         "kind": "categorical",
                     },
                     "send_type": {
-                        "id": "dimension.demo_send_type",
+                        "as": "dimension.demo_send_type",
                         "name": "demo.Event.send_type",
                         "label": "Send type",
                         "column": "send_type",
                         "kind": "categorical",
                     },
                     "account_status": {
-                        "id": "dimension.demo_account_status",
+                        "as": "dimension.demo_account_status",
                         "name": "demo.Event.account_status",
                         "label": "Account status",
                         "column": "account_status",
@@ -240,7 +249,7 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                 },
                 "measures": {
                     "send_count": {
-                        "id": "measure.demo.send_count",
+                        "as": "measure.demo.send_count",
                         "name": "engagement.sends",
                         "label": "Sends",
                         "kind": "entity_count",
@@ -249,7 +258,8 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                         "publish": {"id": "metric.engagement.sends"},
                     },
                     "capacity": {
-                        "id": "measure.demo.capacity",
+                        "kind": "aggregate",
+                        "as": "measure.demo.capacity",
                         "name": "engagement.capacity",
                         "label": "Capacity",
                         "expr": "capacity",
@@ -257,7 +267,7 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                         "publish": {"id": "metric.engagement.capacity"},
                     },
                     "account_count": {
-                        "id": "measure.demo.account_count",
+                        "as": "measure.demo.account_count",
                         "name": "engagement.accounts",
                         "label": "Accounts",
                         "kind": "entity_count",
@@ -273,7 +283,22 @@ def _write_generic_planning_package(package_dir: Path) -> None:
         package_dir / "metrics.yml",
         {
             "metrics": {
+                **{
+                    name: {
+                        "value_type": "number",
+                        "id": f"metric.engagement.{name}",
+                        "kind": "aggregate",
+                        "measure": f"measure.demo.{measure}",
+                        "label": label,
+                    }
+                    for name, measure, label in (
+                        ("sends", "send_count", "Sends"),
+                        ("capacity", "capacity", "Capacity"),
+                        ("accounts", "account_count", "Accounts"),
+                    )
+                },
                 "engagement.utilization_rate": {
+                    "value_type": "number",
                     "id": "metric.engagement.utilization_rate",
                     "name": "engagement.utilization_rate",
                     "label": "Utilization rate",
@@ -287,6 +312,7 @@ def _write_generic_planning_package(package_dir: Path) -> None:
                     },
                 },
                 "engagement.sends_per_account": {
+                    "value_type": "number",
                     "id": "metric.engagement.sends_per_account",
                     "name": "engagement.sends_per_account",
                     "label": "Sends per account",

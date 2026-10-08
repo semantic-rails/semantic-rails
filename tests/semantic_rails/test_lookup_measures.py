@@ -120,7 +120,11 @@ def _models() -> dict[str, dict[str, Any]]:
 
 
 def _write(
-    root: Path, models: dict[str, dict[str, Any]], coverage_key: tuple[str, ...] = ("coverage_id",)
+    root: Path,
+    models: dict[str, dict[str, Any]],
+    coverage_key: tuple[str, ...] = ("coverage_id",),
+    *,
+    relationships: dict | None = None,
 ) -> Path:
     def put(name: str, doc: dict[str, Any]) -> None:
         (root / name).parent.mkdir(parents=True, exist_ok=True)
@@ -156,7 +160,8 @@ def _write(
                 "entities": {
                     name: {"key": key, "model": model, "allowed_as_root": True}
                     for name, (key, model) in entities.items()
-                }
+                },
+                "relationships": relationships or {},
             }
         },
     )
@@ -688,8 +693,9 @@ def test_the_source_clock_alone_binds_no_measure(runtime: Runtime) -> None:
 
 def _bad_package(tmp_path: Path, change, **keys: Any) -> SemanticLayerError:
     models = copy.deepcopy(_models())
-    change(models)
-    root = _write(tmp_path / NS, models, **keys)
+    relationships: dict = {}
+    change(models, relationships)
+    root = _write(tmp_path / NS, models, relationships=relationships, **keys)
     with pytest.raises(SemanticLayerError) as raised:
         load_package_config(str(root))
     assert raised.value.code == "INVALID_CONFIG"
@@ -697,46 +703,42 @@ def _bad_package(tmp_path: Path, change, **keys: Any) -> SemanticLayerError:
 
 
 def _lookup(**spec: Any):
-    def change(models: dict[str, Any]) -> None:
+    def change(models: dict[str, Any], relationships: dict) -> None:
         models["claims"]["measures"]["bad"] = {"kind": "lookup", "via": "coverage", **spec}
 
     return change
 
 
-def _second_coverage_key(models: dict[str, Any]) -> None:
-    models["claims"]["joins"] = {"prior_coverage": {"to": "coverage", "via": ["prior_coverage_id"]}}
-
-
-def _second_source_coverage_key(models: dict[str, Any]) -> None:
-    models["premiums"]["joins"] = {
-        "prior_coverage": {"to": "coverage", "via": ["prior_coverage_id"]}
+def _second_coverage_key(models: dict[str, Any], relationships: dict) -> None:
+    relationships["prior_claim_coverage"] = {
+        "entities": ["claim", "coverage"],
+        "cardinality": "many_to_one",
+        "via": ["prior_coverage_id"],
     }
 
 
-def _timed_coverage_key(models: dict[str, Any]) -> None:
-    models["claims"]["entities"] = {"claim": {}}
-    models["claims"]["joins"] = {
-        "coverage": {
-            "to": "coverage",
-            "via": ["coverage_id"],
-            "temporal_validity": {
-                "valid_from": "coverage.valid_from",
-                "valid_to": "coverage.valid_to",
-            },
-        }
+def _second_source_coverage_key(models: dict[str, Any], relationships: dict) -> None:
+    relationships["prior_premium_coverage"] = {
+        "entities": ["premium", "coverage"],
+        "cardinality": "many_to_one",
+        "via": ["prior_coverage_id"],
     }
 
 
-def _composite_coverage_key(models: dict[str, Any]) -> None:
+def _timed_coverage_key(models: dict[str, Any], relationships: dict) -> None:
+    relationships["claims_coverage"] = {
+        "entities": ["claim", "coverage"],
+        "cardinality": "many_to_one",
+        "temporal_validity": {
+            "valid_from": "coverage.valid_from",
+            "valid_to": "coverage.valid_to",
+        },
+    }
+
+
+def _composite_coverage_key(models: dict[str, Any], relationships: dict) -> None:
     for model, entity in (("claims", "claim"), ("premiums", "premium")):
-        models[model]["entities"] = {entity: {}}
-        models[model]["joins"] = {
-            "coverage": {
-                "to": "coverage",
-                "via": ["coverage_id", "term"],
-                "target": ["coverage_id", "term"],
-            }
-        }
+        models[model]["entities"] = {entity: {}, "coverage": {"expr": ["coverage_id", "term"]}}
 
 
 # 6. Each load refusal names the key at fault.
@@ -769,7 +771,7 @@ def test_bad_declarations_are_refused_at_load(tmp_path: Path, change, key: str) 
 
 
 def test_from_and_via_belong_to_lookups_only(tmp_path: Path) -> None:
-    def change(models: dict[str, Any]) -> None:
+    def change(models: dict[str, Any], relationships: dict) -> None:
         models["claims"]["measures"]["reserve"]["via"] = "coverage"
 
     assert _bad_package(tmp_path, change).details["key"] == "via"
