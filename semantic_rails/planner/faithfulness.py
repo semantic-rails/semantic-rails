@@ -370,9 +370,30 @@ def intent_faithfulness_why(
         # value-specific absences are consequences of the same contradiction.
         gaps.extend(contradictions)
     else:
-        gaps.extend(_filter_value_gaps(runtime, text, query))
+        filter_text = text
+        if len(requested_subjects) >= 2 and not missing:
+            filter_text = _conjoined_filter_text(text, requested_subjects)
+        gaps.extend(_filter_value_gaps(runtime, filter_text, query))
 
-    return _coverage_why(gaps)
+    why = _coverage_why(gaps)
+    if why is not None and any(gap.kind == "multiple_subjects_unrealized" for gap in gaps):
+        objects = {
+            row.id: row for row in [*runtime._config.measures, *runtime._config.metric_recipes]
+        }
+        why["details"]["parts"] = [
+            {
+                **part,
+                "temporal_roles": [
+                    str(
+                        getattr(objects[key], "temporal_role", "")
+                        or getattr(objects[key], "default_temporal_role", "")
+                    )
+                    for key in part["candidate_ids"]
+                ],
+            }
+            for part in requested_subjects
+        ]
+    return why
 
 
 def _ambiguous_grouping_gaps(
@@ -534,6 +555,12 @@ def named_subject_why(
     """A shared whole name cannot be settled by the ranking's label or score."""
 
     rows = _shared_subjects(runtime._config, question)
+    if not rows:
+        # A longer name in another piece cannot settle this piece's own collision.
+        for part in _conjoined_subjects(runtime, question):
+            rows = _shared_subjects(runtime._config, part["phrase"])
+            if rows:
+                break
     if not rows or any(row.id in _projected_subject_ids(partial_query or {}) for row in rows):
         return None
     return _coverage_why(
@@ -672,6 +699,13 @@ def _conjoined_subjects(runtime: Any, text: str) -> list[dict[str, Any]]:
             return []
         matches.append({"phrase": piece, "candidate_ids": candidate_ids})
     return matches
+
+
+def _conjoined_filter_text(text: str, subjects: list[dict[str, Any]]) -> str:
+    """Selected subject names consume only their first occurrence, never a later filter."""
+    for part in subjects:
+        text = text.replace(part["phrase"], "", 1)
+    return text
 
 
 def _matches_exact_subject_field(row: Any, piece_tokens: tuple[str, ...]) -> bool:

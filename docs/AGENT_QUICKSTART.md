@@ -199,6 +199,13 @@ Statuses are:
   month": `comparison_unrealized`); and "How many orders and how much revenue last
   week?" needs a select of its own naming orders and one naming revenue, never the same select
   twice or one that names neither (`multiple_questions_unrealized`).
+  Exact conjoined metric or measure names ("New accounts and closures last week")
+  can produce one Query IR v1 draft with a select for every subject, in question order.
+  The subjects must share a declared or compatible clock, a supported window, grouping,
+  and filters. Shared-name ambiguity asks for clarification; incompatible subjects remain
+  held as `multiple_subjects_unrealized`, with visible subject ids and their declared clocks
+  in `why.details.parts`. Disabling `conjoined_metrics` in `package.planner.disabled_patterns`
+  keeps the coverage guard: a draft that omits a requested subject is never ready.
   `warnings` can still name other question words the draft doesn't use (`PLAN_UNMATCHED_TERMS`).
   Parsed qualification drafts are held with `PLAN_INTENT_COVERAGE_GAP` until their cohort and
   time scope can be proven; entity keys or key counts alone do not prove that scope.

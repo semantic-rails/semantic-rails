@@ -6,7 +6,7 @@ import pytest
 
 from semantic_rails.planner import plan_payload
 from tests.semantic_rails.conftest import opened
-from tests.semantic_rails.result_helpers import assert_plan_held
+from tests.semantic_rails.result_helpers import assert_plan_held, disable_planner_patterns
 
 
 def _gap_kinds(payload: dict) -> set[str]:
@@ -43,6 +43,7 @@ def test_validating_but_unfaithful_complex_plans_fail_closed(
     expected_gap: str,
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
+    disable_planner_patterns(runtime, "conjoined_metrics")
     try:
         payload = plan_payload(runtime, intent=intent)
     finally:

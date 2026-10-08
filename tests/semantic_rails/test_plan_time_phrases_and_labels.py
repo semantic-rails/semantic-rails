@@ -27,7 +27,7 @@ from semantic_rails.planner.patterns.metric_by_dimension_rollup import (
 from semantic_rails.planner.time_checks import _caller_window_gaps
 from semantic_rails.planner.time_windows import _time_bounds_from_text, _time_window
 from semantic_rails.planner.unmatched_words import unmatched_intent_terms
-from tests.semantic_rails.result_helpers import assert_plan_held
+from tests.semantic_rails.result_helpers import assert_plan_held, disable_planner_patterns
 
 MARCH_15 = "2017-03-15"
 HOUR = {"start": f"{MARCH_15}T12:00:00", "end": f"{MARCH_15}T13:00:00"}
@@ -1324,6 +1324,7 @@ def test_a_second_measure_is_never_dropped_silently(
     runtime_factory: Any, intent: str, missing: str | tuple[str, ...]
 ) -> None:
     runtime = runtime_factory("jaffle_shop")
+    disable_planner_patterns(runtime, "conjoined_metrics")
     try:
         payload = plan_payload(runtime, intent=intent, detail="query")
         if intent == "revenue and orders by store":
