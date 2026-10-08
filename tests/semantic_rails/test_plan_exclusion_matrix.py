@@ -446,3 +446,61 @@ def test_a_caller_constraint_never_discharges_an_item(shop):
     assert exclusion_gaps(
         shop._config, question, {"where": _drops("store")}, caller={"where": _drops("store")}
     )[0].actual["missing"] == ["web"]
+
+
+def test_an_exclusion_inside_a_selected_expression_is_no_evidence(shop):
+    question = "signups excluding web and Top"
+    scoped = {
+        "as": "signup_count",
+        "expression": {
+            "kind": "scoped_aggregate",
+            "measure": "measure.shop.signup_count",
+            "where": _drops("store"),
+        },
+    }
+    [gap] = exclusion_gaps(shop._config, question, {"select": [scoped], "where": _drops("web")})
+    assert "Top" in gap.actual["missing"]
+
+
+STORE = "dimension.jaffle_store_name"
+
+
+@pytest.mark.parametrize(
+    ("question", "excluded"),
+    [
+        ("revenue excluding Brooklyn", "Brooklyn"),
+        ("revenue not Brooklyn by month", "Brooklyn"),
+        ("revenue for all stores except New Orleans", "New Orleans"),
+    ],
+)
+def test_planned_store_exclusions_match_reference_sql(runtime_factory, question, excluded):
+    # These held with a reversed '=' draft; the planner now drafts the null-keeping exclusion,
+    # which keeps orders whose store has no name.
+    runtime = runtime_factory("jaffle_shop")
+    try:
+        payload = plan_payload(runtime, intent=question)
+        assert payload["status"] == "ok", payload.get("why")
+        assert payload["next"]["ready_for"] == ["execute"]
+        query = payload["best"]["query_ir"]
+        assert query["where"] == [{"field": STORE, "op": KEEPS, "value": excluded}]
+        alias = query["select"][0]["as"]
+        total = sum(row[alias] for row in runtime.query(query)["rows"])
+        overall = {key: value for key, value in query.items() if key not in {"time", "order_by"}}
+        by_store = {
+            row[STORE]: row[alias]
+            for row in runtime.query({**overall, "group_by": [STORE]})["rows"]
+        }
+    finally:
+        runtime.close()
+    with duckdb.connect(runtime.db_path, read_only=True) as connection:
+        expected = dict(
+            connection.execute(
+                "SELECT s.store_name, SUM(o.order_total_cents / 100.0) FROM jaffle_order o "
+                "LEFT JOIN jaffle_store s ON o.store_id = s.store_id "
+                "WHERE s.store_name IS DISTINCT FROM ? GROUP BY 1",
+                [excluded],
+            ).fetchall()
+        )
+    assert excluded not in expected
+    assert by_store == pytest.approx(expected)
+    assert total == pytest.approx(sum(expected.values()))
