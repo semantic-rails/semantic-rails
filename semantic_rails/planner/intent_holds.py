@@ -53,13 +53,14 @@ def _pattern_dropped_start(
 
 
 def _with_time_gap(why: dict[str, Any], time_why: dict[str, Any] | None) -> dict[str, Any]:
-    """Add a time why (unresolved window, dropped start) to a coverage-gap why."""
+    """Add a time why (unresolved window, incomplete period, dropped start) to a coverage-gap
+    why."""
 
     if time_why is None:
         return why
     details = dict(time_why.get("details") or {})
     clause = ", ".join(details.get("unresolved_phrases") or []) or str(
-        details.get("requested_start", "")
+        (details.get("incomplete_period") or {}).get("start") or details.get("requested_start", "")
     )
     gaps = [
         *list((why.get("details") or {}).get("gaps") or []),
@@ -231,7 +232,11 @@ def _time_assumptions(intent: str, query: dict[str, Any]) -> list[str]:
 
 
 def _start_dropped_why(start: Any) -> dict[str, Any] | None:
-    """Explain a window whose start a lookback metric couldn't take."""
+    """Explain a window whose start a lookback metric couldn't take.
+
+    A period comparison whose kept rows would still hold an incomplete period gets
+    ``PERIOD_COMPARISON_INCOMPLETE`` instead (``period_checks``), never this hint to execute.
+    """
 
     if not start:
         return None
